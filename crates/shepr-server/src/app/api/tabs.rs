@@ -24,7 +24,7 @@ impl App {
         } else {
             let mut tabs = Vec::new();
             for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
-                for tab_idx in 0..ws.tabs.len() {
+                for tab_idx in 0..ws.tabs().len() {
                     if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
                         tabs.push(tab);
                     }
@@ -113,7 +113,7 @@ impl App {
                         .state
                         .workspaces
                         .get_mut(ws_idx)
-                        .and_then(|ws| ws.tabs.get_mut(tab_idx))
+                        .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
                     {
                         tab.set_custom_name(label);
                         // A missing stable id must not be reconstructed from the tab's position.
@@ -159,7 +159,7 @@ impl App {
             .state
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
         else {
             return tab_not_found(id, &params.tab_id);
         };
@@ -187,7 +187,7 @@ impl App {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return tab_not_found(id, &params.tab_id);
         };
-        if params.insert_index > ws.tabs.len() {
+        if params.insert_index > ws.tabs().len() {
             return failure(
                 id,
                 ApiErrorCode::TabMoveFailed,
@@ -258,7 +258,7 @@ impl App {
             .workspaces
             .get(ws_idx)
             .map(|ws| {
-                (0..ws.tabs.len())
+                (0..ws.tabs().len())
                     .filter_map(|idx| self.tab_info(ws_idx, idx))
                     .collect()
             })
@@ -305,7 +305,7 @@ mod tests {
         app.state.set_selected_index(Some(0));
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
         let workspace_id = app.public_workspace_id(0);
-        let root_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let root_pane = app.state.workspaces[0].tabs()[0].root_pane;
         let pane_id = app.public_pane_id(0, root_pane).expect("test precondition");
 
         let response = app.handle_tab_close(
@@ -372,7 +372,7 @@ mod tests {
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
-        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let root = app.state.workspaces[0].tabs()[0].root_pane;
         app.state
             .public_pane_id_aliases
             .insert("wOLD:p1".into(), root);
@@ -394,7 +394,7 @@ mod tests {
 
         let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
-        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs().len(), 1);
         assert!(
             !app.state
                 .public_pane_id_aliases
@@ -439,7 +439,7 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
-        let moved_root = app.state.workspaces[0].tabs[0].root_pane;
+        let moved_root = app.state.workspaces[0].tabs()[0].root_pane;
         let moved_id = app.public_tab_id(0, 0).expect("test precondition");
 
         let response = app.handle_tab_move(
@@ -454,7 +454,7 @@ mod tests {
         let ResponseResult::TabList { tabs } = success.result else {
             panic!("expected tab list");
         };
-        assert_eq!(app.state.workspaces[0].tabs[2].root_pane, moved_root);
+        assert_eq!(app.state.workspaces[0].tabs()[2].root_pane, moved_root);
         assert_eq!(
             tabs[2].tab_id,
             app.public_tab_id(0, 2).expect("test precondition")
@@ -488,7 +488,7 @@ mod tests {
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
         let workspace = Workspace::test_new("tabs");
-        let focused_pane = workspace.tabs[0].root_pane;
+        let focused_pane = workspace.tabs()[0].root_pane;
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
@@ -518,7 +518,7 @@ mod tests {
 
         let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
-        let created = &app.state.workspaces[0].tabs[1];
+        let created = &app.state.workspaces[0].tabs()[1];
         let created_terminal_id = created
             .terminal_id(created.root_pane)
             .expect("test precondition");

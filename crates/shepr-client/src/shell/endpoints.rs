@@ -134,10 +134,6 @@ impl ClientShellState {
     }
 
     pub(crate) fn activate_endpoint_projection(&mut self, endpoint_id: &ClientEndpointId) -> bool {
-        let pending_agent_reveal = self
-            .pending_agent_reveal
-            .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
-        let agent_body_height = self.hits.agent_body.height;
         let Some(endpoint) = self
             .endpoints
             .iter()
@@ -152,6 +148,20 @@ impl ClientShellState {
             return false;
         };
         let generation = endpoint.snapshot_generation;
+        // Resolve the endpoint's config before changing the active id or clearing the
+        // previous pane surface. A malformed config must not make the old projection
+        // appear to belong to this endpoint.
+        let snapshot_config = match self.resolve_snapshot_config(endpoint_id, &snapshot) {
+            Ok(config) => config,
+            Err(error) => {
+                self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
+                return false;
+            }
+        };
+        let pending_agent_reveal = self
+            .pending_agent_reveal
+            .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
+        let agent_body_height = self.hits.agent_body.height;
         let switching_endpoint = endpoint_id != &self.active_endpoint_id;
         let agent_scroll = self.agent_scroll;
         if switching_endpoint {
@@ -159,7 +169,7 @@ impl ClientShellState {
             self.pane_surface = None;
             self.pending_pane_surface = None;
         }
-        self.apply_active_snapshot(snapshot, generation);
+        self.apply_active_snapshot(snapshot, generation, &snapshot_config);
         if switching_endpoint {
             // The aggregate agent list belongs to the client, not one endpoint.
             self.agent_scroll = agent_scroll;
@@ -409,8 +419,50 @@ impl ClientShellState {
             return;
         };
         if endpoint_id == &self.active_endpoint_id {
-            self.apply_active_snapshot(snapshot, generation);
+            match self.resolve_snapshot_config(endpoint_id, &snapshot) {
+                Ok(config) => self.apply_active_snapshot(snapshot, generation, &config),
+                Err(error) => {
+                    self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
+                }
+            }
         }
+    }
+
+    fn resolve_snapshot_config(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        snapshot: &ClientShellSnapshot,
+    ) -> Result<std::sync::Arc<shepr_config::ValidatedConfig>, String> {
+        let cached_config = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.resolved_config.as_ref())
+            // A zero-length config is the connection-local reuse marker.
+            .filter(|cached| {
+                snapshot.resolved_config.is_empty() || cached.wire == snapshot.resolved_config
+            })
+            .map(|cached| std::sync::Arc::clone(&cached.config));
+        if let Some(config) = cached_config {
+            return Ok(config);
+        }
+
+        let config = shepr_protocol::codec::from_slice_exact::<shepr_config::ValidatedConfig>(
+            &snapshot.resolved_config,
+        )
+        .map_err(|error| error.to_string())?;
+        let config = std::sync::Arc::new(config);
+        if let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        {
+            endpoint.resolved_config = Some(CachedEndpointConfig {
+                wire: snapshot.resolved_config.clone(),
+                config: std::sync::Arc::clone(&config),
+            });
+        }
+        Ok(config)
     }
 }
 

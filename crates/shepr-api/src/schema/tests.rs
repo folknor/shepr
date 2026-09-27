@@ -469,7 +469,6 @@ fn success_response_round_trips() {
         id: "req_1".into(),
         result: ResponseResult::Pong {
             version: "0.1.2".into(),
-            protocol: 6,
             build_id: "0123456789abcdef".into(),
             capabilities: Some(ServerCapabilities {
                 detached_server_daemon: true,
@@ -510,7 +509,6 @@ fn session_snapshot_request_and_response_round_trip() {
         result: ResponseResult::SessionSnapshot {
             snapshot: Box::new(SessionSnapshot {
                 version: "0.1.2".into(),
-                protocol: 16,
                 focused_workspace_id: None,
                 focused_tab_id: None,
                 focused_pane_id: None,

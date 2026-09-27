@@ -301,6 +301,9 @@ fn parse_kitty_event_type(value: Option<&str>) -> Option<crossterm::event::KeyEv
     }
 }
 
+// Keypad digits, operators and navigation map to ordinary keys, losing their
+// distinct keypad identity; agent and shell panes do not need full Kitty
+// report-all keypad fidelity.
 fn kitty_codepoint_to_keycode(codepoint: u32) -> Option<KeyCode> {
     match codepoint {
         8 | 127 => Some(KeyCode::Backspace),
@@ -379,6 +382,8 @@ fn kitty_codepoint_to_keycode(codepoint: u32) -> Option<KeyCode> {
     }
 }
 
+// Kitty's Caps Lock and Num Lock modifier bits are dropped because agent and
+// shell panes do not need lock-state fidelity.
 fn key_modifiers_from_u8(modifier: u8) -> KeyModifiers {
     let mut mods = KeyModifiers::empty();
     if modifier & 0b0000_0001 != 0 {

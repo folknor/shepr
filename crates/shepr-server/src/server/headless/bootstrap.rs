@@ -135,12 +135,12 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
 ///
 /// Must run while the process is still single-threaded; see `run_server`.
 fn take_startup_cwd() -> Option<PathBuf> {
-    let cwd = std::env::var_os(shepr_remote::autodetect::STARTUP_CWD_ENV_VAR)?;
+    let cwd = std::env::var_os(shepr_remote::local_server::STARTUP_CWD_ENV_VAR)?;
     // SAFETY: `run_server` calls this before it starts the API server thread,
     // the tokio runtime or anything else that spawns threads, and `main` spawns
     // none before calling `run_server`, so no other thread can be reading the
     // environment concurrently.
-    unsafe { std::env::remove_var(shepr_remote::autodetect::STARTUP_CWD_ENV_VAR) };
+    unsafe { std::env::remove_var(shepr_remote::local_server::STARTUP_CWD_ENV_VAR) };
     startup_cwd_from_env_value(cwd)
 }
 

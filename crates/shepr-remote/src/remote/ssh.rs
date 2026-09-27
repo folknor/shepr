@@ -386,7 +386,8 @@ pub(super) fn output_with_forwarded_stderr(
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh command stdout missing"))?;
     // A ControlPersist master forked by this command may keep stderr open after the
     // command exits; the capture stops waiting for it shortly after the exit.
-    let stdout_capture = PipeCapture::spawn(child_stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
+    let stdout_capture =
+        PipeCapture::spawn_tail(child_stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
     let stderr_relay = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::Stderr);
 
     let write_result = if let Some(bytes) = stdin {

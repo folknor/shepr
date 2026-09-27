@@ -865,6 +865,7 @@ impl ClientShellState {
         &mut self,
         snapshot: Box<ClientShellSnapshot>,
         generation: Option<u64>,
+        snapshot_config: &std::sync::Arc<shepr_config::ValidatedConfig>,
     ) {
         let graphics_scope = match &self.active_endpoint_id {
             // Local direct uploads use image IDs authored by the server from its boot ID.
@@ -882,48 +883,12 @@ impl ClientShellState {
         {
             return;
         }
-        let cached_config = self
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-            .and_then(|endpoint| endpoint.resolved_config.as_ref())
-            // A zero-length config is the connection-local reuse marker.
-            .filter(|cached| {
-                snapshot.resolved_config.is_empty() || cached.wire == snapshot.resolved_config
-            })
-            .map(|cached| std::sync::Arc::clone(&cached.config));
-        let snapshot_config = match cached_config {
-            Some(config) => config,
-            None => {
-                let config = match shepr_protocol::codec::from_slice_exact::<
-                    shepr_config::ValidatedConfig,
-                >(&snapshot.resolved_config)
-                {
-                    Ok(config) => std::sync::Arc::new(config),
-                    Err(error) => {
-                        self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
-                        return;
-                    }
-                };
-                if let Some(endpoint) = self
-                    .endpoints
-                    .iter_mut()
-                    .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-                {
-                    endpoint.resolved_config = Some(super::endpoints::CachedEndpointConfig {
-                        wire: snapshot.resolved_config.clone(),
-                        config: std::sync::Arc::clone(&config),
-                    });
-                }
-                config
-            }
-        };
         let endpoint_keybindings_changed =
             self.active_resolved_config.as_ref().is_none_or(|current| {
-                !std::sync::Arc::ptr_eq(current, &snapshot_config)
-                    && !current.same_keybinding_resolution(&snapshot_config)
+                !std::sync::Arc::ptr_eq(current, snapshot_config)
+                    && !current.same_keybinding_resolution(snapshot_config)
             });
-        self.active_resolved_config = Some(std::sync::Arc::clone(&snapshot_config));
+        self.active_resolved_config = Some(std::sync::Arc::clone(snapshot_config));
         // Screen revisions restart per connection. Keep the displayed surface for selection
         // content comparisons, but retire speculative frames from the old connection.
         if generation_changed {
@@ -962,7 +927,7 @@ impl ClientShellState {
             self.previous_pane_id = Some(previous.clone());
         }
         if snapshot_keybindings_changed {
-            if let Err(err) = self.config.apply_snapshot_config(&snapshot_config) {
+            if let Err(err) = self.config.apply_snapshot_config(snapshot_config) {
                 self.set_endpoint_error(err);
             } else if matches!(
                 self.mode,

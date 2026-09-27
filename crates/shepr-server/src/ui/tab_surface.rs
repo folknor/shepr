@@ -20,7 +20,7 @@ impl TabSurfaceTarget {
         tab_index: usize,
     ) -> Option<Self> {
         let workspace = app.workspaces.get(workspace_index)?;
-        let tab = workspace.tabs.get(tab_index)?;
+        let tab = workspace.tabs().get(tab_index)?;
         Some(Self {
             workspace_id: workspace.id.clone(),
             tab_id: shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab.number),
@@ -37,7 +37,7 @@ impl TabSurfaceTarget {
             .position(|workspace| workspace.id == self.workspace_id)?;
         let workspace = &app.workspaces[workspace_index];
         let tab_index = workspace
-            .tabs
+            .tabs()
             .iter()
             .position(|tab| tab.number == self.tab_id.number())?;
         Some((workspace_index, tab_index))
@@ -77,7 +77,7 @@ pub(crate) fn compute_tab_surface_for(
 ) -> TabSurfaceLayout {
     let resolved = target.as_ref().and_then(|target| target.resolve(app));
     let tab = resolved.and_then(|(workspace_index, tab_index)| {
-        app.workspaces.get(workspace_index)?.tabs.get(tab_index)
+        app.workspaces.get(workspace_index)?.tabs().get(tab_index)
     });
     let split_borders = tab
         .map(|tab| {
@@ -256,10 +256,10 @@ mod tests {
 
         let target = TabSurfaceTarget::from_indices(&app, 1, 1).expect("test precondition");
         app.workspaces.swap(0, 1);
-        app.workspaces[0].tabs.swap(0, 1);
+        app.workspaces[0].tabs_mut().swap(0, 1);
         assert_eq!(target.resolve(&app), Some((0, 0)));
 
-        app.workspaces[0].tabs.remove(0);
+        assert!(app.workspaces[0].close_tab(0).is_some());
         assert_eq!(target.resolve(&app), None);
     }
 
@@ -267,7 +267,7 @@ mod tests {
     async fn explicit_surface_layout_drives_render_cursor_and_hyperlinks() {
         let uri = "https://example.com/surface";
         let mut workspace = Workspace::test_new("shell-workspace");
-        let left = workspace.tabs[0].root_pane;
+        let left = workspace.tabs()[0].root_pane;
         let right = workspace.test_split(Direction::Horizontal);
         let mut runtimes = PaneRuntimeRegistry::new();
         let left_terminal = workspace.terminal_id(left).cloned().expect("left terminal");

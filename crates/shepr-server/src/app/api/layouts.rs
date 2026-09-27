@@ -85,7 +85,7 @@ impl App {
             self.state
                 .workspaces
                 .get(ws_idx)?
-                .tabs
+                .tabs()
                 .get(tab_idx)?
                 .custom_name
                 .clone()
@@ -234,7 +234,7 @@ impl App {
                 data: EventData::TabCreated { tab },
             });
         }
-        for pane_id in self.state.workspaces[ws_idx].tabs[new_tab_idx]
+        for pane_id in self.state.workspaces[ws_idx].tabs()[new_tab_idx]
             .layout
             .pane_ids()
         {
@@ -281,7 +281,7 @@ impl App {
             .state
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
             .is_some_and(|tab| tab.layout.set_ratio_at(&path, params.ratio));
         if !changed {
             return failure(id, ApiErrorCode::SplitNotFound, "split path not found");
@@ -318,7 +318,7 @@ impl App {
 
     fn layout_description(&self, ws_idx: usize, tab_idx: usize) -> Option<LayoutDescription> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs.get(tab_idx)?;
+        let tab = ws.tabs().get(tab_idx)?;
         Some(LayoutDescription {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
@@ -362,7 +362,7 @@ impl App {
         pane_id: PaneId,
     ) -> Option<LayoutPane> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs.get(tab_idx)?;
+        let tab = ws.tabs().get(tab_idx)?;
         let terminal_id = tab.terminal_id(pane_id)?;
         let terminal = self.state.terminals.get(terminal_id);
         Some(LayoutPane {
@@ -390,7 +390,7 @@ impl App {
                 .state
                 .workspaces
                 .get(ws_idx)?
-                .tabs
+                .tabs()
                 .get(tab_idx)?
                 .layout
                 .focused();
@@ -659,14 +659,16 @@ mod tests {
     #[test]
     fn layout_export_returns_portable_tree() {
         let mut app = app_with_workspace();
-        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let root = app.state.workspaces[0].tabs()[0].root_pane;
         let right = app.state.workspaces[0].test_split(Direction::Horizontal);
         app.state.ensure_test_terminals();
-        app.state.workspaces[0].tabs[0].layout.focus_pane(root);
-        app.state.workspaces[0].tabs[0]
+        app.state.workspaces[0].tabs_mut()[0]
+            .layout
+            .focus_pane(root);
+        app.state.workspaces[0].tabs_mut()[0]
             .layout
             .set_ratio_at(&[], 0.65);
-        let right_terminal_id = app.state.workspaces[0].tabs[0]
+        let right_terminal_id = app.state.workspaces[0].tabs()[0]
             .terminal_id(right)
             .cloned()
             .expect("test precondition");
@@ -767,7 +769,7 @@ mod tests {
     async fn layout_apply_replaces_tab_with_requested_tree() {
         let mut app = app_with_workspace();
         let original_tab_id = app.public_tab_id(0, 0).expect("test precondition");
-        let original_root = app.state.workspaces[0].tabs[0].root_pane;
+        let original_root = app.state.workspaces[0].tabs()[0].root_pane;
         let original_pane_id = app
             .public_pane_id(0, original_root)
             .expect("test precondition");
@@ -807,7 +809,7 @@ mod tests {
         let ResponseResult::LayoutApply { layout } = success.result else {
             panic!("expected layout apply response");
         };
-        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs().len(), 1);
         assert_eq!(
             app.state.workspaces[0].tab_display_name(0).as_deref(),
             Some("dev")
@@ -861,7 +863,7 @@ mod tests {
     #[tokio::test]
     async fn layout_apply_new_tab_follows_cached_focused_pane_cwd_without_runtime() {
         let mut app = app_with_workspace();
-        let focused_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let focused_pane = app.state.workspaces[0].tabs()[0].root_pane;
         let scratch = crate::test_support::ScratchDir::new("cached-cwd");
         let cached_cwd = scratch.to_path_buf();
         let terminal_id = app.state.workspaces[0]
@@ -889,7 +891,7 @@ mod tests {
 
         let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
-        let created = &app.state.workspaces[0].tabs[1];
+        let created = &app.state.workspaces[0].tabs()[1];
         let created_terminal_id = created
             .terminal_id(created.root_pane)
             .expect("test precondition");
@@ -909,7 +911,7 @@ mod tests {
     #[tokio::test]
     async fn layout_apply_rejects_invalid_deep_leaf_without_creating_tab() {
         let mut app = app_with_workspace();
-        let original_tab_count = app.state.workspaces[0].tabs.len();
+        let original_tab_count = app.state.workspaces[0].tabs().len();
 
         let response = app.handle_layout_apply(
             "req".into(),
@@ -939,7 +941,7 @@ mod tests {
 
         let error: ErrorResponse = shepr_api::error::test_error(&response);
         assert_eq!(error.error.code, "invalid_layout");
-        assert_eq!(app.state.workspaces[0].tabs.len(), original_tab_count);
+        assert_eq!(app.state.workspaces[0].tabs().len(), original_tab_count);
     }
 
     #[test]

@@ -154,7 +154,7 @@ mod tests {
                 assert_eq!(request["method"], expected);
                 let response = if expected == "ping" {
                     serde_json::json!({"id": request["id"], "result": {
-                        "type": "pong", "version": "test", "protocol": shepr_protocol::PROTOCOL_VERSION,
+                        "type": "pong", "version": "test",
                         "build_id": shepr_protocol::BUILD_ID,
                         "capabilities": {"detached_server_daemon": false,
                             "ssh_agent_registration": true}
@@ -225,7 +225,7 @@ mod tests {
                 continue;
             }
             let result = if expected == "ping" {
-                serde_json::json!({"type": "pong", "version": "test", "protocol": shepr_protocol::PROTOCOL_VERSION,
+                serde_json::json!({"type": "pong", "version": "test",
                     "build_id": shepr_protocol::BUILD_ID,
                     "capabilities": {"detached_server_daemon": false,
                         "ssh_agent_registration": true}})

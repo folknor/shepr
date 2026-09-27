@@ -180,8 +180,22 @@ pub(super) fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "SSH runtime directory must be owned by the current user, mode 0700, and not a symlink",
+            UnsafeSshRuntimeDirectory,
         ));
     }
     Ok(())
 }
+
+/// A deterministic policy failure, distinct from filesystem permission errors.
+#[derive(Debug)]
+pub struct UnsafeSshRuntimeDirectory;
+
+impl std::fmt::Display for UnsafeSshRuntimeDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "SSH runtime directory must be owned by the current user, mode 0700, and not a symlink",
+        )
+    }
+}
+
+impl std::error::Error for UnsafeSshRuntimeDirectory {}

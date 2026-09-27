@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -128,7 +129,7 @@ impl EndpointSupervisors {
         profiles: &[super::SavedSshEndpoint],
         settings: shepr_remote::SavedSshSettings,
         now: Instant,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let mut supervisors = Self {
             endpoints: HashMap::new(),
             ssh_settings: settings,
@@ -138,25 +139,44 @@ impl EndpointSupervisors {
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         for profile in profiles {
-            supervisors.start_ssh(profile, now);
+            let connector = Arc::new(shepr_remote::SavedSshConnector::new(
+                paths,
+                &profile.id,
+                &profile.target,
+                &profile.session,
+                settings,
+            ));
+            if let Some(error) = connector.launch_fatal_setup_error() {
+                return Err(error);
+            }
+            supervisors.start_ssh_with_connector(profile, connector, now);
         }
-        supervisors
+        Ok(supervisors)
     }
 
     /// Supervises a saved machine with a fresh connector, replacing any previous one for
     /// the same profile id. The first attempt is due immediately, unless a retired attempt
     /// for the same id is still running; then it is due as soon as that one reports.
     pub(crate) fn start_ssh(&mut self, profile: &super::SavedSshEndpoint, now: Instant) {
-        let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
-        self.retire(&endpoint_id);
-        let connector = shepr_remote::SavedSshConnector::new(
+        let connector = Arc::new(shepr_remote::SavedSshConnector::new(
             &self.paths,
             &profile.id,
             &profile.target,
             &profile.session,
             self.ssh_settings,
-        );
-        let mut state = ReconnectState::new(ConnectTarget::Ssh(Arc::new(connector)), now);
+        ));
+        self.start_ssh_with_connector(profile, connector, now);
+    }
+
+    fn start_ssh_with_connector(
+        &mut self,
+        profile: &super::SavedSshEndpoint,
+        connector: Arc<shepr_remote::SavedSshConnector>,
+        now: Instant,
+    ) {
+        let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+        self.retire(&endpoint_id);
+        let mut state = ReconnectState::new(ConnectTarget::Ssh(connector), now);
         if self.retired_attempts.contains_key(&endpoint_id) {
             state.next_attempt = None;
         }
@@ -426,6 +446,7 @@ fn handshake_error(error: crate::ClientError) -> std::io::Error {
     use crate::ClientError;
     use shepr_protocol::FramingError;
     let error = match error {
+        ClientError::EndpointSetup(error) => error,
         ClientError::ConnectionFailed(error) | ClientError::ConnectionLost(error) => error,
         ClientError::HostTerminal(error) => error,
         ClientError::HandshakeRejected { error, .. } => {
@@ -503,6 +524,7 @@ mod tests {
             },
             now,
         )
+        .expect("test saved SSH setup is retryable")
     }
 
     #[test]

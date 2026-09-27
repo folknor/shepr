@@ -151,35 +151,84 @@ pub struct Workspace {
     pub metadata_token_sequences: crate::terminal::metadata_tokens::SequenceMarks,
     pub next_public_pane_number: usize,
     pub next_public_tab_number: usize,
-    pub tabs: Vec<Tab>,
+    tabs: Vec<Tab>,
     pub active_tab: usize,
 }
 
-// These two impls still `expect` a tab. `tabs` is public and can be empty
-// for a moment: `take_pane_for_move` hands back `workspace_empty` and its
-// caller removes the workspace. Every other mutation keeps at least one tab.
-// Removing the impls means rewriting each implicit `ws.layout` / `ws.panes` /
-// `ws.zoomed` (active-tab) access across ui, server and api code into an
-// explicit `active_tab()` lookup that handles `None`. That is a crate-wide
-// pass the compiler has to drive; it was not done in the same change that
-// removed the other `expect`s from this file.
+// These impls rely on the runtime tab-removal paths. Constructors, including restore, create a
+// workspace only with a surviving tab. `close_tab` and `remove_pane` remove
+// tabs only when another remains, and `move_tab` reinserts before returning.
+// `take_pane_for_move` can temporarily empty a workspace: its production
+// caller removes that workspace for cross-workspace moves, or creates a
+// replacement tab for same-workspace new-tab moves, before using implicit
+// active-tab access again. Keep this path documented at both expects below.
 impl Deref for Workspace {
     type Target = Tab;
 
     fn deref(&self) -> &Self::Target {
         self.active_tab()
-            .expect("workspace must always have at least one active tab")
+            // See the removal-path invariant above; all runtime empty states
+            // are consumed before this implicit access can occur.
+            .expect("workspace must have a tab when implicitly dereferenced")
     }
 }
 
 impl DerefMut for Workspace {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.active_tab_mut()
-            .expect("workspace must always have at least one active tab")
+            // See the removal-path invariant above; all runtime empty states
+            // are consumed before this implicit access can occur.
+            .expect("workspace must have a tab when implicitly dereferenced")
     }
 }
 
 impl Workspace {
+    pub(crate) fn from_restored_tabs(
+        id: String,
+        custom_name: Option<String>,
+        identity_cwd: PathBuf,
+        tabs: Vec<Tab>,
+        active_tab: usize,
+        next_public_pane_number: usize,
+        next_public_tab_number: usize,
+    ) -> Option<Self> {
+        if tabs.is_empty() || active_tab >= tabs.len() {
+            return None;
+        }
+        let mut workspace = Self {
+            id: id.into(),
+            custom_name,
+            cached_identity_cwd: identity_cwd.clone(),
+            cached_auto_label: fallback_label_from_cwd(&identity_cwd),
+            cached_git_status_key: identity_cwd.clone(),
+            identity_cwd,
+            cached_git_branch: None,
+            cached_git_ahead_behind: None,
+            cached_git_space: None,
+            metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
+            metadata_token_sequences: HashMap::new(),
+            next_public_pane_number,
+            next_public_tab_number,
+            active_tab,
+            tabs,
+        };
+        workspace.mark_identity_undiscovered();
+        Some(workspace)
+    }
+
+    pub fn tabs(&self) -> &[Tab] {
+        &self.tabs
+    }
+
+    pub fn tabs_mut(&mut self) -> &mut [Tab] {
+        &mut self.tabs
+    }
+
+    #[cfg(any(test, feature = "test-api"))]
+    pub fn clear_tabs_for_test(&mut self) {
+        self.tabs.clear();
+    }
+
     fn adjust_active_tab_after_removal(&mut self, removed_idx: usize) {
         if self.tabs.is_empty() {
             self.active_tab = 0;
@@ -691,9 +740,11 @@ impl Workspace {
     pub fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         let pane_count = self.tabs[tab_idx].panes.len();
+        // Take the pane before removing its tab, so a failed take leaves the
+        // tab in place instead of dropping it.
+        let moved = self.tabs[tab_idx].take_pane_for_move(pane_id)?;
         if pane_count <= 1 {
-            let mut tab = self.tabs.remove(tab_idx);
-            let moved = tab.take_pane_for_move(pane_id)?;
+            self.tabs.remove(tab_idx);
             self.adjust_active_tab_after_removal(tab_idx);
             return Some(TakenPane {
                 moved,
@@ -702,7 +753,6 @@ impl Workspace {
             });
         }
 
-        let moved = self.tabs[tab_idx].take_pane_for_move(pane_id)?;
         Some(TakenPane {
             moved,
             removed_tab_idx: None,

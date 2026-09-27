@@ -54,7 +54,7 @@ pub(super) fn snapshot_from_session(
                 .state
                 .workspaces
                 .get(workspace_index)?
-                .tabs
+                .tabs()
                 .get(tab_index)?
                 .layout
                 .focused();
@@ -136,7 +136,7 @@ pub(super) fn snapshot_from_session(
                     app.state
                         .workspaces
                         .get(workspace_index)?
-                        .tabs
+                        .tabs()
                         .get(tab_index)
                 });
             Some(shepr_protocol::ClientShellTab {
@@ -214,7 +214,7 @@ pub(super) fn snapshot_from_session(
             app.state
                 .workspaces
                 .get(workspace_index)?
-                .tabs
+                .tabs()
                 .get(tab_index)
         })
         .is_some_and(|tab| tab.zoomed);
@@ -510,7 +510,7 @@ mod tests {
         first.test_add_tab(Some("second-tab"));
         let mut second = shepr_mux::workspace::Workspace::test_new("second");
         second.custom_name = Some("named".into());
-        second.tabs[0].zoomed = true;
+        second.tabs_mut()[0].zoomed = true;
         app.state.workspaces = vec![first, second];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));

@@ -11,6 +11,7 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
+mod autodetect;
 mod cli;
 #[cfg(test)]
 mod netside_tests;
@@ -207,7 +208,7 @@ fn main() -> io::Result<()> {
 
     let saved_federation =
         shepr_remote::machine::EndpointCatalog::load(paths).is_ok_and(|catalog| catalog.has_ssh());
-    if let Err(err) = shepr_remote::autodetect::auto_detect_launch(
+    if let Err(err) = autodetect::auto_detect_launch(
         saved_federation,
         &loaded_config,
         paths,

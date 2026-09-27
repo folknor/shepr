@@ -27,7 +27,7 @@ impl App {
             .iter()
             .enumerate()
             .flat_map(|(ws_idx, ws)| {
-                ws.tabs.iter().flat_map(move |tab| {
+                ws.tabs().iter().flat_map(move |tab| {
                     tab.layout
                         .pane_ids()
                         .into_iter()

@@ -299,6 +299,28 @@ fn exhausted_discovery_reports_not_ready_and_starts_over_next_time() {
 }
 
 #[test]
+fn remote_client_status_requires_an_exact_build_id() {
+    let matching = RemoteClientStatusJson {
+        version: Some("old-version".into()),
+        build_id: Some(shepr_protocol::BUILD_ID.into()),
+    };
+    assert!(ensure_remote_client_build("build", &matching).is_ok());
+
+    let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+        "0000000000000000"
+    } else {
+        "ffffffffffffffff"
+    };
+    let mismatched = RemoteClientStatusJson {
+        version: Some(shepr_protocol::build_version()),
+        build_id: Some(other_build.into()),
+    };
+    let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert!(error.to_string().contains(other_build));
+}
+
+#[test]
 fn exhausted_discovery_names_a_path_rejected_for_shell_quoting() {
     struct QuotedInstall(Option<RejectedShellUnsafeCandidate>);
     impl DiscoverySteps for QuotedInstall {

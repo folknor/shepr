@@ -1291,6 +1291,7 @@ dependencies = [
  "shepr-test-support",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]

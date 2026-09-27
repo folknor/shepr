@@ -1093,7 +1093,8 @@ mod tests {
                 manage_ssh_config: false,
             },
             now,
-        );
+        )
+        .expect("test saved SSH setup is retryable");
 
         // The active machine is re-pointed at another target and another machine is added.
         let mut added = endpoint::EndpointCatalog::default();

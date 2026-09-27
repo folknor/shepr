@@ -494,7 +494,8 @@ async fn run_client_loop(
             manage_ssh_config: config.settings.manage_ssh_config,
         },
         std::time::Instant::now(),
-    );
+    )
+    .map_err(ClientError::EndpointSetup)?;
     if local_failure_policy.reconnects_local() {
         supervisors.add_local(
             config.paths.server_address().client_socket().to_path_buf(),

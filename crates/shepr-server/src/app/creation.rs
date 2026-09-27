@@ -63,7 +63,7 @@ impl App {
     ) -> Option<PathBuf> {
         let workspace = self.state.workspaces.get(ws_idx)?;
         let tab = workspace
-            .tabs
+            .tabs()
             .get(workspace.find_tab_index_for_pane(pane_id)?)?;
         launch_cwd_for_terminal(
             tab.terminal_id(pane_id)?,
@@ -92,7 +92,7 @@ impl App {
         tab_idx: Option<usize>,
     ) -> PathBuf {
         let follow_cwd = tab_idx
-            .and_then(|tab_idx| self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx))
+            .and_then(|tab_idx| self.state.workspaces.get(ws_idx)?.tabs().get(tab_idx))
             .map(|tab| tab.layout.focused())
             .and_then(|pane_id| self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id))
             .or_else(|| self.seed_cwd_from_workspace(ws_idx));
@@ -156,7 +156,7 @@ impl App {
                 ));
             };
             Ok(ws
-                .tabs
+                .tabs()
                 .iter()
                 .flat_map(|tab| tab.layout.pane_ids().into_iter())
                 .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
@@ -168,7 +168,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .flat_map(|(ws_idx, ws)| {
-                    ws.tabs
+                    ws.tabs()
                         .iter()
                         .flat_map(|tab| tab.layout.pane_ids().into_iter())
                         .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
@@ -183,7 +183,7 @@ impl App {
         tab_idx: usize,
     ) -> Option<shepr_api::schema::TabInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs.get(tab_idx)?;
+        let tab = ws.tabs().get(tab_idx)?;
         let agg_state = tab.aggregate_state(&self.state.terminals);
         Some(shepr_api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
@@ -267,7 +267,7 @@ impl App {
         tab_idx: usize,
     ) -> Option<shepr_api::schema::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs.get(tab_idx)?;
+        let tab = ws.tabs().get(tab_idx)?;
         self.pane_info(ws_idx, tab.root_pane)
     }
 
@@ -295,7 +295,7 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
-        let tab = ws.tabs.get(tab_idx)?;
+        let tab = ws.tabs().get(tab_idx)?;
         Some(shepr_api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
@@ -360,7 +360,7 @@ impl App {
             label: ws.display_name(),
             focused: self.state.active_index() == Some(index),
             pane_count: ws.pane_count(),
-            tab_count: ws.tabs.len(),
+            tab_count: ws.tabs().len(),
             // A missing active tab has no stable public identity; omit this
             // workspace snapshot instead of manufacturing one from its index.
             active_tab_id: self.public_tab_id(index, ws.active_tab)?,

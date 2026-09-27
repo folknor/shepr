@@ -18,6 +18,8 @@ impl ClientErrorContext {
 /// Errors that can occur during client operation.
 #[derive(Debug)]
 pub enum ClientError {
+    /// A saved endpoint's local SSH transport cannot be configured for this launch.
+    EndpointSetup(io::Error),
     /// Could not connect to the server's client socket.
     ConnectionFailed(io::Error),
     /// A host terminal write failed while updating terminal modes or output.
@@ -70,6 +72,9 @@ impl ClientError {
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ClientError::EndpointSetup(err) => {
+                write!(f, "failed to set up saved SSH endpoints: {err}")
+            }
             ClientError::ConnectionFailed(err) => {
                 write!(f, "failed to connect to server: {err}")?;
                 write!(
@@ -120,6 +125,7 @@ impl std::fmt::Display for ClientError {
 impl std::error::Error for ClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            ClientError::EndpointSetup(err) => Some(err),
             ClientError::ConnectionFailed(err) => Some(err),
             ClientError::HostTerminal(err) => Some(err),
             ClientError::ConnectionLost(err) => Some(err),

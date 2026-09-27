@@ -34,7 +34,7 @@ pub(crate) fn resize_all_tab_surfaces(
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) {
     for (workspace_index, workspace) in app.workspaces.iter().enumerate() {
-        for tab_index in 0..workspace.tabs.len() {
+        for tab_index in 0..workspace.tabs().len() {
             resize_tab_surface(
                 app,
                 terminal_runtimes,

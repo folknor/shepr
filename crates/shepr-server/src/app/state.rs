@@ -168,7 +168,7 @@ impl AppState {
     pub(crate) fn refresh_active_tab_id(&mut self) {
         self.active_tab_id = self.active_index().and_then(|index| {
             let workspace = self.workspaces.get(index)?;
-            let tab = workspace.tabs.get(workspace.active_tab)?;
+            let tab = workspace.tabs().get(workspace.active_tab)?;
             Some(shepr_protocol::PublicTabId::new(
                 workspace.id.to_string(),
                 tab.number,
@@ -290,7 +290,7 @@ impl AppState {
     pub fn ensure_test_terminals(&mut self) {
         use shepr_mux::terminal::TerminalState;
         for ws in &self.workspaces {
-            for tab in &ws.tabs {
+            for tab in ws.tabs() {
                 for pane in tab.panes.values() {
                     if !self.terminals.contains_key(&pane.attached_terminal_id) {
                         let cwd = ws.identity_cwd.clone();
@@ -346,7 +346,7 @@ impl AppState {
             .active_index()
             .expect("non-empty app state must have active workspace");
         let active_workspace = &self.workspaces[active];
-        let active_tab = &active_workspace.tabs[active_workspace.active_tab];
+        let active_tab = &active_workspace.tabs()[active_workspace.active_tab];
         assert_eq!(
             self.active_tab_id.as_ref(),
             Some(&shepr_protocol::PublicTabId::new(
@@ -376,7 +376,7 @@ impl AppState {
             workspace_id_to_idx.insert(ws.id.clone(), ws_idx);
             ws.assert_invariants_for_test();
 
-            for tab in &ws.tabs {
+            for tab in ws.tabs() {
                 for (pane_id, pane) in &tab.panes {
                     assert!(
                         pane_ids.insert(*pane_id),
@@ -462,8 +462,8 @@ mod tests {
     async fn runtime_lookup_goes_through_the_registry_by_terminal_id() {
         let mut state = AppState::test_new();
         let ws = shepr_mux::workspace::Workspace::test_new("test");
-        let pane_id = ws.tabs[0].root_pane;
-        let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
+        let pane_id = ws.tabs()[0].root_pane;
+        let terminal_id = ws.tabs()[0].panes[&pane_id].attached_terminal_id.clone();
         state.workspaces = vec![ws];
         let mut registry = shepr_mux::pane::PaneRuntimeRegistry::new();
 
@@ -498,7 +498,7 @@ mod tests {
         state.assert_invariants_for_test();
 
         let ws = &mut state.workspaces[0];
-        let active_public = ws.tabs[ws.active_tab].number;
+        let active_public = ws.tabs()[ws.active_tab].number;
         assert_ne!(ws.active_tab + 1, active_public);
         let new_pane = ws.test_split(ratatui::layout::Direction::Horizontal);
         assert!(ws.public_pane_number(new_pane).is_some());

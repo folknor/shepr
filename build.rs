@@ -7,8 +7,7 @@
 //! it. This script fingerprints every input that shapes the binary (the
 //! manifest, the lockfile, this script and every file under `src/`) and hands
 //! the result to the crate as `BUILD_ID`, which the handshake preamble, `ping`
-//! and `status` compare exactly, and `PROTOCOL_VERSION`, a derived number
-//! reported for information only. Any source change yields a new
+//! and `status` compare exactly. Any source change yields a new
 //! identity, so a stale server or a hand-copied remote binary is reported as
 //! a mismatch instead of passing as compatible.
 //!
@@ -74,15 +73,6 @@ fn relative_name(root: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
     Ok(parts.join("/"))
 }
 
-/// Folds the 64-bit fingerprint into `1..u32::MAX`. Keeping clear of both
-/// ends means `PROTOCOL_VERSION + 1` and `- 1`, which tests use to build a
-/// peer that differs only in this informational number, can never overflow.
-fn protocol_version(hash: u64) -> u32 {
-    let folded = (hash ^ (hash >> 32)) & u64::from(u32::MAX);
-    let span = u64::from(u32::MAX - 1);
-    u32::try_from(folded % span).map_or(1, |value| value + 1)
-}
-
 pub fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,
@@ -120,7 +110,6 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         hash.write_file(name, &fs::read(path)?);
     }
     let build_id = format!("{:016x}", hash.0);
-    let protocol = protocol_version(hash.0);
 
     fs::write(
         out_dir.join("build_id.rs"),
@@ -130,12 +119,10 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         ),
     )?;
     fs::write(
-        out_dir.join("protocol_identity.rs"),
+        out_dir.join("build_identity.rs"),
         format!(
             "/// Fingerprint of the source tree this binary was built from.\n\
-             pub const BUILD_ID: &str = \"{build_id}\";\n\
-             /// Wire protocol identity, derived from `BUILD_ID`.\n\
-             pub const PROTOCOL_VERSION: u32 = {protocol};\n"
+             pub const BUILD_ID: &str = \"{build_id}\";\n"
         ),
     )?;
 

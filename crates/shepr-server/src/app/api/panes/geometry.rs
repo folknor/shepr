@@ -164,7 +164,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.tabs.get(tab_idx))
+            .and_then(|ws| ws.tabs().get(tab_idx))
         else {
             return failure(
                 id,
@@ -259,7 +259,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.tabs.get(tab_idx))
+            .and_then(|ws| ws.tabs().get(tab_idx))
             .map(|tab| tab.layout.focused())
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
@@ -324,7 +324,7 @@ impl App {
             .state
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
             .is_some_and(|tab| tab.layout.resize_pane(pane_id, direction, amount, area));
         if changed {
             self.schedule_session_save();
@@ -454,7 +454,7 @@ impl App {
                     self.state
                         .workspaces
                         .get(ws_idx)?
-                        .tabs
+                        .tabs()
                         .get(tab_idx)
                         .map(|tab| tab.layout.focused())
                 })
@@ -484,7 +484,7 @@ impl App {
                 .state
                 .workspaces
                 .get_mut(ws_idx)
-                .and_then(|ws| ws.tabs.get_mut(tab_idx))
+                .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
             {
                 changed = tab.layout.swap_panes(source_pane_id, target_pane_id);
                 tab.layout.focus_pane(source_pane_id);
@@ -581,7 +581,7 @@ impl App {
             .state
             .workspaces
             .get(source_ws_idx)
-            .and_then(|ws| Some((ws, ws.tabs.get(source_tab_idx)?)))
+            .and_then(|ws| Some((ws, ws.tabs().get(source_tab_idx)?)))
         else {
             return failure(
                 id,
@@ -664,7 +664,7 @@ impl App {
                     .state
                     .workspaces
                     .get(target_ws_idx)
-                    .and_then(|ws| ws.tabs.get(target_tab_idx))
+                    .and_then(|ws| ws.tabs().get(target_tab_idx))
                     .map(|tab| (tab.zoomed, tab.layout.focused()))
                 else {
                     return failure(

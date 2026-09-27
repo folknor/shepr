@@ -405,13 +405,16 @@ impl EndpointCatalog {
 fn acquire_catalog_update_lock(
     catalog_path: &Path,
 ) -> Result<shepr_platform::ipc::FlockLock, String> {
-    let _parent = catalog_path
+    let parent = catalog_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| format!("invalid endpoint catalog path: {}", catalog_path.display()))?;
-    let mut lock_name = catalog_path.as_os_str().to_os_string();
+    let file_name = catalog_path
+        .file_name()
+        .ok_or_else(|| format!("invalid endpoint catalog path: {}", catalog_path.display()))?;
+    let mut lock_name = file_name.to_os_string();
     lock_name.push(".lock");
-    let lock_path = PathBuf::from(lock_name);
+    let lock_path = parent.join(lock_name);
     shepr_platform::ipc::acquire_flock_lock(&lock_path, true)
         .map_err(|error| format!("failed to lock endpoint catalog: {error}"))
 }

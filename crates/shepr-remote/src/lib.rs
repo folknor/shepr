@@ -3,8 +3,6 @@ mod args;
 #[cfg(test)]
 #[path = "remote/attach.rs"]
 mod attach;
-#[path = "remote/autodetect.rs"]
-pub mod autodetect;
 #[path = "remote/bridge.rs"]
 mod bridge;
 #[path = "remote/discovery.rs"]
@@ -13,6 +11,8 @@ mod discovery;
 mod host;
 #[path = "remote/launch.rs"]
 mod launch;
+#[path = "remote/local_server.rs"]
+pub mod local_server;
 pub mod machine;
 #[path = "remote/process.rs"]
 mod process;

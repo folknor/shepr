@@ -21,6 +21,7 @@ pub(super) const BRIDGE_ACCEPT_POLL: Duration = Duration::from_millis(50);
 pub(super) const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
 pub(super) const BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600;
 pub(super) const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
+const BRIDGE_FAILURE_REPORT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[cfg(test)]
 thread_local! {
@@ -175,13 +176,27 @@ impl SshStdioBridge {
 
     pub(crate) fn reported_failure(&self) -> Option<io::Error> {
         // A local client can observe EOF before this worker has reaped ssh and
-        // sent its exit diagnostic. The bounded wait lets that result arrive;
-        // a cleanly closed stream adds no more than one second after the EOF.
-        self.failure_rx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recv_timeout(BRIDGE_FAILURE_REPORT_TIMEOUT)
-            .ok()
+        // sent its exit diagnostic. Polling keeps the receiver mutex available
+        // to the accept thread while it discards an unclaimed earlier failure.
+        let deadline = Instant::now() + BRIDGE_FAILURE_REPORT_TIMEOUT;
+        loop {
+            let received = self
+                .failure_rx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_recv();
+            match received {
+                Ok(error) => return Some(error),
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            thread::sleep(remaining.min(BRIDGE_FAILURE_REPORT_POLL_INTERVAL));
+        }
     }
 }
 

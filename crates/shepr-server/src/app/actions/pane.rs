@@ -105,7 +105,7 @@ impl AppState {
         let tab = self
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))?;
+            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))?;
         if tab.layout.pane_count() <= 1 {
             return Some(PaneZoomOutcome {
                 changed: false,

@@ -204,7 +204,7 @@ impl App {
 
     pub(crate) fn sync_full_lifecycle_authority_detection_pauses(&self) {
         for workspace in &self.state.workspaces {
-            for tab in &workspace.tabs {
+            for tab in workspace.tabs() {
                 for pane in tab.panes.values() {
                     let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id)
                     else {
@@ -302,7 +302,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.tabs.get(tab_idx))
+            .and_then(|ws| ws.tabs().get(tab_idx))
         else {
             return Vec::new();
         };
@@ -341,7 +341,7 @@ impl App {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return Vec::new();
         };
-        let mut events: Vec<_> = (0..ws.tabs.len())
+        let mut events: Vec<_> = (0..ws.tabs().len())
             .flat_map(|tab_idx| self.tab_close_events(ws_idx, tab_idx))
             .collect();
         events.push(EventEnvelope {

@@ -576,7 +576,6 @@ fn handle_request(
             id: request.id.clone(),
             result: ResponseResult::Pong {
                 version: shepr_protocol::build_version(),
-                protocol: shepr_protocol::PROTOCOL_VERSION,
                 build_id: shepr_protocol::BUILD_ID.to_owned(),
                 capabilities,
             },

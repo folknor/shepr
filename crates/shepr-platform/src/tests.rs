@@ -287,6 +287,13 @@ fn shared_ssh_directory_rejects_symlinks_and_public_modes() {
             .kind(),
         std::io::ErrorKind::PermissionDenied
     );
+    assert!(
+        validate_shared_ssh_dir(&link)
+            .expect_err("test precondition")
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<UnsafeSshRuntimeDirectory>())
+            .is_some()
+    );
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
         .expect("test precondition");
     assert_eq!(

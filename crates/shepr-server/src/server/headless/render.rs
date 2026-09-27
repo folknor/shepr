@@ -85,7 +85,7 @@ impl HeadlessServer {
             .state
             .workspaces
             .get(workspace_index)?
-            .tabs
+            .tabs()
             .get(tab_index)?;
         let pane_id = tab.layout.focused();
         self.app
@@ -311,7 +311,7 @@ impl HeadlessServer {
                     .state
                     .workspaces
                     .get(workspace_index)
-                    .and_then(|workspace| workspace.tabs.get(tab_index))
+                    .and_then(|workspace| workspace.tabs().get(tab_index))
                 else {
                     continue;
                 };
@@ -324,7 +324,7 @@ impl HeadlessServer {
         }
         if !direct_terminal_targets.is_empty() {
             for workspace in &self.app.state.workspaces {
-                for tab in &workspace.tabs {
+                for tab in workspace.tabs() {
                     pane_ids.extend(tab.panes.iter().filter_map(|(&pane_id, pane)| {
                         direct_terminal_targets
                             .contains(pane.attached_terminal_id.as_str())
@@ -412,7 +412,7 @@ impl HeadlessServer {
                 .state
                 .workspaces
                 .get(workspace_index)
-                .and_then(|workspace| workspace.tabs.get(tab_index))
+                .and_then(|workspace| workspace.tabs().get(tab_index))
             else {
                 return false;
             };

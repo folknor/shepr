@@ -66,11 +66,31 @@ pub struct SavedSshConnector {
 #[derive(Default)]
 struct ConnectorState {
     ssh: Option<RemoteSsh>,
+    launch_fatal_setup_error: Option<StoredSetupError>,
     remote_shepr: Option<RemoteExecutable>,
     /// Full discovery's completed round trips, while it has not finished. Only kept while
     /// there is no remembered executable.
     discovery: DiscoveryProgress,
     seeded_from_disk: bool,
+}
+
+#[derive(Clone)]
+struct StoredSetupError {
+    kind: io::ErrorKind,
+    message: String,
+}
+
+impl StoredSetupError {
+    fn capture(error: &io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
+
+    fn to_io_error(&self) -> io::Error {
+        io::Error::new(self.kind, self.message.clone())
+    }
 }
 
 impl SavedSshConnector {
@@ -81,14 +101,73 @@ impl SavedSshConnector {
         session: &str,
         settings: SavedSshSettings,
     ) -> Self {
-        Self {
+        let connector = Self {
             paths: paths.clone(),
             profile_id: profile_id.clone(),
             target: target.clone(),
             session: session.to_owned(),
             settings,
             state: std::sync::Mutex::new(ConnectorState::default()),
+        };
+        connector.prepare_for_launch();
+        connector
+    }
+
+    /// Reports a deterministic local setup failure found while constructing this saved
+    /// connector. The client checks it before entering its retry loop; transient filesystem
+    /// failures remain in the connector and are tried again by `connect`.
+    pub fn launch_fatal_setup_error(&self) -> Option<io::Error> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .launch_fatal_setup_error
+            .as_ref()
+            .map(StoredSetupError::to_io_error)
+    }
+
+    fn prepare_for_launch(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = self.validate_local_setup() {
+            if is_launch_fatal_setup_error(&error) {
+                state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
+            } else {
+                tracing::debug!(%error, "saved SSH path setup failed transiently; it will be retried");
+            }
+            return;
         }
+        match RemoteSsh::new_noninteractive_with(
+            self.target.clone(),
+            self.settings.manage_ssh_config,
+            &self.paths,
+        ) {
+            Ok(ssh) => state.ssh = Some(ssh),
+            Err(error) if is_launch_fatal_setup_error(&error) => {
+                state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
+            }
+            Err(error) => {
+                tracing::debug!(%error, "saved SSH setup failed transiently; it will be retried");
+            }
+        }
+    }
+
+    fn validate_local_setup(&self) -> io::Result<()> {
+        shepr_api::session::validate_name(&self.session)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        // This path is needed even when managed SSH config is disabled. Validate it at
+        // launch so an XDG_RUNTIME_DIR that can never hold the local bridge socket fails
+        // before the endpoint's first scheduled connection attempt.
+        saved_bridge_path(self.paths.xdg_runtime_dir(), &self.profile_id)?;
+        if self.settings.manage_ssh_config {
+            shepr_platform::shared_ssh_control_path(
+                self.paths.xdg_runtime_dir(),
+                self.paths.config_file(),
+                self.target.as_str(),
+            )?;
+        }
+        Ok(())
     }
 
     /// Starts a bridge and hands its stream to `establish`, which runs the endpoint
@@ -120,6 +199,9 @@ impl SavedSshConnector {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(error) = &state.launch_fatal_setup_error {
+            return Err(error.to_io_error());
+        }
         if !state.seeded_from_disk {
             state.seeded_from_disk = true;
             state.remote_shepr = metadata_cache.load();
@@ -306,6 +388,17 @@ fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> i
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
 }
 
+fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::InvalidInput {
+        return true;
+    }
+    // A policy violation cannot recover on retry, while an OS permission error can.
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>())
+        .is_some()
+}
+
 fn validated_saved_ssh(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
@@ -320,6 +413,20 @@ fn validated_saved_ssh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_typed_runtime_directory_policy_errors_are_launch_fatal() {
+        let policy = io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            shepr_platform::UnsafeSshRuntimeDirectory,
+        );
+        assert!(is_launch_fatal_setup_error(&policy));
+        let ordinary = io::Error::new(io::ErrorKind::PermissionDenied, policy.to_string());
+        assert!(!is_launch_fatal_setup_error(&ordinary));
+        assert!(is_launch_fatal_setup_error(&io::Error::from(
+            io::ErrorKind::InvalidInput,
+        )));
+    }
 
     #[test]
     fn bridge_paths_use_profile_identity_not_target_or_session() {

@@ -98,7 +98,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .find_map(|(ws_idx, ws)| {
-                    ws.tabs.iter().find_map(|tab| {
+                    ws.tabs().iter().find_map(|tab| {
                         tab.panes
                             .iter()
                             .find(|(_, pane)| pane.attached_terminal_id == terminal_id)
@@ -212,7 +212,7 @@ impl App {
             .iter()
             .enumerate()
             .any(|(ws_idx, ws)| {
-                ws.tabs.iter().enumerate().any(|(tab_idx, tab)| {
+                ws.tabs().iter().enumerate().any(|(tab_idx, tab)| {
                     self.tab_has_pending_agent_resume(tab)
                         && self
                             .pending_agent_resume_pane_infos(ws_idx, tab_idx, tab, terminal_area)
@@ -256,7 +256,7 @@ impl App {
 
         let mut pending = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
-            for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+            for (tab_idx, tab) in ws.tabs().iter().enumerate() {
                 if !self.tab_has_pending_agent_resume(tab) {
                     continue;
                 }
@@ -343,7 +343,7 @@ impl App {
             return false;
         }
         let Some((pane_id, cwd, plan)) = self.state.workspaces.iter().find_map(|ws| {
-            ws.tabs.iter().find_map(|tab| {
+            ws.tabs().iter().find_map(|tab| {
                 tab.layout.pane_ids().into_iter().find_map(|pane_id| {
                     let pane = tab.panes.get(&pane_id)?;
                     if &pane.attached_terminal_id != terminal_id {
@@ -644,7 +644,7 @@ mod tests {
     async fn failed_due_resume_backs_off_instead_of_leaving_deadline_in_the_past() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs[0].root_pane;
+        let pane_id = workspace.tabs()[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
@@ -690,7 +690,7 @@ mod tests {
     async fn candidate_probe_agrees_with_the_collected_candidates() {
         let mut app = test_app();
         let pending_workspace = shepr_mux::workspace::Workspace::test_new("pending");
-        let pending_pane = pending_workspace.tabs[0].root_pane;
+        let pending_pane = pending_workspace.tabs()[0].root_pane;
         let pending_terminal = pending_workspace
             .terminal_id(pending_pane)
             .cloned()
@@ -744,7 +744,7 @@ mod tests {
         for missing_shell in [false, true] {
             let mut app = test_app();
             let workspace = shepr_mux::workspace::Workspace::test_new("unavailable");
-            let pane_id = workspace.tabs[0].root_pane;
+            let pane_id = workspace.tabs()[0].root_pane;
             let terminal_id = workspace
                 .terminal_id(pane_id)
                 .expect("test precondition")
@@ -809,12 +809,12 @@ mod tests {
     async fn pending_agent_resume_waits_for_host_theme_before_launch() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs[0].root_pane;
+        let pane_id = workspace.tabs()[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        let pane_infos = workspace.tabs[0]
+        let pane_infos = workspace.tabs()[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
             .into_iter()
@@ -892,12 +892,12 @@ mod tests {
     async fn pending_agent_resume_can_launch_after_theme_wait_expires() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs[0].root_pane;
+        let pane_id = workspace.tabs()[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = workspace.tabs[0]
+        app.state.view.pane_infos = workspace.tabs()[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
             .into_iter()
@@ -930,12 +930,12 @@ mod tests {
     async fn a_launched_resume_releases_its_managed_name_when_the_agent_never_appears() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs[0].root_pane;
+        let pane_id = workspace.tabs()[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = workspace.tabs[0]
+        app.state.view.pane_infos = workspace.tabs()[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
             .into_iter()
@@ -988,18 +988,18 @@ mod tests {
     async fn pending_agent_resume_launches_hidden_panes_with_current_terminal_area() {
         let mut app = test_app();
         let active_workspace = shepr_mux::workspace::Workspace::test_new("active");
-        let active_pane = active_workspace.tabs[0].root_pane;
+        let active_pane = active_workspace.tabs()[0].root_pane;
         let active_terminal = active_workspace
             .terminal_id(active_pane)
             .cloned()
             .expect("test precondition");
         let hidden_workspace = shepr_mux::workspace::Workspace::test_new("hidden");
-        let hidden_pane = hidden_workspace.tabs[0].root_pane;
+        let hidden_pane = hidden_workspace.tabs()[0].root_pane;
         let hidden_terminal = hidden_workspace
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = active_workspace.tabs[0]
+        app.state.view.pane_infos = active_workspace.tabs()[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
             .into_iter()
@@ -1058,14 +1058,14 @@ mod tests {
     async fn pending_agent_resume_launches_inactive_tab_panes_with_current_terminal_area() {
         let mut app = test_app();
         let mut workspace = shepr_mux::workspace::Workspace::test_new("tabs");
-        let active_pane = workspace.tabs[0].root_pane;
+        let active_pane = workspace.tabs()[0].root_pane;
         let inactive_tab = workspace.test_add_tab(Some("agents"));
-        let inactive_pane = workspace.tabs[inactive_tab].root_pane;
-        let inactive_terminal = workspace.tabs[inactive_tab]
+        let inactive_pane = workspace.tabs()[inactive_tab].root_pane;
+        let inactive_terminal = workspace.tabs()[inactive_tab]
             .terminal_id(inactive_pane)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = workspace.tabs[0]
+        app.state.view.pane_infos = workspace.tabs()[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
             .into_iter()
@@ -1079,7 +1079,7 @@ mod tests {
             app.state
                 .workspaces
                 .first()
-                .and_then(|ws| ws.tabs[0].terminal_id(active_pane))
+                .and_then(|ws| ws.tabs()[0].terminal_id(active_pane))
                 .is_some()
         );
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -1125,9 +1125,9 @@ mod tests {
     async fn pending_agent_resume_launches_zoom_hidden_active_tab_panes() {
         let mut app = test_app();
         let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed");
-        let hidden_pane = workspace.tabs[0].root_pane;
+        let hidden_pane = workspace.tabs()[0].root_pane;
         let visible_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        workspace.tabs[0].zoomed = true;
+        workspace.tabs_mut()[0].zoomed = true;
         let hidden_terminal = workspace
             .terminal_id(hidden_pane)
             .cloned()
@@ -1187,13 +1187,13 @@ mod tests {
     async fn pending_agent_resume_uses_current_terminal_area_for_background_panes() {
         let mut app = test_app();
         let previous_workspace = shepr_mux::workspace::Workspace::test_new("previous");
-        let previous_pane = previous_workspace.tabs[0].root_pane;
+        let previous_pane = previous_workspace.tabs()[0].root_pane;
         let previous_terminal = previous_workspace
             .terminal_id(previous_pane)
             .cloned()
             .expect("test precondition");
         let current_workspace = shepr_mux::workspace::Workspace::test_new("current");
-        app.state.view.pane_infos = previous_workspace.tabs[0]
+        app.state.view.pane_infos = previous_workspace.tabs()[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
             .into_iter()

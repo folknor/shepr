@@ -39,6 +39,7 @@ pub use process::{
 };
 pub use remote_bridge_io::{RemoteBridgeWake, forward_remote_bridge_stdio};
 pub use shutdown::HostShutdownMonitor;
+pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::fits_unix_socket_path;
 pub use ssh_paths::{
     RemoteSshConfigPaths, create_remote_ssh_config_dir, remote_bridge_endpoint_path,

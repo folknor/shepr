@@ -336,24 +336,15 @@ fn restore_workspace(
     // `None` exactly when no tab survived; the workspace is dropped then.
     let active_tab = remap_saved_index(snap.active_tab, &restored_tab_index)?;
 
-    let mut workspace = Workspace {
-        id: workspace_id.into(),
-        custom_name: snap.custom_name.clone(),
-        identity_cwd: snap.identity_cwd.clone(),
-        cached_identity_cwd: snap.identity_cwd.clone(),
-        cached_auto_label: crate::git::fallback_label_from_cwd(&snap.identity_cwd),
-        cached_git_status_key: snap.identity_cwd.clone(),
-        cached_git_branch: None,
-        cached_git_ahead_behind: None,
-        cached_git_space: None,
-        metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
-        metadata_token_sequences: HashMap::new(),
+    let workspace = Workspace::from_restored_tabs(
+        workspace_id,
+        snap.custom_name.clone(),
+        snap.identity_cwd.clone(),
+        tabs,
+        active_tab,
         next_public_pane_number,
         next_public_tab_number,
-        active_tab,
-        tabs,
-    };
-    workspace.mark_identity_undiscovered();
+    )?;
     Some((workspace, terminals, terminal_runtimes))
 }
 
@@ -1004,7 +995,7 @@ mod tests {
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
         );
-        let tab = &workspaces[0].tabs[0];
+        let tab = &workspaces[0].tabs()[0];
         assert_eq!(tab.layout.pane_ids(), vec![tab.root_pane]);
         assert_eq!(tab.panes.len(), 1);
         assert_eq!(terminals.len(), 1);
@@ -1131,7 +1122,7 @@ mod tests {
 
                 // Once the pane runs, its live screen supersedes the carried one
                 // for good.
-                let tab = &workspaces[0].tabs[0];
+                let tab = &workspaces[0].tabs()[0];
                 let terminal_id = tab.terminal_id(tab.root_pane).expect("test precondition");
                 runtimes.insert(
                     terminal_id.clone(),
@@ -1299,9 +1290,9 @@ mod tests {
         assert_eq!(restored.active, Some(1));
         assert_eq!(restored.selected, 0);
         let active = &restored.workspaces[1];
-        assert_eq!(active.tabs.len(), 2);
+        assert_eq!(active.tabs().len(), 2);
         assert_eq!(
-            active.tabs[active.active_tab].custom_name.as_deref(),
+            active.tabs()[active.active_tab].custom_name.as_deref(),
             Some("wanted")
         );
     }
@@ -1372,7 +1363,7 @@ mod tests {
 
             let restored = restore_runtimeless(&snapshot);
 
-            let tab = &restored.workspaces[0].tabs[0];
+            let tab = &restored.workspaces[0].tabs()[0];
             assert_eq!(tab.zoomed, zoomed, "panes={panes:?} focused={focused}");
         }
     }
@@ -1743,16 +1734,16 @@ mod tests {
                     .value_str(),
                 "keep-my-session"
             );
-            let root = workspaces[0].tabs[0].root_pane;
-            let terminal_id = workspaces[0].tabs[0]
+            let root = workspaces[0].tabs()[0].root_pane;
+            let terminal_id = workspaces[0].tabs()[0]
                 .terminal_id(root)
                 .expect("test precondition");
             assert!(
                 runtimes.get(terminal_id).is_none(),
                 "do not open a replacement shell elsewhere"
             );
-            let healthy = workspaces[1].tabs[0]
-                .terminal_id(workspaces[1].tabs[0].root_pane)
+            let healthy = workspaces[1].tabs()[0]
+                .terminal_id(workspaces[1].tabs()[0].root_pane)
                 .expect("test precondition");
             assert_eq!(runtimes.get(healthy).is_some(), !missing_shell);
             assert!(terminals[terminal_id].restore_error.is_some());
@@ -1917,14 +1908,14 @@ mod tests {
 
         let workspace = workspaces.first().expect("workspace should restore");
         let mut public_numbers: Vec<_> = workspace
-            .tabs
+            .tabs()
             .iter()
             .flat_map(|tab| tab.panes.values().map(|pane| pane.public_number))
             .collect();
         public_numbers.sort_unstable();
         assert_eq!(public_numbers, vec![1, 3]);
         assert_eq!(workspace.next_public_pane_number, 4);
-        assert_eq!(workspace.tabs[0].number, 5);
+        assert_eq!(workspace.tabs()[0].number, 5);
         assert_eq!(workspace.next_public_tab_number, 6);
     }
 
@@ -2086,9 +2077,9 @@ mod tests {
 
         let workspace = workspaces.first().expect("workspace should restore");
         assert_eq!(workspace.active_tab, 3);
-        assert_eq!(workspace.tabs[3].number, 5);
-        let agent_pane = workspace.tabs[3].root_pane;
-        let terminal_id = &workspace.tabs[3].panes[&agent_pane].attached_terminal_id;
+        assert_eq!(workspace.tabs()[3].number, 5);
+        let agent_pane = workspace.tabs()[3].root_pane;
+        let terminal_id = &workspace.tabs()[3].panes[&agent_pane].attached_terminal_id;
         assert!(terminals[terminal_id].agent_name.is_none());
         assert_eq!(terminals[terminal_id].managed_agent_kind(), None);
         assert!(terminals[terminal_id].effective_agent_label().is_none());

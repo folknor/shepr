@@ -26,13 +26,16 @@ pub fn run_remote_client_bridge(
 
 /// Starts the server when none is listening. A running server of another build
 /// is not screened here: the client's handshake through this bridge reads its
-/// build-identity preamble and reports the mismatch.
+/// build-identity preamble and reports a typed mismatch, which the client
+/// classifies as needing attention. Failing here instead would reach the client
+/// only as this command's stderr and exit status, which it classifies as an
+/// ordinary retryable failure.
 fn ensure_remote_server_running(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let socket_path = paths.server_address().client_socket().to_path_buf();
-    if super::autodetect::is_server_listening(paths) {
+    if super::local_server::is_server_listening(paths)? {
         return Ok(());
     }
 
-    super::autodetect::spawn_server_daemon(paths)?;
-    super::autodetect::wait_for_server_socket(&socket_path, Duration::from_secs(5), paths)
+    super::local_server::spawn_server_daemon(paths)?;
+    super::local_server::wait_for_server_socket(&socket_path, Duration::from_secs(5), paths)
 }

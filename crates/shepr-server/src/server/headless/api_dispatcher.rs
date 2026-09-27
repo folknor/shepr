@@ -151,7 +151,7 @@ impl super::HeadlessServer {
         let all_focus_before = reconcile.then(|| self.shell_focus_targets());
         let navigation_changed =
             self.apply_shell_navigation_request(client_id, &msg.request.method);
-        self.set_default_shell_target_from_client(client_id);
+        let default_target_changed = self.set_default_shell_target_from_client(client_id);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg);
         self.focus_shell_client_on_default_target(client_id);
         if reconcile {
@@ -189,7 +189,7 @@ impl super::HeadlessServer {
                 self.claim_shell_tab_geometry(client_id, false)
                     || self.resize_shell_tab_if_controller(client_id, false)
             };
-        changed | navigation_changed | geometry_changed
+        changed | navigation_changed | default_target_changed | geometry_changed
     }
 
     pub(super) fn process_deferred_alt_screen_reads(&mut self) -> bool {

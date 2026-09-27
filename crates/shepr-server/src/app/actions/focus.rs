@@ -64,7 +64,7 @@ impl AppState {
         focus: bool,
     ) -> WorkspaceCreationOutcome {
         let workspace_id = workspace.id.to_string();
-        let root_pane = workspace.tabs.first().map(|tab| tab.root_pane);
+        let root_pane = workspace.tabs().first().map(|tab| tab.root_pane);
         self.terminals.insert(terminal.id.clone(), terminal);
         self.workspaces.push(workspace);
         let workspace_index = self.workspaces.len() - 1;
@@ -208,7 +208,7 @@ impl AppState {
         if let Some(tab) = self
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
         {
             tab.layout.focus_pane(pane_id);
             self.previous_pane_focus = previous;

@@ -109,11 +109,11 @@ impl HeadlessServer {
         let mut tab_workspace_ids = HashMap::new();
         for workspace in &self.app.state.workspaces {
             let workspace_id = workspace.id.clone();
-            if let Some(tab) = workspace.tabs.get(workspace.active_tab_index()) {
+            if let Some(tab) = workspace.tabs().get(workspace.active_tab_index()) {
                 let tab_id = shepr_protocol::PublicTabId::new(workspace_id.as_str(), tab.number);
                 active_tab_ids.insert(workspace_id.clone(), tab_id);
             }
-            for tab in &workspace.tabs {
+            for tab in workspace.tabs() {
                 let tab_id = shepr_protocol::PublicTabId::new(workspace_id.as_str(), tab.number);
                 tab_workspace_ids.insert(tab_id, workspace_id.clone());
             }
@@ -210,9 +210,16 @@ impl HeadlessServer {
         let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
             return false;
         };
-        self.app
+        let changed = self
+            .app
             .state
-            .switch_workspace_tab(workspace_index, tab_index)
+            .switch_workspace_tab(workspace_index, tab_index);
+        if changed {
+            // The shared shell session snapshot includes default focus even
+            // when this client's projection follows its own location.
+            self.app.state.mark_shell_projection_dirty();
+        }
+        changed
     }
 
     pub(super) fn focus_shell_client_on_default_target(&mut self, client_id: ClientId) -> bool {
@@ -283,7 +290,7 @@ impl HeadlessServer {
             .state
             .workspaces
             .get(workspace_index)?
-            .tabs
+            .tabs()
             .get(tab_index)?
             .layout
             .focused();
@@ -429,7 +436,7 @@ impl HeadlessServer {
             .state
             .workspaces
             .get(workspace_index)
-            .and_then(|workspace| workspace.tabs.get(tab_index))
+            .and_then(|workspace| workspace.tabs().get(tab_index))
         else {
             return false;
         };
@@ -504,7 +511,7 @@ impl HeadlessServer {
         let area = Rect::new(0, 0, cols, rows);
         if self.app_client_count() == 1 {
             for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {
-                for tab_index in 0..workspace.tabs.len() {
+                for tab_index in 0..workspace.tabs().len() {
                     crate::ui::resize_tab_surface(
                         &self.app.state,
                         &self.app.terminal_runtimes,
@@ -710,7 +717,7 @@ impl HeadlessServer {
         let target = self.app.state.workspaces.iter().enumerate().find_map(
             |(workspace_index, workspace)| {
                 workspace
-                    .tabs
+                    .tabs()
                     .iter()
                     .enumerate()
                     .find_map(|(tab_index, tab)| {

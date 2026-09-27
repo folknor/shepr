@@ -1,9 +1,4 @@
-//! Auto-detect launch behavior for the `shepr` command.
-//!
-//! When the user runs `shepr` with no subcommand:
-//! 1. Check if a server is already listening on the client socket
-//! 2. If no server → spawn one as a background daemon → wait for socket readiness (up to 15s)
-//! 3. Attach as a client to the server
+//! Shared local server startup and build checks for direct and SSH clients.
 
 use std::io;
 use std::path::Path;
@@ -15,10 +10,6 @@ use tracing::info;
 fn client_socket_path(paths: &shepr_config::AppPaths) -> std::path::PathBuf {
     paths.server_address().client_socket().to_path_buf()
 }
-
-/// Maximum time to wait for the server's client socket to become ready
-/// after spawning the server process.
-const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Poll interval when waiting for the server socket to appear.
 const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -37,44 +28,34 @@ pub const STARTUP_CWD_ENV_VAR: &str = "SHEPR_STARTUP_CWD";
 /// Checks whether a shepr server is currently listening on the client socket.
 ///
 /// This works by attempting to connect to the client socket. If the connection
-/// succeeds, a server is running. If the socket file doesn't exist or the
-/// connection is refused, no server is running. Stale sockets (from a crashed
-/// server) are detected because connect returns `ConnectionRefused`
-/// when nobody is listening.
-pub fn is_server_listening(paths: &shepr_config::AppPaths) -> bool {
+/// succeeds, a server is running. If the socket path is missing or the
+/// connection is refused, no server is running. Other errors are returned so
+/// an inaccessible socket is not mistaken for permission to start another
+/// daemon.
+pub fn is_server_listening(paths: &shepr_config::AppPaths) -> io::Result<bool> {
     is_server_listening_at(&client_socket_path(paths))
 }
 
 /// Checks whether a shepr server is listening at a specific socket path.
-fn is_server_listening_at(socket_path: &Path) -> bool {
-    if !socket_path.exists() {
-        return false;
-    }
-
+fn is_server_listening_at(socket_path: &Path) -> io::Result<bool> {
     match shepr_platform::ipc::connect_local_stream(socket_path) {
-        Ok(_) => {
-            // Server is listening. Close the test connection immediately.
-            // The server's handshake handler will time out on this connection
-            // since we don't send a handshake, which is fine.
-            true
+        Ok(stream) => {
+            // Its preamble write fails or its handshake reader sees EOF, so the
+            // probe does not occupy the server until the handshake deadline.
+            drop(stream);
+            Ok(true)
         }
         Err(err)
             if matches!(
                 err.kind(),
-                io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
             ) =>
         {
-            // Socket file exists but nobody is listening - stale socket.
-            false
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            // Socket file disappeared between exists() and connect().
-            false
+            Ok(false)
         }
         Err(err) => {
-            // Other errors (permission denied, etc.) - assume not listening.
-            tracing::warn!(err = %err, "unexpected error checking server socket");
-            false
+            tracing::warn!(path = %socket_path.display(), %err, "failed to check server socket");
+            Err(err)
         }
     }
 }
@@ -85,7 +66,7 @@ fn read_server_status(
     shepr_api::read_runtime_status_at(&shepr_api::socket_path(paths), STATUS_REQUEST_TIMEOUT)
 }
 
-fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::Result<()> {
+pub fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let Some(status) = read_server_status(paths)? else {
         return Err(io::Error::other(format!(
             "a shepr server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
@@ -186,7 +167,7 @@ pub fn wait_for_server_socket(
     let deadline = std::time::Instant::now() + timeout;
 
     while std::time::Instant::now() < deadline {
-        if is_server_listening_at(socket_path) {
+        if is_server_listening_at(socket_path)? {
             info!(path = %socket_path.display(), "server socket ready");
             return Ok(());
         }
@@ -207,60 +188,6 @@ pub fn wait_for_server_socket(
 }
 
 // ---------------------------------------------------------------------------
-// Auto-detect launch
-// ---------------------------------------------------------------------------
-
-/// Performs auto-detect launch: check for server, spawn if needed, then
-/// attach as a thin client.
-///
-/// This is the entry point called from `main.rs` when the user runs `shepr`
-/// without a subcommand.
-///
-/// Flow:
-/// 1. Check if a server is listening on the client socket
-/// 2. If no server → spawn server daemon → wait for socket readiness
-/// 3. Run the thin client (which connects to the server)
-pub fn auto_detect_launch(
-    saved_federation: bool,
-    config: &shepr_config::ValidatedConfig,
-    paths: &shepr_config::AppPaths,
-    run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> io::Result<()>,
-) -> io::Result<()> {
-    // The client requires terminal geometry before it can attach. Reject an
-    // unusable terminal before socket lookup creates directories or starts a daemon.
-    shepr_platform::terminal_grid_size().map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!("cannot attach without a usable terminal: {err}; run inside a terminal"),
-        )
-    })?;
-    let socket_path = client_socket_path(paths);
-    info!(path = %socket_path.display(), "auto-detect launch starting");
-
-    // The running server is checked whether or not saved machines are
-    // enabled. With saved machines a mismatch only downgrades to a warning
-    // below, so they stay reachable; the Local endpoint's own handshake then
-    // rejects the different build with the build-identity preamble error.
-    let startup = if is_server_listening_at(&socket_path) {
-        info!("server already running, attaching as client");
-        validate_running_server_compatibility(paths)
-    } else {
-        info!("no server running, spawning server daemon");
-        spawn_server_daemon(paths)
-            .and_then(|_| wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT, paths))
-    };
-    if let Err(error) = startup {
-        if !saved_federation {
-            return Err(error);
-        }
-        tracing::warn!(%error, "Local startup failed; keeping saved machines available");
-    }
-
-    // Now attach as a thin client.
-    run_client(config, paths)
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -270,6 +197,7 @@ mod tests {
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::ffi::OsStr;
     use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
 
@@ -277,7 +205,39 @@ mod tests {
     fn is_server_listening_returns_false_for_nonexistent_path() {
         let dir = ScratchDir::new("nonexistent");
         let path = dir.join("s.sock");
-        assert!(!is_server_listening_at(&path));
+        assert!(!is_server_listening_at(&path).expect("socket lookup succeeds"));
+    }
+
+    #[test]
+    fn is_server_listening_returns_permission_errors_instead_of_false() {
+        // SAFETY: geteuid takes no arguments, cannot fail and touches no memory.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let dir = ScratchDir::new("inaccessible");
+        let parent = dir.join("private");
+        std::fs::create_dir(&parent).expect("create inaccessible directory");
+        let mut permissions = std::fs::metadata(&parent)
+            .expect("read inaccessible directory metadata")
+            .permissions();
+        permissions.set_mode(0o000);
+        std::fs::set_permissions(&parent, permissions).expect("restrict directory permissions");
+
+        let path = parent.join("s.sock");
+        let result = is_server_listening_at(&path);
+
+        let mut permissions = std::fs::metadata(&parent)
+            .expect("read inaccessible directory metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&parent, permissions).expect("restore directory permissions");
+        assert_eq!(
+            result
+                .expect_err("permission errors must not mean no server")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]
@@ -343,7 +303,7 @@ test "$sid" = "$$"
         let path = dir.join("s.sock");
 
         let _listener = UnixListener::bind(&path).expect("test precondition");
-        assert!(is_server_listening_at(&path));
+        assert!(is_server_listening_at(&path).expect("socket lookup succeeds"));
     }
 
     #[test]
@@ -358,7 +318,7 @@ test "$sid" = "$$"
         }
 
         // The socket file exists but nobody is listening.
-        assert!(!is_server_listening_at(&path));
+        assert!(!is_server_listening_at(&path).expect("socket lookup succeeds"));
     }
 
     #[test]
@@ -370,7 +330,7 @@ test "$sid" = "$$"
         drop(UnixListener::bind(&path).expect("test precondition"));
 
         // Socket is stale - should return false.
-        assert!(!is_server_listening_at(&path));
+        assert!(!is_server_listening_at(&path).expect("socket lookup succeeds"));
     }
 
     #[test]
@@ -444,7 +404,7 @@ test "$sid" = "$$"
             assert!(request.contains("ping"));
             stream
                 .write_all(
-                    b"{\"id\":\"autodetect:server:status\",\"result\":{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":2,\"build_id\":\"0123456789abcdef\"}}\n",
+                    b"{\"id\":\"autodetect:server:status\",\"result\":{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"0123456789abcdef\"}}\n",
                 )
                 .expect("test precondition");
             stream.flush().expect("test precondition");
@@ -455,7 +415,6 @@ test "$sid" = "$$"
             .expect("test precondition");
         let _ = handle.join();
         assert_eq!(status.version.as_deref(), Some("0.5.5"));
-        assert_eq!(status.protocol, Some(2));
         assert_eq!(status.build_id, "0123456789abcdef");
     }
 
@@ -490,15 +449,13 @@ test "$sid" = "$$"
                 .read_line(&mut request)
                 .expect("test precondition");
             assert!(request.contains("ping"));
-            // Same protocol number, different build: only the build id decides.
             let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
                 "0000000000000000"
             } else {
                 "ffffffffffffffff"
             };
             let body = format!(
-                "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":{},\"build_id\":\"{other_build}\"}}}}\n",
-                shepr_protocol::PROTOCOL_VERSION
+                "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{other_build}\"}}}}\n"
             );
             stream
                 .write_all(body.as_bytes())

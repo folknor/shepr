@@ -113,12 +113,10 @@ impl ApiClient {
         match response.result {
             ResponseResult::Pong {
                 version,
-                protocol,
                 build_id,
                 capabilities,
             } => Ok(crate::RuntimeStatus {
                 version: Some(version),
-                protocol: Some(protocol),
                 build_id,
                 capabilities,
             }),

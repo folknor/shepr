@@ -1064,7 +1064,7 @@ impl HeadlessServer {
                     .state
                     .workspaces
                     .get(workspace_index)?
-                    .tabs
+                    .tabs()
                     .get(tab_index)
             })
             .map(|tab| tab.layout.focused())

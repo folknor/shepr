@@ -96,11 +96,8 @@ impl DiscoverySteps for SshDiscovery<'_> {
                 // This command reports the candidate binary's identity. Reject a
                 // different build here instead of accepting it and failing later
                 // during the server bridge's build-identity preamble.
-                if status.build_id.as_deref() == Some(shepr_protocol::BUILD_ID) {
-                    Ok(true)
-                } else {
-                    Err(remote_compatibility_error(self.target(), &status))
-                }
+                ensure_remote_client_build(self.target(), &status)?;
+                Ok(true)
             }
             CandidateVerification::ApiForwarding { session } => {
                 remote_api_forwarding_supported(self.ssh, candidate, session)
@@ -313,6 +310,10 @@ pub(super) fn remote_api_forwarding_supported(
     session: &str,
 ) -> io::Result<bool> {
     let output = ssh.sh_output(&candidate.api_bridge_check_command(session))?;
+    let status = parse_client_status_json(&String::from_utf8_lossy(&output.stdout));
+    if let Some(status) = &status {
+        ensure_remote_client_build(ssh.target(), status)?;
+    }
     if !output.status.success() {
         let error = command_failed("remote SSH connection failed", &output);
         if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
@@ -320,7 +321,7 @@ pub(super) fn remote_api_forwarding_supported(
         }
         return Ok(false);
     }
-    Ok(true)
+    Ok(status.is_some())
 }
 
 pub(super) fn push_if_new_remote_binary_candidate(
@@ -444,6 +445,14 @@ pub(super) fn parse_client_status_json(status: &str) -> Option<RemoteClientStatu
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<RemoteClientStatusJson>(line).ok())
         .find(|status| status.version.is_some() || status.build_id.is_some())
+}
+
+fn ensure_remote_client_build(target: &str, status: &RemoteClientStatusJson) -> io::Result<()> {
+    if status.build_id.as_deref() == Some(shepr_protocol::BUILD_ID) {
+        Ok(())
+    } else {
+        Err(remote_compatibility_error(target, status))
+    }
 }
 
 fn remote_compatibility_error(target: &str, status: &RemoteClientStatusJson) -> io::Error {

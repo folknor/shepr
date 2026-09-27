@@ -32,7 +32,7 @@ impl AppState {
             .iter()
             .flat_map(|ws| {
                 let workspace_id = ws.id.to_string();
-                ws.tabs.iter().flat_map(move |tab| {
+                ws.tabs().iter().flat_map(move |tab| {
                     let workspace_id = workspace_id.clone();
                     tab.layout
                         .pane_ids()
@@ -89,7 +89,7 @@ impl AppState {
             .iter()
             .enumerate()
             .flat_map(|(ws_idx, workspace)| {
-                workspace.tabs.iter().flat_map(move |tab| {
+                workspace.tabs().iter().flat_map(move |tab| {
                     tab.layout
                         .pane_ids()
                         .into_iter()
@@ -148,7 +148,7 @@ impl AppState {
         if self
             .workspaces
             .get(ws_idx)
-            .is_none_or(|ws| tab_idx >= ws.tabs.len())
+            .is_none_or(|ws| tab_idx >= ws.tabs().len())
         {
             return false;
         }
@@ -275,7 +275,7 @@ impl AppState {
         self.workspaces
             .get(ws_idx)
             .into_iter()
-            .flat_map(|ws| &ws.tabs)
+            .flat_map(shepr_mux::workspace::Workspace::tabs)
             .flat_map(|tab| tab.panes.values())
             .map(|pane| pane.attached_terminal_id.clone())
             .collect()
@@ -285,7 +285,7 @@ impl AppState {
         self.workspaces
             .get(ws_idx)
             .into_iter()
-            .flat_map(|ws| &ws.tabs)
+            .flat_map(shepr_mux::workspace::Workspace::tabs)
             .flat_map(|tab| tab.layout.pane_ids())
             .collect()
     }
@@ -308,7 +308,7 @@ impl AppState {
     ) {
         for terminal_id in terminal_ids {
             let still_attached = self.workspaces.iter().any(|ws| {
-                ws.tabs.iter().any(|tab| {
+                ws.tabs().iter().any(|tab| {
                     tab.panes
                         .values()
                         .any(|pane| pane.attached_terminal_id == terminal_id)
@@ -409,11 +409,11 @@ impl AppState {
         tab_index: usize,
     ) -> Option<TabRemovalPlan> {
         let workspace = self.workspaces.get(workspace_index)?;
-        let tab_number = workspace.tabs.get(tab_index)?.number;
+        let tab_number = workspace.tabs().get(tab_index)?.number;
         Some(TabRemovalPlan {
             workspace_index,
             tab_index,
-            scope: if workspace.tabs.len() <= 1 {
+            scope: if workspace.tabs().len() <= 1 {
                 TabRemovalScope::Workspace
             } else {
                 TabRemovalScope::Tab
@@ -427,10 +427,10 @@ impl AppState {
         let Some(workspace) = self.workspaces.get(plan.workspace_index) else {
             return TabRemovalCommit::Stale;
         };
-        let Some(tab) = workspace.tabs.get(plan.tab_index) else {
+        let Some(tab) = workspace.tabs().get(plan.tab_index) else {
             return TabRemovalCommit::Stale;
         };
-        let expected_scope = if workspace.tabs.len() <= 1 {
+        let expected_scope = if workspace.tabs().len() <= 1 {
             TabRemovalScope::Workspace
         } else {
             TabRemovalScope::Tab

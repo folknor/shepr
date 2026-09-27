@@ -150,20 +150,23 @@ impl App {
             .iter()
             .enumerate()
             .flat_map(|(ws_idx, ws)| {
-                ws.tabs.iter().enumerate().flat_map(move |(tab_idx, tab)| {
-                    tab.layout
-                        .pane_ids()
-                        .into_iter()
-                        .filter_map(move |pane_id| {
-                            tab.terminal_id(pane_id)
-                                .map(|terminal_id| TerminalTargetRef {
-                                    ws_idx,
-                                    tab_idx,
-                                    pane_id,
-                                    terminal_id,
-                                })
-                        })
-                })
+                ws.tabs()
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(tab_idx, tab)| {
+                        tab.layout
+                            .pane_ids()
+                            .into_iter()
+                            .filter_map(move |pane_id| {
+                                tab.terminal_id(pane_id)
+                                    .map(|terminal_id| TerminalTargetRef {
+                                        ws_idx,
+                                        tab_idx,
+                                        pane_id,
+                                        terminal_id,
+                                    })
+                            })
+                    })
             })
     }
 
@@ -199,7 +202,7 @@ impl App {
             pane_id: shepr_protocol::PublicPaneId::new(&ws.id, pane_number),
             workspace_id: shepr_protocol::WorkspaceId::new(ws.id.clone()),
             tab_id: shepr_protocol::PublicTabId::new(&ws.id, tab_number),
-            cwd: ws.tabs[tab_idx]
+            cwd: ws.tabs()[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             agent_status: pane_agent_status(terminal.state),

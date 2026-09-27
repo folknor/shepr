@@ -994,7 +994,7 @@ mod tests {
 
         assert_eq!(
             remote_shepr.api_bridge_check_command("agents"),
-            "test -x /home/u/.cargo/bin/shepr && /home/u/.cargo/bin/shepr --session agents remote-api-bridge --check </dev/null"
+            "test -x /home/u/.cargo/bin/shepr && /home/u/.cargo/bin/shepr status client --json && /home/u/.cargo/bin/shepr --session agents remote-api-bridge --check </dev/null"
         );
     }
 
@@ -1026,7 +1026,7 @@ mod tests {
     fn parse_remote_server_status_json_reads_running_server() {
         assert_eq!(
             parse_remote_server_status_json(
-                r#"{"status":"running","running":true,"version":"0.6.0","protocol":8,"build_id":"0123456789abcdef","capabilities":{"detached_server_daemon":true,"ssh_agent_registration":false}}"#
+                r#"{"status":"running","running":true,"version":"0.6.0","build_id":"0123456789abcdef","capabilities":{"detached_server_daemon":true,"ssh_agent_registration":false}}"#
             )
             .expect("test precondition"),
             RemoteServerStatus::Running {
@@ -1041,7 +1041,7 @@ mod tests {
     fn parse_remote_server_status_json_reads_stopped_server() {
         assert_eq!(
             parse_remote_server_status_json(
-                r#"{"status":"not_running","running":false,"version":null,"protocol":null}"#
+                r#"{"status":"not_running","running":false,"version":null}"#
             )
             .expect("test precondition"),
             RemoteServerStatus::NotRunning

@@ -2,9 +2,8 @@
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-// Protocol identity of this build: a fold of the source fingerprint into
-// `1..u32::MAX`, so it changes whenever any source file does.
-include!(concat!(env!("OUT_DIR"), "/protocol_identity.rs"));
+// Exact source fingerprint shared by the wire preamble and JSON status API.
+include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 
 /// Maximum allowed frame payload size (2 MB) in either direction. Readers
 /// reject larger length prefixes to prevent denial-of-service, and

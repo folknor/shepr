@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{self, Read, Write as _};
 use std::process::Output;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -20,11 +21,17 @@ pub(super) const SSH_STDERR_CAPTURE_LIMIT: usize = 16 * 1024;
 /// far are used.
 pub(super) const PIPE_DRAIN_GRACE: Duration = Duration::from_millis(500);
 
+#[derive(Clone, Copy)]
+enum CaptureRetention {
+    Head,
+    Tail,
+}
+
 /// Reads a child pipe on its own thread. [`PipeCapture::finish`] never waits on
 /// the reader longer than the grace it is given, so a pipe held open by a
 /// process other than the child cannot hang the caller.
 pub(super) struct PipeCapture {
-    captured: Arc<Mutex<Vec<u8>>>,
+    captured: Arc<Mutex<VecDeque<u8>>>,
     done: mpsc::Receiver<io::Result<()>>,
 }
 
@@ -38,11 +45,31 @@ pub(super) enum PipeEcho {
 
 impl PipeCapture {
     pub(super) fn spawn(reader: impl Read + Send + 'static, limit: usize, echo: PipeEcho) -> Self {
-        let captured = Arc::new(Mutex::new(Vec::new()));
+        Self::spawn_with_retention(reader, limit, echo, CaptureRetention::Head)
+    }
+
+    /// Retains trailing command output so a large login banner cannot hide its result.
+    pub(super) fn spawn_tail(
+        reader: impl Read + Send + 'static,
+        limit: usize,
+        echo: PipeEcho,
+    ) -> Self {
+        Self::spawn_with_retention(reader, limit, echo, CaptureRetention::Tail)
+    }
+
+    fn spawn_with_retention(
+        reader: impl Read + Send + 'static,
+        limit: usize,
+        echo: PipeEcho,
+        retention: CaptureRetention,
+    ) -> Self {
+        // Grows with the output: the stdout limit is 1 MiB and most commands
+        // print a few lines, so reserving the limit up front would waste it.
+        let captured = Arc::new(Mutex::new(VecDeque::new()));
         let worker_captured = Arc::clone(&captured);
         let (done_tx, done) = mpsc::sync_channel(1);
         thread::spawn(move || {
-            let result = read_into(reader, &worker_captured, limit, echo);
+            let result = read_into(reader, &worker_captured, limit, echo, retention);
             let _ = done_tx.send(result);
         });
         Self { captured, done }
@@ -64,15 +91,16 @@ impl PipeCapture {
             }
         }
         let captured = self.captured.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(captured.clone())
+        Ok(captured.iter().copied().collect())
     }
 }
 
 fn read_into(
     mut reader: impl Read,
-    captured: &Mutex<Vec<u8>>,
+    captured: &Mutex<VecDeque<u8>>,
     limit: usize,
     echo: PipeEcho,
+    retention: CaptureRetention,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; 8 * 1024];
     let mut destination = io::stderr();
@@ -85,8 +113,26 @@ fn read_into(
         };
         {
             let mut captured = captured.lock().unwrap_or_else(PoisonError::into_inner);
-            let remaining = limit.saturating_sub(captured.len());
-            captured.extend_from_slice(&buffer[..read.min(remaining)]);
+            match retention {
+                CaptureRetention::Head => {
+                    let remaining = limit.saturating_sub(captured.len());
+                    captured.extend(buffer[..read.min(remaining)].iter().copied());
+                }
+                CaptureRetention::Tail => {
+                    let bytes = &buffer[..read];
+                    if bytes.len() >= limit {
+                        captured.clear();
+                        captured.extend(bytes[bytes.len() - limit..].iter().copied());
+                    } else {
+                        let overflow = captured
+                            .len()
+                            .saturating_add(bytes.len())
+                            .saturating_sub(limit);
+                        captured.drain(..overflow);
+                        captured.extend(bytes.iter().copied());
+                    }
+                }
+            }
         }
         if matches!(echo, PipeEcho::Stderr) && destination.write_all(&buffer[..read]).is_ok() {
             let _ = destination.flush();
@@ -108,7 +154,7 @@ pub(super) fn wait_with_output_timeout(
         .ok_or_else(|| io::Error::other("SSH command stderr was not captured"))?;
     // Discovery and status responses are small. Drain both pipes to avoid a
     // child blocking, but retain only bounded output from the remote host.
-    let stdout = PipeCapture::spawn(stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
+    let stdout = PipeCapture::spawn_tail(stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
     let stderr = PipeCapture::spawn(stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::None);
     let started = Instant::now();
     let status = loop {
@@ -201,5 +247,15 @@ mod tests {
             .finish(Duration::from_secs(3))
             .expect("test precondition");
         assert_eq!(captured.len(), 16 * 1024);
+    }
+
+    #[test]
+    fn tail_capture_keeps_the_newest_bytes_within_its_limit() {
+        let capture =
+            PipeCapture::spawn_tail(io::Cursor::new(b"hello world".to_vec()), 5, PipeEcho::None);
+        let captured = capture
+            .finish(Duration::from_secs(3))
+            .expect("test precondition");
+        assert_eq!(captured, b"world");
     }
 }

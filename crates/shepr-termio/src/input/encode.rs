@@ -13,7 +13,10 @@ const KITTY_FLAG_REPORT_EVENT_TYPES: u16 = KittyKeyboardFlags::REPORT_EVENT_TYPE
 const KITTY_FLAG_REPORT_ALTERNATE_KEYS: u16 = KittyKeyboardFlags::REPORT_ALTERNATE_KEYS.bits();
 const KITTY_FLAG_REPORT_ASSOCIATED_TEXT: u16 = KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT.bits();
 
-/// Encode a key event for a PTY child using the pane's negotiated keyboard protocol.
+/// Encode a key event for a PTY child using the supported subset of the pane's
+/// negotiated keyboard protocol.
+/// Full Kitty report-all fidelity is deliberately omitted because agent and shell
+/// panes do not need a shepr-owned key model.
 /// Test-only: production keys go through `encode_terminal_key_with_modes`.
 #[cfg(test)]
 fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
@@ -306,6 +309,8 @@ fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
 /// F1-F12: `CSI 1;mods[:event] {A,B,C,D,H,F,P,Q,S}` or
 /// `CSI n;mods[:event] ~` (F3 is `CSI 13~` so it cannot be mistaken for a
 /// cursor position report).
+/// Full report-all support for F13+, lock, media and bare modifier keys is not
+/// needed by agent and shell panes.
 fn encode_kitty_functional_key(
     code: KeyCode,
     mods: KeyModifiers,
@@ -350,7 +355,9 @@ fn encode_kitty_functional_key(
 pub struct KeyEncodeModes {
     /// Active kitty keyboard flags (0 = legacy).
     pub kitty_flags: u16,
-    /// xterm modifyOtherKeys level (0, 1 or 2).
+    /// xterm modifyOtherKeys level (0, 1 or 2). Encoding covers modified Enter
+    /// and Escape, plus Tab and Backspace at level 2; agent and shell panes do
+    /// not need broader level 1/2 support.
     pub modify_other_keys: u8,
     /// DECCKM (mode 1): unmodified cursor keys use SS3.
     pub application_cursor: bool,
@@ -411,6 +418,8 @@ pub fn encode_terminal_key_with_modes(mut key: TerminalKey, modes: KeyEncodeMode
 /// `CSI 27 ; mods ; code ~` for modified Enter/Tab/Backspace/Escape. Level 1
 /// leaves Alt-only chords and Tab/Backspace (keys with well-known legacy
 /// meanings) to the legacy encoder, as xterm does.
+/// This limited key set is deliberate because agent and shell panes do not need
+/// full modifyOtherKeys level 1/2 encoding.
 fn encode_modify_other_keys(key: &TerminalKey, level: u8) -> Option<Vec<u8>> {
     let code = match key.code {
         KeyCode::Enter => 13,
@@ -795,6 +804,8 @@ fn encode_legacy_inner(key: &TerminalKey) -> Vec<u8> {
     }
 }
 
+// Agent and shell panes do not need full Kitty report-all fidelity, so the
+// legacy fallback intentionally encodes only F1-F12.
 fn encode_f_key(n: u8) -> Vec<u8> {
     match n {
         1 => vec![27, 79, 80],

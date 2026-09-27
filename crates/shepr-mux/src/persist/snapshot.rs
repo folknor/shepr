@@ -260,7 +260,7 @@ fn capture_workspace(
     fallback_cwd: &std::path::Path,
 ) -> WorkspaceSnapshot {
     let tabs: Vec<_> = ws
-        .tabs
+        .tabs()
         .iter()
         .map(|tab| capture_tab(tab, terminals, terminal_runtimes, fallback_cwd))
         .collect();
@@ -274,7 +274,7 @@ fn capture_workspace(
         custom_name: ws.custom_name.clone(),
         identity_cwd,
         public_pane_numbers: ws
-            .tabs
+            .tabs()
             .iter()
             .flat_map(|tab| {
                 tab.panes
@@ -283,7 +283,7 @@ fn capture_workspace(
             })
             .collect(),
         next_public_pane_number: ws.next_public_pane_number,
-        public_tab_numbers: ws.tabs.iter().map(|tab| tab.number).collect(),
+        public_tab_numbers: ws.tabs().iter().map(|tab| tab.number).collect(),
         next_public_tab_number: ws.next_public_tab_number,
         tabs,
         active_tab: ws.active_tab,
@@ -547,8 +547,9 @@ impl PendingHistory {
         let carry = self.carry;
         SessionHistorySnapshot {
             version: SNAPSHOT_VERSION,
-            // Live panes keep their allocated IDs across saves. Restore allocates
-            // fresh IDs, but carries each saved history through the ID remap.
+            // Pair history to this saved layout here: live pane IDs are stable
+            // across saves, while restore allocates fresh IDs and carries the
+            // saved history through the ID remap.
             layout_fingerprint: layout_fingerprint(snapshot),
             workspaces: self
                 .workspaces
@@ -600,7 +601,7 @@ pub fn capture_pending_history(
         .iter()
         .map(|workspace| {
             workspace
-                .tabs
+                .tabs()
                 .iter()
                 .map(|tab| capture_tab_history(tab, terminal_runtimes, &mut carried))
                 .collect()
@@ -608,7 +609,7 @@ pub fn capture_pending_history(
         .collect();
     let live_ids: std::collections::HashSet<_> = workspaces
         .iter()
-        .flat_map(|workspace| workspace.tabs.iter())
+        .flat_map(|workspace| workspace.tabs().iter())
         .flat_map(|tab| tab.panes.values())
         .map(|pane| &pane.attached_terminal_id)
         .collect();

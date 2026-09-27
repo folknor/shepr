@@ -10,6 +10,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
+// The client endpoint sends HealthPing after five seconds without received data,
+// and the server answers HealthPong. Those protocol frames renew this byte-level
+// watchdog, so a healthy idle saved endpoint stays connected.
 pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn now() -> io::Result<u64> {

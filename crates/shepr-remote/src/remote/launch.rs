@@ -138,11 +138,10 @@ impl RemoteExecutable {
     }
 
     pub(super) fn api_bridge_check_command(&self, session_name: &str) -> String {
-        format!(
-            "test -x {} && {} </dev/null",
-            self.quoted(),
-            self.command(&["--session", session_name, "remote-api-bridge", "--check"])
-        )
+        let path = self.quoted();
+        let status = self.command(&["status", "client", "--json"]);
+        let check = self.command(&["--session", session_name, "remote-api-bridge", "--check"]);
+        format!("test -x {path} && {status} && {check} </dev/null")
     }
 
     pub(super) fn bridge_command(&self, session_name: &str, idle_timeout: bool) -> String {
@@ -161,6 +160,9 @@ impl RemoteExecutable {
 
     pub(super) fn saved_bridge_command(&self, session_name: &str) -> String {
         let args = Self::session_args(session_name, &["remote-client-bridge"]);
+        // This redirects bridge stdin to /dev/null. The bridge forwards EOF as a
+        // socket write shutdown, so the server's handshake reader returns without
+        // waiting for its deadline.
         format!("{} </dev/null", self.command(&args))
     }
 }
@@ -263,6 +265,7 @@ pub fn interactive_shell_command(argv: &[String]) -> Option<String> {
 #[cfg(test)]
 mod shell_command_tests {
     use super::*;
+    use std::io::Write as _;
 
     #[test]
     fn interactive_shell_command_quotes_posix_arguments() {
@@ -279,5 +282,62 @@ mod shell_command_tests {
             interactive_shell_command(&argv).as_deref(),
             Some("pi '' 'two words' 'a'\\''b' '$HOME' 'semi;colon' @options")
         );
+    }
+
+    #[test]
+    fn api_forwarding_probe_runs_status_and_check_under_posix_sh() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Stdio;
+
+        let scratch = shepr_test_support::ScratchDir::new("api-forwarding-probe");
+        let executable_path = scratch.join("shepr");
+        std::fs::write(
+            &executable_path,
+            r#"#!/bin/sh
+case "$*" in
+  "status client --json") printf '%s\n' '{"version":"test","build_id":"0123456789abcdef"}' ;;
+  "--session agents remote-api-bridge --check") exit 0 ;;
+  *) exit 64 ;;
+esac
+"#,
+        )
+        .expect("write fake remote shepr");
+        let mut permissions = std::fs::metadata(&executable_path)
+            .expect("read fake remote shepr metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable_path, permissions)
+            .expect("make fake remote shepr executable");
+
+        let executable = RemoteExecutable::parse(
+            executable_path
+                .to_str()
+                .expect("scratch path is valid UTF-8"),
+        )
+        .expect("fake executable path is valid");
+        let script = posix_remote_output_command(&executable.api_bridge_check_command("agents"));
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-s")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start POSIX shell");
+        child
+            .stdin
+            .take()
+            .expect("shell stdin is piped")
+            .write_all(script.as_bytes())
+            .expect("write probe script");
+        let output = child.wait_with_output().expect("wait for POSIX shell");
+        assert!(
+            output.status.success(),
+            "probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let mut stdout = output.stdout;
+        normalize_remote_stdout(&mut stdout, true).expect("output marker is present");
+        assert!(parse_client_status_json(&String::from_utf8_lossy(&stdout)).is_some());
     }
 }

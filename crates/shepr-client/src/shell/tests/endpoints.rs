@@ -82,6 +82,42 @@ fn repeated_endpoint_snapshots_reuse_the_validated_config() {
 }
 
 #[test]
+fn switching_to_an_endpoint_with_an_undecodable_config_keeps_the_previous_one() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let profile = remote_profile();
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    remote.resolved_config = vec![0xff; 3];
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+
+    assert!(!state.activate_endpoint_projection(&endpoint_id));
+    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert!(state.pane_surface.is_some());
+    assert_ne!(
+        state
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.workspaces.first())
+            .map(|workspace| workspace.label.as_str()),
+        Some("remote-workspace")
+    );
+    assert!(
+        state
+            .endpoint_error
+            .as_deref()
+            .is_some_and(|error| error.contains("invalid endpoint configuration")),
+        "{:?}",
+        state.endpoint_error
+    );
+}
+
+#[test]
 fn inactive_endpoint_keeps_config_when_later_snapshots_omit_bytes() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut later = state

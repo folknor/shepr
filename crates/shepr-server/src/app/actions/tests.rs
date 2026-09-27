@@ -22,7 +22,7 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
     state.view.pane_infos = state
         .active_index()
         .and_then(|ws_idx| state.workspaces.get(ws_idx))
-        .and_then(|workspace| workspace.tabs.get(workspace.active_tab))
+        .and_then(|workspace| workspace.tabs().get(workspace.active_tab))
         .map(|tab| {
             state
                 .pane_geometry_in(area)
@@ -84,7 +84,7 @@ fn pane_removal_command_returns_the_removed_container_scope() {
     let mut state = app_with_workspaces(&["one"]);
     let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
     state.ensure_test_terminals();
-    let first_pane = state.workspaces[0].tabs[0].root_pane;
+    let first_pane = state.workspaces[0].tabs()[0].root_pane;
 
     let plan = state
         .prepare_pane_removal(0, first_pane)
@@ -94,10 +94,10 @@ fn pane_removal_command_returns_the_removed_container_scope() {
         panic!("prepared tab removal must commit");
     };
     assert_eq!(outcome.removal.scope, PaneRemovalScope::Tab);
-    assert_eq!(state.workspaces[0].tabs.len(), 1);
+    assert_eq!(state.workspaces[0].tabs().len(), 1);
     assert_eq!(state.workspaces[0].active_tab, second_tab - 1);
 
-    let final_pane = state.workspaces[0].tabs[0].root_pane;
+    let final_pane = state.workspaces[0].tabs()[0].root_pane;
     let PaneRemovalCommit::Removed(outcome) = state.remove_pane(0, final_pane) else {
         panic!("final pane removal must commit");
     };
@@ -109,8 +109,8 @@ fn pane_removal_command_returns_the_removed_container_scope() {
 #[test]
 fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
     let mut state = app_with_workspaces(&["one"]);
-    let root_pane = state.workspaces[0].tabs[0].root_pane;
-    let mut prepared_layout = state.workspaces[0].tabs[0].layout.clone();
+    let root_pane = state.workspaces[0].tabs()[0].root_pane;
+    let mut prepared_layout = state.workspaces[0].tabs()[0].layout.clone();
     let new_pane = prepared_layout
         .split_pane(root_pane, Direction::Horizontal, 0.5)
         .expect("test precondition");
@@ -153,7 +153,7 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
 fn workspace_creation_state_command_commits_spawned_values() {
     let mut state = AppState::test_new();
     let workspace = Workspace::test_new("created");
-    let root_pane = workspace.tabs[0].root_pane;
+    let root_pane = workspace.tabs()[0].root_pane;
     let terminal_id = workspace
         .terminal_id(root_pane)
         .expect("test precondition")
@@ -564,7 +564,7 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
     let mut state = app_with_workspaces(&["a", "dying", "c"]);
     state.set_active_index(Some(2));
     state.set_selected_index(Some(0));
-    let pane_id = state.workspaces[1].tabs[0].root_pane;
+    let pane_id = state.workspaces[1].tabs()[0].root_pane;
     let terminal_id = state
         .terminal_id_for_pane(1, pane_id)
         .expect("test precondition");
@@ -668,7 +668,7 @@ fn state_changed_updates_pane() {
 #[test]
 fn agent_state_sequences_track_transitions_for_waiters() {
     let mut app = app_with_workspaces(&["active", "background"]);
-    let pane_id = app.workspaces[1].tabs[0].root_pane;
+    let pane_id = app.workspaces[1].tabs()[0].root_pane;
     let terminal_id = app.workspaces[1].panes[&pane_id]
         .attached_terminal_id
         .clone();
@@ -693,7 +693,7 @@ fn agent_state_sequences_track_transitions_for_waiters() {
 #[test]
 fn managed_launch_becomes_interactive_after_state_detection() {
     let mut app = app_with_workspaces(&["active", "background"]);
-    let pane_id = app.workspaces[1].tabs[0].root_pane;
+    let pane_id = app.workspaces[1].tabs()[0].root_pane;
     let terminal_id = app.workspaces[1].panes[&pane_id]
         .attached_terminal_id
         .clone();
@@ -727,7 +727,7 @@ fn managed_launch_becomes_interactive_after_state_detection() {
 #[test]
 fn agent_prompt_observation_changes_readiness_without_state_change() {
     let mut app = app_with_workspaces(&["active", "background"]);
-    let pane_id = app.workspaces[1].tabs[0].root_pane;
+    let pane_id = app.workspaces[1].tabs()[0].root_pane;
     let terminal_id = app.workspaces[1].panes[&pane_id]
         .attached_terminal_id
         .clone();
@@ -1118,7 +1118,7 @@ fn relative_terminal_cwd_report_is_ignored() {
 fn metadata_expiry_state_change_bumps_state_sequence() {
     let mut state = app_with_workspaces(&["active", "background"]);
     state.set_active_index(Some(0));
-    let pane_id = state.workspaces[1].tabs[0].root_pane;
+    let pane_id = state.workspaces[1].tabs()[0].root_pane;
     let terminal_id = state
         .terminal_id_for_pane(1, pane_id)
         .expect("test precondition");
@@ -1186,7 +1186,7 @@ fn toggle_zoom_single_pane_noop() {
 #[test]
 fn navigate_pane_changes_focus_while_zoomed() {
     let mut state = app_with_workspaces(&["test"]);
-    let root = state.workspaces[0].tabs[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane;
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].layout.focus_pane(root);
     state.workspaces[0].zoomed = true;
@@ -1208,7 +1208,7 @@ fn navigate_pane_changes_focus_while_zoomed() {
 #[test]
 fn swap_pane_direction_preserves_focus_and_swaps_layout_cells() {
     let mut state = app_with_workspaces(&["test"]);
-    let root = state.workspaces[0].tabs[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane;
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].layout.focus_pane(root);
     refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
@@ -1256,7 +1256,7 @@ fn swap_pane_direction_preserves_focus_and_swaps_layout_cells() {
 #[test]
 fn swap_pane_direction_stays_zoomed_and_mutates_hidden_layout() {
     let mut state = app_with_workspaces(&["test"]);
-    let root = state.workspaces[0].tabs[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane;
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].layout.focus_pane(root);
     state.workspaces[0].zoomed = true;
@@ -1309,7 +1309,7 @@ fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
     let mut state = app_with_workspaces(&["active", "background"]);
     state.set_active_index(Some(1));
     state.ensure_test_terminals();
-    let pane_id = state.workspaces[0].tabs[0].root_pane;
+    let pane_id = state.workspaces[0].tabs()[0].root_pane;
     let terminal_id = state
         .terminal_id_for_pane(0, pane_id)
         .expect("test precondition");
@@ -1363,7 +1363,7 @@ fn close_tab_removes_unattached_terminal_states() {
     let tab_idx = state.workspaces[0].test_add_tab(Some("logs"));
     state.ensure_test_terminals();
     state.workspaces[0].switch_tab(tab_idx);
-    let pane_id = state.workspaces[0].tabs[tab_idx].root_pane;
+    let pane_id = state.workspaces[0].tabs()[tab_idx].root_pane;
     let terminal_id = state
         .terminal_id_for_pane(0, pane_id)
         .expect("test precondition");
@@ -1379,8 +1379,8 @@ fn close_tab_removes_unattached_terminal_states() {
 #[test]
 fn close_workspace_prunes_aliases_and_resize_locks_of_its_panes() {
     let mut state = app_with_workspaces(&["closing", "kept"]);
-    let closing_pane = state.workspaces[0].tabs[0].root_pane;
-    let kept_pane = state.workspaces[1].tabs[0].root_pane;
+    let closing_pane = state.workspaces[0].tabs()[0].root_pane;
+    let kept_pane = state.workspaces[1].tabs()[0].root_pane;
     let closing_terminal = state
         .terminal_id_for_pane(0, closing_pane)
         .expect("test precondition");
@@ -1459,7 +1459,7 @@ fn close_workspace_at_out_of_range_is_a_noop() {
 #[test]
 fn close_workspace_removes_unattached_terminal_states() {
     let mut state = app_with_workspaces(&["one", "two"]);
-    let pane_id = state.workspaces[0].tabs[0].root_pane;
+    let pane_id = state.workspaces[0].tabs()[0].root_pane;
     let terminal_id = state
         .terminal_id_for_pane(0, pane_id)
         .expect("test precondition");
@@ -1474,7 +1474,7 @@ fn close_workspace_removes_unattached_terminal_states() {
 fn close_tab_closes_active_workspace_not_selected_workspace() {
     let mut state = app_with_workspaces(&["selected", "active"]);
     let active_terminal_id = state
-        .terminal_id_for_pane(1, state.workspaces[1].tabs[0].root_pane)
+        .terminal_id_for_pane(1, state.workspaces[1].tabs()[0].root_pane)
         .expect("test precondition");
     state.set_active_index(Some(1));
     state.set_selected_index(Some(0));
@@ -1494,12 +1494,12 @@ fn close_tab_closes_active_workspace_not_selected_workspace() {
 fn close_pane_last_pane_closes_active_workspace_not_selected_workspace() {
     let mut state = app_with_workspaces(&["selected", "active"]);
     let active_terminal_id = state
-        .terminal_id_for_pane(1, state.workspaces[1].tabs[0].root_pane)
+        .terminal_id_for_pane(1, state.workspaces[1].tabs()[0].root_pane)
         .expect("test precondition");
     state.set_active_index(Some(1));
     state.set_selected_index(Some(0));
 
-    let pane_id = state.workspaces[1].tabs[0].root_pane;
+    let pane_id = state.workspaces[1].tabs()[0].root_pane;
     assert!(matches!(
         state.remove_pane(1, pane_id),
         PaneRemovalCommit::Removed(_)
