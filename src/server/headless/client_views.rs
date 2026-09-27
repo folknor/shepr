@@ -394,7 +394,7 @@ impl HeadlessServer {
     pub(super) fn send_shell_focus_target(
         &self,
         target: &ShellFocusTarget,
-        event: crate::ghostty::FocusEvent,
+        event: crate::vt::FocusEvent,
     ) {
         if let Some(workspace_index) = self
             .app
@@ -446,10 +446,10 @@ impl HeadlessServer {
         gained: &HashMap<String, ShellFocusTarget>,
     ) {
         for target in lost.values() {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
+            self.send_shell_focus_target(target, crate::vt::FocusEvent::Lost);
         }
         for target in gained.values() {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Gained);
+            self.send_shell_focus_target(target, crate::vt::FocusEvent::Gained);
         }
     }
 
@@ -474,10 +474,10 @@ impl HeadlessServer {
         let (lost, gained) =
             classify_shell_focus_transition(before, after, focused_tabs_before, focused_tabs_after);
         if let Some(target) = lost {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
+            self.send_shell_focus_target(target, crate::vt::FocusEvent::Lost);
         }
         if let Some(target) = gained {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Gained);
+            self.send_shell_focus_target(target, crate::vt::FocusEvent::Gained);
         }
     }
 

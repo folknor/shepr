@@ -9,7 +9,7 @@ repository = "https://github.com/folknor/shepr"
 rust-version = "1.99"
 
 [dependencies]
-# Terminal emulation core. Pinned exactly: src/ghostty/ is written against this
+# Terminal emulation core. Pinned exactly: src/vt/ is written against this
 # version's API (reference checkout in research/alacritty).
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 base64 = "0.23.1"

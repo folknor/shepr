@@ -420,10 +420,7 @@ impl App {
         }
     }
 
-    fn sync_focus_events_with_outer_event(
-        &mut self,
-        outer_event: Option<crate::ghostty::FocusEvent>,
-    ) {
+    fn sync_focus_events_with_outer_event(&mut self, outer_event: Option<crate::vt::FocusEvent>) {
         let current_focus = self.state.active_index().and_then(|idx| {
             self.state
                 .workspaces
@@ -438,14 +435,14 @@ impl App {
         }
 
         if let Some((ws_idx, pane_id)) = self.last_focus {
-            self.send_pane_focus_event(ws_idx, pane_id, crate::ghostty::FocusEvent::Lost);
+            self.send_pane_focus_event(ws_idx, pane_id, crate::vt::FocusEvent::Lost);
         }
         if let Some((ws_idx, pane_id)) = current_focus {
             let event = outer_event.unwrap_or_else(|| {
                 if self.state.outer_terminal_focus == Some(false) {
-                    crate::ghostty::FocusEvent::Lost
+                    crate::vt::FocusEvent::Lost
                 } else {
-                    crate::ghostty::FocusEvent::Gained
+                    crate::vt::FocusEvent::Gained
                 }
             });
             self.send_pane_focus_event(ws_idx, pane_id, event);
@@ -459,7 +456,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
-        event: crate::ghostty::FocusEvent,
+        event: crate::vt::FocusEvent,
     ) {
         let Some(runtime) = self.state.workspaces.get(ws_idx).and_then(|_| {
             self.state

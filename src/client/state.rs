@@ -78,7 +78,7 @@ impl Drop for ClientState {
                 &mut io::stdout(),
                 &mut self.direct_keyboard_protocol,
                 crate::protocol::KittyKeyboardFlags::NONE,
-                crate::ghostty::ModifyOtherKeysLevel::Off,
+                crate::vt::ModifyOtherKeysLevel::Off,
             );
         }
     }

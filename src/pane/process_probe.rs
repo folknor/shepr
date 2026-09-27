@@ -29,7 +29,7 @@ pub(super) fn active_pending_release(
     pending_release: &Mutex<Option<PendingAgentRelease>>,
     now: std::time::Instant,
 ) -> Option<Agent> {
-    let mut pending_release = crate::ghostty::lock_auxiliary(pending_release);
+    let mut pending_release = crate::vt::lock_auxiliary(pending_release);
     match *pending_release {
         Some(pending) if now < pending.until => Some(pending.agent),
         Some(_) => {

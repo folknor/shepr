@@ -5,18 +5,18 @@
 
 /// The DECSCUSR parameter (1-6) for a cursor shape and blink state.
 pub(crate) fn decscusr_cursor_shape(
-    style: crate::ghostty::CursorVisualStyle,
+    style: crate::vt::CursorVisualStyle,
     blinking: bool,
 ) -> crate::protocol::CursorShapeParam {
     use crate::protocol::CursorShapeParam;
     match (style, blinking) {
-        (crate::ghostty::CursorVisualStyle::Block, true)
-        | (crate::ghostty::CursorVisualStyle::BlockHollow, true) => CursorShapeParam::BlinkingBlock,
-        (crate::ghostty::CursorVisualStyle::Block, false)
-        | (crate::ghostty::CursorVisualStyle::BlockHollow, false) => CursorShapeParam::SteadyBlock,
-        (crate::ghostty::CursorVisualStyle::Underline, true) => CursorShapeParam::BlinkingUnderline,
-        (crate::ghostty::CursorVisualStyle::Underline, false) => CursorShapeParam::SteadyUnderline,
-        (crate::ghostty::CursorVisualStyle::Bar, true) => CursorShapeParam::BlinkingBar,
-        (crate::ghostty::CursorVisualStyle::Bar, false) => CursorShapeParam::SteadyBar,
+        (crate::vt::CursorVisualStyle::Block, true)
+        | (crate::vt::CursorVisualStyle::BlockHollow, true) => CursorShapeParam::BlinkingBlock,
+        (crate::vt::CursorVisualStyle::Block, false)
+        | (crate::vt::CursorVisualStyle::BlockHollow, false) => CursorShapeParam::SteadyBlock,
+        (crate::vt::CursorVisualStyle::Underline, true) => CursorShapeParam::BlinkingUnderline,
+        (crate::vt::CursorVisualStyle::Underline, false) => CursorShapeParam::SteadyUnderline,
+        (crate::vt::CursorVisualStyle::Bar, true) => CursorShapeParam::BlinkingBar,
+        (crate::vt::CursorVisualStyle::Bar, false) => CursorShapeParam::SteadyBar,
     }
 }

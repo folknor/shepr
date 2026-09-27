@@ -25,7 +25,6 @@ mod copy_mode;
 mod detect;
 mod events;
 mod geometry;
-mod ghostty;
 mod host_term;
 mod input;
 mod integration;
@@ -39,6 +38,7 @@ mod persist;
 mod platform;
 mod protocol;
 mod pty;
+mod vt;
 pub(crate) use input::raw_input;
 mod remote;
 #[path = "server/render_signal.rs"]

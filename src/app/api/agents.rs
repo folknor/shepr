@@ -163,7 +163,7 @@ impl App {
         }
         if expected_agent == crate::detect::Agent::GithubCopilot {
             // Copilot ignores synthetic Enter after focus loss until it receives focus gained.
-            let focus = crate::ghostty::encode_focus(crate::ghostty::FocusEvent::Gained);
+            let focus = crate::vt::encode_focus(crate::vt::FocusEvent::Gained);
             if let Err(err) = runtime.try_send_bytes(Bytes::from_static(focus)) {
                 return Err(ApiError::new(
                     ApiErrorCode::AgentPromptFailed,

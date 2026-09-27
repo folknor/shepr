@@ -20,7 +20,7 @@ struct Effects {
 struct Observation {
     geometry: (u16, u16),
     cells: Vec<CellData>,
-    text_rows: Vec<crate::ghostty::ScreenTextRow>,
+    text_rows: Vec<crate::vt::ScreenTextRow>,
     links: Vec<((u16, u16), String, String)>,
     cursor: TerminalCursorState,
     input: InputState,
@@ -32,7 +32,7 @@ struct Observation {
 
 impl Harness {
     fn new(width: u16, height: u16) -> Self {
-        let terminal = crate::ghostty::Terminal::new(width, height, 256);
+        let terminal = crate::vt::Terminal::new(width, height, 256);
         Self {
             pane: PaneTerminal::new(GhosttyPaneTerminal::new(terminal)),
             width,
@@ -90,8 +90,7 @@ impl Harness {
 
     fn cursor(&self) -> Option<TerminalCursorState> {
         current_cursor_state(
-            &mut crate::ghostty::lock_terminal_core(&self.pane.ghostty.core)
-                .expect("test precondition"),
+            &mut crate::vt::lock_terminal_core(&self.pane.ghostty.core).expect("test precondition"),
         )
     }
 
@@ -369,8 +368,8 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
         );
         assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 8));
 
-        let core = crate::ghostty::lock_terminal_core(&terminal.pane.ghostty.core)
-            .expect("test precondition");
+        let core =
+            crate::vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
         for row in core.render_state.iter_rows() {
             assert_eq!(row.is_dirty(), height == 3 && row.y() == 4);
         }
@@ -389,7 +388,7 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         TerminalDirtyPatchOutcome::Fallback
     ));
     let core =
-        crate::ghostty::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
+        crate::vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
     // `RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)`
     // that `map` wants here; the closure below is not actually redundant.
     #[allow(clippy::redundant_closure_for_method_calls)]

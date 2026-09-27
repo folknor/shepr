@@ -306,7 +306,7 @@ mod tests {
                     bg: WireColor::from_ratatui(Color::Indexed(220)),
                     style: WireStyle {
                         flags: WireStyleFlags::BOLD,
-                        underline: crate::ghostty::UnderlineStyle::Curly,
+                        underline: crate::vt::UnderlineStyle::Curly,
                     },
                     skip: false,
                     hyperlink: Some(0),
@@ -606,7 +606,7 @@ mod tests {
     fn direct_terminal_keyboard_mode_roundtrip() -> TestResult {
         let msg = ServerMessage::DirectTerminalKeyboardProtocol {
             flags: KittyKeyboardFlags::from_bits_retain(15),
-            modify_other_keys_level: crate::ghostty::ModifyOtherKeysLevel::ExceptWellDefined,
+            modify_other_keys_level: crate::vt::ModifyOtherKeysLevel::ExceptWellDefined,
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -1090,10 +1090,10 @@ mod tests {
         // The ratatui buffer has no underline-shape field, so the adapter
         // preserves non-single underline styles in its temporary modifier.
         for underline in [
-            crate::ghostty::UnderlineStyle::Double,
-            crate::ghostty::UnderlineStyle::Curly,
-            crate::ghostty::UnderlineStyle::Dotted,
-            crate::ghostty::UnderlineStyle::Dashed,
+            crate::vt::UnderlineStyle::Double,
+            crate::vt::UnderlineStyle::Curly,
+            crate::vt::UnderlineStyle::Dotted,
+            crate::vt::UnderlineStyle::Dashed,
         ] {
             let style = WireStyle {
                 flags: WireStyleFlags::BOLD,
@@ -1126,7 +1126,7 @@ mod tests {
             Modifier::BOLD.bits() | (3 << RATATUI_UNDERLINE_STYLE_SHIFT),
         );
         let style = WireStyle::from_ratatui_modifier(stale);
-        assert_eq!(style.underline, crate::ghostty::UnderlineStyle::None);
+        assert_eq!(style.underline, crate::vt::UnderlineStyle::None);
         assert_eq!(style.to_ratatui_modifier(), Modifier::BOLD);
     }
 

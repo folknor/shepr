@@ -36,10 +36,10 @@ use std::io::Write;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::ghostty::UnderlineStyle;
 use crate::protocol::{
     CellData, CursorState, FrameData, PaneSurfacePatchRow, WireColor, WireStyle, WireStyleFlags,
 };
+use crate::vt::UnderlineStyle;
 
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub(crate) struct EncodedBlit {
@@ -1627,7 +1627,7 @@ mod tests {
     fn batched_ascii_diff_replays_to_current_frame() {
         let prev = make_frame(4, 3, vec![default_cell("A"); 12]);
         let curr = make_frame(4, 3, vec![default_cell("B"); 12]);
-        let mut terminal = crate::ghostty::Terminal::new(4, 3, 0);
+        let mut terminal = crate::vt::Terminal::new(4, 3, 0);
 
         let mut initial = Vec::new();
         blit_frame_to(&mut initial, &prev, None);

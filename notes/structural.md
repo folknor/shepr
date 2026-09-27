@@ -16,16 +16,6 @@ be types, and moves, splits and rewrites with the payoff each buys.
 
 # Moves, splits and rewrites
 
-## STR-024 - Rename src/ghostty to vt and split it
-
-The libghostty shims and infallible `Result`s are gone. Remaining: `mod.rs`
-still holds the colour model, palette, cell/style types, `Terminal`, the
-`RenderState` snapshot, row/cell views and text readers; proposed `color.rs`,
-`cell.rs`, `render.rs`, `read.rs` around `Terminal`, and the planned rename of
-`src/ghostty` to `vt`. Several accessors are now `#[cfg(test)]`-only.
-
-Reported by: terminal-core.
-
 ## STR-055 - Test layouts that mirror accidents
 
 `app/mod.rs` has ~1,300 lines of API handler tests round-tripping JSON strings

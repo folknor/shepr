@@ -1,5 +1,5 @@
-use crate::ghostty::ModifyOtherKeysLevel;
 use crate::protocol::KittyKeyboardFlags;
+use crate::vt::ModifyOtherKeysLevel;
 use std::io::{self, Write};
 
 const DISABLE_HOST_MOUSE_REPORTING_SEQUENCE: &[u8] =

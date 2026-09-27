@@ -1,6 +1,4 @@
-pub use crate::ghostty::{
-    ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor,
-};
+pub use crate::vt::{ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalTheme {

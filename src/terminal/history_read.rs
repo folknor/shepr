@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::ghostty::{CellWide, ScreenTextRow};
 use crate::pane::TerminalReadSnapshot;
+use crate::vt::{CellWide, ScreenTextRow};
 
 const MIN_ALIGNMENT_RATIO_PERCENT: usize = 30;
 const SIMILAR_VIEWPORT_RATIO_PERCENT: usize = 70;
@@ -233,7 +233,7 @@ fn push_row_text(text: &mut String, row: &ScreenTextRow, skip_spacer_head: bool)
             continue;
         }
         if cell.graphemes.is_empty()
-            || cell.graphemes.first().copied() == Some(crate::ghostty::KITTY_UNICODE_PLACEHOLDER)
+            || cell.graphemes.first().copied() == Some(crate::vt::KITTY_UNICODE_PLACEHOLDER)
         {
             text.push(' ');
         } else {
@@ -247,7 +247,7 @@ fn push_row_text(text: &mut String, row: &ScreenTextRow, skip_spacer_head: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ghostty::{ScreenTextCell, ScreenTextRow};
+    use crate::vt::{ScreenTextCell, ScreenTextRow};
 
     fn row(text: &str) -> ScreenTextRow {
         ScreenTextRow {

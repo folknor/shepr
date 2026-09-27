@@ -143,7 +143,7 @@ pub enum ServerMessage {
     /// Zero restores the host terminal's previous keyboard mode.
     DirectTerminalKeyboardProtocol {
         flags: KittyKeyboardFlags,
-        modify_other_keys_level: crate::ghostty::ModifyOtherKeysLevel,
+        modify_other_keys_level: crate::vt::ModifyOtherKeysLevel,
     },
 
     /// Whether the focused pane needs the shell host to report every key.

@@ -147,7 +147,7 @@ impl PtyIoActorHandle {
         &self,
         bytes: Bytes,
     ) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        let user_writes = crate::ghostty::lock_auxiliary(&self.user_writes);
+        let user_writes = crate::vt::lock_auxiliary(&self.user_writes);
         if !user_writes.accepting {
             return Err(mpsc::error::TrySendError::Closed(bytes));
         }
@@ -174,7 +174,7 @@ impl PtyIoActorHandle {
         enter: Bytes,
         delay: Duration,
     ) -> std::io::Result<QueuedSubmission> {
-        let user_writes = crate::ghostty::lock_auxiliary(&self.user_writes);
+        let user_writes = crate::vt::lock_auxiliary(&self.user_writes);
         if !user_writes.accepting {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -210,12 +210,12 @@ impl PtyIoActorHandle {
     }
 
     pub(crate) fn write_terminal_response(&self, response: impl FnOnce() -> Option<Bytes>) {
-        let _order = crate::ghostty::lock_auxiliary(&self.response_order);
+        let _order = crate::vt::lock_auxiliary(&self.response_order);
         let Some(bytes) = response() else {
             return;
         };
         if !bytes.is_empty() {
-            crate::ghostty::lock_auxiliary(&self.controls)
+            crate::vt::lock_auxiliary(&self.controls)
                 .terminal_responses
                 .push(bytes);
             self.wake_actor();
@@ -228,7 +228,7 @@ impl PtyIoActorHandle {
         terminal_responses: Vec<Bytes>,
     ) {
         {
-            let mut controls = crate::ghostty::lock_auxiliary(&self.controls);
+            let mut controls = crate::vt::lock_auxiliary(&self.controls);
             controls.resize = Some(PtyResizeRequest {
                 resize: PtyResize { geometry },
                 terminal_responses,
@@ -239,7 +239,7 @@ impl PtyIoActorHandle {
 
     pub(crate) fn shutdown(&self) {
         {
-            let mut user_writes = crate::ghostty::lock_auxiliary(&self.user_writes);
+            let mut user_writes = crate::vt::lock_auxiliary(&self.user_writes);
             user_writes.accepting = false;
         }
         if self.control_tx.send(PtyIoControlCommand::Shutdown).is_ok() {
@@ -537,7 +537,7 @@ impl PtyIoActorRunner {
 
     fn apply_pending_controls(&mut self) {
         let (resize, terminal_responses) = {
-            let mut controls = crate::ghostty::lock_auxiliary(&self.controls);
+            let mut controls = crate::vt::lock_auxiliary(&self.controls);
             (
                 controls.resize.take(),
                 std::mem::take(&mut controls.terminal_responses),
@@ -585,7 +585,7 @@ impl PtyIoActorRunner {
             }
             Ok(n) => {
                 let response_order = Arc::clone(&self.response_order);
-                let _order = crate::ghostty::lock_auxiliary(&response_order);
+                let _order = crate::vt::lock_auxiliary(&response_order);
                 // A panic in the terminal core must not unwind out of the
                 // actor thread: that would skip the reader-exit report and
                 // leave the pane dead with nobody told. Catching it costs
@@ -614,12 +614,12 @@ impl PtyIoActorRunner {
                     self.read_callback_panicked = true;
                     return ReadOutcome::Closed;
                 }
-                crate::ghostty::lock_auxiliary(&self.controls)
+                crate::vt::lock_auxiliary(&self.controls)
                     .terminal_responses
                     .extend(result.terminal_responses);
                 drop(_order);
                 let terminal_responses = std::mem::take(
-                    &mut crate::ghostty::lock_auxiliary(&self.controls).terminal_responses,
+                    &mut crate::vt::lock_auxiliary(&self.controls).terminal_responses,
                 );
                 self.enqueue_terminal_responses(terminal_responses);
                 ReadOutcome::Data
@@ -1355,7 +1355,7 @@ mod tests {
             on_reader_exit: Some(Box::new({
                 let handle_slot = Arc::clone(&handle_slot);
                 move |_| {
-                    let handle = crate::ghostty::lock_auxiliary(&handle_slot)
+                    let handle = crate::vt::lock_auxiliary(&handle_slot)
                         .as_ref()
                         .expect("actor handle installed")
                         .clone();
@@ -1370,7 +1370,7 @@ mod tests {
             core_broken: None,
         };
         let handle = PtyIoActor::spawn(config).expect("actor spawn");
-        *crate::ghostty::lock_auxiliary(&handle_slot) = Some(handle);
+        *crate::vt::lock_auxiliary(&handle_slot) = Some(handle);
 
         drop(peer);
         let err = match attempt_rx
@@ -1644,7 +1644,7 @@ mod tests {
         );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"response")));
 
-        let controls = crate::ghostty::lock_auxiliary(&controls);
+        let controls = crate::vt::lock_auxiliary(&controls);
         assert_eq!(
             controls.resize,
             Some(PtyResizeRequest {

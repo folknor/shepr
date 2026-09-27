@@ -134,19 +134,16 @@ pub(super) struct AgentOscStateTracker {
 impl AgentOscStateTracker {
     /// Collects the title and progress changes the terminal core saw since
     /// the last call. Returns whether the displayed title changed.
-    pub(super) fn apply_terminal_updates(
-        &mut self,
-        terminal: &mut crate::ghostty::Terminal,
-    ) -> bool {
+    pub(super) fn apply_terminal_updates(&mut self, terminal: &mut crate::vt::Terminal) -> bool {
         let mut terminal_title_changed = false;
         if let Some(update) = terminal.take_title_update() {
             let title = match update {
-                crate::ghostty::TitleUpdate::Set(title) => Some(sanitize_agent_osc_string(
+                crate::vt::TitleUpdate::Set(title) => Some(sanitize_agent_osc_string(
                     title.as_bytes(),
                     AGENT_OSC_MAX_CHARS,
                 ))
                 .filter(|title| !title.is_empty()),
-                crate::ghostty::TitleUpdate::Reset => None,
+                crate::vt::TitleUpdate::Reset => None,
             };
             terminal_title_changed = self.terminal_title != title;
             self.terminal_title.clone_from(&title);
@@ -447,7 +444,7 @@ mod tests {
     fn pane_default_theme(
         pane: &super::super::GhosttyPaneTerminal,
     ) -> crate::host_term::theme::TerminalTheme {
-        let mut core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
         let super::super::terminal::GhosttyPaneCore {
             terminal,
             render_state,
@@ -494,14 +491,14 @@ mod tests {
     /// A tracker fed the way the pane feeds it: bytes go through the terminal
     /// core, the tracker collects what the core saw.
     struct TrackedTerminal {
-        terminal: crate::ghostty::Terminal,
+        terminal: crate::vt::Terminal,
         tracker: AgentOscStateTracker,
     }
 
     impl TrackedTerminal {
         fn new() -> Self {
             Self {
-                terminal: crate::ghostty::Terminal::new(80, 24, 0),
+                terminal: crate::vt::Terminal::new(80, 24, 0),
                 tracker: AgentOscStateTracker::default(),
             }
         }
@@ -918,7 +915,7 @@ mod tests {
 
     #[test]
     fn restore_host_terminal_theme_reapplies_cached_colors() {
-        let terminal = crate::ghostty::Terminal::new(80, 24, 0);
+        let terminal = crate::vt::Terminal::new(80, 24, 0);
         let pane = super::super::GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         let shell_pid = 7;
@@ -938,8 +935,7 @@ mod tests {
 
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core =
-                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
+            let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
             core.terminal
                 .write(b"\x1b]10;rgb:01/02/03\x1b\\\x1b]11;rgb:dd/ee/ff\x1b\\");
@@ -954,8 +950,7 @@ mod tests {
         );
 
         {
-            let mut core =
-                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
+            let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
             // The child is mid-sequence when the restore runs: nothing may be
             // written into its stream.
             core.terminal.write(b"\x1b[3");

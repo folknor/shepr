@@ -393,7 +393,7 @@ impl ApiDispatcher {
         }
         let runtime = server.app.terminal_runtimes.get(&terminal.id)?;
         let (screen, snapshot) = runtime.screen_text_snapshot()?;
-        if screen != crate::ghostty::ActiveScreen::Alternate
+        if screen != crate::vt::ActiveScreen::Alternate
             || snapshot.rows.len() >= requested.min(1000) as usize
         {
             return None;
@@ -453,7 +453,7 @@ impl ApiDispatcher {
             return None;
         }
         let (screen, initial, content_seq) = runtime.screen_text_snapshot_with_seq()?;
-        if screen != crate::ghostty::ActiveScreen::Alternate || initial.rows.len() >= lines {
+        if screen != crate::vt::ActiveScreen::Alternate || initial.rows.len() >= lines {
             return None;
         }
         Some(AltScreenReadSpec {

@@ -66,7 +66,7 @@ fn text_cells(row: &str) -> Vec<TextCell> {
     let mut next_col = 0u16;
     row.chars()
         .map(|ch| {
-            let width = u16::from(crate::ghostty::unicode_codepoint_width(ch as u32));
+            let width = u16::from(crate::vt::unicode_codepoint_width(ch as u32));
             let start_col = if width == 0 {
                 next_col.saturating_sub(1)
             } else {
@@ -276,7 +276,7 @@ mod tests {
         let prefix = &row[..byte_idx];
         prefix
             .chars()
-            .map(|ch| u16::from(crate::ghostty::unicode_codepoint_width(ch as u32)))
+            .map(|ch| u16::from(crate::vt::unicode_codepoint_width(ch as u32)))
             .sum()
     }
 

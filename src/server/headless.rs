@@ -692,7 +692,7 @@ impl HeadlessServer {
             }
         }
         if should_release_focus && let Some(target) = disconnected_focus.as_ref() {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
+            self.send_shell_focus_target(target, crate::vt::FocusEvent::Lost);
         }
         if was_foreground {
             self.promote_latest_remaining_client()
@@ -1664,7 +1664,7 @@ impl HeadlessServer {
                     if !another_focused_viewer
                         && let Some(target) = self.shell_focus_target(client_id)
                     {
-                        self.send_shell_focus_target(&target, crate::ghostty::FocusEvent::Gained);
+                        self.send_shell_focus_target(&target, crate::vt::FocusEvent::Gained);
                     }
                     true
                 } else {
@@ -1674,7 +1674,7 @@ impl HeadlessServer {
                     if !another_focused_viewer
                         && let Some(target) = self.shell_focus_target(client_id)
                     {
-                        self.send_shell_focus_target(&target, crate::ghostty::FocusEvent::Lost);
+                        self.send_shell_focus_target(&target, crate::vt::FocusEvent::Lost);
                     }
                     true
                 }

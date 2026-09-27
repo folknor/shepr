@@ -34,7 +34,7 @@ pub(crate) struct PendingAltScreenRead {
     unwrap: bool,
     initial: ScreenSnapshot,
     previous: ScreenSnapshot,
-    history: Vec<crate::ghostty::ScreenTextRow>,
+    history: Vec<crate::vt::ScreenTextRow>,
     phase: Phase,
     next_poll_at: Instant,
     step_deadline: Instant,
@@ -219,7 +219,7 @@ impl PendingAltScreenRead {
             self.next_poll_at = now + OUTPUT_QUIET;
             return Some(self);
         }
-        if screen != crate::ghostty::ActiveScreen::Alternate
+        if screen != crate::vt::ActiveScreen::Alternate
             || snapshot.cols != self.initial.cols
             || snapshot.rows.len() != self.initial.rows.len()
         {

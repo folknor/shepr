@@ -116,9 +116,10 @@ inherited socket overrides so the debug binary talks to its own server:
 
 The emulator is `alacritty_terminal`, pinned with `=` in `Cargo.toml` (bump it
 deliberately, never through a loose requirement). Everything that touches it
-lives in `src/ghostty/` (the name predates the switch; a rename to `vt` is
-planned): `mod.rs` is the adapter the rest of the tree uses, `format.rs` the
-plain/VT formatters used for reads and history persistence, `scan.rs` a scanner
+lives in `src/vt/`: `mod.rs` owns `Terminal` and the adapter boundary;
+`color.rs`, `cell.rs`, `render.rs` and `read.rs` hold the focused data and
+methods around it. `format.rs` has the plain/VT formatters used for reads and
+history persistence, while `scan.rs` is a scanner
 for sequences alacritty ignores (OSC 7, modes 9/1016/2031/2048, CSI ? 996 n,
 CSI 16 t, XTGETTCAP, modifyOtherKeys) and for the halfwidth katakana voiced
 marks U+FF9E/U+FF9F, which unicode-width calls zero-width but terminals give

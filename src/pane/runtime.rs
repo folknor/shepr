@@ -71,7 +71,7 @@ impl SyncTimeoutRender {
     /// Ask for a render at `at`. Returns the instant a new task must first
     /// wake at, or `None` when the armed task will cover it.
     fn arm(&self, at: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = crate::ghostty::lock_auxiliary(&self.latest);
+        let mut latest = crate::vt::lock_auxiliary(&self.latest);
         match *latest {
             Some(armed) => {
                 if at > armed {
@@ -92,7 +92,7 @@ impl SyncTimeoutRender {
     /// the earlier wake is safe: a newer update only begins after the earlier
     /// one ended, and ending an update requests its own render.
     fn next_wake(&self, woke_for: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = crate::ghostty::lock_auxiliary(&self.latest);
+        let mut latest = crate::vt::lock_auxiliary(&self.latest);
         match *latest {
             Some(later) if later > woke_for => Some(later),
             _ => {
@@ -230,7 +230,7 @@ fn publish_reported_cwd(
     let Some(cwd) = usable_reported_cwd(cwd) else {
         return;
     };
-    if crate::ghostty::lock_auxiliary(reported_cwd).as_ref() == Some(&cwd) {
+    if crate::vt::lock_auxiliary(reported_cwd).as_ref() == Some(&cwd) {
         return;
     }
     // The dedupe slot is updated only once the event is queued: if the shared
@@ -242,7 +242,7 @@ fn publish_reported_cwd(
         cwd: cwd.clone(),
     }) {
         Ok(()) => {
-            *crate::ghostty::lock_auxiliary(reported_cwd) = Some(cwd);
+            *crate::vt::lock_auxiliary(reported_cwd) = Some(cwd);
         }
         Err(err) => {
             warn!(
@@ -410,7 +410,7 @@ impl PaneRuntime {
         let cols = size.cols.get();
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
-        let terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes);
+        let terminal = crate::vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         let pane_terminal = GhosttyPaneTerminal::new(terminal);
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
@@ -489,7 +489,7 @@ impl PaneRuntime {
             let sync_timeout_render = Arc::new(SyncTimeoutRender::default());
             let timer_writer_for_read = Arc::clone(&timer_writer);
             let on_read = Box::new(move |bytes: &[u8]| {
-                let _content_write_guard = crate::ghostty::lock_auxiliary(&content_write_lock);
+                let _content_write_guard = crate::vt::lock_auxiliary(&content_write_lock);
                 content_seq.fetch_add(1, Ordering::AcqRel);
                 let shell_pid = child_liveness.pid();
                 let result = terminal.process_pty_bytes(pane_id, shell_pid, bytes);
@@ -545,7 +545,7 @@ impl PaneRuntime {
                         // their wait off a Tokio worker when a timer fires.
                         tokio::task::spawn_blocking(move || {
                             let _content_write_guard =
-                                crate::ghostty::lock_auxiliary(&content_write_lock);
+                                crate::vt::lock_auxiliary(&content_write_lock);
                             content_seq.fetch_add(1, Ordering::AcqRel);
                             let result = terminal.flush_expired_synchronized_output(
                                 pane_id,
@@ -744,7 +744,7 @@ impl PaneRuntime {
                         );
                         if process_change.clear_pending_release {
                             let mut pending_release =
-                                crate::ghostty::lock_auxiliary(&pending_release_for_task);
+                                crate::vt::lock_auxiliary(&pending_release_for_task);
                             *pending_release = None;
                         }
                         if process_change.should_clear_osc_evidence {
@@ -941,7 +941,7 @@ impl PaneRuntime {
     }
 
     pub fn begin_graceful_release(&self, agent: Agent) {
-        *crate::ghostty::lock_auxiliary(&self.pending_release) = Some(PendingAgentRelease {
+        *crate::vt::lock_auxiliary(&self.pending_release) = Some(PendingAgentRelease {
             agent,
             until: std::time::Instant::now() + RELEASE_REACQUIRE_SUPPRESSION,
         });
@@ -990,7 +990,7 @@ impl PaneRuntime {
             return;
         }
         self.current_size.set(size);
-        let _content_write_guard = crate::ghostty::lock_auxiliary(&self.content_write_lock);
+        let _content_write_guard = crate::vt::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let terminal_responses = self.terminal.resize(size);
         self.content_seq.fetch_add(1, Ordering::Release);
@@ -1010,7 +1010,7 @@ impl PaneRuntime {
     }
 
     pub fn clear_screen(&self) -> Result<(), PaneClearError> {
-        let guard = crate::ghostty::lock_auxiliary(&self.content_write_lock);
+        let guard = crate::vt::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let result = self.terminal.clear_screen();
         self.content_seq.fetch_add(1, Ordering::Release);
@@ -1177,7 +1177,7 @@ impl PaneRuntime {
     ) -> Option<TerminalDirtyPatchSnapshot> {
         // PTY/resize writers announce changes before locking the terminal core.
         // Exclude them until rows and metadata have been paired with their revision.
-        let _content_guard = crate::ghostty::lock_auxiliary(&self.content_write_lock);
+        let _content_guard = crate::vt::lock_auxiliary(&self.content_write_lock);
         let revision = self.content_seq();
         if !revision.is_multiple_of(2) {
             return None;
@@ -1244,12 +1244,12 @@ impl PaneRuntime {
         Bytes::from(payload)
     }
 
-    pub fn try_send_focus_event(&self, event: crate::ghostty::FocusEvent) -> bool {
+    pub fn try_send_focus_event(&self, event: crate::vt::FocusEvent) -> bool {
         if !self.focus_reporting_enabled() {
             return false;
         }
 
-        let bytes = crate::ghostty::encode_focus(event);
+        let bytes = crate::vt::encode_focus(event);
         if let Err(err) = self.try_send_bytes(Bytes::from_static(bytes)) {
             warn!(err = %err, ?event, "failed to forward pane focus event");
         }
@@ -1262,10 +1262,7 @@ impl PaneRuntime {
 
     pub(crate) fn screen_text_snapshot(
         &self,
-    ) -> Option<(
-        crate::ghostty::ActiveScreen,
-        crate::terminal::ScreenSnapshot,
-    )> {
+    ) -> Option<(crate::vt::ActiveScreen, crate::terminal::ScreenSnapshot)> {
         let (screen, cols, rows) = self.terminal.screen_text_snapshot()?;
         Some((screen, crate::terminal::ScreenSnapshot { cols, rows }))
     }
@@ -1273,7 +1270,7 @@ impl PaneRuntime {
     pub(crate) fn screen_text_snapshot_with_seq(
         &self,
     ) -> Option<(
-        crate::ghostty::ActiveScreen,
+        crate::vt::ActiveScreen,
         crate::terminal::ScreenSnapshot,
         u64,
     )> {
@@ -1357,7 +1354,7 @@ impl PaneRuntime {
 
     /// Get the current working directory of the child shell process.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
-        if let Some(cwd) = crate::ghostty::lock_auxiliary(&self.reported_cwd).clone() {
+        if let Some(cwd) = crate::vt::lock_auxiliary(&self.reported_cwd).clone() {
             return Some(cwd);
         }
 
@@ -1373,12 +1370,12 @@ impl PaneRuntime {
             .filter(|cwd| cwd.is_absolute())
         {
             // Persistence observations must not change OSC authority or follow-cwd behavior.
-            *crate::ghostty::lock_auxiliary(&self.persistence_cwd) = Some(cwd.clone());
+            *crate::vt::lock_auxiliary(&self.persistence_cwd) = Some(cwd.clone());
             return Some(cwd);
         }
-        crate::ghostty::lock_auxiliary(&self.persistence_cwd)
+        crate::vt::lock_auxiliary(&self.persistence_cwd)
             .clone()
-            .or_else(|| crate::ghostty::lock_auxiliary(&self.reported_cwd).clone())
+            .or_else(|| crate::vt::lock_auxiliary(&self.reported_cwd).clone())
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -1457,7 +1454,7 @@ impl PaneRuntime {
         let (start_tx, start_rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        crate::ghostty::lock_terminal_core(&self.terminal.ghostty.core)
+        crate::vt::lock_terminal_core(&self.terminal.ghostty.core)
             .expect("test terminal core lock is not poisoned")
             .dirty_collection_hook = Some(Box::new(move || {
             start_tx.send(()).expect("test start channel is open");
@@ -1469,19 +1466,19 @@ impl PaneRuntime {
             start_rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("test start signal arrives within timeout");
-            let guard = crate::ghostty::try_lock_auxiliary(&write_lock);
+            let guard = crate::vt::try_lock_auxiliary(&write_lock);
             let announced = guard.is_some();
             if announced {
                 sequence.fetch_add(1, Ordering::AcqRel);
                 assert!(matches!(
-                    crate::ghostty::try_lock_terminal_core(&terminal.ghostty.core),
-                    Err(crate::ghostty::TerminalCoreTryLockError::WouldBlock)
+                    crate::vt::try_lock_terminal_core(&terminal.ghostty.core),
+                    Err(crate::vt::TerminalCoreTryLockError::WouldBlock)
                 ));
             }
             ready_tx.send(()).expect("test ready channel is open");
             let _ = release_rx.recv();
             let _guard = guard.unwrap_or_else(|| {
-                let guard = crate::ghostty::lock_auxiliary(&write_lock);
+                let guard = crate::vt::lock_auxiliary(&write_lock);
                 sequence.fetch_add(1, Ordering::AcqRel);
                 guard
             });
@@ -1493,7 +1490,7 @@ impl PaneRuntime {
     }
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        let _content_write_guard = crate::ghostty::lock_auxiliary(&self.content_write_lock);
+        let _content_write_guard = crate::vt::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes);
         self.content_seq.fetch_add(1, Ordering::Release);
@@ -1517,7 +1514,7 @@ impl PaneRuntime {
     ) -> (Self, mpsc::Receiver<Bytes>) {
         let (tx, rx) = mpsc::channel(channel_capacity);
         let (resize_tx, _resize_rx) = watch::channel((rows, cols, 0, 0));
-        let mut terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes);
+        let mut terminal = crate::vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         terminal.write(bytes);
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
@@ -1642,7 +1639,7 @@ mod tests {
 
         runtime.test_process_pty_bytes(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
         assert!(runtime.collect_dirty_patch_snapshot(20, 4).is_none());
-        assert!(crate::ghostty::try_lock_auxiliary(&runtime.content_write_lock).is_some());
+        assert!(crate::vt::try_lock_auxiliary(&runtime.content_write_lock).is_some());
     }
 
     #[tokio::test]
@@ -1770,7 +1767,7 @@ mod tests {
         let (events, _event_rx) = mpsc::channel(1);
         publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
         assert_eq!(
-            crate::ghostty::lock_auxiliary(&runtime.reported_cwd).as_ref(),
+            crate::vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
             Some(&cwd),
             "test setup must pass cache admission"
         );
@@ -1797,7 +1794,7 @@ mod tests {
 
         publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
         assert!(
-            crate::ghostty::lock_auxiliary(&runtime.reported_cwd).is_none(),
+            crate::vt::lock_auxiliary(&runtime.reported_cwd).is_none(),
             "an unsent report must not occupy the dedupe slot"
         );
 
@@ -1808,7 +1805,7 @@ mod tests {
         };
         assert_eq!(sent, cwd);
         assert_eq!(
-            crate::ghostty::lock_auxiliary(&runtime.reported_cwd).as_ref(),
+            crate::vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
             Some(&cwd)
         );
     }
@@ -1855,7 +1852,7 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("follow-cwd");
         let cwd = scratch.to_path_buf();
-        *crate::ghostty::lock_auxiliary(&runtime.reported_cwd) = Some(cwd.clone());
+        *crate::vt::lock_auxiliary(&runtime.reported_cwd) = Some(cwd.clone());
 
         assert_eq!(runtime.follow_cwd(), Some(cwd));
     }
@@ -2064,12 +2061,12 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("exited-cwd");
         let saved = scratch.join("saved");
-        *crate::ghostty::lock_auxiliary(&runtime.persistence_cwd) = Some(saved.clone());
+        *crate::vt::lock_auxiliary(&runtime.persistence_cwd) = Some(saved.clone());
         // A different live process now owns the exited shell's numeric PID.
         runtime.child_liveness.set_pid_for_test(std::process::id());
         runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_for_persistence(), Some(saved));
-        *crate::ghostty::lock_auxiliary(&runtime.persistence_cwd) = None;
+        *crate::vt::lock_auxiliary(&runtime.persistence_cwd) = None;
         assert_eq!(runtime.cwd_for_persistence(), None);
     }
 
@@ -2107,9 +2104,9 @@ mod tests {
     async fn focus_events_are_forwarded_when_enabled() {
         let (tx, mut rx) = mpsc::channel(4);
         let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
-        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0);
+        let mut terminal = crate::vt::Terminal::new(80, 24, 0);
         terminal
-            .mode_set(crate::ghostty::MODE_FOCUS_EVENT, true)
+            .mode_set(crate::vt::MODE_FOCUS_EVENT, true)
             .expect("test precondition");
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
@@ -2134,7 +2131,7 @@ mod tests {
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
-        assert!(runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));
+        assert!(runtime.try_send_focus_event(crate::vt::FocusEvent::Gained));
         assert_eq!(
             rx.recv().await.expect("test precondition"),
             Bytes::from_static(b"\x1b[I")
@@ -2145,7 +2142,7 @@ mod tests {
     async fn focus_events_are_suppressed_when_disabled() {
         let (tx, mut rx) = mpsc::channel(4);
         let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
-        let terminal = crate::ghostty::Terminal::new(80, 24, 0);
+        let terminal = crate::vt::Terminal::new(80, 24, 0);
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
         let runtime = PaneRuntime {
@@ -2169,7 +2166,7 @@ mod tests {
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
-        assert!(!runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));
+        assert!(!runtime.try_send_focus_event(crate::vt::FocusEvent::Gained));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv())
                 .await

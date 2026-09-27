@@ -577,9 +577,9 @@ mod tests {
         assert_eq!(
             scanned_events(bytes),
             [
-                crate::ghostty::ModifyOtherKeysLevel::All,
-                crate::ghostty::ModifyOtherKeysLevel::Off,
-                crate::ghostty::ModifyOtherKeysLevel::Off
+                crate::vt::ModifyOtherKeysLevel::All,
+                crate::vt::ModifyOtherKeysLevel::Off,
+                crate::vt::ModifyOtherKeysLevel::Off
             ]
             .into_iter()
             .map(ScanEvent::ModifyOtherKeys)

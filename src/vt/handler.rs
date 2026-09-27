@@ -235,7 +235,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn input(&mut self, c: char) {
-        if super::is_halfwidth_voiced_mark(u32::from(c)) {
+        if super::cell::is_halfwidth_voiced_mark(u32::from(c)) {
             self.input_halfwidth_voiced_mark(c);
         } else {
             Handler::input(self.term, c);

@@ -314,7 +314,7 @@ impl SubmissionCancel {
 pub(crate) fn lock_state(
     state: &Mutex<SubmissionState>,
 ) -> std::sync::MutexGuard<'_, SubmissionState> {
-    crate::ghostty::lock_auxiliary(state)
+    crate::vt::lock_auxiliary(state)
 }
 
 #[cfg(test)]

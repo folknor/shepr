@@ -195,7 +195,7 @@ impl HeadlessServer {
             let serialized =
                 match Self::frame_server_message(&ServerMessage::DirectTerminalKeyboardProtocol {
                     flags: crate::protocol::KittyKeyboardFlags::from_bits_retain(flags),
-                    modify_other_keys_level: crate::ghostty::ModifyOtherKeysLevel::from_parameter(
+                    modify_other_keys_level: crate::vt::ModifyOtherKeysLevel::from_parameter(
                         u16::from(modify_other_keys_level),
                     ),
                 }) {
