@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarise src/: per top-level module file count, lines, tiny files, and cross-module `crate::` uses."""
+"""Summarise root modules and per-crate Rust file and line totals."""
 import os, re, collections
 
 root = "src"
@@ -41,3 +41,12 @@ for (a, b), n in edges.items():
     out[a].append(f"{b}:{n}")
 for a in sorted(out):
     print(f"{a:15} {' '.join(sorted(out[a]))}")
+
+print("\ncrate                 files   lines")
+for crate in sorted(os.listdir("crates")):
+    source = os.path.join("crates", crate, "src")
+    if not os.path.isdir(source):
+        continue
+    paths = (os.path.join(d, f) for d, _, fs in os.walk(source) for f in fs if f.endswith(".rs"))
+    counts = [open(p).read().count("\n") for p in paths]
+    print(f"{crate:21} {len(counts):5} {sum(counts):7}")

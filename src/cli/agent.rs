@@ -317,8 +317,8 @@ fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> super
     };
     let expected_kind = shepr_agent::detect::agent_label(expected_kind).to_string();
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_AGENT_START_TIMEOUT_MS));
-    let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
-        && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
+    let retryable_timeout = timeout > shepr_server::app::AGENT_START_SETTLE_DELAY
+        && timeout <= shepr_server::app::MAX_AGENT_START_TIMEOUT;
     let pinned_terminal_id = pane_terminal_id(paths, &pane_id)?;
     let mut retry_deadline = None;
     let mut previous_busy_response = None;
@@ -455,7 +455,7 @@ fn agent_attach(
         eprintln!("agent attach failed: response did not include terminal_id");
         return Ok(1);
     };
-    crate::client::run_terminal_attach(&config, paths, terminal_id.to_owned(), takeover)?;
+    shepr_client::run_terminal_attach(&config, paths, terminal_id.to_owned(), takeover)?;
     Ok(0)
 }
 

@@ -1,14 +1,14 @@
 use std::sync::{Arc, Mutex};
 
-use crate::client::endpoint::{
+use shepr_api as api;
+use shepr_client::endpoint::{
     ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport, ProfileId,
     SavedSshEndpoint,
 };
-use crate::server::ClientId;
-use crate::server::client_transport::ServerEvent;
-use crate::server::headless::tests as headless_tests;
-use shepr_api as api;
 use shepr_protocol::ServerMessage;
+use shepr_server::server::ClientId;
+use shepr_server::server::client_transport::ServerEvent;
+use shepr_server::server::headless::tests as headless_tests;
 
 #[derive(Clone)]
 struct CapturingEndpointTransport(Arc<Mutex<Vec<shepr_protocol::ClientMessage>>>);
@@ -80,12 +80,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let profile = SavedSshEndpoint {
         id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
         label: "Remote".into(),
-        target: crate::remote::SshTarget::parse("dev@example.com").expect("test precondition"),
+        target: shepr_remote::SshTarget::parse("dev@example.com").expect("test precondition"),
         session: "main".into(),
     };
     let target_id = ClientEndpointId::Ssh(profile.id.clone());
-    let mut shell = crate::client::ClientShellState::new(
-        crate::client::ClientShellConfig::from_config(&shepr_config::Config::default()),
+    let mut shell = shepr_client::ClientShellState::new(
+        shepr_client::ClientShellConfig::from_config(&shepr_config::Config::default()),
     );
     shell.set_endpoint_catalog(&[profile]);
     shell.set_snapshot(source_snapshot);
@@ -102,7 +102,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         7,
         false,
     );
-    let mut activation = crate::client::endpoint::PendingEndpointActivation::begin(
+    let mut activation = shepr_client::endpoint::PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
         &target_id,
@@ -175,7 +175,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             &source_release_data,
             &mut endpoints,
         ),
-        crate::client::endpoint::SurfaceActivationProgress::Pending
+        shepr_client::endpoint::SurfaceActivationProgress::Pending
     );
 
     headless_tests::dispatch_lifecycle_messages(
@@ -201,7 +201,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     };
     assert_eq!(
         activation.receive_response(&target_id, 7, &request_id, &data, &mut endpoints),
-        crate::client::endpoint::SurfaceActivationProgress::Pending
+        shepr_client::endpoint::SurfaceActivationProgress::Pending
     );
 
     headless_tests::render_and_stream(&mut target_server);
@@ -210,7 +210,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     shell.set_endpoint_snapshot(&target_id, coherent_snapshot);
     assert_eq!(
         snapshot_progress,
-        crate::client::endpoint::SurfaceActivationProgress::Pending
+        shepr_client::endpoint::SurfaceActivationProgress::Pending
     );
     let ServerMessage::PaneSurface(coherent_surface) = headless_tests::read_server_message(
         target_render.recv().expect("target replacement surface"),
@@ -219,12 +219,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     };
     assert_eq!(
         activation.receive_surface(&target_id, 7, coherent_surface),
-        crate::client::endpoint::SurfaceActivationProgress::Ready
+        shepr_client::endpoint::SurfaceActivationProgress::Ready
     );
 
     assert!(matches!(
         activation.complete(&mut shell, &mut endpoints),
-        Ok(crate::client::endpoint::ActivationCompletion::AwaitingPresentationSync {
+        Ok(shepr_client::endpoint::ActivationCompletion::AwaitingPresentationSync {
             endpoint,
             ..
         }) if endpoint == target_id
@@ -271,7 +271,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     };
     assert_eq!(
         activation.receive_response(&target_id, 7, &sync_request_id, &sync_data, &mut endpoints,),
-        crate::client::endpoint::SurfaceActivationProgress::Pending
+        shepr_client::endpoint::SurfaceActivationProgress::Pending
     );
     headless_tests::render_and_stream(&mut target_server);
     let sync_snapshot = loop {
@@ -286,7 +286,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     shell.set_endpoint_snapshot_for_generation(&target_id, 7, Box::new(sync_snapshot));
     assert_eq!(
         sync_progress,
-        crate::client::endpoint::SurfaceActivationProgress::Pending
+        shepr_client::endpoint::SurfaceActivationProgress::Pending
     );
     let ServerMessage::PaneSurface(sync_surface) = headless_tests::read_server_message(
         target_render.recv().expect("presentation sync surface"),
@@ -295,11 +295,11 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     };
     assert_eq!(
         activation.receive_surface(&target_id, 7, sync_surface),
-        crate::client::endpoint::SurfaceActivationProgress::Ready
+        shepr_client::endpoint::SurfaceActivationProgress::Ready
     );
     assert_eq!(
         activation.complete(&mut shell, &mut endpoints),
-        Ok(crate::client::endpoint::ActivationCompletion::AwaitingPresentationEffects)
+        Ok(shepr_client::endpoint::ActivationCompletion::AwaitingPresentationEffects)
     );
     let effects_token = target_sent
         .lock()
@@ -329,7 +329,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
                 assert_eq!(data, effects_token);
                 assert_eq!(
                     activation.receive_presentation_effects_ready(&target_id, 7, &data),
-                    crate::client::endpoint::SurfaceActivationProgress::Ready
+                    shepr_client::endpoint::SurfaceActivationProgress::Ready
                 );
                 break;
             }
@@ -341,7 +341,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     assert!(replayed_keyboard);
     assert_eq!(
         activation.complete(&mut shell, &mut endpoints),
-        Ok(crate::client::endpoint::ActivationCompletion::Activated)
+        Ok(shepr_client::endpoint::ActivationCompletion::Activated)
     );
     endpoints.unfreeze_input();
     assert_eq!(endpoints.active_id(), &target_id);
@@ -349,7 +349,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     assert!(shell.endpoint_is_active(&target_id));
 
     target_sent.lock().expect("test precondition").clear();
-    let mut returning = crate::client::endpoint::PendingEndpointActivation::begin(
+    let mut returning = shepr_client::endpoint::PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
         &ClientEndpointId::Local,

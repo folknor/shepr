@@ -116,11 +116,14 @@ futures-util = { workspace = true }
 
 shepr-agent = { path = "crates/shepr-agent" }
 shepr-api = { path = "crates/shepr-api" }
+shepr-client = { path = "crates/shepr-client" }
 shepr-config = { path = "crates/shepr-config" }
 shepr-core = { path = "crates/shepr-core" }
 shepr-platform = { path = "crates/shepr-platform" }
 shepr-protocol = { path = "crates/shepr-protocol" }
 shepr-pty = { path = "crates/shepr-pty" }
+shepr-remote = { path = "crates/shepr-remote" }
+shepr-server = { path = "crates/shepr-server" }
 shepr-termio = { path = "crates/shepr-termio" }
 shepr-vt = { path = "crates/shepr-vt" }
 
@@ -130,7 +133,9 @@ workspace = true
 [dev-dependencies]
 shepr-agent = { path = "crates/shepr-agent", features = ["test-support"] }
 shepr-api = { path = "crates/shepr-api", features = ["test-support"] }
+shepr-client = { path = "crates/shepr-client", features = ["test-support"] }
 shepr-config = { path = "crates/shepr-config", features = ["test-support"] }
 shepr-protocol = { path = "crates/shepr-protocol", features = ["test-support"] }
+shepr-server = { path = "crates/shepr-server", features = ["test-api"] }
 shepr-termio = { path = "crates/shepr-termio", features = ["test-support"] }
 shepr-test-support = { path = "crates/shepr-test-support" }

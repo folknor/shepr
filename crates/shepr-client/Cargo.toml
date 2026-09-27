@@ -1,0 +1,40 @@
+[package]
+name = "shepr-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+base64 = { workspace = true }
+crossterm = { workspace = true }
+ctrlc = { workspace = true }
+interprocess = { workspace = true }
+ratatui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+unicode-segmentation = { workspace = true }
+unicode-width = { workspace = true }
+
+shepr-agent = { path = "../shepr-agent" }
+shepr-api = { path = "../shepr-api" }
+shepr-config = { path = "../shepr-config" }
+shepr-core = { path = "../shepr-core" }
+shepr-platform = { path = "../shepr-platform" }
+shepr-protocol = { path = "../shepr-protocol" }
+shepr-remote = { path = "../shepr-remote" }
+shepr-termio = { path = "../shepr-termio" }
+shepr-vt = { path = "../shepr-vt" }
+
+[dev-dependencies]
+shepr-remote = { path = "../shepr-remote", features = ["test-support"] }
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

@@ -614,7 +614,7 @@ fn run_terminal_command(
                 Some(config) => config,
                 None => load_validated_config(context)?,
             };
-            crate::client::run_terminal_attach(&config, context, terminal_id, takeover)?;
+            shepr_client::run_terminal_attach(&config, context, terminal_id, takeover)?;
             Ok(0)
         }
         TerminalCommand::TitleSet { title } => print_response(&send_request(

@@ -22,7 +22,6 @@ mod ssh_paths;
 mod terminal_environment;
 #[cfg(test)]
 mod tests;
-mod workspace_label;
 
 pub use child_io::{ChildExitReason, classify_child_exit, poll_fd_readable, read_fd};
 pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_client_stream};
@@ -44,7 +43,6 @@ pub use ssh_paths::{
     remote_ssh_config_paths, shared_ssh_control_path,
 };
 pub use terminal_environment::prefers_osc52_clipboard;
-pub use workspace_label::workspace_label_from_cwd;
 
 // Shared helpers for sibling platform modules.
 use child_io::{LimitedRead, poll_fd, poll_timeout_until, read_limited_reader};

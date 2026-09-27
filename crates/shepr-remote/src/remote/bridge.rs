@@ -1,0 +1,667 @@
+use super::*;
+
+use super::process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho};
+use interprocess::TryClone as _;
+use interprocess::local_socket::ListenerNonblockingMode;
+use interprocess::local_socket::traits::Listener as _;
+#[cfg(any(test, feature = "test-support"))]
+use interprocess::local_socket::traits::Stream as _;
+use std::io::{self, Write as _};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+pub(super) const BRIDGE_ACCEPT_POLL: Duration = Duration::from_millis(50);
+pub(super) const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
+pub(super) const BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600;
+pub(super) const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static UPLOAD_READ_ATTEMPTS: std::cell::RefCell<
+        Option<Arc<std::sync::atomic::AtomicUsize>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) struct SshStdioBridge {
+    local_socket: PathBuf,
+    socket_identity: shepr_platform::ipc::SocketFileIdentity,
+    should_stop: Arc<AtomicBool>,
+    failure_rx: mpsc::Receiver<io::Error>,
+    thread: Option<JoinHandle<()>>,
+    // Dropped after `Drop::drop` has removed the socket; see `TeardownRegistry`.
+    _teardown: TeardownRegistration,
+}
+
+impl SshStdioBridge {
+    pub(crate) fn start(
+        target: SshTarget,
+        remote_shepr: &RemoteExecutable,
+        local_socket: PathBuf,
+        session_name: &str,
+        ssh_options: Option<&ManagedSshOptions>,
+        noninteractive: bool,
+    ) -> io::Result<Self> {
+        Self::start_command(
+            target,
+            remote_shepr.bridge_command(session_name, noninteractive),
+            local_socket,
+            ssh_options,
+            noninteractive,
+        )
+    }
+
+    pub(crate) fn start_command(
+        target: SshTarget,
+        remote_command: String,
+        local_socket: PathBuf,
+        ssh_options: Option<&ManagedSshOptions>,
+        noninteractive: bool,
+    ) -> io::Result<Self> {
+        shepr_platform::ipc::prepare_socket_path(&local_socket, |path| {
+            format!("remote bridge is already listening at {}", path.display())
+        })?;
+        let listener = shepr_platform::ipc::bind_private_local_listener(&local_socket)?;
+        let socket_identity = shepr_platform::ipc::socket_file_identity(&local_socket)?;
+        let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
+            path: local_socket.clone(),
+            identity: socket_identity.clone(),
+        });
+        if let Err(err) = shepr_platform::ipc::restrict_socket_permissions(
+            &local_socket,
+            BRIDGE_SOCKET_PERMISSION_MODE,
+        ) {
+            let _ =
+                shepr_platform::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
+            return Err(err);
+        }
+        if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
+            let _ =
+                shepr_platform::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
+            return Err(err);
+        }
+
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&should_stop);
+        let thread_ssh_options = ssh_options.cloned();
+        let (failure_tx, failure_rx) = mpsc::sync_channel(1);
+        let thread = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok(stream) => {
+                        match shepr_platform::ipc::peer_is_same_user(&stream) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::warn!(
+                                    "rejected remote bridge socket peer with different credentials"
+                                );
+                                continue;
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %err, "could not check remote bridge socket peer");
+                                continue;
+                            }
+                        }
+                        let stream = match prepare_remote_bridge_stream(stream) {
+                            Ok(stream) => stream,
+                            Err(err) => {
+                                tracing::error!(
+                                    error = %err,
+                                    "remote bridge failed to prepare client socket"
+                                );
+                                continue;
+                            }
+                        };
+                        if let Err(err) = bridge_connection(
+                            stream,
+                            &target,
+                            &remote_command,
+                            thread_ssh_options.as_ref(),
+                            noninteractive,
+                            &thread_stop,
+                        ) {
+                            if noninteractive {
+                                tracing::warn!(error = %err, "saved SSH endpoint bridge failed");
+                            } else {
+                                eprintln!("shepr: remote bridge failed: {err}");
+                            }
+                            // The original error, so its typed SSH failure survives.
+                            let _ = failure_tx.try_send(err);
+                        }
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(BRIDGE_ACCEPT_POLL);
+                    }
+                    Err(err) => {
+                        if noninteractive {
+                            tracing::warn!(error = %err, "saved SSH endpoint listener failed");
+                        } else {
+                            eprintln!("shepr: remote bridge listener failed: {err}");
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            local_socket,
+            socket_identity,
+            should_stop,
+            failure_rx,
+            thread: Some(thread),
+            _teardown: teardown,
+        })
+    }
+
+    pub(crate) fn reported_failure(&self) -> Option<io::Error> {
+        self.failure_rx
+            .recv_timeout(BRIDGE_FAILURE_REPORT_TIMEOUT)
+            .ok()
+    }
+}
+
+pub(super) fn prepare_remote_bridge_stream(
+    mut stream: shepr_platform::ipc::LocalStream,
+) -> io::Result<shepr_platform::ipc::LocalStream> {
+    shepr_platform::ipc::set_local_stream_polling(&mut stream, false)?;
+    Ok(stream)
+}
+
+impl Drop for SshStdioBridge {
+    fn drop(&mut self) {
+        self.should_stop.store(true, Ordering::Release);
+        let _ = shepr_platform::ipc::remove_socket_file_if_owned(
+            &self.local_socket,
+            &self.socket_identity,
+        );
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+pub(super) struct BridgeUploadStop {
+    stopped: AtomicBool,
+    pub(super) wake: shepr_platform::RemoteBridgeWake,
+}
+
+impl BridgeUploadStop {
+    pub(super) fn new() -> io::Result<Self> {
+        Ok(Self {
+            stopped: AtomicBool::new(false),
+            wake: shepr_platform::RemoteBridgeWake::new()?,
+        })
+    }
+
+    pub(super) fn cancel(&self) {
+        if !self.stopped.swap(true, Ordering::AcqRel)
+            && let Err(error) = self.wake.cancel()
+        {
+            tracing::debug!(%error, "remote bridge read cancellation failed");
+        }
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn bridge_upload_cancellation_for_test(
+    stream: shepr_platform::ipc::LocalStream,
+    mut writer: impl io::Write + Send + 'static,
+) -> impl FnOnce() {
+    stream
+        .set_nonblocking(true)
+        .expect("test stream supports nonblocking mode");
+    let stop =
+        Arc::new(BridgeUploadStop::new().expect("test bridge upload stop creation succeeds"));
+    let worker_stop = Arc::clone(&stop);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        let closed = AtomicBool::new(false);
+        let result = copy_local_stream_to_writer(
+            stream,
+            &mut writer,
+            &worker_stop,
+            &AtomicBool::new(false),
+            &closed,
+        );
+        done_tx
+            .send((result, closed.load(Ordering::Acquire)))
+            .expect("test done channel is open");
+    });
+    move || {
+        stop.cancel();
+        let (result, closed) = done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("test worker reports completion within timeout");
+        worker.join().expect("test worker thread does not panic");
+        result.expect("upload copy completes without error");
+        assert!(!closed, "upload cancellation must not report peer EOF");
+    }
+}
+
+pub(super) fn bridge_connection(
+    mut stream: shepr_platform::ipc::LocalStream,
+    target: &SshTarget,
+    remote_command: &str,
+    ssh_options: Option<&ManagedSshOptions>,
+    noninteractive: bool,
+    bridge_stop: &Arc<AtomicBool>,
+) -> io::Result<()> {
+    let upload_stop = Arc::new(BridgeUploadStop::new()?);
+    let mut command = Command::new("ssh");
+    apply_managed_ssh_options(&mut command, ssh_options);
+    if noninteractive {
+        apply_noninteractive_ssh_options(&mut command);
+    }
+    command
+        .arg("-T")
+        .arg(target.as_str())
+        .arg(remote_command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(if noninteractive {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        });
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| io::Error::new(err.kind(), format!("failed to start ssh bridge: {err}")))?;
+    let mut child_stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => return terminate_bridge_child(child, "ssh bridge stdin missing"),
+    };
+    let child_stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => return terminate_bridge_child(child, "ssh bridge stdout missing"),
+    };
+    let stderr_reader = if noninteractive {
+        let Some(child_stderr) = child.stderr.take() else {
+            return terminate_bridge_child(child, "ssh bridge stderr missing");
+        };
+        Some(PipeCapture::spawn(
+            child_stderr,
+            NONINTERACTIVE_SSH_STDERR_LIMIT,
+            PipeEcho::None,
+        ))
+    } else {
+        None
+    };
+    let stream_to_child = match stream.try_clone() {
+        Ok(stream) => stream,
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
+    };
+    if let Err(err) = shepr_platform::ipc::set_local_stream_polling(&mut stream, true) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(err);
+    }
+    let mut child_to_stream = stream;
+
+    let connection_stop = Arc::new(AtomicBool::new(false));
+    let upload_failed = Arc::new(AtomicBool::new(false));
+    let download_done = Arc::new(AtomicBool::new(false));
+    let client_closed = Arc::new(AtomicBool::new(false));
+    let upload_cancel = Arc::clone(&upload_stop);
+    let upload_bridge_stop = Arc::clone(bridge_stop);
+    let upload_failed_worker = Arc::clone(&upload_failed);
+    let upload_client_closed = Arc::clone(&client_closed);
+    let upload = thread::spawn(move || {
+        let result = copy_local_stream_to_writer(
+            stream_to_child,
+            &mut child_stdin,
+            &upload_cancel,
+            &upload_bridge_stop,
+            &upload_client_closed,
+        );
+        upload_failed_worker.store(result.is_err(), Ordering::Release);
+        result
+    });
+    let download_stop = Arc::clone(&connection_stop);
+    let download_bridge_stop = Arc::clone(bridge_stop);
+    let download_done_worker = Arc::clone(&download_done);
+    let download_upload_stop = Arc::clone(&upload_stop);
+    let download = thread::spawn(move || {
+        let mut child_stdout = io::BufReader::new(child_stdout);
+        let result = discard_remote_output_preamble(&mut child_stdout).and_then(|()| {
+            copy_reader_to_local_stream(
+                &mut child_stdout,
+                &mut child_to_stream,
+                &download_stop,
+                &download_bridge_stop,
+            )
+        });
+        download_done_worker.store(true, Ordering::Release);
+        download_upload_stop.cancel();
+        result
+    });
+
+    let mut stopped_at = None;
+    let (status_result, child_exited) = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                upload_stop.cancel();
+                break (Ok(status), true);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                connection_stop.store(true, Ordering::Release);
+                upload_stop.cancel();
+                let _ = child.kill();
+                let _ = child.wait();
+                break (Err(err), false);
+            }
+        }
+        if bridge_stop.load(Ordering::Acquire) {
+            connection_stop.store(true, Ordering::Release);
+            upload_stop.cancel();
+            let _ = child.kill();
+            break (child.wait(), false);
+        }
+        if client_closed.load(Ordering::Acquire)
+            || upload_failed.load(Ordering::Acquire)
+            || download_done.load(Ordering::Acquire)
+        {
+            upload_stop.cancel();
+            let stopped_at = stopped_at.get_or_insert_with(Instant::now);
+            if stopped_at.elapsed() >= Duration::from_millis(250) {
+                connection_stop.store(true, Ordering::Release);
+                let _ = child.kill();
+                break (child.wait(), false);
+            }
+        }
+        thread::sleep(BRIDGE_ACCEPT_POLL);
+    };
+    upload_stop.cancel();
+    if !child_exited {
+        connection_stop.store(true, Ordering::Release);
+    }
+    let upload_result = upload
+        .join()
+        .map_err(|_| io::Error::other("remote bridge upload worker panicked"))?;
+    let download_result = download
+        .join()
+        .map_err(|_| io::Error::other("remote bridge download worker panicked"))?;
+    // Bounded: a ControlPersist master forked by this ssh can hold its stderr open for
+    // the whole persist timeout after the bridge itself has exited.
+    let stderr = match stderr_reader {
+        Some(reader) => reader.finish(PIPE_DRAIN_GRACE)?,
+        None => Vec::new(),
+    };
+    let status = status_result?;
+
+    let stopping = bridge_stop.load(Ordering::Acquire);
+    let client_closed = client_closed.load(Ordering::Acquire);
+    if child_exited && !status.success() && !stopping && !client_closed {
+        return Err(ssh_bridge_exit_error(status, &stderr));
+    }
+    if !stopping && !client_closed {
+        upload_result.map_err(|err| {
+            io::Error::new(err.kind(), format!("remote bridge upload failed: {err}"))
+        })?;
+        download_result.map_err(|err| {
+            io::Error::new(err.kind(), format!("remote bridge download failed: {err}"))
+        })?;
+    }
+
+    if status.success() || stopping || client_closed {
+        Ok(())
+    } else {
+        Err(ssh_bridge_exit_error(status, &stderr))
+    }
+}
+
+pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    let (failure, exit_status) = if status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
+        (
+            "remote SSH connection failed",
+            format!("exit status {SSH_OWN_FAILURE_EXIT_CODE}"),
+        )
+    } else {
+        let exit_status = status
+            .code()
+            .map_or_else(|| status.to_string(), |code| format!("exit status {code}"));
+        ("remote command failed", exit_status)
+    };
+    let message = if stderr.is_empty() {
+        format!("{failure} ({exit_status})")
+    } else {
+        format!("{failure} ({exit_status}): {stderr}")
+    };
+    io::Error::new(
+        io::ErrorKind::ConnectionAborted,
+        super::SshFailureDiagnostic::from_ssh_output(status.code(), message),
+    )
+}
+
+/// A connection attempt that ran out of its time budget. `TimedOut`, so it counts as a link
+/// failure (no rediscovery) and a transient one (a retry, not attention).
+pub(crate) fn attempt_deadline_passed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "SSH connection attempt ran out of time",
+    )
+}
+
+/// OpenSSH exits with 255 when ssh itself fails (resolve, connect, host key,
+/// authentication, a dropped link); any other code came from the remote command.
+pub(crate) const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
+
+/// Whether `error` says the SSH link, not the remote side, failed: the remote end
+/// was never reached or was lost, so nothing is known about the remote install.
+pub(crate) fn is_ssh_link_failure(error: &io::Error) -> bool {
+    super::SshFailureDiagnostic::from_error(error).is_link_failure()
+}
+
+pub(super) fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {
+    let marker = REMOTE_OUTPUT_READY_MARKER.as_bytes();
+    let mut matched = 0;
+    let mut matching = true;
+    loop {
+        let (consumed, ready) = {
+            let buffer = reader.fill_buf()?;
+            if buffer.is_empty() {
+                if matching && matched == marker.len() {
+                    return Ok(());
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "remote command exited before producing its output marker",
+                ));
+            }
+
+            let mut consumed = 0;
+            let mut ready = false;
+            for &byte in buffer {
+                consumed += 1;
+                if byte == b'\n' {
+                    if matching && matched == marker.len() {
+                        ready = true;
+                        break;
+                    }
+                    matched = 0;
+                    matching = true;
+                } else if matching && matched < marker.len() && byte == marker[matched] {
+                    matched += 1;
+                } else if matching && (matched != marker.len() || byte != b'\r') {
+                    matching = false;
+                }
+            }
+            (consumed, ready)
+        };
+        reader.consume(consumed);
+        if ready {
+            return Ok(());
+        }
+    }
+}
+
+pub(super) fn terminate_bridge_child(
+    mut child: std::process::Child,
+    message: &'static str,
+) -> io::Result<()> {
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(io::Error::new(io::ErrorKind::BrokenPipe, message))
+}
+
+pub(super) fn copy_reader_to_local_stream<R: io::Read>(
+    reader: &mut R,
+    stream: &mut shepr_platform::ipc::LocalStream,
+    connection_stop: &AtomicBool,
+    bridge_stop: &AtomicBool,
+) -> io::Result<u64> {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0;
+
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(read) => read,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        };
+        let mut written = 0;
+        while written < read {
+            if connection_stop.load(Ordering::Acquire) || bridge_stop.load(Ordering::Acquire) {
+                return Ok(total);
+            }
+            let chunk_len = (read - written).min(4 * 1024);
+            match stream.write(&buffer[written..written + chunk_len]) {
+                Ok(0) => thread::sleep(BRIDGE_IO_POLL),
+                Ok(count) => written += count,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(BRIDGE_IO_POLL);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        stream.flush()?;
+        total += read as u64;
+    }
+}
+
+/// The upload half of the SSH bridge: everything the client types or pastes passes through
+/// here on its way to the remote host. Like the download half above, it never logs the
+/// bytes it copies; bridge diagnostics carry errors and ssh's own stderr only.
+pub(super) fn copy_local_stream_to_writer<W: io::Write>(
+    mut stream: shepr_platform::ipc::LocalStream,
+    writer: &mut W,
+    connection_stop: &BridgeUploadStop,
+    bridge_stop: &AtomicBool,
+    client_closed: &AtomicBool,
+) -> io::Result<u64> {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0;
+
+    while !connection_stop.is_stopped() && !bridge_stop.load(Ordering::Acquire) {
+        #[cfg(test)]
+        UPLOAD_READ_ATTEMPTS.with(|attempts| {
+            if let Some(attempts) = attempts.borrow().as_ref() {
+                attempts.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        match shepr_platform::ipc::poll_local_stream_read_count(&mut stream, &mut buffer)? {
+            shepr_platform::ipc::LocalStreamReadCount::Data(read) => {
+                writer.write_all(&buffer[..read])?;
+                writer.flush()?;
+                total += read as u64;
+            }
+            shepr_platform::ipc::LocalStreamReadCount::Pending => {
+                connection_stop.wake.wait(&stream)?;
+            }
+            shepr_platform::ipc::LocalStreamReadCount::Closed => {
+                client_closed.store(true, Ordering::Release);
+                break;
+            }
+        }
+    }
+
+    Ok(total)
+}
+
+pub(super) fn run_client_process(
+    local_socket: &Path,
+    reattach_command: &str,
+    keybindings: RemoteKeybindings,
+) -> io::Result<()> {
+    let exe = shepr_platform::launch_executable()?;
+    let status = Command::new(exe)
+        .arg("client")
+        .env(shepr_config::CLIENT_SOCKET_PATH_ENV_VAR, local_socket)
+        .env(REATTACH_COMMAND_ENV_VAR, reattach_command)
+        .env(REMOTE_KEYBINDINGS_ENV_VAR, keybindings.as_str())
+        .env_remove(shepr_config::SOCKET_PATH_ENV_VAR)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!("remote client exited with {status}"),
+        ))
+    }
+}
+
+pub(super) fn local_forward_socket_path(target: &str, session_name: &str) -> PathBuf {
+    let pid = std::process::id();
+    let target_clean = sanitize_path_component(target);
+    let session_clean = sanitize_path_component(session_name);
+    let readable_name = format!("shepr-remote-{pid}-{target_clean}-{session_clean}.sock");
+    let target_prefix: String = target_clean.chars().take(8).collect();
+    let hash = short_socket_hash(target, session_name);
+    let short_name = format!("shepr-r-{pid}-{target_prefix}-{hash}.sock");
+    shepr_platform::remote_bridge_endpoint_path(&readable_name, &short_name)
+}
+
+#[cfg(test)]
+pub(super) fn fits_unix_socket_path(path: &Path) -> bool {
+    shepr_platform::fits_unix_socket_path(path)
+}
+
+pub(super) fn short_socket_hash(target: &str, session: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    target.hash(&mut hasher);
+    0u8.hash(&mut hasher);
+    session.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+pub(super) fn sanitize_path_component(input: &str) -> String {
+    let sanitized: String = input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    sanitized.trim_matches('-').chars().take(32).collect()
+}

@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use serde::Serialize;
 
-use crate::machine::{EndpointCatalog, SshMetadataCache, SshTarget};
+use shepr_remote::machine::{EndpointCatalog, SshMetadataCache, SshTarget};
 
 use super::matches::{flag, required, string};
 
@@ -117,7 +117,7 @@ fn status(
     selector: Option<&str>,
     json: bool,
     paths: &shepr_config::AppPaths,
-    settings: crate::remote::SavedSshSettings,
+    settings: shepr_remote::SavedSshSettings,
 ) -> super::CliResult<i32> {
     let catalog = load_catalog(paths)?;
     let profiles = match selector {
@@ -133,7 +133,7 @@ fn status(
     let rows = profiles
         .into_iter()
         .map(|profile| {
-            let (status, error) = match crate::remote::check_saved_ssh(
+            let (status, error) = match shepr_remote::check_saved_ssh(
                 paths,
                 &profile.target,
                 &profile.session,
@@ -142,7 +142,7 @@ fn status(
                 Ok(()) => ("reachable", None),
                 Err(error) => {
                     let message = error.to_string();
-                    let status = if crate::remote::ssh_error_requires_authentication(&message) {
+                    let status = if shepr_remote::ssh_error_requires_authentication(&message) {
                         "auth required"
                     } else {
                         "error"
@@ -180,7 +180,7 @@ fn status(
 fn reconnect(
     paths: &shepr_config::AppPaths,
     selector: &str,
-    settings: crate::remote::SavedSshSettings,
+    settings: shepr_remote::SavedSshSettings,
 ) -> super::CliResult<i32> {
     use std::io::IsTerminal;
     let catalog = load_catalog(paths)?;
@@ -198,16 +198,16 @@ fn reconnect(
         return Ok(2);
     }
     let mut authentication =
-        crate::remote::ssh_authentication_command(paths, &profile.target, settings)?;
+        shepr_remote::ssh_authentication_command(paths, &profile.target, settings)?;
     if !authentication.command.status()?.success() {
         eprintln!("SSH authentication failed; the saved machine was not changed.");
         return Ok(1);
     }
-    crate::remote::check_saved_ssh(paths, &profile.target, &profile.session, settings)?;
+    shepr_remote::check_saved_ssh(paths, &profile.target, &profile.session, settings)?;
     println!(
         "Machine {} is reachable. Open Shepr clients retry within {} seconds.",
         profile.id,
-        crate::client::endpoint::MAX_RETRY_DELAY.as_secs()
+        shepr_client::endpoint::MAX_RETRY_DELAY.as_secs()
     );
     Ok(0)
 }
@@ -231,7 +231,7 @@ fn add_args(matches: &ArgMatches) -> AddArgs {
 fn add(
     paths: &shepr_config::AppPaths,
     args: AddArgs,
-    settings: crate::remote::SavedSshSettings,
+    settings: shepr_remote::SavedSshSettings,
 ) -> super::CliResult<i32> {
     let AddArgs {
         target,
@@ -256,11 +256,11 @@ fn add(
             return Ok(2);
         }
     }
-    let executable = match crate::remote::prepare_saved_ssh(paths, &target, &session, settings) {
+    let executable = match shepr_remote::prepare_saved_ssh(paths, &target, &session, settings) {
         Ok(executable) => executable,
         Err(error) => {
             eprintln!("error: {error}; machine was not saved");
-            crate::remote::print_saved_ssh_error_hint(&error, &target);
+            shepr_remote::print_saved_ssh_error_hint(&error, &target);
             return Ok(1);
         }
     };
@@ -290,9 +290,9 @@ fn add(
 
 fn saved_ssh_settings(
     paths: &shepr_config::AppPaths,
-) -> super::CliResult<crate::remote::SavedSshSettings> {
+) -> super::CliResult<shepr_remote::SavedSshSettings> {
     let config = super::load_validated_config(paths)?;
-    Ok(crate::remote::SavedSshSettings {
+    Ok(shepr_remote::SavedSshSettings {
         manage_ssh_config: config.remote.manage_ssh_config,
     })
 }

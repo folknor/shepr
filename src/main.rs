@@ -11,25 +11,11 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
-mod app;
 mod cli;
-mod client;
-mod events;
-mod git;
-mod machine;
 #[cfg(test)]
 mod netside_tests;
-mod pane;
-mod persist;
-mod remote;
-#[path = "server/render_signal.rs"]
-mod render_signal;
-mod server;
-mod terminal;
 #[cfg(test)]
 mod test_support;
-mod ui;
-mod workspace;
 
 fn should_block_nested(config: &shepr_config::Config) -> bool {
     should_block_nested_for_env(config, std::env::var(SHEPR_ENV_VAR).ok().as_deref())
@@ -120,7 +106,7 @@ fn main() -> io::Result<()> {
         Ok(session) => session,
         Err(err) => usage_exit(&err.to_string()),
     };
-    let remote_launch = match remote::remote_launch(
+    let remote_launch = match shepr_remote::remote_launch(
         invocation.remote().as_deref(),
         invocation.remote_keybindings().as_deref(),
     ) {
@@ -169,7 +155,7 @@ fn main() -> io::Result<()> {
                         errors.join("; ")
                     ))
                 })?;
-            return remote::run_remote_api_bridge(*check, &paths);
+            return shepr_remote::run_remote_api_bridge(*check, &paths);
         }
         cli::Launch::ClientBridge { idle_timeout_v1 } => {
             let paths = shepr_config::AppPaths::resolve_with_session(requested_session.clone())
@@ -179,7 +165,7 @@ fn main() -> io::Result<()> {
                         errors.join("; ")
                     ))
                 })?;
-            return remote::run_remote_client_bridge(*idle_timeout_v1, &paths);
+            return shepr_remote::run_remote_client_bridge(*idle_timeout_v1, &paths);
         }
         _ => {}
     }
@@ -189,11 +175,11 @@ fn main() -> io::Result<()> {
 
     match invocation.launch {
         cli::Launch::HeadlessServer => {
-            return server::headless::run_server(&loaded_config, paths);
+            return shepr_server::server::headless::run_server(&loaded_config, paths);
         }
         cli::Launch::Client => {
             exit_if_nested_disabled(&loaded_config);
-            return client::run_client(&loaded_config, paths);
+            return shepr_client::run_client(&loaded_config, paths);
         }
         cli::Launch::Tui { .. } => {}
         cli::Launch::ApiBridge { .. } | cli::Launch::ClientBridge { .. } | cli::Launch::Cli(_) => {
@@ -203,12 +189,12 @@ fn main() -> io::Result<()> {
 
     if let Some(remote_launch) = remote_launch {
         let remote_target = remote_launch.target.clone();
-        let ssh_settings = remote::SavedSshSettings {
+        let ssh_settings = shepr_remote::SavedSshSettings {
             manage_ssh_config: loaded_config.remote.manage_ssh_config,
         };
-        if let Err(err) = remote::run_remote(remote_launch, ssh_settings, paths) {
+        if let Err(err) = shepr_remote::run_remote(remote_launch, ssh_settings, paths) {
             eprintln!("error: {err}");
-            remote::print_remote_error_hint(&err, &remote_target);
+            shepr_remote::print_remote_error_hint(&err, &remote_target);
             std::process::exit(1);
         }
         return Ok(());
@@ -217,12 +203,12 @@ fn main() -> io::Result<()> {
     exit_if_nested_disabled(&loaded_config);
 
     let saved_federation =
-        machine::EndpointCatalog::load(paths).is_ok_and(|catalog| catalog.has_ssh());
-    if let Err(err) = remote::autodetect::auto_detect_launch(
+        shepr_remote::machine::EndpointCatalog::load(paths).is_ok_and(|catalog| catalog.has_ssh());
+    if let Err(err) = shepr_remote::autodetect::auto_detect_launch(
         saved_federation,
         &loaded_config,
         paths,
-        client::run_client,
+        shepr_client::run_client,
     ) {
         eprintln!("shepr: {err}");
         std::process::exit(1);

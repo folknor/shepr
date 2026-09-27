@@ -2,13 +2,13 @@ use std::cell::{Cell, RefCell};
 use std::io;
 use std::ops::Deref;
 
-use crate::machine::{EndpointCatalog, SavedSshEndpoint};
 use shepr_api::client::{ApiClient, ConnectionTarget};
+use shepr_remote::machine::{EndpointCatalog, SavedSshEndpoint};
 
 struct MachineTarget {
     profile: SavedSshEndpoint,
-    bridge: Option<crate::remote::SavedSshApiBridge>,
-    ssh_settings: crate::remote::SavedSshSettings,
+    bridge: Option<shepr_remote::SavedSshApiBridge>,
+    ssh_settings: shepr_remote::SavedSshSettings,
 }
 
 enum ApiTarget {
@@ -30,7 +30,7 @@ impl CliContext {
             paths,
             target: RefCell::new(ApiTarget::Local),
             protocol_checked: Cell::new(false),
-            caller_pane_id: std::env::var(crate::pane::SHEPR_PANE_ID_ENV_VAR).ok(),
+            caller_pane_id: std::env::var(shepr_server::pane::SHEPR_PANE_ID_ENV_VAR).ok(),
             caller_socket: std::env::var_os(shepr_config::SOCKET_PATH_ENV_VAR),
         }
     }
@@ -49,7 +49,7 @@ impl CliContext {
     fn machine(
         paths: shepr_config::AppPaths,
         profile: SavedSshEndpoint,
-        ssh_settings: crate::remote::SavedSshSettings,
+        ssh_settings: shepr_remote::SavedSshSettings,
     ) -> Self {
         Self {
             paths,
@@ -97,7 +97,7 @@ pub(super) fn run_on_machine(
         return usage_error(&error);
     }
     let config = super::load_validated_config(paths)?;
-    let ssh_settings = crate::remote::SavedSshSettings {
+    let ssh_settings = shepr_remote::SavedSshSettings {
         manage_ssh_config: config.remote.manage_ssh_config,
     };
     let profiles = EndpointCatalog::load_profiles(paths).map_err(io::Error::other)?;
@@ -120,7 +120,7 @@ pub(super) fn api_client(context: &CliContext) -> super::CliResult<ApiClient> {
     };
     if target.bridge.is_none() {
         target.bridge = Some(
-            crate::remote::SavedSshApiBridge::start(
+            shepr_remote::SavedSshApiBridge::start(
                 context,
                 &target.profile.id,
                 &target.profile.target,
@@ -174,13 +174,13 @@ pub(super) fn server_status(
             return Err(error);
         };
         if !bridge.used_cached_metadata
-            || !crate::remote::SavedSshApiBridge::stale_metadata_failure(&failure)
+            || !shepr_remote::SavedSshApiBridge::stale_metadata_failure(&failure)
         {
             return Err(failure.into());
         }
         bridge.invalidate_metadata();
         target.bridge.take();
-        target.bridge = Some(crate::remote::SavedSshApiBridge::start(
+        target.bridge = Some(shepr_remote::SavedSshApiBridge::start(
             context,
             &target.profile.id,
             &target.profile.target,
@@ -202,7 +202,7 @@ pub(super) fn remote_error(context: &CliContext, error: io::Error) -> io::Error 
     let error = target
         .bridge
         .as_ref()
-        .and_then(crate::remote::SavedSshApiBridge::reported_failure)
+        .and_then(shepr_remote::SavedSshApiBridge::reported_failure)
         .unwrap_or(error);
     io::Error::new(
         error.kind(),

@@ -24,9 +24,9 @@ Kept:
 - Terminal core: `alacritty_terminal` for emulation, a small libc PTY layer
   (`crates/shepr-pty/src/`), PTY hosting
 - Workspaces, tabs, panes, layout, the tab bar, the agent sidebar
-- Agent detection from bundled manifests (`src/detect/manifests/*.toml`),
+- Agent detection from bundled manifests (`crates/shepr-agent/src/detect/manifests/*.toml`),
   plus local override files and `shepr server reload-agent-manifests`
-- Agent integrations (`src/integration/`): hooks installed into each agent's
+- Agent integrations (`crates/shepr-agent/src/integration/`): hooks installed into each agent's
   own config that report state and session IDs back to shepr
 - Session restore (layout saved to disk, rebuilt with fresh shells) and agent
   resume on restore
@@ -52,7 +52,23 @@ restarted.
 The root `shepr` package is the binary. Extracted libraries live under
 `crates/`. Dependencies follow the documented bottom-up layering: lower
 crates never depend on higher ones. Shared test isolation lives in
-`shepr-test-support`, used only as a dev-dependency.
+`shepr-test-support`, used as a dev-dependency or behind a test API feature.
+
+The libraries, from lower layers to higher layers:
+
+- `shepr-core`: shared geometry, layout and plain types.
+- `shepr-platform`: Linux process, filesystem, IPC and terminal plumbing.
+- `shepr-vt`: terminal emulation and read formatting.
+- `shepr-pty`: PTY process launch and IO.
+- `shepr-test-support`: shared environment isolation and scratch directories for tests.
+- `shepr-agent`: detection manifests and agent integrations.
+- `shepr-protocol`: compact wire types and codec.
+- `shepr-config`: configuration parsing and validation.
+- `shepr-api`: JSON API schema, client and server transport.
+- `shepr-termio`: terminal input and copy mode.
+- `shepr-remote`: saved machines and SSH connections.
+- `shepr-server`: panes, workspaces, application state, persistence and serving.
+- `shepr-client`: endpoint management and TUI presentation.
 
 ## Build and test
 
@@ -82,9 +98,9 @@ inherited socket overrides so the debug binary talks to its own server:
 
 - **State is separated from runtime.** `AppState` is pure data, testable
   without PTYs or async. `PaneState` is separate from `PaneRuntime`.
-- **Render is pure.** `compute_view()` handles geometry and mutations;
-  `render()` takes `&AppState` and only draws.
-- **No god objects.** `app/` is split into state, actions and input; keep it
+- **Render is pure.** `compute_view()` in `crates/shepr-server/src/ui.rs`
+  handles geometry and mutations; `render()` takes `&AppState` and only draws.
+- **No god objects.** `crates/shepr-server/src/app/` is split into state, actions and input; keep it
   that way.
 - **Linux only.** No `#[cfg(windows)]`, `#[cfg(target_os = "macos")]` or
   `cfg!` branches for other platforms. libc, `/proc` and helper-program
@@ -103,7 +119,7 @@ inherited socket overrides so the debug binary talks to its own server:
 - **No wire compatibility obligations.** Client and server are always the same
   build. Change the protocol freely; there are no frozen fixtures.
 - **Wire encoding is shepr's own.** Frames are `[u32 LE length][payload]`,
-  and payloads use the positional serde codec in `src/protocol/codec.rs`
+  and payloads use the positional serde codec in `crates/shepr-protocol/src/codec.rs`
   (varints, no field names, not self-describing). Wire types must not use
   `skip_serializing_if`, `flatten`, `untagged` or tagged enums.
 
@@ -116,8 +132,8 @@ inherited socket overrides so the debug binary talks to its own server:
   or `Workspace` behaviour should be testable with `AppState::test_new()` /
   `Workspace::test_new()`.
 - Tests that touch the process environment hold a
-  `crate::test_support::IsolatedEnv`, and tests that write files use a
-  `ScratchDir` from the same module, never fixed or shared temp paths.
+  `shepr_test_support::IsolatedEnv`, and tests that write files use a
+  `shepr_test_support::ScratchDir`, never fixed or shared temp paths.
 
 ## Terminal core
 
