@@ -213,7 +213,7 @@ impl App {
         let tab_id = self
             .public_tab_id(resolved.ws_idx, resolved.tab_idx)
             .unwrap_or_else(|| {
-                crate::workspace::public_tab_id_for_number(&workspace_id, resolved.tab_idx + 1)
+                shepr_mux::workspace::public_tab_id_for_number(&workspace_id, resolved.tab_idx + 1)
             });
 
         success(
@@ -322,7 +322,7 @@ impl App {
             .state
             .terminals
             .get(terminal_id)
-            .and_then(crate::terminal::TerminalState::effective_known_agent)
+            .and_then(shepr_mux::terminal::TerminalState::effective_known_agent)
         else {
             return agent_not_ready(id, &params.target);
         };
@@ -417,10 +417,11 @@ fn agent_not_found(_id: String, target: &str) -> ApiResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{app::Mode, workspace::Workspace};
+    use crate::app::Mode;
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_api::schema::{AgentStatus, SuccessResponse};
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     fn app_with_agent() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -493,7 +494,7 @@ mod tests {
 
         // One process-exit observation, then the same agent is observed alive
         // again on the next probe - the process never actually went away.
-        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+        app.handle_internal_event(shepr_mux::events::AppEvent::StateChanged {
             pane_id,
             agent: Some(Agent::Pi),
             state: AgentState::Idle,
@@ -501,7 +502,7 @@ mod tests {
             process_exited: true,
             observed_at,
         });
-        app.handle_internal_event(crate::events::AppEvent::AgentProcessDetected {
+        app.handle_internal_event(shepr_mux::events::AppEvent::AgentProcessDetected {
             pane_id,
             agent: Agent::Pi,
             observed_at: observed_at + std::time::Duration::from_secs(1),
@@ -541,7 +542,7 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
         let (runtime, mut rx) =
-            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 2);
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 2);
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -688,7 +689,7 @@ mod tests {
             .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Blocked);
-        let (runtime, mut rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+        let (runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
         app.insert_test_runtime(pane_id, runtime);
 
         let response = run_deferred_agent_prompt(
@@ -731,7 +732,7 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Idle);
         let (runtime, mut rx) =
-            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 3);
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 3);
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -777,7 +778,7 @@ mod tests {
             .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        let (runtime, mut rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+        let (runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
         app.insert_test_runtime(pane_id, runtime);
 
         let rejected = app.handle_agent_send_keys(
@@ -830,7 +831,7 @@ mod tests {
             std::time::Duration::from_secs(10),
         );
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
-        let (runtime, mut rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+        let (runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
         app.insert_test_runtime(pane_id, runtime);
 
         let response = run_deferred_agent_prompt(

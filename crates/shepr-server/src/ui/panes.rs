@@ -10,10 +10,10 @@ use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
 use super::text::display_width;
 use super::text::truncate_end;
 use crate::app::AppState;
-use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
+use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 #[cfg(test)]
-use crate::workspace::apply_pane_chrome;
-use crate::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
+use shepr_mux::workspace::apply_pane_chrome;
+use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
 
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.scroll_metrics()
@@ -34,7 +34,7 @@ fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<Str
 // The gutter rule itself is `terminal_content_rect`, shared with the size a
 // new pane's PTY is spawned at, so the two cannot drift.
 fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool) -> Rect {
-    crate::workspace::terminal_content_rect(
+    shepr_mux::workspace::terminal_content_rect(
         pane_inner,
         pane_scrollbars,
         pane_scrollbars && rt.alternate_screen_active(),
@@ -43,7 +43,7 @@ fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool
 
 fn runtime_for_tab_pane<'a>(
     terminal_runtimes: &'a PaneRuntimeRegistry,
-    tab: &'a crate::workspace::Tab,
+    tab: &'a shepr_mux::workspace::Tab,
     pane_id: shepr_core::layout::PaneId,
 ) -> Option<(&'a shepr_protocol::TerminalId, &'a PaneRuntime)> {
     let terminal_id = tab.terminal_id(pane_id)?;
@@ -156,7 +156,7 @@ fn compute_pane_infos(
     let Some(tab_index) = app
         .workspaces
         .get(workspace_index)
-        .map(crate::workspace::Workspace::active_tab_index)
+        .map(shepr_mux::workspace::Workspace::active_tab_index)
     else {
         return Vec::new();
     };
@@ -213,7 +213,7 @@ struct LineCell {
 
 fn render_pane_borders(
     app: &AppState,
-    ws: &crate::workspace::Workspace,
+    ws: &shepr_mux::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[shepr_core::layout::SplitBorder],
     frame: &mut Frame,
@@ -384,7 +384,7 @@ fn line_touches_pane(x: u16, y: u16, info: &PaneInfo, pane_gaps: bool) -> bool {
 
 fn render_pane_border_titles(
     app: &AppState,
-    ws: &crate::workspace::Workspace,
+    ws: &shepr_mux::workspace::Workspace,
     pane_infos: &[PaneInfo],
     frame: &mut Frame,
 ) {
@@ -472,11 +472,11 @@ use shepr_termio::selection_render::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pane::PaneRuntime;
-    use crate::terminal::TerminalState;
-    use crate::workspace::Workspace;
     use shepr_config::PaneBordersConfig;
     use shepr_core::layout::PaneId;
+    use shepr_mux::pane::PaneRuntime;
+    use shepr_mux::terminal::TerminalState;
+    use shepr_mux::workspace::Workspace;
     use shepr_vt::selection::Selection;
 
     /// A registry holding `runtime` as the live runtime of `pane_id`, keyed

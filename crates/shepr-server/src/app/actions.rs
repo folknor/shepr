@@ -5,22 +5,22 @@ use std::time::Instant;
 
 use tracing::debug;
 
-use crate::events::AppEvent;
-use crate::git::WorkspaceGitStatus;
-use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
-use crate::workspace::{
-    PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope, TabRemoval,
-};
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 #[cfg(test)]
 use shepr_core::layout::{NavDirection, find_in_direction};
+use shepr_mux::events::AppEvent;
+use shepr_mux::git::WorkspaceGitStatus;
+use shepr_mux::terminal::{EffectiveStateChange, TerminalStateMutation};
+use shepr_mux::workspace::{
+    PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope, TabRemoval,
+};
 
 use super::state::{AppState, Mode, PaneFocusTarget};
 
-fn public_tab_id_for_index(ws: &crate::workspace::Workspace, tab_idx: usize) -> Option<String> {
+fn public_tab_id_for_index(ws: &shepr_mux::workspace::Workspace, tab_idx: usize) -> Option<String> {
     let tab_number = ws.public_tab_number(tab_idx)?;
-    Some(crate::workspace::public_tab_id_for_number(
+    Some(shepr_mux::workspace::public_tab_id_for_number(
         &ws.id, tab_number,
     ))
 }
@@ -30,7 +30,7 @@ pub struct PaneStateSnapshot {
     pub agent_label: Option<String>,
     pub known_agent: Option<Agent>,
     pub state: AgentState,
-    pub presentation: crate::terminal::EffectivePresentation,
+    pub presentation: shepr_mux::terminal::EffectivePresentation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -106,8 +106,8 @@ impl App {
                     }
                 }
                 WindowTitlePart::Token(WindowTitleToken::TerminalTitle) => {
-                    if let Some(terminal_title) =
-                        terminal.and_then(crate::terminal::TerminalState::terminal_title_stripped)
+                    if let Some(terminal_title) = terminal
+                        .and_then(shepr_mux::terminal::TerminalState::terminal_title_stripped)
                     {
                         title.push_str(&terminal_title);
                     }
@@ -122,8 +122,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
-    use crate::workspace::Workspace;
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     fn test_app() -> App {
         let event_hub = shepr_api::EventHub::default();

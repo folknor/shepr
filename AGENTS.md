@@ -67,7 +67,8 @@ The libraries, from lower layers to higher layers:
 - `shepr-api`: JSON API schema, client and server transport.
 - `shepr-termio`: terminal input and copy mode.
 - `shepr-remote`: saved machines and SSH connections.
-- `shepr-server`: panes, workspaces, application state, persistence and serving.
+- `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
+- `shepr-server`: application state, UI and serving.
 - `shepr-client`: endpoint management and TUI presentation.
 
 ## Build and test

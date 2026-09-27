@@ -75,7 +75,7 @@ impl std::fmt::Display for PaneInputFailures {
 }
 
 fn send_input(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     bytes: Bytes,
     what: &'static str,
 ) -> Result<(), PaneInputError> {
@@ -85,7 +85,7 @@ fn send_input(
 }
 
 fn send_paste(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     text: String,
     what: &'static str,
 ) -> Result<(), PaneInputError> {
@@ -140,7 +140,7 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
 }
 
 pub(super) fn terminal_attach_mouse_position(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     terminal_size: shepr_core::geometry::GridSize,
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     pixel_mouse: bool,
@@ -207,7 +207,7 @@ pub(super) fn terminal_attach_mouse_position(
 }
 
 pub(super) fn apply_terminal_attach_scroll(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     source: AttachScrollSource,
     direction: AttachScrollDirection,
     lines: u16,
@@ -229,7 +229,7 @@ pub(super) fn apply_terminal_attach_scroll(
 }
 
 fn apply_scroll(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     source: AttachScrollSource,
     direction: AttachScrollDirection,
     lines: u16,
@@ -255,7 +255,7 @@ fn apply_scroll(
     }
 
     match runtime.wheel_routing() {
-        Some(crate::pane::WheelRouting::MouseReport) => {
+        Some(shepr_mux::pane::WheelRouting::MouseReport) => {
             runtime.scroll_reset();
             let Some(bytes) = runtime.encode_mouse_wheel(
                 wheel_kind,
@@ -269,14 +269,14 @@ fn apply_scroll(
             };
             send_input(runtime, Bytes::from(bytes), "mouse wheel input")?;
         }
-        Some(crate::pane::WheelRouting::AlternateScroll) => {
+        Some(shepr_mux::pane::WheelRouting::AlternateScroll) => {
             runtime.scroll_reset();
             let Some(bytes) = runtime.encode_alternate_scroll(wheel_kind) else {
                 return Ok(());
             };
             send_input(runtime, Bytes::from(bytes), "alternate scroll input")?;
         }
-        Some(crate::pane::WheelRouting::HostScroll) | None => match direction {
+        Some(shepr_mux::pane::WheelRouting::HostScroll) | None => match direction {
             AttachScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
             AttachScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
         },
@@ -285,7 +285,7 @@ fn apply_scroll(
 }
 
 pub(super) fn apply_terminal_attach_input(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     data: Vec<u8>,
 ) -> Result<(), PaneInputError> {
     runtime.scroll_reset();
@@ -302,7 +302,7 @@ pub(super) fn apply_terminal_attach_input(
 /// takes the matching release (or any later input) down with it. The error
 /// carries every failure from the batch.
 pub(super) fn apply_client_pane_input_events(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     events: &[ClientPaneInputEvent],
 ) -> Result<(), PaneInputFailures> {
     let mut failures = PaneInputFailures::default();
@@ -319,7 +319,7 @@ pub(super) fn apply_client_pane_input_events(
 }
 
 fn apply_client_pane_input_event(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     event: &ClientPaneInputEvent,
 ) -> Result<(), PaneInputError> {
     if let ClientPaneInputEvent::Mouse {
@@ -447,7 +447,7 @@ mod tests {
     async fn a_full_input_queue_reports_every_dropped_event_without_aborting_the_batch() {
         // Input queue capacity 4: the fifth and later sends find it full.
         let (runtime, mut input_rx) =
-            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 0, b"", 4);
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 0, b"", 4);
         let events = ["a", "b", "c", "d", "e", "f"]
             .into_iter()
             .map(|text| ClientPaneInputEvent::TextCommit(text.to_owned()))
@@ -483,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn dropped_input_errors_do_not_carry_the_typed_text() {
         let (runtime, _input_rx) =
-            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 0, b"", 1);
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 0, b"", 1);
         let secret = "hunter2-secret";
         let events = [
             ClientPaneInputEvent::TextCommit("x".to_owned()),
@@ -509,7 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let position = shepr_protocol::ClientMousePosition::Pixels {
             x: 121,
             y: 81,

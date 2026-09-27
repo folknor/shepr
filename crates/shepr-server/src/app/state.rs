@@ -3,10 +3,10 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use shepr_config::NewTerminalCwdConfig;
 
-use crate::workspace::PaneChromeInfo as PaneInfo;
 use shepr_core::layout::PaneId;
+use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 
-use crate::workspace::Workspace;
+use shepr_mux::workspace::Workspace;
 use shepr_termio::host_term::theme::{HostAppearance, TerminalTheme};
 
 pub use shepr_config::theme::Palette;
@@ -43,7 +43,7 @@ pub enum TabBarStatusSegment {
 /// it is handed, keyed by terminal id.
 pub struct AppState {
     pub terminals:
-        std::collections::HashMap<shepr_protocol::TerminalId, crate::terminal::TerminalState>,
+        std::collections::HashMap<shepr_protocol::TerminalId, shepr_mux::terminal::TerminalState>,
     /// Terminal ids whose size is currently owned by a direct attach client.
     pub direct_attach_resize_locks: std::collections::HashSet<shepr_protocol::TerminalId>,
     /// Keeps a pane's pre-move public id (`<old workspace>:p<n>`) resolving
@@ -191,7 +191,7 @@ impl AppState {
     /// Geometry a new pane's PTY is sized against: the most recently computed
     /// pane surface, or the headless size before any view has been computed
     /// (at startup, or when no client has ever attached).
-    pub(crate) fn pane_geometry(&self) -> crate::workspace::PaneGeometry {
+    pub(crate) fn pane_geometry(&self) -> shepr_mux::workspace::PaneGeometry {
         let area = if self.view.terminal_area.is_empty() {
             Rect::new(
                 0,
@@ -206,8 +206,8 @@ impl AppState {
     }
 
     /// The configured pane chrome applied to a tab laid out in `area`.
-    pub(crate) fn pane_geometry_in(&self, area: Rect) -> crate::workspace::PaneGeometry {
-        crate::workspace::PaneGeometry {
+    pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::PaneGeometry {
+        shepr_mux::workspace::PaneGeometry {
             area,
             pane_borders: self.settings.pane_borders,
             pane_gaps: self.settings.pane_gaps,
@@ -222,10 +222,10 @@ impl AppState {
     /// whose shell failed to start, or one still waiting on agent resume).
     pub(crate) fn runtime_for_pane_in_workspace<'a>(
         &'a self,
-        terminal_runtimes: &'a crate::pane::PaneRuntimeRegistry,
+        terminal_runtimes: &'a shepr_mux::pane::PaneRuntimeRegistry,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&'a crate::pane::PaneRuntime> {
+    ) -> Option<&'a shepr_mux::pane::PaneRuntime> {
         let terminal_id = self.workspaces.get(ws_idx)?.terminal_id(pane_id)?;
         terminal_runtimes.get(terminal_id)
     }
@@ -284,7 +284,7 @@ impl AppState {
     /// Populate missing `TerminalState` entries for every pane so tests that
     /// read or write terminal metadata don't need to manually create them.
     pub fn ensure_test_terminals(&mut self) {
-        use crate::terminal::TerminalState;
+        use shepr_mux::terminal::TerminalState;
         for ws in &self.workspaces {
             for tab in &ws.tabs {
                 for pane in tab.panes.values() {
@@ -302,7 +302,7 @@ impl AppState {
 
     pub fn test_with_adversarial_identity_state() -> Self {
         let mut state = Self::test_new();
-        state.workspaces = vec![crate::workspace::Workspace::test_adversarial_identity_state()];
+        state.workspaces = vec![shepr_mux::workspace::Workspace::test_adversarial_identity_state()];
         state.set_active_index(Some(0));
         state.set_selected_index(Some(0));
         state.ensure_test_terminals();
@@ -457,11 +457,11 @@ mod tests {
     #[tokio::test]
     async fn runtime_lookup_goes_through_the_registry_by_terminal_id() {
         let mut state = AppState::test_new();
-        let ws = crate::workspace::Workspace::test_new("test");
+        let ws = shepr_mux::workspace::Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;
         let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
         state.workspaces = vec![ws];
-        let mut registry = crate::pane::PaneRuntimeRegistry::new();
+        let mut registry = shepr_mux::pane::PaneRuntimeRegistry::new();
 
         assert!(
             state
@@ -471,7 +471,7 @@ mod tests {
 
         registry.insert(
             terminal_id,
-            crate::pane::PaneRuntime::test_with_screen_bytes(20, 5, b""),
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b""),
         );
         assert!(
             state

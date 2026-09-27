@@ -8,7 +8,7 @@ impl AppState {
     pub(crate) fn next_agent_metadata_expiry(&self) -> Option<std::time::Instant> {
         self.terminals
             .values()
-            .filter_map(crate::terminal::TerminalState::next_agent_metadata_expiry)
+            .filter_map(shepr_mux::terminal::TerminalState::next_agent_metadata_expiry)
             .chain(
                 self.terminals
                     .values()
@@ -468,8 +468,10 @@ impl AppState {
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
         self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
         self.mark_session_dirty();
-        let tab_id =
-            crate::workspace::public_tab_id_for_number(&removal.workspace_id, removal.tab_number);
+        let tab_id = shepr_mux::workspace::public_tab_id_for_number(
+            &removal.workspace_id,
+            removal.tab_number,
+        );
         shepr_platform::logging::tab_closed(&removal.workspace_id, &tab_id);
         TabRemovalCommit::Removed(TabRemovalOutcome {
             workspace_index: plan.workspace_index,
@@ -553,10 +555,11 @@ impl AppState {
             });
         }
         let last = self.workspaces.len() - 1;
-        let position_of = |id: Option<shepr_protocol::WorkspaceId>,
-                           workspaces: &[crate::workspace::Workspace]| {
-            id.and_then(|id| workspaces.iter().position(|ws| ws.id == id))
-        };
+        let position_of =
+            |id: Option<shepr_protocol::WorkspaceId>,
+             workspaces: &[shepr_mux::workspace::Workspace]| {
+                id.and_then(|id| workspaces.iter().position(|ws| ws.id == id))
+            };
         let active = position_of(active_workspace_id, &self.workspaces).unwrap_or(ws_idx.min(last));
         self.set_active_index(Some(active));
         self.set_selected_index(Some(

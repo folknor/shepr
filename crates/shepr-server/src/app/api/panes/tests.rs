@@ -1,8 +1,8 @@
 use super::*;
-use crate::workspace::Workspace;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_api::schema::{ErrorResponse, SplitDirection, SuccessResponse};
 use shepr_config::Config;
+use shepr_mux::workspace::Workspace;
 
 fn app_with_test_workspace() -> (App, String) {
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -54,7 +54,7 @@ fn app_with_send_key_runtime(
 ) -> (App, String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
     let (mut app, public_pane_id) = app_with_test_workspace();
     let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-    let (runtime, rx) = crate::pane::PaneRuntime::test_with_channel_capacity(80, 24, capacity);
+    let (runtime, rx) = shepr_mux::pane::PaneRuntime::test_with_channel_capacity(80, 24, capacity);
     app.insert_test_runtime(pane_id, runtime);
     (app, public_pane_id, rx)
 }
@@ -66,7 +66,7 @@ fn app_with_scrollback_runtime() -> (App, String, PaneId) {
         .map(|line| format!("line {line:02}\n"))
         .collect::<String>();
     let runtime =
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, lines.as_bytes());
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, lines.as_bytes());
     app.insert_test_runtime(pane_id, runtime);
     (app, public_pane_id, pane_id)
 }
@@ -255,7 +255,7 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
     let pane_id = app.state.workspaces[0].tabs[0].root_pane;
     app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
     );
 
     let runtime = app
@@ -302,7 +302,7 @@ async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
     let pane_id = app.state.workspaces[0].tabs[0].root_pane;
     app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
     );
 
     let response = app.handle_pane_copy_motion(
@@ -338,7 +338,7 @@ async fn api_paragraph_motion_preserves_the_copy_cursor_column() {
     let pane_id = app.state.workspaces[0].tabs[0].root_pane;
     app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"one\r\n\r\nthree"),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"one\r\n\r\nthree"),
     );
     let response = app.handle_pane_copy_motion(
         "req".into(),
@@ -372,7 +372,7 @@ async fn api_copy_search_uses_endpoint_terminal_matches_and_wraps() {
     let pane_id = app.state.workspaces[0].tabs[0].root_pane;
     app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta alpha"),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta alpha"),
     );
 
     let content_revision = app
@@ -435,7 +435,7 @@ async fn api_copy_search_bounds_returned_matches_but_keeps_exact_total() {
     let text = "a ".repeat(1500);
     app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(200, 20, 4000, text.as_bytes()),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(200, 20, 4000, text.as_bytes()),
     );
     let content_revision = app
         .state
@@ -471,7 +471,7 @@ async fn api_copy_search_rejects_stale_content_revision() {
     let pane_id = app.state.workspaces[0].tabs[0].root_pane;
     app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta"),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta"),
     );
     let response = app.handle_pane_copy_search(
         "req".into(),
@@ -659,8 +659,13 @@ async fn api_pane_send_keys_accepts_literal_plus() {
 async fn api_pane_send_keys_sends_shifted_punctuation_as_text_in_kitty_mode() {
     let (mut app, pane_id) = app_with_test_workspace();
     let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
-    let (runtime, mut rx) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"\x1b[>7u", 1);
+    let (runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        80,
+        24,
+        0,
+        b"\x1b[>7u",
+        1,
+    );
     app.insert_test_runtime(internal_pane_id, runtime);
 
     let response = app.handle_api_request(shepr_api::schema::Request {
@@ -787,7 +792,7 @@ fn seed_terminal_states(app: &mut App) {
                     .terminals
                     .entry(pane.attached_terminal_id.clone())
                     .or_insert_with(|| {
-                        crate::terminal::TerminalState::new(
+                        shepr_mux::terminal::TerminalState::new(
                             pane.attached_terminal_id.clone(),
                             std::path::PathBuf::from("/shepr-test"),
                         )
@@ -1358,9 +1363,9 @@ async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
     seed_terminal_states(&mut app);
     app.insert_test_runtime(
         source,
-        crate::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"moved"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"moved"),
     );
-    let runtime = app.test_runtime(source) as *const crate::pane::PaneRuntime;
+    let runtime = app.test_runtime(source) as *const shepr_mux::pane::PaneRuntime;
     let source_public = app.public_pane_id(0, source).expect("test precondition");
 
     let response = app.handle_pane_move(

@@ -119,6 +119,7 @@ shepr-api = { path = "crates/shepr-api" }
 shepr-client = { path = "crates/shepr-client" }
 shepr-config = { path = "crates/shepr-config" }
 shepr-core = { path = "crates/shepr-core" }
+shepr-mux = { path = "crates/shepr-mux" }
 shepr-platform = { path = "crates/shepr-platform" }
 shepr-protocol = { path = "crates/shepr-protocol" }
 shepr-pty = { path = "crates/shepr-pty" }

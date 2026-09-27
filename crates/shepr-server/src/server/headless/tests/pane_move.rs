@@ -6,10 +6,10 @@ use shepr_api::schema::{
 
 fn pane_move_server() -> HeadlessServer {
     let mut server = test_headless_server();
-    let mut first = crate::workspace::Workspace::test_new("first");
+    let mut first = shepr_mux::workspace::Workspace::test_new("first");
     first.test_add_tab(Some("remaining"));
     first.switch_tab(0);
-    server.app.state.workspaces = vec![first, crate::workspace::Workspace::test_new("second")];
+    server.app.state.workspaces = vec![first, shepr_mux::workspace::Workspace::test_new("second")];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -50,7 +50,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         .terminal_id(source)
         .expect("test precondition")
         .clone();
-    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+    let (runtime, mut input_rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
     server.app.terminal_runtimes.insert(terminal_id, runtime);
     let source_id = server
         .app

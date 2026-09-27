@@ -14,7 +14,7 @@ fn normalize_api_key_alias(key: &str) -> &str {
     }
 }
 
-pub(super) fn encode_api_text(runtime: &crate::pane::PaneRuntime, text: &str) -> Vec<u8> {
+pub(super) fn encode_api_text(runtime: &shepr_mux::pane::PaneRuntime, text: &str) -> Vec<u8> {
     let bracketed = runtime.bracketed_paste_enabled();
     if bracketed {
         format!("\x1b[200~{text}\x1b[201~").into_bytes()
@@ -24,7 +24,7 @@ pub(super) fn encode_api_text(runtime: &crate::pane::PaneRuntime, text: &str) ->
 }
 
 pub(super) fn encode_api_keys(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     keys: &[String],
 ) -> Result<Vec<Vec<u8>>, ApiError> {
     let mut encoded_keys = Vec::with_capacity(keys.len());
@@ -41,7 +41,7 @@ pub(super) fn encode_api_keys(
 }
 
 pub(super) fn encode_api_submission_parts(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     text: &str,
 ) -> (Vec<u8>, Vec<u8>) {
     let text = encode_api_text(runtime, text);
@@ -52,14 +52,14 @@ pub(super) fn encode_api_submission_parts(
     (text, runtime.encode_terminal_key(enter.into()))
 }
 
-pub(super) fn encode_api_submission(runtime: &crate::pane::PaneRuntime, text: &str) -> Vec<u8> {
+pub(super) fn encode_api_submission(runtime: &shepr_mux::pane::PaneRuntime, text: &str) -> Vec<u8> {
     let (mut text, enter) = encode_api_submission_parts(runtime, text);
     text.extend_from_slice(&enter);
     text
 }
 
 pub(super) fn encode_api_input(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     text: &str,
     keys: &[String],
 ) -> Result<Vec<u8>, ApiError> {
@@ -130,11 +130,11 @@ pub(super) fn effective_read_format(
 }
 
 pub(super) fn read_terminal_snapshot(
-    terminal: &crate::pane::PaneRuntime,
+    terminal: &shepr_mux::pane::PaneRuntime,
     source: shepr_api::schema::ReadSource,
     format: shepr_api::schema::ReadFormat,
     lines: Option<u32>,
-) -> Result<crate::terminal::TerminalReadSnapshot, ApiError> {
+) -> Result<shepr_mux::terminal::TerminalReadSnapshot, ApiError> {
     validate_read_request(source, format, lines)?;
     Ok(read_validated_terminal_snapshot(
         terminal, source, format, lines,
@@ -166,11 +166,11 @@ fn validate_read_request(
 }
 
 fn read_validated_terminal_snapshot(
-    terminal: &crate::pane::PaneRuntime,
+    terminal: &shepr_mux::pane::PaneRuntime,
     source: shepr_api::schema::ReadSource,
     format: shepr_api::schema::ReadFormat,
     lines: Option<u32>,
-) -> crate::terminal::TerminalReadSnapshot {
+) -> shepr_mux::terminal::TerminalReadSnapshot {
     use shepr_api::schema::{ReadFormat, ReadSource};
 
     let line_limit = lines.map(|lines| lines as usize);
@@ -204,15 +204,15 @@ fn read_validated_terminal_snapshot(
 pub(crate) fn limit_snapshot_lines(
     text: String,
     limit: Option<usize>,
-) -> crate::terminal::TerminalReadSnapshot {
+) -> shepr_mux::terminal::TerminalReadSnapshot {
     let Some(limit) = limit else {
-        return crate::terminal::TerminalReadSnapshot {
+        return shepr_mux::terminal::TerminalReadSnapshot {
             text,
             truncated: false,
         };
     };
     let lines: Vec<_> = text.split_inclusive('\n').collect();
-    crate::terminal::TerminalReadSnapshot {
+    shepr_mux::terminal::TerminalReadSnapshot {
         text: lines[lines.len().saturating_sub(limit)..].concat(),
         truncated: lines.len() > limit,
     }

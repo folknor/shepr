@@ -2,9 +2,9 @@ use ratatui::{Frame, layout::Rect};
 
 use super::panes::{compute_pane_infos_for_tab, render_panes, resize_pane_infos};
 use crate::app::AppState;
-use crate::pane::PaneRuntimeRegistry;
-use crate::workspace::PaneChromeInfo as PaneInfo;
 use shepr_core::layout::SplitBorder;
+use shepr_mux::pane::PaneRuntimeRegistry;
+use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 use shepr_protocol::CursorState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,10 +241,10 @@ pub(crate) fn tab_surface_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Direction;
+    use shepr_mux::workspace::Workspace;
 
     #[test]
     fn target_tracks_tab_across_position_changes() {
@@ -277,7 +277,7 @@ mod tests {
             .expect("right terminal");
         runtimes.insert(
             left_terminal,
-            crate::pane::PaneRuntime::test_with_screen_bytes(
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
                 20,
                 8,
                 format!("\x1b]8;;{uri}\x1b\\LEFT\x1b]8;;\x1b\\").as_bytes(),
@@ -285,7 +285,7 @@ mod tests {
         );
         runtimes.insert(
             right_terminal,
-            crate::pane::PaneRuntime::test_with_screen_bytes(20, 8, b"RIGHT"),
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 8, b"RIGHT"),
         );
 
         let mut app = AppState::test_new();

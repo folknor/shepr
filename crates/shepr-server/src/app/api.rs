@@ -8,10 +8,10 @@ mod tabs;
 mod workspaces;
 
 use super::App;
-#[cfg(test)]
-use crate::events::AppEvent;
 use shepr_api::error::{ApiErrorCode, ApiResult};
 use shepr_api::{Outcome, RenderDemand};
+#[cfg(test)]
+use shepr_mux::events::AppEvent;
 
 impl App {
     pub(crate) fn handle_api_request_with_render(
@@ -241,13 +241,13 @@ mod tests {
             api_rx,
             shepr_api::EventHub::default(),
         );
-        app.state.workspaces = vec![crate::workspace::Workspace::test_new("manifest-reload")];
+        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("manifest-reload")];
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+        let (runtime, _rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
         let reset_notify = runtime.agent_detection_reset_notify_for_test();
         app.terminal_runtimes.insert(terminal_id, runtime);
 
@@ -281,13 +281,13 @@ mod tests {
             api_rx,
             shepr_api::EventHub::default(),
         );
-        app.state.workspaces = vec![crate::workspace::Workspace::test_new("manifest-status")];
+        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("manifest-status")];
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+        let (runtime, _rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
         let reset_notify = runtime.agent_detection_reset_notify_for_test();
         app.terminal_runtimes.insert(terminal_id, runtime);
 
@@ -323,7 +323,7 @@ mod tests {
             api_rx,
             shepr_api::EventHub::default(),
         );
-        app.state.workspaces = vec![crate::workspace::Workspace::test_new("agent-explain")];
+        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("agent-explain")];
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
@@ -334,7 +334,7 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .detected_agent = Some(Agent::Codex);
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
             80,
             24,
             b"press enter to confirm or esc to cancel",
@@ -369,7 +369,9 @@ mod tests {
             api_rx,
             shepr_api::EventHub::default(),
         );
-        app.state.workspaces = vec![crate::workspace::Workspace::test_new("agent-explain-omp")];
+        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new(
+            "agent-explain-omp",
+        )];
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
@@ -386,7 +388,7 @@ mod tests {
                 None,
                 Some(1),
             );
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         app.terminal_runtimes.insert(terminal_id, runtime);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
 
@@ -412,13 +414,13 @@ mod tests {
             api_rx,
             shepr_api::EventHub::default(),
         );
-        app.state.workspaces = vec![crate::workspace::Workspace::test_new("process-info")];
+        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("process-info")];
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
+        let (runtime, _rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
         app.terminal_runtimes.insert(terminal_id, runtime);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
 
@@ -483,7 +485,7 @@ mod tests {
             api_rx,
             event_hub.clone(),
         );
-        let mut workspace = crate::workspace::Workspace::test_new("pane-exit-layout");
+        let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-exit-layout");
         let dead_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
@@ -521,13 +523,13 @@ mod tests {
             api_rx,
             event_hub.clone(),
         );
-        let first = crate::workspace::Workspace::test_new("closing");
-        let target = crate::workspace::Workspace::test_new("target");
+        let first = shepr_mux::workspace::Workspace::test_new("closing");
+        let target = shepr_mux::workspace::Workspace::test_new("target");
         let pane_id = target.tabs[0].root_pane;
         let workspace_id = target.id.to_string();
         app.state.workspaces = vec![first, target];
         app.state.ensure_test_terminals();
-        let presentation = crate::terminal::EffectivePresentation {
+        let presentation = shepr_mux::terminal::EffectivePresentation {
             title: None,
             display_agent: None,
             state_labels: std::collections::HashMap::new(),
@@ -574,7 +576,7 @@ mod tests {
             api_rx,
             event_hub.clone(),
         );
-        let mut workspace = crate::workspace::Workspace::test_new("pane-exit-tab");
+        let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-exit-tab");
         workspace.test_add_tab(Some("second"));
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
@@ -660,7 +662,7 @@ mod tests {
                 api_rx,
                 event_hub.clone(),
             );
-            let workspace = crate::workspace::Workspace::test_new("idle-agent-exit");
+            let workspace = shepr_mux::workspace::Workspace::test_new("idle-agent-exit");
             let pane_id = workspace.tabs[0].root_pane;
             let terminal_id = workspace
                 .terminal_id(pane_id)
@@ -715,7 +717,7 @@ mod tests {
             api_rx,
             event_hub.clone(),
         );
-        let workspace = crate::workspace::Workspace::test_new("stale-agent-exit");
+        let workspace = shepr_mux::workspace::Workspace::test_new("stale-agent-exit");
         let pane_id = workspace.tabs[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)

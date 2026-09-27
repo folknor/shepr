@@ -116,7 +116,7 @@ impl App {
         self.state
             .terminals
             .get(&target.terminal_id)
-            .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
+            .is_some_and(shepr_mux::terminal::TerminalState::is_agent_terminal)
     }
 
     fn single_terminal_match<'a>(

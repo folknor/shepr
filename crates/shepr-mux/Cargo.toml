@@ -1,0 +1,35 @@
+[package]
+name = "shepr-mux"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+test-api = []
+
+[dependencies]
+bytes = { workspace = true }
+crossterm = { workspace = true }
+libc = { workspace = true }
+ratatui = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+shepr-agent = { path = "../shepr-agent" }
+shepr-config = { path = "../shepr-config" }
+shepr-core = { path = "../shepr-core" }
+shepr-platform = { path = "../shepr-platform" }
+shepr-protocol = { path = "../shepr-protocol" }
+shepr-pty = { path = "../shepr-pty" }
+shepr-termio = { path = "../shepr-termio" }
+shepr-vt = { path = "../shepr-vt" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

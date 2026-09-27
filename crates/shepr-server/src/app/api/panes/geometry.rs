@@ -949,7 +949,7 @@ impl App {
                             .to_path_buf()
                     });
                 let moved_pane_id = moved.pane_id;
-                let workspace = crate::workspace::Workspace::from_existing_pane(
+                let workspace = shepr_mux::workspace::Workspace::from_existing_pane(
                     label,
                     tab_label,
                     &identity_cwd,
@@ -1071,7 +1071,7 @@ impl App {
     pub(super) fn recover_failed_pane_move(
         &mut self,
         context: PaneMoveRecoveryContext,
-        moved: crate::workspace::MovedPane,
+        moved: shepr_mux::workspace::MovedPane,
     ) {
         if let Some(ws) = self
             .parse_workspace_id(&context.previous_workspace_id)
@@ -1079,7 +1079,7 @@ impl App {
         {
             ws.create_tab_from_existing_pane(moved, context.previous_tab_label);
         } else {
-            let mut workspace = crate::workspace::Workspace::from_existing_pane(
+            let mut workspace = shepr_mux::workspace::Workspace::from_existing_pane(
                 context.previous_workspace_label,
                 context.previous_tab_label,
                 &context.identity_cwd,

@@ -230,7 +230,7 @@ fn default_headless_size_is_effective_without_clients() {
 async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
     let event_hub = shepr_api::EventHub::default();
     let mut server = test_headless_server_with_event_hub(event_hub.clone());
-    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("one")];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -248,7 +248,7 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
         .get_mut(&terminal_id)
         .expect("test precondition")
         .detected_agent = Some(shepr_agent::detect::Agent::Claude);
-    let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+    let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes(b"\x1b]0;\xe2\xa0\x8b task\x07");
     server
         .app
@@ -441,7 +441,7 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
 
 fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<u8>>) {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("herd")];
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("herd")];
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
 
@@ -492,7 +492,7 @@ fn no_window_title(control_rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> bool {
 #[test]
 fn window_title_waits_for_a_foreground_client_to_exist() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("herd")];
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("herd")];
     server.app.state.set_active_index(Some(0));
     server.app.configure_window_title("{workspace}");
 
@@ -593,7 +593,7 @@ async fn focused_terminal_title_syncs_without_requesting_a_sidebar_render() {
         .terminal_id(pane_id)
         .expect("terminal")
         .clone();
-    let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+    let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes("\x1b]0;⠋ building\x07".as_bytes());
     server
         .app
@@ -753,10 +753,10 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
 #[tokio::test]
 async fn promoted_client_window_title_uses_its_own_view() {
     let mut server = test_headless_server();
-    let mut survivor = crate::workspace::Workspace::test_new("survivor");
+    let mut survivor = shepr_mux::workspace::Workspace::test_new("survivor");
     let survivor_tab_index = survivor.test_add_tab(Some("survivor-tab"));
     let survivor_pane = survivor.tabs[survivor_tab_index].layout.focused();
-    let disconnected = crate::workspace::Workspace::test_new("disconnected");
+    let disconnected = shepr_mux::workspace::Workspace::test_new("disconnected");
     let disconnected_pane = disconnected.tabs[0].layout.focused();
     server.app.state.workspaces = vec![survivor, disconnected];
     server.app.state.set_active_index(Some(1));
@@ -806,7 +806,7 @@ async fn promoted_client_window_title_uses_its_own_view() {
         Some(survivor_tab_id.as_str())
     );
 
-    let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+    let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes(b"\x1b]0;UPDATED OSC\x07");
     server
         .app
@@ -876,7 +876,7 @@ async fn client_shell_attach_seeds_workspace() {
 #[tokio::test]
 async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("endpoint");
+    let workspace = shepr_mux::workspace::Workspace::test_new("endpoint");
     let pane_id = workspace.tabs[0].root_pane;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -929,7 +929,7 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
 #[tokio::test]
 async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("endpoint")];
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("endpoint")];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
     let (writer, control_rx, _render_rx) = test_client_writer();
@@ -1060,13 +1060,13 @@ fn terminal_client_endpoint_request_error_removes_client() {
 #[tokio::test]
 async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("shell-only-label");
+    let workspace = shepr_mux::workspace::Workspace::test_new("shell-only-label");
     let pane_id = workspace.focused_pane_id().expect("focused pane");
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_screen_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
             80,
             23,
             b"\x1b[?1003h\x1b[?1006h\x1b[?1016hCLIENT_SHELL_LIVE",
@@ -1228,13 +1228,13 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
 }
 
 fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> shepr_core::layout::PaneId {
-    let workspace = crate::workspace::Workspace::test_new("shared-view");
+    let workspace = shepr_mux::workspace::Workspace::test_new("shared-view");
     let pane_id = workspace.focused_pane_id().expect("focused pane");
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"BASE"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"BASE"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1398,18 +1398,18 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
 #[tokio::test]
 async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("synchronized-split");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("synchronized-split");
     let first = workspace.tabs[0].root_pane;
     let second = workspace.test_split(ratatui::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
     );
     server.app.insert_test_runtime(
         second,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1444,7 +1444,7 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
 #[tokio::test]
 async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("zoomed-sync");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed-sync");
     let hidden = workspace.tabs[0].root_pane;
     let visible = workspace.test_split(ratatui::layout::Direction::Vertical);
     workspace.tabs[0].zoomed = true;
@@ -1452,11 +1452,11 @@ async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         hidden,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"HIDDEN"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"HIDDEN"),
     );
     server.app.insert_test_runtime(
         visible,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"VISIBLE"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"VISIBLE"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1678,7 +1678,7 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
 #[tokio::test]
 async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("divergent-retained");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("divergent-retained");
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
@@ -1686,11 +1686,11 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1908,7 +1908,7 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
 #[tokio::test]
 async fn client_shell_tab_focus_changes_only_the_source_connection() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("independent-tabs");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("independent-tabs");
     let second_tab = workspace.test_add_tab(Some("second"));
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -1975,12 +1975,12 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
 #[tokio::test]
 async fn client_local_navigation_does_not_emit_global_focus_transitions() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("independent-focus");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("independent-focus");
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
     let (first_runtime, mut first_input) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -1988,7 +1988,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
             4,
         );
     let (second_runtime, mut second_input) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2052,7 +2052,7 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
 
     let event_hub = shepr_api::EventHub::default();
     let mut server = test_headless_server_with_event_hub(event_hub.clone());
-    let mut workspace = crate::workspace::Workspace::test_new("focus-events");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("focus-events");
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
@@ -2172,12 +2172,12 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
 #[tokio::test]
 async fn public_focus_moves_shell_focus_between_tabs() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("public-focus-events");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("public-focus-events");
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
     let (first_runtime, mut first_input) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2185,7 +2185,7 @@ async fn public_focus_moves_shell_focus_between_tabs() {
             4,
         );
     let (second_runtime, mut second_input) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2247,18 +2247,18 @@ async fn public_focus_moves_shell_focus_between_tabs() {
 #[tokio::test]
 async fn repeated_layout_action_reapplies_controller_geometry() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("layout-geometry");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("layout-geometry");
     let first_pane = workspace.tabs[0].root_pane;
     let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -2296,18 +2296,18 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
 #[tokio::test]
 async fn public_close_reapplies_controller_geometry() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("public-close-geometry");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("public-close-geometry");
     let first_pane = workspace.tabs[0].root_pane;
     let second_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -2352,7 +2352,7 @@ async fn public_close_reapplies_controller_geometry() {
 #[tokio::test]
 async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("geometry-controller-viewer");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("geometry-controller-viewer");
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
@@ -2362,7 +2362,7 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     for pane_id in [first_pane, second_pane, third_pane] {
         server.app.insert_test_runtime(
             pane_id,
-            crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
         );
     }
     server.app.state.set_active_index(Some(0));
@@ -2409,13 +2409,13 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
 #[tokio::test]
 async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("independent-geometry");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("independent-geometry");
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
 
     let (second_runtime, mut second_input) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2426,7 +2426,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_TAB"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_TAB"),
     );
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.set_active_index(Some(0));
@@ -2518,7 +2518,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
 #[tokio::test]
 async fn public_background_tab_create_preserves_client_locations() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("background-create");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("background-create");
     let second_tab = workspace.test_add_tab(Some("second"));
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -2571,9 +2571,9 @@ async fn public_background_tab_create_preserves_client_locations() {
 #[tokio::test]
 async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     let mut server = test_headless_server();
-    let mut first = crate::workspace::Workspace::test_new("first");
+    let mut first = shepr_mux::workspace::Workspace::test_new("first");
     let second_tab = first.test_add_tab(Some("second"));
-    let second = crate::workspace::Workspace::test_new("second");
+    let second = shepr_mux::workspace::Workspace::test_new("second");
     server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -2638,20 +2638,20 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
 #[tokio::test]
 async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     let mut server = test_headless_server();
-    let first = crate::workspace::Workspace::test_new("first");
+    let first = shepr_mux::workspace::Workspace::test_new("first");
     let first_pane = first.tabs[0].root_pane;
 
-    let second = crate::workspace::Workspace::test_new("second");
+    let second = shepr_mux::workspace::Workspace::test_new("second");
     let second_pane = second.tabs[0].root_pane;
 
     server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(
         first_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_AGENT"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_AGENT"),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"SECOND_WORKSPACE"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"SECOND_WORKSPACE"),
     );
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -2736,8 +2736,8 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
 #[tokio::test]
 async fn public_api_focus_replaces_every_client_shell_projection() {
     let mut server = test_headless_server();
-    let first = crate::workspace::Workspace::test_new("first");
-    let second = crate::workspace::Workspace::test_new("second");
+    let first = shepr_mux::workspace::Workspace::test_new("first");
+    let second = shepr_mux::workspace::Workspace::test_new("second");
     server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -2896,11 +2896,17 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
 #[tokio::test]
 async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("hidden-input");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("hidden-input");
     let hidden_tab = workspace.test_add_tab(Some("hidden"));
     let hidden_pane = workspace.tabs[hidden_tab].root_pane;
     let (runtime, mut input_rx) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"\x1b[>3u", 4);
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            80,
+            24,
+            0,
+            b"\x1b[>3u",
+            4,
+        );
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(hidden_pane, runtime);
@@ -2952,15 +2958,16 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
 #[tokio::test]
 async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("scrolled-input");
+    let workspace = shepr_mux::workspace::Workspace::test_new("scrolled-input");
     let pane_id = workspace.tabs[0].root_pane;
-    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-        80,
-        2,
-        10_000,
-        b"one\r\ntwo\r\nthree\r\n",
-        4,
-    );
+    let (runtime, mut input_rx) =
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            80,
+            2,
+            10_000,
+            b"one\r\ntwo\r\nthree\r\n",
+            4,
+        );
     runtime.scroll_up(1);
     assert!(
         runtime
@@ -3010,7 +3017,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             .app
             .state
             .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
-            .and_then(crate::pane::PaneRuntime::scroll_metrics)
+            .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
             .map(|metrics| metrics.offset_from_bottom),
         Some(0)
     );
@@ -3182,9 +3189,9 @@ pub fn install_focused_test_runtime(
     server: &mut HeadlessServer,
     terminal_bytes: &[u8],
 ) -> tokio::sync::mpsc::Receiver<Bytes> {
-    let workspace = crate::workspace::Workspace::test_new("focus-reporting");
+    let workspace = shepr_mux::workspace::Workspace::test_new("focus-reporting");
     let pane_id = workspace.tabs[0].root_pane;
-    let (runtime, input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+    let (runtime, input_rx) = shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
         80,
         24,
         0,
@@ -3209,13 +3216,13 @@ fn retained_test_server_with_control(
     shepr_core::layout::PaneId,
 ) {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("test");
+    let workspace = shepr_mux::workspace::Workspace::test_new("test");
     let pane_id = workspace.focused_pane_id().expect("focused pane");
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, initial_screen),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, initial_screen),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -3430,7 +3437,7 @@ fn with_terminal_session_test_server(
         .expect("test runtime");
     let _runtime_guard = rt.enter();
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("test");
+    let workspace = shepr_mux::workspace::Workspace::test_new("test");
     let pane_id = workspace.tabs[0].root_pane;
     let terminal_id = workspace.terminal_id(pane_id).expect("terminal id").clone();
     let terminal_id_string = terminal_id.to_string();
@@ -3439,7 +3446,7 @@ fn with_terminal_session_test_server(
     server.app.state.ensure_test_terminals();
     server.app.terminal_runtimes.insert(
         terminal_id.clone(),
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
 
     test(&mut server, terminal_id, terminal_id_string, public_pane_id);
@@ -3488,7 +3495,7 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
             terminal.state = shepr_agent::detect::AgentState::Working;
             server.app.terminal_runtimes.insert(
                 terminal_id,
-                crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"\x1b[?1049hworking"),
+                shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"\x1b[?1049hworking"),
             );
             let request = shepr_api::schema::Request {
                 id: "read".into(),
@@ -3536,7 +3543,7 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
         .expect("test runtime");
     let _runtime_guard = rt.enter();
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("test");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("test");
     let second_tab = workspace.test_add_tab(Some("second"));
     let pane_id = workspace.tabs[0].root_pane;
     let terminal_id = workspace.terminal_id(pane_id).expect("terminal id").clone();
@@ -3551,7 +3558,7 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
         .expect("second tab id");
     server.app.terminal_runtimes.insert(
         terminal_id.clone(),
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.clients.insert(
         1,
@@ -3653,7 +3660,7 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
                 },
                 120,
                 false,
-                crate::terminal::ScreenSnapshot {
+                shepr_mux::terminal::ScreenSnapshot {
                     cols: 80,
                     rows: Vec::new(),
                 },
@@ -3841,7 +3848,7 @@ fn terminal_attach_is_told_about_rejected_pastes_and_dropped_input_once() {
 fn unchanged_git_refresh_does_not_request_headless_render() {
     let mut server = test_headless_server();
     server.app.git_refresh.git_refresh_in_flight = true;
-    let mut workspace = crate::workspace::Workspace::test_new("one");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("one");
     let workspace_id = workspace.id.to_string();
     let cwd = workspace.identity_cwd.clone();
     workspace.cached_auto_label = "cached".into();
@@ -3850,11 +3857,11 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     server.app.state.workspaces.push(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-        results: vec![crate::git::WorkspaceGitStatus {
+        results: vec![shepr_mux::git::WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: crate::git::GitStatusRefreshDemand::ALL,
+            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "cached".into(),
             branch: None,
             ahead_behind: None,
@@ -3870,17 +3877,17 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
 #[test]
 fn changed_git_refresh_requests_headless_render() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("one");
+    let workspace = shepr_mux::workspace::Workspace::test_new("one");
     let workspace_id = workspace.id.to_string();
     let cwd = workspace.identity_cwd.clone();
     server.app.state.workspaces.push(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-        results: vec![crate::git::WorkspaceGitStatus {
+        results: vec![shepr_mux::git::WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: crate::git::GitStatusRefreshDemand::ALL,
+            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: Some("changed".into()),
             ahead_behind: None,
@@ -3895,7 +3902,7 @@ fn changed_git_refresh_requests_headless_render() {
 #[tokio::test]
 async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on_cancel() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("host-shutdown");
+    let workspace = shepr_mux::workspace::Workspace::test_new("host-shutdown");
     let pane_id = workspace.tabs[0].root_pane;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -3947,7 +3954,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
 #[tokio::test]
 async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("oversized");
+    let workspace = shepr_mux::workspace::Workspace::test_new("oversized");
     let pane_id = workspace.tabs[0].root_pane;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -3964,7 +3971,7 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     }
     server.app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, screen.as_bytes()),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, screen.as_bytes()),
     );
     let (control, render_rx) = connect_test_shell(&mut server, 91, 80, 24);
     // The test writer forwards queued control messages from a background
@@ -4003,7 +4010,7 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
 
     server.app.insert_test_runtime(
         pane_id,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     assert!(server.handle_server_event(ServerEvent::ClientShellResize {
         client_id: ClientId::test_new(91),
@@ -4089,7 +4096,7 @@ async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
 #[tokio::test]
 async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("signal-quit");
+    let workspace = shepr_mux::workspace::Workspace::test_new("signal-quit");
     let pane_id = workspace.tabs[0].root_pane;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -4124,12 +4131,12 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
 #[tokio::test]
 async fn pane_death_reconciles_each_client_view_and_focus() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("pane-death-views");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-death-views");
     let dead_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
     let (second_runtime, mut second_input) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -4220,18 +4227,18 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
 #[tokio::test]
 async fn pane_death_reapplies_controller_geometry() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("pane-death-geometry");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-death-geometry");
     let first_pane = workspace.tabs[0].root_pane;
     let dead_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.insert_test_runtime(
         dead_pane,
-        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -4274,7 +4281,7 @@ fn terminal_attach_scroll_moves_attached_runtime_viewport() {
     for line in 0..80 {
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
-    let runtime = crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 4096, &bytes);
+    let runtime = shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 4096, &bytes);
 
     apply_terminal_attach_scroll(
         &runtime,
@@ -4313,13 +4320,14 @@ fn client_pane_pixel_mouse_uses_runtime_pixel_encoding() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-        20,
-        5,
-        0,
-        b"\x1b[?1003h\x1b[?1006h\x1b[?1016h",
-        4,
-    );
+    let (runtime, mut input_rx) =
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            20,
+            5,
+            0,
+            b"\x1b[?1003h\x1b[?1006h\x1b[?1016h",
+            4,
+        );
     runtime.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 10, 20));
 
     apply_client_pane_input_events(
@@ -4354,13 +4362,14 @@ fn client_pane_pixel_mouse_stays_pixel_scaled_when_sgr_is_reasserted() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-        80,
-        24,
-        0,
-        b"\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1006h",
-        4,
-    );
+    let (runtime, mut input_rx) =
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            80,
+            24,
+            0,
+            b"\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1006h",
+            4,
+        );
     runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 10, 20));
 
     apply_client_pane_input_events(
@@ -4395,13 +4404,14 @@ fn client_pane_pixel_mouse_falls_back_to_canonical_cell_position() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-        20,
-        5,
-        0,
-        b"\x1b[?1003h\x1b[?1006h",
-        4,
-    );
+    let (runtime, mut input_rx) =
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            20,
+            5,
+            0,
+            b"\x1b[?1003h\x1b[?1006h",
+            4,
+        );
     runtime.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 10, 20));
 
     apply_client_pane_input_events(
@@ -4441,7 +4451,9 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
     let (runtime, mut input_rx) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 4096, &bytes, 4);
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            20, 5, 4096, &bytes, 4,
+        );
     let scroll = |kind| shepr_protocol::ClientPaneInputEvent::Mouse {
         kind,
         position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
@@ -4544,7 +4556,9 @@ fn terminal_attach_input_resets_scrolled_viewport() {
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
     let (runtime, mut input_rx) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 4096, &bytes, 4);
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            20, 5, 4096, &bytes, 4,
+        );
 
     runtime.scroll_up(4);
     assert_eq!(
@@ -4576,7 +4590,7 @@ fn terminal_attach_input_resets_scrolled_viewport() {
 fn with_terminal_attach_runtime(
     initial_bytes: &[u8],
     initial_scroll: usize,
-    test: impl FnOnce(&crate::pane::PaneRuntime, &mut mpsc::Receiver<Bytes>),
+    test: impl FnOnce(&shepr_mux::pane::PaneRuntime, &mut mpsc::Receiver<Bytes>),
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -4588,7 +4602,9 @@ fn with_terminal_attach_runtime(
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
     let (runtime, mut input_rx) =
-        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 4096, &bytes, 4);
+        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            20, 5, 4096, &bytes, 4,
+        );
     if initial_scroll > 0 {
         runtime.scroll_up(initial_scroll);
     }
@@ -4600,7 +4616,7 @@ fn with_terminal_attach_runtime(
     rt.shutdown_timeout(Duration::from_millis(100));
 }
 
-fn apply_terminal_attach_page_up(runtime: &crate::pane::PaneRuntime) {
+fn apply_terminal_attach_page_up(runtime: &shepr_mux::pane::PaneRuntime) {
     apply_terminal_attach_scroll(
         runtime,
         AttachScrollSource::PageKey {
@@ -4854,7 +4870,7 @@ fn terminal_attach_page_key_forwards_in_alternate_screen_without_mouse_reporting
 #[test]
 fn headless_scheduled_tasks_expire_agent_metadata() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("metadata");
+    let workspace = shepr_mux::workspace::Workspace::test_new("metadata");
     let pane_id = workspace.tabs[0].root_pane;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -4945,7 +4961,7 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
 #[tokio::test]
 async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("restored");
+    let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.tabs[0].root_pane;
     let terminal_id = workspace
         .terminal_id(pane_id)
@@ -4997,7 +5013,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
 #[tokio::test]
 async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_ticks() {
     let mut server = test_headless_server();
-    let workspace = crate::workspace::Workspace::test_new("restored");
+    let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.tabs[0].root_pane;
     let terminal_id = workspace
         .terminal_id(pane_id)
@@ -5342,7 +5358,7 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
 fn client_shell_focus_promotes_and_reaches_reporting_pane() {
     with_terminal_session_test_server(|server, terminal_id, _other_terminal_id, _pane_id| {
         let (runtime, mut input_rx) =
-            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
                 80,
                 24,
                 0,
@@ -5584,7 +5600,7 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
 fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
     with_terminal_session_test_server(|server, runtime_terminal_id, terminal_id, _pane_id| {
         let (runtime, mut input_rx) =
-            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
                 80,
                 24,
                 0,
@@ -5628,7 +5644,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
 fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
     with_terminal_session_test_server(|server, runtime_terminal_id, terminal_id, _pane_id| {
         let (runtime, mut input_rx) =
-            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
                 80,
                 24,
                 0,

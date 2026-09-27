@@ -94,7 +94,7 @@ impl App {
             shepr_api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
         };
         let shell_config =
-            crate::pane::PaneShellConfig::new(&default_shell, self.state.settings.login_shell);
+            shepr_mux::pane::PaneShellConfig::new(&default_shell, self.state.settings.login_shell);
         let split_result = match params.ratio {
             Some(ratio) => ws.split_pane_with_ratio(
                 target_pane_id,
@@ -131,7 +131,7 @@ impl App {
             Some(Err(err)) => return failure(id, ApiErrorCode::PaneSplitFailed, err.to_string()),
             None => return failure(id, ApiErrorCode::PaneNotFound, "pane not found"),
         };
-        let crate::workspace::NewPane {
+        let shepr_mux::workspace::NewPane {
             pane_id,
             terminal,
             runtime,
@@ -312,7 +312,7 @@ impl App {
             params.lines,
         )?;
         let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
-            crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
+            shepr_mux::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
         });
 
         success(
@@ -389,14 +389,16 @@ impl App {
         let Some(plan) = self.state.prepare_pane_removal(ws_idx, pane_id) else {
             return Err(ApiError::pane_not_found(target.pane_id.clone()));
         };
-        let layout_update_target = (plan.scope == crate::workspace::PaneRemovalScope::Pane)
+        let layout_update_target = (plan.scope == shepr_mux::workspace::PaneRemovalScope::Pane)
             .then_some((ws_idx, plan.tab_index));
         let container_events = match plan.scope {
-            crate::workspace::PaneRemovalScope::Pane => Vec::new(),
-            crate::workspace::PaneRemovalScope::Tab => {
+            shepr_mux::workspace::PaneRemovalScope::Pane => Vec::new(),
+            shepr_mux::workspace::PaneRemovalScope::Tab => {
                 self.tab_close_events(ws_idx, plan.tab_index)
             }
-            crate::workspace::PaneRemovalScope::Workspace => self.workspace_close_events(ws_idx),
+            shepr_mux::workspace::PaneRemovalScope::Workspace => {
+                self.workspace_close_events(ws_idx)
+            }
         };
         let PaneRemovalCommit::Removed(outcome) = self.state.commit_pane_removal(&plan) else {
             return Err(ApiError::pane_not_found(target.pane_id.clone()));
@@ -404,14 +406,14 @@ impl App {
         self.shutdown_detached_terminal_runtimes();
         self.schedule_session_save();
         match outcome.removal.scope {
-            crate::workspace::PaneRemovalScope::Pane => self.emit_event(EventEnvelope {
+            shepr_mux::workspace::PaneRemovalScope::Pane => self.emit_event(EventEnvelope {
                 data: EventData::PaneClosed {
                     pane_id: public_pane_id,
                     workspace_id,
                 },
             }),
-            crate::workspace::PaneRemovalScope::Tab
-            | crate::workspace::PaneRemovalScope::Workspace => {
+            shepr_mux::workspace::PaneRemovalScope::Tab
+            | shepr_mux::workspace::PaneRemovalScope::Workspace => {
                 self.emit_events(container_events);
             }
         }
@@ -472,8 +474,8 @@ fn normalize_state_labels(
         .collect()
 }
 
-fn terminal_word_motion(motion: PaneCopyMotion) -> Option<crate::pane::TerminalWordMotion> {
-    use crate::pane::TerminalWordMotion;
+fn terminal_word_motion(motion: PaneCopyMotion) -> Option<shepr_mux::pane::TerminalWordMotion> {
+    use shepr_mux::pane::TerminalWordMotion;
     match motion {
         PaneCopyMotion::NextWordStart => Some(TerminalWordMotion::NextStart),
         PaneCopyMotion::PreviousWordStart => Some(TerminalWordMotion::PreviousStart),

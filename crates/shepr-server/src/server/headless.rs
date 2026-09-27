@@ -33,7 +33,6 @@ use tracing::{debug, info, warn};
 use base64::Engine;
 
 use crate::app;
-use crate::events::AppEvent;
 use crate::server::client_accept::accept_pending_client_connections;
 use crate::server::client_shell::{
     render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
@@ -49,6 +48,7 @@ use crate::server::pane_input::{
 };
 use crate::server::socket_paths::{client_socket_path, prepare_socket_path};
 use shepr_api::{self, RenderDemand};
+use shepr_mux::events::AppEvent;
 #[cfg(any(test, feature = "test-api"))]
 use shepr_platform::ipc::bind_local_listener;
 use shepr_platform::ipc::{
@@ -521,7 +521,7 @@ impl HeadlessServer {
             self.app.save_session_before_teardown();
         }
         self.app.terminal_runtimes.clear();
-        if !crate::pane::wait_for_pane_session_teardowns(Duration::from_secs(3)) {
+        if !shepr_mux::pane::wait_for_pane_session_teardowns(Duration::from_secs(3)) {
             warn!("pane session teardown did not finish before server exit");
         }
         self.app.retire_session_writer();
@@ -828,7 +828,7 @@ impl HeadlessServer {
     fn runtime_for_terminal_id_string(
         &self,
         terminal_id: &str,
-    ) -> Option<&crate::pane::PaneRuntime> {
+    ) -> Option<&shepr_mux::pane::PaneRuntime> {
         let terminal_id = self.terminal_id_by_string(terminal_id)?;
         self.app.terminal_runtimes.get(terminal_id)
     }

@@ -54,9 +54,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::workspace::Workspace;
     use shepr_api::schema::{EmptyParams, Method, ResponseResult, SuccessResponse};
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     fn app_with_two_tabs() -> crate::app::App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

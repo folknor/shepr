@@ -14,7 +14,7 @@ pub(crate) use self::tab_surface::{
 };
 
 use crate::app::AppState;
-use crate::pane::PaneRuntimeRegistry;
+use shepr_mux::pane::PaneRuntimeRegistry;
 
 /// Refresh the active view geometry without resizing any terminal runtimes.
 pub fn compute_view_with_runtime_registry(

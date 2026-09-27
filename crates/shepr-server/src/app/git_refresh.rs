@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use super::{App, GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
-use crate::events::AppEvent;
-use crate::git::{GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus};
+use shepr_mux::events::AppEvent;
+use shepr_mux::git::{GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus};
 
 pub(crate) struct GitRefreshScheduler {
     pub(crate) last_git_remote_status_refresh: Instant,
@@ -217,7 +217,7 @@ fn deduplicate_git_refresh_items(
     for item in items {
         let reconcile = item.cache_key_hint.is_none();
         let cache_key = item.cache_key_hint.unwrap_or_else(|| {
-            crate::git::git_status_cache_key(&item.resolved_identity_cwd)
+            shepr_mux::git::git_status_cache_key(&item.resolved_identity_cwd)
                 .unwrap_or_else(|| item.resolved_identity_cwd.clone())
         });
         let target = WorkspaceGitRefreshTarget {
@@ -265,7 +265,7 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
     let mut cache_updates = Vec::new();
 
     for job in deduplicate_git_refresh_items(items, cache) {
-        let (snapshot, cache_entry) = crate::git::git_status_snapshot_for_cwd_with_demand(
+        let (snapshot, cache_entry) = shepr_mux::git::git_status_snapshot_for_cwd_with_demand(
             &job.cache_key,
             job.cached.as_ref(),
             demand,
@@ -292,7 +292,7 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
+    use shepr_mux::workspace::Workspace;
 
     #[test]
     fn git_refresh_deduplicates_workspaces_with_same_cache_key() {
@@ -344,11 +344,11 @@ mod tests {
         let cached = GitStatusCacheEntry {
             fingerprint: None,
             retry_after: Some(Instant::now() + std::time::Duration::from_secs(30)),
-            snapshot: crate::git::WorkspaceGitStatusSnapshot {
+            snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
                 auto_label: "/".into(),
                 branch: Some("main".into()),
                 ahead_behind: None,
-                space: Some(crate::git::GitSpaceMetadata {
+                space: Some(shepr_mux::git::GitSpaceMetadata {
                     key: "/.git".into(),
                     checkout_key: "/".into(),
                     repo_name: "repo".into(),
@@ -434,7 +434,7 @@ mod tests {
         let cached = GitStatusCacheEntry {
             fingerprint: None,
             retry_after: None,
-            snapshot: crate::git::WorkspaceGitStatusSnapshot {
+            snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
                 auto_label: "stale".into(),
                 branch: None,
                 ahead_behind: None,
@@ -603,7 +603,7 @@ mod tests {
         let mut app = test_app(&shepr_config::Config::default());
         let scratch = crate::test_support::ScratchDir::new("git-miss");
         let cwd = scratch.to_path_buf();
-        let (_, entry) = crate::git::git_status_snapshot_for_cwd_with_demand(
+        let (_, entry) = shepr_mux::git::git_status_snapshot_for_cwd_with_demand(
             &cwd,
             None,
             GitStatusRefreshDemand::ALL,

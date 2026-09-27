@@ -5,13 +5,13 @@ use super::{App, SESSION_SAVE_DEBOUNCE};
 pub(crate) struct SessionSaver {
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
-    pub(crate) session_writer: std::sync::Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
+    pub(crate) session_writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>,
     pub(crate) pane_exit_checkpoint_pending: bool,
 }
 
 impl SessionSaver {
     pub(crate) fn new(
-        writer: std::sync::Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
+        writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>,
     ) -> Self {
         Self {
             session_save_deadline: None,
@@ -46,8 +46,8 @@ impl SessionSaver {
 enum SessionSaveJob {
     Clear,
     Save {
-        snapshot: crate::persist::SessionSnapshot,
-        history: Option<crate::persist::PendingHistory>,
+        snapshot: shepr_mux::persist::SessionSnapshot,
+        history: Option<shepr_mux::persist::PendingHistory>,
     },
 }
 
@@ -84,7 +84,7 @@ impl App {
         if self.state.workspaces.is_empty() {
             SessionSaveJob::Clear
         } else {
-            let snapshot = crate::persist::capture(
+            let snapshot = shepr_mux::persist::capture(
                 &self.state.workspaces,
                 &self.state.terminals,
                 &self.terminal_runtimes,
@@ -96,7 +96,7 @@ impl App {
                 self.state.host_terminal_theme,
             );
             let history = self.persist_pane_history.then(|| {
-                crate::persist::capture_pending_history(
+                shepr_mux::persist::capture_pending_history(
                     &self.state.workspaces,
                     &self.terminal_runtimes,
                     &self.pane_history_carry,
@@ -210,7 +210,7 @@ impl App {
 
 fn run_session_save_job(
     job: SessionSaveJob,
-    writer: &std::sync::Mutex<crate::persist::SessionWriter>,
+    writer: &std::sync::Mutex<shepr_mux::persist::SessionWriter>,
 ) {
     // Formatting pane history is the expensive part of a save; it happens
     // here, before the writer is locked.

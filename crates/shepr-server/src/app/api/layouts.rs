@@ -142,7 +142,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(
+                    shepr_mux::pane::PaneShellConfig::new(
                         &default_shell,
                         self.state.settings.login_shell,
                     ),
@@ -405,7 +405,7 @@ impl App {
 struct LayoutStaging<'a> {
     workspace_id: &'a str,
     tab_number: usize,
-    geometry: crate::workspace::PaneGeometry,
+    geometry: shepr_mux::workspace::PaneGeometry,
     default_shell: &'a str,
     login_shell: bool,
     scrollback_limit_bytes: usize,
@@ -414,16 +414,16 @@ struct LayoutStaging<'a> {
     default_cwd: &'a std::path::Path,
     next_pane_number: &'a mut usize,
     pane_cwds: &'a mut std::collections::HashMap<PaneId, PathBuf>,
-    pane_terminals: &'a mut std::collections::HashMap<PaneId, crate::terminal::TerminalState>,
+    pane_terminals: &'a mut std::collections::HashMap<PaneId, shepr_mux::terminal::TerminalState>,
     pane_runtimes: &'a mut std::collections::HashMap<
         PaneId,
-        (shepr_protocol::TerminalId, crate::pane::PaneRuntime),
+        (shepr_protocol::TerminalId, shepr_mux::pane::PaneRuntime),
     >,
-    spawn: &'a crate::workspace::PaneSpawnHandles,
+    spawn: &'a shepr_mux::workspace::PaneSpawnHandles,
 }
 
 fn stage_layout_node(
-    tab: &mut crate::workspace::Tab,
+    tab: &mut shepr_mux::workspace::Tab,
     target_pane_id: PaneId,
     node: &LayoutNode,
     staging: &mut LayoutStaging<'_>,
@@ -463,7 +463,7 @@ fn stage_layout_node(
             let extra_env = super::env::normalize_launch_env(second_leaf.env.clone())
                 .map_err(shepr_api::error::ApiError::into_message)?;
             let command = layout_command(second_leaf)?;
-            let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
+            let launch_env = shepr_mux::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
                 shepr_protocol::WorkspaceId::new(staging.workspace_id),
                 shepr_protocol::PublicTabId::new(staging.workspace_id, staging.tab_number),
                 shepr_protocol::PublicPaneId::new(staging.workspace_id, *staging.next_pane_number),
@@ -500,13 +500,16 @@ fn stage_layout_node(
                     staging.scrollback_limit_bytes,
                     staging.host_terminal_theme,
                     staging.host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(staging.default_shell, staging.login_shell),
+                    shepr_mux::pane::PaneShellConfig::new(
+                        staging.default_shell,
+                        staging.login_shell,
+                    ),
                     &launch_env,
                     staging.spawn,
                 )
             }
             .map_err(|err| err.to_string())?;
-            let crate::workspace::NewPane {
+            let shepr_mux::workspace::NewPane {
                 pane_id,
                 terminal,
                 runtime,
@@ -632,9 +635,9 @@ fn validate_layout_node(
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
-    use crate::workspace::Workspace;
     use shepr_api::schema::{ErrorResponse, ResponseResult, SuccessResponse};
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     fn app_with_workspace() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

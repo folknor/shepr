@@ -30,7 +30,7 @@ impl CliContext {
             paths,
             target: RefCell::new(ApiTarget::Local),
             protocol_checked: Cell::new(false),
-            caller_pane_id: std::env::var(shepr_server::pane::SHEPR_PANE_ID_ENV_VAR).ok(),
+            caller_pane_id: std::env::var(shepr_mux::pane::SHEPR_PANE_ID_ENV_VAR).ok(),
             caller_socket: std::env::var_os(shepr_config::SOCKET_PATH_ENV_VAR),
         }
     }

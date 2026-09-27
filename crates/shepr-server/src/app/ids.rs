@@ -4,7 +4,7 @@ impl App {
     pub(crate) fn find_pane(
         &self,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<(usize, &crate::pane::PaneState)> {
+    ) -> Option<(usize, &shepr_mux::pane::PaneState)> {
         self.state
             .workspaces
             .iter()
@@ -31,7 +31,7 @@ impl App {
     pub(crate) fn public_tab_id(&self, ws_idx: usize, tab_idx: usize) -> Option<String> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_number = ws.public_tab_number(tab_idx)?;
-        Some(crate::workspace::public_tab_id_for_number(
+        Some(shepr_mux::workspace::public_tab_id_for_number(
             &ws.id, tab_number,
         ))
     }
@@ -43,7 +43,7 @@ impl App {
     ) -> Option<String> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_number = ws.public_pane_number(pane_id)?;
-        Some(crate::workspace::public_pane_id_for_number(
+        Some(shepr_mux::workspace::public_pane_id_for_number(
             &ws.id,
             pane_number,
         ))
@@ -69,7 +69,7 @@ impl App {
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
         extra_env: Vec<(String, String)>,
-    ) -> Option<crate::pane::PaneLaunchEnv> {
+    ) -> Option<shepr_mux::pane::PaneLaunchEnv> {
         let tab_idx = self.tab_index_for_pane(ws_idx, pane_id)?;
         let workspace = self.state.workspaces.get(ws_idx)?;
         let tab_number = workspace.public_tab_number(tab_idx)?;
@@ -78,7 +78,7 @@ impl App {
         let tab_id = shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab_number);
         let pane_id = shepr_protocol::PublicPaneId::new(workspace.id.as_str(), pane_number);
         Some(
-            crate::pane::PaneLaunchEnv::from_extra(extra_env)
+            shepr_mux::pane::PaneLaunchEnv::from_extra(extra_env)
                 .with_api_socket_path(shepr_api::socket_path(&self.paths))
                 .with_identity(workspace_id, tab_id, pane_id),
         )
@@ -152,7 +152,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::workspace::Workspace;
+    use shepr_mux::workspace::Workspace;
 
     fn test_app_with_workspaces(names: &[&str]) -> super::App {
         let mut app = super::App::new(

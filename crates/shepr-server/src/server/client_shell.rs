@@ -107,9 +107,9 @@ pub(super) fn snapshot_from_session(
                 number: workspace.number,
                 label: workspace.label,
                 custom_label: state.is_some_and(|state| state.custom_name.is_some()),
-                branch: state.and_then(crate::workspace::Workspace::branch),
+                branch: state.and_then(shepr_mux::workspace::Workspace::branch),
                 git_ahead_behind: state
-                    .and_then(crate::workspace::Workspace::git_ahead_behind)
+                    .and_then(shepr_mux::workspace::Workspace::git_ahead_behind)
                     .map(|counts| (counts.ahead, counts.behind)),
                 tokens,
                 agent_status: workspace.agent_status,
@@ -319,9 +319,9 @@ pub(super) fn render_pane_surface(
                                 pane.id,
                             );
                             let mouse_reporting = runtime
-                                .is_some_and(crate::pane::PaneRuntime::mouse_reporting_enabled);
+                                .is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
                             let sgr_pixel_mouse = runtime
-                                .is_some_and(crate::pane::PaneRuntime::sgr_pixel_mouse_enabled);
+                                .is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
                             let (pixel_width, pixel_height) = if cell_size.is_known() {
                                 (
                                     u32::from(pane.inner_rect.width) * cell_size.width_px,
@@ -349,7 +349,7 @@ pub(super) fn render_pane_surface(
                                 inner_rect: pane.inner_rect.into(),
                                 scrollbar_rect: pane.scrollbar_rect.map(Into::into),
                                 scroll: runtime
-                                    .and_then(crate::pane::PaneRuntime::scroll_metrics)
+                                    .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
                                     .map(|metrics| shepr_protocol::PaneSurfaceScrollMetrics {
                                         offset_from_bottom: metrics.offset_from_bottom as u64,
                                         max_offset_from_bottom: metrics.max_offset_from_bottom
@@ -360,8 +360,9 @@ pub(super) fn render_pane_surface(
                                 focused: pane.is_focused,
                                 mouse_reporting,
                                 sgr_pixel_mouse,
-                                alternate_screen_active: runtime
-                                    .is_some_and(crate::pane::PaneRuntime::alternate_screen_active),
+                                alternate_screen_active: runtime.is_some_and(
+                                    shepr_mux::pane::PaneRuntime::alternate_screen_active,
+                                ),
                                 pixel_width,
                                 pixel_height,
                             })
@@ -496,13 +497,13 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel().1,
             shepr_api::EventHub::default(),
         );
-        let mut first = crate::workspace::Workspace::test_new("first");
+        let mut first = shepr_mux::workspace::Workspace::test_new("first");
         // `test_new` always sets a custom name for identification; clear it
         // so only `second` below is actually custom-named, which is what
         // this test's `custom_label` assertions check.
         first.custom_name = None;
         first.test_add_tab(Some("second-tab"));
-        let mut second = crate::workspace::Workspace::test_new("second");
+        let mut second = shepr_mux::workspace::Workspace::test_new("second");
         second.custom_name = Some("named".into());
         second.tabs[0].zoomed = true;
         app.state.workspaces = vec![first, second];

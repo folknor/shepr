@@ -4,7 +4,7 @@ use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::layout::{Position, Rect, Size};
 
 use crate::app::state::AppState;
-use crate::pane::PaneRuntimeRegistry;
+use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_protocol::{
     CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
     SurfaceRevision, TerminalFrame,
@@ -488,7 +488,7 @@ pub(crate) fn render_tab_surface_virtual(
 
 /// Renders one server-owned terminal directly for `terminal attach` clients.
 pub(crate) fn render_terminal_virtual(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     area: Rect,
 ) -> (ratatui::buffer::Buffer, Option<CursorState>) {
     let suppress_cursor = runtime.synchronized_output_active();

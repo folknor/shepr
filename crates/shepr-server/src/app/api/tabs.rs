@@ -88,7 +88,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(
+                    shepr_mux::pane::PaneShellConfig::new(
                         &default_shell,
                         self.state.settings.login_shell,
                     ),
@@ -109,7 +109,7 @@ impl App {
                 if let Some(label) = label {
                     let workspace_id = self.public_workspace_id(ws_idx);
                     let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
-                        crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
+                        shepr_mux::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
                     });
                     if let Some(tab) = self
                         .state
@@ -152,7 +152,7 @@ impl App {
             return tab_not_found(id, &params.tab_id);
         };
         let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
-            crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
+            shepr_mux::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
         });
         let Some(tab) = self
             .state
@@ -196,7 +196,7 @@ impl App {
 
         let tab_id = self
             .public_tab_id(ws_idx, tab_idx)
-            .unwrap_or_else(|| crate::workspace::public_tab_id_for_number(&ws.id, tab_idx + 1));
+            .unwrap_or_else(|| shepr_mux::workspace::public_tab_id_for_number(&ws.id, tab_idx + 1));
         let workspace_id = self.public_workspace_id(ws_idx);
         let insert_index = params.insert_index;
         let moved = self
@@ -285,9 +285,9 @@ fn tab_not_found(id: String, tab_id: &str) -> ApiResult {
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
-    use crate::workspace::Workspace;
     use shepr_api::schema::SuccessResponse;
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     #[test]
     fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {

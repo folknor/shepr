@@ -12,7 +12,8 @@ const PENDING_AGENT_RESUME_RETRY_INTERVAL: std::time::Duration = std::time::Dura
 /// How long a restored managed agent's name waits, once its resume command is
 /// typed, for the agent's process (or a hook report from it) to appear. Only
 /// the process has to show up, not reach a prompt, so this is generous.
-const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = crate::pane::MANAGED_AGENT_RESUME_TIMEOUT;
+const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration =
+    shepr_mux::pane::MANAGED_AGENT_RESUME_TIMEOUT;
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
@@ -224,7 +225,7 @@ impl App {
     /// Cheap pre-filter: whether any pane of `tab` awaits a resume. Lets the
     /// candidate walks skip the layout computation for every tab with nothing
     /// pending, which is almost all of them.
-    fn tab_has_pending_agent_resume(&self, tab: &crate::workspace::Tab) -> bool {
+    fn tab_has_pending_agent_resume(&self, tab: &shepr_mux::workspace::Tab) -> bool {
         tab.panes
             .keys()
             .any(|pane_id| self.pane_awaits_agent_resume(tab, *pane_id))
@@ -232,7 +233,7 @@ impl App {
 
     fn pane_awaits_agent_resume(
         &self,
-        tab: &crate::workspace::Tab,
+        tab: &shepr_mux::workspace::Tab,
         pane_id: shepr_core::layout::PaneId,
     ) -> bool {
         tab.panes.get(&pane_id).is_some_and(|pane| {
@@ -297,9 +298,9 @@ impl App {
         &self,
         ws_idx: usize,
         tab_idx: usize,
-        tab: &crate::workspace::Tab,
+        tab: &shepr_mux::workspace::Tab,
         terminal_area: Rect,
-    ) -> Vec<crate::workspace::PaneChromeInfo> {
+    ) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
         let mut pane_infos = derived_pending_agent_resume_pane_infos(
             tab,
             terminal_area,
@@ -423,7 +424,7 @@ impl App {
             return true;
         }
 
-        let runtime = match crate::pane::PaneRuntime::spawn(
+        let runtime = match shepr_mux::pane::PaneRuntime::spawn(
             pane_id,
             rows,
             cols,
@@ -431,7 +432,7 @@ impl App {
             self.state.settings.pane_scrollback_limit_bytes,
             host_terminal_theme,
             self.state.host_terminal_appearance,
-            crate::pane::PaneShellConfig::new(
+            shepr_mux::pane::PaneShellConfig::new(
                 &self.state.settings.default_shell,
                 self.state.settings.login_shell,
             ),
@@ -492,14 +493,14 @@ impl App {
 }
 
 fn derived_pending_agent_resume_pane_infos(
-    tab: &crate::workspace::Tab,
+    tab: &shepr_mux::workspace::Tab,
     terminal_area: Rect,
     pane_borders: shepr_config::PaneBordersConfig,
     pane_gaps: bool,
     pane_outer_borders: bool,
     pane_scrollbars: bool,
-) -> Vec<crate::workspace::PaneChromeInfo> {
-    let geometry = crate::workspace::PaneGeometry {
+) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
+    let geometry = shepr_mux::workspace::PaneGeometry {
         area: terminal_area,
         pane_borders,
         pane_gaps,
@@ -519,7 +520,7 @@ fn derived_pending_agent_resume_pane_infos(
     panes
         .into_iter()
         .map(|mut info| {
-            let pane_inner = crate::workspace::pane_inner_rect(info.rect, info.borders);
+            let pane_inner = shepr_mux::workspace::pane_inner_rect(info.rect, info.borders);
             info.inner_rect = stable_terminal_inner_rect(pane_inner);
             info
         })
@@ -568,7 +569,7 @@ mod tests {
                 shepr_api::EventHub::default(),
             );
             app.state.workspaces = (0..4)
-                .map(|_| crate::workspace::Workspace::test_new("restore"))
+                .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
                 .collect();
             app.state.set_active_index(Some(0));
             app.state.view.terminal_area = Rect::new(0, 0, 100, 30);
@@ -642,7 +643,7 @@ mod tests {
     #[tokio::test]
     async fn failed_due_resume_backs_off_instead_of_leaving_deadline_in_the_past() {
         let mut app = test_app();
-        let workspace = crate::workspace::Workspace::test_new("restored");
+        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
@@ -688,14 +689,14 @@ mod tests {
     #[tokio::test]
     async fn candidate_probe_agrees_with_the_collected_candidates() {
         let mut app = test_app();
-        let pending_workspace = crate::workspace::Workspace::test_new("pending");
+        let pending_workspace = shepr_mux::workspace::Workspace::test_new("pending");
         let pending_pane = pending_workspace.tabs[0].root_pane;
         let pending_terminal = pending_workspace
             .terminal_id(pending_pane)
             .cloned()
             .expect("test precondition");
         app.state.workspaces = vec![
-            crate::workspace::Workspace::test_new("idle"),
+            shepr_mux::workspace::Workspace::test_new("idle"),
             pending_workspace,
         ];
         app.state.set_active_index(Some(0));
@@ -742,7 +743,7 @@ mod tests {
     async fn failed_deferred_restore_keeps_session_reference_without_retrying_elsewhere() {
         for missing_shell in [false, true] {
             let mut app = test_app();
-            let workspace = crate::workspace::Workspace::test_new("unavailable");
+            let workspace = shepr_mux::workspace::Workspace::test_new("unavailable");
             let pane_id = workspace.tabs[0].root_pane;
             let terminal_id = workspace
                 .terminal_id(pane_id)
@@ -807,7 +808,7 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_waits_for_host_theme_before_launch() {
         let mut app = test_app();
-        let workspace = crate::workspace::Workspace::test_new("restored");
+        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
@@ -890,7 +891,7 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_can_launch_after_theme_wait_expires() {
         let mut app = test_app();
-        let workspace = crate::workspace::Workspace::test_new("restored");
+        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
@@ -928,7 +929,7 @@ mod tests {
     #[tokio::test]
     async fn a_launched_resume_releases_its_managed_name_when_the_agent_never_appears() {
         let mut app = test_app();
-        let workspace = crate::workspace::Workspace::test_new("restored");
+        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs[0].root_pane;
         let terminal_id = workspace
             .terminal_id(pane_id)
@@ -986,13 +987,13 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_launches_hidden_panes_with_current_terminal_area() {
         let mut app = test_app();
-        let active_workspace = crate::workspace::Workspace::test_new("active");
+        let active_workspace = shepr_mux::workspace::Workspace::test_new("active");
         let active_pane = active_workspace.tabs[0].root_pane;
         let active_terminal = active_workspace
             .terminal_id(active_pane)
             .cloned()
             .expect("test precondition");
-        let hidden_workspace = crate::workspace::Workspace::test_new("hidden");
+        let hidden_workspace = shepr_mux::workspace::Workspace::test_new("hidden");
         let hidden_pane = hidden_workspace.tabs[0].root_pane;
         let hidden_terminal = hidden_workspace
             .terminal_id(hidden_pane)
@@ -1056,7 +1057,7 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_launches_inactive_tab_panes_with_current_terminal_area() {
         let mut app = test_app();
-        let mut workspace = crate::workspace::Workspace::test_new("tabs");
+        let mut workspace = shepr_mux::workspace::Workspace::test_new("tabs");
         let active_pane = workspace.tabs[0].root_pane;
         let inactive_tab = workspace.test_add_tab(Some("agents"));
         let inactive_pane = workspace.tabs[inactive_tab].root_pane;
@@ -1123,7 +1124,7 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_launches_zoom_hidden_active_tab_panes() {
         let mut app = test_app();
-        let mut workspace = crate::workspace::Workspace::test_new("zoomed");
+        let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed");
         let hidden_pane = workspace.tabs[0].root_pane;
         let visible_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
         workspace.tabs[0].zoomed = true;
@@ -1131,7 +1132,7 @@ mod tests {
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = vec![crate::workspace::PaneChromeInfo {
+        app.state.view.pane_infos = vec![shepr_mux::workspace::PaneChromeInfo {
             id: visible_pane,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),
@@ -1185,13 +1186,13 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_uses_current_terminal_area_for_background_panes() {
         let mut app = test_app();
-        let previous_workspace = crate::workspace::Workspace::test_new("previous");
+        let previous_workspace = shepr_mux::workspace::Workspace::test_new("previous");
         let previous_pane = previous_workspace.tabs[0].root_pane;
         let previous_terminal = previous_workspace
             .terminal_id(previous_pane)
             .cloned()
             .expect("test precondition");
-        let current_workspace = crate::workspace::Workspace::test_new("current");
+        let current_workspace = shepr_mux::workspace::Workspace::test_new("current");
         app.state.view.pane_infos = previous_workspace.tabs[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
@@ -1246,13 +1247,13 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_launches_with_inner_rect_size() {
         let mut app = test_app();
-        let mut workspace = crate::workspace::Workspace::test_new("split");
+        let mut workspace = shepr_mux::workspace::Workspace::test_new("split");
         let pane_id = workspace.test_split(ratatui::layout::Direction::Horizontal);
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = vec![crate::workspace::PaneChromeInfo {
+        app.state.view.pane_infos = vec![shepr_mux::workspace::PaneChromeInfo {
             id: pane_id,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),

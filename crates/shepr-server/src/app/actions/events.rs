@@ -7,7 +7,7 @@ use super::*;
 impl AppState {
     pub(crate) fn apply_workspace_git_statuses(
         &mut self,
-        terminal_runtimes: &crate::pane::PaneRuntimeRegistry,
+        terminal_runtimes: &shepr_mux::pane::PaneRuntimeRegistry,
         results: Vec<WorkspaceGitStatus>,
     ) -> bool {
         let mut changed = false;
@@ -167,7 +167,7 @@ impl AppState {
                 ttl,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+                    terminal.set_agent_metadata(shepr_mux::terminal::AgentMetadataReport {
                         source,
                         agent_label,
                         applies_to_source,
@@ -255,7 +255,7 @@ impl AppState {
         update: F,
     ) -> Option<PaneStateUpdate>
     where
-        F: FnOnce(&mut crate::terminal::TerminalState) -> Option<TerminalStateMutation>,
+        F: FnOnce(&mut shepr_mux::terminal::TerminalState) -> Option<TerminalStateMutation>,
     {
         let ws_idx = self
             .workspaces
@@ -343,7 +343,7 @@ impl AppState {
     pub(crate) fn next_managed_agent_deadline(&self) -> Option<Instant> {
         self.terminals
             .values()
-            .filter_map(crate::terminal::TerminalState::next_managed_agent_deadline)
+            .filter_map(shepr_mux::terminal::TerminalState::next_managed_agent_deadline)
             .min()
     }
 

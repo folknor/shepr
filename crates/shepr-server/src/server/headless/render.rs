@@ -15,7 +15,7 @@ impl HeadlessServer {
     fn shell_focused_runtime(
         &self,
         client_id: ClientId,
-    ) -> Option<(&crate::pane::PaneRuntime, shepr_core::layout::PaneId)> {
+    ) -> Option<(&shepr_mux::pane::PaneRuntime, shepr_core::layout::PaneId)> {
         let target = self.shell_target_for_client(client_id)?;
         let (workspace_index, tab_index) = target.resolve(&self.app.state)?;
         let tab = self
@@ -55,10 +55,11 @@ impl HeadlessServer {
                 ClientConnectionMode::TerminalAttach { terminal_id, .. } => {
                     let runtime = self.app.terminal_runtimes.get(terminal_id);
                     let child_requests_mouse =
-                        runtime.is_some_and(crate::pane::PaneRuntime::mouse_reporting_enabled);
+                        runtime.is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
                     let sgr_pixels = child_requests_mouse
                         && client.pixel_mouse
-                        && runtime.is_some_and(crate::pane::PaneRuntime::sgr_pixel_mouse_enabled);
+                        && runtime
+                            .is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
                     Some((client_id, child_requests_mouse, sgr_pixels))
                 }
                 ClientConnectionMode::TerminalPending => None,
@@ -454,7 +455,7 @@ impl HeadlessServer {
                             workspace_index,
                             pane.id,
                         )
-                        .is_some_and(crate::pane::PaneRuntime::synchronized_output_active)
+                        .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
                 }) {
                     continue;
                 }

@@ -272,7 +272,7 @@ impl App {
             return workspace_not_found(id, &params.workspace_id);
         };
         let now = std::time::Instant::now();
-        if !crate::terminal::metadata_tokens::sequence_is_fresh(
+        if !shepr_mux::terminal::metadata_tokens::sequence_is_fresh(
             &workspace.metadata_token_sequences,
             &source,
             params.seq,
@@ -292,7 +292,7 @@ impl App {
                 ),
             );
         }
-        match crate::terminal::metadata_tokens::accept_sequence(
+        match shepr_mux::terminal::metadata_tokens::accept_sequence(
             &mut workspace.metadata_token_sequences,
             &source,
             params.seq,
@@ -306,7 +306,7 @@ impl App {
                     ApiErrorCode::MetadataSequenceSourceLimit,
                     format!(
                         "workspace metadata may track at most {} sequenced sources",
-                        crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
+                        shepr_mux::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
                     ),
                 );
             }
@@ -356,9 +356,9 @@ fn workspace_not_found(id: String, workspace_id: &str) -> ApiResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use shepr_api::schema::{ErrorResponse, SuccessResponse};
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
     // surface. Splits and tabs already do; a new workspace must follow the
@@ -742,7 +742,7 @@ mod tests {
             app.state
                 .workspaces
                 .iter()
-                .map(crate::workspace::Workspace::display_name)
+                .map(shepr_mux::workspace::Workspace::display_name)
                 .collect::<Vec<_>>(),
             ["normal", "parent", "child", "tail"]
         );

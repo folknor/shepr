@@ -2,7 +2,7 @@ use crate::server::ClientId;
 
 pub(super) enum AltScreenReadConflict {
     None,
-    Frozen(crate::terminal::TerminalReadSnapshot),
+    Frozen(shepr_mux::terminal::TerminalReadSnapshot),
     Defer,
 }
 
@@ -10,7 +10,7 @@ pub(super) struct AltScreenReadSpec {
     pub(super) terminal_id: shepr_protocol::TerminalId,
     pub(super) lines: usize,
     pub(super) unwrap: bool,
-    pub(super) initial: crate::terminal::ScreenSnapshot,
+    pub(super) initial: shepr_mux::terminal::ScreenSnapshot,
     pub(super) content_seq: u64,
 }
 
@@ -450,7 +450,7 @@ impl ApiDispatcher {
             return None;
         }
         let runtime = server.app.terminal_runtimes.get(&terminal.id)?;
-        if runtime.wheel_routing() != Some(crate::pane::WheelRouting::MouseReport) {
+        if runtime.wheel_routing() != Some(shepr_mux::pane::WheelRouting::MouseReport) {
             return None;
         }
         let (screen, initial, content_seq) = runtime.screen_text_snapshot_with_seq()?;

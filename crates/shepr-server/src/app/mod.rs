@@ -40,9 +40,9 @@ use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
 use tracing::info;
 
-use crate::events::AppEvent;
 #[cfg(any(test, feature = "test-api"))]
 use shepr_config::Config;
+use shepr_mux::events::AppEvent;
 
 pub use state::{AppState, Mode, ViewState};
 
@@ -72,7 +72,7 @@ impl AppPolicy {
 pub struct App {
     pub state: AppState,
     pub(crate) pixel_mouse_available: bool,
-    pub(crate) terminal_runtimes: crate::pane::PaneRuntimeRegistry,
+    pub(crate) terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
@@ -92,13 +92,13 @@ pub struct App {
     /// Pane history kept across saves (restored panes not yet running, the
     /// last primary screen of panes on the alternate screen); every history
     /// capture takes it.
-    pub(crate) pane_history_carry: crate::persist::HistoryCarry,
+    pub(crate) pane_history_carry: shepr_mux::persist::HistoryCarry,
     /// Last render-loop attempt, including a throttled hidden-only PTY skip.
     pub(crate) last_render_at: Option<Instant>,
     /// Last attempt that could update a connected presentation surface.
     pub(crate) last_presentation_at: Option<Instant>,
     pub render_notify: Arc<Notify>,
-    pub(crate) render_dirty: Arc<crate::render_signal::RenderSignal>,
+    pub(crate) render_dirty: Arc<shepr_mux::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
     resolved_config: shepr_config::ValidatedConfig,
     pub(crate) paths: shepr_config::AppPaths,
@@ -123,47 +123,50 @@ impl App {
             None,
             paths.clone(),
         );
-        let lease = crate::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
-            .expect("test session lease");
+        let lease =
+            shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
+                .expect("test session lease");
         Self::with_paths(&config, &paths, lease, policy, api_rx, event_hub)
     }
 
     pub(crate) fn with_paths(
         config: &shepr_config::ValidatedConfig,
         paths: &shepr_config::AppPaths,
-        lease: crate::persist::DataDirLease,
+        lease: shepr_mux::persist::DataDirLease,
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         event_hub: shepr_api::EventHub,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
-        let render_dirty = Arc::new(crate::render_signal::RenderSignal::new());
+        let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
 
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
-        let mut restored_terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
-        let mut pane_history_carry = crate::persist::HistoryCarry::default();
+        let mut restored_terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
+        let mut pane_history_carry = shepr_mux::persist::HistoryCarry::default();
         let paths = paths.clone();
         let session_data_dir = shepr_api::session::data_dir(&paths);
         let snapshot = policy
             .persists_session()
-            .then(|| crate::persist::load(&session_data_dir))
+            .then(|| shepr_mux::persist::load(&session_data_dir))
             .flatten();
         let restored_host_theme = snapshot
             .as_ref()
             .map(|snapshot| snapshot.host_theme.to_theme())
             .unwrap_or_default();
-        let session_writer = Arc::new(std::sync::Mutex::new(crate::persist::SessionWriter::new(
-            lease,
-            policy.persists_session() && snapshot.is_none(),
-        )));
+        let session_writer = Arc::new(std::sync::Mutex::new(
+            shepr_mux::persist::SessionWriter::new(
+                lease,
+                policy.persists_session() && snapshot.is_none(),
+            ),
+        ));
         let (workspaces, active, selected) = if let Some(snap) = snapshot {
             let history = config
                 .experimental
                 .pane_history
-                .then(|| crate::persist::load_history(&session_data_dir))
+                .then(|| shepr_mux::persist::load_history(&session_data_dir))
                 .flatten();
             // No view exists yet, so restored panes start at the headless size
             // (what the server lays out against until a client attaches); the
@@ -171,7 +174,7 @@ impl App {
             // host theme supplies colours until a live client reports its own.
             let headless_cols = settings.headless_size.cols.get();
             let headless_rows = settings.headless_size.rows.get();
-            let (restore_rows, restore_cols) = crate::workspace::PaneGeometry {
+            let (restore_rows, restore_cols) = shepr_mux::workspace::PaneGeometry {
                 area: Rect::new(0, 0, headless_cols, headless_rows),
                 pane_borders: settings.pane_borders,
                 pane_gaps: settings.pane_gaps,
@@ -179,7 +182,7 @@ impl App {
                 pane_scrollbars: settings.pane_scrollbars,
             }
             .sole_pane_size();
-            let restored = crate::persist::restore(
+            let restored = shepr_mux::persist::restore(
                 &snap,
                 history.as_ref(),
                 restore_rows,
@@ -311,8 +314,8 @@ impl App {
     /// The channels a newly spawned pane runtime reports through. Every call
     /// that spawns a pane (workspace, tab or split creation) takes these;
     /// the workspace tree does not keep them.
-    pub(crate) fn pane_spawn_handles(&self) -> crate::workspace::PaneSpawnHandles {
-        crate::workspace::PaneSpawnHandles {
+    pub(crate) fn pane_spawn_handles(&self) -> shepr_mux::workspace::PaneSpawnHandles {
+        shepr_mux::workspace::PaneSpawnHandles {
             events: self.event_tx.clone(),
             render_notify: Arc::clone(&self.render_notify),
             render_dirty: Arc::clone(&self.render_dirty),
@@ -327,7 +330,7 @@ impl App {
     pub(crate) fn insert_test_runtime(
         &mut self,
         pane_id: shepr_core::layout::PaneId,
-        runtime: crate::pane::PaneRuntime,
+        runtime: shepr_mux::pane::PaneRuntime,
     ) {
         let terminal_id = self
             .state
@@ -344,7 +347,7 @@ impl App {
     pub(crate) fn test_runtime(
         &self,
         pane_id: shepr_core::layout::PaneId,
-    ) -> &crate::pane::PaneRuntime {
+    ) -> &shepr_mux::pane::PaneRuntime {
         self.state
             .workspaces
             .iter()
@@ -388,9 +391,9 @@ impl App {
 mod tests {
     use super::*;
     use crate::test_support::IsolatedEnv;
-    use crate::workspace::Workspace;
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -476,14 +479,14 @@ mod tests {
             .expect("test precondition");
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: vec![crate::git::WorkspaceGitStatus {
+            results: vec![shepr_mux::git::WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: resolved_identity_cwd.clone(),
                 status_cache_key: resolved_identity_cwd,
-                demand: crate::git::GitStatusRefreshDemand::ALL,
+                demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: Some("render-dirty-test".into()),
-                ahead_behind: Some(crate::git::AheadBehind {
+                ahead_behind: Some(shepr_mux::git::AheadBehind {
                     ahead: 1,
                     behind: 0,
                 }),
@@ -1394,7 +1397,7 @@ mod tests {
             .expect("test precondition")
             .set_manual_label("shell".into());
         let (runtime, mut receiver) =
-            crate::pane::PaneRuntime::test_with_channel_capacity(80, 24, 1);
+            shepr_mux::pane::PaneRuntime::test_with_channel_capacity(80, 24, 1);
         runtime
             .try_send_bytes(bytes::Bytes::from_static(b"occupied"))
             .expect("test precondition");
@@ -1648,7 +1651,7 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        let snapshot = crate::persist::load(&shepr_api::session::data_dir(&app.paths))
+        let snapshot = shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths))
             .expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
@@ -1668,7 +1671,7 @@ mod tests {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
-        assert!(crate::persist::load(&shepr_api::session::data_dir(&app.paths)).is_some());
+        assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_some());
 
         app.start_background_session_save();
         if let Some(thread) = app.session_saver.session_save_thread.take() {
@@ -1677,7 +1680,7 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        assert!(crate::persist::load(&shepr_api::session::data_dir(&app.paths)).is_none());
+        assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_none());
     }
 
     #[test]
@@ -1708,7 +1711,7 @@ mod tests {
             app.save_session_before_teardown();
             app.retire_session_writer();
 
-            let snapshot = crate::persist::load(&shepr_api::session::data_dir(&app.paths))
+            let snapshot = shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths))
                 .expect("newer session should be saved");
             assert_eq!(snapshot.workspaces.len(), 1);
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));

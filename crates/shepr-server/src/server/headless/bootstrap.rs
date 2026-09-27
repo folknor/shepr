@@ -13,7 +13,7 @@ pub fn run_server(
     let startup_cwd = take_startup_cwd();
 
     let session_data_dir = shepr_api::session::data_dir(paths);
-    let lease = crate::persist::DataDirLease::acquire(&session_data_dir)?;
+    let lease = shepr_mux::persist::DataDirLease::acquire(&session_data_dir)?;
 
     shepr_platform::logging::init_file_logging(
         &shepr_api::session::data_dir(paths),

@@ -139,7 +139,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
+    use shepr_mux::workspace::Workspace;
 
     #[test]
     fn hidden_render_attempt_keeps_presentation_cadence_available() {
@@ -169,7 +169,7 @@ mod tests {
         app.state
             .view
             .pane_infos
-            .push(crate::workspace::PaneChromeInfo {
+            .push(shepr_mux::workspace::PaneChromeInfo {
                 id: pane_id,
                 rect: ratatui::layout::Rect::new(0, 0, 80, 24),
                 inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),

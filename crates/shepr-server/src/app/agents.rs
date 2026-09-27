@@ -443,7 +443,7 @@ impl App {
     }
 }
 
-fn available_shell_name(runtime: &crate::pane::PaneRuntime) -> Option<String> {
+fn available_shell_name(runtime: &shepr_mux::pane::PaneRuntime) -> Option<String> {
     #[cfg(test)]
     if runtime.child_pid().is_none() {
         return Some("sh".into());
@@ -452,7 +452,7 @@ fn available_shell_name(runtime: &crate::pane::PaneRuntime) -> Option<String> {
 }
 
 pub(super) fn runtime_hosts_agent(
-    runtime: &crate::pane::PaneRuntime,
+    runtime: &shepr_mux::pane::PaneRuntime,
     expected: shepr_agent::detect::Agent,
 ) -> bool {
     #[cfg(test)]
@@ -462,7 +462,9 @@ pub(super) fn runtime_hosts_agent(
     live_runtime_agent(runtime) == Some(expected)
 }
 
-fn live_runtime_agent(runtime: &crate::pane::PaneRuntime) -> Option<shepr_agent::detect::Agent> {
+fn live_runtime_agent(
+    runtime: &shepr_mux::pane::PaneRuntime,
+) -> Option<shepr_agent::detect::Agent> {
     let job = shepr_agent::detect::foreground_job(runtime.child_pid()?)?;
     shepr_agent::detect::identify_agent_in_job(&job)
         .map(|(agent, _)| agent)

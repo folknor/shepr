@@ -5,9 +5,9 @@ use bytes::Bytes;
 use crossterm::event::{KeyModifiers, MouseEventKind};
 use tracing::debug;
 
-use crate::pane::PaneRuntime;
-use crate::terminal::{ScreenSnapshot, UpwardMerge};
 use shepr_api::schema::{PaneReadResult, ResponseResult};
+use shepr_mux::pane::PaneRuntime;
+use shepr_mux::terminal::{ScreenSnapshot, UpwardMerge};
 use shepr_protocol::TerminalId;
 
 const INITIAL_QUIET: Duration = Duration::from_millis(10);
@@ -98,13 +98,13 @@ impl PendingAltScreenRead {
         &self,
         source: shepr_api::schema::ReadSource,
         lines: Option<u32>,
-    ) -> crate::terminal::TerminalReadSnapshot {
+    ) -> shepr_mux::terminal::TerminalReadSnapshot {
         let line_limit = lines.map(|lines| lines.min(1000) as usize);
         match source {
             shepr_api::schema::ReadSource::Recent
             | shepr_api::schema::ReadSource::RecentUnwrapped => {
                 let limit = line_limit.unwrap_or(80);
-                crate::terminal::snapshot_text(
+                shepr_mux::terminal::snapshot_text(
                     &self.initial.rows,
                     limit,
                     source == shepr_api::schema::ReadSource::RecentUnwrapped,
@@ -112,7 +112,7 @@ impl PendingAltScreenRead {
                 )
             }
             shepr_api::schema::ReadSource::Visible | shepr_api::schema::ReadSource::Detection => {
-                let snapshot = crate::terminal::snapshot_text(
+                let snapshot = shepr_mux::terminal::snapshot_text(
                     &self.initial.rows,
                     self.initial.rows.len(),
                     false,
@@ -307,7 +307,7 @@ impl PendingAltScreenRead {
                 }
             }
             Phase::Harvest => {
-                let merge = crate::terminal::merge_scrolled_up(
+                let merge = shepr_mux::terminal::merge_scrolled_up(
                     &mut self.history,
                     &self.previous,
                     &snapshot,
@@ -442,7 +442,7 @@ impl PendingAltScreenRead {
         );
         let truncated = !self.reached_top || self.history.len() > self.lines;
         let snapshot =
-            crate::terminal::snapshot_text(&self.history, self.lines, self.unwrap, truncated);
+            shepr_mux::terminal::snapshot_text(&self.history, self.lines, self.unwrap, truncated);
         self.read.text = snapshot.text;
         self.read.truncated = snapshot.truncated;
         let request_id = self.request_id.clone();
@@ -492,7 +492,7 @@ fn send_wheel(
     events: usize,
     snapshot: &ScreenSnapshot,
 ) -> Result<(), WheelError> {
-    if runtime.wheel_routing() != Some(crate::pane::WheelRouting::MouseReport) {
+    if runtime.wheel_routing() != Some(shepr_mux::pane::WheelRouting::MouseReport) {
         return Err(WheelError::Unroutable);
     }
     let column = snapshot.cols.saturating_sub(1) / 2;

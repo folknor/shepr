@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::{App, api_helpers::pane_agent_status};
-use crate::events::AppEvent;
+use shepr_mux::events::AppEvent;
 
 impl App {
     pub(crate) fn handle_internal_event_with_render_demand(
@@ -18,8 +18,8 @@ impl App {
 
     fn handle_git_status_refreshed(
         &mut self,
-        results: Vec<crate::git::WorkspaceGitStatus>,
-        cache_updates: Vec<(std::path::PathBuf, crate::git::GitStatusCacheEntry)>,
+        results: Vec<shepr_mux::git::WorkspaceGitStatus>,
+        cache_updates: Vec<(std::path::PathBuf, shepr_mux::git::GitStatusCacheEntry)>,
     ) -> bool {
         self.git_refresh.finish(Instant::now(), cache_updates);
         let changed = self
@@ -106,18 +106,18 @@ impl App {
             });
         }
         let pane_exit_layout_target = if let Some(plan) = &pane_removal_plan {
-            (plan.scope == crate::workspace::PaneRemovalScope::Pane)
+            (plan.scope == shepr_mux::workspace::PaneRemovalScope::Pane)
                 .then_some((plan.workspace_index, plan.tab_index))
         } else {
             None
         };
         let pane_exit_container_events = if let Some(plan) = &pane_removal_plan {
             let events = match plan.scope {
-                crate::workspace::PaneRemovalScope::Pane => Vec::new(),
-                crate::workspace::PaneRemovalScope::Tab => {
+                shepr_mux::workspace::PaneRemovalScope::Pane => Vec::new(),
+                shepr_mux::workspace::PaneRemovalScope::Tab => {
                     self.tab_close_events(plan.workspace_index, plan.tab_index)
                 }
-                crate::workspace::PaneRemovalScope::Workspace => {
+                shepr_mux::workspace::PaneRemovalScope::Workspace => {
                     self.workspace_close_events(plan.workspace_index)
                 }
             };

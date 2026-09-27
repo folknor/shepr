@@ -12,7 +12,7 @@ impl App {
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
         };
-        self.handle_internal_event(crate::events::AppEvent::HookStateReported {
+        self.handle_internal_event(shepr_mux::events::AppEvent::HookStateReported {
             pane_id,
             session_ref: shepr_agent::agent::resume::session_ref_from_report(
                 &params.source,
@@ -41,7 +41,7 @@ impl App {
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
         };
-        self.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
+        self.handle_internal_event(shepr_mux::events::AppEvent::AgentSessionReported {
             pane_id,
             session_ref: shepr_agent::agent::resume::session_ref_from_report(
                 &params.source,
@@ -189,7 +189,7 @@ impl App {
         if !terminal.metadata_report_sequence_is_fresh(&source, params.seq) {
             return success(id, ResponseResult::Ok {});
         }
-        let metadata_agent = crate::terminal::TerminalState::metadata_report_agent(
+        let metadata_agent = shepr_mux::terminal::TerminalState::metadata_report_agent(
             &source,
             agent_label.as_deref(),
             applies_to_source.as_deref(),
@@ -216,7 +216,7 @@ impl App {
                     shepr_api::error::ApiErrorCode::MetadataSequenceSourceLimit,
                     format!(
                         "pane metadata may track at most {} sequenced sources",
-                        crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
+                        shepr_mux::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
                     ),
                 );
             }
@@ -232,7 +232,7 @@ impl App {
         });
 
         if presentation_requested {
-            self.handle_internal_event(crate::events::AppEvent::HookMetadataReported {
+            self.handle_internal_event(shepr_mux::events::AppEvent::HookMetadataReported {
                 pane_id,
                 source,
                 agent_label,
@@ -263,7 +263,7 @@ impl App {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
-        self.handle_internal_event(crate::events::AppEvent::HookAuthorityCleared {
+        self.handle_internal_event(shepr_mux::events::AppEvent::HookAuthorityCleared {
             pane_id,
             source: params.source,
             seq: params.seq,
@@ -283,7 +283,7 @@ impl App {
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
         };
-        self.handle_internal_event(crate::events::AppEvent::HookAgentReleased {
+        self.handle_internal_event(shepr_mux::events::AppEvent::HookAgentReleased {
             pane_id,
             source: params.source,
             known_agent: shepr_agent::detect::parse_agent_label(&agent_label),

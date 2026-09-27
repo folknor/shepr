@@ -10,7 +10,7 @@ fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool
 fn patch_intersects_hyperlinks(
     frame: &FrameData,
     area: shepr_protocol::SurfaceRect,
-    patch: &crate::pane::TerminalDirtyPatch,
+    patch: &shepr_mux::pane::TerminalDirtyPatch,
 ) -> bool {
     if frame.hyperlinks.is_empty() || !rect_fits_frame(area, frame) {
         return false;
@@ -47,7 +47,7 @@ fn patch_row_changed(frame: &FrameData, row: &shepr_protocol::PaneSurfacePatchRo
 fn changed_rows(
     frame: &FrameData,
     area: shepr_protocol::SurfaceRect,
-    patch: &crate::pane::TerminalDirtyPatch,
+    patch: &shepr_mux::pane::TerminalDirtyPatch,
 ) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
     if !rect_fits_frame(area, frame) {
         return None;
@@ -97,7 +97,7 @@ fn retained_scrollbar_patch(
     frame: &FrameData,
     pane: &mut shepr_protocol::PaneSurfacePane,
     alternate_screen_active: bool,
-    metrics: Option<crate::pane::ScrollMetrics>,
+    metrics: Option<shepr_mux::pane::ScrollMetrics>,
 ) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
     let next_rect = metrics
         .filter(|metrics| metrics.max_offset_from_bottom > 0)
@@ -187,9 +187,9 @@ struct RetainedRecipient<'a> {
 
 struct CollectedPanePatch {
     pane_id: shepr_protocol::PublicPaneId,
-    patch: crate::pane::TerminalDirtyPatch,
+    patch: shepr_mux::pane::TerminalDirtyPatch,
     content_revision: u64,
-    scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    scroll_metrics: Option<shepr_mux::pane::ScrollMetrics>,
     mouse_reporting: bool,
     sgr_pixel_mouse: bool,
     alternate_screen_active: bool,
@@ -210,7 +210,7 @@ fn has_synchronized_pane(app: &app::App, surface: &shepr_protocol::PaneSurfaceFr
                     pane_id,
                 )
             })
-            .is_some_and(crate::pane::PaneRuntime::synchronized_output_active)
+            .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
     })
 }
 
@@ -328,11 +328,11 @@ impl HeadlessServer {
                 fallback!("terminal_snapshot");
             };
             let patch = match snapshot.patch {
-                crate::pane::TerminalDirtyPatchOutcome::Clean => {
-                    crate::pane::TerminalDirtyPatch { rows: Vec::new() }
+                shepr_mux::pane::TerminalDirtyPatchOutcome::Clean => {
+                    shepr_mux::pane::TerminalDirtyPatch { rows: Vec::new() }
                 }
-                crate::pane::TerminalDirtyPatchOutcome::Patch(patch) => patch,
-                crate::pane::TerminalDirtyPatchOutcome::Fallback => {
+                shepr_mux::pane::TerminalDirtyPatchOutcome::Patch(patch) => patch,
+                shepr_mux::pane::TerminalDirtyPatchOutcome::Fallback => {
                     fallback!("terminal_patch");
                 }
             };
@@ -526,7 +526,7 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
         };
-        let patch = crate::pane::TerminalDirtyPatch {
+        let patch = shepr_mux::pane::TerminalDirtyPatch {
             rows: vec![(0, vec![cell(" "), cell("x"), cell("y"), cell(" ")])],
         };
 
@@ -562,7 +562,7 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
         };
-        let patch = crate::pane::TerminalDirtyPatch {
+        let patch = shepr_mux::pane::TerminalDirtyPatch {
             rows: vec![(0, vec![cell("x"), cell("z"), cell("q")])],
         };
 
@@ -597,7 +597,7 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
         };
-        let patch = crate::pane::TerminalDirtyPatch {
+        let patch = shepr_mux::pane::TerminalDirtyPatch {
             rows: vec![(0, vec![cell(" "); 4]), (1, vec![cell(" "); 4])],
         };
 

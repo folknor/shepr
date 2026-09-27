@@ -482,7 +482,7 @@ impl StatusCommandControl {
 }
 
 fn spawn_status_command(
-    event_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
+    event_tx: tokio::sync::mpsc::Sender<shepr_mux::events::AppEvent>,
     segment_index: usize,
     command: String,
     timeout: Duration,
@@ -507,7 +507,7 @@ fn spawn_status_command(
         .await;
         task_control.terminate();
         let _ = event_tx
-            .send(crate::events::AppEvent::TabBarCommandFinished {
+            .send(shepr_mux::events::AppEvent::TabBarCommandFinished {
                 segment_index,
                 result,
             })
@@ -578,8 +578,8 @@ async fn run_status_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::AppEvent;
     use shepr_config::Config;
+    use shepr_mux::events::AppEvent;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

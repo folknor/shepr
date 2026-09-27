@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use ratatui::layout::{Direction, Rect};
 
 use super::{AppState, Mode};
-use crate::pane::PaneRuntimeRegistry;
-use crate::persist::snapshot::*;
-use crate::workspace::Workspace;
 use shepr_core::layout::NavDirection;
+use shepr_mux::pane::PaneRuntimeRegistry;
+use shepr_mux::persist::snapshot::*;
+use shepr_mux::workspace::Workspace;
 
 fn test_session_path(name: &str) -> String {
     std::env::current_dir()
@@ -43,7 +43,7 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
         .unwrap_or_default()
         .into_iter()
         .map(|mut pane| {
-            pane.inner_rect = crate::workspace::pane_inner_rect(pane.rect, pane.borders);
+            pane.inner_rect = shepr_mux::workspace::pane_inner_rect(pane.rect, pane.borders);
             pane
         })
         .collect();
@@ -450,7 +450,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         .expect("test precondition")
         .clone();
     let (events, _rx) = tokio::sync::mpsc::channel(32);
-    let runtime = crate::pane::PaneRuntime::spawn(
+    let runtime = shepr_mux::pane::PaneRuntime::spawn(
         pane_id,
         24,
         80,
@@ -458,11 +458,11 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         0,
         Default::default(),
         None,
-        crate::pane::PaneShellConfig::new("/bin/sh", false),
-        &crate::pane::PaneLaunchEnv::default(),
+        shepr_mux::pane::PaneShellConfig::new("/bin/sh", false),
+        &shepr_mux::pane::PaneLaunchEnv::default(),
         &events,
         &std::sync::Arc::new(tokio::sync::Notify::new()),
-        &std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
+        &std::sync::Arc::new(shepr_mux::render_signal::RenderSignal::new()),
     )
     .expect("test precondition");
     let pid = runtime.child_pid().expect("test precondition");
@@ -573,7 +573,7 @@ async fn capture_contract_tracks_pane_history_from_runtime() {
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
     terminal_runtimes.insert(
         terminal_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
             20,
             3,
             4096,
@@ -607,7 +607,7 @@ async fn capture_contract_tracks_history_for_each_pane() {
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
     terminal_runtimes.insert(
         first_terminal_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
             20,
             3,
             4096,
@@ -616,7 +616,7 @@ async fn capture_contract_tracks_history_for_each_pane() {
     );
     terminal_runtimes.insert(
         second_terminal_id,
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
             20,
             3,
             4096,
@@ -662,7 +662,7 @@ async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
     terminal_runtimes.insert(
         terminal_id.clone(),
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"PRIMARY_ONE\r\n"),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"PRIMARY_ONE\r\n"),
     );
     let runtime = |runtimes: &PaneRuntimeRegistry, bytes: &[u8]| {
         runtimes
@@ -732,7 +732,12 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
     // resumed agent does: no primary history of its own yet.
     terminal_runtimes.insert(
         terminal_id.clone(),
-        crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"\x1b[?1049hAGENT_TUI"),
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
+            20,
+            3,
+            4096,
+            b"\x1b[?1049hAGENT_TUI",
+        ),
     );
     let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
     assert_eq!(root_history(&saved, root), None);

@@ -59,8 +59,8 @@ impl AppState {
 
     pub(crate) fn commit_workspace_creation(
         &mut self,
-        workspace: crate::workspace::Workspace,
-        terminal: crate::terminal::TerminalState,
+        workspace: shepr_mux::workspace::Workspace,
+        terminal: shepr_mux::terminal::TerminalState,
         focus: bool,
     ) -> WorkspaceCreationOutcome {
         let workspace_id = workspace.id.to_string();
@@ -85,10 +85,10 @@ impl AppState {
     pub(crate) fn commit_tab_creation(
         &mut self,
         workspace_index: usize,
-        tab: crate::workspace::Tab,
-        terminal: crate::terminal::TerminalState,
+        tab: shepr_mux::workspace::Tab,
+        terminal: shepr_mux::terminal::TerminalState,
         focus: bool,
-    ) -> Option<crate::workspace::TabCreationOutcome> {
+    ) -> Option<shepr_mux::workspace::TabCreationOutcome> {
         let workspace = self.workspaces.get_mut(workspace_index)?;
         let outcome = workspace.commit_new_tab(tab);
         self.terminals.insert(terminal.id.clone(), terminal);
@@ -103,10 +103,10 @@ impl AppState {
     pub(crate) fn commit_layout_tab_creation(
         &mut self,
         workspace_index: usize,
-        tab: crate::workspace::Tab,
-        terminals: Vec<crate::terminal::TerminalState>,
+        tab: shepr_mux::workspace::Tab,
+        terminals: Vec<shepr_mux::terminal::TerminalState>,
         focus: bool,
-    ) -> Option<crate::workspace::TabCreationOutcome> {
+    ) -> Option<shepr_mux::workspace::TabCreationOutcome> {
         let outcome = self
             .workspaces
             .get_mut(workspace_index)?
@@ -128,7 +128,7 @@ impl AppState {
         tab_index: usize,
         pane_id: PaneId,
         prepared_layout: shepr_core::layout::TileLayout,
-        terminal: crate::terminal::TerminalState,
+        terminal: shepr_mux::terminal::TerminalState,
         focus: bool,
         right_click_passthrough: bool,
         previous_focus: Option<PaneFocusTarget>,

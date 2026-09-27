@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use super::{App, api_helpers::pane_agent_status};
-use crate::workspace::Workspace;
 use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_api::schema::{EventData, EventEnvelope};
 use shepr_config::NewTerminalCwdConfig;
+use shepr_mux::workspace::Workspace;
 
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwdConfig,
@@ -38,13 +38,13 @@ pub(super) fn launch_cwd_for_terminal(
     terminal_id: &shepr_protocol::TerminalId,
     terminals: &std::collections::HashMap<
         shepr_protocol::TerminalId,
-        crate::terminal::TerminalState,
+        shepr_mux::terminal::TerminalState,
     >,
-    terminal_runtimes: &crate::pane::PaneRuntimeRegistry,
+    terminal_runtimes: &shepr_mux::pane::PaneRuntimeRegistry,
 ) -> Option<PathBuf> {
     terminal_runtimes
         .get(terminal_id)
-        .and_then(crate::pane::PaneRuntime::follow_cwd)
+        .and_then(shepr_mux::pane::PaneRuntime::follow_cwd)
         .or_else(|| {
             terminals
                 .get(terminal_id)
@@ -125,7 +125,7 @@ impl App {
             self.state.settings.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
-            crate::pane::PaneShellConfig::new(
+            shepr_mux::pane::PaneShellConfig::new(
                 &self.state.settings.default_shell,
                 self.state.settings.login_shell,
             ),
@@ -287,7 +287,7 @@ impl App {
         let scroll = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-            .and_then(crate::pane::PaneRuntime::scroll_metrics)
+            .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
             .map(|metrics| shepr_api::schema::PaneScrollInfo {
                 offset_from_bottom: metrics.offset_from_bottom as u64,
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
@@ -336,7 +336,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<(&crate::pane::PaneRuntime, String)> {
+    ) -> Option<(&shepr_mux::pane::PaneRuntime, String)> {
         let runtime =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
@@ -347,7 +347,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&crate::pane::PaneRuntime> {
+    ) -> Option<&shepr_mux::pane::PaneRuntime> {
         self.state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
     }
@@ -366,7 +366,7 @@ impl App {
             pane_count: ws.pane_count(),
             tab_count: ws.tabs.len(),
             active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {
-                crate::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
+                shepr_mux::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
             }),
             agent_status: pane_agent_status(agg_state),
             tokens: ws.metadata_tokens.values(),
@@ -375,7 +375,7 @@ impl App {
 }
 
 fn terminal_agent_session_info(
-    terminal: &crate::terminal::TerminalState,
+    terminal: &shepr_mux::terminal::TerminalState,
 ) -> Option<shepr_api::schema::AgentSessionInfo> {
     if let Some(authority) = terminal.hook_authority.as_ref()
         && let Some(session_ref) = authority.session_ref.as_ref()

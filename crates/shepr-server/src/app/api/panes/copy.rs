@@ -155,7 +155,7 @@ impl App {
                 } else {
                     shepr_termio::copy_mode::first_non_blank_col(&text).unwrap_or(0)
                 };
-                crate::pane::TerminalTextPoint {
+                shepr_mux::pane::TerminalTextPoint {
                     row: params.cursor.row,
                     col: col.min(width.saturating_sub(1)),
                 }
@@ -175,7 +175,7 @@ impl App {
                 };
                 runtime
                     .word_motion_target(params.cursor.row, params.cursor.col, motion)
-                    .unwrap_or(crate::pane::TerminalTextPoint {
+                    .unwrap_or(shepr_mux::pane::TerminalTextPoint {
                         row: params.cursor.row,
                         col: params.cursor.col,
                     })
@@ -189,11 +189,11 @@ impl App {
                         1
                     },
                 )
-                .map(|target| crate::pane::TerminalTextPoint {
+                .map(|target| shepr_mux::pane::TerminalTextPoint {
                     row: target.row,
                     col: params.cursor.col,
                 })
-                .unwrap_or(crate::pane::TerminalTextPoint {
+                .unwrap_or(shepr_mux::pane::TerminalTextPoint {
                     row: params.cursor.row,
                     col: params.cursor.col,
                 }),
@@ -250,25 +250,25 @@ impl App {
                 "pane content changed",
             );
         }
-        let cursor = crate::pane::TerminalTextPoint {
+        let cursor = shepr_mux::pane::TerminalTextPoint {
             row: params.cursor.row,
             col: params.cursor.col,
         };
         let previous = params.previous.map(|previous| {
             (
-                crate::pane::TerminalTextPoint {
+                shepr_mux::pane::TerminalTextPoint {
                     row: previous.start.row,
                     col: previous.start.col,
                 },
-                crate::pane::TerminalTextPoint {
+                shepr_mux::pane::TerminalTextPoint {
                     row: previous.end.row,
                     col: previous.end.col,
                 },
             )
         });
         let direction = match params.direction {
-            PaneCopySearchDirection::Forward => crate::pane::TerminalSearchDirection::Forward,
-            PaneCopySearchDirection::Backward => crate::pane::TerminalSearchDirection::Backward,
+            PaneCopySearchDirection::Forward => shepr_mux::pane::TerminalSearchDirection::Forward,
+            PaneCopySearchDirection::Backward => shepr_mux::pane::TerminalSearchDirection::Backward,
         };
         let result = runtime.search_text_window(
             &params.query,

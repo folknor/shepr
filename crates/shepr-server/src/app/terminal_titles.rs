@@ -80,9 +80,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
+    use shepr_mux::workspace::Workspace;
 
     #[tokio::test]
     async fn sync_keeps_latest_raw_title_and_emits_only_for_stripped_changes() {
@@ -108,7 +108,7 @@ mod tests {
             .expect("test precondition");
         terminal.detected_agent = Some(Agent::Claude);
         terminal.state = AgentState::Working;
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes("\x1b]0;⠋ 修复\u{1F642}标题\x07".as_bytes());
         app.terminal_runtimes.insert(terminal_id.clone(), runtime);
         let sources = HashSet::from([pane_id]);
@@ -195,7 +195,7 @@ mod tests {
             .terminal_id(pane_id)
             .expect("test precondition")
             .clone();
-        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]0;building\x07");
         app.terminal_runtimes.insert(terminal_id, runtime);
         app.render_dirty.request_terminal_title(pane_id);

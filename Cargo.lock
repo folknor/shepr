@@ -1714,6 +1714,7 @@ dependencies = [
  "shepr-client",
  "shepr-config",
  "shepr-core",
+ "shepr-mux",
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
@@ -1822,6 +1823,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "shepr-mux"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "crossterm",
+ "libc",
+ "ratatui",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "shepr-agent",
+ "shepr-config",
+ "shepr-core",
+ "shepr-platform",
+ "shepr-protocol",
+ "shepr-pty",
+ "shepr-termio",
+ "shepr-test-support",
+ "shepr-vt",
+ "tokio",
+ "tracing",
+ "unicode-width",
+]
+
+[[package]]
 name = "shepr-platform"
 version = "0.1.0"
 dependencies = [
@@ -1890,14 +1917,13 @@ dependencies = [
  "interprocess",
  "libc",
  "ratatui",
- "regex",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "shepr-agent",
  "shepr-api",
  "shepr-config",
  "shepr-core",
+ "shepr-mux",
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",

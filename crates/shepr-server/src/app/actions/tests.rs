@@ -1,7 +1,7 @@
 use super::*;
-use crate::workspace::Workspace;
 use ratatui::layout::{Direction, Rect};
 use shepr_agent::detect::{Agent, AgentState};
+use shepr_mux::workspace::Workspace;
 
 fn app_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
@@ -31,7 +31,7 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
         .unwrap_or_default()
         .into_iter()
         .map(|mut pane| {
-            pane.inner_rect = crate::workspace::pane_inner_rect(pane.rect, pane.borders);
+            pane.inner_rect = shepr_mux::workspace::pane_inner_rect(pane.rect, pane.borders);
             pane
         })
         .collect();
@@ -116,8 +116,10 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
         .expect("test precondition");
     assert_eq!(state.workspaces[0].pane_count(), 1);
     let terminal_id = shepr_protocol::TerminalId::alloc();
-    let terminal =
-        crate::terminal::TerminalState::new(terminal_id.clone(), std::path::PathBuf::from("/tmp"));
+    let terminal = shepr_mux::terminal::TerminalState::new(
+        terminal_id.clone(),
+        std::path::PathBuf::from("/tmp"),
+    );
     let previous_focus = state.current_pane_focus_target();
 
     let outcome = state
@@ -156,8 +158,10 @@ fn workspace_creation_state_command_commits_spawned_values() {
         .terminal_id(root_pane)
         .expect("test precondition")
         .clone();
-    let terminal =
-        crate::terminal::TerminalState::new(terminal_id.clone(), std::path::PathBuf::from("/tmp"));
+    let terminal = shepr_mux::terminal::TerminalState::new(
+        terminal_id.clone(),
+        std::path::PathBuf::from("/tmp"),
+    );
 
     let outcome = state.commit_workspace_creation(workspace, terminal, true);
 
@@ -174,9 +178,10 @@ fn tab_creation_state_command_commits_spawned_values_and_focus() {
     let workspace = &state.workspaces[0];
     let (layout, root_pane) = shepr_core::layout::TileLayout::new();
     let terminal_id = shepr_protocol::TerminalId::alloc();
-    let mut pane = crate::workspace::TabPane::new(crate::pane::PaneState::new(terminal_id.clone()));
+    let mut pane =
+        shepr_mux::workspace::TabPane::new(shepr_mux::pane::PaneState::new(terminal_id.clone()));
     pane.public_number = workspace.next_public_pane_number();
-    let tab = crate::workspace::Tab {
+    let tab = shepr_mux::workspace::Tab {
         custom_name: None,
         number: workspace.next_public_tab_number(),
         root_pane,
@@ -184,8 +189,10 @@ fn tab_creation_state_command_commits_spawned_values_and_focus() {
         panes: std::collections::HashMap::from([(root_pane, pane)]),
         zoomed: false,
     };
-    let terminal =
-        crate::terminal::TerminalState::new(terminal_id.clone(), std::path::PathBuf::from("/tmp"));
+    let terminal = shepr_mux::terminal::TerminalState::new(
+        terminal_id.clone(),
+        std::path::PathBuf::from("/tmp"),
+    );
 
     let outcome = state
         .commit_tab_creation(0, tab, terminal, true)
@@ -207,17 +214,17 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
         .expect("test precondition");
     let second_id = state.workspaces[1].id.to_string();
 
-    let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
+    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
     let changed = state.apply_workspace_git_statuses(
         &terminal_runtimes,
         vec![WorkspaceGitStatus {
             workspace_id: first_id,
             resolved_identity_cwd: first_cwd.clone(),
             status_cache_key: first_cwd,
-            demand: crate::git::GitStatusRefreshDemand::ALL,
+            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: Some("main".into()),
-            ahead_behind: Some(crate::git::AheadBehind {
+            ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 2,
                 behind: 1,
             }),
@@ -229,7 +236,7 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
     assert_eq!(state.workspaces[0].branch().as_deref(), Some("main"));
     assert_eq!(
         state.workspaces[0].git_ahead_behind(),
-        Some(crate::git::AheadBehind {
+        Some(shepr_mux::git::AheadBehind {
             ahead: 2,
             behind: 1
         })
@@ -243,22 +250,22 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
     let mut state = app_with_workspaces(&["one"]);
     let workspace_id = state.workspaces[0].id.to_string();
     state.workspaces[0].cached_git_branch = Some("old".into());
-    state.workspaces[0].cached_git_ahead_behind = Some(crate::git::AheadBehind {
+    state.workspaces[0].cached_git_ahead_behind = Some(shepr_mux::git::AheadBehind {
         ahead: 1,
         behind: 0,
     });
 
-    let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
+    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
     let changed = state.apply_workspace_git_statuses(
         &terminal_runtimes,
         vec![WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
             status_cache_key: std::path::PathBuf::from("/definitely/not/current"),
-            demand: crate::git::GitStatusRefreshDemand::ALL,
+            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "stale".into(),
             branch: Some("main".into()),
-            ahead_behind: Some(crate::git::AheadBehind {
+            ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 0,
                 behind: 1,
             }),
@@ -270,7 +277,7 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
     assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
     assert_eq!(
         state.workspaces[0].git_ahead_behind(),
-        Some(crate::git::AheadBehind {
+        Some(shepr_mux::git::AheadBehind {
             ahead: 1,
             behind: 0
         })
@@ -287,14 +294,14 @@ fn apply_workspace_git_statuses_ignores_unrequested_branch_changes() {
     state.workspaces[0].cached_auto_label = "one".into();
     state.workspaces[0].cached_git_branch = Some("old".into());
 
-    let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
+    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
     let changed = state.apply_workspace_git_statuses(
         &terminal_runtimes,
         vec![WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: crate::git::GitStatusRefreshDemand {
+            demand: shepr_mux::git::GitStatusRefreshDemand {
                 branch: false,
                 ahead_behind: true,
             },
@@ -317,19 +324,19 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
         .resolved_identity_cwd()
         .expect("test precondition");
     state.workspaces[0].cached_git_branch = Some("main".into());
-    state.workspaces[0].cached_git_ahead_behind = Some(crate::git::AheadBehind {
+    state.workspaces[0].cached_git_ahead_behind = Some(shepr_mux::git::AheadBehind {
         ahead: 1,
         behind: 2,
     });
 
-    let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
+    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
     let changed = state.apply_workspace_git_statuses(
         &terminal_runtimes,
         vec![WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: crate::git::GitStatusRefreshDemand::ALL,
+            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: None,
             ahead_behind: None,
@@ -370,7 +377,7 @@ fn move_workspace_reorders_without_changing_logical_selection() {
     let names: Vec<_> = state
         .workspaces
         .iter()
-        .map(crate::workspace::Workspace::display_name)
+        .map(shepr_mux::workspace::Workspace::display_name)
         .collect();
     assert_eq!(names, vec!["b", "a", "c"]);
     assert_eq!(state.active_index(), Some(0));
@@ -419,7 +426,7 @@ fn move_workspace_accepts_insert_at_end() {
     let names: Vec<_> = state
         .workspaces
         .iter()
-        .map(crate::workspace::Workspace::display_name)
+        .map(shepr_mux::workspace::Workspace::display_name)
         .collect();
     assert_eq!(names, vec!["b", "c", "a"]);
 }
@@ -442,7 +449,7 @@ fn move_workspace_block_collects_non_contiguous_members() {
     let names = state
         .workspaces
         .iter()
-        .map(crate::workspace::Workspace::display_name)
+        .map(shepr_mux::workspace::Workspace::display_name)
         .collect::<Vec<_>>();
     assert_eq!(
         names,
@@ -476,7 +483,7 @@ fn move_workspace_block_rejects_invalid_and_noop_orders() {
         state
             .workspaces
             .iter()
-            .map(crate::workspace::Workspace::display_name)
+            .map(shepr_mux::workspace::Workspace::display_name)
             .collect::<Vec<_>>(),
         ["a", "b", "c"]
     );
@@ -1122,7 +1129,7 @@ fn metadata_expiry_state_change_bumps_state_sequence() {
             .get_mut(&terminal_id)
             .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+        terminal.set_agent_metadata(shepr_mux::terminal::AgentMetadataReport {
             source: "custom:status".into(),
             agent_label: None,
             applies_to_source: None,
