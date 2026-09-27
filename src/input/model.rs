@@ -1,6 +1,6 @@
-use crate::protocol::KittyKeyboardFlags;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
+use shepr_protocol::KittyKeyboardFlags;
 
 /// A key as shepr understands it. A Linux host terminal reports keys as VT
 /// bytes and never a physical key identity, so a key is identified by these
@@ -87,7 +87,7 @@ impl TerminalKey {
     }
 }
 
-impl crate::config::BindingKey for TerminalKey {
+impl shepr_config::BindingKey for TerminalKey {
     fn code(&self) -> KeyCode {
         self.code
     }

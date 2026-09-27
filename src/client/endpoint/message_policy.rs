@@ -1,4 +1,4 @@
-use crate::protocol::ServerMessage;
+use shepr_protocol::ServerMessage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PresentationDecision {
@@ -86,7 +86,7 @@ fn is_presentation_effect(message: &ServerMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{FrameData, PaneSurfaceFrame, PaneSurfacePatch};
+    use shepr_protocol::{FrameData, PaneSurfaceFrame, PaneSurfacePatch};
 
     fn gate(
         endpoint_active: bool,
@@ -105,8 +105,8 @@ mod tests {
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
             boot_id: "boot".into(),
-            projection_revision: crate::protocol::ProjectionRevision::new(1),
-            surface_revision: crate::protocol::SurfaceRevision::new(1),
+            projection_revision: shepr_protocol::ProjectionRevision::new(1),
+            surface_revision: shepr_protocol::SurfaceRevision::new(1),
             frame: FrameData {
                 cells: Vec::new(),
                 width: 0,
@@ -122,9 +122,9 @@ mod tests {
     fn patch() -> PaneSurfacePatch {
         PaneSurfacePatch {
             boot_id: "boot".into(),
-            projection_revision: crate::protocol::ProjectionRevision::new(1),
-            base_surface_revision: crate::protocol::SurfaceRevision::new(1),
-            surface_revision: crate::protocol::SurfaceRevision::new(2),
+            projection_revision: shepr_protocol::ProjectionRevision::new(1),
+            base_surface_revision: shepr_protocol::SurfaceRevision::new(1),
+            surface_revision: shepr_protocol::SurfaceRevision::new(2),
             rows: Vec::new(),
             panes: Vec::new(),
             cursor: None,

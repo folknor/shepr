@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::protocol::FrameData;
+use shepr_protocol::FrameData;
 
 /// Local output only. Shepr no longer forwards pane images to the outer
 /// terminal, so this is a thin wrapper around the plain text frame.

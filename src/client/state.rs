@@ -51,7 +51,7 @@ pub(super) struct ClientState {
     pub(super) host_mouse_mode: terminal_setup::HostMouseMode,
     /// Latest physical host theme observations, retained so an endpoint selected after the
     /// observation receives the same client-owned baseline.
-    pub(super) host_theme_updates: Vec<crate::protocol::ClientHostThemeUpdate>,
+    pub(super) host_theme_updates: Vec<shepr_protocol::ClientHostThemeUpdate>,
     pub(super) direct_keyboard_protocol: crate::host_term::modes::DirectHostKeyboardState,
     pub(super) pane_keyboard_report_all: bool,
     pub(super) keyboard_report_all_active: bool,
@@ -77,7 +77,7 @@ impl Drop for ClientState {
             let _ = crate::host_term::modes::set_direct_host_keyboard_protocol(
                 &mut io::stdout(),
                 &mut self.direct_keyboard_protocol,
-                crate::protocol::KittyKeyboardFlags::NONE,
+                shepr_protocol::KittyKeyboardFlags::NONE,
                 shepr_vt::ModifyOtherKeysLevel::Off,
             );
         }
@@ -87,7 +87,7 @@ impl Drop for ClientState {
 impl ClientState {
     #[cfg(test)]
     pub(super) fn test_new() -> Self {
-        let config = crate::config::ValidatedConfig::test_default();
+        let config = shepr_config::ValidatedConfig::test_default();
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
             host_mouse_mode: terminal_setup::HostMouseMode::new(false, false, false),
@@ -129,9 +129,9 @@ impl ClientState {
 
     pub(super) fn record_host_theme_update(
         &mut self,
-        update: &crate::protocol::ClientHostThemeUpdate,
+        update: &shepr_protocol::ClientHostThemeUpdate,
     ) {
-        use crate::protocol::ClientHostThemeUpdate;
+        use shepr_protocol::ClientHostThemeUpdate;
 
         match update {
             ClientHostThemeUpdate::DefaultColor { kind, .. } => {
@@ -165,7 +165,7 @@ impl ClientState {
         for update in &self.host_theme_updates {
             let _ = endpoints.send_to(
                 endpoint_id,
-                &crate::protocol::ClientMessage::ClientShellHostTheme {
+                &shepr_protocol::ClientMessage::ClientShellHostTheme {
                     update: update.clone(),
                 },
             );

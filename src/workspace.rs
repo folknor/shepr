@@ -10,12 +10,12 @@ use tokio::sync::{Notify, mpsc};
 use crate::events::AppEvent;
 use crate::git::{AheadBehind, GitSpaceMetadata, fallback_label_from_cwd};
 use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
-use crate::protocol::{
-    PublicPaneId, PublicTabId, TerminalId, WorkspaceId, decode_public_number, encode_public_number,
-};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalState;
 use shepr_core::layout::{PaneId, TileLayout};
+use shepr_protocol::{
+    PublicPaneId, PublicTabId, TerminalId, WorkspaceId, decode_public_number, encode_public_number,
+};
 
 mod aggregate;
 mod geometry;

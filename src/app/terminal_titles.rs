@@ -17,8 +17,8 @@ impl App {
             .flatten()
             .flatten()
             .any(|token| match token.parts().0 {
-                crate::config::AgentSidebarToken::TerminalTitle => changes.raw_changed,
-                crate::config::AgentSidebarToken::TerminalTitleStripped => changes.stripped_changed,
+                shepr_config::AgentSidebarToken::TerminalTitle => changes.raw_changed,
+                shepr_config::AgentSidebarToken::TerminalTitleStripped => changes.stripped_changed,
                 _ => false,
             })
     }
@@ -80,9 +80,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::detect::{Agent, AgentState};
     use crate::workspace::Workspace;
+    use shepr_agent::detect::{Agent, AgentState};
+    use shepr_config::Config;
 
     #[tokio::test]
     async fn sync_keeps_latest_raw_title_and_emits_only_for_stripped_changes() {
@@ -188,9 +188,8 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        app.state.settings.sidebar_agents.rows = vec![vec![
-            crate::config::AgentSidebarToken::TerminalTitleStripped,
-        ]];
+        app.state.settings.sidebar_agents.rows =
+            vec![vec![shepr_config::AgentSidebarToken::TerminalTitleStripped]];
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)
@@ -218,13 +217,10 @@ mod tests {
             api_rx,
             event_hub,
         );
-        app.state.settings.sidebar_agents.rows =
-            vec![vec![crate::config::AgentSidebarToken::Agent]];
+        app.state.settings.sidebar_agents.rows = vec![vec![shepr_config::AgentSidebarToken::Agent]];
         app.state.settings.sidebar_agents.rows_by_agent.insert(
             "claude".into(),
-            vec![vec![
-                crate::config::AgentSidebarToken::TerminalTitleStripped,
-            ]],
+            vec![vec![shepr_config::AgentSidebarToken::TerminalTitleStripped]],
         );
 
         let spinner_only = TerminalTitleChanges {
@@ -239,7 +235,7 @@ mod tests {
 
         app.state.settings.sidebar_agents.rows_by_agent.insert(
             "claude".into(),
-            vec![vec![crate::config::AgentSidebarToken::TerminalTitle]],
+            vec![vec![shepr_config::AgentSidebarToken::TerminalTitle]],
         );
         assert!(app.terminal_title_sidebar_changed(&spinner_only));
     }

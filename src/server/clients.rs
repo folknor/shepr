@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::ops::Index;
 
 use crate::api::RenderDemand;
-use crate::protocol::PublicTabId;
-use crate::protocol::TerminalId;
-use crate::protocol::{
+use crate::server::client_transport::ClientWriter;
+use crate::server::render_stream::ClientRenderState;
+use shepr_protocol::PublicTabId;
+use shepr_protocol::TerminalId;
+use shepr_protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientPaneInputEvent,
     RenderEncoding,
 };
-use crate::server::client_transport::ClientWriter;
-use crate::server::render_stream::ClientRenderState;
 
 /// Identity of a connection accepted by this server. Only the registry's
 /// allocator mints production values; disconnecting never reuses one.
@@ -106,9 +106,9 @@ pub(crate) struct ClientShellState {
     /// Connection-local workspace and tab projection.
     pub(crate) location: Option<ClientShellLocation>,
     /// Last coherent shell replacement sent to this client.
-    pub(crate) snapshot: Option<crate::protocol::ClientShellSnapshot>,
+    pub(crate) snapshot: Option<shepr_protocol::ClientShellSnapshot>,
     /// Monotonic shell replacement revision for this connection.
-    pub(crate) projection_revision: crate::protocol::ProjectionRevision,
+    pub(crate) projection_revision: shepr_protocol::ProjectionRevision,
     /// Whether this shell is waiting for one ordered endpoint command response.
     pub(crate) endpoint_command_in_flight: bool,
 }
@@ -121,12 +121,12 @@ impl ClientShellState {
         }
     }
 
-    fn update_host_theme(&mut self, update: &crate::protocol::ClientHostThemeUpdate) -> bool {
+    fn update_host_theme(&mut self, update: &shepr_protocol::ClientHostThemeUpdate) -> bool {
         let mut next_theme = self.host_terminal_theme;
         let mut changed = false;
 
         match update {
-            crate::protocol::ClientHostThemeUpdate::DefaultColor { kind, color } => {
+            shepr_protocol::ClientHostThemeUpdate::DefaultColor { kind, color } => {
                 let kind: crate::host_term::theme::DefaultColorKind = (*kind).into();
                 let color = (*color).into();
                 next_theme = next_theme.with_color(kind, color);
@@ -136,12 +136,12 @@ impl ClientShellState {
                     changed |= self.set_host_appearance(Some(color.inferred_appearance()), false);
                 }
             }
-            crate::protocol::ClientHostThemeUpdate::PaletteColors(colors) => {
+            shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors) => {
                 for &(index, color) in colors {
                     next_theme = next_theme.with_palette_color(index, color.into());
                 }
             }
-            crate::protocol::ClientHostThemeUpdate::Appearance(appearance) => {
+            shepr_protocol::ClientHostThemeUpdate::Appearance(appearance) => {
                 let appearance = (*appearance).into();
                 changed |= self.set_host_appearance(Some(appearance), true);
             }
@@ -507,25 +507,25 @@ enum ClientShellPressId {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClientShellHeldInput {
-    pub(crate) target: crate::protocol::PublicPaneId,
+    pub(crate) target: shepr_protocol::PublicPaneId,
     pub(crate) release: ClientPaneInputEvent,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ClientShellLocation {
-    pub(crate) focused_workspace_id: Option<crate::protocol::WorkspaceId>,
-    pub(crate) active_tab_ids: HashMap<crate::protocol::WorkspaceId, PublicTabId>,
+    pub(crate) focused_workspace_id: Option<shepr_protocol::WorkspaceId>,
+    pub(crate) active_tab_ids: HashMap<shepr_protocol::WorkspaceId, PublicTabId>,
 }
 
 pub(crate) struct ClientShellTopology {
-    pub(crate) focused_workspace_id: Option<crate::protocol::WorkspaceId>,
-    pub(crate) fallback_workspace_id: Option<crate::protocol::WorkspaceId>,
-    pub(crate) active_tab_ids: HashMap<crate::protocol::WorkspaceId, PublicTabId>,
-    pub(crate) tab_workspace_ids: HashMap<PublicTabId, crate::protocol::WorkspaceId>,
+    pub(crate) focused_workspace_id: Option<shepr_protocol::WorkspaceId>,
+    pub(crate) fallback_workspace_id: Option<shepr_protocol::WorkspaceId>,
+    pub(crate) active_tab_ids: HashMap<shepr_protocol::WorkspaceId, PublicTabId>,
+    pub(crate) tab_workspace_ids: HashMap<PublicTabId, shepr_protocol::WorkspaceId>,
 }
 
 impl ClientShellLocation {
-    pub(crate) fn from_snapshot(snapshot: &crate::protocol::ClientShellSnapshot) -> Self {
+    pub(crate) fn from_snapshot(snapshot: &shepr_protocol::ClientShellSnapshot) -> Self {
         Self {
             focused_workspace_id: snapshot.focused_workspace_id.clone(),
             active_tab_ids: snapshot
@@ -547,13 +547,13 @@ impl ClientShellLocation {
             .and_then(|workspace_id| self.active_tab_ids.get(workspace_id))
     }
 
-    pub(crate) fn focus_workspace(&mut self, workspace_id: crate::protocol::WorkspaceId) {
+    pub(crate) fn focus_workspace(&mut self, workspace_id: shepr_protocol::WorkspaceId) {
         self.focused_workspace_id = Some(workspace_id);
     }
 
     pub(crate) fn focus_tab(
         &mut self,
-        workspace_id: crate::protocol::WorkspaceId,
+        workspace_id: shepr_protocol::WorkspaceId,
         tab_id: PublicTabId,
     ) {
         self.focused_workspace_id = Some(workspace_id.clone());
@@ -710,7 +710,7 @@ impl ClientConnection {
 
     pub(crate) fn track_shell_input(
         &mut self,
-        target: &crate::protocol::PublicPaneId,
+        target: &shepr_protocol::PublicPaneId,
         events: &[ClientPaneInputEvent],
     ) {
         let Some(shell) = self.shell_state_mut() else {
@@ -818,7 +818,7 @@ impl ClientConnection {
 
     pub(crate) fn update_host_theme(
         &mut self,
-        update: &crate::protocol::ClientHostThemeUpdate,
+        update: &shepr_protocol::ClientHostThemeUpdate,
     ) -> bool {
         self.shell_state_mut()
             .is_some_and(|shell| shell.update_host_theme(update))
@@ -921,7 +921,7 @@ mod tests {
             (80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             1,
-            crate::protocol::RenderEncoding::SemanticFrame,
+            shepr_protocol::RenderEncoding::SemanticFrame,
             None,
         )
     }
@@ -934,7 +934,7 @@ mod tests {
                 shepr_core::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 1,
-                crate::protocol::RenderEncoding::TerminalAnsi,
+                shepr_protocol::RenderEncoding::TerminalAnsi,
                 None,
             )
         };
@@ -965,7 +965,7 @@ mod tests {
             (80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
-            crate::protocol::RenderEncoding::SemanticFrame,
+            shepr_protocol::RenderEncoding::SemanticFrame,
             None,
         );
         let second = ClientConnection::new_with_mode(
@@ -973,7 +973,7 @@ mod tests {
             shepr_core::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
-            crate::protocol::RenderEncoding::TerminalAnsi,
+            shepr_protocol::RenderEncoding::TerminalAnsi,
             None,
         );
         registry.insert(first_id, first);
@@ -1019,8 +1019,8 @@ mod tests {
         client.track_shell_input(
             &"w1:p1".into(),
             &[ClientPaneInputEvent::Key {
-                code: crate::protocol::ClientKeyCode::Char('x'),
-                modifiers: crate::protocol::WireModifiers::NONE,
+                code: shepr_protocol::ClientKeyCode::Char('x'),
+                modifiers: shepr_protocol::WireModifiers::NONE,
                 kind: ClientKeyKind::Press,
                 repeat_count: 1,
                 shifted_codepoint: None,
@@ -1036,7 +1036,7 @@ mod tests {
         let mut client = shell_client();
         let key = |code, kind| ClientPaneInputEvent::Key {
             code,
-            modifiers: crate::protocol::WireModifiers::SHIFT,
+            modifiers: shepr_protocol::WireModifiers::SHIFT,
             kind,
             repeat_count: 1,
             shifted_codepoint: None,
@@ -1045,10 +1045,10 @@ mod tests {
         client.track_shell_input(
             &"w1:p1".into(),
             &[
-                key(crate::protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
-                key(crate::protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
-                key(crate::protocol::ClientKeyCode::Esc, ClientKeyKind::Press),
-                key(crate::protocol::ClientKeyCode::Esc, ClientKeyKind::Release),
+                key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
+                key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
+                key(shepr_protocol::ClientKeyCode::Esc, ClientKeyKind::Press),
+                key(shepr_protocol::ClientKeyCode::Esc, ClientKeyKind::Release),
             ],
         );
 
@@ -1057,10 +1057,7 @@ mod tests {
         assert_eq!(held[0].target, "w1:p1");
         assert_eq!(
             held[0].release,
-            key(
-                crate::protocol::ClientKeyCode::Enter,
-                ClientKeyKind::Release
-            )
+            key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Release)
         );
     }
 }

@@ -20,9 +20,8 @@ mod frame_output;
 mod handshake;
 pub(crate) mod host_replies;
 mod input;
-mod input_wire;
+pub(crate) mod input_wire;
 mod loop_config;
-mod render_wire;
 mod shell;
 mod shell_runtime;
 mod startup;
@@ -88,8 +87,8 @@ use interprocess::local_socket::traits::Stream as _;
 use tracing::{debug, info, warn};
 
 use crate::blit as render_ansi;
-use crate::ipc::LocalStream;
-use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
+use shepr_platform::ipc::LocalStream;
+use shepr_protocol::{ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 
 fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
     const MAX_NOTICES: usize = 64;
@@ -102,15 +101,15 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
 enum ClientLaunchMode {
     Shell,
     Attach {
-        terminal_id: crate::protocol::TerminalId,
+        terminal_id: shepr_protocol::TerminalId,
         takeover: bool,
         escape: AttachEscapeState,
     },
 }
 
 fn run_client_with_mode(
-    config: &crate::config::ValidatedConfig,
-    paths: &crate::config::AppPaths,
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
     mode: ClientLaunchMode,
     log_message: &'static str,
 ) -> io::Result<()> {
@@ -122,9 +121,9 @@ fn run_client_with_mode(
             escape,
         } => (Some((terminal_id, takeover)), Some(escape)),
     };
-    crate::logging::init_file_logging(
+    shepr_platform::logging::init_file_logging(
         &crate::session::data_dir(paths),
-        crate::logging::CLIENT_LOG_FILE,
+        shepr_platform::logging::CLIENT_LOG_FILE,
     );
 
     crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
@@ -157,7 +156,7 @@ fn run_client_with_mode(
         shell_config,
     };
 
-    crate::logging::startup("client");
+    shepr_platform::logging::startup("client");
     info!(path = %socket_path.display(), "{log_message}");
 
     let endpoint_catalog = if client_rendered_shell && role == ClientProcessRole::Local {
@@ -170,7 +169,7 @@ fn run_client_with_mode(
     };
     let local_failure_policy = endpoint::LocalFailurePolicy::for_catalog(&endpoint_catalog);
 
-    let initial_stream = match crate::ipc::connect_local_stream(&socket_path) {
+    let initial_stream = match shepr_platform::ipc::connect_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
         Err(error) if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) => {
             warn!(%error, "Local is unavailable; keeping saved machines available");
@@ -293,13 +292,13 @@ fn run_client_with_mode(
             &err,
             ClientError::ServerShutdown {
                 reason: Some(reason)
-            } if *reason == protocol::ShutdownReason::Detached
+            } if *reason == shepr_protocol::ShutdownReason::Detached
         );
         let error_message = err.display_with_context(&error_context);
         let _ = writeln!(io::stderr(), "shepr: {error_message}");
         rt.shutdown_timeout(Duration::from_millis(100));
         crate::remote::release_ssh_resources_before_exit(Duration::from_secs(1));
-        crate::logging::shutdown("client");
+        shepr_platform::logging::shutdown("client");
 
         let connection_lost_during_terminal_hangup =
             terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
@@ -312,7 +311,7 @@ fn run_client_with_mode(
 
     rt.shutdown_timeout(Duration::from_millis(100));
     crate::remote::release_ssh_resources_before_exit(Duration::from_secs(1));
-    crate::logging::shutdown("client");
+    shepr_platform::logging::shutdown("client");
     Ok(())
 }
 
@@ -469,8 +468,8 @@ async fn run_client_loop(
     });
 
     let write_stream = if let Some(stream) = initial {
-        let max_frame_size = crate::protocol::MAX_FRAME_SIZE;
-        let surface_decoder = protocol::surface_reuse::Decoder::default();
+        let max_frame_size = shepr_protocol::MAX_FRAME_SIZE;
+        let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
         let transport = start_endpoint_transport(
             stream,
             (),
@@ -605,7 +604,7 @@ impl ClientLoop<'_> {
                 );
             }
             if let Some(shell) = self.state.mode.shell() {
-                let cell = protocol::ProtocolCellSize::from_host(
+                let cell = shepr_protocol::ProtocolCellSize::from_host(
                     self.state.reported_geometry.cell_width(),
                     self.state.reported_geometry.cell_height(),
                     self.state.reported_geometry.exact,
@@ -783,13 +782,13 @@ impl ClientLoop<'_> {
                     let message = ClientMessage::AttachMouse {
                         kind,
                         position,
-                        geometry: Some(crate::protocol::ClientMouseGeometry {
+                        geometry: Some(shepr_protocol::ClientMouseGeometry {
                             cols: geometry.cols(),
                             rows: geometry.rows(),
                             width_px: geometry.width_px,
                             height_px: geometry.height_px,
                         }),
-                        modifiers: crate::protocol::WireModifiers::from_bits_retain(modifiers),
+                        modifiers: shepr_protocol::WireModifiers::from_bits_retain(modifiers),
                         lines: state.settings.mouse_scroll_lines,
                     };
                     write_stream.send(&message);
@@ -938,7 +937,7 @@ impl ClientLoop<'_> {
             )
         } else {
             ClientMessage::Resize {
-                geometry: protocol::TerminalGeometry::new(
+                geometry: shepr_protocol::TerminalGeometry::new(
                     new_cols,
                     new_rows,
                     cell_width_px,
@@ -1050,7 +1049,7 @@ impl ClientLoop<'_> {
                     // surface yet), only the machine list.
                     state.present_chrome(frame, pending_activation.is_some());
                 }
-                let surface_decoder = protocol::surface_reuse::Decoder::default();
+                let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
                 spawn_endpoint_reader(
                     reader,
                     event_tx,

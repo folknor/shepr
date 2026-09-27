@@ -106,7 +106,7 @@ fn managed_agent_snapshot_omits_pending_and_persists_active_ownership() {
         .expect("test precondition")
         .begin_managed_agent(
             "reviewer".into(),
-            crate::detect::Agent::Pi,
+            shepr_agent::detect::Agent::Pi,
             now,
             std::time::Duration::ZERO,
             std::time::Duration::from_secs(1),
@@ -122,8 +122,8 @@ fn managed_agent_snapshot_omits_pending_and_persists_active_ownership() {
         .get_mut(&terminal_id)
         .expect("test precondition");
     terminal.set_detected_state(
-        Some(crate::detect::Agent::Pi),
-        crate::detect::AgentState::Idle,
+        Some(shepr_agent::detect::Agent::Pi),
+        shepr_agent::detect::AgentState::Idle,
     );
     assert!(terminal.reconcile_managed_agent_at(now, false));
     let active = capture_from_state(&state);
@@ -474,13 +474,13 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         )))
         .expect("test precondition");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while (crate::detect::process_cwd(pid).as_ref() != Some(&new)
+    while (shepr_agent::detect::process_cwd(pid).as_ref() != Some(&new)
         || runtime.cwd().as_ref() != Some(&old))
         && std::time::Instant::now() < deadline
     {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(crate::detect::process_cwd(pid), Some(new.clone()));
+    assert_eq!(shepr_agent::detect::process_cwd(pid), Some(new.clone()));
     assert_eq!(
         runtime.cwd(),
         Some(old.clone()),
@@ -505,10 +505,12 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     );
     shepr_platform::signal_processes(&[pid], shepr_platform::Signal::Kill);
     let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while crate::detect::process_cwd(pid).is_some() && std::time::Instant::now() < exit_deadline {
+    while shepr_agent::detect::process_cwd(pid).is_some()
+        && std::time::Instant::now() < exit_deadline
+    {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(crate::detect::process_cwd(pid).is_none());
+    assert!(shepr_agent::detect::process_cwd(pid).is_none());
     let after = capture_from_state_with_runtimes(&state, &runtimes);
     assert_eq!(
         after.workspaces[0].tabs[0]
@@ -767,21 +769,21 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         .get_mut(&terminal_id)
         .expect("test precondition");
     terminal.set_detected_state(
-        Some(crate::detect::Agent::Pi),
-        crate::detect::AgentState::Idle,
+        Some(shepr_agent::detect::Agent::Pi),
+        shepr_agent::detect::AgentState::Idle,
     );
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
+    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
         source: "shepr:pi".into(),
-        agent: crate::agent::Agent::Pi,
-        session_ref: crate::agent::resume::AgentSessionRef::path(session_path.clone())
+        agent: shepr_agent::agent::Agent::Pi,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
             .expect("test precondition"),
     });
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi".into(),
         "pi".into(),
-        crate::detect::AgentState::Working,
+        shepr_agent::detect::AgentState::Working,
         None,
-        crate::agent::resume::AgentSessionRef::path(session_path.clone()),
+        shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
     );
 
@@ -795,7 +797,7 @@ fn capture_contract_tracks_hook_authority_agent_session() {
     assert_eq!(agent_session.agent, "pi");
     assert_eq!(
         agent_session.session_ref.kind(),
-        crate::agent::resume::AgentSessionRefKind::Path
+        shepr_agent::agent::resume::AgentSessionRefKind::Path
     );
     assert_eq!(agent_session.session_ref.value_str(), session_path);
 }
@@ -812,10 +814,10 @@ fn capture_contract_preserves_restored_agent_session() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition")
-        .set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
+        .set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
             source: "shepr:opencode".into(),
-            agent: crate::agent::Agent::OpenCode,
-            session_ref: crate::agent::resume::AgentSessionRef::id("opencode-session")
+            agent: shepr_agent::agent::Agent::OpenCode,
+            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("opencode-session")
                 .expect("test precondition"),
         });
 
@@ -829,7 +831,7 @@ fn capture_contract_preserves_restored_agent_session() {
     assert_eq!(agent_session.agent, "opencode");
     assert_eq!(
         agent_session.session_ref.kind(),
-        crate::agent::resume::AgentSessionRefKind::Id
+        shepr_agent::agent::resume::AgentSessionRefKind::Id
     );
     assert_eq!(agent_session.session_ref.value_str(), "opencode-session");
 }

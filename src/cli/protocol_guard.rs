@@ -1,13 +1,13 @@
 use crate::api::schema::{ErrorBody, ErrorResponse};
 
 /// The error reported for a server whose protocol is another build's, as
-/// classified by `protocol::Compatibility`.
+/// classified by `shepr_protocol::Compatibility`.
 pub(super) fn mismatch_response(
     request_id: &str,
     server_protocol: u32,
     restart_guidance: &str,
 ) -> ErrorResponse {
-    let client_protocol = crate::protocol::PROTOCOL_VERSION;
+    let client_protocol = shepr_protocol::PROTOCOL_VERSION;
     // Protocol versions are folded from a source fingerprint (see `build.rs`),
     // so comparing them says nothing about which build is newer. Report a
     // different build and give the same restart guidance either way: the
@@ -43,7 +43,7 @@ mod tests {
     fn mismatch_error_preserves_request_id_and_guidance() {
         let response = mismatch_response(
             "cli:agent:wait",
-            crate::protocol::PROTOCOL_VERSION - 1,
+            shepr_protocol::PROTOCOL_VERSION - 1,
             "Run the session stop command, then restart.",
         );
 
@@ -53,11 +53,11 @@ mod tests {
             response
                 .error
                 .message
-                .contains(&format!("protocol {}", crate::protocol::PROTOCOL_VERSION))
+                .contains(&format!("protocol {}", shepr_protocol::PROTOCOL_VERSION))
         );
         assert!(response.error.message.contains(&format!(
             "protocol {}",
-            crate::protocol::PROTOCOL_VERSION - 1
+            shepr_protocol::PROTOCOL_VERSION - 1
         )));
         assert!(
             response
@@ -73,8 +73,8 @@ mod tests {
         // server version must produce the same "different build" report with
         // the restart guidance.
         for server_protocol in [
-            crate::protocol::PROTOCOL_VERSION - 1,
-            crate::protocol::PROTOCOL_VERSION + 1,
+            shepr_protocol::PROTOCOL_VERSION - 1,
+            shepr_protocol::PROTOCOL_VERSION + 1,
         ] {
             let message = mismatch_response("req", server_protocol, "restart guidance")
                 .error

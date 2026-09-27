@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::PaneRuntime;
-use crate::protocol::TerminalId;
+use shepr_protocol::TerminalId;
 
 /// Server-owned live terminal runtimes, keyed by durable terminal id.
 ///

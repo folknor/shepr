@@ -3,14 +3,14 @@ use ratatui::{Frame, layout::Rect};
 use super::panes::{compute_pane_infos_for_tab, render_panes, resize_pane_infos};
 use crate::app::AppState;
 use crate::pane::PaneRuntimeRegistry;
-use crate::protocol::CursorState;
 use crate::workspace::PaneChromeInfo as PaneInfo;
 use shepr_core::layout::SplitBorder;
+use shepr_protocol::CursorState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabSurfaceTarget {
-    pub(crate) workspace_id: crate::protocol::WorkspaceId,
-    pub(crate) tab_id: crate::protocol::PublicTabId,
+    pub(crate) workspace_id: shepr_protocol::WorkspaceId,
+    pub(crate) tab_id: shepr_protocol::PublicTabId,
 }
 
 impl TabSurfaceTarget {
@@ -23,7 +23,7 @@ impl TabSurfaceTarget {
         let tab = workspace.tabs.get(tab_index)?;
         Some(Self {
             workspace_id: workspace.id.clone(),
-            tab_id: crate::protocol::PublicTabId::new(workspace.id.as_str(), tab.number),
+            tab_id: shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab.number),
         })
     }
 
@@ -219,7 +219,7 @@ pub(crate) fn tab_surface_cursor(
             y: cursor.y,
             visible,
             shape: if reveal && visible {
-                crate::protocol::CursorShapeParam::from_decscusr(app.settings.cjk_ime_cursor_shape)
+                shepr_protocol::CursorShapeParam::from_decscusr(app.settings.cjk_ime_cursor_shape)
             } else {
                 cursor.shape
             },
@@ -229,7 +229,7 @@ pub(crate) fn tab_surface_cursor(
             x: info.inner_rect.x,
             y: info.inner_rect.y,
             visible: true,
-            shape: crate::protocol::CursorShapeParam::from_decscusr(
+            shape: shepr_protocol::CursorShapeParam::from_decscusr(
                 app.settings.cjk_ime_cursor_shape,
             ),
         })

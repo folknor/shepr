@@ -1,0 +1,26 @@
+[package]
+name = "shepr-agent"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+jsonc-parser = { workspace = true }
+libc = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shepr-core = { path = "../shepr-core" }
+shepr-platform = { path = "../shepr-platform" }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+shepr-pty = { path = "../shepr-pty" }
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

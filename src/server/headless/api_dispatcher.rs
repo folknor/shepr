@@ -8,7 +8,7 @@ pub(super) enum AltScreenReadConflict {
 }
 
 pub(super) struct AltScreenReadSpec {
-    pub(super) terminal_id: crate::protocol::TerminalId,
+    pub(super) terminal_id: shepr_protocol::TerminalId,
     pub(super) lines: usize,
     pub(super) unwrap: bool,
     pub(super) initial: crate::terminal::ScreenSnapshot,
@@ -358,9 +358,7 @@ impl ApiDispatcher {
             _ => None,
         };
         self.read_conflict(
-            terminal_id
-                .as_ref()
-                .map(crate::protocol::TerminalId::as_str),
+            terminal_id.as_ref().map(shepr_protocol::TerminalId::as_str),
             request,
         )
     }
@@ -387,7 +385,7 @@ impl ApiDispatcher {
         let target = server.app.resolve_agent_target(&params.target).ok()?;
         let terminal = server.app.state.terminals.get(&target.terminal_id)?;
         if terminal.effective_known_agent().is_none()
-            || terminal.state == crate::detect::AgentState::Idle
+            || terminal.state == shepr_agent::detect::AgentState::Idle
         {
             return None;
         }
@@ -398,7 +396,7 @@ impl ApiDispatcher {
         {
             return None;
         }
-        let status = crate::detect::manifest::agent_state_label(terminal.state);
+        let status = shepr_agent::detect::manifest::agent_state_label(terminal.state);
         Some(api::error::ApiError::new(
             api::error::ApiErrorCode::AgentNotIdle,
             format!(
@@ -444,7 +442,7 @@ impl ApiDispatcher {
         }
         let terminal = server.app.state.terminals.get(&target.terminal_id)?;
         if terminal.effective_known_agent().is_none()
-            || terminal.state != crate::detect::AgentState::Idle
+            || terminal.state != shepr_agent::detect::AgentState::Idle
         {
             return None;
         }
@@ -478,7 +476,7 @@ impl ApiDispatcher {
                 .state
                 .terminals
                 .get(&read.terminal_id)
-                .is_some_and(|terminal| terminal.state == crate::detect::AgentState::Idle);
+                .is_some_and(|terminal| terminal.state == shepr_agent::detect::AgentState::Idle);
             let attached = server.clients.has_attach_owner(&read.terminal_id);
             let outcome = if remains_idle && !attached {
                 read.poll(runtime, now)

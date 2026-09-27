@@ -75,7 +75,7 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
     assert_eq!(cell.symbol, "─");
     assert_eq!(
         cell.fg,
-        crate::protocol::WireColor::from_ratatui(state.config.palette.accent)
+        shepr_protocol::WireColor::from_ratatui(state.config.palette.accent)
     );
 }
 
@@ -138,7 +138,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .expect("test precondition");
         projection.agents = (0..8)
             .map(|index| ClientShellAgent {
-                pane_id: crate::protocol::PublicPaneId::new("ws_1", index + 1),
+                pane_id: shepr_protocol::PublicPaneId::new("ws_1", index + 1),
                 focused: index == 0,
                 ..agent(&format!("agent {index}"), AgentStatus::Idle, 1)
             })
@@ -375,7 +375,7 @@ fn same_machine_reboot_still_resets_agent_scroll() {
 fn switching_machines_from_copy_mode_restores_terminal_input() {
     let (mut state, remote) = state_with_remote();
     let mut local_surface = surface();
-    local_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    local_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
@@ -637,7 +637,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     assert!(state.hits.workspace_max_scroll > 0);
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
-    update.revision = crate::protocol::ProjectionRevision::new(2);
+    update.revision = shepr_protocol::ProjectionRevision::new(2);
     update.workspaces.push(ClientShellWorkspace {
         workspace_id: "ws_13".into(),
         number: 13,
@@ -650,7 +650,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     }
     state.set_snapshot(Box::new(update));
     let mut updated_surface = surface();
-    updated_surface.projection_revision = crate::protocol::ProjectionRevision::new(2);
+    updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     state.set_pane_surface(updated_surface);
     state.compose(106, 2).expect("zero-height workspace body");
     assert!(state.reveal_focused_workspace);
@@ -831,7 +831,7 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
 #[test]
 fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     use crate::api::schema::AgentStatus;
-    use crate::config::{AgentSidebarToken, StatusIndicatorStyle};
+    use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
 
     let mut config = Config::default();
     config.ui.status_indicators = StatusIndicatorStyle::Symbols;
@@ -879,7 +879,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     })]);
     assert_eq!(
         state.config.agent_panel_sort,
-        crate::config::AgentPanelSortConfig::Priority
+        shepr_config::AgentPanelSortConfig::Priority
     );
     assert!(click.actions.is_empty());
 
@@ -897,10 +897,10 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
 #[test]
 fn aggregate_priority_uses_client_observed_recency_across_machines() {
     use crate::api::schema::AgentStatus;
-    use crate::config::AgentSidebarToken;
+    use shepr_config::AgentSidebarToken;
 
     let mut config = Config::default();
-    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+    config.ui.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -977,7 +977,7 @@ fn unselected_endpoint_snapshot_keeps_server_idle_status() {
     remote.boot_id = "remote-boot".into();
     remote.agents = vec![agent("background agent", AgentStatus::Working, 2)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
-    remote.revision = crate::protocol::ProjectionRevision::new(2);
+    remote.revision = shepr_protocol::ProjectionRevision::new(2);
     remote.agents = vec![agent("background agent", AgentStatus::Idle, 3)];
 
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
@@ -1212,33 +1212,33 @@ fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
 fn future_surface_waits_for_its_exact_snapshot_revision() {
     let (mut state, _) = state_with_remote();
     let mut future = surface();
-    future.projection_revision = crate::protocol::ProjectionRevision::new(2);
-    future.surface_revision = crate::protocol::SurfaceRevision::new(2);
+    future.projection_revision = shepr_protocol::ProjectionRevision::new(2);
+    future.surface_revision = shepr_protocol::SurfaceRevision::new(2);
     state.set_pane_surface(future);
     assert_eq!(
         state
             .pane_surface
             .as_ref()
             .map(|surface| surface.projection_revision),
-        Some(crate::protocol::ProjectionRevision::new(1))
+        Some(shepr_protocol::ProjectionRevision::new(1))
     );
     assert_eq!(
         state
             .pending_pane_surface
             .as_ref()
             .map(|surface| surface.projection_revision),
-        Some(crate::protocol::ProjectionRevision::new(2))
+        Some(shepr_protocol::ProjectionRevision::new(2))
     );
 
     let mut next = snapshot();
-    next.revision = crate::protocol::ProjectionRevision::new(2);
+    next.revision = shepr_protocol::ProjectionRevision::new(2);
     state.set_snapshot(Box::new(next));
     assert_eq!(
         state
             .pane_surface
             .as_ref()
             .map(|surface| surface.projection_revision),
-        Some(crate::protocol::ProjectionRevision::new(2))
+        Some(shepr_protocol::ProjectionRevision::new(2))
     );
     assert!(state.pending_pane_surface.is_none());
 }
@@ -1248,12 +1248,12 @@ fn inactive_endpoint_snapshot_cache_never_regresses_revision() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut newest = snapshot();
     newest.boot_id = "remote-boot".into();
-    newest.revision = crate::protocol::ProjectionRevision::new(3);
+    newest.revision = shepr_protocol::ProjectionRevision::new(3);
     newest.workspaces[0].label = "newest".into();
     state.set_endpoint_snapshot(&endpoint_id, Box::new(newest));
     let mut delayed = snapshot();
     delayed.boot_id = "remote-boot".into();
-    delayed.revision = crate::protocol::ProjectionRevision::new(2);
+    delayed.revision = shepr_protocol::ProjectionRevision::new(2);
     delayed.workspaces[0].label = "delayed".into();
 
     state.set_endpoint_snapshot(&endpoint_id, Box::new(delayed));
@@ -1273,12 +1273,12 @@ fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut previous = snapshot();
     previous.boot_id = "shared-server-boot".into();
-    previous.revision = crate::protocol::ProjectionRevision::new(9);
+    previous.revision = shepr_protocol::ProjectionRevision::new(9);
     previous.workspaces[0].label = "old connection".into();
     state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
     let mut reconnected = snapshot();
     reconnected.boot_id = "shared-server-boot".into();
-    reconnected.revision = crate::protocol::ProjectionRevision::new(1);
+    reconnected.revision = shepr_protocol::ProjectionRevision::new(1);
     reconnected.workspaces[0].label = "new connection".into();
 
     state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
@@ -1314,14 +1314,14 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         let (mut state, endpoint_id) = state_with_remote();
         let mut previous = snapshot();
         previous.boot_id = "shared-server-boot".into();
-        previous.revision = crate::protocol::ProjectionRevision::new(previous_revision);
+        previous.revision = shepr_protocol::ProjectionRevision::new(previous_revision);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
         assert!(state.activate_endpoint_projection(&endpoint_id));
         let mut previous_surface = surface();
         previous_surface.boot_id = "shared-server-boot".into();
         previous_surface.projection_revision =
-            crate::protocol::ProjectionRevision::new(previous_revision);
-        previous_surface.surface_revision = crate::protocol::SurfaceRevision::new(9);
+            shepr_protocol::ProjectionRevision::new(previous_revision);
+        previous_surface.surface_revision = shepr_protocol::SurfaceRevision::new(9);
         state.set_pane_surface(previous_surface.clone());
         previous_surface.projection_revision += 1;
         state.set_pane_surface(previous_surface);
@@ -1331,7 +1331,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         state.mark_endpoint_disconnected(&endpoint_id);
         let mut reconnected = snapshot();
         reconnected.boot_id = "shared-server-boot".into();
-        reconnected.revision = crate::protocol::ProjectionRevision::new(1);
+        reconnected.revision = shepr_protocol::ProjectionRevision::new(1);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
         assert_eq!(
             state.snapshot.as_ref().expect("test precondition").revision,
@@ -1351,8 +1351,8 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         assert!(state.compose(106, 20).is_none());
         let mut reconnected_surface = surface();
         reconnected_surface.boot_id = "shared-server-boot".into();
-        reconnected_surface.projection_revision = crate::protocol::ProjectionRevision::new(1);
-        reconnected_surface.surface_revision = crate::protocol::SurfaceRevision::new(1);
+        reconnected_surface.projection_revision = shepr_protocol::ProjectionRevision::new(1);
+        reconnected_surface.surface_revision = shepr_protocol::SurfaceRevision::new(1);
         state.set_pane_surface(reconnected_surface);
 
         assert_eq!(
@@ -1422,7 +1422,7 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
 #[test]
 fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     use crate::api::schema::AgentStatus;
-    use crate::config::{AgentSidebarToken, StatusIndicatorStyle};
+    use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
 
     let (mut state, endpoint_id) = state_with_remote();
     state.config.status_indicators = StatusIndicatorStyle::Symbols;

@@ -85,7 +85,7 @@ impl TerminalState {
                     session.source.as_str() != source || session.agent.label() != agent_label
                 });
         let process_owns_agent =
-            crate::detect::parse_agent_label(agent_label).is_some_and(|agent| {
+            shepr_agent::detect::parse_agent_label(agent_label).is_some_and(|agent| {
                 self.detected_agent == Some(agent) && self.recent_agent_process_exit.is_none()
             });
 
@@ -126,10 +126,12 @@ impl TerminalState {
     }
 
     pub(super) fn hook_authority_is_effective(&self, authority: &HookAuthority) -> bool {
-        !crate::detect::full_lifecycle_hook_authority(&authority.source, &authority.agent_label)
-            || crate::detect::parse_agent_label(&authority.agent_label).is_none_or(|agent| {
-                self.detected_agent == Some(agent) && self.recent_agent_process_exit.is_none()
-            })
+        !shepr_agent::detect::full_lifecycle_hook_authority(
+            &authority.source,
+            &authority.agent_label,
+        ) || shepr_agent::detect::parse_agent_label(&authority.agent_label).is_none_or(|agent| {
+            self.detected_agent == Some(agent) && self.recent_agent_process_exit.is_none()
+        })
     }
 
     pub fn effective_agent_label(&self) -> Option<&str> {
@@ -140,14 +142,14 @@ impl TerminalState {
             .or_else(|| {
                 self.recent_agent_process_exit
                     .is_none()
-                    .then(|| self.detected_agent.map(crate::detect::agent_label))
+                    .then(|| self.detected_agent.map(shepr_agent::detect::agent_label))
                     .flatten()
             })
     }
 
     pub fn effective_known_agent(&self) -> Option<Agent> {
         self.effective_agent_label()
-            .and_then(crate::detect::parse_agent_label)
+            .and_then(shepr_agent::detect::parse_agent_label)
     }
 
     pub(crate) fn unchanged_effective_state_change_at(&self, now: Instant) -> EffectiveStateChange {
@@ -179,7 +181,7 @@ impl TerminalState {
             && self.fallback_not_older_than_hook()
             && self.hook_authority.as_ref().is_some_and(|authority| {
                 authority.state != AgentState::Blocked
-                    && crate::detect::parse_agent_label(&authority.agent_label)
+                    && shepr_agent::detect::parse_agent_label(&authority.agent_label)
                         == self.detected_agent
             })
     }
@@ -187,7 +189,7 @@ impl TerminalState {
     pub(super) fn live_full_lifecycle_hook_authority(&self) -> bool {
         self.hook_authority.as_ref().is_some_and(|authority| {
             self.hook_authority_is_effective(authority)
-                && crate::detect::full_lifecycle_hook_authority(
+                && shepr_agent::detect::full_lifecycle_hook_authority(
                     &authority.source,
                     &authority.agent_label,
                 )

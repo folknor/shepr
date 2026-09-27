@@ -1,4 +1,4 @@
-use crate::protocol::KittyKeyboardFlags;
+use shepr_protocol::KittyKeyboardFlags;
 use shepr_vt::ModifyOtherKeysLevel;
 use std::io::{self, Write};
 

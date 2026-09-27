@@ -5,8 +5,8 @@
 
 use std::time::Instant;
 
-use crate::detect::{Agent, AgentState};
 use crate::git::{GitStatusCacheEntry, WorkspaceGitStatus};
+use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 
 /// An event from a background task to the main loop.
@@ -46,7 +46,7 @@ pub enum AppEvent {
         state: AgentState,
         message: Option<String>,
         seq: Option<u64>,
-        session_ref: Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
     },
     /// Agent session identity was reported without state authority.
     AgentSessionReported {
@@ -54,8 +54,8 @@ pub enum AppEvent {
         source: String,
         agent_label: String,
         seq: Option<u64>,
-        session_ref: Option<crate::agent::resume::AgentSessionRef>,
-        session_start_source: Option<crate::agent::resume::AgentSessionStartSource>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
     },
     /// Display-only agent metadata was reported for a pane.
     HookMetadataReported {

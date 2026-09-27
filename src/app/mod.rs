@@ -40,9 +40,9 @@ use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
 use tracing::info;
 
-#[cfg(test)]
-use crate::config::Config;
 use crate::events::AppEvent;
+#[cfg(test)]
+use shepr_config::Config;
 
 pub use state::{AppState, Mode, ViewState};
 
@@ -87,7 +87,7 @@ pub struct App {
     pub(crate) session_saver: session::SessionSaver,
     tab_bar_status: tab_bar_status::TabBarStatus,
     /// Parsed `ui.window_title` plus the hostname resolved when it was applied.
-    window_title_template: Option<(crate::config::WindowTitleTemplate, String)>,
+    window_title_template: Option<(shepr_config::WindowTitleTemplate, String)>,
     pub(crate) persist_pane_history: bool,
     /// Pane history kept across saves (restored panes not yet running, the
     /// last primary screen of panes on the alternate screen); every history
@@ -100,8 +100,8 @@ pub struct App {
     pub render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<crate::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
-    resolved_config: crate::config::ValidatedConfig,
-    pub(crate) paths: crate::config::AppPaths,
+    resolved_config: shepr_config::ValidatedConfig,
+    pub(crate) paths: shepr_config::AppPaths,
 }
 
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -117,8 +117,8 @@ impl App {
         event_hub: crate::api::EventHub,
     ) -> Self {
         let scratch = crate::test_support::ScratchDir::new("app").keep_until_exit();
-        let paths = crate::config::AppPaths::test_at(&scratch);
-        let config = crate::config::ValidatedConfig::test_from_config_with_paths(
+        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
             config.clone(),
             None,
             paths.clone(),
@@ -129,8 +129,8 @@ impl App {
     }
 
     pub(crate) fn with_paths(
-        config: &crate::config::ValidatedConfig,
-        paths: &crate::config::AppPaths,
+        config: &shepr_config::ValidatedConfig,
+        paths: &shepr_config::AppPaths,
         lease: crate::persist::DataDirLease,
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
@@ -196,10 +196,10 @@ impl App {
             restored_terminal_runtimes = restored.terminal_runtimes.into();
             pane_history_carry = restored.history_carry;
             if restored.workspaces.is_empty() {
-                crate::logging::session_restored(0, "empty");
+                shepr_platform::logging::session_restored(0, "empty");
                 (Vec::new(), None, 0)
             } else {
-                crate::logging::session_restored(restored.workspaces.len(), "ok");
+                shepr_platform::logging::session_restored(restored.workspaces.len(), "ok");
                 (restored.workspaces, restored.active, restored.selected)
             }
         } else {
@@ -219,7 +219,7 @@ impl App {
 
         #[cfg(not(test))]
         let agent_manifest_summaries =
-            crate::detect::manifest::reload_manifests(paths.config_dir());
+            shepr_agent::detect::manifest::reload_manifests(paths.config_dir());
         // Nextest runs each unit test in a fresh process. Manifest-sensitive tests reload
         // explicitly; unrelated App tests should not recompile every bundled regex.
         #[cfg(test)]
@@ -353,7 +353,7 @@ impl App {
             .expect("pane must have a live runtime")
     }
 
-    pub(crate) fn resolved_config(&self) -> &crate::config::ValidatedConfig {
+    pub(crate) fn resolved_config(&self) -> &shepr_config::ValidatedConfig {
         &self.resolved_config
     }
 
@@ -387,10 +387,10 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::detect::{Agent, AgentState};
     use crate::test_support::IsolatedEnv;
     use crate::workspace::Workspace;
+    use shepr_agent::detect::{Agent, AgentState};
+    use shepr_config::Config;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -431,7 +431,7 @@ mod tests {
     fn tab_bar_command_events_render_only_when_visible_output_changes() {
         let mut app = test_app();
         app.configure_tab_bar_status(
-            &[crate::config::TabBarRightEntryConfig::Command {
+            &[shepr_config::TabBarRightEntryConfig::Command {
                 command: "status".into(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
@@ -607,7 +607,7 @@ mod tests {
         );
 
         // `theme.custom.accent` wins over `ui.accent`.
-        config.theme.custom = Some(crate::config::CustomThemeColors {
+        config.theme.custom = Some(shepr_config::CustomThemeColors {
             accent: Some("#010203".into()),
             ..Default::default()
         });
@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn new_terminal_cwd_follow_uses_source_cwd() {
         let cwd = creation::resolve_new_terminal_cwd(
-            &crate::config::NewTerminalCwdConfig::Follow,
+            &shepr_config::NewTerminalCwdConfig::Follow,
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/shepr-source")),
@@ -850,7 +850,7 @@ mod tests {
         let home = env.home();
 
         let cwd = creation::resolve_new_terminal_cwd(
-            &crate::config::NewTerminalCwdConfig::Follow,
+            &shepr_config::NewTerminalCwdConfig::Follow,
             Some(home.as_path()),
             None,
             None,
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn new_terminal_cwd_path_uses_configured_path() {
         let cwd = creation::resolve_new_terminal_cwd(
-            &crate::config::NewTerminalCwdConfig::Path("/tmp/shepr-fixed".into()),
+            &shepr_config::NewTerminalCwdConfig::Path("/tmp/shepr-fixed".into()),
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/shepr-source")),
@@ -1018,8 +1018,8 @@ mod tests {
             .get_mut(&attached_terminal_id)
             .expect("test precondition")
             .set_detected_state(
-                Some(crate::detect::Agent::Pi),
-                crate::detect::AgentState::Idle,
+                Some(shepr_agent::detect::Agent::Pi),
+                shepr_agent::detect::AgentState::Idle,
             );
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
@@ -1081,8 +1081,8 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .set_detected_state(
-                Some(crate::detect::Agent::Pi),
-                crate::detect::AgentState::Idle,
+                Some(shepr_agent::detect::Agent::Pi),
+                shepr_agent::detect::AgentState::Idle,
             );
 
         let resolved = app
@@ -1112,8 +1112,8 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition");
         terminal.set_detected_state(
-            Some(crate::detect::Agent::Pi),
-            crate::detect::AgentState::Idle,
+            Some(shepr_agent::detect::Agent::Pi),
+            shepr_agent::detect::AgentState::Idle,
         );
         terminal.set_agent_name("p_1".into());
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::{App, MIN_RENDER_INTERVAL};
 
 impl App {
-    pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: &crate::protocol::TerminalId) {
+    pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: &shepr_protocol::TerminalId) {
         if let Some(runtime) = self.terminal_runtimes.remove(terminal_id) {
             runtime.shutdown();
         }
@@ -157,7 +157,7 @@ mod tests {
 
     fn test_app_with_pane() -> (super::super::App, shepr_core::layout::PaneId) {
         let mut app = super::super::App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),

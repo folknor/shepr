@@ -132,7 +132,7 @@ pub(super) fn parse(matches: &ArgMatches) -> Command {
 
 pub(super) fn run_agent_command(
     command: Command,
-    config: Option<crate::config::ValidatedConfig>,
+    config: Option<shepr_config::ValidatedConfig>,
     paths: &super::target::CliContext,
 ) -> super::CliResult<i32> {
     match command {
@@ -169,10 +169,9 @@ fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super:
                 return Ok(1);
             }
         };
-        crate::detect::manifest::explain_to_json_value(&crate::detect::manifest::explain_for_label(
-            &agent_label,
-            &content,
-        ))
+        shepr_agent::detect::manifest::explain_to_json_value(
+            &shepr_agent::detect::manifest::explain_for_label(&agent_label, &content),
+        )
     } else {
         let response = super::send_request(
             paths,
@@ -311,12 +310,12 @@ fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> super
     } = args;
     // `--kind` is limited to the agent labels by the spec; this maps the label
     // to its canonical spelling for comparison with the detected agent.
-    let Some(expected_kind) = crate::detect::parse_agent_label(&kind) else {
+    let Some(expected_kind) = shepr_agent::detect::parse_agent_label(&kind) else {
         return Ok(super::usage_error(&format!(
             "unsupported interactive agent kind: {kind}"
         )));
     };
-    let expected_kind = crate::detect::agent_label(expected_kind).to_string();
+    let expected_kind = shepr_agent::detect::agent_label(expected_kind).to_string();
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_AGENT_START_TIMEOUT_MS));
     let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
         && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
@@ -437,7 +436,7 @@ fn agent_focus(paths: &super::target::CliContext, target: String) -> super::CliR
 fn agent_attach(
     target: &str,
     takeover: bool,
-    config: Option<crate::config::ValidatedConfig>,
+    config: Option<shepr_config::ValidatedConfig>,
     paths: &super::target::CliContext,
 ) -> super::CliResult<i32> {
     let config = match config {
@@ -593,12 +592,12 @@ fn process_info_shows_shell_initialization(process_info: &serde_json::Value) -> 
                 process["pid"].as_u64() == Some(shell_pid)
                     && (process["name"]
                         .as_str()
-                        .is_some_and(crate::detect::is_pane_shell_process_name)
+                        .is_some_and(shepr_agent::detect::is_pane_shell_process_name)
                         || process["argv"]
                             .as_array()
                             .and_then(|argv| argv.first())
                             .and_then(serde_json::Value::as_str)
-                            .is_some_and(crate::detect::is_pane_shell_process_name))
+                            .is_some_and(shepr_agent::detect::is_pane_shell_process_name))
             })
         })
 }

@@ -61,7 +61,7 @@ pub(super) fn run_machine_command(
     command: Command,
     context: &super::target::CliContext,
 ) -> super::CliResult<i32> {
-    let paths: &crate::config::AppPaths = context;
+    let paths: &shepr_config::AppPaths = context;
     match command {
         Command::List { json } => list(paths, json),
         Command::Status { machine, json } => {
@@ -74,7 +74,7 @@ pub(super) fn run_machine_command(
     }
 }
 
-fn list(paths: &crate::config::AppPaths, json: bool) -> super::CliResult<i32> {
+fn list(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
     let catalog = load_catalog(paths)?;
     let selected_profile = catalog.load_selection();
     let rows = catalog
@@ -116,7 +116,7 @@ struct MachineStatusRow<'a> {
 fn status(
     selector: Option<&str>,
     json: bool,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
     settings: crate::remote::SavedSshSettings,
 ) -> super::CliResult<i32> {
     let catalog = load_catalog(paths)?;
@@ -178,7 +178,7 @@ fn status(
 }
 
 fn reconnect(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
     selector: &str,
     settings: crate::remote::SavedSshSettings,
 ) -> super::CliResult<i32> {
@@ -224,12 +224,12 @@ fn add_args(matches: &ArgMatches) -> AddArgs {
         target: required(matches, "ssh-target"),
         label: required(matches, "label"),
         session: string(matches, "remote-session")
-            .unwrap_or_else(|| crate::config::DEFAULT_SESSION_NAME.to_owned()),
+            .unwrap_or_else(|| shepr_config::DEFAULT_SESSION_NAME.to_owned()),
     }
 }
 
 fn add(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
     args: AddArgs,
     settings: crate::remote::SavedSshSettings,
 ) -> super::CliResult<i32> {
@@ -289,7 +289,7 @@ fn add(
 }
 
 fn saved_ssh_settings(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> super::CliResult<crate::remote::SavedSshSettings> {
     let config = super::load_validated_config(paths)?;
     Ok(crate::remote::SavedSshSettings {
@@ -297,7 +297,7 @@ fn saved_ssh_settings(
     })
 }
 
-fn remove(paths: &crate::config::AppPaths, selector: &str) -> super::CliResult<i32> {
+fn remove(paths: &shepr_config::AppPaths, selector: &str) -> super::CliResult<i32> {
     let mut catalog = load_catalog(paths)?;
     let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
         Ok(profile) => profile,
@@ -326,7 +326,7 @@ fn remove(paths: &crate::config::AppPaths, selector: &str) -> super::CliResult<i
     Ok(0)
 }
 
-fn load_catalog(paths: &crate::config::AppPaths) -> super::CliResult<EndpointCatalog> {
+fn load_catalog(paths: &shepr_config::AppPaths) -> super::CliResult<EndpointCatalog> {
     EndpointCatalog::load(paths).map_err(|error| std::io::Error::other(error).into())
 }
 

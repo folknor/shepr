@@ -5,14 +5,14 @@ use super::*;
 pub(super) struct WorkspaceNavigationTarget {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) workspace_id: String,
-    boot_id: crate::protocol::BootId,
+    boot_id: shepr_protocol::BootId,
     generation: Option<u64>,
 }
 
 /// Display-only continuity while a direct focus request awaits its authoritative snapshot.
 pub(super) struct PendingWorkspaceHighlight {
     pub(super) target: WorkspaceNavigationTarget,
-    pub(super) request_id: crate::protocol::RequestId,
+    pub(super) request_id: shepr_protocol::RequestId,
     expires_at: std::time::Instant,
 }
 

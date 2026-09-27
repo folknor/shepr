@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use super::ClientEndpointId;
 use super::health::{EndpointHealth, HealthAction};
-use crate::protocol::ClientMessage;
+use shepr_protocol::ClientMessage;
 
 pub(crate) trait EndpointTransport: Send {
     fn send(&mut self, message: &ClientMessage) -> io::Result<()>;
@@ -22,7 +22,7 @@ pub(crate) trait EndpointTransport: Send {
 
 pub(crate) struct EndpointConnection {
     transport: Box<dyn EndpointTransport>,
-    pub(crate) generation: crate::protocol::ConnectionGeneration,
+    pub(crate) generation: shepr_protocol::ConnectionGeneration,
     pub(crate) surface_active: bool,
     health: Option<EndpointHealth>,
 }

@@ -75,7 +75,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     };
     pane_surface.panes[0].rect = rect;
     pane_surface.panes[0].inner_rect = rect;
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 50,
         viewport_rows: u64::from(area.height),
@@ -88,7 +88,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 
     // The cursor starts on the last line of history, which no scroll can lift above the
     // bar's usual row: the bar moves to the top row instead.
-    let accent = crate::protocol::WireColor::from_ratatui(state.config.palette.accent);
+    let accent = shepr_protocol::WireColor::from_ratatui(state.config.palette.accent);
     let bottom = area.bottom() - 1;
     let frame = state.compose(106, 20).expect("copy frame");
     let rows = frame_rows(&frame);
@@ -153,7 +153,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
         let fallback = state.compose(106, 20).expect("fallback frame");
         assert_eq!(
             fallback.cells[cell_index].bg,
-            crate::protocol::WireColor::from_ratatui(Color::DarkGray)
+            shepr_protocol::WireColor::from_ratatui(Color::DarkGray)
         );
         if explicit_appearance {
             state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(
@@ -179,7 +179,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
             let cell = &frame.cells[cell_index];
             assert_eq!(
                 cell.bg,
-                crate::protocol::WireColor::from_ratatui(Color::Rgb(
+                shepr_protocol::WireColor::from_ratatui(Color::Rgb(
                     selected_bg.0,
                     selected_bg.1,
                     selected_bg.2
@@ -187,7 +187,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
             );
             assert_eq!(
                 cell.fg,
-                crate::protocol::WireColor::from_ratatui(Color::Rgb(
+                shepr_protocol::WireColor::from_ratatui(Color::Rgb(
                     selected_fg.0,
                     selected_fg.1,
                     selected_fg.2
@@ -248,7 +248,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         &selected.cells[usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x)];
     assert_ne!(
         selected_cell.bg,
-        crate::protocol::WireColor::from_ratatui(ratatui::style::Color::Reset)
+        shepr_protocol::WireColor::from_ratatui(ratatui::style::Color::Reset)
     );
 
     let release =
@@ -342,13 +342,13 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     let mut cell = updated.frame.cells[0].clone();
     cell.symbol = "y".into();
     assert!(matches!(
-        state.apply_pane_surface_patch(&crate::protocol::PaneSurfacePatch {
+        state.apply_pane_surface_patch(&shepr_protocol::PaneSurfacePatch {
             boot_id: updated.boot_id,
             projection_revision: updated.projection_revision,
             base_surface_revision: updated.surface_revision,
             surface_revision: updated.surface_revision + 1,
             panes: updated.panes,
-            rows: vec![crate::protocol::PaneSurfacePatchRow {
+            rows: vec![shepr_protocol::PaneSurfacePatchRow {
                 x: 0,
                 y: 0,
                 cells: vec![cell]
@@ -407,7 +407,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
@@ -465,7 +465,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
@@ -589,7 +589,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             viewport_rows: 2,
@@ -648,7 +648,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
@@ -706,7 +706,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             viewport_rows: 2,
@@ -748,7 +748,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
@@ -804,7 +804,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
@@ -852,7 +852,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
                     && events.iter().any(|event| matches!(
                         event,
                         ClientPaneInputEvent::Key {
-                            code: crate::protocol::ClientKeyCode::Char('x'),
+                            code: shepr_protocol::ClientKeyCode::Char('x'),
                             ..
                         }
                     ))
@@ -866,7 +866,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
@@ -1957,7 +1957,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 10,
         viewport_rows: 2,
@@ -2139,7 +2139,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
@@ -2193,7 +2193,7 @@ fn queued_copy_keys_preserve_prefix_order() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 10,
         viewport_rows: 2,
@@ -2242,7 +2242,7 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 10,
         viewport_rows: 2,
@@ -2274,7 +2274,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
@@ -2334,7 +2334,7 @@ fn new_content_revision_invalidates_copy_search_coordinates() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
@@ -2415,7 +2415,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
             offset_from_bottom: 0,
             max_offset_from_bottom: 20,
             viewport_rows: 2,

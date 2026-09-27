@@ -2,9 +2,9 @@ use super::*;
 use crate::api::schema::{
     AgentStatus, EventData, EventEnvelope, PaneInfo, PaneReadResult, ReadFormat, ReadSource,
 };
-use crate::ipc::{LocalStreamReadCount, poll_local_stream_read_count};
 use interprocess::local_socket::traits::Listener as _;
 use serde_json::{Value, json};
+use shepr_platform::ipc::{LocalStreamReadCount, poll_local_stream_read_count};
 use tokio::sync::mpsc;
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -35,9 +35,10 @@ impl SocketTest {
         let path = crate::test_support::ScratchDir::new("sub")
             .keep_until_exit()
             .join("s.sock");
-        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
+        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         self.paths.push(path.clone());
-        let mut stream = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let mut stream =
+            shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
         set_local_stream_polling(&mut stream, true).expect("test precondition");
         let api_tx = self.api_tx.clone();

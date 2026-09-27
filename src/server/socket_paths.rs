@@ -2,10 +2,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use crate::config::{ServerAddress, derive_client_socket_from_api_socket};
+use shepr_config::{ServerAddress, derive_client_socket_from_api_socket};
 
 /// Returns the resolved client protocol socket for this process.
-pub fn client_socket_path(paths: &crate::config::AppPaths) -> PathBuf {
+pub fn client_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.server_address().client_socket().to_path_buf()
 }
 
@@ -18,7 +18,7 @@ pub fn client_socket_path(paths: &crate::config::AppPaths) -> PathBuf {
 /// another server's data directory; the server claims that directory with a
 /// persistence lease before it opens either socket.
 pub(crate) fn prepare_socket_path(path: &Path) -> io::Result<()> {
-    crate::ipc::prepare_socket_path(path, |path| {
+    shepr_platform::ipc::prepare_socket_path(path, |path| {
         format!(
             "shepr server is already running (socket busy at {})",
             path.display()
@@ -36,7 +36,7 @@ mod tests {
     fn client_socket_path_derived_from_api_socket_override() {
         let address = ServerAddress::resolve(
             Path::new("/tmp"),
-            &crate::config::SessionId::Default,
+            &shepr_config::SessionId::Default,
             false,
             Some("/tmp/test-shepr.sock"),
             None,
@@ -51,7 +51,7 @@ mod tests {
     fn client_socket_path_api_override_takes_precedence_over_legacy_client_override() {
         let address = ServerAddress::resolve(
             Path::new("/tmp"),
-            &crate::config::SessionId::Default,
+            &shepr_config::SessionId::Default,
             false,
             Some("/tmp/test-shepr.sock"),
             Some("/tmp/legacy-client.sock"),
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn explicit_session_address_ignores_both_socket_overrides() {
-        let session = crate::config::SessionId::parse("work").expect("test precondition");
+        let session = shepr_config::SessionId::parse("work").expect("test precondition");
         let address = ServerAddress::resolve(
             Path::new("/tmp/runtime"),
             &session,
@@ -91,8 +91,8 @@ mod tests {
     fn client_socket_path_respects_legacy_client_override_without_api_override() {
         let address = ServerAddress::resolve(
             Path::new("/tmp"),
-            &crate::config::SessionId::Named(
-                crate::config::SessionName::parse("work").expect("test precondition"),
+            &shepr_config::SessionId::Named(
+                shepr_config::SessionName::parse("work").expect("test precondition"),
             ),
             false,
             None,
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn client_socket_path_defaults_to_runtime_dir() {
-        let session = crate::config::SessionId::Default;
+        let session = shepr_config::SessionId::Default;
         let address =
             ServerAddress::resolve(Path::new("/tmp/runtime"), &session, false, None, None);
         assert_eq!(
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn named_session_client_socket_matches_derived_api_socket_name() {
-        let session = crate::config::SessionId::parse("work").expect("test precondition");
+        let session = shepr_config::SessionId::parse("work").expect("test precondition");
         let api = session.api_socket_path_under(Path::new("/tmp/runtime"));
         let client = session.client_socket_path_under(Path::new("/tmp/runtime"));
         let derived = derive_client_socket_from_api_socket(&api);

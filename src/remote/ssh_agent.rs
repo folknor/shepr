@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::api::client::{ApiClientError, parse_response_value};
 use crate::api::schema::{Method, Request, ResponseResult, ServerSshAgentRegisterParams};
-use crate::ipc::{LocalStream, LocalStreamRead, LocalStreamReadCount};
+use shepr_platform::ipc::{LocalStream, LocalStreamRead, LocalStreamReadCount};
 
 pub(super) struct Registration {
     stop: Arc<AtomicBool>,
@@ -14,7 +14,7 @@ pub(super) struct Registration {
 }
 
 impl Registration {
-    pub(super) fn start(paths: &crate::config::AppPaths) -> Option<Self> {
+    pub(super) fn start(paths: &shepr_config::AppPaths) -> Option<Self> {
         let path = std::env::var("SSH_AUTH_SOCK")
             .ok()
             .filter(|path| !path.is_empty())?;
@@ -37,7 +37,7 @@ impl Registration {
             while !worker_stop.load(Ordering::Relaxed) {
                 if let Some(connection) = stream.as_mut() {
                     if !matches!(
-                        crate::ipc::poll_local_stream_read(connection, &mut byte),
+                        shepr_platform::ipc::poll_local_stream_read(connection, &mut byte),
                         Ok(LocalStreamRead::Pending)
                     ) {
                         stream = None;
@@ -82,7 +82,7 @@ fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     {
         return Ok(None);
     }
-    let mut stream = crate::ipc::connect_local_stream(socket_path)?;
+    let mut stream = shepr_platform::ipc::connect_local_stream(socket_path)?;
     let request = Request {
         id: "remote:ssh-agent".into(),
         method: Method::ServerSshAgentRegister(ServerSshAgentRegisterParams {
@@ -91,12 +91,12 @@ fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     };
     serde_json::to_writer(&mut stream, &request)?;
     stream.write_all(b"\n")?;
-    crate::ipc::set_local_stream_polling(&mut stream, true)?;
+    shepr_platform::ipc::set_local_stream_polling(&mut stream, true)?;
     let deadline = Instant::now() + timeout;
     let mut response = Vec::new();
     let mut byte = [0];
     while Instant::now() < deadline && response.len() < 4096 {
-        match crate::ipc::poll_local_stream_read_count(&mut stream, &mut byte)? {
+        match shepr_platform::ipc::poll_local_stream_read_count(&mut stream, &mut byte)? {
             LocalStreamReadCount::Data(_) if byte[0] == b'\n' => {
                 let response = match parse_response_value(serde_json::from_slice(&response)?) {
                     Ok(response) => response,
@@ -154,7 +154,7 @@ mod tests {
                 assert_eq!(request["method"], expected);
                 let response = if expected == "ping" {
                     serde_json::json!({"id": request["id"], "result": {
-                        "type": "pong", "version": "test", "protocol": crate::protocol::PROTOCOL_VERSION,
+                        "type": "pong", "version": "test", "protocol": shepr_protocol::PROTOCOL_VERSION,
                         "capabilities": {"detached_server_daemon": false,
                             "ssh_agent_registration": true}
                     }})
@@ -224,7 +224,7 @@ mod tests {
                 continue;
             }
             let result = if expected == "ping" {
-                serde_json::json!({"type": "pong", "version": "test", "protocol": crate::protocol::PROTOCOL_VERSION,
+                serde_json::json!({"type": "pong", "version": "test", "protocol": shepr_protocol::PROTOCOL_VERSION,
                     "capabilities": {"detached_server_daemon": false,
                         "ssh_agent_registration": true}})
             } else {

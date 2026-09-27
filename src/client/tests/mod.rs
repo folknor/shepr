@@ -71,10 +71,8 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 fn client_host_size_clamps_only_client_shell_grids() {
     let shell = terminal_geometry::ClientHostSize::new(0, u16::MAX, true);
     assert_eq!(shell.cols, 1);
-    assert!((1..=crate::protocol::MAX_SURFACE_DIMENSION).contains(&shell.rows));
-    assert!(
-        usize::from(shell.cols) * usize::from(shell.rows) <= crate::protocol::MAX_SURFACE_CELLS
-    );
+    assert!((1..=shepr_protocol::MAX_SURFACE_DIMENSION).contains(&shell.rows));
+    assert!(usize::from(shell.cols) * usize::from(shell.rows) <= shepr_protocol::MAX_SURFACE_CELLS);
     assert_eq!(
         terminal_geometry::ClientHostSize::new(0, u16::MAX, false),
         terminal_geometry::ClientHostSize {
@@ -87,16 +85,16 @@ fn client_host_size_clamps_only_client_shell_grids() {
 #[test]
 fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
     let (width, height, exact) = super::terminal_geometry::bounded_cell_geometry(
-        crate::protocol::MAX_CELL_SIZE_PX + 1,
-        crate::protocol::MAX_CELL_SIZE_PX + 2,
+        shepr_protocol::MAX_CELL_SIZE_PX + 1,
+        shepr_protocol::MAX_CELL_SIZE_PX + 2,
         true,
     );
 
     assert_eq!(
         (width, height, exact),
         (
-            crate::protocol::MAX_CELL_SIZE_PX,
-            crate::protocol::MAX_CELL_SIZE_PX,
+            shepr_protocol::MAX_CELL_SIZE_PX,
+            shepr_protocol::MAX_CELL_SIZE_PX,
             false,
         )
     );
@@ -169,7 +167,7 @@ fn host_cursor_policy_auto_uses_platform_default() {
     // Both sides read the terminal environment another test changes.
     let _env = IsolatedEnv::new();
     assert_eq!(
-        should_draw_host_cursor(crate::config::HostCursorModeConfig::Auto),
+        should_draw_host_cursor(shepr_config::HostCursorModeConfig::Auto),
         shepr_platform::should_draw_host_cursor_by_default()
     );
 }
@@ -180,10 +178,10 @@ fn host_cursor_policy_native_and_drawn_override_auto_detection() {
     env.set("TERM_PROGRAM", "WezTerm");
 
     assert!(!should_draw_host_cursor(
-        crate::config::HostCursorModeConfig::Native
+        shepr_config::HostCursorModeConfig::Native
     ));
     assert!(should_draw_host_cursor(
-        crate::config::HostCursorModeConfig::Drawn
+        shepr_config::HostCursorModeConfig::Drawn
     ));
 }
 
@@ -344,7 +342,7 @@ fn client_error_display_host_terminal_does_not_claim_server_connection_failed() 
 #[test]
 fn client_error_display_handshake_rejected() {
     let err = ClientError::HandshakeRejected {
-        error: crate::protocol::HandshakeRefusal::InvalidSurface("incompatible".into()),
+        error: shepr_protocol::HandshakeRefusal::InvalidSurface("incompatible".into()),
     };
     let msg = err.to_string();
     assert!(
@@ -357,7 +355,7 @@ fn client_error_display_handshake_rejected() {
 #[test]
 fn client_error_display_server_shutdown() {
     let err = ClientError::ServerShutdown {
-        reason: Some(crate::protocol::ShutdownReason::Message(
+        reason: Some(shepr_protocol::ShutdownReason::Message(
             "maintenance".into(),
         )),
     };
@@ -384,9 +382,9 @@ fn client_error_display_detached_default_session_reattach_hint() {
     let env = IsolatedEnv::new();
     env.remove(crate::remote::REATTACH_COMMAND_ENV_VAR);
     let err = ClientError::ServerShutdown {
-        reason: Some(crate::protocol::ShutdownReason::Detached),
+        reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
-    let paths = crate::config::AppPaths::default();
+    let paths = shepr_config::AppPaths::default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
@@ -403,10 +401,10 @@ fn client_error_display_detached_named_session_reattach_hint() {
     let env = IsolatedEnv::new();
     env.remove(crate::remote::REATTACH_COMMAND_ENV_VAR);
     let err = ClientError::ServerShutdown {
-        reason: Some(crate::protocol::ShutdownReason::Detached),
+        reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
-    let session = crate::config::SessionId::parse("work").expect("test precondition");
-    let paths = crate::config::AppPaths::default();
+    let session = shepr_config::SessionId::parse("work").expect("test precondition");
+    let paths = shepr_config::AppPaths::default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(&session),
         std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
@@ -425,11 +423,11 @@ fn client_error_display_detached_remote_reattach_hint_takes_precedence() {
         crate::remote::REATTACH_COMMAND_ENV_VAR,
         "shepr --remote host --session work",
     );
-    env.set(crate::config::SESSION_ENV_VAR, "work");
+    env.set(shepr_config::SESSION_ENV_VAR, "work");
     let err = ClientError::ServerShutdown {
-        reason: Some(crate::protocol::ShutdownReason::Detached),
+        reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
-    let paths = crate::config::AppPaths::default();
+    let paths = shepr_config::AppPaths::default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
@@ -461,7 +459,7 @@ fn client_error_display_remote_connection_lost_has_reattach_hint() {
         "shepr --remote host --session work",
     );
     let err = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
-    let paths = crate::config::AppPaths::default();
+    let paths = shepr_config::AppPaths::default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
@@ -488,7 +486,7 @@ fn client_error_context_keeps_launch_reattach_command() {
         crate::remote::REATTACH_COMMAND_ENV_VAR,
         "shepr --remote first",
     );
-    let paths = crate::config::AppPaths::default();
+    let paths = shepr_config::AppPaths::default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),

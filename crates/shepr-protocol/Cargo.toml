@@ -1,0 +1,22 @@
+[package]
+name = "shepr-protocol"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[features]
+test-support = []
+
+[dependencies]
+ratatui = { workspace = true }
+serde = { workspace = true }
+shepr-core = { path = "../shepr-core" }
+shepr-vt = { path = "../shepr-vt" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

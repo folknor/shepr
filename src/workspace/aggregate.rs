@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::detect::AgentState;
-use crate::protocol::TerminalId;
 use crate::terminal::TerminalState;
+use shepr_agent::detect::AgentState;
+use shepr_protocol::TerminalId;
 
 use super::{Tab, Workspace};
 

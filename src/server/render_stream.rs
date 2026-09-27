@@ -6,7 +6,7 @@ use ratatui::layout::{Position, Rect, Size};
 use crate::app::state::AppState;
 use crate::blit::{BlitEncoder, EncodedBlit};
 use crate::pane::PaneRuntimeRegistry;
-use crate::protocol::{
+use shepr_protocol::{
     CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
     SurfaceRevision, TerminalFrame,
 };
@@ -138,7 +138,7 @@ impl ClientRenderState {
         let committed_surface = surface.clone();
         let mut message = ServerMessage::PaneSurface(surface);
         let delta = last_surface.as_deref().and_then(|last| {
-            crate::protocol::surface_delta::message(last, &mut message)
+            shepr_protocol::surface_delta::message(last, &mut message)
                 .map_err(|error| tracing::warn!(%error, "failed to encode surface delta"))
                 .ok()
                 .flatten()
@@ -149,7 +149,7 @@ impl ClientRenderState {
                 .then_some(last_surface.as_deref())
                 .flatten()
                 .filter(|last| last.frame == surface.frame)
-                .and_then(|last| crate::protocol::surface_reuse::message(last, surface))
+                .and_then(|last| shepr_protocol::surface_reuse::message(last, surface))
         } else {
             None
         };
@@ -176,7 +176,7 @@ impl ClientRenderState {
         }
         let last = last_surface.as_deref()?;
         let next_revision = surface_revision.checked_next()?;
-        let baseline = crate::protocol::surface_reuse::Baseline::new(
+        let baseline = shepr_protocol::surface_reuse::Baseline::new(
             &last.boot_id,
             last.projection_revision,
             last.surface_revision,
@@ -192,9 +192,9 @@ impl ClientRenderState {
             return None;
         }
         patch.surface_revision = next_revision;
-        crate::protocol::validate_patch_rows(last.frame.width, last.frame.height, &patch.rows)
+        shepr_protocol::validate_patch_rows(last.frame.width, last.frame.height, &patch.rows)
             .ok()?;
-        let mut meta = crate::protocol::SurfaceMeta::from(last);
+        let mut meta = shepr_protocol::SurfaceMeta::from(last);
         meta.frame.cursor.clone_from(&patch.cursor);
         for updated in &patch.panes {
             let pane = meta
@@ -203,7 +203,7 @@ impl ClientRenderState {
                 .find(|pane| pane.pane_id == updated.pane_id)?;
             pane.clone_from(updated);
         }
-        let message = ServerMessage::SurfaceUpdate(crate::protocol::SurfaceUpdate {
+        let message = ServerMessage::SurfaceUpdate(shepr_protocol::SurfaceUpdate {
             boot_id: patch.boot_id.clone(),
             base_projection_revision: last.projection_revision,
             base_surface_revision: patch.base_surface_revision,
@@ -212,8 +212,8 @@ impl ClientRenderState {
             meta: Some(meta),
             spans: patch.rows.clone(),
         });
-        let size = crate::protocol::codec::encoded_len(&message).ok()?;
-        if !crate::protocol::frame_payload_fits(size) {
+        let size = shepr_protocol::codec::encoded_len(&message).ok()?;
+        if !shepr_protocol::frame_payload_fits(size) {
             return None;
         }
         Some(PreparedRender::SemanticPatch { message, patch })
@@ -285,7 +285,7 @@ pub(super) fn apply_pane_surface_patch(
     surface: &mut PaneSurfaceFrame,
     patch: &PaneSurfacePatch,
 ) -> Result<(), &'static str> {
-    let baseline = crate::protocol::surface_reuse::Baseline::new(
+    let baseline = shepr_protocol::surface_reuse::Baseline::new(
         &surface.boot_id,
         surface.projection_revision,
         surface.surface_revision,
@@ -300,9 +300,9 @@ pub(super) fn apply_pane_surface_patch(
     {
         return Err("patch revision does not match the surface baseline");
     }
-    crate::protocol::validate_patch_rows(surface.frame.width, surface.frame.height, &patch.rows)?;
+    shepr_protocol::validate_patch_rows(surface.frame.width, surface.frame.height, &patch.rows)?;
     let width = usize::from(surface.frame.width);
-    if crate::protocol::surface_grid_size(surface.frame.width, surface.frame.height)
+    if shepr_protocol::surface_grid_size(surface.frame.width, surface.frame.height)
         != Some(surface.frame.cells.len())
     {
         return Err("surface cell grid does not match its size");
@@ -388,7 +388,7 @@ impl CursorTrackingBackend {
             x: pos.x,
             y: pos.y,
             visible: true,
-            shape: crate::protocol::CursorShapeParam::Default,
+            shape: shepr_protocol::CursorShapeParam::Default,
         })
     }
 }
@@ -526,8 +526,8 @@ mod tests {
         let pane = ratatui::buffer::Buffer::with_lines([content]);
         PaneSurfaceFrame {
             boot_id: "boot-1".into(),
-            projection_revision: crate::protocol::ProjectionRevision::new(1),
-            surface_revision: crate::protocol::SurfaceRevision::new(1),
+            projection_revision: shepr_protocol::ProjectionRevision::new(1),
+            surface_revision: shepr_protocol::SurfaceRevision::new(1),
             frame: FrameData::from_ratatui_buffer_with_hyperlinks(&pane, None, &[]),
             panes: Vec::new(),
             splits: Vec::new(),
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn surface_encodings_preserve_projection_and_patch_baselines() {
         let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
-        let mut decoder = crate::protocol::surface_reuse::Decoder::default();
+        let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
         let mut surface = test_surface("popup");
         let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 240, 100));
         surface.frame = FrameData::from_ratatui_buffer(&buffer, None);
@@ -594,7 +594,7 @@ mod tests {
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
         let mut bytes = Vec::new();
-        crate::protocol::write_message(&mut bytes, update.message()).expect("test precondition");
+        shepr_protocol::write_message(&mut bytes, update.message()).expect("test precondition");
 
         assert!(matches!(update.message(), ServerMessage::SurfaceUpdate(_)));
         assert!(
@@ -620,9 +620,9 @@ mod tests {
             .prepare_pane_surface_patch(PaneSurfacePatch {
                 boot_id: surface.boot_id.clone(),
                 projection_revision: surface.projection_revision,
-                base_surface_revision: crate::protocol::SurfaceRevision::new(2),
-                surface_revision: crate::protocol::SurfaceRevision::new(0),
-                rows: vec![crate::protocol::PaneSurfacePatchRow {
+                base_surface_revision: shepr_protocol::SurfaceRevision::new(2),
+                surface_revision: shepr_protocol::SurfaceRevision::new(0),
+                rows: vec![shepr_protocol::PaneSurfacePatchRow {
                     x: 0,
                     y: 0,
                     cells: vec![changed_cell.clone()],
@@ -680,7 +680,7 @@ mod tests {
     fn surface_update_keeps_large_metadata_within_the_frame_limit() {
         let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
         let mut surface = test_surface("popup");
-        surface.frame.hyperlinks = vec!["\"".repeat(crate::protocol::MAX_FRAME_SIZE / 2)];
+        surface.frame.hyperlinks = vec!["\"".repeat(shepr_protocol::MAX_FRAME_SIZE / 2)];
         let initial = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
@@ -691,8 +691,8 @@ mod tests {
             .expect("test precondition");
         assert!(matches!(update.message(), ServerMessage::SurfaceUpdate(_)));
         let mut bytes = Vec::new();
-        crate::protocol::write_message(&mut bytes, update.message()).expect("test precondition");
-        assert!(bytes.len() < crate::protocol::MAX_FRAME_SIZE);
+        shepr_protocol::write_message(&mut bytes, update.message()).expect("test precondition");
+        assert!(bytes.len() < shepr_protocol::MAX_FRAME_SIZE);
     }
 
     #[test]
@@ -701,10 +701,10 @@ mod tests {
         let before = surface.clone();
         let patch = PaneSurfacePatch {
             boot_id: surface.boot_id.clone(),
-            projection_revision: crate::protocol::ProjectionRevision::new(1),
-            base_surface_revision: crate::protocol::SurfaceRevision::new(1),
-            surface_revision: crate::protocol::SurfaceRevision::new(2),
-            rows: vec![crate::protocol::PaneSurfacePatchRow {
+            projection_revision: shepr_protocol::ProjectionRevision::new(1),
+            base_surface_revision: shepr_protocol::SurfaceRevision::new(1),
+            surface_revision: shepr_protocol::SurfaceRevision::new(2),
+            rows: vec![shepr_protocol::PaneSurfacePatchRow {
                 x: 2,
                 y: 0,
                 cells: vec![surface.frame.cells[0].clone(); 2],

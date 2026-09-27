@@ -2,8 +2,8 @@ use super::*;
 
 /// Runs the thin client and enters the main event loop.
 pub fn run_client(
-    config: &crate::config::ValidatedConfig,
-    paths: &crate::config::AppPaths,
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
     run_client_with_mode(
         config,
@@ -14,8 +14,8 @@ pub fn run_client(
 }
 
 pub fn run_terminal_attach(
-    config: &crate::config::ValidatedConfig,
-    paths: &crate::config::AppPaths,
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
     terminal_id: String,
     takeover: bool,
 ) -> io::Result<()> {

@@ -134,7 +134,7 @@ pub(super) fn cursor_state_from_render_state(
     let shape = if cursor_shape_overridden {
         decscusr_cursor_shape(cursor.visual_style, cursor.blinking)
     } else {
-        crate::protocol::CursorShapeParam::Default
+        shepr_protocol::CursorShapeParam::Default
     };
     Some(TerminalCursorState {
         x: viewport.x,
@@ -647,9 +647,9 @@ pub(super) fn blank_cell_data(default_fg: Option<Color>, default_bg: Option<Colo
 pub(super) fn cell_data_from_style(symbol: String, style: Style) -> CellData {
     CellData {
         symbol,
-        fg: crate::protocol::WireColor::from_ratatui(style.fg.unwrap_or(Color::Reset)),
-        bg: crate::protocol::WireColor::from_ratatui(style.bg.unwrap_or(Color::Reset)),
-        style: crate::protocol::WireStyle::from_ratatui_modifier(style.add_modifier),
+        fg: shepr_protocol::WireColor::from_ratatui(style.fg.unwrap_or(Color::Reset)),
+        bg: shepr_protocol::WireColor::from_ratatui(style.bg.unwrap_or(Color::Reset)),
+        style: shepr_protocol::WireStyle::from_ratatui_modifier(style.add_modifier),
         skip: false,
         hyperlink: None,
     }
@@ -713,20 +713,20 @@ pub(super) fn ghostty_cell_style(
     {
         style = style.underline_color(underline_color);
     }
-    let mut flags = crate::protocol::WireStyleFlags::default();
+    let mut flags = shepr_protocol::WireStyleFlags::default();
     if basic.style.bold {
-        flags = flags.union(crate::protocol::WireStyleFlags::BOLD);
+        flags = flags.union(shepr_protocol::WireStyleFlags::BOLD);
     }
     if basic.style.faint {
-        flags = flags.union(crate::protocol::WireStyleFlags::DIM);
+        flags = flags.union(shepr_protocol::WireStyleFlags::DIM);
     }
     if basic.style.italic {
-        flags = flags.union(crate::protocol::WireStyleFlags::ITALIC);
+        flags = flags.union(shepr_protocol::WireStyleFlags::ITALIC);
     }
     if basic.style.strikethrough {
-        flags = flags.union(crate::protocol::WireStyleFlags::CROSSED_OUT);
+        flags = flags.union(shepr_protocol::WireStyleFlags::CROSSED_OUT);
     }
-    let wire_style = crate::protocol::WireStyle {
+    let wire_style = shepr_protocol::WireStyle {
         flags,
         underline: basic.style.underline,
     };

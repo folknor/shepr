@@ -5,13 +5,13 @@ use std::time::Duration;
 
 pub(crate) fn run_remote_client_bridge(
     idle_timeout: bool,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
     ensure_remote_server_running(paths)?;
     let _ssh_agent = super::ssh_agent::Registration::start(paths);
 
     let socket_path = paths.server_address().client_socket().to_path_buf();
-    let stream = crate::ipc::connect_local_stream(&socket_path).map_err(|err| {
+    let stream = shepr_platform::ipc::connect_local_stream(&socket_path).map_err(|err| {
         io::Error::new(
             err.kind(),
             format!(
@@ -27,7 +27,7 @@ pub(crate) fn run_remote_client_bridge(
 /// Starts the server when none is listening. A running server of another build
 /// is not screened here: the client's handshake through this bridge reads its
 /// build-identity preamble and reports the mismatch.
-fn ensure_remote_server_running(paths: &crate::config::AppPaths) -> io::Result<()> {
+fn ensure_remote_server_running(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let socket_path = paths.server_address().client_socket().to_path_buf();
     if super::autodetect::is_server_listening(paths) {
         return Ok(());

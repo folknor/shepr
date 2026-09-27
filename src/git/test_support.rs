@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 /// A fresh directory kept until the test process exits; callers that clean up
 /// remove it themselves.
 pub(super) fn temp_test_dir(name: &str) -> PathBuf {
-    crate::test_support::ScratchDir::new(name).keep_until_exit()
+    shepr_test_support::ScratchDir::new(name).keep_until_exit()
 }
 
 fn init_repo_with_commit(repo: &Path) {
@@ -17,7 +17,7 @@ fn init_repo_with_commit(repo: &Path) {
     );
 }
 
-pub(crate) fn create_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+pub fn create_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let base = temp_test_dir(name);
     let repo = base.join("shepr");
     let checkout = base.join("testr56");

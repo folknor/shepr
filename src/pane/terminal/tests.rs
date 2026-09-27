@@ -681,31 +681,31 @@ fn append_upper_hex(bytes: &[u8], output: &mut Vec<u8>) {
 fn decscusr_cursor_shape_preserves_blinking_variants() {
     assert_eq!(
         decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Block, true),
-        crate::protocol::CursorShapeParam::BlinkingBlock
+        shepr_protocol::CursorShapeParam::BlinkingBlock
     );
     assert_eq!(
         decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Block, false),
-        crate::protocol::CursorShapeParam::SteadyBlock
+        shepr_protocol::CursorShapeParam::SteadyBlock
     );
     assert_eq!(
         decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Underline, true),
-        crate::protocol::CursorShapeParam::BlinkingUnderline
+        shepr_protocol::CursorShapeParam::BlinkingUnderline
     );
     assert_eq!(
         decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Underline, false),
-        crate::protocol::CursorShapeParam::SteadyUnderline
+        shepr_protocol::CursorShapeParam::SteadyUnderline
     );
     assert_eq!(
         decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Bar, true),
-        crate::protocol::CursorShapeParam::BlinkingBar
+        shepr_protocol::CursorShapeParam::BlinkingBar
     );
     assert_eq!(
         decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Bar, false),
-        crate::protocol::CursorShapeParam::SteadyBar
+        shepr_protocol::CursorShapeParam::SteadyBar
     );
     assert_eq!(
         decscusr_cursor_shape(shepr_vt::CursorVisualStyle::BlockHollow, false),
-        crate::protocol::CursorShapeParam::SteadyBlock
+        shepr_protocol::CursorShapeParam::SteadyBlock
     );
 }
 
@@ -717,14 +717,14 @@ fn cursor_state_uses_terminal_default_until_child_sets_shape() {
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
-        crate::protocol::CursorShapeParam::Default
+        shepr_protocol::CursorShapeParam::Default
     );
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b[6 q");
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
-        crate::protocol::CursorShapeParam::SteadyBar
+        shepr_protocol::CursorShapeParam::SteadyBar
     );
 }
 
@@ -737,14 +737,14 @@ fn cursor_state_returns_terminal_default_after_decscusr_reset() {
     pane.process_pty_bytes(pane_id, 0, b"\x1b[2 q");
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
-        crate::protocol::CursorShapeParam::SteadyBlock
+        shepr_protocol::CursorShapeParam::SteadyBlock
     );
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b[0 q");
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
-        crate::protocol::CursorShapeParam::Default
+        shepr_protocol::CursorShapeParam::Default
     );
 }
 
@@ -760,7 +760,7 @@ fn cursor_shape_tracker_handles_split_decscusr_sequences() {
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
-        crate::protocol::CursorShapeParam::BlinkingBar
+        shepr_protocol::CursorShapeParam::BlinkingBar
     );
 }
 
@@ -790,13 +790,13 @@ fn cursor_state_returns_terminal_default_after_ris() {
     pane.process_pty_bytes(pane_id, 0, b"\x1b[4 q");
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
-        crate::protocol::CursorShapeParam::SteadyUnderline
+        shepr_protocol::CursorShapeParam::SteadyUnderline
     );
     pane.process_pty_bytes(pane_id, 0, b"\x1bc");
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
-        crate::protocol::CursorShapeParam::Default
+        shepr_protocol::CursorShapeParam::Default
     );
 }
 
@@ -1880,7 +1880,7 @@ fn extract_selection_uses_stable_rows_after_viewport_moves() {
 #[test]
 fn recent_reads_include_viewport_before_scrollback_exists() {
     let mut terminal =
-        shepr_vt::Terminal::new(20, 20, crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES);
+        shepr_vt::Terminal::new(20, 20, shepr_config::DEFAULT_SCROLLBACK_LIMIT_BYTES);
     terminal.write(b"hello123");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -2808,7 +2808,7 @@ fn full_frame_preserves_curly_underline_style() {
         .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
         .expect("test precondition");
 
-    let frame = crate::protocol::FrameData::from_ratatui_buffer(terminal.backend().buffer(), None);
+    let frame = shepr_protocol::FrameData::from_ratatui_buffer(terminal.backend().buffer(), None);
     assert_eq!(frame.cells[0].symbol, "U");
     assert_eq!(
         frame.cells[0].style.underline,

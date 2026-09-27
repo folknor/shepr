@@ -17,7 +17,7 @@ use super::{ClientEndpointId, EndpointCatalog, ProfileId};
 
 struct SelectionAttempt {
     endpoint_id: ClientEndpointId,
-    generation: Option<crate::protocol::ConnectionGeneration>,
+    generation: Option<shepr_protocol::ConnectionGeneration>,
     previous: Option<ProfileId>,
 }
 
@@ -28,7 +28,7 @@ pub(in crate::client) struct EndpointSelectionTracker {
     attempt: Option<SelectionAttempt>,
     failed: Option<(
         ClientEndpointId,
-        Option<crate::protocol::ConnectionGeneration>,
+        Option<shepr_protocol::ConnectionGeneration>,
     )>,
 }
 

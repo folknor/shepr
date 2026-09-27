@@ -7,7 +7,7 @@ use crate::api::schema::{ErrorBody, ErrorResponse};
 pub(super) fn response(
     request_id: &str,
     socket_path: &Path,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> ErrorResponse {
     let attach_command = startup_command(socket_path, paths);
     ErrorResponse {
@@ -22,7 +22,7 @@ pub(super) fn response(
     }
 }
 
-fn startup_command(socket_path: &Path, paths: &crate::config::AppPaths) -> String {
+fn startup_command(socket_path: &Path, paths: &shepr_config::AppPaths) -> String {
     if socket_path == paths.server_address().api_socket() {
         paths.server_address().attach_command(paths.session_id())
     } else {

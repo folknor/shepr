@@ -57,7 +57,7 @@ impl App {
             );
         };
         let shell_pid = runtime.child_pid();
-        let foreground_job = shell_pid.and_then(crate::detect::foreground_job);
+        let foreground_job = shell_pid.and_then(shepr_agent::detect::foreground_job);
         let foreground_process_group_id = foreground_job.as_ref().map(|job| job.process_group_id);
         let foreground_processes = foreground_job
             .map(|job| {
@@ -69,7 +69,7 @@ impl App {
                         argv0: process.argv0,
                         argv: process.argv,
                         cmdline: process.cmdline,
-                        cwd: crate::detect::process_cwd(process.pid)
+                        cwd: shepr_agent::detect::process_cwd(process.pid)
                             .map(|cwd| cwd.display().to_string()),
                     })
                     .collect()

@@ -52,7 +52,7 @@ impl TerminalState {
 
     pub fn with_pending_agent_resume_plan(
         mut self,
-        plan: crate::agent::resume::AgentResumePlan,
+        plan: shepr_agent::agent::resume::AgentResumePlan,
     ) -> Self {
         self.pending_agent_resume_plan = Some(plan);
         self
@@ -140,8 +140,8 @@ impl TerminalState {
         let previous_session = self.current_session_identity_for_persistence();
         let newer_custom_authority = process_exited
             && self.hook_authority.as_ref().is_some_and(|authority| {
-                crate::detect::parse_agent_label(&authority.agent_label) == agent
-                    && !crate::agent::resume::is_official_agent_source(
+                shepr_agent::detect::parse_agent_label(&authority.agent_label) == agent
+                    && !shepr_agent::agent::resume::is_official_agent_source(
                         &authority.source,
                         &authority.agent_label,
                     )
@@ -151,11 +151,9 @@ impl TerminalState {
             && !newer_custom_authority
             && (previous_agent_label.is_some() || self.agent_name.is_some());
         if self.should_ignore_detected_state_under_full_lifecycle_hook(agent, process_exited) {
-            if self
-                .hook_authority
-                .as_ref()
-                .and_then(|authority| crate::detect::parse_agent_label(&authority.agent_label))
-                == agent
+            if self.hook_authority.as_ref().and_then(|authority| {
+                shepr_agent::detect::parse_agent_label(&authority.agent_label)
+            }) == agent
             {
                 self.detected_agent = agent;
             }
@@ -201,7 +199,7 @@ impl TerminalState {
             self.prompt_ready_agent = None;
         }
         if let Some(agent) = agent {
-            let agent_label = crate::detect::agent_label(agent);
+            let agent_label = shepr_agent::detect::agent_label(agent);
             self.reconcile_agent_name_owner(agent_label, None);
         }
         if !process_exited {
@@ -231,7 +229,7 @@ impl TerminalState {
             let mut reset_sources = Vec::new();
             let mut stale_sessions = Vec::new();
             for (source, suppressed) in &mut self.suppressed_full_lifecycle_hook_reports {
-                if crate::detect::parse_agent_label(&suppressed.agent_label) != agent
+                if shepr_agent::detect::parse_agent_label(&suppressed.agent_label) != agent
                     || suppressed.reason == FullLifecycleHookSuppressionReason::HookClear
                 {
                     continue;
@@ -272,10 +270,10 @@ impl TerminalState {
                 .hook_authority
                 .as_ref()
                 .filter(|authority| {
-                    crate::agent::resume::is_official_agent_source(
+                    shepr_agent::agent::resume::is_official_agent_source(
                         &authority.source,
                         &authority.agent_label,
-                    ) && crate::detect::parse_agent_label(&authority.agent_label) == agent
+                    ) && shepr_agent::detect::parse_agent_label(&authority.agent_label) == agent
                 })
                 .map(|authority| {
                     (
@@ -288,7 +286,7 @@ impl TerminalState {
                     self.persisted_agent_session.as_ref().and_then(|session| {
                         agent
                             .is_some_and(|agent| {
-                                session.source == crate::agent::AgentSource::Official(agent)
+                                session.source == shepr_agent::agent::AgentSource::Official(agent)
                                     && session.agent == agent
                             })
                             .then(|| {
@@ -311,7 +309,7 @@ impl TerminalState {
                 );
             }
             let cleared_hook_source = self.hook_authority.as_ref().and_then(|authority| {
-                (crate::detect::parse_agent_label(&authority.agent_label) == agent
+                (shepr_agent::detect::parse_agent_label(&authority.agent_label) == agent
                     && !newer_custom_authority)
                     .then(|| authority.source.clone())
             });
@@ -328,15 +326,18 @@ impl TerminalState {
                 self.persisted_agent_session = None;
             }
             if let Some(agent) = agent {
-                let agent_label = crate::detect::agent_label(agent);
+                let agent_label = shepr_agent::detect::agent_label(agent);
                 let mut cleared_metadata_sources = Vec::new();
                 self.agent_metadata.retain(|source, metadata| {
-                    let official_metadata = crate::agent::resume::is_official_agent_source(
+                    let official_metadata = shepr_agent::agent::resume::is_official_agent_source(
                         &metadata.source,
                         agent_label,
                     ) || metadata.applies_to_source.as_deref().is_some_and(
                         |applies_to| {
-                            crate::agent::resume::is_official_agent_source(applies_to, agent_label)
+                            shepr_agent::agent::resume::is_official_agent_source(
+                                applies_to,
+                                agent_label,
+                            )
                         },
                     );
                     let matches_agent =
@@ -372,13 +373,13 @@ impl TerminalState {
                 || (previous_detected_agent.is_some()
                     && agent != previous_detected_agent
                     && self.hook_authority.as_ref().is_some_and(|authority| {
-                        crate::detect::parse_agent_label(&authority.agent_label)
+                        shepr_agent::detect::parse_agent_label(&authority.agent_label)
                             == previous_detected_agent
                     })))
         {
             let durable_session = self.hook_authority.as_ref().and_then(|authority| {
                 authority.session_ref.as_ref().and_then(|session_ref| {
-                    crate::agent::resume::PersistedAgentSession::from_report(
+                    shepr_agent::agent::resume::PersistedAgentSession::from_report(
                         &authority.source,
                         &authority.agent_label,
                         session_ref.clone(),

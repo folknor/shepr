@@ -3,7 +3,7 @@ project = "shepr"
 # Detection manifests match text agents actually draw on screen (prompt
 # glyphs, check marks, spinners); escaping it would make captures unreadable.
 [gremlins]
-exclude = ["src/detect/manifests"]
+exclude = ["crates/shepr-agent/src/detect/manifests"]
 
 [test]
 debug = true
@@ -13,9 +13,70 @@ debug = true
 name = "workspace"
 packages = [
     "shepr",
+    "shepr-agent",
+    "shepr-config",
     "shepr-core",
     "shepr-platform",
     "shepr-pty",
+    "shepr-protocol",
     "shepr-test-support",
     "shepr-vt",
 ]
+
+[manifest]
+sort_dependencies = true
+lints_workspace_required = true
+
+[[dependency_rule]]
+name = "shepr-core-layer"
+from = "shepr-core"
+allow = ["ratatui", "serde", "unicode-width"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-platform-layer"
+from = "shepr-platform"
+allow = ["crossterm", "futures-util", "interprocess", "libc", "sha2", "time", "tokio", "tracing", "tracing-subscriber", "zbus"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-vt-layer"
+from = "shepr-vt"
+allow = ["alacritty_terminal", "serde", "shepr-core", "tracing", "unicode-segmentation", "unicode-width"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-pty-layer"
+from = "shepr-pty"
+allow = ["bytes", "libc", "shepr-core", "tokio", "tracing"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-test-support-layer"
+from = "shepr-test-support"
+allow = ["libc"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "alacritty-terminal-only-in-shepr-vt"
+from = "*"
+forbid = "alacritty_terminal"
+except = ["shepr-vt"]
+
+[[dependency_rule]]
+name = "shepr-agent-layer"
+from = "shepr-agent"
+allow = ["jsonc-parser", "libc", "regex", "serde", "serde_json", "shepr-core", "shepr-platform", "toml", "tracing"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-protocol-layer"
+from = "shepr-protocol"
+allow = ["ratatui", "serde", "shepr-core", "shepr-vt", "tracing"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-config-layer"
+from = "shepr-config"
+allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-core", "time", "toml"]
+kinds = ["normal"]

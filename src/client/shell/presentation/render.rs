@@ -71,8 +71,8 @@ pub(super) fn render_mode_bar(
             palette.accent
         })
         .add_modifier(Modifier::BOLD);
-    let prefix = crate::config::format_key_combo(keybinds.prefix);
-    let prefix_rhs = |bindings: &crate::config::ActionKeybinds| {
+    let prefix = shepr_config::format_key_combo(keybinds.prefix);
+    let prefix_rhs = |bindings: &shepr_config::ActionKeybinds| {
         bindings
             .prefix_rhs_label()
             .unwrap_or_else(|| "unset".to_owned())
@@ -233,7 +233,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,
-    pub(super) dragged_workspace_id: Option<&'a crate::protocol::WorkspaceId>,
+    pub(super) dragged_workspace_id: Option<&'a shepr_protocol::WorkspaceId>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
 }
 

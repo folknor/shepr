@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 // remains only for session-only/custom hook paths and fallback detection.
 // Process-exit updates clear matching hook authority before recomputing state.
 
-use crate::agent::resume::AgentSessionStartSource;
-use crate::detect::{Agent, AgentState};
-use crate::protocol::TerminalId;
+use shepr_agent::agent::resume::AgentSessionStartSource;
+use shepr_agent::detect::{Agent, AgentState};
+use shepr_protocol::TerminalId;
 
 #[path = "../metadata.rs"]
 mod metadata;
@@ -74,16 +74,16 @@ pub struct HookAuthority {
     pub message: Option<String>,
     #[serde(skip, default = "Instant::now")]
     pub reported_at: Instant,
-    pub session_ref: Option<crate::agent::resume::AgentSessionRef>,
+    pub session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SuppressedFullLifecycleHookReport {
     agent_label: String,
-    session_ref: Option<crate::agent::resume::AgentSessionRef>,
+    session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
     observed_at: Instant,
     reason: FullLifecycleHookSuppressionReason,
-    replacement_session_ref: Option<crate::agent::resume::AgentSessionRef>,
+    replacement_session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
     pending_replacement_report: Option<PendingFullLifecycleHookReport>,
 }
 
@@ -108,7 +108,7 @@ enum FullLifecycleHookReportRoute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StaleFullLifecycleHookSession {
     agent_label: String,
-    session_ref: crate::agent::resume::AgentSessionRef,
+    session_ref: shepr_agent::agent::resume::AgentSessionRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,7 +173,7 @@ pub struct TerminalStateMutation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentNameOwner {
     agent_label: String,
-    session_ref: Option<crate::agent::resume::AgentSessionRef>,
+    session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,14 +197,14 @@ pub struct TerminalState {
     pub hook_authority: Option<HookAuthority>,
     pub agent_metadata: HashMap<String, AgentMetadata>,
     pub metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens,
-    pub persisted_agent_session: Option<crate::agent::resume::PersistedAgentSession>,
+    pub persisted_agent_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
     prompt_ready_agent: Option<Agent>,
-    managed_agent_launch_session: Option<crate::agent::resume::PersistedAgentSession>,
+    managed_agent_launch_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
     hook_report_sequences: HashMap<String, u64>,
     /// When each source's entry in `hook_report_sequences` was last
     /// accepted; see [`HOOK_SEQUENCE_REANCHOR_AFTER`].
@@ -219,7 +219,7 @@ pub struct TerminalState {
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
-    pub pending_agent_resume_plan: Option<crate::agent::resume::AgentResumePlan>,
+    pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
     pub restore_error: Option<String>,
 }
 

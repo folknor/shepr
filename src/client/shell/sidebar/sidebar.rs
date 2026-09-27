@@ -70,7 +70,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     area: Rect,
     workspace_number: usize,
     status: crate::api::schema::AgentStatus,
-    indicators: crate::config::StatusIndicatorStyle,
+    indicators: shepr_config::StatusIndicatorStyle,
     rows: &[Vec<ResolvedToken>],
     focused: bool,
     selected: bool,

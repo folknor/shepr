@@ -5,9 +5,9 @@ use interprocess::local_socket::traits::{Listener as _, Stream as _};
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
-use crate::ipc::LocalListener;
 use crate::server::client_transport::{self, ServerEvent};
 use crate::server::clients::ClientRegistry;
+use shepr_platform::ipc::LocalListener;
 
 /// Accepts pending thin-client connections and starts their handshake readers.
 pub(crate) fn accept_pending_client_connections(
@@ -25,7 +25,7 @@ pub(crate) fn accept_pending_client_connections(
                 // The socket file is owner-only; this is the second check,
                 // for a socket whose mode was loosened or a path bound in a
                 // shared directory. Dropping the stream closes it.
-                match crate::ipc::peer_is_same_user(&stream) {
+                match shepr_platform::ipc::peer_is_same_user(&stream) {
                     Ok(true) => {}
                     Ok(false) => {
                         warn!("client connection from another user refused");

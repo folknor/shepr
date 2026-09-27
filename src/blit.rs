@@ -36,7 +36,7 @@ use std::io::Write;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::protocol::{
+use shepr_protocol::{
     CellData, CursorState, FrameData, PaneSurfacePatchRow, WireColor, WireStyle, WireStyleFlags,
 };
 use shepr_vt::UnderlineStyle;
@@ -196,7 +196,7 @@ impl BlitEncoder {
             }
         }
         // Cursor cells were appended; restore the row-major order spans require.
-        crate::protocol::sort_patch_rows(&mut rows);
+        shepr_protocol::sort_patch_rows(&mut rows);
         Some(rows)
     }
 
@@ -212,7 +212,7 @@ impl BlitEncoder {
         // The client calls this only after encode_patch accepts the same rows
         // and after their encoded bytes are written successfully; the check
         // keeps a misuse from wrapping a span into the next row.
-        if crate::protocol::validate_patch_rows(frame.width, frame.height, rows).is_err() {
+        if shepr_protocol::validate_patch_rows(frame.width, frame.height, rows).is_err() {
             return false;
         }
         for row in rows {
@@ -442,7 +442,7 @@ fn patch_cell_mut(rows: &mut [PaneSurfacePatchRow], x: u16, y: u16) -> Option<&m
 /// Whether `rows` may be drawn over `frame`: they obey the shared span rule and
 /// neither the new cells nor the cells they replace carry a hyperlink.
 fn patch_rows_fit(frame: &FrameData, rows: &[PaneSurfacePatchRow]) -> bool {
-    crate::protocol::validate_patch_rows(frame.width, frame.height, rows).is_ok()
+    shepr_protocol::validate_patch_rows(frame.width, frame.height, rows).is_ok()
         && rows
             .iter()
             .all(|row| patch_row_has_no_hyperlinks(frame, row))
@@ -908,7 +908,7 @@ fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{CellData, CursorState};
+    use shepr_protocol::{CellData, CursorState};
 
     const WIDE_GRAPHEME: &str = "\u{1F4A1}";
     const HALFWIDTH_VOICED_KANA: &str = "ｶ\u{ff9e}";
@@ -1190,7 +1190,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1256,7 +1256,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1295,7 +1295,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1334,7 +1334,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::SteadyBar,
+                shape: shepr_protocol::CursorShapeParam::SteadyBar,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1380,7 +1380,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1398,7 +1398,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::SteadyBar,
+                shape: shepr_protocol::CursorShapeParam::SteadyBar,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1444,7 +1444,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1456,7 +1456,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: false,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1710,7 +1710,7 @@ mod tests {
             x: 3,
             y: 1,
             visible: true,
-            shape: crate::protocol::CursorShapeParam::SteadyBlock,
+            shape: shepr_protocol::CursorShapeParam::SteadyBlock,
         });
         let mut expected = previous;
         expected.cells[4..8].clone_from_slice(&rows[0].cells);
@@ -1809,7 +1809,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: crate::protocol::CursorShapeParam::SteadyBlock,
+                shape: shepr_protocol::CursorShapeParam::SteadyBlock,
             }),
         ] {
             frame.cursor = cursor.clone();
@@ -1827,13 +1827,13 @@ mod tests {
                 x: 2,
                 y: 0,
                 visible: false,
-                shape: crate::protocol::CursorShapeParam::SteadyBlock,
+                shape: shepr_protocol::CursorShapeParam::SteadyBlock,
             },
             CursorState {
                 x: 2,
                 y: 0,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::SteadyBlock,
+                shape: shepr_protocol::CursorShapeParam::SteadyBlock,
             },
         ] {
             let encoded = encoder
@@ -1869,7 +1869,7 @@ mod tests {
             x: 0,
             y: 0,
             visible: true,
-            shape: crate::protocol::CursorShapeParam::Default,
+            shape: shepr_protocol::CursorShapeParam::Default,
         });
         let previous_drawn = frame_with_drawn_cursor(previous.clone());
         let mut encoder = BlitEncoder::new();
@@ -1885,7 +1885,7 @@ mod tests {
             x: 1,
             y: 0,
             visible: true,
-            shape: crate::protocol::CursorShapeParam::Default,
+            shape: shepr_protocol::CursorShapeParam::Default,
         });
         let drawn_rows = encoder
             .patch_rows_with_drawn_cursor(&rows, cursor.as_ref())
@@ -1914,7 +1914,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1939,7 +1939,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1985,7 +1985,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2008,7 +2008,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2036,7 +2036,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2046,7 +2046,7 @@ mod tests {
             x: 2,
             y: 2,
             visible: true,
-            shape: crate::protocol::CursorShapeParam::Default,
+            shape: shepr_protocol::CursorShapeParam::Default,
         });
 
         let mut output = Vec::new();
@@ -2075,7 +2075,7 @@ mod tests {
                 x: 1,
                 y: 1,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2157,7 +2157,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::Default,
+                shape: shepr_protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };

@@ -166,7 +166,7 @@ pub(crate) fn render_pane_scrollbar_buffer(
     buffer: &mut Buffer,
     metrics: crate::pane::ScrollMetrics,
     track: Rect,
-    palette: &crate::theme::Palette,
+    palette: &shepr_config::theme::Palette,
     focused: bool,
 ) {
     let (track_color, thumb_color, thumb_symbol) = if focused {

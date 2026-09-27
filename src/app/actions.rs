@@ -5,13 +5,13 @@ use std::time::Instant;
 
 use tracing::debug;
 
-use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
 use crate::git::WorkspaceGitStatus;
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::{
     PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope, TabRemoval,
 };
+use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 #[cfg(test)]
 use shepr_core::layout::{NavDirection, find_in_direction};
@@ -84,7 +84,7 @@ pub(crate) enum PaneRemovalCommit {
 pub(crate) struct WorkspaceRemovalOutcome {
     pub(crate) workspace_id: String,
     pub(crate) pane_ids: Vec<PaneId>,
-    pub(crate) terminal_ids: Vec<crate::protocol::TerminalId>,
+    pub(crate) terminal_ids: Vec<shepr_protocol::TerminalId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +107,7 @@ pub(crate) struct TabRemovalOutcome {
     pub(crate) workspace_index: usize,
     pub(crate) scope: TabRemovalScope,
     pub(crate) pane_ids: Vec<PaneId>,
-    pub(crate) terminal_ids: Vec<crate::protocol::TerminalId>,
+    pub(crate) terminal_ids: Vec<shepr_protocol::TerminalId>,
     pub(crate) tab: Option<TabRemoval>,
 }
 
@@ -130,7 +130,7 @@ pub(crate) struct PaneCreationOutcome {
     pub(crate) workspace_index: usize,
     pub(crate) tab_index: usize,
     pub(crate) pane_id: PaneId,
-    pub(crate) terminal_id: crate::protocol::TerminalId,
+    pub(crate) terminal_id: shepr_protocol::TerminalId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -6,11 +6,11 @@ mod config_tests;
 mod discovery;
 mod status;
 #[cfg(test)]
-pub(crate) mod test_support;
+pub mod test_support;
 
-pub(crate) use self::discovery::automatic_workspace_label;
+use self::discovery::automatic_workspace_label;
 #[cfg(test)]
-pub(crate) use self::status::git_status_snapshot_for_cwd;
+pub use self::status::git_status_snapshot_for_cwd;
 
 pub use self::{
     discovery::{GitSpaceMetadata, derive_label_from_cwd, fallback_label_from_cwd},

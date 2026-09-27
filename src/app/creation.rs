@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use super::{App, api_helpers::pane_agent_status};
 use crate::api::error::{ApiError, ApiErrorCode};
 use crate::api::schema::{EventData, EventEnvelope};
-use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
+use crate::workspace::Workspace;
+use shepr_config::NewTerminalCwdConfig;
 
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwdConfig,
@@ -34,9 +35,9 @@ pub(crate) fn resolve_new_terminal_cwd(
 }
 
 pub(super) fn launch_cwd_for_terminal(
-    terminal_id: &crate::protocol::TerminalId,
+    terminal_id: &shepr_protocol::TerminalId,
     terminals: &std::collections::HashMap<
-        crate::protocol::TerminalId,
+        shepr_protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &crate::pane::PaneRuntimeRegistry,
@@ -135,7 +136,7 @@ impl App {
         let outcome = self.state.commit_workspace_creation(ws, terminal, focus);
         self.terminal_runtimes.insert(terminal_id, runtime);
         if let Some(root_pane) = outcome.root_pane {
-            crate::logging::workspace_created(&outcome.workspace_id, root_pane.raw());
+            shepr_platform::logging::workspace_created(&outcome.workspace_id, root_pane.raw());
         }
         self.schedule_session_save();
         Ok(outcome.workspace_index)

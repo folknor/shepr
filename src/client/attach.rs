@@ -1,8 +1,9 @@
 //! Direct terminal attach input parsing and semantic actions.
 
+use crate::client::input_wire::WireMouseKind;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use crate::protocol::{AttachScrollDirection, AttachScrollSource, ClientMessage};
+use shepr_protocol::{AttachScrollDirection, AttachScrollSource, ClientMessage};
 
 type KeyCombo = (KeyCode, KeyModifiers);
 
@@ -34,7 +35,7 @@ pub(super) fn forward_input(
 ) -> ForwardOutcome {
     use super::endpoint::EndpointSendOutcome;
 
-    let max = crate::protocol::MAX_INPUT_PAYLOAD;
+    let max = shepr_protocol::MAX_INPUT_PAYLOAD;
     let oversized = data.len() > max;
     // A paste gets one limit whichever client it comes from. The server
     // handles a complete bracketed paste in one input message as a paste,
@@ -75,7 +76,7 @@ pub(super) fn forward_input(
 }
 
 fn input_messages(data: &[u8]) -> impl Iterator<Item = ClientMessage> + '_ {
-    data.chunks(crate::protocol::MAX_INPUT_PAYLOAD)
+    data.chunks(shepr_protocol::MAX_INPUT_PAYLOAD)
         .map(|chunk| ClientMessage::Input {
             data: chunk.to_vec(),
         })
@@ -102,7 +103,7 @@ pub(super) struct AttachKeys {
 }
 
 impl AttachKeys {
-    pub(super) fn from_config(config: &crate::config::ValidatedConfig) -> Self {
+    pub(super) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
         let live = config.live_keybinds();
         let mut detach_after_prefix = Vec::new();
         let mut detach_direct = Vec::new();
@@ -142,7 +143,7 @@ impl AttachKeys {
 #[cfg(test)]
 impl Default for AttachKeys {
     fn default() -> Self {
-        Self::from_config(&crate::config::ValidatedConfig::test_default())
+        Self::from_config(&shepr_config::ValidatedConfig::test_default())
     }
 }
 
@@ -150,7 +151,7 @@ impl Default for AttachKeys {
 /// Escape (ctrl+[) is left out: it starts every escape sequence.
 #[cfg(test)]
 fn legacy_control_byte(combo: KeyCombo) -> Option<u8> {
-    let (KeyCode::Char(ch), modifiers) = crate::config::normalize_key_combo(combo) else {
+    let (KeyCode::Char(ch), modifiers) = shepr_config::normalize_key_combo(combo) else {
         return None;
     };
     if modifiers != KeyModifiers::CONTROL {
@@ -171,7 +172,7 @@ fn legacy_key_bytes(combo: KeyCombo) -> Option<Vec<u8>> {
     if let Some(byte) = legacy_control_byte(combo) {
         return Some(vec![byte]);
     }
-    let (KeyCode::Char(ch), modifiers) = crate::config::normalize_key_combo(combo) else {
+    let (KeyCode::Char(ch), modifiers) = shepr_config::normalize_key_combo(combo) else {
         return None;
     };
     let ch = if modifiers.is_empty() {
@@ -187,7 +188,7 @@ fn legacy_key_bytes(combo: KeyCombo) -> Option<Vec<u8>> {
 fn matches_any(key: &crate::input::TerminalKey, combos: &[KeyCombo]) -> bool {
     combos
         .iter()
-        .any(|combo| crate::config::terminal_key_matches_combo(key, *combo))
+        .any(|combo| shepr_config::terminal_key_matches_combo(key, *combo))
 }
 
 #[derive(Debug)]
@@ -222,8 +223,8 @@ pub(super) enum AttachSemanticAction {
         modifiers: u8,
     },
     Mouse {
-        kind: crate::protocol::ClientMouseKind,
-        position: crate::protocol::ClientMousePosition,
+        kind: shepr_protocol::ClientMouseKind,
+        position: shepr_protocol::ClientMousePosition,
         modifiers: u8,
     },
     Ignore,
@@ -231,7 +232,7 @@ pub(super) enum AttachSemanticAction {
 
 impl AttachEscapeState {
     /// An escape state intercepting the prefix and detach keys `config` sets.
-    pub(super) fn from_config(config: &crate::config::ValidatedConfig) -> Self {
+    pub(super) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
         Self {
             keys: AttachKeys::from_config(config),
             pending_prefix: None,
@@ -326,7 +327,7 @@ impl AttachEscapeState {
 
         if let crate::raw_input::RawInputEvent::Key(key) = event {
             let press = key.kind == KeyEventKind::Press;
-            let is_prefix = crate::config::terminal_key_matches_combo(key, self.keys.prefix);
+            let is_prefix = shepr_config::terminal_key_matches_combo(key, self.keys.prefix);
             let is_direct_detach = press && matches_any(key, &self.keys.detach_direct);
 
             if let Some(mut prefix) = self.pending_prefix.take() {
@@ -388,8 +389,8 @@ pub(super) fn direct_attach_pixel_mouse(
     event: &crate::raw_input::RawInputEvent,
     pixels: crate::input::mouse::HostPixels,
 ) -> Option<(
-    crate::protocol::ClientMouseKind,
-    crate::protocol::ClientMousePosition,
+    shepr_protocol::ClientMouseKind,
+    shepr_protocol::ClientMousePosition,
     u8,
 )> {
     let crate::raw_input::RawInputEvent::Mouse(mouse) = event else {
@@ -397,8 +398,8 @@ pub(super) fn direct_attach_pixel_mouse(
     };
     let (column, row) = pixels.geometry.cell(pixels.x, pixels.y)?;
     Some((
-        crate::protocol::ClientMouseKind::from_crossterm(mouse.kind)?,
-        crate::protocol::ClientMousePosition::Pixels {
+        shepr_protocol::ClientMouseKind::from_crossterm(mouse.kind)?,
+        shepr_protocol::ClientMousePosition::Pixels {
             x: pixels.x,
             y: pixels.y,
             column,
@@ -432,8 +433,8 @@ fn attach_scroll_action(
                 })
             }
             kind => Some(AttachSemanticAction::Mouse {
-                kind: crate::protocol::ClientMouseKind::from_crossterm(kind)?,
-                position: crate::protocol::ClientMousePosition::Cell {
+                kind: shepr_protocol::ClientMouseKind::from_crossterm(kind)?,
+                position: shepr_protocol::ClientMousePosition::Cell {
                     column: mouse.column,
                     row: mouse.row,
                 },
@@ -487,7 +488,7 @@ pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<Cl
             lines,
             column,
             row,
-            modifiers: crate::protocol::WireModifiers::from_bits_retain(modifiers),
+            modifiers: shepr_protocol::WireModifiers::from_bits_retain(modifiers),
         },
         AttachSemanticAction::Mouse {
             kind,
@@ -497,7 +498,7 @@ pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<Cl
             kind,
             position,
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::from_bits_retain(modifiers),
+            modifiers: shepr_protocol::WireModifiers::from_bits_retain(modifiers),
             lines: 1,
         },
         AttachSemanticAction::Ignore => return None,
@@ -508,21 +509,21 @@ pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<Cl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AttachScrollDirection, AttachScrollSource};
+    use shepr_protocol::{AttachScrollDirection, AttachScrollSource};
 
     #[test]
     fn oversized_attach_input_is_split_into_valid_frames() {
-        let data = vec![b'x'; crate::protocol::MAX_FRAME_SIZE + 17];
+        let data = vec![b'x'; shepr_protocol::MAX_FRAME_SIZE + 17];
         let mut reconstructed = Vec::new();
         let mut frames = 0;
         for message in input_messages(&data) {
             let ClientMessage::Input { data: chunk } = &message else {
                 panic!("attach input must be sent as input");
             };
-            assert!(chunk.len() <= crate::protocol::MAX_INPUT_PAYLOAD);
+            assert!(chunk.len() <= shepr_protocol::MAX_INPUT_PAYLOAD);
             reconstructed.extend_from_slice(chunk);
             let mut frame = Vec::new();
-            crate::protocol::write_message(&mut frame, &message).expect("chunk must fit a frame");
+            shepr_protocol::write_message(&mut frame, &message).expect("chunk must fit a frame");
             frames += 1;
         }
         assert!(frames > 1);
@@ -561,12 +562,12 @@ mod tests {
             super::super::endpoint::EndpointRegistry::new(Capture(Arc::clone(&sent)), 1);
         forward_input(
             &mut registry,
-            &vec![b'x'; crate::protocol::MAX_FRAME_SIZE + 17],
+            &vec![b'x'; shepr_protocol::MAX_FRAME_SIZE + 17],
         );
         let sent = sent.lock().expect("test precondition");
         assert_eq!(
             sent.chunks.iter().sum::<usize>(),
-            crate::protocol::MAX_FRAME_SIZE + 17
+            shepr_protocol::MAX_FRAME_SIZE + 17
         );
         assert_eq!(sent.flushes, sent.chunks.len() + 1);
     }
@@ -591,7 +592,7 @@ mod tests {
         let mut registry =
             super::super::endpoint::EndpointRegistry::new(Capture(Arc::clone(&sent)), 1);
         let mut paste = b"\x1b[200~".to_vec();
-        paste.extend(vec![b'x'; crate::protocol::MAX_INPUT_PAYLOAD]);
+        paste.extend(vec![b'x'; shepr_protocol::MAX_INPUT_PAYLOAD]);
         paste.extend_from_slice(b"\x1b[201~");
 
         let outcome = forward_input(&mut registry, &paste);
@@ -599,7 +600,7 @@ mod tests {
             outcome,
             ForwardOutcome::PasteRejected {
                 size: paste.len(),
-                max: crate::protocol::MAX_INPUT_PAYLOAD,
+                max: shepr_protocol::MAX_INPUT_PAYLOAD,
             }
         );
         assert!(
@@ -615,8 +616,8 @@ mod tests {
     }
 
     fn escape_for(config: &str) -> AttachEscapeState {
-        let values: crate::config::Config = toml::from_str(config).expect("test precondition");
-        let config = crate::config::ValidatedConfig::test_from_config(values, Some(config));
+        let values: shepr_config::Config = toml::from_str(config).expect("test precondition");
+        let config = shepr_config::ValidatedConfig::test_from_config(values, Some(config));
         AttachEscapeState::from_config(&config)
     }
 
@@ -873,10 +874,10 @@ mod tests {
         assert!(matches!(
             escape.filter_input(b"\x1b[<0;11;6M".to_vec(), 24, 7),
             AttachInputAction::Semantic(AttachSemanticAction::Mouse {
-                kind: crate::protocol::ClientMouseKind::Down(
-                    crate::protocol::ClientMouseButton::Left
+                kind: shepr_protocol::ClientMouseKind::Down(
+                    shepr_protocol::ClientMouseButton::Left
                 ),
-                position: crate::protocol::ClientMousePosition::Cell { column: 10, row: 5 },
+                position: shepr_protocol::ClientMousePosition::Cell { column: 10, row: 5 },
                 modifiers: 0,
             })
         ));
@@ -895,10 +896,10 @@ mod tests {
             AttachInputAction::ForwardThenSemantic(
                 prefix,
                 AttachSemanticAction::Mouse {
-                    kind: crate::protocol::ClientMouseKind::Down(
-                        crate::protocol::ClientMouseButton::Left
+                    kind: shepr_protocol::ClientMouseKind::Down(
+                        shepr_protocol::ClientMouseButton::Left
                     ),
-                    position: crate::protocol::ClientMousePosition::Cell {
+                    position: shepr_protocol::ClientMousePosition::Cell {
                         column: 10,
                         row: 5
                     },
@@ -927,11 +928,11 @@ mod tests {
 
         assert_eq!(
             kind,
-            crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left)
+            shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left)
         );
         assert_eq!(
             position,
-            crate::protocol::ClientMousePosition::Pixels {
+            shepr_protocol::ClientMousePosition::Pixels {
                 x: 21,
                 y: 22,
                 column: 2,
@@ -1000,10 +1001,10 @@ mod tests {
         assert!(attach_semantic_message(AttachSemanticAction::Ignore).is_none());
         assert!(matches!(
             attach_semantic_message(AttachSemanticAction::Mouse {
-                kind: crate::protocol::ClientMouseKind::Down(
-                    crate::protocol::ClientMouseButton::Left
+                kind: shepr_protocol::ClientMouseKind::Down(
+                    shepr_protocol::ClientMouseButton::Left
                 ),
-                position: crate::protocol::ClientMousePosition::Cell { column: 1, row: 2 },
+                position: shepr_protocol::ClientMousePosition::Cell { column: 1, row: 2 },
                 modifiers: 0,
             }),
             Some(ClientMessage::AttachMouse { lines: 1, .. })

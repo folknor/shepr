@@ -12,8 +12,8 @@ use super::agent_detection::{
 use super::cwd::UsableCwd;
 use super::launch::LaunchPurpose;
 use super::terminal::PaneTerminal;
-use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
+use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 
 pub(super) const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration =
@@ -115,7 +115,7 @@ pub(super) struct AgentDetectionPresence {
 }
 
 pub(super) fn absolute_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
-    crate::detect::process_cwd(pid).filter(|cwd| cwd.is_absolute())
+    shepr_agent::detect::process_cwd(pid).filter(|cwd| cwd.is_absolute())
 }
 
 pub(super) fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
@@ -128,7 +128,7 @@ pub(super) fn foreground_member_cwd_different_from_shell(
     shell_pid: u32,
     shell_cwd: Option<&std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
-    let job = crate::detect::foreground_job(shell_pid)?;
+    let job = shepr_agent::detect::foreground_job(shell_pid)?;
     for process in job.processes {
         if process.pid == shell_pid {
             continue;
@@ -512,7 +512,7 @@ pub(super) struct ScreenPublishContext {
 pub(super) struct PromptObservationInput<'a> {
     pub(super) agent: Option<Agent>,
     pub(super) content: &'a str,
-    pub(super) detection: Option<&'a crate::detect::AgentDetection>,
+    pub(super) detection: Option<&'a shepr_agent::detect::AgentDetection>,
     pub(super) process_exited: bool,
 }
 
@@ -835,7 +835,7 @@ impl DetectorState {
 
     pub(super) fn screen_publish_decision(
         &mut self,
-        screen_detection: crate::detect::AgentDetection,
+        screen_detection: shepr_agent::detect::AgentDetection,
         context: ScreenPublishContext,
     ) -> DetectionPublishDecision {
         decide_screen_detection_publish(
@@ -924,7 +924,7 @@ impl DetectorState {
 }
 
 pub(super) fn agent_hint_for_foreground_job_members(
-    job: &crate::detect::ForegroundJob,
+    job: &shepr_agent::detect::ForegroundJob,
     read_hint: impl Fn(u32) -> Option<Agent>,
 ) -> Option<Agent> {
     read_hint(job.process_group_id)
@@ -932,7 +932,7 @@ pub(super) fn agent_hint_for_foreground_job_members(
 }
 
 fn agent_hint_for_non_leader_foreground_job_members(
-    job: &crate::detect::ForegroundJob,
+    job: &shepr_agent::detect::ForegroundJob,
     read_hint: impl Fn(u32) -> Option<Agent>,
 ) -> Option<Agent> {
     job.processes
@@ -942,21 +942,21 @@ fn agent_hint_for_non_leader_foreground_job_members(
 }
 
 fn identify_process_group_leader_in_job(
-    job: &crate::detect::ForegroundJob,
+    job: &shepr_agent::detect::ForegroundJob,
 ) -> Option<(Agent, String)> {
     let leader = job
         .processes
         .iter()
         .find(|process| process.pid == job.process_group_id)?;
-    let leader_job = crate::detect::ForegroundJob {
+    let leader_job = shepr_agent::detect::ForegroundJob {
         process_group_id: job.process_group_id,
         processes: vec![leader.clone()],
     };
-    crate::detect::identify_agent_in_job(&leader_job)
+    shepr_agent::detect::identify_agent_in_job(&leader_job)
 }
 
 fn process_probe_result(
-    job: &crate::detect::ForegroundJob,
+    job: &shepr_agent::detect::ForegroundJob,
     pid: u32,
     agent: Agent,
     process_name: String,
@@ -972,7 +972,7 @@ fn process_probe_result(
 }
 
 fn hinted_process_probe_result(
-    job: &crate::detect::ForegroundJob,
+    job: &shepr_agent::detect::ForegroundJob,
     pid: u32,
     read_hint: impl Fn(u32) -> Option<Agent>,
 ) -> Option<ProcessProbeResult> {
@@ -981,22 +981,22 @@ fn hinted_process_probe_result(
         job,
         pid,
         agent,
-        crate::detect::agent_label(agent).to_string(),
+        shepr_agent::detect::agent_label(agent).to_string(),
     ))
 }
 
 pub(super) fn probe_foreground_process_from_jobs(
     pid: u32,
     foreground_pgid: Option<u32>,
-    leader_job: Option<&crate::detect::ForegroundJob>,
-    foreground_job: impl FnOnce() -> Option<crate::detect::ForegroundJob>,
+    leader_job: Option<&shepr_agent::detect::ForegroundJob>,
+    foreground_job: impl FnOnce() -> Option<shepr_agent::detect::ForegroundJob>,
     read_hint: impl Fn(u32) -> Option<Agent> + Copy,
 ) -> ProcessProbeResult {
     if let Some(job) = leader_job {
         if let Some(hinted) = hinted_process_probe_result(job, pid, read_hint) {
             return hinted;
         }
-        if let Some((agent, process_name)) = crate::detect::identify_agent_in_job(job) {
+        if let Some((agent, process_name)) = shepr_agent::detect::identify_agent_in_job(job) {
             return process_probe_result(job, pid, agent, process_name);
         }
     }
@@ -1008,7 +1008,7 @@ pub(super) fn probe_foreground_process_from_jobs(
                 job,
                 pid,
                 agent,
-                crate::detect::agent_label(agent).to_string(),
+                shepr_agent::detect::agent_label(agent).to_string(),
             );
         }
         if let Some((agent, process_name)) = identify_process_group_leader_in_job(job) {
@@ -1019,11 +1019,11 @@ pub(super) fn probe_foreground_process_from_jobs(
                 job,
                 pid,
                 agent,
-                crate::detect::agent_label(agent).to_string(),
+                shepr_agent::detect::agent_label(agent).to_string(),
             );
         }
 
-        let identified = crate::detect::identify_agent_in_job(job);
+        let identified = shepr_agent::detect::identify_agent_in_job(job);
         return ProcessProbeResult {
             process_group_id: Some(job.process_group_id),
             foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
@@ -1052,10 +1052,10 @@ pub(super) fn probe_foreground_process(
         pid,
         foreground_pgid,
         foreground_pgid
-            .and_then(crate::detect::foreground_group_leader_job)
+            .and_then(shepr_agent::detect::foreground_group_leader_job)
             .as_ref(),
-        || crate::detect::foreground_job(pid),
-        crate::detect::process_agent_hint,
+        || shepr_agent::detect::foreground_job(pid),
+        shepr_agent::detect::process_agent_hint,
     )
 }
 

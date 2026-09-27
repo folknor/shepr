@@ -82,7 +82,7 @@ pub enum PaneAgentState {
     Unknown,
 }
 
-pub use crate::protocol::AgentStatus;
+pub use shepr_protocol::AgentStatus;
 
 pub(crate) fn default_true() -> bool {
     true

@@ -82,10 +82,22 @@ fn protocol_version(hash: u64) -> u32 {
     u32::try_from(folded % span).map_or(1, |value| value + 1)
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let root = PathBuf::from(
+pub fn main() -> Result<(), Box<dyn Error>> {
+    let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,
     );
+    let root = if manifest_dir
+        .file_name()
+        .is_some_and(|name| name == "shepr-protocol")
+    {
+        manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("missing workspace root")?
+            .to_path_buf()
+    } else {
+        manifest_dir
+    };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
 
     let mut files = ROOT_INPUTS
@@ -94,6 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .filter(|path| path.is_file())
         .collect::<Vec<_>>();
     collect_files(&root.join("src"), &mut files)?;
+    collect_files(&root.join("crates"), &mut files)?;
 
     let mut named = files
         .iter()
@@ -119,17 +132,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         out_dir.join("protocol_identity.rs"),
         format!(
             "/// Fingerprint of the source tree this binary was built from.\n\
-             pub(crate) const BUILD_ID: &str = \"{build_id}\";\n\
+             pub const BUILD_ID: &str = \"{build_id}\";\n\
              /// Wire protocol identity, derived from `BUILD_ID`.\n\
-             pub(crate) const PROTOCOL_VERSION: u32 = {protocol};\n"
+             pub const PROTOCOL_VERSION: u32 = {protocol};\n"
         ),
     )?;
 
     // A directory entry makes Cargo rescan it, so added, removed and edited
     // files under src/ all rerun this script.
-    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed={}", root.join("src").display());
+    println!("cargo:rerun-if-changed={}", root.join("crates").display());
     for name in ROOT_INPUTS {
-        println!("cargo:rerun-if-changed={name}");
+        println!("cargo:rerun-if-changed={}", root.join(name).display());
     }
     Ok(())
 }

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{ClientEndpointId, ClientEndpointStatus, NativeEndpointTransport};
-use crate::protocol::ClientSurfaceSize;
 use interprocess::TryClone as _;
+use shepr_protocol::ClientSurfaceSize;
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// Every endpoint, Local or saved machine, retries at least this often. `shepr machine
@@ -68,7 +68,7 @@ pub(crate) enum EndpointSupervisorEvent {
     Connected {
         endpoint_id: ClientEndpointId,
         generation: u64,
-        reader: crate::ipc::LocalStream,
+        reader: shepr_platform::ipc::LocalStream,
         writer: NativeEndpointTransport,
     },
 }
@@ -90,7 +90,7 @@ struct ReconnectState {
     in_flight: bool,
     /// When the attempt in flight started; its failure schedules the retry from here.
     attempt_started: Option<Instant>,
-    generation: Option<crate::protocol::ConnectionGeneration>,
+    generation: Option<shepr_protocol::ConnectionGeneration>,
     online_since: Option<Instant>,
 }
 
@@ -113,18 +113,18 @@ pub(crate) struct EndpointSupervisors {
     /// Launch-time ssh settings (config is read once), applied to every saved machine,
     /// including ones added to the catalog while the client runs.
     ssh_settings: crate::remote::SavedSshSettings,
-    paths: crate::config::AppPaths,
+    paths: shepr_config::AppPaths,
     /// Attempts still running for endpoints that were retired mid-attempt, by generation.
     /// A saved machine's bridge socket path is derived from its profile id, so a restarted
     /// supervisor for the same id must not start its own attempt until this one reports.
-    retired_attempts: HashMap<ClientEndpointId, crate::protocol::ConnectionGeneration>,
-    next_generation: crate::protocol::ConnectionGeneration,
+    retired_attempts: HashMap<ClientEndpointId, shepr_protocol::ConnectionGeneration>,
+    next_generation: shepr_protocol::ConnectionGeneration,
     shutdown: Arc<AtomicBool>,
 }
 
 impl EndpointSupervisors {
     pub(crate) fn with_ssh_settings(
-        paths: &crate::config::AppPaths,
+        paths: &shepr_config::AppPaths,
         profiles: &[super::SavedSshEndpoint],
         settings: crate::remote::SavedSshSettings,
         now: Instant,
@@ -134,7 +134,7 @@ impl EndpointSupervisors {
             ssh_settings: settings,
             paths: paths.clone(),
             retired_attempts: HashMap::new(),
-            next_generation: crate::protocol::ConnectionGeneration::new(2),
+            next_generation: shepr_protocol::ConnectionGeneration::new(2),
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         for profile in profiles {
@@ -346,7 +346,7 @@ fn connect_once(
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
     match target {
         ConnectTarget::Local(path) => {
-            let stream = crate::ipc::connect_local_stream(path).map_err(|error| {
+            let stream = shepr_platform::ipc::connect_local_stream(path).map_err(|error| {
                 // An absent Local socket is transient, unlike a missing SSH install.
                 if error.kind() == std::io::ErrorKind::NotFound {
                     std::io::Error::new(
@@ -374,7 +374,7 @@ fn connect_once(
 
 /// Handshakes over a fresh endpoint stream and hands the connection to the loop.
 fn establish(
-    mut stream: crate::ipc::LocalStream,
+    mut stream: shepr_platform::ipc::LocalStream,
     ssh_bridge: Option<crate::remote::SavedSshBridge>,
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
@@ -424,7 +424,7 @@ fn establish(
 
 fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
     use crate::client::ClientError;
-    use crate::protocol::FramingError;
+    use shepr_protocol::FramingError;
     let error = match error {
         ClientError::ConnectionFailed(error) | ClientError::ConnectionLost(error) => error,
         ClientError::HostTerminal(error) => error,
@@ -432,7 +432,7 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
             std::io::Error::new(std::io::ErrorKind::Unsupported, error)
         }
         ClientError::Preamble(
-            error @ crate::protocol::preamble::PreambleError::DifferentBuild(_),
+            error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
         ) => std::io::Error::new(std::io::ErrorKind::Unsupported, error),
         ClientError::Preamble(error) => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
         ClientError::UnexpectedWelcome { endpoint } => std::io::Error::new(
@@ -499,7 +499,7 @@ mod tests {
         now: Instant,
     ) -> EndpointSupervisors {
         EndpointSupervisors::with_ssh_settings(
-            &crate::config::AppPaths::default(),
+            &shepr_config::AppPaths::default(),
             profiles,
             crate::remote::SavedSshSettings {
                 manage_ssh_config: false,
@@ -535,7 +535,7 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(crate::protocol::ConnectionGeneration::new(2));
+            .generation = Some(shepr_protocol::ConnectionGeneration::new(2));
         for attempt in 1..=5 {
             let connected = now + Duration::from_secs(attempt * 20);
             assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected));
@@ -573,7 +573,7 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(crate::protocol::ConnectionGeneration::new(2));
+            .generation = Some(shepr_protocol::ConnectionGeneration::new(2));
         for _ in 0..20 {
             assert!(supervisors.disconnected(&id, 2, now));
             assert!(
@@ -594,7 +594,7 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(crate::protocol::ConnectionGeneration::new(9));
+            .generation = Some(shepr_protocol::ConnectionGeneration::new(9));
 
         assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Attention, now));
         assert_eq!(
@@ -635,7 +635,7 @@ mod tests {
                 state.in_flight = true;
                 state.attempt_started = Some(started);
                 state.next_attempt = None;
-                state.generation = Some(crate::protocol::ConnectionGeneration::new(7));
+                state.generation = Some(shepr_protocol::ConnectionGeneration::new(7));
             }
             let promised_at = started + Duration::from_millis(10);
             let gave_up = started + ATTEMPT_BUDGET;
@@ -686,7 +686,7 @@ mod tests {
                 .expect("test precondition");
             state.in_flight = true;
             state.next_attempt = None;
-            state.generation = Some(crate::protocol::ConnectionGeneration::new(5));
+            state.generation = Some(shepr_protocol::ConnectionGeneration::new(5));
         }
 
         // Removed and re-added (or re-pointed) while that attempt still runs: the new
@@ -709,7 +709,7 @@ mod tests {
         ));
         assert!(!crate::remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
         let rejected = handshake_error(crate::client::ClientError::HandshakeRejected {
-            error: crate::protocol::HandshakeRefusal::InvalidSurface(
+            error: shepr_protocol::HandshakeRefusal::InvalidSurface(
                 "surface capability missing".into(),
             ),
         });
@@ -720,14 +720,14 @@ mod tests {
     #[test]
     fn early_end_of_stream_and_shutdown_during_handshake_are_transient() {
         let eof = handshake_error(crate::client::ClientError::Protocol(
-            crate::protocol::FramingError::UnexpectedEof,
+            shepr_protocol::FramingError::UnexpectedEof,
         ));
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
         assert!(!crate::remote::SshFailureDiagnostic::from_error(&eof).needs_attention());
         let shutdown = handshake_error(crate::client::ClientError::ServerShutdown { reason: None });
         assert!(!crate::remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
         let malformed = handshake_error(crate::client::ClientError::Protocol(
-            crate::protocol::FramingError::Oversized { claimed: 2, max: 1 },
+            shepr_protocol::FramingError::Oversized { claimed: 2, max: 1 },
         ));
         assert!(crate::remote::SshFailureDiagnostic::from_error(&malformed).needs_attention());
     }
@@ -785,7 +785,7 @@ mod tests {
             .endpoints
             .get_mut(&endpoint_id)
             .expect("test precondition")
-            .generation = Some(crate::protocol::ConnectionGeneration::new(4));
+            .generation = Some(shepr_protocol::ConnectionGeneration::new(4));
         assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Online, now));
         assert!(!supervisors.disconnected(&endpoint_id, 3, now));
         assert!(supervisors.endpoints[&endpoint_id].next_attempt.is_none());

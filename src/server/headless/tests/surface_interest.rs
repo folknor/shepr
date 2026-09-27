@@ -64,7 +64,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id,
             pane_id: pane_id.clone().into(),
-            events: vec![crate::protocol::ClientPaneInputEvent::Paste(
+            events: vec![shepr_protocol::ClientPaneInputEvent::Paste(
                 "blocked".into()
             )],
         })
@@ -96,7 +96,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(server.send_to_client(
         client_id,
         &ServerMessage::ClientShellError {
-            kind: protocol::NoticeKind::PaneInputDropped {
+            kind: shepr_protocol::NoticeKind::PaneInputDropped {
                 pane_id: pane_id.clone().into(),
                 events: 1
             },

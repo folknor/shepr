@@ -39,7 +39,7 @@ impl App {
 
         SessionSnapshot {
             version: crate::build_info::version(),
-            protocol: crate::protocol::PROTOCOL_VERSION,
+            protocol: shepr_protocol::PROTOCOL_VERSION,
             focused_workspace_id,
             focused_tab_id,
             focused_pane_id,
@@ -55,7 +55,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::api::schema::{EmptyParams, Method, ResponseResult, SuccessResponse};
-    use crate::{config::Config, workspace::Workspace};
+    use crate::workspace::Workspace;
+    use shepr_config::Config;
 
     fn app_with_two_tabs() -> crate::app::App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

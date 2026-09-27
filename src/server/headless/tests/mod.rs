@@ -27,11 +27,11 @@ pub(crate) fn outer_terminal_focus(
 pub(crate) fn dispatch_lifecycle_messages(
     server: &mut HeadlessServer,
     client_id: crate::server::ClientId,
-    messages: Vec<crate::protocol::ClientMessage>,
+    messages: Vec<shepr_protocol::ClientMessage>,
 ) {
     for message in messages {
         let event = match message {
-            crate::protocol::ClientMessage::ClientShellResize { geometry } => {
+            shepr_protocol::ClientMessage::ClientShellResize { geometry } => {
                 crate::server::client_transport::ServerEvent::ClientShellResize {
                     client_id,
                     cell_width_px: geometry.width(),
@@ -41,13 +41,13 @@ pub(crate) fn dispatch_lifecycle_messages(
                     pixel_mouse: geometry.pixel_mouse,
                 }
             }
-            crate::protocol::ClientMessage::ClientShellFocus { focused } => {
+            shepr_protocol::ClientMessage::ClientShellFocus { focused } => {
                 crate::server::client_transport::ServerEvent::ClientShellFocus {
                     client_id,
                     focused,
                 }
             }
-            crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
                 crate::server::client_transport::ServerEvent::ClientShellEndpointRequest {
                     client_id,
                     boot_id,
@@ -80,7 +80,7 @@ async fn client_listener_readiness_wakes_for_new_connection() {
         LocalListener::UdSocket(socket) => socket.as_fd().as_raw_fd(),
     };
     let ready = tokio::io::unix::AsyncFd::new(ListenerFd(listener_fd)).expect("register listener");
-    let _client = crate::ipc::connect_local_stream(&socket_path).expect("connect client");
+    let _client = shepr_platform::ipc::connect_local_stream(&socket_path).expect("connect client");
     let readiness = tokio::time::timeout(Duration::from_millis(500), ready.readable())
         .await
         .expect("listener should become readable")
@@ -91,7 +91,7 @@ async fn client_listener_readiness_wakes_for_new_connection() {
 
 pub(crate) fn client_shell_snapshot(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
-) -> Box<protocol::ClientShellSnapshot> {
+) -> Box<shepr_protocol::ClientShellSnapshot> {
     let ServerMessage::EndpointSnapshot(snapshot) = read_server_message(
         receiver
             .recv_timeout(Duration::from_secs(1))
@@ -107,7 +107,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
 }
 
 fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServer {
-    let config = crate::config::Config::default();
+    let config = shepr_config::Config::default();
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::TEST, api_rx, event_hub);
 
@@ -157,7 +157,7 @@ pub(crate) fn shutdown_test_runtimes(server: &mut HeadlessServer) {
 
 pub(crate) fn read_server_message(bytes: Vec<u8>) -> ServerMessage {
     let mut cursor = std::io::Cursor::new(bytes);
-    protocol::read_message(&mut cursor, MAX_FRAME_SIZE).expect("decode server message")
+    shepr_protocol::read_message(&mut cursor, MAX_FRAME_SIZE).expect("decode server message")
 }
 
 fn frame_text(frame: &FrameData) -> String {
@@ -183,7 +183,7 @@ fn read_server_shutdown_reason(bytes: Vec<u8>) -> Option<String> {
 #[test]
 fn frame_server_message_refuses_payloads_over_the_frame_cap() {
     let small = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
-        kind: protocol::NoticeKind::PaneInputDropped {
+        kind: shepr_protocol::NoticeKind::PaneInputDropped {
             pane_id: "w1:p1".into(),
             events: 1,
         },
@@ -191,12 +191,12 @@ fn frame_server_message_refuses_payloads_over_the_frame_cap() {
     .expect("small message frames");
     assert!(matches!(
         read_server_message(small),
-        ServerMessage::ClientShellError { kind: protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 } } if pane_id == "w1:p1"
+        ServerMessage::ClientShellError { kind: shepr_protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 } } if pane_id == "w1:p1"
     ));
 
     let oversized = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
-        kind: protocol::NoticeKind::PaneInputDropped {
-            pane_id: crate::protocol::PublicPaneId::new(
+        kind: shepr_protocol::NoticeKind::PaneInputDropped {
+            pane_id: shepr_protocol::PublicPaneId::new(
                 format!("w{}", "x".repeat(MAX_FRAME_SIZE + 1)),
                 1,
             ),
@@ -205,7 +205,7 @@ fn frame_server_message_refuses_payloads_over_the_frame_cap() {
     });
     assert!(matches!(
         oversized,
-        Err(protocol::FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
+        Err(shepr_protocol::FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
     ));
 }
 
@@ -216,8 +216,8 @@ fn default_headless_size_is_effective_without_clients() {
     assert_eq!(
         server.headless_size,
         shepr_core::geometry::GridSize::clamped(
-            crate::config::DEFAULT_HEADLESS_COLS,
-            crate::config::DEFAULT_HEADLESS_ROWS
+            shepr_config::DEFAULT_HEADLESS_COLS,
+            shepr_config::DEFAULT_HEADLESS_ROWS
         )
     );
     assert_eq!(server.effective_size, server.headless_size);
@@ -232,9 +232,8 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    server.app.state.settings.sidebar_agents.rows = vec![vec![
-        crate::config::AgentSidebarToken::TerminalTitleStripped,
-    ]];
+    server.app.state.settings.sidebar_agents.rows =
+        vec![vec![shepr_config::AgentSidebarToken::TerminalTitleStripped]];
     let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
     let terminal_id = server.app.state.workspaces[0].tabs[0].panes[&pane_id]
         .attached_terminal_id
@@ -245,7 +244,7 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition")
-        .detected_agent = Some(crate::detect::Agent::Claude);
+        .detected_agent = Some(shepr_agent::detect::Agent::Claude);
     let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes(b"\x1b]0;\xe2\xa0\x8b task\x07");
     server
@@ -885,8 +884,8 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
         .get_mut(&terminal_id)
         .expect("terminal")
         .set_detected_state(
-            Some(crate::detect::Agent::Pi),
-            crate::detect::AgentState::Unknown,
+            Some(shepr_agent::detect::Agent::Pi),
+            shepr_agent::detect::AgentState::Unknown,
         );
 
     let (writer, control_rx, _render_rx) = test_client_writer();
@@ -1289,14 +1288,14 @@ fn write_shared_test_pane(
 /// running baseline a real endpoint client would keep.
 struct PaneSurfaceReceiver {
     receiver: std::sync::mpsc::Receiver<Vec<u8>>,
-    decoder: crate::protocol::surface_reuse::Decoder,
+    decoder: shepr_protocol::surface_reuse::Decoder,
 }
 
 impl PaneSurfaceReceiver {
     fn new(receiver: std::sync::mpsc::Receiver<Vec<u8>>) -> Self {
         Self {
             receiver,
-            decoder: crate::protocol::surface_reuse::Decoder::default(),
+            decoder: shepr_protocol::surface_reuse::Decoder::default(),
         }
     }
 
@@ -1317,7 +1316,7 @@ impl PaneSurfaceReceiver {
 fn recv_pane_surface(
     receiver: &mut PaneSurfaceReceiver,
     context: &str,
-) -> crate::protocol::PaneSurfaceFrame {
+) -> shepr_protocol::PaneSurfaceFrame {
     match receiver.recv(context) {
         ServerMessage::PaneSurface(surface) => surface,
         ServerMessage::PaneSurfacePatch(_) => receiver.decoder.current_surface().expect("baseline"),
@@ -1328,7 +1327,7 @@ fn recv_pane_surface(
 fn recv_pane_surface_patch(
     receiver: &mut PaneSurfaceReceiver,
     context: &str,
-) -> crate::protocol::SurfaceUpdate {
+) -> shepr_protocol::SurfaceUpdate {
     let message = read_server_message(
         receiver
             .receiver
@@ -2454,7 +2453,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(22),
         pane_id: second_pane_id.into(),
-        events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+        events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
             "typed".into(),
         )],
     });
@@ -2614,13 +2613,13 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     );
     assert_eq!(
         first_location.active_tab_ids
-            [&crate::protocol::WorkspaceId::new(first_workspace_id.as_str())]
+            [&shepr_protocol::WorkspaceId::new(first_workspace_id.as_str())]
             .to_string(),
         second_tab_id
     );
     assert_eq!(
         second_location.active_tab_ids
-            [&crate::protocol::WorkspaceId::new(first_workspace_id.as_str())]
+            [&shepr_protocol::WorkspaceId::new(first_workspace_id.as_str())]
             .to_string(),
         first_tab_id
     );
@@ -2676,7 +2675,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         .event_tx
         .try_send(AppEvent::AgentProcessDetected {
             pane_id: first_pane,
-            agent: crate::detect::Agent::Claude,
+            agent: shepr_agent::detect::Agent::Claude,
             observed_at: Instant::now(),
         })
         .expect("test precondition");
@@ -2811,37 +2810,37 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
             client_id: ClientId::test_new(11),
             pane_id: pane_id.into(),
             events: vec![
-                crate::protocol::ClientPaneInputEvent::Key {
-                    code: crate::protocol::ClientKeyCode::Char('c'),
-                    modifiers: crate::protocol::WireModifiers::CONTROL,
-                    kind: crate::protocol::ClientKeyKind::Press,
+                shepr_protocol::ClientPaneInputEvent::Key {
+                    code: shepr_protocol::ClientKeyCode::Char('c'),
+                    modifiers: shepr_protocol::WireModifiers::CONTROL,
+                    kind: shepr_protocol::ClientKeyKind::Press,
                     repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
-                crate::protocol::ClientPaneInputEvent::Key {
-                    code: crate::protocol::ClientKeyCode::Char('c'),
-                    modifiers: crate::protocol::WireModifiers::CONTROL,
-                    kind: crate::protocol::ClientKeyKind::Release,
+                shepr_protocol::ClientPaneInputEvent::Key {
+                    code: shepr_protocol::ClientKeyCode::Char('c'),
+                    modifiers: shepr_protocol::WireModifiers::CONTROL,
+                    kind: shepr_protocol::ClientKeyKind::Release,
                     repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
-                crate::protocol::ClientPaneInputEvent::Key {
-                    code: crate::protocol::ClientKeyCode::Char('x'),
-                    modifiers: crate::protocol::WireModifiers::ALT,
-                    kind: crate::protocol::ClientKeyKind::Press,
+                shepr_protocol::ClientPaneInputEvent::Key {
+                    code: shepr_protocol::ClientKeyCode::Char('x'),
+                    modifiers: shepr_protocol::WireModifiers::ALT,
+                    kind: shepr_protocol::ClientKeyKind::Press,
                     repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
-                crate::protocol::ClientPaneInputEvent::Mouse {
-                    kind: crate::protocol::ClientMouseKind::Down(
-                        crate::protocol::ClientMouseButton::Left,
+                shepr_protocol::ClientPaneInputEvent::Mouse {
+                    kind: shepr_protocol::ClientMouseKind::Down(
+                        shepr_protocol::ClientMouseButton::Left,
                     ),
-                    position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+                    position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
                     geometry: None,
-                    modifiers: crate::protocol::WireModifiers::NONE,
+                    modifiers: shepr_protocol::WireModifiers::NONE,
                     lines: 3,
                 },
             ],
@@ -2914,9 +2913,9 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
             None,
         ),
     );
-    let key = |kind| crate::protocol::ClientPaneInputEvent::Key {
-        code: crate::protocol::ClientKeyCode::Char('x'),
-        modifiers: crate::protocol::WireModifiers::NONE,
+    let key = |kind| shepr_protocol::ClientPaneInputEvent::Key {
+        code: shepr_protocol::ClientKeyCode::Char('x'),
+        modifiers: shepr_protocol::WireModifiers::NONE,
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
@@ -2927,7 +2926,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.clone().into(),
-            events: vec![key(crate::protocol::ClientKeyKind::Press)],
+            events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
     assert!(input_rx.try_recv().is_err());
@@ -2935,7 +2934,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.into(),
-            events: vec![key(crate::protocol::ClientKeyKind::Release)],
+            events: vec![key(shepr_protocol::ClientKeyKind::Release)],
         })
     );
     assert!(!input_rx.recv().await.expect("encoded release").is_empty());
@@ -2989,7 +2988,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: public_pane_id.clone().into(),
-            events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+            events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
                 "x".to_owned(),
             )],
         });
@@ -3013,7 +3012,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: public_pane_id.into(),
-            events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+            events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
                 "y".to_owned(),
             )],
         });
@@ -3054,11 +3053,11 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.into(),
-            events: vec![crate::protocol::ClientPaneInputEvent::Mouse {
-                kind: crate::protocol::ClientMouseKind::Moved,
-                position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+            events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
+                kind: shepr_protocol::ClientMouseKind::Moved,
+                position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
                 geometry: None,
-                modifiers: crate::protocol::WireModifiers::NONE,
+                modifiers: shepr_protocol::WireModifiers::NONE,
                 lines: 0,
             }],
         });
@@ -3096,11 +3095,11 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.into(),
-            events: vec![crate::protocol::ClientPaneInputEvent::Mouse {
-                kind: crate::protocol::ClientMouseKind::Moved,
-                position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+            events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
+                kind: shepr_protocol::ClientMouseKind::Moved,
+                position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
                 geometry: None,
-                modifiers: crate::protocol::WireModifiers::NONE,
+                modifiers: shepr_protocol::WireModifiers::NONE,
                 lines: 0,
             }],
         });
@@ -3144,7 +3143,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
 
     let events = ["a", "b", "c", "d", "e", "f"]
         .into_iter()
-        .map(|text| crate::protocol::ClientPaneInputEvent::TextCommit(text.to_owned()))
+        .map(|text| shepr_protocol::ClientPaneInputEvent::TextCommit(text.to_owned()))
         .collect();
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(11),
@@ -3262,12 +3261,12 @@ fn client_shell_host_theme_follows_foreground_client() {
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(1)));
 
-    let dark = protocol::ClientHostColor {
+    let dark = shepr_protocol::ClientHostColor {
         r: 20,
         g: 30,
         b: 40,
     };
-    let blue = protocol::ClientHostColor {
+    let blue = shepr_protocol::ClientHostColor {
         r: 10,
         g: 20,
         b: 200,
@@ -3275,8 +3274,8 @@ fn client_shell_host_theme_follows_foreground_client() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellHostTheme {
             client_id: ClientId::test_new(1),
-            update: protocol::ClientHostThemeUpdate::DefaultColor {
-                kind: protocol::ClientHostDefaultColorKind::Background,
+            update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
+                kind: shepr_protocol::ClientHostDefaultColorKind::Background,
                 color: dark,
             },
         })
@@ -3284,12 +3283,14 @@ fn client_shell_host_theme_follows_foreground_client() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellHostTheme {
             client_id: ClientId::test_new(1),
-            update: protocol::ClientHostThemeUpdate::PaletteColors(vec![(4, blue)]),
+            update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(vec![(4, blue)]),
         })
     );
     server.handle_server_event(ServerEvent::ClientShellHostTheme {
         client_id: ClientId::test_new(1),
-        update: protocol::ClientHostThemeUpdate::Appearance(protocol::ClientHostAppearance::Dark),
+        update: shepr_protocol::ClientHostThemeUpdate::Appearance(
+            shepr_protocol::ClientHostAppearance::Dark,
+        ),
     });
     assert_eq!(
         server.app.state.host_terminal_theme.background,
@@ -3305,7 +3306,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     );
     assert!(server.app.state.host_terminal_appearance_explicit);
 
-    let light = protocol::ClientHostColor {
+    let light = shepr_protocol::ClientHostColor {
         r: 240,
         g: 230,
         b: 220,
@@ -3313,8 +3314,8 @@ fn client_shell_host_theme_follows_foreground_client() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellHostTheme {
             client_id: ClientId::test_new(2),
-            update: protocol::ClientHostThemeUpdate::DefaultColor {
-                kind: protocol::ClientHostDefaultColorKind::Background,
+            update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
+                kind: shepr_protocol::ClientHostDefaultColorKind::Background,
                 color: light,
             },
         })
@@ -3414,7 +3415,7 @@ fn terminal_attach_rejects_missing_terminal_and_removes_client() {
 }
 
 fn with_terminal_session_test_server(
-    test: impl FnOnce(&mut HeadlessServer, crate::protocol::TerminalId, String, String),
+    test: impl FnOnce(&mut HeadlessServer, shepr_protocol::TerminalId, String, String),
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3476,8 +3477,8 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
                 .terminals
                 .get_mut(&terminal_id)
                 .expect("terminal");
-            terminal.detected_agent = Some(crate::detect::Agent::Claude);
-            terminal.state = crate::detect::AgentState::Working;
+            terminal.detected_agent = Some(shepr_agent::detect::Agent::Claude);
+            terminal.state = shepr_agent::detect::AgentState::Working;
             server.app.terminal_runtimes.insert(
                 terminal_id,
                 crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"\x1b[?1049hworking"),
@@ -3666,7 +3667,7 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
         assert!(
             !server
                 .clients
-                .has_attach_owner(&crate::protocol::TerminalId::test_new(&terminal_id_string))
+                .has_attach_owner(&shepr_protocol::TerminalId::test_new(&terminal_id_string))
         );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(
@@ -3705,7 +3706,7 @@ fn terminal_attach_rejects_second_client_without_takeover() {
             server
                 .clients
                 .attach_owners()
-                .get(&crate::protocol::TerminalId::test_new(&terminal_id_string)),
+                .get(&shepr_protocol::TerminalId::test_new(&terminal_id_string)),
             Some(&ClientId::test_new(7))
         );
     });
@@ -3738,7 +3739,7 @@ fn terminal_attach_takeover_replaces_existing_client() {
             server
                 .clients
                 .attach_owners()
-                .get(&crate::protocol::TerminalId::test_new(&terminal_id_string)),
+                .get(&shepr_protocol::TerminalId::test_new(&terminal_id_string)),
             Some(&ClientId::test_new(8))
         );
     });
@@ -3764,7 +3765,7 @@ fn terminal_attach_detach_sends_shutdown_before_removal() {
         assert!(
             !server
                 .clients
-                .has_attach_owner(&crate::protocol::TerminalId::test_new(&terminal_id_string))
+                .has_attach_owner(&shepr_protocol::TerminalId::test_new(&terminal_id_string))
         );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(reason, Some("detached".to_owned()));
@@ -4009,7 +4010,7 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     assert!(!reported(&server), "a frame that fits clears the report");
     assert!(render_rx.try_recv().is_ok(), "the smaller frame was sent");
     assert!(
-        protocol::NoticeKind::OversizedFrame {
+        shepr_protocol::NoticeKind::OversizedFrame {
             claimed: 3_000_000,
             max: MAX_FRAME_SIZE
         }
@@ -4041,7 +4042,7 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
         .collect::<Vec<_>>();
     assert_eq!(entries, vec![std::ffi::OsString::from("client.sock")]);
     // The linked name reaches the listener.
-    assert!(crate::ipc::connect_local_stream(&path).is_ok());
+    assert!(shepr_platform::ipc::connect_local_stream(&path).is_ok());
     assert!(listener.accept().is_ok());
     // A second server never replaces a socket that is already there.
     let err = bind_owner_only_listener(&path).expect_err("path is taken");
@@ -4316,16 +4317,16 @@ fn client_pane_pixel_mouse_uses_runtime_pixel_encoding() {
 
     apply_client_pane_input_events(
         &runtime,
-        &[crate::protocol::ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Moved,
-            position: crate::protocol::ClientMousePosition::Pixels {
+        &[shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Moved,
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 21,
                 y: 22,
                 column: 2,
                 row: 1,
             },
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4357,16 +4358,16 @@ fn client_pane_pixel_mouse_stays_pixel_scaled_when_sgr_is_reasserted() {
 
     apply_client_pane_input_events(
         &runtime,
-        &[crate::protocol::ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
-            position: crate::protocol::ClientMousePosition::Pixels {
+        &[shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 403,
                 y: 240,
                 column: 40,
                 row: 12,
             },
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }],
     )
@@ -4398,16 +4399,16 @@ fn client_pane_pixel_mouse_falls_back_to_canonical_cell_position() {
 
     apply_client_pane_input_events(
         &runtime,
-        &[crate::protocol::ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Moved,
-            position: crate::protocol::ClientMousePosition::Pixels {
+        &[shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Moved,
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 21,
                 y: 22,
                 column: 2,
                 row: 1,
             },
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4434,22 +4435,22 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
     }
     let (runtime, mut input_rx) =
         crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 4096, &bytes, 4);
-    let scroll = |kind| crate::protocol::ClientPaneInputEvent::Mouse {
+    let scroll = |kind| shepr_protocol::ClientPaneInputEvent::Mouse {
         kind,
-        position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+        position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
         geometry: None,
-        modifiers: crate::protocol::WireModifiers::NONE,
+        modifiers: shepr_protocol::WireModifiers::NONE,
         lines: 3,
     };
 
     apply_client_pane_input_events(
         &runtime,
-        &[scroll(crate::protocol::ClientMouseKind::ScrollUp)],
+        &[scroll(shepr_protocol::ClientMouseKind::ScrollUp)],
     )
     .expect("first scroll up");
     apply_client_pane_input_events(
         &runtime,
-        &[scroll(crate::protocol::ClientMouseKind::ScrollUp)],
+        &[scroll(shepr_protocol::ClientMouseKind::ScrollUp)],
     )
     .expect("second scroll up");
     assert_eq!(
@@ -4462,7 +4463,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
 
     apply_client_pane_input_events(
         &runtime,
-        &[scroll(crate::protocol::ClientMouseKind::ScrollDown)],
+        &[scroll(shepr_protocol::ClientMouseKind::ScrollDown)],
     )
     .expect("scroll down");
     assert_eq!(
@@ -4476,11 +4477,11 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
     runtime.test_process_pty_bytes(b"\x1b[?1003h\x1b[?1006h");
     apply_client_pane_input_events(
         &runtime,
-        &[crate::protocol::ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Moved,
-            position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+        &[shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Moved,
+            position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4499,11 +4500,11 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
 
     apply_client_pane_input_events(
         &runtime,
-        &[crate::protocol::ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
-            position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+        &[shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
+            position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4608,13 +4609,13 @@ fn apply_terminal_attach_page_up(runtime: &crate::pane::PaneRuntime) {
 }
 
 fn client_page_key(
-    code: crate::protocol::ClientKeyCode,
+    code: shepr_protocol::ClientKeyCode,
     modifiers: crossterm::event::KeyModifiers,
-    kind: crate::protocol::ClientKeyKind,
-) -> crate::protocol::ClientPaneInputEvent {
-    crate::protocol::ClientPaneInputEvent::Key {
+    kind: shepr_protocol::ClientKeyKind,
+) -> shepr_protocol::ClientPaneInputEvent {
+    shepr_protocol::ClientPaneInputEvent::Key {
         code,
-        modifiers: crate::protocol::WireModifiers::from(modifiers),
+        modifiers: crate::client::input_wire::wire_modifiers(modifiers),
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
@@ -4628,9 +4629,9 @@ fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
-                crate::protocol::ClientKeyCode::PageUp,
+                shepr_protocol::ClientKeyCode::PageUp,
                 crossterm::event::KeyModifiers::empty(),
-                crate::protocol::ClientKeyKind::Press,
+                shepr_protocol::ClientKeyKind::Press,
             )],
         )
         .expect("pane PageUp");
@@ -4645,9 +4646,9 @@ fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
-                crate::protocol::ClientKeyCode::PageUp,
+                shepr_protocol::ClientKeyCode::PageUp,
                 crossterm::event::KeyModifiers::empty(),
-                crate::protocol::ClientKeyKind::Release,
+                shepr_protocol::ClientKeyKind::Release,
             )],
         )
         .expect("pane PageUp release");
@@ -4662,9 +4663,9 @@ fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
-                crate::protocol::ClientKeyCode::PageDown,
+                shepr_protocol::ClientKeyCode::PageDown,
                 crossterm::event::KeyModifiers::empty(),
-                crate::protocol::ClientKeyKind::Press,
+                shepr_protocol::ClientKeyKind::Press,
             )],
         )
         .expect("pane PageDown");
@@ -4685,9 +4686,9 @@ fn client_page_keys_forward_when_modified_or_owned_by_application() {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
-                crate::protocol::ClientKeyCode::PageUp,
+                shepr_protocol::ClientKeyCode::PageUp,
                 crossterm::event::KeyModifiers::CONTROL,
-                crate::protocol::ClientKeyKind::Press,
+                shepr_protocol::ClientKeyKind::Press,
             )],
         )
         .expect("modified pane PageUp");
@@ -4708,9 +4709,9 @@ fn client_page_keys_forward_when_modified_or_owned_by_application() {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
-                crate::protocol::ClientKeyCode::PageUp,
+                shepr_protocol::ClientKeyCode::PageUp,
                 crossterm::event::KeyModifiers::empty(),
-                crate::protocol::ClientKeyKind::Press,
+                shepr_protocol::ClientKeyKind::Press,
             )],
         )
         .expect("application PageUp");
@@ -4856,7 +4857,7 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
             pane_id,
             source: "custom:pi".into(),
             agent_label: "pi".into(),
-            state: crate::detect::AgentState::Working,
+            state: shepr_agent::detect::AgentState::Working,
             message: None,
             seq: None,
             session_ref: None,
@@ -4952,7 +4953,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::agent::resume::test_codex_plan(
+        .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
         vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
     ));
@@ -5004,7 +5005,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::agent::resume::test_codex_plan(
+        .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
         vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
     ));
@@ -5041,7 +5042,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
             RenderEncoding::SemanticFrame,
             None,
         );
-        client.mode = ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
+        client.mode = ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
             terminal_id.clone(),
         ));
         server.clients.insert(1, client);
@@ -5151,7 +5152,7 @@ async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry()
         (1, ClientConnectionMode::TerminalPending),
         (
             2,
-            ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new("t1")),
+            ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new("t1")),
         ),
     ] {
         server.clients.insert(
@@ -5229,9 +5230,9 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             ),
         );
     }
-    let key = |kind| crate::protocol::ClientPaneInputEvent::Key {
-        code: crate::protocol::ClientKeyCode::Char('x'),
-        modifiers: crate::protocol::WireModifiers::NONE,
+    let key = |kind| shepr_protocol::ClientPaneInputEvent::Key {
+        code: shepr_protocol::ClientKeyCode::Char('x'),
+        modifiers: shepr_protocol::WireModifiers::NONE,
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
@@ -5244,7 +5245,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.clone().into(),
-            events: vec![key(crate::protocol::ClientKeyKind::Press)],
+            events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
     assert!(!input_rx.recv().await.expect("encoded press").is_empty());
@@ -5254,7 +5255,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.clone().into(),
-            events: vec![key(crate::protocol::ClientKeyKind::Release)],
+            events: vec![key(shepr_protocol::ClientKeyKind::Release)],
         })
     );
     assert!(!input_rx.recv().await.expect("encoded release").is_empty());
@@ -5267,7 +5268,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.into(),
-            events: vec![key(crate::protocol::ClientKeyKind::Press)],
+            events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
     assert!(
@@ -5439,7 +5440,7 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
+                ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
                 shepr_core::geometry::GridSize::clamped(80, 24),
@@ -5590,7 +5591,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
+                ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
                 shepr_core::geometry::GridSize::clamped(80, 24),
@@ -5603,10 +5604,10 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
 
         assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
             client_id: ClientId::test_new(1),
-            kind: protocol::ClientMouseKind::Down(protocol::ClientMouseButton::Left),
-            position: protocol::ClientMousePosition::Cell { column: 10, row: 5 },
+            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
+            position: shepr_protocol::ClientMousePosition::Cell { column: 10, row: 5 },
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert_eq!(
@@ -5635,7 +5636,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
+                ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
                 shepr_core::geometry::GridSize::clamped(80, 24),
@@ -5654,40 +5655,40 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
 
         assert!(!server.handle_server_event(ServerEvent::ClientAttachMouse {
             client_id: ClientId::test_new(1),
-            kind: protocol::ClientMouseKind::Down(protocol::ClientMouseButton::Left),
-            position: protocol::ClientMousePosition::Pixels {
+            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 21,
                 y: 22,
                 column: 3,
                 row: 1,
             },
-            geometry: Some(protocol::ClientMouseGeometry {
+            geometry: Some(shepr_protocol::ClientMouseGeometry {
                 cols: 80,
                 rows: 24,
                 width_px: 800,
                 height_px: 480,
             }),
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert!(input_rx.try_recv().is_err());
 
         assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
             client_id: ClientId::test_new(1),
-            kind: protocol::ClientMouseKind::Down(protocol::ClientMouseButton::Left),
-            position: protocol::ClientMousePosition::Pixels {
+            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 21,
                 y: 22,
                 column: 2,
                 row: 1,
             },
-            geometry: Some(protocol::ClientMouseGeometry {
+            geometry: Some(shepr_protocol::ClientMouseGeometry {
                 cols: 80,
                 rows: 24,
                 width_px: 805,
                 height_px: 485,
             }),
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert_eq!(
@@ -5699,40 +5700,40 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
 
         assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
             client_id: ClientId::test_new(1),
-            kind: protocol::ClientMouseKind::Moved,
-            position: protocol::ClientMousePosition::Pixels {
+            kind: shepr_protocol::ClientMouseKind::Moved,
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 21,
                 y: 22,
                 column: 2,
                 row: 1,
             },
-            geometry: Some(protocol::ClientMouseGeometry {
+            geometry: Some(shepr_protocol::ClientMouseGeometry {
                 cols: 80,
                 rows: 24,
                 width_px: 800,
                 height_px: 480,
             }),
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert!(input_rx.try_recv().is_err());
 
         assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
             client_id: ClientId::test_new(1),
-            kind: protocol::ClientMouseKind::Down(protocol::ClientMouseButton::Left),
-            position: protocol::ClientMousePosition::Pixels {
+            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 21,
                 y: 22,
                 column: 2,
                 row: 1,
             },
-            geometry: Some(protocol::ClientMouseGeometry {
+            geometry: Some(shepr_protocol::ClientMouseGeometry {
                 cols: 80,
                 rows: 24,
                 width_px: 800,
                 height_px: 480,
             }),
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert_eq!(

@@ -10,7 +10,7 @@
 //! pushes the result to the foreground client, which writes the `OSC 0`.
 
 use super::App;
-use crate::config::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken};
+use shepr_config::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken};
 
 impl App {
     pub(crate) fn configure_window_title(&mut self, template: &str) {
@@ -122,8 +122,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
-    use crate::config::Config;
     use crate::workspace::Workspace;
+    use shepr_config::Config;
 
     fn test_app() -> App {
         let event_hub = crate::api::EventHub::default();

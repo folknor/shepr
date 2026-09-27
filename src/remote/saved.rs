@@ -21,7 +21,7 @@ impl SavedSshBridge {
 }
 
 pub(crate) struct SavedSshStream {
-    pub(crate) stream: crate::ipc::LocalStream,
+    pub(crate) stream: shepr_platform::ipc::LocalStream,
     pub(crate) bridge: SavedSshBridge,
 }
 
@@ -55,7 +55,7 @@ pub(crate) struct SavedSshSettings {
 /// resumes it, so every attempt still ends within its budget and discovery still
 /// finishes.
 pub(crate) struct SavedSshConnector {
-    paths: crate::config::AppPaths,
+    paths: shepr_config::AppPaths,
     profile_id: ProfileId,
     target: SshTarget,
     session: String,
@@ -75,7 +75,7 @@ struct ConnectorState {
 
 impl SavedSshConnector {
     pub(crate) fn new(
-        paths: &crate::config::AppPaths,
+        paths: &shepr_config::AppPaths,
         profile_id: &ProfileId,
         target: &SshTarget,
         session: &str,
@@ -210,7 +210,7 @@ impl SavedSshConnector {
             ssh.options(),
             true,
         )?;
-        let stream = crate::ipc::connect_local_stream(&path)?;
+        let stream = shepr_platform::ipc::connect_local_stream(&path)?;
         establish(SavedSshStream {
             stream,
             bridge: SavedSshBridge { bridge },
@@ -227,7 +227,7 @@ pub(crate) struct SavedSshApiBridge {
 
 impl SavedSshApiBridge {
     pub(crate) fn start(
-        paths: &crate::config::AppPaths,
+        paths: &shepr_config::AppPaths,
         profile_id: &ProfileId,
         target: &SshTarget,
         session: &str,
@@ -303,7 +303,7 @@ fn saved_bridge_path(profile_id: &ProfileId) -> PathBuf {
 }
 
 fn validated_saved_ssh(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
     target: &SshTarget,
     session: &str,
     settings: SavedSshSettings,
@@ -340,7 +340,7 @@ mod tests {
             manage_ssh_config: false,
         };
         let connector = SavedSshConnector::new(
-            &crate::config::AppPaths::default(),
+            &shepr_config::AppPaths::default(),
             &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
             &SshTarget::parse("build").expect("test precondition"),
             "bad session/name",

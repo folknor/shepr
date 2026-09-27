@@ -161,7 +161,7 @@ impl TextEditor {
         }
         let previous_len = self.text.len();
         let mut content_changed = false;
-        let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+        let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
         // Explicit text from the host is authoritative, including AltGr/composition.
         if let Some(text) = key
             .generated_text
@@ -264,7 +264,7 @@ pub(super) fn render(
     area: ratatui::layout::Rect,
     editor: &TextEditor,
     style: ratatui::style::Style,
-) -> Option<crate::protocol::CursorState> {
+) -> Option<shepr_protocol::CursorState> {
     let area = area.intersection(buffer.area);
     if area.is_empty() {
         return None;
@@ -274,11 +274,11 @@ pub(super) fn render(
         buffer[(x, area.y)].set_symbol(" ").set_style(style);
     }
     buffer.set_stringn(area.x, area.y, text, usize::from(area.width), style);
-    Some(crate::protocol::CursorState {
+    Some(shepr_protocol::CursorState {
         x: area.x + cursor,
         y: area.y,
         visible: true,
-        shape: crate::protocol::CursorShapeParam::Default,
+        shape: shepr_protocol::CursorShapeParam::Default,
     })
 }
 

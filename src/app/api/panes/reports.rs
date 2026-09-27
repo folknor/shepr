@@ -14,7 +14,7 @@ impl App {
         };
         self.handle_internal_event(crate::events::AppEvent::HookStateReported {
             pane_id,
-            session_ref: crate::agent::resume::session_ref_from_report(
+            session_ref: shepr_agent::agent::resume::session_ref_from_report(
                 &params.source,
                 &agent_label,
                 params.agent_session_id,
@@ -43,7 +43,7 @@ impl App {
         };
         self.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
             pane_id,
-            session_ref: crate::agent::resume::session_ref_from_report(
+            session_ref: shepr_agent::agent::resume::session_ref_from_report(
                 &params.source,
                 &agent_label,
                 params.agent_session_id,
@@ -52,7 +52,7 @@ impl App {
             source: params.source,
             agent_label,
             seq: params.seq,
-            session_start_source: crate::agent::resume::normalize_session_start_source(
+            session_start_source: shepr_agent::agent::resume::normalize_session_start_source(
                 params.session_start_source.as_deref(),
             ),
         });
@@ -286,7 +286,7 @@ impl App {
         self.handle_internal_event(crate::events::AppEvent::HookAgentReleased {
             pane_id,
             source: params.source,
-            known_agent: crate::detect::parse_agent_label(&agent_label),
+            known_agent: shepr_agent::detect::parse_agent_label(&agent_label),
             agent_label,
             seq: params.seq,
         });

@@ -1,14 +1,14 @@
 use ratatui::layout::Rect;
 
 use crate::app;
-use crate::protocol::{self, FrameData};
+use shepr_protocol::FrameData;
 
 pub(super) fn snapshot(
     app: &app::App,
     boot_id: &str,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
-) -> protocol::ClientShellSnapshot {
+) -> shepr_protocol::ClientShellSnapshot {
     snapshot_from_session(app, app.session_snapshot(), boot_id, revision, location)
 }
 
@@ -25,7 +25,7 @@ pub(super) fn snapshot_from_session(
     boot_id: &str,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
-) -> protocol::ClientShellSnapshot {
+) -> shepr_protocol::ClientShellSnapshot {
     let focused_workspace_id = location
         .and_then(|location| location.focused_workspace_id.clone())
         .or_else(|| snapshot.focused_workspace_id.clone().map(Into::into));
@@ -83,7 +83,7 @@ pub(super) fn snapshot_from_session(
                 .and_then(|location| {
                     location
                         .active_tab_ids
-                        .get(&crate::protocol::WorkspaceId::new(workspace_id.as_str()))
+                        .get(&shepr_protocol::WorkspaceId::new(workspace_id.as_str()))
                 })
                 .cloned()
                 .or_else(|| workspace.active_tab_id.parse().ok())?;
@@ -99,7 +99,7 @@ pub(super) fn snapshot_from_session(
                         .to_string()
                 })
                 .unwrap_or_default();
-            Some(protocol::ClientShellWorkspace {
+            Some(shepr_protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
                 workspace_id: workspace_id.into(),
                 active_tab_id,
@@ -120,7 +120,7 @@ pub(super) fn snapshot_from_session(
         .tabs
         .into_iter()
         .filter_map(|tab| {
-            let tab_id: crate::protocol::PublicTabId = tab.tab_id.parse().ok()?;
+            let tab_id: shepr_protocol::PublicTabId = tab.tab_id.parse().ok()?;
             let state = app
                 .parse_tab_id(&tab_id)
                 .and_then(|(workspace_index, tab_index)| {
@@ -130,7 +130,7 @@ pub(super) fn snapshot_from_session(
                         .tabs
                         .get(tab_index)
                 });
-            Some(protocol::ClientShellTab {
+            Some(shepr_protocol::ClientShellTab {
                 focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
                 tab_id,
                 workspace_id: tab.workspace_id.into(),
@@ -146,7 +146,7 @@ pub(super) fn snapshot_from_session(
         .panes
         .into_iter()
         .filter_map(|pane| {
-            let pane_id: crate::protocol::PublicPaneId = pane.pane_id.parse().ok()?;
+            let pane_id: shepr_protocol::PublicPaneId = pane.pane_id.parse().ok()?;
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
             let right_click_passthrough = app
                 .parse_pane_id(&pane_id)
@@ -157,7 +157,7 @@ pub(super) fn snapshot_from_session(
                         .pane_state(pane_id)
                 })
                 .is_some_and(|pane| pane.right_click_passthrough);
-            Some(protocol::ClientShellPane {
+            Some(shepr_protocol::ClientShellPane {
                 pane_id,
                 workspace_id: pane.workspace_id.into(),
                 tab_id: pane.tab_id.parse().ok()?,
@@ -179,7 +179,7 @@ pub(super) fn snapshot_from_session(
             state_labels.sort_by(|left, right| left.0.cmp(&right.0));
             let mut tokens = agent.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
-            Some(protocol::ClientShellAgent {
+            Some(shepr_protocol::ClientShellAgent {
                 pane_id,
                 workspace_id: agent.workspace_id.into(),
                 tab_id: agent.tab_id.parse().ok()?,
@@ -215,13 +215,13 @@ pub(super) fn snapshot_from_session(
         .iter()
         .filter_map(|segment| match segment {
             crate::app::state::TabBarStatusSegment::Zoom if zoomed => {
-                Some(protocol::ClientShellTabStatusSegment {
+                Some(shepr_protocol::ClientShellTabStatusSegment {
                     text: "ZOOM".to_owned(),
                     accent: true,
                 })
             }
             crate::app::state::TabBarStatusSegment::Text(Some(text)) if !text.is_empty() => {
-                Some(protocol::ClientShellTabStatusSegment {
+                Some(shepr_protocol::ClientShellTabStatusSegment {
                     text: text.clone(),
                     accent: false,
                 })
@@ -232,10 +232,10 @@ pub(super) fn snapshot_from_session(
         .collect();
 
     let mut resolved_config = Vec::new();
-    protocol::codec::encode_into(&mut resolved_config, app.resolved_config())
+    shepr_protocol::codec::encode_into(&mut resolved_config, app.resolved_config())
         .expect("validated configuration must encode for the client protocol");
 
-    protocol::ClientShellSnapshot {
+    shepr_protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
         revision: revision.into(),
         resolved_config,
@@ -253,8 +253,8 @@ pub(super) fn snapshot_from_session(
 
 pub(super) struct RenderedPaneSurface {
     pub(super) frame: FrameData,
-    pub(super) panes: Vec<protocol::PaneSurfacePane>,
-    pub(super) splits: Vec<protocol::PaneSurfaceSplit>,
+    pub(super) panes: Vec<shepr_protocol::PaneSurfacePane>,
+    pub(super) splits: Vec<shepr_protocol::PaneSurfaceSplit>,
 }
 
 #[derive(Debug)]
@@ -342,7 +342,7 @@ pub(super) fn render_pane_surface(
                                     after | 1
                                 }
                             });
-                            Some(protocol::PaneSurfacePane {
+                            Some(shepr_protocol::PaneSurfacePane {
                                 pane_id,
                                 content_revision,
                                 rect: pane.rect.into(),
@@ -350,7 +350,7 @@ pub(super) fn render_pane_surface(
                                 scrollbar_rect: pane.scrollbar_rect.map(Into::into),
                                 scroll: runtime
                                     .and_then(crate::pane::PaneRuntime::scroll_metrics)
-                                    .map(|metrics| protocol::PaneSurfaceScrollMetrics {
+                                    .map(|metrics| shepr_protocol::PaneSurfaceScrollMetrics {
                                         offset_from_bottom: metrics.offset_from_bottom as u64,
                                         max_offset_from_bottom: metrics.max_offset_from_bottom
                                             as u64,
@@ -387,13 +387,13 @@ pub(super) fn render_pane_surface(
             )?;
             let direction = match split.direction {
                 ratatui::layout::Direction::Horizontal => {
-                    protocol::PaneSurfaceSplitDirection::Horizontal
+                    shepr_protocol::PaneSurfaceSplitDirection::Horizontal
                 }
                 ratatui::layout::Direction::Vertical => {
-                    protocol::PaneSurfaceSplitDirection::Vertical
+                    shepr_protocol::PaneSurfaceSplitDirection::Vertical
                 }
             };
-            Some(protocol::PaneSurfaceSplit {
+            Some(shepr_protocol::PaneSurfaceSplit {
                 direction,
                 pos: split.pos,
                 area: split.area.into(),
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn snapshot_state_fields_follow_ids_not_positions() {
         let mut app = app::App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             app::AppPolicy::TEST,
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),

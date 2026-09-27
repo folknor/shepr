@@ -22,12 +22,12 @@ use super::process_probe::*;
 use super::teardown::*;
 use super::terminal::{GhosttyPaneTerminal, PaneTerminal};
 use super::*;
-use crate::detect::Agent;
-#[cfg(test)]
-use crate::detect::AgentState;
 use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalReadSnapshot;
+use shepr_agent::detect::Agent;
+#[cfg(test)]
+use shepr_agent::detect::AgentState;
 use shepr_core::layout::PaneId;
 use shepr_pty::PtyCommand;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
@@ -407,7 +407,12 @@ impl PaneRuntime {
         let size = clamp_pane_size(rows, cols);
         let rows = size.rows.get();
         let cols = size.cols.get();
-        crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
+        shepr_platform::logging::pane_spawn_started(
+            pane_id.raw(),
+            rows,
+            cols,
+            scrollback_limit_bytes,
+        );
 
         let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         let pane_terminal = GhosttyPaneTerminal::new(terminal);
@@ -444,7 +449,7 @@ impl PaneRuntime {
             let rt = tokio::runtime::Handle::current();
             let mut child = spawned.child;
             let pid = child.id();
-            crate::logging::pane_spawned(pane_id.raw(), pid);
+            shepr_platform::logging::pane_spawned(pane_id.raw(), pid);
             tokio::task::spawn_blocking(move || {
                 // Blocking waitpid on this child only; no process-wide SIGCHLD
                 // handling is involved.
@@ -452,11 +457,11 @@ impl PaneRuntime {
                     Ok(status) => {
                         let exit_reason = shepr_platform::classify_child_exit(&status);
                         let status_text = status.to_string();
-                        crate::logging::pane_exited(pane_id.raw(), &status_text);
+                        shepr_platform::logging::pane_exited(pane_id.raw(), &status_text);
                         exit_reason
                     }
                     Err(e) => {
-                        crate::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
+                        shepr_platform::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
                         shepr_platform::ChildExitReason::WaitFailed
                     }
                 };
@@ -647,7 +652,6 @@ impl PaneRuntime {
 
         // --- Detection task ---
         let (detect_handle, detect_reset_notify, pending_release) = {
-            use crate::detect;
             use std::time::{Duration, Instant};
 
             let child_liveness = Arc::clone(&child_liveness);
@@ -699,7 +703,7 @@ impl PaneRuntime {
                         full_lifecycle_authority_active_for_task.load(Ordering::Acquire);
                     let foreground_pgid = if pid > 0 {
                         match tokio::task::spawn_blocking(move || {
-                            detect::foreground_process_group_id(pid)
+                            shepr_agent::detect::foreground_process_group_id(pid)
                         })
                         .await
                         {
@@ -1357,13 +1361,13 @@ impl PaneRuntime {
         }
 
         let pid = self.child_liveness.pid();
-        crate::detect::process_cwd(pid)
+        shepr_agent::detect::process_cwd(pid)
     }
 
     pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
         let pid = self.child_liveness.pid();
         if let Some(cwd) = (!self.child_liveness.wait_completed())
-            .then(|| crate::detect::process_cwd(pid))
+            .then(|| shepr_agent::detect::process_cwd(pid))
             .flatten()
             .filter(|cwd| cwd.is_absolute())
         {
@@ -1384,7 +1388,7 @@ impl PaneRuntime {
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
         let leader_cwd = self
             .child_pid()
-            .and_then(crate::detect::foreground_process_group_id)
+            .and_then(shepr_agent::detect::foreground_process_group_id)
             .and_then(usable_process_cwd);
         leader_cwd.or_else(|| self.cwd())
     }
@@ -1392,7 +1396,7 @@ impl PaneRuntime {
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         let pid = self.child_liveness.pid();
-        let foreground_pgid = crate::detect::foreground_process_group_id(pid);
+        let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
         let leader_cwd = foreground_pgid.and_then(absolute_process_cwd);
 
         // The group leader's cwd is authoritative (issue #3270): a helper
@@ -1822,7 +1826,7 @@ mod tests {
             .current_dir(&cwd)
             .spawn()
             .expect("spawn process in cwd");
-        let expected_cwd = crate::detect::process_cwd(child.id())
+        let expected_cwd = shepr_agent::detect::process_cwd(child.id())
             .expect("resolve process cwd before restricting traversal");
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000))
             .expect("make cwd path untraversable");
@@ -2252,8 +2256,8 @@ mod tests {
         );
     }
 
-    fn foreground_process(pid: u32, name: &str) -> crate::detect::ForegroundProcess {
-        crate::detect::ForegroundProcess {
+    fn foreground_process(pid: u32, name: &str) -> shepr_agent::detect::ForegroundProcess {
+        shepr_agent::detect::ForegroundProcess {
             pid,
             name: name.to_string(),
             argv0: None,
@@ -2264,7 +2268,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_accepts_pane_shell_environment() {
-        let job = crate::detect::ForegroundJob {
+        let job = shepr_agent::detect::ForegroundJob {
             process_group_id: 42,
             processes: vec![foreground_process(42, "bash")],
         };
@@ -2279,7 +2283,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_accepts_non_leader_foreground_process_environment() {
-        let job = crate::detect::ForegroundJob {
+        let job = shepr_agent::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "fence"),
@@ -2297,7 +2301,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_wins_over_process_name_detection() {
-        let job = crate::detect::ForegroundJob {
+        let job = shepr_agent::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![foreground_process(99, "codex")],
         };
@@ -2316,7 +2320,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_on_inherited_child_environment_is_authoritative() {
-        let job = crate::detect::ForegroundJob {
+        let job = shepr_agent::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![foreground_process(99, "vim")],
         };
@@ -2335,7 +2339,7 @@ mod tests {
 
     #[test]
     fn non_leader_agent_hint_does_not_override_identifiable_leader() {
-        let job = crate::detect::ForegroundJob {
+        let job = shepr_agent::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "codex"),
@@ -2357,7 +2361,7 @@ mod tests {
 
     #[test]
     fn non_leader_agent_hint_wins_when_leader_is_unidentified() {
-        let job = crate::detect::ForegroundJob {
+        let job = shepr_agent::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "some_vm"),
@@ -2515,7 +2519,7 @@ mod tests {
     async fn agent_prompt_observation_revokes_on_working_or_skipped_screen() {
         let (tx, mut rx) = mpsc::channel(4);
         let pane_id = PaneId::from_raw(42);
-        let detection = crate::detect::AgentDetection {
+        let detection = shepr_agent::detect::AgentDetection {
             state: AgentState::Unknown,
             skip_state_update: false,
             visible_idle: false,
@@ -2557,7 +2561,7 @@ mod tests {
             )
             .await;
         assert!(rx.try_recv().is_err());
-        let working = crate::detect::AgentDetection {
+        let working = shepr_agent::detect::AgentDetection {
             state: AgentState::Working,
             ..detection
         };

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tracing::info;
 
-fn client_socket_path(paths: &crate::config::AppPaths) -> std::path::PathBuf {
+fn client_socket_path(paths: &shepr_config::AppPaths) -> std::path::PathBuf {
     paths.server_address().client_socket().to_path_buf()
 }
 
@@ -41,7 +41,7 @@ pub(crate) const STARTUP_CWD_ENV_VAR: &str = "SHEPR_STARTUP_CWD";
 /// connection is refused, no server is running. Stale sockets (from a crashed
 /// server) are detected because connect returns `ConnectionRefused`
 /// when nobody is listening.
-pub fn is_server_listening(paths: &crate::config::AppPaths) -> bool {
+pub fn is_server_listening(paths: &shepr_config::AppPaths) -> bool {
     is_server_listening_at(&client_socket_path(paths))
 }
 
@@ -51,7 +51,7 @@ fn is_server_listening_at(socket_path: &Path) -> bool {
         return false;
     }
 
-    match crate::ipc::connect_local_stream(socket_path) {
+    match shepr_platform::ipc::connect_local_stream(socket_path) {
         Ok(_) => {
             // Server is listening. Close the test connection immediately.
             // The server's handshake handler will time out on this connection
@@ -80,12 +80,12 @@ fn is_server_listening_at(socket_path: &Path) -> bool {
 }
 
 fn read_server_status(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> io::Result<Option<crate::api::RuntimeStatus>> {
     crate::api::read_runtime_status_at(&crate::api::socket_path(paths), STATUS_REQUEST_TIMEOUT)
 }
 
-fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io::Result<()> {
+fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let Some(status) = read_server_status(paths)? else {
         return Err(io::Error::other(format!(
             "a shepr server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
@@ -93,7 +93,7 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
         )));
     };
 
-    let compatibility = crate::protocol::Compatibility::of(status.protocol);
+    let compatibility = shepr_protocol::Compatibility::of(status.protocol);
     if compatibility.is_compatible() {
         return Ok(());
     }
@@ -102,11 +102,11 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
         "the running shepr server is a different build; restart it before attaching.\n\nserver: v{} protocol {}\nclient: v{} protocol {}\n\n{}",
         status.version.as_deref().unwrap_or("unknown"),
         match compatibility {
-            crate::protocol::Compatibility::DifferentBuild(protocol) => protocol.to_string(),
+            shepr_protocol::Compatibility::DifferentBuild(protocol) => protocol.to_string(),
             _ => "unavailable".to_string(),
         },
         crate::build_info::version(),
-        crate::protocol::PROTOCOL_VERSION,
+        shepr_protocol::PROTOCOL_VERSION,
         crate::session::restart_after_update_guidance_for(paths)
     )))
 }
@@ -125,7 +125,7 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
 ///   inherited overrides that were superseded by an explicit session.
 ///
 /// Returns the PID of the spawned server process.
-pub fn spawn_server_daemon(paths: &crate::config::AppPaths) -> io::Result<u32> {
+pub fn spawn_server_daemon(paths: &shepr_config::AppPaths) -> io::Result<u32> {
     // After an install replaces the binary, raw `current_exe()` names the
     // running one "/…/shepr (deleted)"; this resolves to the new install.
     let exe = shepr_platform::launch_executable().map_err(|err| {
@@ -150,7 +150,7 @@ pub fn spawn_server_daemon(paths: &crate::config::AppPaths) -> io::Result<u32> {
 fn build_server_daemon_command(
     exe: &Path,
     startup_cwd: Option<&Path>,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> Command {
     let mut command = Command::new(exe);
     command
@@ -185,7 +185,7 @@ fn build_server_daemon_command(
 pub fn wait_for_server_socket(
     socket_path: &Path,
     timeout: Duration,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
 
@@ -226,9 +226,9 @@ pub fn wait_for_server_socket(
 /// 3. Run the thin client (which connects to the server)
 pub fn auto_detect_launch(
     saved_federation: bool,
-    config: &crate::config::ValidatedConfig,
-    paths: &crate::config::AppPaths,
-    run_client: impl FnOnce(&crate::config::ValidatedConfig, &crate::config::AppPaths) -> io::Result<()>,
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
+    run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> io::Result<()>,
 ) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
@@ -287,10 +287,10 @@ mod tests {
     #[test]
     fn server_daemon_command_clears_socket_overrides_for_explicit_session() {
         let env = IsolatedEnv::new();
-        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         env.set("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock");
-        let session = crate::config::SessionId::parse("work").expect("test precondition");
-        let paths = crate::config::AppPaths::resolve_with_session(Some(session))
+        let session = shepr_config::SessionId::parse("work").expect("test precondition");
+        let paths = shepr_config::AppPaths::resolve_with_session(Some(session))
             .expect("isolated paths resolve");
 
         let command = build_server_daemon_command(
@@ -301,20 +301,20 @@ mod tests {
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(crate::config::SOCKET_PATH_ENV_VAR) && value.is_none()
+            *key == OsStr::new(shepr_config::SOCKET_PATH_ENV_VAR) && value.is_none()
         }));
         assert!(envs.iter().any(|(key, value)| {
             *key == OsStr::new("SHEPR_CLIENT_SOCKET_PATH") && value.is_none()
         }));
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(crate::config::SESSION_ENV_VAR) && value == &Some(OsStr::new("work"))
+            *key == OsStr::new(shepr_config::SESSION_ENV_VAR) && value == &Some(OsStr::new("work"))
         }));
     }
 
     #[test]
     fn server_daemon_command_passes_current_dir_as_startup_cwd() {
         let expected = Path::new("/home/test");
-        let paths = crate::config::AppPaths::default();
+        let paths = shepr_config::AppPaths::default();
         let command =
             build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"), Some(expected), &paths);
         let envs: Vec<_> = command.get_envs().collect();
@@ -388,7 +388,7 @@ test "$sid" = "$$"
         let result = wait_for_server_socket(
             &path,
             Duration::from_millis(100),
-            &crate::config::AppPaths::test_at(dir.path()),
+            &shepr_config::AppPaths::test_at(dir.path()),
         );
         assert!(result.is_ok());
     }
@@ -402,7 +402,7 @@ test "$sid" = "$$"
         let result = wait_for_server_socket(
             &path,
             Duration::from_millis(50),
-            &crate::config::AppPaths::test_at(dir.path()),
+            &shepr_config::AppPaths::test_at(dir.path()),
         );
         assert!(result.is_err());
         assert_eq!(
@@ -429,7 +429,7 @@ test "$sid" = "$$"
         let result = wait_for_server_socket(
             &path,
             Duration::from_secs(2),
-            &crate::config::AppPaths::test_at(dir.path()),
+            &shepr_config::AppPaths::test_at(dir.path()),
         );
         assert!(result.is_ok());
     }
@@ -466,8 +466,8 @@ test "$sid" = "$$"
     fn validate_running_server_compatibility_fails_when_status_api_missing() {
         let env = IsolatedEnv::new();
         let path = env.path().join("api.sock");
-        env.set(crate::config::SOCKET_PATH_ENV_VAR, &path);
-        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+        env.set(shepr_config::SOCKET_PATH_ENV_VAR, &path);
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
 
@@ -480,8 +480,8 @@ test "$sid" = "$$"
     #[test]
     fn validate_running_server_compatibility_names_session_commands_for_protocol_mismatch() {
         let env = IsolatedEnv::new();
-        env.set(crate::config::SESSION_ENV_VAR, "work");
-        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+        env.set(shepr_config::SESSION_ENV_VAR, "work");
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         let path = crate::session::api_socket_path_for(&paths, paths.session_id());
         std::fs::create_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -495,7 +495,7 @@ test "$sid" = "$$"
             assert!(request.contains("ping"));
             let body = format!(
                 "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":{}}}}}\n",
-                crate::protocol::PROTOCOL_VERSION + 1
+                shepr_protocol::PROTOCOL_VERSION + 1
             );
             stream
                 .write_all(body.as_bytes())

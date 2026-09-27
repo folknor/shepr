@@ -91,7 +91,7 @@ pub(super) struct ClientHostSize {
 
 impl ClientHostSize {
     pub(super) fn new(cols: u16, rows: u16, client_shell: bool) -> Self {
-        let size = crate::protocol::ClientSurfaceSize { cols, rows };
+        let size = shepr_protocol::ClientSurfaceSize { cols, rows };
         let size = if client_shell { size.clamped() } else { size };
         Self {
             cols: size.cols,
@@ -105,7 +105,7 @@ pub(super) fn bounded_cell_geometry(
     cell_height_px: u32,
     pixel_geometry_exact: bool,
 ) -> (u32, u32, bool) {
-    let size = crate::protocol::ProtocolCellSize::from_host(
+    let size = shepr_protocol::ProtocolCellSize::from_host(
         cell_width_px,
         cell_height_px,
         pixel_geometry_exact,

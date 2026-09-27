@@ -227,13 +227,13 @@ fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
 
 pub(crate) fn run_remote_api_bridge(
     check: bool,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> std::io::Result<()> {
     if check {
         return Ok(());
     }
     let path = crate::api::socket_path(paths);
-    let stream = crate::ipc::connect_local_stream(&path).map_err(|error| {
+    let stream = shepr_platform::ipc::connect_local_stream(&path).map_err(|error| {
         std::io::Error::new(
             error.kind(),
             format!(

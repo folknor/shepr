@@ -79,7 +79,7 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
 
     println!("client:");
     println!("  version: {}", crate::build_info::version());
-    println!("  protocol: {}", crate::protocol::PROTOCOL_VERSION);
+    println!("  protocol: {}", shepr_protocol::PROTOCOL_VERSION);
     println!();
     println!("server:");
     print_server_status_body(paths, &server, "  ");
@@ -104,14 +104,14 @@ fn print_server_status(paths: &super::target::CliContext, json: bool) -> super::
     Ok(0)
 }
 
-fn print_client_status(json: bool, paths: &crate::config::AppPaths) -> super::CliResult<()> {
+fn print_client_status(json: bool, paths: &shepr_config::AppPaths) -> super::CliResult<()> {
     if json {
         print_json(&client_status_json(paths))?;
         return Ok(());
     }
 
     println!("version: {}", crate::build_info::version());
-    println!("protocol: {}", crate::protocol::PROTOCOL_VERSION);
+    println!("protocol: {}", shepr_protocol::PROTOCOL_VERSION);
     println!("binary: {}", current_exe_label());
     Ok(())
 }
@@ -130,7 +130,7 @@ fn print_server_status_body(
             println!("{indent}protocol: {}", protocol_label(*protocol));
             println!(
                 "{indent}protocol_compatible: {}",
-                crate::protocol::Compatibility::of(*protocol).label()
+                shepr_protocol::Compatibility::of(*protocol).label()
             );
             println!("{indent}socket: {}", super::target::socket_label(paths));
         }
@@ -232,10 +232,10 @@ struct UpdateStatusJson {
     server_binary_stale: Option<bool>,
 }
 
-fn client_status_json(paths: &crate::config::AppPaths) -> ClientStatusJson {
+fn client_status_json(paths: &shepr_config::AppPaths) -> ClientStatusJson {
     ClientStatusJson {
         version: crate::build_info::version(),
-        protocol: crate::protocol::PROTOCOL_VERSION,
+        protocol: shepr_protocol::PROTOCOL_VERSION,
         binary: current_exe_label(),
         session: paths.session_id().name().map(str::to_owned),
     }
@@ -261,7 +261,7 @@ fn server_status_json(
                     detached_server_daemon: capabilities.detached_server_daemon,
                     ssh_agent_registration: capabilities.ssh_agent_registration,
                 }),
-            compatible: crate::protocol::Compatibility::of(*protocol).known(),
+            compatible: shepr_protocol::Compatibility::of(*protocol).known(),
             socket: api::socket_path(paths).display().to_string(),
             session: paths.session_id().name().map(str::to_owned),
             restart_needed: restart_needed_bool(server),
@@ -298,7 +298,7 @@ fn update_status_json(server: &ServerRuntimeStatus) -> UpdateStatusJson {
 fn restart_needed_bool(server: &ServerRuntimeStatus) -> Option<bool> {
     match server {
         ServerRuntimeStatus::Running { protocol, .. } => {
-            Some(!crate::protocol::Compatibility::of(*protocol).is_compatible())
+            Some(!shepr_protocol::Compatibility::of(*protocol).is_compatible())
         }
         ServerRuntimeStatus::NotRunning => Some(false),
     }
@@ -346,9 +346,8 @@ mod tests {
 
     #[test]
     fn status_exposes_only_dynamic_server_capabilities() {
-        let server = running_server(Some("test"), Some(crate::protocol::PROTOCOL_VERSION));
-        let paths =
-            super::super::target::CliContext::test_local(crate::config::AppPaths::default());
+        let server = running_server(Some("test"), Some(shepr_protocol::PROTOCOL_VERSION));
+        let paths = super::super::target::CliContext::test_local(shepr_config::AppPaths::default());
         let value =
             serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
         assert_eq!(value["capabilities"]["ssh_agent_registration"], false);
@@ -358,7 +357,7 @@ mod tests {
 
     #[test]
     fn stale_compatible_server_does_not_require_restart() {
-        let server = running_server(Some("0.0.0-old"), Some(crate::protocol::PROTOCOL_VERSION));
+        let server = running_server(Some("0.0.0-old"), Some(shepr_protocol::PROTOCOL_VERSION));
 
         assert_eq!(restart_needed_bool(&server), Some(false));
         assert_eq!(server_binary_stale_bool(&server), Some(true));
@@ -368,7 +367,7 @@ mod tests {
     fn server_with_other_protocol_requires_restart() {
         let server = running_server(
             Some(crate::build_info::version().as_str()),
-            Some(crate::protocol::PROTOCOL_VERSION + 1),
+            Some(shepr_protocol::PROTOCOL_VERSION + 1),
         );
 
         assert_eq!(restart_needed_bool(&server), Some(true));

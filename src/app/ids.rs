@@ -74,9 +74,9 @@ impl App {
         let workspace = self.state.workspaces.get(ws_idx)?;
         let tab_number = workspace.public_tab_number(tab_idx)?;
         let pane_number = workspace.public_pane_number(pane_id)?;
-        let workspace_id = crate::protocol::WorkspaceId::new(workspace.id.clone());
-        let tab_id = crate::protocol::PublicTabId::new(workspace.id.as_str(), tab_number);
-        let pane_id = crate::protocol::PublicPaneId::new(workspace.id.as_str(), pane_number);
+        let workspace_id = shepr_protocol::WorkspaceId::new(workspace.id.clone());
+        let tab_id = shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab_number);
+        let pane_id = shepr_protocol::PublicPaneId::new(workspace.id.as_str(), pane_number);
         Some(
             crate::pane::PaneLaunchEnv::from_extra(extra_env)
                 .with_api_socket_path(crate::api::socket_path(&self.paths))
@@ -101,13 +101,13 @@ impl App {
     /// the same reason as in `parse_workspace_id`: tab numbers are stable and
     /// independent of tab order, positions are not.
     pub(crate) fn parse_tab_id(&self, id: &str) -> Option<(usize, usize)> {
-        let public_id = id.parse::<crate::protocol::PublicTabId>().ok()?;
+        let public_id = id.parse::<shepr_protocol::PublicTabId>().ok()?;
         self.resolve_tab_id(&public_id)
     }
 
     pub(crate) fn resolve_tab_id(
         &self,
-        public_id: &crate::protocol::PublicTabId,
+        public_id: &shepr_protocol::PublicTabId,
     ) -> Option<(usize, usize)> {
         let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
         let tab_idx = self
@@ -127,7 +127,7 @@ impl App {
     /// process, so after a server restart they name a different pane. The
     /// `<workspace>-N` form is gone too; nothing emits it.
     pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, shepr_core::layout::PaneId)> {
-        let public_id = id.parse::<crate::protocol::PublicPaneId>().ok()?;
+        let public_id = id.parse::<shepr_protocol::PublicPaneId>().ok()?;
         let current_id = (|| {
             let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
             let pane_number = public_id.number();
@@ -156,7 +156,7 @@ mod tests {
 
     fn test_app_with_workspaces(names: &[&str]) -> super::App {
         let mut app = super::App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),

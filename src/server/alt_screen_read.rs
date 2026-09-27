@@ -7,8 +7,8 @@ use tracing::debug;
 
 use crate::api::schema::{PaneReadResult, ResponseResult};
 use crate::pane::PaneRuntime;
-use crate::protocol::TerminalId;
 use crate::terminal::{ScreenSnapshot, UpwardMerge};
+use shepr_protocol::TerminalId;
 
 const INITIAL_QUIET: Duration = Duration::from_millis(10);
 const OUTPUT_QUIET: Duration = Duration::from_millis(10);
@@ -28,7 +28,7 @@ enum Phase {
 
 pub(crate) struct PendingAltScreenRead {
     pub(crate) terminal_id: TerminalId,
-    request_id: crate::protocol::RequestId,
+    request_id: shepr_protocol::RequestId,
     respond_to: mpsc::Sender<crate::api::error::ApiResult>,
     fallback_response: crate::api::error::ApiResult,
     read: PaneReadResult,
@@ -54,7 +54,7 @@ pub(crate) struct PendingAltScreenRead {
 impl PendingAltScreenRead {
     pub(crate) fn start(
         terminal_id: TerminalId,
-        request_id: crate::protocol::RequestId,
+        request_id: shepr_protocol::RequestId,
         respond_to: mpsc::Sender<crate::api::error::ApiResult>,
         fallback_response: crate::api::error::ApiResult,
         read: PaneReadResult,

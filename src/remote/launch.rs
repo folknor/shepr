@@ -7,7 +7,7 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready:1
 pub(crate) fn run_remote(
     remote: RemoteLaunch,
     settings: super::SavedSshSettings,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
     let session_name = paths.session_id().display_name().to_owned();
     let local_socket = local_forward_socket_path(&remote.target, &session_name);
@@ -38,7 +38,7 @@ pub(crate) fn run_remote(
 }
 
 pub(crate) fn check_saved_ssh(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
     target: &SshTarget,
     session: &str,
     settings: super::SavedSshSettings,
@@ -62,7 +62,7 @@ pub(crate) fn check_saved_ssh(
 }
 
 pub(crate) fn prepare_saved_ssh(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
     target: &SshTarget,
     session_name: &str,
     settings: super::SavedSshSettings,
@@ -116,7 +116,7 @@ impl RemoteExecutable {
 
     pub(super) fn session_args<'a>(session_name: &'a str, args: &[&'a str]) -> Vec<&'a str> {
         let mut session_args = Vec::with_capacity(args.len() + 2);
-        if session_name != crate::config::DEFAULT_SESSION_NAME {
+        if session_name != shepr_config::DEFAULT_SESSION_NAME {
             session_args.extend(["--session", session_name]);
         }
         session_args.extend_from_slice(args);
@@ -220,7 +220,7 @@ pub(super) fn reattach_command(
         command.push_str(" --remote-keybindings ");
         command.push_str(keybindings.as_str());
     }
-    if session_name != crate::config::DEFAULT_SESSION_NAME {
+    if session_name != shepr_config::DEFAULT_SESSION_NAME {
         command.push_str(" --session ");
         command.push_str(&shell_quote(session_name));
     }

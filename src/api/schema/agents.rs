@@ -115,6 +115,6 @@ pub struct AgentInfo {
 pub struct AgentSessionInfo {
     pub source: String,
     pub agent: String,
-    pub kind: crate::agent::resume::AgentSessionRefKind,
+    pub kind: shepr_agent::agent::resume::AgentSessionRefKind,
     pub value: String,
 }

@@ -1,7 +1,7 @@
 //! Endpoint-qualified rows shared by aggregate navigation surfaces.
 
 use super::*;
-use crate::protocol::ClientShellAgent;
+use shepr_protocol::ClientShellAgent;
 
 #[derive(Clone, Copy)]
 pub(super) struct CachedEndpointSnapshot<'a> {
@@ -43,20 +43,20 @@ pub(super) struct AggregateAgentRow<'a> {
 
 pub(super) struct AggregateAgentTarget {
     pub(super) endpoint_id: ClientEndpointId,
-    pub(super) pane_id: crate::protocol::PublicPaneId,
+    pub(super) pane_id: shepr_protocol::PublicPaneId,
 }
 
 pub(super) fn aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
     _active_endpoint_id: &ClientEndpointId,
-    sort: crate::config::AgentPanelSortConfig,
+    sort: shepr_config::AgentPanelSortConfig,
 ) -> Vec<AggregateAgentRow<'a>> {
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
             super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
                 .into_iter()
                 .filter_map(move |pane_id| {
-                    let typed_pane_id = pane_id.parse::<crate::protocol::PublicPaneId>().ok()?;
+                    let typed_pane_id = pane_id.parse::<shepr_protocol::PublicPaneId>().ok()?;
                     let agent = endpoint
                         .snapshot
                         .agents
@@ -80,9 +80,9 @@ pub(super) fn aggregate_agent_rows<'a>(
 
 fn sort_aggregate_rows(
     rows: &mut [AggregateAgentRow<'_>],
-    sort: crate::config::AgentPanelSortConfig,
+    sort: shepr_config::AgentPanelSortConfig,
 ) {
-    if sort == crate::config::AgentPanelSortConfig::Priority {
+    if sort == shepr_config::AgentPanelSortConfig::Priority {
         rows.sort_by_key(|row| {
             (
                 row.endpoint.stale(),
@@ -96,7 +96,7 @@ fn sort_aggregate_rows(
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    sort: crate::config::AgentPanelSortConfig,
+    sort: shepr_config::AgentPanelSortConfig,
 ) -> Vec<AggregateAgentTarget> {
     aggregate_agent_rows(endpoints, active_endpoint_id, sort)
         .into_iter()

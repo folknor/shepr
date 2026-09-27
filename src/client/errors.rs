@@ -1,7 +1,5 @@
 use std::io;
 
-use crate::protocol;
-
 /// All environment and target details needed to present a client failure.
 pub(crate) struct ClientErrorContext {
     remote_reattach: Option<String>,
@@ -25,28 +23,30 @@ pub enum ClientError {
     /// A host terminal write failed while updating terminal modes or output.
     HostTerminal(io::Error),
     /// Server rejected our handshake.
-    HandshakeRejected { error: protocol::HandshakeRefusal },
+    HandshakeRejected {
+        error: shepr_protocol::HandshakeRefusal,
+    },
     /// The peer did not send a valid build preamble.
-    Preamble(protocol::preamble::PreambleError),
+    Preamble(shepr_protocol::preamble::PreambleError),
     /// The first framed reply had the wrong message kind.
     UnexpectedWelcome { endpoint: bool },
     /// A delta bypassed connection-local surface decoding.
     SurfaceUpdateBeforeDecode,
     /// Server shut down.
     ServerShutdown {
-        reason: Option<protocol::ShutdownReason>,
+        reason: Option<shepr_protocol::ShutdownReason>,
     },
     /// Lost connection to the server.
     ConnectionLost(io::Error),
     /// Protocol error (framing, deserialization).
-    Protocol(protocol::FramingError),
+    Protocol(shepr_protocol::FramingError),
 }
 
 impl ClientError {
     pub(crate) fn display_with_context(&self, context: &ClientErrorContext) -> String {
         match self {
             Self::ServerShutdown {
-                reason: Some(protocol::ShutdownReason::Detached),
+                reason: Some(shepr_protocol::ShutdownReason::Detached),
             } => {
                 if let Some(command) = &context.remote_reattach {
                     format!("detached from remote server\nRun `{command}` to reattach")
@@ -81,7 +81,9 @@ impl std::fmt::Display for ClientError {
             ClientError::HandshakeRejected { error } => {
                 write!(f, "server rejected handshake: {error}")
             }
-            ClientError::Preamble(error @ protocol::preamble::PreambleError::DifferentBuild(_)) => {
+            ClientError::Preamble(
+                error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
+            ) => {
                 write!(f, "server rejected handshake: {error}")
             }
             ClientError::Preamble(error) => write!(f, "protocol error: {error}"),
@@ -97,7 +99,9 @@ impl std::fmt::Display for ClientError {
             ),
             ClientError::ServerShutdown { reason } => {
                 match reason {
-                    Some(protocol::ShutdownReason::Detached) => write!(f, "detached from server")?,
+                    Some(shepr_protocol::ShutdownReason::Detached) => {
+                        write!(f, "detached from server")?;
+                    }
                     _ => {
                         write!(f, "server shut down")?;
                         if let Some(reason) = reason {
@@ -126,14 +130,13 @@ impl std::error::Error for ClientError {
     }
 }
 
-impl From<protocol::FramingError> for ClientError {
-    fn from(err: protocol::FramingError) -> Self {
+impl From<shepr_protocol::FramingError> for ClientError {
+    fn from(err: shepr_protocol::FramingError) -> Self {
         match err {
-            protocol::FramingError::UnexpectedEof => ClientError::ConnectionLost(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "server closed connection",
-            )),
-            protocol::FramingError::Io(err) => ClientError::ConnectionLost(err),
+            shepr_protocol::FramingError::UnexpectedEof => ClientError::ConnectionLost(
+                io::Error::new(io::ErrorKind::UnexpectedEof, "server closed connection"),
+            ),
+            shepr_protocol::FramingError::Io(err) => ClientError::ConnectionLost(err),
             err => ClientError::Protocol(err),
         }
     }

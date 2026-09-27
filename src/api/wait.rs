@@ -18,7 +18,7 @@ use crate::api::subscriptions::{
     match_output, output_match_read_source, subscription_events_after,
 };
 use crate::api::{ApiRequestSender, EventHub};
-use crate::ipc::LocalStream;
+use shepr_platform::ipc::LocalStream;
 
 const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
 const AGENT_PROMPT_RESPONSE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -30,7 +30,7 @@ pub(super) fn wait_for_output(
     api_tx: &ApiRequestSender,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
-    crate::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
+    shepr_platform::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
     let deadline = params
         .timeout_ms
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
@@ -57,7 +57,11 @@ pub(super) fn wait_for_output(
 
     loop {
         if should_stop_connection(stream, running)? {
-            crate::logging::api_wait_completed(&request_id, &params.pane_id, "client_disconnected");
+            shepr_platform::logging::api_wait_completed(
+                &request_id,
+                &params.pane_id,
+                "client_disconnected",
+            );
             return Ok(None);
         }
 
@@ -97,7 +101,7 @@ pub(super) fn wait_for_output(
         let matched_line = match_output(&read.text, &params.r#match, regex.as_ref());
         if matched_line.is_some() {
             let revision = read.revision;
-            crate::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
+            shepr_platform::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
             return Ok(Some(
                 serde_json::to_string(&SuccessResponse {
                     id: request_id,
@@ -113,7 +117,7 @@ pub(super) fn wait_for_output(
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-            crate::logging::api_wait_timed_out(&request_id, &params.pane_id);
+            shepr_platform::logging::api_wait_timed_out(&request_id, &params.pane_id);
             return Ok(Some(
                 serde_json::to_string(&ErrorResponse {
                     id: request_id,

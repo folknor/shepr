@@ -3,9 +3,9 @@ use std::time::Duration;
 use interprocess::local_socket::traits::Stream as _;
 use tracing::info;
 
-use crate::ipc::LocalStream;
-use crate::protocol::endpoint::EndpointClientHello;
-use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
+use shepr_platform::ipc::LocalStream;
+use shepr_protocol::endpoint::EndpointClientHello;
+use shepr_protocol::{ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 
 use super::{ClientError, shell};
 
@@ -76,11 +76,13 @@ fn set_handshake_recv_timeout(
 /// Maps a failed preamble exchange onto the client's error kinds: an early
 /// close or read failure stays a transient connection problem, while a peer
 /// that is not this build is a rejection the user has to act on.
-fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
-    use protocol::preamble::PreambleError;
+fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError {
+    use shepr_protocol::preamble::PreambleError;
     match error {
-        PreambleError::UnexpectedEof => ClientError::from(protocol::FramingError::UnexpectedEof),
-        PreambleError::Io(error) => ClientError::from(protocol::FramingError::Io(error)),
+        PreambleError::UnexpectedEof => {
+            ClientError::from(shepr_protocol::FramingError::UnexpectedEof)
+        }
+        PreambleError::Io(error) => ClientError::from(shepr_protocol::FramingError::Io(error)),
         error @ PreambleError::NotShepr => ClientError::Preamble(error),
         error @ PreambleError::DifferentBuild(_) => ClientError::Preamble(error),
     }
@@ -89,7 +91,7 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
 /// Performs the client→server handshake.
 ///
 /// The connection opens with the raw build-identity preamble in both
-/// directions (`protocol::preamble`), so a server of any other build is
+/// directions (`shepr_protocol::preamble`), so a server of any other build is
 /// reported as a mismatch before either side decodes a codec frame. Direct
 /// terminal clients then send `TerminalHello`; client-owned shells send a JSON
 /// endpoint hello. The hello variant selects terminal ANSI or semantic surface
@@ -103,7 +105,7 @@ pub(super) fn do_handshake(
     stream: &mut LocalStream,
     role: ClientProcessRole,
     geometry: shepr_core::geometry::HostGeometry,
-    shell_surface_size: Option<crate::protocol::ClientSurfaceSize>,
+    shell_surface_size: Option<shepr_protocol::ClientSurfaceSize>,
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
@@ -122,7 +124,7 @@ pub(super) fn do_handshake(
     let endpoint_shell = shell_surface_size.is_some();
     let hello = if let Some(surface_size) = shell_surface_size {
         let hello = EndpointClientHello {
-            geometry: protocol::TerminalGeometry::new(
+            geometry: shepr_protocol::TerminalGeometry::new(
                 surface_size.cols,
                 surface_size.rows,
                 cell_width_px,
@@ -135,7 +137,7 @@ pub(super) fn do_handshake(
         ClientMessage::EndpointHello(hello)
     } else {
         ClientMessage::TerminalHello {
-            geometry: protocol::TerminalGeometry::new(
+            geometry: shepr_protocol::TerminalGeometry::new(
                 cols,
                 rows,
                 cell_width_px,
@@ -147,14 +149,14 @@ pub(super) fn do_handshake(
     // Preamble and hello go out together; the server's preamble is read back
     // before its welcome, so a different build is named even if its welcome
     // would not decode.
-    let mut opening = protocol::preamble::local_preamble().to_vec();
-    opening.extend_from_slice(&protocol::encode_frame(&hello).map_err(hello_write_error)?);
+    let mut opening = shepr_protocol::preamble::local_preamble().to_vec();
+    opening.extend_from_slice(&shepr_protocol::encode_frame(&hello).map_err(hello_write_error)?);
     {
         use std::io::Write as _;
         stream
             .write_all(&opening)
             .and_then(|()| stream.flush())
-            .map_err(|error| hello_write_error(protocol::FramingError::Io(error)))?;
+            .map_err(|error| hello_write_error(shepr_protocol::FramingError::Io(error)))?;
     }
 
     let read_timeout = if endpoint_shell && !surface_active {
@@ -166,9 +168,9 @@ pub(super) fn do_handshake(
     // per-read idle timeout.
     let read_deadline = std::time::Instant::now() + read_timeout;
     let read_deadline = deadline.map_or(read_deadline, |deadline| deadline.min(read_deadline));
-    let mut reader = crate::ipc::DeadlineReader::new(stream, read_deadline);
-    protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
-    let welcome = protocol::read_message::<_, ServerMessage>(&mut reader, MAX_FRAME_SIZE)?;
+    let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, read_deadline);
+    shepr_protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
+    let welcome = shepr_protocol::read_message::<_, ServerMessage>(&mut reader, MAX_FRAME_SIZE)?;
     set_handshake_recv_timeout(
         stream,
         None,
@@ -210,9 +212,9 @@ pub(super) fn do_handshake(
 /// Keeps the socket error itself, kind included: the endpoint supervisor decides
 /// between retrying and asking for attention by that kind, and a broken pipe or a
 /// reset must stay a transient failure.
-fn hello_write_error(error: protocol::FramingError) -> ClientError {
+fn hello_write_error(error: shepr_protocol::FramingError) -> ClientError {
     match error {
-        protocol::FramingError::Io(error) => ClientError::ConnectionFailed(error),
+        shepr_protocol::FramingError::Io(error) => ClientError::ConnectionFailed(error),
         // Encoding the hello failed: a local defect, not a connection problem.
         error => ClientError::Protocol(error),
     }
@@ -221,8 +223,8 @@ fn hello_write_error(error: protocol::FramingError) -> ClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::PROTOCOL_VERSION;
     use interprocess::local_socket::traits::Listener as _;
+    use shepr_protocol::PROTOCOL_VERSION;
     use std::io;
 
     fn socket_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
@@ -230,8 +232,9 @@ mod tests {
         let path = crate::test_support::ScratchDir::new(name)
             .keep_until_exit()
             .join("s.sock");
-        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
-        let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
         (client, server, path)
     }
@@ -243,22 +246,20 @@ mod tests {
             "shutdown-terminal"
         });
         let peer = std::thread::spawn(move || {
-            protocol::preamble::write_preamble(&mut server).expect("test precondition");
-            protocol::preamble::read_preamble(&mut server).expect("client preamble");
-            let _hello: ClientMessage =
-                protocol::read_message(&mut server, MAX_FRAME_SIZE).expect("test precondition");
-            protocol::write_message(
+            shepr_protocol::preamble::write_preamble(&mut server).expect("test precondition");
+            shepr_protocol::preamble::read_preamble(&mut server).expect("client preamble");
+            let _hello: ClientMessage = shepr_protocol::read_message(&mut server, MAX_FRAME_SIZE)
+                .expect("test precondition");
+            shepr_protocol::write_message(
                 &mut server,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(crate::protocol::ShutdownReason::Message(
-                        "restarting".into(),
-                    )),
+                    reason: Some(shepr_protocol::ShutdownReason::Message("restarting".into())),
                 },
             )
             .expect("test precondition");
         });
         let surface =
-            endpoint_shell.then_some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 });
+            endpoint_shell.then_some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 });
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
@@ -281,9 +282,7 @@ mod tests {
                 ClientError::ServerShutdown { reason } => {
                     assert_eq!(
                         reason,
-                        Some(crate::protocol::ShutdownReason::Message(
-                            "restarting".into()
-                        ))
+                        Some(shepr_protocol::ShutdownReason::Message("restarting".into()))
                     );
                 }
                 other => panic!("endpoint_shell={endpoint_shell}: {other}"),
@@ -299,7 +298,7 @@ mod tests {
         let peer = std::thread::spawn(move || {
             let _ = server.write_all(&server_opening);
             // Hold the connection until the client has read the opening.
-            let mut client_preamble = [0u8; protocol::preamble::PREAMBLE_LEN];
+            let mut client_preamble = [0u8; shepr_protocol::preamble::PREAMBLE_LEN];
             let _ = std::io::Read::read_exact(&mut server, &mut client_preamble);
             std::thread::sleep(Duration::from_millis(50));
         });
@@ -307,7 +306,7 @@ mod tests {
             &mut client,
             ClientProcessRole::Local,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
+            Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
             true,
             None,
@@ -328,7 +327,7 @@ mod tests {
             &mut client,
             ClientProcessRole::Local,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
+            Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
             false,
             Some(started + Duration::from_millis(200)),
@@ -353,8 +352,8 @@ mod tests {
     fn different_build_is_reported_from_the_preamble() {
         // A server of another build: its preamble names it, and nothing after
         // it (here: garbage) needs to decode for the mismatch to be reported.
-        let mut opening = protocol::preamble::local_preamble().to_vec();
-        let version_start = protocol::preamble::PREAMBLE_MAGIC.len();
+        let mut opening = shepr_protocol::preamble::local_preamble().to_vec();
+        let version_start = shepr_protocol::preamble::PREAMBLE_MAGIC.len();
         opening[version_start..version_start + 4]
             .copy_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
         let id_start = version_start + 4;
@@ -381,9 +380,9 @@ mod tests {
     #[test]
     fn peer_without_a_preamble_is_not_mistaken_for_a_closed_connection() {
         // A peer that answers straight with a codec frame.
-        let mut opening = protocol::encode_frame(&ServerMessage::Welcome { error: None })
+        let mut opening = shepr_protocol::encode_frame(&ServerMessage::Welcome { error: None })
             .expect("test precondition");
-        opening.resize(opening.len().max(protocol::preamble::PREAMBLE_LEN), 0);
+        opening.resize(opening.len().max(shepr_protocol::preamble::PREAMBLE_LEN), 0);
         match handshake_against_opening("preamble-missing", opening) {
             ClientError::Preamble(error) => {
                 assert!(error.to_string().contains("preamble"), "{error}");
@@ -399,13 +398,15 @@ mod tests {
             io::ErrorKind::ConnectionReset,
             io::ErrorKind::TimedOut,
         ] {
-            match hello_write_error(protocol::FramingError::Io(io::Error::new(kind, "write"))) {
+            match hello_write_error(shepr_protocol::FramingError::Io(io::Error::new(
+                kind, "write",
+            ))) {
                 ClientError::ConnectionFailed(error) => assert_eq!(error.kind(), kind),
                 other => panic!("{other}"),
             }
         }
         assert!(matches!(
-            hello_write_error(protocol::FramingError::Oversized { claimed: 2, max: 1 }),
+            hello_write_error(shepr_protocol::FramingError::Oversized { claimed: 2, max: 1 }),
             ClientError::Protocol(_)
         ));
     }

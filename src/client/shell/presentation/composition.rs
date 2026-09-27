@@ -13,7 +13,7 @@ fn mode_bar_range(frame: &FrameData, bar: Rect) -> Option<std::ops::Range<usize>
 fn restore_mode_bar(
     frame: &mut FrameData,
     bar: Option<Rect>,
-    cells: Option<&[crate::protocol::CellData]>,
+    cells: Option<&[shepr_protocol::CellData]>,
 ) {
     let (Some(bar), Some(cells)) = (bar, cells) else {
         return;
@@ -296,10 +296,10 @@ impl ClientShellState {
             .map(|split| PaneSplitHit {
                 direction: split.direction,
                 pos: match split.direction {
-                    crate::protocol::PaneSurfaceSplitDirection::Horizontal => {
+                    shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
                         layout.pane_surface.x.saturating_add(split.pos)
                     }
-                    crate::protocol::PaneSurfaceSplitDirection::Vertical => {
+                    shepr_protocol::PaneSurfaceSplitDirection::Vertical => {
                         layout.pane_surface.y.saturating_add(split.pos)
                     }
                 },

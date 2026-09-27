@@ -11,7 +11,7 @@ mod tests {
         let env = IsolatedEnv::new();
         assert_eq!(std::env::var_os("HOME"), Some(env.home().into_os_string()));
         assert!(std::env::var_os("XDG_CONFIG_HOME").is_none());
-        let paths = crate::config::AppPaths::resolve().expect("isolated directories resolve");
+        let paths = shepr_config::AppPaths::resolve().expect("isolated directories resolve");
         assert!(paths.config_dir().starts_with(env.path()));
         assert!(paths.state_dir().starts_with(env.path()));
         assert!(paths.runtime_dir().starts_with(env.path()));

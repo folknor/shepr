@@ -1,7 +1,8 @@
 use super::*;
-use crate::protocol::ClientPaneInputEvent;
+use crate::client::input_wire::{WireMouseButton, WirePaneInput};
 use crate::raw_input::RawInputEvent;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+use shepr_protocol::ClientPaneInputEvent;
 
 const LOCAL_INPUT_SOURCE: u8 = 0;
 
@@ -76,8 +77,8 @@ pub(super) fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
         && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
 }
 
-fn host_theme_update(event: &RawInputEvent) -> Option<crate::protocol::ClientHostThemeUpdate> {
-    use crate::protocol::ClientHostThemeUpdate;
+fn host_theme_update(event: &RawInputEvent) -> Option<shepr_protocol::ClientHostThemeUpdate> {
+    use shepr_protocol::ClientHostThemeUpdate;
 
     match event {
         RawInputEvent::HostDefaultColor { kind, color } => {
@@ -101,11 +102,11 @@ fn host_theme_update(event: &RawInputEvent) -> Option<crate::protocol::ClientHos
 
 fn push_host_theme_update(
     requests: &mut Vec<ClientMessage>,
-    update: crate::protocol::ClientHostThemeUpdate,
+    update: shepr_protocol::ClientHostThemeUpdate,
 ) {
-    if let crate::protocol::ClientHostThemeUpdate::PaletteColors(colors) = &update
+    if let shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors) = &update
         && let Some(ClientMessage::ClientShellHostTheme {
-            update: crate::protocol::ClientHostThemeUpdate::PaletteColors(pending),
+            update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(pending),
         }) = requests.last_mut()
         && pending.len() + colors.len() <= 256
     {
@@ -352,9 +353,9 @@ impl ClientShellState {
                 .difference(gesture.stripped_modifiers);
             let geometry = matches!(
                 gesture.last_position,
-                crate::protocol::ClientMousePosition::Pixels { .. }
+                shepr_protocol::ClientMousePosition::Pixels { .. }
             )
-            .then_some(crate::protocol::ClientMouseGeometry {
+            .then_some(shepr_protocol::ClientMouseGeometry {
                 cols: gesture.hit.inner_rect.width,
                 rows: gesture.hit.inner_rect.height,
                 width_px: gesture.hit.pixel_width,
@@ -363,12 +364,12 @@ impl ClientShellState {
             super::push_target_event(
                 ClientInputTarget::Pane(gesture.hit.pane_id),
                 ClientPaneInputEvent::Mouse {
-                    kind: crate::protocol::ClientMouseKind::Up(
-                        crate::protocol::ClientMouseButton::from_crossterm(gesture.button),
+                    kind: shepr_protocol::ClientMouseKind::Up(
+                        shepr_protocol::ClientMouseButton::from_crossterm(gesture.button),
                     ),
                     position: gesture.last_position,
                     geometry,
-                    modifiers: crate::protocol::WireModifiers::from(modifiers),
+                    modifiers: crate::client::input_wire::wire_modifiers(modifiers),
                     lines: u16::try_from(self.config.mouse_scroll_lines).unwrap_or(u16::MAX),
                 },
                 outcome,
@@ -511,7 +512,7 @@ impl ClientShellState {
                     self.record_binding(&binding, outcome);
                     return None;
                 }
-                if crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+                if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
                     return None;
@@ -526,7 +527,7 @@ impl ClientShellState {
                 } else {
                     ClientShellMode::Terminal
                 };
-                if crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+                if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
                     self.mode = return_mode;
                     outcome.repaint = true;
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
@@ -561,7 +562,7 @@ impl ClientShellState {
                     .copy_mode
                     .as_ref()
                     .is_none_or(|copy_mode| copy_mode.search_prompt.is_none())
-                    && crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+                    && shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
                 {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
@@ -592,7 +593,7 @@ impl ClientShellState {
 
         self.pending_workspace_highlight = None;
         if key.code == KeyCode::Esc
-            || crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+            || shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
         {
             self.mode = self.copy_or_terminal_mode();
             self.navigate_workspace_id = None;
@@ -625,7 +626,7 @@ impl ClientShellState {
             return;
         }
 
-        let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+        let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
         if code == KeyCode::Enter && modifiers.is_empty() {
             self.accept_navigate_workspace(outcome);
             return;
@@ -642,7 +643,7 @@ impl ClientShellState {
         }
 
         if let Some(index) = ('1'..='9').position(|digit| {
-            crate::config::terminal_key_matches_combo(
+            shepr_config::terminal_key_matches_combo(
                 key,
                 (KeyCode::Char(digit), KeyModifiers::empty()),
             )
@@ -904,7 +905,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn focused_pane_id(&self) -> Option<crate::protocol::PublicPaneId> {
+    pub(super) fn focused_pane_id(&self) -> Option<shepr_protocol::PublicPaneId> {
         self.snapshot
             .as_deref()
             .and_then(|snapshot| snapshot.focused_pane_id.clone())
@@ -932,10 +933,10 @@ impl ClientShellState {
     /// past the limit starts a message of its own instead of joining the batch.
     fn push_focused_paste(&mut self, text: String, outcome: &mut ClientShellInput) {
         let size = text.len();
-        if size > crate::protocol::MAX_INPUT_PAYLOAD {
+        if size > shepr_protocol::MAX_INPUT_PAYLOAD {
             outcome.repaint |= self.receive_endpoint_error(format!(
                 "Paste is {size} bytes; Shepr's limit is {} bytes",
-                crate::protocol::MAX_INPUT_PAYLOAD
+                shepr_protocol::MAX_INPUT_PAYLOAD
             ));
             return;
         }
@@ -953,7 +954,7 @@ impl ClientShellState {
             _ => 0,
         };
         let event = ClientPaneInputEvent::Paste(text);
-        if batched.saturating_add(size) > crate::protocol::MAX_INPUT_PAYLOAD {
+        if batched.saturating_add(size) > shepr_protocol::MAX_INPUT_PAYLOAD {
             outcome.requests.push(super::target_event_message(
                 ClientInputTarget::Pane(pane_id),
                 event,
@@ -967,7 +968,7 @@ impl ClientShellState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::MAX_INPUT_PAYLOAD;
+    use shepr_protocol::MAX_INPUT_PAYLOAD;
 
     fn shell() -> ClientShellState {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));

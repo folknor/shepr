@@ -11,29 +11,22 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
-mod agent;
 mod api;
 mod app;
 mod blit;
 mod build_info;
 mod cli;
 mod client;
-mod config;
 mod copy_mode;
-mod detect;
 mod events;
 mod git;
 mod host_term;
 mod input;
-mod integration;
-mod ipc;
-mod logging;
 mod machine;
 #[cfg(test)]
 mod netside_tests;
 mod pane;
 mod persist;
-mod protocol;
 pub(crate) use input::raw_input;
 mod remote;
 #[path = "server/render_signal.rs"]
@@ -43,15 +36,14 @@ mod session;
 mod terminal;
 #[cfg(test)]
 mod test_support;
-mod theme;
 mod ui;
 mod workspace;
 
-fn should_block_nested(config: &config::Config) -> bool {
+fn should_block_nested(config: &shepr_config::Config) -> bool {
     should_block_nested_for_env(config, std::env::var(SHEPR_ENV_VAR).ok().as_deref())
 }
 
-fn should_block_nested_for_env(config: &config::Config, shepr_env: Option<&str>) -> bool {
+fn should_block_nested_for_env(config: &shepr_config::Config, shepr_env: Option<&str>) -> bool {
     !config.experimental.allow_nested && shepr_env == Some(SHEPR_ENV_VALUE)
 }
 
@@ -66,7 +58,7 @@ fn random_nested_message() -> &'static str {
     NESTED_SHEPR_MESSAGES[index]
 }
 
-fn exit_if_nested_disabled(config: &config::Config) {
+fn exit_if_nested_disabled(config: &shepr_config::Config) {
     if should_block_nested(config) {
         eprintln!("\x1b[1merror:\x1b[0m nested shepr is disabled by default.");
         eprintln!("see configuration if you want to enable it.");
@@ -130,7 +122,7 @@ fn main() -> io::Result<()> {
     };
     let requested_session = match requested_session
         .as_deref()
-        .map(config::SessionId::parse)
+        .map(shepr_config::SessionId::parse)
         .transpose()
     {
         Ok(session) => session,
@@ -168,7 +160,7 @@ fn main() -> io::Result<()> {
 
     if invocation.default_config_requested() {
         shepr_platform::begin_cli_output();
-        print!("{}", config::DEFAULT_CONFIG);
+        print!("{}", shepr_config::DEFAULT_CONFIG);
         return Ok(());
     }
 
@@ -178,25 +170,23 @@ fn main() -> io::Result<()> {
 
     match &invocation.launch {
         cli::Launch::ApiBridge { check } => {
-            let paths = config::AppPaths::resolve_with_session(requested_session.clone()).map_err(
-                |errors| {
+            let paths = shepr_config::AppPaths::resolve_with_session(requested_session.clone())
+                .map_err(|errors| {
                     io::Error::other(format!(
                         "application paths could not be resolved: {}",
                         errors.join("; ")
                     ))
-                },
-            )?;
+                })?;
             return remote::run_remote_api_bridge(*check, &paths);
         }
         cli::Launch::ClientBridge { idle_timeout_v1 } => {
-            let paths = config::AppPaths::resolve_with_session(requested_session.clone()).map_err(
-                |errors| {
+            let paths = shepr_config::AppPaths::resolve_with_session(requested_session.clone())
+                .map_err(|errors| {
                     io::Error::other(format!(
                         "application paths could not be resolved: {}",
                         errors.join("; ")
                     ))
-                },
-            )?;
+                })?;
             return remote::run_remote_client_bridge(*idle_timeout_v1, &paths);
         }
         _ => {}
@@ -249,9 +239,9 @@ fn main() -> io::Result<()> {
 }
 
 fn load_validated_config_or_exit(
-    requested_session: Option<config::SessionId>,
-) -> config::ValidatedConfig {
-    let paths = match config::AppPaths::resolve_with_session(requested_session) {
+    requested_session: Option<shepr_config::SessionId>,
+) -> shepr_config::ValidatedConfig {
+    let paths = match shepr_config::AppPaths::resolve_with_session(requested_session) {
         Ok(paths) => paths,
         Err(diagnostics) => {
             eprintln!("shepr: configuration error:");
@@ -261,7 +251,7 @@ fn load_validated_config_or_exit(
             std::process::exit(1);
         }
     };
-    match config::Config::load_validated(&paths) {
+    match shepr_config::Config::load_validated(&paths) {
         Ok(config) => config,
         Err(diagnostics) => {
             eprintln!("shepr: configuration error:");
@@ -280,12 +270,15 @@ mod tests {
     #[test]
     fn default_config_lists_ui_accent_before_nested_tables() {
         let accent_marker = "# accent = \"#89b4fa\"";
-        assert_eq!(config::DEFAULT_CONFIG.matches(accent_marker).count(), 1);
+        assert_eq!(
+            shepr_config::DEFAULT_CONFIG.matches(accent_marker).count(),
+            1
+        );
 
-        let accent = config::DEFAULT_CONFIG
+        let accent = shepr_config::DEFAULT_CONFIG
             .find(accent_marker)
             .expect("test precondition");
-        let sidebar = config::DEFAULT_CONFIG
+        let sidebar = shepr_config::DEFAULT_CONFIG
             .find("# [ui.sidebar.agents]")
             .expect("test precondition");
 
@@ -295,7 +288,7 @@ mod tests {
     #[test]
     fn default_config_documents_every_keybinding_with_its_default() {
         let keys =
-            toml::Value::try_from(config::Config::default().keys).expect("test precondition");
+            toml::Value::try_from(shepr_config::Config::default().keys).expect("test precondition");
         let keys = keys.as_table().expect("test precondition");
         assert!(!keys.is_empty());
         for (field, value) in keys {
@@ -304,7 +297,7 @@ mod tests {
             };
             let marker = format!("# {field} = ");
             let quoted = format!("{default:?}");
-            let documented = config::DEFAULT_CONFIG.lines().any(|line| {
+            let documented = shepr_config::DEFAULT_CONFIG.lines().any(|line| {
                 line.strip_prefix(marker.as_str())
                     .and_then(|rest| rest.split_whitespace().next())
                     == Some(quoted.as_str())
@@ -318,20 +311,20 @@ mod tests {
 
     #[test]
     fn nested_shepr_blocks_when_env_is_set() {
-        let config = config::Config::default();
+        let config = shepr_config::Config::default();
         assert!(should_block_nested_for_env(&config, Some(SHEPR_ENV_VALUE)));
     }
 
     #[test]
     fn nested_shepr_does_not_block_when_allowed() {
-        let config: config::Config =
+        let config: shepr_config::Config =
             toml::from_str("[experimental]\nallow_nested = true\n").expect("test precondition");
         assert!(!should_block_nested_for_env(&config, Some(SHEPR_ENV_VALUE)));
     }
 
     #[test]
     fn nested_shepr_does_not_block_without_env() {
-        let config = config::Config::default();
+        let config = shepr_config::Config::default();
         assert!(!should_block_nested_for_env(&config, None));
     }
 

@@ -259,7 +259,7 @@ impl HeadlessServer {
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
         let shutdown_msg = ServerMessage::ServerShutdown {
-            reason: Some(crate::protocol::ShutdownReason::Message(
+            reason: Some(shepr_protocol::ShutdownReason::Message(
                 "server is shutting down".to_owned(),
             )),
         };
@@ -289,7 +289,7 @@ impl HeadlessServer {
         // Send ServerShutdown to all remaining clients.
         if !self.clients.is_empty() {
             let shutdown_msg = ServerMessage::ServerShutdown {
-                reason: Some(crate::protocol::ShutdownReason::Message(
+                reason: Some(shepr_protocol::ShutdownReason::Message(
                     "server is shutting down".to_owned(),
                 )),
             };

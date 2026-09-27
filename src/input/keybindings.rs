@@ -1,6 +1,6 @@
 use crossterm::event::KeyCode;
 
-use crate::config::Keybinds;
+use shepr_config::Keybinds;
 
 use super::TerminalKey;
 
@@ -149,15 +149,15 @@ pub(crate) fn resolve_indexed_action(
     key: &TerminalKey,
     dispatch: KeybindDispatch,
 ) -> Option<KeybindAction> {
-    let actual_modifiers = crate::config::normalize_key_combo((key.code, key.modifiers)).1;
+    let actual_modifiers = shepr_config::normalize_key_combo((key.code, key.modifiers)).1;
 
     for exact_modifiers in [true, false] {
-        let trigger_matches = |binding: &crate::config::IndexedKeybind| {
+        let trigger_matches = |binding: &shepr_config::IndexedKeybind| {
             let dispatch_matches = match dispatch {
                 KeybindDispatch::Direct => binding.trigger.is_direct(),
                 KeybindDispatch::Prefix => binding.trigger.is_prefix(),
             };
-            let expected_modifiers = crate::config::normalize_key_combo(binding.trigger.combo()).1;
+            let expected_modifiers = shepr_config::normalize_key_combo(binding.trigger.combo()).1;
             dispatch_matches && (actual_modifiers == expected_modifiers) == exact_modifiers
         };
 
@@ -210,7 +210,7 @@ fn generated_character_key(key: &TerminalKey) -> Option<TerminalKey> {
 }
 
 fn action_matches(
-    bindings: &crate::config::ActionKeybinds,
+    bindings: &shepr_config::ActionKeybinds,
     key: &TerminalKey,
     dispatch: KeybindDispatch,
 ) -> bool {
@@ -229,13 +229,13 @@ mod tests {
     #[test]
     fn clear_pane_is_unbound_by_default_and_configurable() {
         assert!(
-            crate::config::Config::default()
+            shepr_config::Config::default()
                 .keybinds()
                 .clear_pane
                 .bindings
                 .is_empty()
         );
-        let config: crate::config::Config =
+        let config: shepr_config::Config =
             toml::from_str("[keys]\nclear_pane = [\"super+k\", \"prefix+ctrl+k\"]")
                 .expect("test precondition");
         assert!(config.collect_diagnostics().is_empty());
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn one_shared_resolver_handles_direct_prefix_and_indexed_bindings() {
         let keybinds = Keybinds {
-            next_tab: crate::config::ActionKeybinds::direct("ctrl+n"),
+            next_tab: shepr_config::ActionKeybinds::direct("ctrl+n"),
             ..Keybinds::default()
         };
 

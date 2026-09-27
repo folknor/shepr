@@ -1,7 +1,7 @@
 use super::*;
-use crate::detect::{Agent, AgentState};
 use crate::workspace::Workspace;
 use ratatui::layout::{Direction, Rect};
+use shepr_agent::detect::{Agent, AgentState};
 
 fn app_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
@@ -115,7 +115,7 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
         .split_pane(root_pane, Direction::Horizontal, 0.5)
         .expect("test precondition");
     assert_eq!(state.workspaces[0].pane_count(), 1);
-    let terminal_id = crate::protocol::TerminalId::alloc();
+    let terminal_id = shepr_protocol::TerminalId::alloc();
     let terminal =
         crate::terminal::TerminalState::new(terminal_id.clone(), std::path::PathBuf::from("/tmp"));
     let previous_focus = state.current_pane_focus_target();
@@ -173,7 +173,7 @@ fn tab_creation_state_command_commits_spawned_values_and_focus() {
     let mut state = app_with_workspaces(&["one"]);
     let workspace = &state.workspaces[0];
     let (layout, root_pane) = shepr_core::layout::TileLayout::new();
-    let terminal_id = crate::protocol::TerminalId::alloc();
+    let terminal_id = shepr_protocol::TerminalId::alloc();
     let mut pane = crate::workspace::TabPane::new(crate::pane::PaneState::new(terminal_id.clone()));
     pane.public_number = workspace.next_public_pane_number();
     let tab = crate::workspace::Tab {
@@ -834,7 +834,7 @@ fn reserved_native_state_report_does_not_override_screen_state() {
         state: AgentState::Blocked,
         message: None,
         seq: Some(1),
-        session_ref: crate::agent::resume::AgentSessionRef::id("claude-session"),
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
     });
     let terminal = state
         .terminals
@@ -887,10 +887,10 @@ fn official_release_preserves_process_owned_agent_identity() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition");
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
+    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
         source: "shepr:pi".into(),
-        agent: crate::agent::Agent::Pi,
-        session_ref: crate::agent::resume::AgentSessionRef::path(
+        agent: shepr_agent::agent::Agent::Pi,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(
             std::env::current_dir()
                 .expect("test precondition")
                 .join("release-session.jsonl")
@@ -956,7 +956,7 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
         state: AgentState::Working,
         message: None,
         seq: Some(1),
-        session_ref: crate::agent::resume::AgentSessionRef::id("devin-session"),
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("devin-session"),
     });
 
     let terminal = state
@@ -987,7 +987,7 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
         state: AgentState::Working,
         message: None,
         seq: Some(20),
-        session_ref: crate::agent::resume::AgentSessionRef::path(first_session),
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(first_session),
     });
     assert_eq!(first_updates.len(), 1);
     state.session_dirty = false;
@@ -999,7 +999,7 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
         state: AgentState::Working,
         message: None,
         seq: Some(21),
-        session_ref: crate::agent::resume::AgentSessionRef::path(second_session),
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(second_session),
     });
 
     assert!(second_updates.is_empty());

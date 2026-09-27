@@ -15,7 +15,7 @@ pub(crate) struct OverlayRender {
     pub(crate) help_scrollbar: Rect,
     pub(crate) help_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) help_max_scroll: usize,
-    pub(crate) cursor: Option<crate::protocol::CursorState>,
+    pub(crate) cursor: Option<shepr_protocol::CursorState>,
 }
 
 pub(crate) fn render_client_overlay(
@@ -491,12 +491,7 @@ fn render_navigator_overlay(
         let indent = format!("{:width$}{connector}", "", width = usize::from(padding));
         let current = if r.current { "◆ " } else { "" };
         let glyph_option = r.status.map(|status| {
-            status_glyph(
-                status,
-                crate::config::StatusIndicatorStyle::Dots,
-                p,
-                r.stale,
-            )
+            status_glyph(status, shepr_config::StatusIndicatorStyle::Dots, p, r.stale)
         });
         let status = glyph_option.map_or("", |glyph| glyph.text);
         let status_separator = if status.is_empty() { "" } else { " " };

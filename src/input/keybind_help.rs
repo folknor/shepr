@@ -2,10 +2,8 @@ use std::borrow::Cow;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::{
-    config::{ActionKeybinds, IndexedKeybind, Keybinds},
-    input::TerminalKey,
-};
+use crate::input::TerminalKey;
+use shepr_config::{ActionKeybinds, IndexedKeybind, Keybinds};
 
 pub(crate) type KeybindHelpEntry = (String, Cow<'static, str>);
 pub(crate) type KeybindHelpGroup = (&'static str, Vec<KeybindHelpEntry>);
@@ -70,7 +68,7 @@ pub(crate) fn keybind_help_groups(
         (
             "global",
             vec![
-                entry(crate::config::format_key_combo(prefix), "prefix mode"),
+                entry(shepr_config::format_key_combo(prefix), "prefix mode"),
                 entry(binding_label(&keybinds.help), "keybinds"),
                 entry(binding_label(&keybinds.detach), "detach"),
             ],
@@ -243,7 +241,7 @@ mod tests {
 
     #[test]
     fn help_lists_every_default_pane_binding() {
-        let config = crate::config::Config::default();
+        let config = shepr_config::Config::default();
         let groups = keybind_help_groups(&config.keybinds(), config.live_keybinds().prefix);
         let entries: Vec<_> = groups.iter().flat_map(|(_, entries)| entries).collect();
         for (key, label) in [

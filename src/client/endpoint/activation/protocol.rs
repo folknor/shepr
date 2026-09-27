@@ -66,8 +66,8 @@ pub(super) fn coherent_completion_surface(
     lease: &EndpointLease,
     evidence: &ActivationEvidence,
     acknowledgement_revision: Option<u64>,
-    geometry: crate::protocol::ClientSurfaceSize,
-) -> Result<crate::protocol::PaneSurfaceFrame, String> {
+    geometry: shepr_protocol::ClientSurfaceSize,
+) -> Result<shepr_protocol::PaneSurfaceFrame, String> {
     let acknowledgement_revision = acknowledgement_revision.ok_or_else(|| {
         "endpoint activation completed without a surface acknowledgement".to_owned()
     })?;
@@ -92,10 +92,10 @@ pub(super) fn coherent_completion_surface(
 }
 
 pub(super) fn resize_geometry(
-    message: &crate::protocol::ClientMessage,
-) -> Option<crate::protocol::ClientSurfaceSize> {
+    message: &shepr_protocol::ClientMessage,
+) -> Option<shepr_protocol::ClientSurfaceSize> {
     match message {
-        crate::protocol::ClientMessage::ClientShellResize { geometry } => {
+        shepr_protocol::ClientMessage::ClientShellResize { geometry } => {
             Some(geometry.surface_size())
         }
         _ => None,
@@ -103,8 +103,8 @@ pub(super) fn resize_geometry(
 }
 
 pub(super) fn surface_matches_geometry(
-    surface: &crate::protocol::PaneSurfaceFrame,
-    geometry: crate::protocol::ClientSurfaceSize,
+    surface: &shepr_protocol::PaneSurfaceFrame,
+    geometry: shepr_protocol::ClientSurfaceSize,
 ) -> bool {
     surface.frame.width == geometry.cols && surface.frame.height == geometry.rows
 }
@@ -112,8 +112,8 @@ pub(super) fn surface_matches_geometry(
 pub(super) fn send_surface_activation(
     endpoints: &mut EndpointRegistry,
     target: &EndpointLease,
-    request_id: &crate::protocol::RequestId,
-    resize: &crate::protocol::ClientMessage,
+    request_id: &shepr_protocol::RequestId,
+    resize: &shepr_protocol::ClientMessage,
     focused: bool,
 ) -> Result<(), String> {
     if endpoints.send_to(&target.endpoint_id, resize) != EndpointSendOutcome::Sent {
@@ -128,7 +128,7 @@ pub(super) fn send_surface_activation(
     // on the same ordered transport before navigation or presentation can commit.
     if endpoints.send_to(
         &target.endpoint_id,
-        &crate::protocol::ClientMessage::ClientShellFocus { focused },
+        &shepr_protocol::ClientMessage::ClientShellFocus { focused },
     ) != EndpointSendOutcome::Sent
     {
         return Err("endpoint focus baseline could not be sent".into());
@@ -158,9 +158,9 @@ pub(super) fn surface_set_revision(
 
 pub(super) fn focus_request(
     boot_id: &str,
-    request_id: &crate::protocol::RequestId,
+    request_id: &shepr_protocol::RequestId,
     focus: &crate::client::shell::ClientEndpointFocusTarget,
-) -> std::io::Result<crate::protocol::ClientMessage> {
+) -> std::io::Result<shepr_protocol::ClientMessage> {
     let method = match focus {
         crate::client::shell::ClientEndpointFocusTarget::Workspace(workspace_id) => {
             crate::api::schema::Method::WorkspaceFocus(crate::api::schema::WorkspaceTarget {
@@ -184,9 +184,9 @@ pub(super) fn focus_request(
 
 pub(super) fn surface_interest_request(
     boot_id: &str,
-    request_id: &crate::protocol::RequestId,
+    request_id: &shepr_protocol::RequestId,
     active: bool,
-) -> std::io::Result<crate::protocol::ClientMessage> {
+) -> std::io::Result<shepr_protocol::ClientMessage> {
     endpoint_request(
         boot_id,
         &crate::api::schema::Request {
@@ -201,8 +201,8 @@ pub(super) fn surface_interest_request(
 fn endpoint_request(
     boot_id: &str,
     request: &crate::api::schema::Request,
-) -> std::io::Result<crate::protocol::ClientMessage> {
-    Ok(crate::protocol::ClientMessage::ClientShellEndpointRequest {
+) -> std::io::Result<shepr_protocol::ClientMessage> {
+    Ok(shepr_protocol::ClientMessage::ClientShellEndpointRequest {
         boot_id: boot_id.into(),
         request: serde_json::to_string(request)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,

@@ -384,19 +384,19 @@ impl Invocation {
     }
 }
 
-pub(crate) fn print_help(requested_session: Option<crate::config::SessionId>) {
+pub(crate) fn print_help(requested_session: Option<shepr_config::SessionId>) {
     shepr_platform::begin_cli_output();
     let help = spec::command().render_help().to_string();
     print!("{help}");
     if !help.ends_with("\n\n") {
         println!();
     }
-    match crate::config::AppPaths::resolve_with_session(requested_session) {
+    match shepr_config::AppPaths::resolve_with_session(requested_session) {
         Ok(paths) => {
             println!("Config: {}", paths.config_file().display());
             println!(
                 "Logs:   {}",
-                crate::logging::help_log_paths_summary(&crate::session::data_dir(&paths))
+                shepr_platform::logging::help_log_paths_summary(&crate::session::data_dir(&paths))
             );
         }
         Err(errors) => {
@@ -428,7 +428,7 @@ pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> Cl
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(
     command: &CliCommand,
-    requested_session: Option<crate::config::SessionId>,
+    requested_session: Option<shepr_config::SessionId>,
 ) -> CliResult<i32> {
     if matches!(command, CliCommand::Config(ConfigCommand::Check)) {
         return Ok(config_check());
@@ -440,7 +440,7 @@ pub(crate) fn run(
 
 fn dispatch_with_config(
     command: &CliCommand,
-    config: Option<crate::config::ValidatedConfig>,
+    config: Option<shepr_config::ValidatedConfig>,
     context: &target::CliContext,
 ) -> CliResult<i32> {
     match command {
@@ -464,9 +464,9 @@ fn dispatch_with_config(
 }
 
 fn resolve_app_paths(
-    requested_session: Option<crate::config::SessionId>,
-) -> CliResult<crate::config::AppPaths> {
-    crate::config::AppPaths::resolve_with_session(requested_session).map_err(|diagnostics| {
+    requested_session: Option<shepr_config::SessionId>,
+) -> CliResult<shepr_config::AppPaths> {
+    shepr_config::AppPaths::resolve_with_session(requested_session).map_err(|diagnostics| {
         CliError::Io(std::io::Error::other(format!(
             "application paths could not be resolved:\n  {}",
             diagnostics.join("\n  ")
@@ -474,8 +474,8 @@ fn resolve_app_paths(
     })
 }
 
-fn resolve_machine_app_paths() -> CliResult<crate::config::AppPaths> {
-    crate::config::AppPaths::resolve_for_machine().map_err(|diagnostics| {
+fn resolve_machine_app_paths() -> CliResult<shepr_config::AppPaths> {
+    shepr_config::AppPaths::resolve_for_machine().map_err(|diagnostics| {
         CliError::Io(std::io::Error::other(format!(
             "application paths could not be resolved:\n  {}",
             diagnostics.join("\n  ")
@@ -502,9 +502,9 @@ pub(super) fn usage_error(message: &str) -> i32 {
 fn config_check() -> i32 {
     // Path problems are reported like any other config issue instead of
     // aborting the check.
-    let (diagnostics, provenance) = match crate::config::AppPaths::resolve() {
+    let (diagnostics, provenance) = match shepr_config::AppPaths::resolve() {
         Ok(paths) => {
-            let loaded = crate::config::Config::load_for_check(&paths);
+            let loaded = shepr_config::Config::load_for_check(&paths);
             let mut sources = loaded
                 .provenance
                 .values()
@@ -562,7 +562,7 @@ fn config_check() -> i32 {
         Err(diagnostics) => (
             diagnostics
                 .into_iter()
-                .map(crate::config::ConfigDiagnostic::Path)
+                .map(shepr_config::ConfigDiagnostic::Path)
                 .collect(),
             Vec::new(),
         ),
@@ -584,9 +584,9 @@ fn config_check() -> i32 {
 }
 
 fn load_validated_config(
-    paths: &crate::config::AppPaths,
-) -> CliResult<crate::config::ValidatedConfig> {
-    crate::config::Config::load_validated(paths).map_err(|diagnostics| {
+    paths: &shepr_config::AppPaths,
+) -> CliResult<shepr_config::ValidatedConfig> {
+    shepr_config::Config::load_validated(paths).map_err(|diagnostics| {
         CliError::Io(std::io::Error::other(format!(
             "configuration error:\n  {}",
             diagnostics
@@ -600,7 +600,7 @@ fn load_validated_config(
 
 fn run_terminal_command(
     command: TerminalCommand,
-    config: Option<crate::config::ValidatedConfig>,
+    config: Option<shepr_config::ValidatedConfig>,
     context: &target::CliContext,
 ) -> CliResult<i32> {
     match command {
@@ -642,7 +642,7 @@ fn run_session_command(command: SessionCommand, paths: &target::CliContext) -> C
     }
 }
 
-fn session_list(paths: &crate::config::AppPaths, json: bool) -> CliResult<i32> {
+fn session_list(paths: &shepr_config::AppPaths, json: bool) -> CliResult<i32> {
     let sessions = crate::session::list_sessions(paths)?;
     if json {
         let sessions = sessions
@@ -662,7 +662,7 @@ fn session_list(paths: &crate::config::AppPaths, json: bool) -> CliResult<i32> {
 /// protocol-mismatch error tells the user to run `session stop` / `server
 /// stop`, so stopping must keep working against a server from another build.
 /// `crate::session` sends a bare `server.stop` JSON line for that reason.
-fn session_stop(name: &str, json: bool, paths: &crate::config::AppPaths) -> CliResult<i32> {
+fn session_stop(name: &str, json: bool, paths: &shepr_config::AppPaths) -> CliResult<i32> {
     let target = crate::session::parse_target_name(name)
         .map_err(|message| CliError::Session(SessionCliError::InvalidName(message)))?;
     match crate::session::stop_session(paths, &target) {
@@ -681,7 +681,7 @@ fn session_stop(name: &str, json: bool, paths: &crate::config::AppPaths) -> CliR
     }
 }
 
-fn session_delete(name: &str, json: bool, paths: &crate::config::AppPaths) -> CliResult<i32> {
+fn session_delete(name: &str, json: bool, paths: &shepr_config::AppPaths) -> CliResult<i32> {
     let target = crate::session::parse_target_name(name)
         .map_err(|message| CliError::Session(SessionCliError::InvalidName(message)))?;
     match crate::session::delete_session(paths, &target) {
@@ -766,13 +766,13 @@ fn ensure_server_protocol_compatible(
     }
     let status = target::server_status(context, client)
         .map_err(|err| map_server_not_running_or_io(context, err, request_id, client))?;
-    let server_protocol = match crate::protocol::Compatibility::of(status.protocol) {
-        crate::protocol::Compatibility::Compatible => {
+    let server_protocol = match shepr_protocol::Compatibility::of(status.protocol) {
+        shepr_protocol::Compatibility::Compatible => {
             context.mark_protocol_checked();
             return Ok(());
         }
-        crate::protocol::Compatibility::DifferentBuild(protocol) => protocol,
-        crate::protocol::Compatibility::Unknown => {
+        shepr_protocol::Compatibility::DifferentBuild(protocol) => protocol,
+        shepr_protocol::Compatibility::Unknown => {
             return Err(
                 std::io::Error::other("server ping did not include a protocol version").into(),
             );
@@ -790,10 +790,10 @@ fn ensure_server_protocol_compatible(
 /// Whether the local API socket is definitely absent or stale. Other probe
 /// failures remain transport errors because they do not establish liveness.
 pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> CliResult<bool> {
-    match crate::ipc::probe(socket_path) {
-        crate::ipc::Liveness::Absent | crate::ipc::Liveness::Stale => Ok(true),
-        crate::ipc::Liveness::Live => Ok(false),
-        crate::ipc::Liveness::Unreachable(error) => Err(error.into()),
+    match shepr_platform::ipc::probe(socket_path) {
+        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => Ok(true),
+        shepr_platform::ipc::Liveness::Live => Ok(false),
+        shepr_platform::ipc::Liveness::Unreachable(error) => Err(error.into()),
     }
 }
 
@@ -1016,7 +1016,7 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("cli-invalid-config");
         let config_path = scratch.join("config.toml");
         std::fs::write(&config_path, "[").expect("write invalid config");
-        _env.set(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
+        _env.set(shepr_config::CONFIG_PATH_ENV_VAR, &config_path);
 
         for args in [
             &["terminal", "attach", "terminal-1"][..],
@@ -1133,7 +1133,7 @@ mod tests {
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-error");
         let paths =
-            super::target::CliContext::test_local(crate::config::AppPaths::test_at(scratch.path()));
+            super::target::CliContext::test_local(shepr_config::AppPaths::test_at(scratch.path()));
         let client = ApiClient::local(&paths);
         let socket = client.socket_path().display().to_string();
 
@@ -1176,10 +1176,10 @@ mod tests {
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
         let paths =
-            super::target::CliContext::test_local(crate::config::AppPaths::test_at(scratch.path()));
+            super::target::CliContext::test_local(shepr_config::AppPaths::test_at(scratch.path()));
         std::fs::create_dir_all(paths.runtime_dir()).expect("create test runtime directory");
         let client = ApiClient::local(&paths);
-        let _listener = crate::ipc::bind_local_listener(&client.socket_path())
+        let _listener = shepr_platform::ipc::bind_local_listener(&client.socket_path())
             .expect("bind test server socket");
         let mapped = super::map_server_not_running_or_io(
             &paths,

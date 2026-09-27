@@ -86,7 +86,8 @@ impl App {
                 }
             }
             Method::ServerReloadAgentManifests(_) => {
-                let summaries = crate::detect::manifest::reload_manifests(self.paths.config_dir());
+                let summaries =
+                    shepr_agent::detect::manifest::reload_manifests(self.paths.config_dir());
                 self.state.agent_manifest_summaries = summaries.clone();
                 self.reset_all_agent_detection_runtimes();
                 ResponseResult::AgentManifestReload {
@@ -201,10 +202,10 @@ impl App {
 }
 
 fn agent_manifest_info(
-    summary: crate::detect::manifest::AgentManifestSummary,
+    summary: shepr_agent::detect::manifest::AgentManifestSummary,
 ) -> crate::api::schema::AgentManifestInfo {
     crate::api::schema::AgentManifestInfo {
-        agent: crate::detect::agent_label(summary.agent).to_string(),
+        agent: shepr_agent::detect::agent_label(summary.agent).to_string(),
         source: summary.active_source.label(),
         source_kind: summary.active_source.kind().to_string(),
         warning: summary.warning,
@@ -229,13 +230,13 @@ pub(super) mod test_support {
 mod tests {
     use super::*;
     use crate::api::schema::ResponseResult;
-    use crate::detect::{Agent, AgentState};
+    use shepr_agent::detect::{Agent, AgentState};
 
     #[tokio::test]
     async fn server_reload_agent_manifests_resets_detection_runtimes() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             crate::api::EventHub::default(),
@@ -275,7 +276,7 @@ mod tests {
     async fn server_agent_manifests_reports_status_without_resetting_runtimes() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             crate::api::EventHub::default(),
@@ -317,7 +318,7 @@ mod tests {
     async fn agent_explain_evaluates_with_server_manifest_cache() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             crate::api::EventHub::default(),
@@ -363,7 +364,7 @@ mod tests {
     async fn agent_explain_rejects_hook_only_full_lifecycle_authority() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             crate::api::EventHub::default(),
@@ -406,7 +407,7 @@ mod tests {
     async fn pane_process_info_returns_response_for_existing_pane() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             crate::api::EventHub::default(),
@@ -441,7 +442,7 @@ mod tests {
     fn methods_answered_before_the_app_are_reported_as_misrouted() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             crate::api::EventHub::default(),
@@ -477,7 +478,7 @@ mod tests {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             event_hub.clone(),
@@ -517,7 +518,7 @@ mod tests {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             event_hub.clone(),
@@ -570,7 +571,7 @@ mod tests {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             event_hub.clone(),
@@ -656,7 +657,7 @@ mod tests {
             let event_hub = crate::api::EventHub::default();
             let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
             let mut app = App::new(
-                &crate::config::Config::default(),
+                &shepr_config::Config::default(),
                 crate::app::AppPolicy::TEST,
                 api_rx,
                 event_hub.clone(),
@@ -711,7 +712,7 @@ mod tests {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &crate::config::Config::default(),
+            &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
             event_hub.clone(),

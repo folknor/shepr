@@ -125,7 +125,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
     let right = state.hits.tab_scroll_right;
     assert_eq!(
         frame.cells[(right.y * frame.width + right.x + 1) as usize].fg,
-        crate::protocol::WireColor::from_ratatui(state.config.palette.overlay1),
+        shepr_protocol::WireColor::from_ratatui(state.config.palette.overlay1),
         "right arrow stays enabled while the final tab is clipped"
     );
     state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -139,7 +139,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
     assert!(frame_rows(&frame)[0].contains("nvim test"));
     assert_eq!(
         frame.cells[(right.y * frame.width + right.x + 1) as usize].fg,
-        crate::protocol::WireColor::from_ratatui(state.config.palette.overlay0),
+        shepr_protocol::WireColor::from_ratatui(state.config.palette.overlay0),
         "right arrow dims at the useful scroll limit"
     );
 }
@@ -173,13 +173,13 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     );
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
-    update.revision = crate::protocol::ProjectionRevision::new(2);
+    update.revision = shepr_protocol::ProjectionRevision::new(2);
     update.focused_workspace_id = Some("ws_12".into());
     for workspace in &mut update.workspaces {
         workspace.focused = workspace.workspace_id == "ws_12";
     }
     let mut updated_surface = surface();
-    updated_surface.projection_revision = crate::protocol::ProjectionRevision::new(2);
+    updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     state.set_snapshot(Box::new(update));
     state.set_pane_surface(updated_surface);
     state.compose(106, 2).expect("zero-height workspace body");

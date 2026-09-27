@@ -13,7 +13,7 @@ pub(super) use self::tokens::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::theme::Palette;
+use shepr_config::theme::Palette;
 
 /// Workspace share of the expanded sidebar, constrained before rendering.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
@@ -317,7 +317,7 @@ pub(super) fn resolved_token_spans(
     spans
 }
 
-fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {
+fn apply_token_style(mut style: Style, patch: shepr_config::SidebarTokenStyle) -> Style {
     if let Some(foreground) = patch.fg {
         style = style.fg(foreground.ratatui());
     }

@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::Stream as _;
 
 use super::EndpointTransport;
-use crate::ipc::LocalStream;
-use crate::protocol::ClientMessage;
+use shepr_platform::ipc::LocalStream;
+use shepr_protocol::ClientMessage;
 
 const MAX_QUEUED_BATCHES: usize = 256;
 const MAX_BATCH_BYTES: usize = 64 * 1024;
-const MAX_QUEUED_BYTES: usize = 2 * crate::protocol::MAX_FRAME_SIZE;
+const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
@@ -134,7 +134,7 @@ impl EndpointTransport for NativeEndpointTransport {
         // word. Pastes are checked against the server's input limit even earlier,
         // in the shell's input handling, and never get this far.
         let mut frame = Vec::new();
-        crate::protocol::write_message(&mut frame, message)
+        shepr_protocol::write_message(&mut frame, message)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         let len = frame.len();
         if self
@@ -258,9 +258,10 @@ mod tests {
         let path = crate::test_support::ScratchDir::new("writer")
             .keep_until_exit()
             .join("s.sock");
-        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let accepting = std::thread::spawn(move || listener.accept().expect("test precondition"));
-        let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         (client, accepting.join().expect("test precondition"), path)
     }
 
@@ -272,10 +273,10 @@ mod tests {
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let first: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
                     .expect("test precondition");
             let second: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
                     .expect("test precondition");
             done.send((first, second)).expect("test precondition");
         });
@@ -309,10 +310,10 @@ mod tests {
         let reader = std::thread::spawn(move || {
             let result = (|| {
                 let first: ClientMessage =
-                    crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)?;
+                    shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)?;
                 let second: ClientMessage =
-                    crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)?;
-                Ok::<_, crate::protocol::FramingError>((first, second))
+                    shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)?;
+                Ok::<_, shepr_protocol::FramingError>((first, second))
             })();
             done.send(result).expect("test precondition");
         });
@@ -342,10 +343,10 @@ mod tests {
         impl io::Read for PollingPeer {
             fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
                 loop {
-                    match crate::ipc::poll_local_stream_read_count(&mut self.0, buffer)? {
-                        crate::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
-                        crate::ipc::LocalStreamReadCount::Closed => return Ok(0),
-                        crate::ipc::LocalStreamReadCount::Pending => {
+                    match shepr_platform::ipc::poll_local_stream_read_count(&mut self.0, buffer)? {
+                        shepr_platform::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
+                        shepr_platform::ipc::LocalStreamReadCount::Closed => return Ok(0),
+                        shepr_platform::ipc::LocalStreamReadCount::Pending => {
                             std::thread::sleep(IO_POLL_INTERVAL);
                         }
                     }
@@ -360,10 +361,10 @@ mod tests {
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let first: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
                     .expect("test precondition");
             let second: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
                     .expect("test precondition");
             done.send((first, second)).expect("test precondition");
         });
@@ -405,7 +406,7 @@ mod tests {
         transport
             .send(&ClientMessage::Input {
                 // Large enough to overrun the socket buffer, small enough to fit one frame.
-                data: vec![b'x'; crate::protocol::MAX_FRAME_SIZE - 64],
+                data: vec![b'x'; shepr_protocol::MAX_FRAME_SIZE - 64],
             })
             .expect("test precondition");
         drop(transport);
@@ -496,7 +497,7 @@ mod tests {
         let mut expected = Vec::new();
         for data in framer.push(input.as_bytes()) {
             let message = ClientMessage::Input { data };
-            crate::protocol::write_message(&mut expected, &message).expect("test precondition");
+            shepr_protocol::write_message(&mut expected, &message).expect("test precondition");
             transport
                 .send(&message)
                 .expect("a small stdin burst must fit");
@@ -524,7 +525,7 @@ mod tests {
         };
         write_batch(&mut received, &batch, &transport.stopped, &queued_bytes)
             .expect("test precondition");
-        crate::protocol::write_message(&mut expected, &ClientMessage::Detach)
+        shepr_protocol::write_message(&mut expected, &ClientMessage::Detach)
             .expect("test precondition");
         assert_eq!(received, expected);
         assert_eq!(queued_bytes.load(Ordering::Acquire), 0);
@@ -557,7 +558,7 @@ mod tests {
         )
         .expect("test precondition");
         let mut expected = Vec::new();
-        crate::protocol::write_message(&mut expected, &first).expect("test precondition");
+        shepr_protocol::write_message(&mut expected, &first).expect("test precondition");
         assert_eq!(received, expected);
         assert!(matches!(
             receiver.try_recv().expect("test precondition"),
@@ -573,7 +574,7 @@ mod tests {
             &transport.queued_bytes,
         )
         .expect("test precondition");
-        crate::protocol::write_message(&mut expected, &last).expect("test precondition");
+        shepr_protocol::write_message(&mut expected, &last).expect("test precondition");
         assert_eq!(received, expected);
         assert_eq!(transport.queued_bytes.load(Ordering::Acquire), 0);
     }
@@ -583,7 +584,7 @@ mod tests {
         let (mut transport, receiver) = queued_transport(MAX_QUEUED_BATCHES);
         let error = transport
             .send(&ClientMessage::Input {
-                data: vec![b'x'; crate::protocol::MAX_FRAME_SIZE],
+                data: vec![b'x'; shepr_protocol::MAX_FRAME_SIZE],
             })
             .expect_err("a frame over the cap must not be sent");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);

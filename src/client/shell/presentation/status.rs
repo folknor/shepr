@@ -8,12 +8,12 @@ pub(super) struct StatusGlyph {
 
 pub(super) fn status_glyph(
     status: crate::api::schema::AgentStatus,
-    indicator_style: crate::config::StatusIndicatorStyle,
+    indicator_style: shepr_config::StatusIndicatorStyle,
     palette: &Palette,
     stale: bool,
 ) -> StatusGlyph {
     use crate::api::schema::AgentStatus;
-    use crate::config::StatusIndicatorStyle;
+    use shepr_config::StatusIndicatorStyle;
     let text = match (indicator_style, status) {
         (StatusIndicatorStyle::Dots, AgentStatus::Working | AgentStatus::Blocked) => "●",
         (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
@@ -43,9 +43,9 @@ pub(super) fn status_glyph(
 pub(super) fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
     use crate::api::schema::AgentStatus;
     let state = match status {
-        AgentStatus::Blocked => crate::detect::AgentState::Blocked,
-        AgentStatus::Working => crate::detect::AgentState::Working,
-        AgentStatus::Idle => crate::detect::AgentState::Idle,
+        AgentStatus::Blocked => shepr_agent::detect::AgentState::Blocked,
+        AgentStatus::Working => shepr_agent::detect::AgentState::Working,
+        AgentStatus::Idle => shepr_agent::detect::AgentState::Idle,
     };
     state.attention_rank()
 }

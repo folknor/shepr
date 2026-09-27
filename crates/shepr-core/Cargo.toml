@@ -5,8 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-serde = { workspace = true }
 ratatui = { workspace = true }
+serde = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]

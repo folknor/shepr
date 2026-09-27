@@ -11,7 +11,7 @@ use word_bounds::word_bounds_at_column;
 /// pointer position when it returns, so remote latency cannot queue up motion.
 #[derive(Debug)]
 pub(super) struct ClientWordSelection {
-    pub(super) pane_id: crate::protocol::PublicPaneId,
+    pub(super) pane_id: shepr_protocol::PublicPaneId,
     pub(super) focus_confirmed: bool,
     anchor: (shepr_vt::AbsRow, u16),
     anchor_bounds: Option<(u16, u16)>,

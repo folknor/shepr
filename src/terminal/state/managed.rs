@@ -51,7 +51,7 @@ impl TerminalState {
         self.prompt_ready_agent = None;
         self.set_agent_name(name);
         self.agent_name_owner = Some(AgentNameOwner {
-            agent_label: crate::detect::agent_label(kind).to_string(),
+            agent_label: shepr_agent::detect::agent_label(kind).to_string(),
             session_ref: None,
         });
         self.managed_agent = Some(ManagedAgent {
@@ -167,7 +167,7 @@ impl TerminalState {
                     managed.kind,
                     self.state,
                     self.prompt_ready_agent == Some(managed.kind),
-                    crate::detect::manifest::has_screen_manifest,
+                    shepr_agent::detect::manifest::has_screen_manifest,
                 )
             {
                 self.managed_agent = Some(ManagedAgent {
@@ -202,7 +202,7 @@ impl TerminalState {
                         managed.kind,
                         self.state,
                         self.prompt_ready_agent == Some(managed.kind),
-                        crate::detect::manifest::has_screen_manifest,
+                        shepr_agent::detect::manifest::has_screen_manifest,
                     )
                 {
                     self.managed_agent = Some(ManagedAgent {
@@ -258,7 +258,7 @@ impl TerminalState {
     ) {
         self.set_agent_name(name);
         self.agent_name_owner = Some(AgentNameOwner {
-            agent_label: crate::detect::agent_label(kind).to_string(),
+            agent_label: shepr_agent::detect::agent_label(kind).to_string(),
             session_ref: None,
         });
         self.managed_agent = Some(ManagedAgent { kind, phase });
@@ -313,7 +313,7 @@ impl TerminalState {
             .hook_authority
             .as_ref()
             .filter(|authority| self.hook_authority_is_effective(authority))
-            .and_then(|authority| crate::detect::parse_agent_label(&authority.agent_label))
+            .and_then(|authority| shepr_agent::detect::parse_agent_label(&authority.agent_label))
             == Some(kind);
         if hook_confirms {
             self.managed_agent = Some(ManagedAgent {
@@ -354,13 +354,13 @@ impl TerminalState {
     pub(super) fn reconcile_agent_name_owner(
         &mut self,
         agent_label: &str,
-        session_ref: Option<&crate::agent::resume::AgentSessionRef>,
+        session_ref: Option<&shepr_agent::agent::resume::AgentSessionRef>,
     ) {
         if self.agent_name.is_none() {
             return;
         }
         if self.managed_agent.is_some_and(|managed| {
-            crate::detect::parse_agent_label(agent_label) == Some(managed.kind)
+            shepr_agent::detect::parse_agent_label(agent_label) == Some(managed.kind)
         }) {
             return;
         }

@@ -34,14 +34,7 @@ use base64::Engine;
 
 use crate::api::{self, RenderDemand};
 use crate::app;
-use crate::config;
 use crate::events::AppEvent;
-#[cfg(test)]
-use crate::ipc::bind_local_listener;
-use crate::ipc::{
-    LocalListener, SocketFileIdentity, remove_socket_file_if_owned, socket_file_identity,
-};
-use crate::protocol::{self, AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
 use crate::server::client_accept::accept_pending_client_connections;
 use crate::server::client_shell::{
     render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
@@ -56,6 +49,12 @@ use crate::server::pane_input::{
     terminal_attach_mouse_position,
 };
 use crate::server::socket_paths::{client_socket_path, prepare_socket_path};
+#[cfg(test)]
+use shepr_platform::ipc::bind_local_listener;
+use shepr_platform::ipc::{
+    LocalListener, SocketFileIdentity, remove_socket_file_if_owned, socket_file_identity,
+};
+use shepr_protocol::{AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
 
 mod api_dispatcher;
 mod bootstrap;
@@ -72,11 +71,11 @@ pub use bootstrap::run_server;
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
 #[cfg(test)]
-use crate::protocol::MAX_FRAME_SIZE;
-#[cfg(test)]
-use crate::protocol::RenderEncoding;
-#[cfg(test)]
 use crate::server::client_transport::ClientWriter;
+#[cfg(test)]
+use shepr_protocol::MAX_FRAME_SIZE;
+#[cfg(test)]
+use shepr_protocol::RenderEncoding;
 #[cfg(test)]
 use std::fs;
 
@@ -149,7 +148,7 @@ pub struct HeadlessServer {
     client_socket_identity: SocketFileIdentity,
     clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
-    client_shell_boot_id: crate::protocol::BootId,
+    client_shell_boot_id: shepr_protocol::BootId,
     /// Outer window title last pushed, paired with the client that received it.
     /// Keying on the client means a newly attached terminal is written to even
     /// when the title itself has not changed, without every code path that
@@ -260,7 +259,7 @@ impl HeadlessServer {
     /// - Handles scheduled tasks (session save, metadata expiry, etc.)
     /// - Renders virtually and streams frames to clients
     pub async fn run(&mut self) -> io::Result<()> {
-        crate::logging::startup("server");
+        shepr_platform::logging::startup("server");
         let listener_fd = match &self.client_listener {
             LocalListener::UdSocket(socket) => socket.as_fd().as_raw_fd(),
         };
@@ -466,7 +465,7 @@ impl HeadlessServer {
                     ) => {
                         if let Ok(message) =
                             Self::frame_server_message(&ServerMessage::ServerShutdown {
-                                reason: Some(crate::protocol::ShutdownReason::Message(
+                                reason: Some(shepr_protocol::ShutdownReason::Message(
                                     "server is shutting down".to_owned(),
                                 )),
                             })
@@ -733,7 +732,7 @@ impl HeadlessServer {
     fn report_client_shell_input_failures(
         &mut self,
         client_id: ClientId,
-        pane_id: &crate::protocol::PublicPaneId,
+        pane_id: &shepr_protocol::PublicPaneId,
         failures: &crate::server::pane_input::PaneInputFailures,
     ) {
         warn!(?client_id, pane_id = %pane_id, err = %failures, "targeted client shell input failed");
@@ -744,7 +743,7 @@ impl HeadlessServer {
         self.send_to_client(
             client_id,
             &ServerMessage::ClientShellError {
-                kind: crate::protocol::NoticeKind::PaneInputDropped {
+                kind: shepr_protocol::NoticeKind::PaneInputDropped {
                     pane_id: pane_id.clone(),
                     events: dropped,
                 },
@@ -795,7 +794,7 @@ impl HeadlessServer {
             if let ServerEvent::ClientConnected { writer, .. }
             | ServerEvent::ClientShellConnected { writer, .. } = event
                 && let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
-                    reason: Some(crate::protocol::ShutdownReason::Message(
+                    reason: Some(shepr_protocol::ShutdownReason::Message(
                         "server is shutting down".to_owned(),
                     )),
                 })
@@ -814,7 +813,7 @@ impl HeadlessServer {
     /// allocate a `to_string()` per terminal on every attach keystroke, mouse
     /// event and render.
     #[cfg(test)]
-    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&crate::protocol::TerminalId> {
+    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&shepr_protocol::TerminalId> {
         self.app
             .state
             .terminals
@@ -839,7 +838,7 @@ impl HeadlessServer {
         lines: u16,
         column: Option<u16>,
         row: Option<u16>,
-        modifiers: protocol::WireModifiers,
+        modifiers: shepr_protocol::WireModifiers,
     ) -> bool {
         let Some(ClientConnection {
             mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
@@ -871,10 +870,10 @@ impl HeadlessServer {
     fn handle_terminal_attach_mouse(
         &mut self,
         client_id: ClientId,
-        kind: protocol::ClientMouseKind,
-        position: protocol::ClientMousePosition,
-        geometry: Option<protocol::ClientMouseGeometry>,
-        modifiers: protocol::WireModifiers,
+        kind: shepr_protocol::ClientMouseKind,
+        position: shepr_protocol::ClientMousePosition,
+        geometry: Option<shepr_protocol::ClientMouseGeometry>,
+        modifiers: shepr_protocol::WireModifiers,
         lines: u16,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
@@ -902,7 +901,7 @@ impl HeadlessServer {
         ) else {
             return false;
         };
-        let event = protocol::ClientPaneInputEvent::Mouse {
+        let event = shepr_protocol::ClientPaneInputEvent::Mouse {
             kind,
             position,
             geometry: None,
@@ -955,7 +954,7 @@ impl HeadlessServer {
         self.send_to_client(
             client_id,
             &ServerMessage::DirectTerminalNotice {
-                kind: crate::protocol::NoticeKind::InputDropped {
+                kind: shepr_protocol::NoticeKind::InputDropped {
                     terminal_id: terminal_id.clone(),
                 },
             },
@@ -1020,7 +1019,7 @@ impl HeadlessServer {
                         })
                 },
             )
-            .and_then(|title| crate::config::sanitize_window_title_text(&title))
+            .and_then(|title| shepr_config::sanitize_window_title_text(&title))
     }
 
     /// Pushes the configured outer window title to the foreground client when it
@@ -1067,7 +1066,7 @@ impl HeadlessServer {
         use api::schema::{ClientWindowTitleReason, ResponseResult};
 
         let title = match title {
-            Some(title) => match crate::config::sanitize_window_title_text(&title) {
+            Some(title) => match shepr_config::sanitize_window_title_text(&title) {
                 Some(title) => Some(title),
                 None => {
                     return Err(api::error::ApiError::new(
@@ -1095,10 +1094,10 @@ impl HeadlessServer {
     /// Encodes a server message into a length-prefixed frame.
     ///
     /// A payload over `MAX_FRAME_SIZE` fails with `FramingError::Oversized`:
-    /// `protocol::write_message` refuses it before writing anything, since
+    /// `shepr_protocol::write_message` refuses it before writing anything, since
     /// every reader would drop the connection on such a frame.
-    fn frame_server_message(msg: &ServerMessage) -> Result<Vec<u8>, protocol::FramingError> {
-        protocol::encode_frame(msg)
+    fn frame_server_message(msg: &ServerMessage) -> Result<Vec<u8>, shepr_protocol::FramingError> {
+        shepr_protocol::encode_frame(msg)
     }
 
     /// Sends a message to all connected clients.
@@ -1177,7 +1176,7 @@ impl HeadlessServer {
 
     fn shutdown_terminal_stream_clients(
         &mut self,
-        terminal_id: &crate::protocol::TerminalId,
+        terminal_id: &shepr_protocol::TerminalId,
         reason: &str,
     ) {
         let client_ids = terminal_stream_client_ids(&self.clients, terminal_id);
@@ -1186,7 +1185,7 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(crate::protocol::ShutdownReason::Message(reason.to_owned())),
+                    reason: Some(shepr_protocol::ShutdownReason::Message(reason.to_owned())),
                 },
             );
             self.remove_client_and_resize_if_needed(client_id);
@@ -1201,7 +1200,7 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(crate::protocol::ShutdownReason::Detached),
+                    reason: Some(shepr_protocol::ShutdownReason::Detached),
                 },
             );
         }
@@ -1210,14 +1209,14 @@ impl HeadlessServer {
     fn attach_terminal_client(
         &mut self,
         client_id: ClientId,
-        terminal_id: &crate::protocol::TerminalId,
+        terminal_id: &shepr_protocol::TerminalId,
         takeover: bool,
     ) -> bool {
         if !self.client_is_pending_terminal_mode(client_id) {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(crate::protocol::ShutdownReason::Message(
+                    reason: Some(shepr_protocol::ShutdownReason::Message(
                         "terminal attach failed: connection is not pending terminal attach"
                             .to_owned(),
                     )),
@@ -1231,7 +1230,7 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(crate::protocol::ShutdownReason::Message(format!(
+                    reason: Some(shepr_protocol::ShutdownReason::Message(format!(
                         "terminal attach failed: terminal {terminal_id} not found"
                     ))),
                 },
@@ -1249,7 +1248,7 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(crate::protocol::ShutdownReason::Message(format!(
+                    reason: Some(shepr_protocol::ShutdownReason::Message(format!(
                         "terminal attach failed: terminal {terminal_id} has a read in progress; retry"
                     ))),
                 },
@@ -1266,7 +1265,7 @@ impl HeadlessServer {
                 self.send_to_client(
                     client_id,
                     &ServerMessage::ServerShutdown {
-                        reason: Some(crate::protocol::ShutdownReason::Message(format!(
+                        reason: Some(shepr_protocol::ShutdownReason::Message(format!(
                             "terminal attach failed: terminal {terminal_id} already has an attached client; retry with --takeover"
                         ))),
                     },
@@ -1278,7 +1277,7 @@ impl HeadlessServer {
                 self.send_to_client(
                     owner,
                     &ServerMessage::ServerShutdown {
-                        reason: Some(crate::protocol::ShutdownReason::Message(
+                        reason: Some(shepr_protocol::ShutdownReason::Message(
                             "terminal attach taken over".to_owned(),
                         )),
                     },
@@ -1362,7 +1361,7 @@ impl HeadlessServer {
                     shepr_core::geometry::GridSize::clamped(cols, rows),
                     observed,
                     last_activity,
-                    protocol::RenderEncoding::TerminalAnsi,
+                    shepr_protocol::RenderEncoding::TerminalAnsi,
                     Some(writer),
                 );
                 connection.pixel_mouse = pixel_mouse;
@@ -1387,7 +1386,7 @@ impl HeadlessServer {
                     cell_width_px,
                     cell_height_px,
                     surface_active,
-                    render_encoding = ?protocol::RenderEncoding::SemanticFrame,
+                    render_encoding = ?shepr_protocol::RenderEncoding::SemanticFrame,
                     "client connected"
                 );
                 self.app.ensure_default_workspace();
@@ -1402,7 +1401,7 @@ impl HeadlessServer {
                     shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows),
                     observed,
                     last_activity,
-                    protocol::RenderEncoding::SemanticFrame,
+                    shepr_protocol::RenderEncoding::SemanticFrame,
                     Some(writer),
                 );
                 connection.pixel_mouse = pixel_mouse && observed.is_known();
@@ -1412,7 +1411,7 @@ impl HeadlessServer {
                 };
                 shell.mouse_capture = mouse_capture;
                 shell.surface_active = surface_active;
-                shell.projection_revision = crate::protocol::ProjectionRevision::new(1);
+                shell.projection_revision = shepr_protocol::ProjectionRevision::new(1);
                 let seed_snapshot = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
@@ -1421,7 +1420,7 @@ impl HeadlessServer {
                 );
                 let location =
                     crate::server::clients::ClientShellLocation::from_snapshot(&seed_snapshot);
-                let snapshot_message = crate::protocol::endpoint::snapshot_message(&seed_snapshot);
+                let snapshot_message = shepr_protocol::endpoint::snapshot_message(&seed_snapshot);
                 shell.location = Some(location);
                 shell.snapshot = Some(seed_snapshot);
                 self.clients.insert(client_id, connection);
@@ -1493,7 +1492,7 @@ impl HeadlessServer {
                     self.send_to_client(
                         client_id,
                         &ServerMessage::ClientShellError {
-                            kind: crate::protocol::NoticeKind::PasteRejected { size, max },
+                            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
                         },
                     );
                 } else {
@@ -1504,7 +1503,7 @@ impl HeadlessServer {
                     self.send_to_client(
                         client_id,
                         &ServerMessage::DirectTerminalNotice {
-                            kind: crate::protocol::NoticeKind::PasteRejected { size, max },
+                            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
                         },
                     );
                 }
@@ -2038,20 +2037,20 @@ impl HeadlessServer {
     }
 }
 
-fn client_pane_input_releases_press(event: &protocol::ClientPaneInputEvent) -> bool {
+fn client_pane_input_releases_press(event: &shepr_protocol::ClientPaneInputEvent) -> bool {
     matches!(
         event,
-        protocol::ClientPaneInputEvent::Key {
-            kind: protocol::ClientKeyKind::Release,
+        shepr_protocol::ClientPaneInputEvent::Key {
+            kind: shepr_protocol::ClientKeyKind::Release,
             ..
-        } | protocol::ClientPaneInputEvent::Mouse {
-            kind: protocol::ClientMouseKind::Up(_),
+        } | shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Up(_),
             ..
         }
     )
 }
 
-fn client_pane_input_has_interaction(events: &[protocol::ClientPaneInputEvent]) -> bool {
+fn client_pane_input_has_interaction(events: &[shepr_protocol::ClientPaneInputEvent]) -> bool {
     events
         .iter()
         .any(|event| !client_pane_input_releases_press(event))
@@ -2096,7 +2095,7 @@ async fn sleep_until_or_pending(deadline: Option<Instant>) {
 /// `ipc::bind_private_local_listener`), naming the server in the error when
 /// another one won the race to the path.
 fn bind_owner_only_listener(path: &Path) -> io::Result<LocalListener> {
-    crate::ipc::bind_private_local_listener(path).map_err(|err| {
+    shepr_platform::ipc::bind_private_local_listener(path).map_err(|err| {
         if err.kind() == io::ErrorKind::AddrInUse {
             io::Error::new(
                 io::ErrorKind::AddrInUse,

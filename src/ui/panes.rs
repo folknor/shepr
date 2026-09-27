@@ -13,10 +13,10 @@ use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
 use crate::app::AppState;
 use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
-use crate::theme::Palette;
 #[cfg(test)]
 use crate::workspace::apply_pane_chrome;
 use crate::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
+use shepr_config::theme::Palette;
 
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.scroll_metrics()
@@ -48,7 +48,7 @@ fn runtime_for_tab_pane<'a>(
     terminal_runtimes: &'a PaneRuntimeRegistry,
     tab: &'a crate::workspace::Tab,
     pane_id: shepr_core::layout::PaneId,
-) -> Option<(&'a crate::protocol::TerminalId, &'a PaneRuntime)> {
+) -> Option<(&'a shepr_protocol::TerminalId, &'a PaneRuntime)> {
     let terminal_id = tab.terminal_id(pane_id)?;
     terminal_runtimes
         .get(terminal_id)
@@ -623,10 +623,10 @@ fn color_to_rgb(color: Color) -> Option<Rgb> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PaneBordersConfig;
     use crate::pane::PaneRuntime;
     use crate::terminal::TerminalState;
     use crate::workspace::Workspace;
+    use shepr_config::PaneBordersConfig;
     use shepr_core::layout::PaneId;
     use shepr_vt::selection::Selection;
 

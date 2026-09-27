@@ -1,6 +1,5 @@
 use std::ops::Range;
 
-use crate::protocol::{ClientShellAgent, ClientShellPane};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -8,11 +7,12 @@ use ratatui::{
     text::Line,
     widgets::{Paragraph, Widget},
 };
+use shepr_protocol::{ClientShellAgent, ClientShellPane};
 
 use super::*;
 
 pub(super) struct AgentRow {
-    pub(super) pane_id: crate::protocol::PublicPaneId,
+    pub(super) pane_id: shepr_protocol::PublicPaneId,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<ResolvedToken>>,
@@ -20,7 +20,7 @@ pub(super) struct AgentRow {
 
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
-    sort: crate::config::AgentPanelSortConfig,
+    sort: shepr_config::AgentPanelSortConfig,
 ) -> Vec<String> {
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
     sort_agent_refs(&mut agents, sort);
@@ -30,8 +30,8 @@ pub(super) fn ordered_agent_pane_ids(
         .collect()
 }
 
-fn sort_agent_refs(agents: &mut [&ClientShellAgent], sort: crate::config::AgentPanelSortConfig) {
-    if sort == crate::config::AgentPanelSortConfig::Priority {
+fn sort_agent_refs(agents: &mut [&ClientShellAgent], sort: shepr_config::AgentPanelSortConfig) {
+    if sort == shepr_config::AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
             (
                 std::cmp::Reverse(status_priority(agent.agent_status)),
@@ -72,8 +72,8 @@ pub(super) fn render_agent_panel_header(
             .add_modifier(Modifier::BOLD),
     );
     let sort_label = match config.agent_panel_sort {
-        crate::config::AgentPanelSortConfig::Spaces => "grouped",
-        crate::config::AgentPanelSortConfig::Priority => "priority",
+        shepr_config::AgentPanelSortConfig::Spaces => "grouped",
+        shepr_config::AgentPanelSortConfig::Priority => "priority",
     };
     let sort_width =
         u16::try_from(display_width(sort_label).min(usize::from(area.width))).unwrap_or(u16::MAX);
@@ -246,7 +246,7 @@ impl AgentRowIndexItem<'_> {
 }
 
 impl<'a> AgentRowIndex<'a> {
-    fn new(snapshot: &'a ClientShellSnapshot, sort: crate::config::AgentPanelSortConfig) -> Self {
+    fn new(snapshot: &'a ClientShellSnapshot, sort: shepr_config::AgentPanelSortConfig) -> Self {
         let capacity = snapshot
             .agents
             .len()
@@ -276,7 +276,7 @@ impl<'a> AgentRowIndex<'a> {
                             agent: right,
                             order: right_order,
                         },
-                    ) if sort == crate::config::AgentPanelSortConfig::Priority => (
+                    ) if sort == shepr_config::AgentPanelSortConfig::Priority => (
                         std::cmp::Reverse(status_priority(left.agent_status)),
                         std::cmp::Reverse(left.state_change_seq),
                         left_order,
@@ -417,7 +417,7 @@ impl<'a> AgentRowIndex<'a> {
         let canonical_agent = agent
             .agent
             .as_deref()
-            .and_then(crate::detect::parse_agent_label);
+            .and_then(shepr_agent::detect::parse_agent_label);
         let rows = sidebar_agent_rows(
             &config.agents,
             &AgentTokenContext {

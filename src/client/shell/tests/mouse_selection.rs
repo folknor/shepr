@@ -112,15 +112,15 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
         Some(ClientChromeDrag::PaneSplit { .. })
     ));
     let mut replacement = snapshot();
-    replacement.revision = crate::protocol::ProjectionRevision::new(2);
+    replacement.revision = shepr_protocol::ProjectionRevision::new(2);
     replacement
         .tab_bar_right
-        .push(crate::protocol::ClientShellTabStatusSegment {
+        .push(shepr_protocol::ClientShellTabStatusSegment {
             text: "updated".into(),
             accent: false,
         });
     let mut replacement_surface = surface();
-    replacement_surface.projection_revision = crate::protocol::ProjectionRevision::new(2);
+    replacement_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     replacement_surface.splits.push(PaneSurfaceSplit {
         direction: PaneSurfaceSplitDirection::Horizontal,
         pos: 40,
@@ -788,9 +788,9 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     state.set_snapshot(Box::new(snapshot()));
     let surface_at = |surface_revision, content_revision, alternate_screen_active| {
         let mut pane_surface = surface();
-        pane_surface.surface_revision = crate::protocol::SurfaceRevision::new(surface_revision);
+        pane_surface.surface_revision = shepr_protocol::SurfaceRevision::new(surface_revision);
         pane_surface.panes[0].content_revision = content_revision;
-        pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
             offset_from_bottom: 0,
             max_offset_from_bottom: 11,
             viewport_rows: 2,
@@ -856,11 +856,11 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         .expect("test precondition")
         .offset_from_bottom = 2;
     assert!(matches!(
-        state.apply_pane_surface_patch(&crate::protocol::PaneSurfacePatch {
+        state.apply_pane_surface_patch(&shepr_protocol::PaneSurfacePatch {
             boot_id: scrolled.boot_id,
             projection_revision: scrolled.projection_revision,
-            base_surface_revision: crate::protocol::SurfaceRevision::new(3),
-            surface_revision: crate::protocol::SurfaceRevision::new(4),
+            base_surface_revision: shepr_protocol::SurfaceRevision::new(3),
+            surface_revision: shepr_protocol::SurfaceRevision::new(4),
             panes: scrolled.panes,
             rows: vec![],
             cursor: scrolled.frame.cursor,
@@ -922,13 +922,13 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     assert!(matches!(
         &events[..],
         [ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Down(
-                crate::protocol::ClientMouseButton::Left
+            kind: shepr_protocol::ClientMouseKind::Down(
+                shepr_protocol::ClientMouseButton::Left
             ),
             position: ClientMousePosition::Cell { column: 2, row: 1 },
             modifiers,
             ..
-        }] if *modifiers == crate::protocol::WireModifiers::ALT
+        }] if *modifiers == shepr_protocol::WireModifiers::ALT
     ));
     let moved = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Moved,
@@ -953,8 +953,8 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
-                        kind: crate::protocol::ClientMouseKind::Up(
-                            crate::protocol::ClientMouseButton::Left
+                        kind: shepr_protocol::ClientMouseKind::Up(
+                            shepr_protocol::ClientMouseButton::Left
                         ),
                         ..
                     }]
@@ -997,8 +997,8 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
-                        kind: crate::protocol::ClientMouseKind::Down(
-                            crate::protocol::ClientMouseButton::Left
+                        kind: shepr_protocol::ClientMouseKind::Down(
+                            shepr_protocol::ClientMouseButton::Left
                         ),
                         position: ClientMousePosition::Pixels { x: 20, y: 20, .. },
                         ..
@@ -1015,8 +1015,8 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
         ] if pane_id == "pane_1" && matches!(
             &events[..],
             [ClientPaneInputEvent::Mouse {
-                kind: crate::protocol::ClientMouseKind::Up(
-                    crate::protocol::ClientMouseButton::Left
+                kind: shepr_protocol::ClientMouseKind::Up(
+                    shepr_protocol::ClientMouseButton::Left
                 ),
                 position: ClientMousePosition::Pixels { x: 20, y: 20, .. },
                 ..
@@ -1063,8 +1063,8 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
-                        kind: crate::protocol::ClientMouseKind::Up(
-                            crate::protocol::ClientMouseButton::Right
+                        kind: shepr_protocol::ClientMouseKind::Up(
+                            shepr_protocol::ClientMouseButton::Right
                         ),
                         ..
                     }]

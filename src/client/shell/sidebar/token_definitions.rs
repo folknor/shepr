@@ -1,4 +1,4 @@
-use crate::config::{
+use shepr_config::{
     AgentSidebarToken, AgentsSidebarConfig, SidebarTokenStyle, SpaceSidebarToken,
     SpacesSidebarConfig,
 };
@@ -60,7 +60,7 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) agent_label: Option<&'a str>,
     pub(crate) terminal_title: Option<&'a str>,
     pub(crate) terminal_title_stripped: Option<&'a str>,
-    pub(crate) canonical_agent: Option<crate::detect::Agent>,
+    pub(crate) canonical_agent: Option<shepr_agent::detect::Agent>,
     pub(crate) tokens: &'a dyn TokenValues,
 }
 
@@ -89,7 +89,11 @@ pub(crate) fn agent_rows(
     state_text: &str,
 ) -> Vec<Vec<ResolvedToken>> {
     config
-        .rows_for_agent(context.canonical_agent.map(crate::agent::Agent::label))
+        .rows_for_agent(
+            context
+                .canonical_agent
+                .map(shepr_agent::agent::Agent::label),
+        )
         .iter()
         .filter_map(|row| {
             let resolved = row
@@ -206,7 +210,7 @@ pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentSidebarToken, SpaceSidebarToken};
+    use shepr_config::{AgentSidebarToken, SpaceSidebarToken};
 
     struct Entry {
         workspace: String,
@@ -215,7 +219,7 @@ mod tests {
         agent_label: Option<String>,
         terminal_title: Option<String>,
         terminal_title_stripped: Option<String>,
-        canonical_agent: Option<crate::detect::Agent>,
+        canonical_agent: Option<shepr_agent::detect::Agent>,
         tokens: std::collections::HashMap<String, String>,
     }
 
@@ -227,7 +231,7 @@ mod tests {
             agent_label: Some("pi".into()),
             terminal_title: None,
             terminal_title_stripped: None,
-            canonical_agent: Some(crate::detect::Agent::Pi),
+            canonical_agent: Some(shepr_agent::detect::Agent::Pi),
             tokens: std::collections::HashMap::new(),
         }
     }
@@ -294,8 +298,8 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 &rows[0],
                 super::super::super::status_glyph(
                     crate::api::schema::AgentStatus::Working,
-                    crate::config::StatusIndicatorStyle::Dots,
-                    &crate::theme::Palette::catppuccin(),
+                    shepr_config::StatusIndicatorStyle::Dots,
+                    &shepr_config::theme::Palette::catppuccin(),
                     false,
                 ),
                 super::super::TokenStyles {
@@ -327,7 +331,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
 
     #[test]
     fn custom_numeric_rules_resolve_in_agent_overrides_and_space_rows() {
-        let config: crate::config::SidebarConfig = toml::from_str(
+        let config: shepr_config::SidebarConfig = toml::from_str(
             r#"
 [agents]
 rows = [["workspace"]]
@@ -366,7 +370,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
 
     #[test]
     fn conditional_hide_removes_tokens_and_empty_rows() {
-        let config: crate::config::SidebarConfig = toml::from_str(
+        let config: shepr_config::SidebarConfig = toml::from_str(
             r##"
 [agents]
 rows = [[{ token = "machine", fg = "#61afef", rules = [{ equals = "Local", hide = true }] }, "agent"]]
@@ -378,7 +382,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         ).expect("test precondition");
         let encoded = toml::to_string(&config).expect("test precondition");
         assert!(encoded.contains("hide = true"));
-        let config: crate::config::SidebarConfig =
+        let config: shepr_config::SidebarConfig =
             toml::from_str(&encoded).expect("test precondition");
         let mut entry = entry();
         entry.canonical_agent = None;
@@ -392,7 +396,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 ResolvedTokenKind::Agent("pi".into())
             );
         }
-        entry.canonical_agent = Some(crate::detect::Agent::Pi);
+        entry.canonical_agent = Some(shepr_agent::detect::Agent::Pi);
         for (value, count) in [("20", 1), ("90", 2)] {
             entry.tokens.insert("load".into(), value.into());
             assert_eq!(

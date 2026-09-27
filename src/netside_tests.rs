@@ -5,16 +5,16 @@ use crate::client::endpoint::{
     ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport, ProfileId,
     SavedSshEndpoint,
 };
-use crate::protocol::ServerMessage;
 use crate::server::ClientId;
 use crate::server::client_transport::ServerEvent;
 use crate::server::headless::tests as headless_tests;
+use shepr_protocol::ServerMessage;
 
 #[derive(Clone)]
-struct CapturingEndpointTransport(Arc<Mutex<Vec<crate::protocol::ClientMessage>>>);
+struct CapturingEndpointTransport(Arc<Mutex<Vec<shepr_protocol::ClientMessage>>>);
 
 impl EndpointTransport for CapturingEndpointTransport {
-    fn send(&mut self, message: &crate::protocol::ClientMessage) -> std::io::Result<()> {
+    fn send(&mut self, message: &shepr_protocol::ClientMessage) -> std::io::Result<()> {
         let mut sent = self
             .0
             .lock()
@@ -24,9 +24,9 @@ impl EndpointTransport for CapturingEndpointTransport {
     }
 }
 
-fn lifecycle_resize() -> crate::protocol::ClientMessage {
-    crate::protocol::ClientMessage::ClientShellResize {
-        geometry: crate::protocol::TerminalGeometry::new(80, 24, 8, 16, false),
+fn lifecycle_resize() -> shepr_protocol::ClientMessage {
+    shepr_protocol::ClientMessage::ClientShellResize {
+        geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false),
     }
 }
 
@@ -85,7 +85,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     };
     let target_id = ClientEndpointId::Ssh(profile.id.clone());
     let mut shell = crate::client::ClientShellState::new(
-        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+        crate::client::ClientShellConfig::from_config(&shepr_config::Config::default()),
     );
     shell.set_endpoint_catalog(&[profile]);
     shell.set_snapshot(source_snapshot);
@@ -118,7 +118,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let mut source_release_request_id = None;
     for message in std::mem::take(&mut *source_sent.lock().expect("test precondition")) {
         match message {
-            crate::protocol::ClientMessage::ClientShellFocus { focused } => {
+            shepr_protocol::ClientMessage::ClientShellFocus { focused } => {
                 assert!(headless_tests::handle_server_event(
                     &mut source_server,
                     ServerEvent::ClientShellFocus {
@@ -127,7 +127,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
                     }
                 ));
             }
-            crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
                 let request = serde_json::from_str::<api::schema::Request>(&request)
                     .expect("test precondition");
                 if matches!(
@@ -239,7 +239,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         .expect("test precondition")
         .iter()
         .find_map(|message| match message {
-            crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
                 let request = serde_json::from_str::<api::schema::Request>(request).ok()?;
                 request
                     .id
@@ -306,7 +306,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         .expect("test precondition")
         .iter()
         .find_map(|message| match message {
-            crate::protocol::ClientMessage::PresentationSync(data) => Some(data.clone()),
+            shepr_protocol::ClientMessage::PresentationSync(data) => Some(data.clone()),
             _ => None,
         })
         .expect("client presentation effects fence");

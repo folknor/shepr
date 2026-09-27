@@ -132,7 +132,7 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
     let pid = child.0.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let ready = crate::detect::foreground_job(pid).is_some_and(|job| {
+        let ready = shepr_agent::detect::foreground_job(pid).is_some_and(|job| {
             job.processes
                 .iter()
                 .any(|process| process.cmdline.as_deref() == Some("droid 999"))

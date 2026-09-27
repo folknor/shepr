@@ -81,7 +81,7 @@ impl App {
                     && let Some(workspace) = self.state.workspaces.get_mut(index)
                 {
                     workspace.set_custom_name(label);
-                    crate::logging::workspace_renamed(&workspace.id);
+                    shepr_platform::logging::workspace_renamed(&workspace.id);
                 }
                 self.emit_workspace_open_events(index);
                 match self.workspace_created_result(index) {
@@ -128,7 +128,7 @@ impl App {
             return workspace_not_found(id, &params.workspace_id);
         };
         ws.set_custom_name(params.label.clone());
-        crate::logging::workspace_renamed(&ws.id);
+        shepr_platform::logging::workspace_renamed(&ws.id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
             data: EventData::WorkspaceRenamed {
@@ -358,9 +358,9 @@ mod tests {
     use super::*;
     use crate::{
         api::schema::{ErrorResponse, SuccessResponse},
-        config::Config,
         workspace::Workspace,
     };
+    use shepr_config::Config;
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
     // surface. Splits and tabs already do; a new workspace must follow the

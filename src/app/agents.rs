@@ -178,7 +178,7 @@ impl App {
         if !valid_agent_name(&name) {
             return Err(AgentStartError::InvalidName);
         }
-        let Some(kind) = crate::detect::parse_agent_label(&params.kind) else {
+        let Some(kind) = shepr_agent::detect::parse_agent_label(&params.kind) else {
             return Err(AgentStartError::UnsupportedKind(params.kind));
         };
         if params
@@ -189,7 +189,7 @@ impl App {
             return Err(AgentStartError::InvalidArgument);
         }
         let persisted_agent_session =
-            crate::agent::resume::persisted_session_from_launch_args(kind, &params.args);
+            shepr_agent::agent::resume::persisted_session_from_launch_args(kind, &params.args);
         let conflicts = self.agent_name_conflicts(&name, "");
         if !conflicts.is_empty() {
             return Err(AgentStartError::DuplicateName {
@@ -222,7 +222,7 @@ impl App {
         available_shell_name(runtime)
             .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
 
-        let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
+        let mut argv = vec![shepr_agent::detect::interactive_agent_executable(kind).to_string()];
         argv.extend(params.args);
         let command = crate::remote::interactive_shell_command(&argv)
             .ok_or(AgentStartError::InvalidArgument)?;
@@ -448,12 +448,12 @@ fn available_shell_name(runtime: &crate::pane::PaneRuntime) -> Option<String> {
     if runtime.child_pid().is_none() {
         return Some("sh".into());
     }
-    crate::detect::available_pane_shell(runtime.child_pid()?)
+    shepr_agent::detect::available_pane_shell(runtime.child_pid()?)
 }
 
 pub(super) fn runtime_hosts_agent(
     runtime: &crate::pane::PaneRuntime,
-    expected: crate::detect::Agent,
+    expected: shepr_agent::detect::Agent,
 ) -> bool {
     #[cfg(test)]
     if runtime.child_pid().is_none() {
@@ -462,14 +462,14 @@ pub(super) fn runtime_hosts_agent(
     live_runtime_agent(runtime) == Some(expected)
 }
 
-fn live_runtime_agent(runtime: &crate::pane::PaneRuntime) -> Option<crate::detect::Agent> {
-    let job = crate::detect::foreground_job(runtime.child_pid()?)?;
-    crate::detect::identify_agent_in_job(&job)
+fn live_runtime_agent(runtime: &crate::pane::PaneRuntime) -> Option<shepr_agent::detect::Agent> {
+    let job = shepr_agent::detect::foreground_job(runtime.child_pid()?)?;
+    shepr_agent::detect::identify_agent_in_job(&job)
         .map(|(agent, _)| agent)
         .or_else(|| {
             job.processes
                 .iter()
-                .find_map(|process| crate::detect::process_agent_hint(process.pid))
+                .find_map(|process| shepr_agent::detect::process_agent_hint(process.pid))
         })
 }
 

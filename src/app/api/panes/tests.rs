@@ -1,10 +1,10 @@
 use super::*;
 use crate::{
     api::schema::{ErrorResponse, SplitDirection, SuccessResponse},
-    config::Config,
-    detect::{Agent, AgentState},
     workspace::Workspace,
 };
+use shepr_agent::detect::{Agent, AgentState};
+use shepr_config::Config;
 
 fn app_with_test_workspace() -> (App, String) {
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2103,7 +2103,7 @@ fn api_pane_focus_returns_idle_agent_status() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition")
-        .state = crate::detect::AgentState::Idle;
+        .state = shepr_agent::detect::AgentState::Idle;
     app.state.workspaces[0].tabs[0].layout.focus_pane(pane_id);
 
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");

@@ -5,11 +5,11 @@ edition = "2024"
 publish = false
 
 [dependencies]
-libc = { workspace = true }
 bytes = { workspace = true }
+libc = { workspace = true }
+shepr-core = { path = "../shepr-core" }
 tokio = { workspace = true }
 tracing = { workspace = true }
-shepr-core = { path = "../shepr-core" }
 
 [dev-dependencies]
 shepr-test-support = { path = "../shepr-test-support" }

@@ -84,13 +84,13 @@ impl SessionWriter {
             // too and the unloaded-file guard is released, exactly as for a
             // durable save.
             Ok(super::io::Published::NotDurable(err)) => {
-                crate::logging::session_save_failed(
+                shepr_platform::logging::session_save_failed(
                     &self.path,
                     &format!("saved, but syncing its directory failed: {err}"),
                 );
             }
             Err(err) => {
-                crate::logging::session_save_failed(&self.path, &err.to_string());
+                shepr_platform::logging::session_save_failed(&self.path, &err.to_string());
                 return;
             }
         }
@@ -100,9 +100,9 @@ impl SessionWriter {
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = self.save_history(&history_path, history) {
             self.written_history = None;
-            crate::logging::session_save_failed(&history_path, &err.to_string());
+            shepr_platform::logging::session_save_failed(&history_path, &err.to_string());
         }
-        crate::logging::session_saved(&self.path, snapshot.workspaces.len());
+        shepr_platform::logging::session_saved(&self.path, snapshot.workspaces.len());
     }
 
     /// Writes the history unless the file already holds exactly these bytes
@@ -139,14 +139,14 @@ impl SessionWriter {
             super::io::clear_path(&self.path)
         });
         if let Err(err) = result {
-            crate::logging::session_clear_failed(&self.path, &err.to_string());
+            shepr_platform::logging::session_clear_failed(&self.path, &err.to_string());
             return;
         }
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::clear_path(&history_path) {
-            crate::logging::session_clear_failed(&history_path, &err.to_string());
+            shepr_platform::logging::session_clear_failed(&history_path, &err.to_string());
         }
-        crate::logging::session_cleared(&self.path);
+        shepr_platform::logging::session_cleared(&self.path);
     }
 }
 

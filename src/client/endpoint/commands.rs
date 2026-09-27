@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::api::client::ApiClientError;
 use crate::api::schema::{Request, ResponseResult};
-use crate::protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
+use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
 use crate::client::shell::ClientShellEndpointError;
@@ -608,7 +608,7 @@ mod tests {
             .expect("test precondition")
             .queued
             .push_back(QueuedCommand {
-                generation: crate::protocol::ConnectionGeneration::new(1),
+                generation: shepr_protocol::ConnectionGeneration::new(1),
                 boot_id: "boot-a".into(),
                 request: Box::new(Request {
                     id: "queued-source".into(),
@@ -621,7 +621,7 @@ mod tests {
             remote.clone(),
             EndpointCommandLane {
                 queued: VecDeque::from([QueuedCommand {
-                    generation: crate::protocol::ConnectionGeneration::new(2),
+                    generation: shepr_protocol::ConnectionGeneration::new(2),
                     boot_id: "boot-b".into(),
                     request: Box::new(Request {
                         id: "request-b".into(),
@@ -673,7 +673,7 @@ mod tests {
             .expect("test precondition")
             .queued
             .push_back(QueuedCommand {
-                generation: crate::protocol::ConnectionGeneration::new(1),
+                generation: shepr_protocol::ConnectionGeneration::new(1),
                 boot_id: "boot-a".into(),
                 request: Box::new(Request {
                     id: "queued-a".into(),

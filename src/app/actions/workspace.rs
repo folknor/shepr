@@ -128,14 +128,14 @@ impl AppState {
             self.set_active_index(Some(idx));
             self.set_selected_index(Some(idx));
             let workspace_id = self.workspaces[idx].id.to_string();
-            crate::logging::workspace_focused(&workspace_id);
+            shepr_platform::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
             if let Some(ws) = self.workspaces.get_mut(idx) {
                 let active_tab = ws.active_tab;
                 ws.switch_tab(active_tab);
                 let tab_id =
                     public_tab_id_for_index(ws, active_tab).unwrap_or_else(|| workspace_id.clone());
-                crate::logging::tab_focused(&workspace_id, &tab_id);
+                shepr_platform::logging::tab_focused(&workspace_id, &tab_id);
             }
             self.record_pane_focus_after_navigation(previous_focus);
         }
@@ -159,14 +159,14 @@ impl AppState {
         self.set_selected_index(Some(ws_idx));
         let workspace_id = self.workspaces[ws_idx].id.to_string();
         if workspace_changed {
-            crate::logging::workspace_focused(&workspace_id);
+            shepr_platform::logging::workspace_focused(&workspace_id);
         }
         self.mark_session_dirty();
         if let Some(ws) = self.workspaces.get_mut(ws_idx) {
             ws.switch_tab(tab_idx);
             let tab_id =
                 public_tab_id_for_index(ws, tab_idx).unwrap_or_else(|| workspace_id.clone());
-            crate::logging::tab_focused(&workspace_id, &tab_id);
+            shepr_platform::logging::tab_focused(&workspace_id, &tab_id);
         }
         self.refresh_active_tab_id();
         self.record_pane_focus_after_navigation(previous_focus);
@@ -183,7 +183,7 @@ impl AppState {
             ws.switch_tab(idx);
             let workspace_id = ws.id.to_string();
             let tab_id = public_tab_id_for_index(ws, idx).unwrap_or_else(|| workspace_id.clone());
-            crate::logging::tab_focused(&workspace_id, &tab_id);
+            shepr_platform::logging::tab_focused(&workspace_id, &tab_id);
             self.refresh_active_tab_id();
             self.mark_session_dirty();
             self.record_pane_focus_after_navigation(previous_focus);
@@ -271,7 +271,7 @@ impl AppState {
     pub(crate) fn terminal_ids_for_workspace(
         &self,
         ws_idx: usize,
-    ) -> Vec<crate::protocol::TerminalId> {
+    ) -> Vec<shepr_protocol::TerminalId> {
         self.workspaces
             .get(ws_idx)
             .into_iter()
@@ -295,7 +295,7 @@ impl AppState {
         &self,
         ws_idx: usize,
         pane_id: PaneId,
-    ) -> Option<crate::protocol::TerminalId> {
+    ) -> Option<shepr_protocol::TerminalId> {
         self.workspaces
             .get(ws_idx)?
             .pane_state(pane_id)
@@ -304,7 +304,7 @@ impl AppState {
 
     pub(crate) fn remove_unattached_terminal_ids(
         &mut self,
-        terminal_ids: impl IntoIterator<Item = crate::protocol::TerminalId>,
+        terminal_ids: impl IntoIterator<Item = shepr_protocol::TerminalId>,
     ) {
         for terminal_id in terminal_ids {
             let still_attached = self.workspaces.iter().any(|ws| {
@@ -470,7 +470,7 @@ impl AppState {
         self.mark_session_dirty();
         let tab_id =
             crate::workspace::public_tab_id_for_number(&removal.workspace_id, removal.tab_number);
-        crate::logging::tab_closed(&removal.workspace_id, &tab_id);
+        shepr_platform::logging::tab_closed(&removal.workspace_id, &tab_id);
         TabRemovalCommit::Removed(TabRemovalOutcome {
             workspace_index: plan.workspace_index,
             scope: plan.scope,
@@ -528,7 +528,7 @@ impl AppState {
     pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) -> Option<WorkspaceRemovalOutcome> {
         let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.to_string())?;
         self.mark_session_dirty();
-        crate::logging::workspace_closed(&workspace_id);
+        shepr_platform::logging::workspace_closed(&workspace_id);
 
         let terminal_ids = self.terminal_ids_for_workspace(ws_idx);
         let pane_ids = self.pane_ids_for_workspace(ws_idx);
@@ -553,7 +553,7 @@ impl AppState {
             });
         }
         let last = self.workspaces.len() - 1;
-        let position_of = |id: Option<crate::protocol::WorkspaceId>,
+        let position_of = |id: Option<shepr_protocol::WorkspaceId>,
                            workspaces: &[crate::workspace::Workspace]| {
             id.and_then(|id| workspaces.iter().position(|ws| ws.id == id))
         };

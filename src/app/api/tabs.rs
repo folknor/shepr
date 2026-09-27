@@ -118,7 +118,7 @@ impl App {
                         .and_then(|ws| ws.tabs.get_mut(tab_idx))
                     {
                         tab.set_custom_name(label);
-                        crate::logging::tab_renamed(&workspace_id, &tab_id);
+                        shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
                     }
                 }
                 self.schedule_session_save();
@@ -163,7 +163,7 @@ impl App {
             return tab_not_found(id, &params.tab_id);
         };
         tab.set_custom_name(params.label.clone());
-        crate::logging::tab_renamed(&workspace_id, &tab_id);
+        shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
             data: EventData::TabRenamed {
@@ -285,7 +285,8 @@ fn tab_not_found(id: String, tab_id: &str) -> ApiResult {
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
-    use crate::{api::schema::SuccessResponse, config::Config, workspace::Workspace};
+    use crate::{api::schema::SuccessResponse, workspace::Workspace};
+    use shepr_config::Config;
 
     #[test]
     fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {

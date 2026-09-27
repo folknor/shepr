@@ -5,7 +5,7 @@ impl HeadlessServer {
     pub(super) fn handle_client_shell_endpoint_request(
         &mut self,
         client_id: ClientId,
-        boot_id: crate::protocol::BootId,
+        boot_id: shepr_protocol::BootId,
         mut request: Box<api::schema::Request>,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
@@ -15,7 +15,7 @@ impl HeadlessServer {
             self.remove_client_and_resize_if_needed(client_id);
             return true;
         };
-        let request_id: crate::protocol::RequestId = request.id.clone().into();
+        let request_id: shepr_protocol::RequestId = request.id.clone().into();
         if !crate::server::client_commands::supports_client_shell_method(&request.method) {
             let message = crate::server::client_commands::error_message(
                 boot_id,

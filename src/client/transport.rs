@@ -7,7 +7,7 @@ pub(super) fn start_endpoint_transport(
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
     max_frame_size: usize,
-    surface_decoder: protocol::surface_reuse::Decoder,
+    surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) -> Result<endpoint::NativeEndpointTransport, ClientError> {
     let reader = stream.try_clone().map_err(ClientError::ConnectionFailed)?;
     let transport = endpoint::NativeEndpointTransport::with_lifetime(stream, lifetime)
@@ -32,7 +32,7 @@ pub(super) fn spawn_endpoint_reader(
     max_frame_size: usize,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
-    surface_decoder: protocol::surface_reuse::Decoder,
+    surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) -> Result<(), ClientError> {
     let event_tx = event_tx.clone();
     let stopped = Arc::clone(stopped);
@@ -61,7 +61,7 @@ pub(super) fn server_reader_thread(
     max_frame_size: usize,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
-    mut surface_decoder: protocol::surface_reuse::Decoder,
+    mut surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) {
     if let Err(error) = stream.set_nonblocking(true) {
         let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
@@ -81,11 +81,12 @@ pub(super) fn server_reader_thread(
             break;
         }
 
-        let message = protocol::read_message(&mut stream, max_frame_size).and_then(|message| {
-            surface_decoder
-                .decode(message)
-                .map_err(|error| protocol::FramingError::SurfaceDecode(error.to_string()))
-        });
+        let message =
+            shepr_protocol::read_message(&mut stream, max_frame_size).and_then(|message| {
+                surface_decoder
+                    .decode(message)
+                    .map_err(|error| shepr_protocol::FramingError::SurfaceDecode(error.to_string()))
+            });
         match message {
             Ok(msg) => {
                 if event_tx
@@ -99,11 +100,11 @@ pub(super) fn server_reader_thread(
                     break;
                 }
             }
-            Err(protocol::FramingError::UnexpectedEof) => {
+            Err(shepr_protocol::FramingError::UnexpectedEof) => {
                 let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
                     endpoint_id: endpoint_id.clone(),
                     generation,
-                    error: framing_error_to_io(protocol::FramingError::UnexpectedEof),
+                    error: framing_error_to_io(shepr_protocol::FramingError::UnexpectedEof),
                 });
                 break;
             }
@@ -121,12 +122,12 @@ pub(super) fn server_reader_thread(
     }
 }
 
-fn framing_error_to_io(error: protocol::FramingError) -> io::Error {
+fn framing_error_to_io(error: shepr_protocol::FramingError) -> io::Error {
     match error {
-        protocol::FramingError::UnexpectedEof => {
+        shepr_protocol::FramingError::UnexpectedEof => {
             io::Error::new(io::ErrorKind::UnexpectedEof, "server closed connection")
         }
-        protocol::FramingError::Io(error) => error,
+        shepr_protocol::FramingError::Io(error) => error,
         error => io::Error::new(io::ErrorKind::InvalidData, error),
     }
 }
@@ -142,10 +143,10 @@ impl io::Read for EndpointReader<'_> {
             if self.stopped.load(Ordering::Acquire) {
                 return Ok(0);
             }
-            match crate::ipc::poll_local_stream_read_count(self.stream, buffer)? {
-                crate::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
-                crate::ipc::LocalStreamReadCount::Closed => return Ok(0),
-                crate::ipc::LocalStreamReadCount::Pending => {
+            match shepr_platform::ipc::poll_local_stream_read_count(self.stream, buffer)? {
+                shepr_platform::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
+                shepr_platform::ipc::LocalStreamReadCount::Closed => return Ok(0),
+                shepr_platform::ipc::LocalStreamReadCount::Pending => {
                     shepr_platform::wait_client_stream_readable(self.stream)?;
                 }
             }
@@ -157,7 +158,7 @@ pub(in crate::client) fn write_to_local_server(
     stream: &mut LocalStream,
     msg: &ClientMessage,
 ) -> io::Result<()> {
-    protocol::write_message(stream, msg).map_err(|error| io::Error::other(error.to_string()))
+    shepr_protocol::write_message(stream, msg).map_err(|error| io::Error::other(error.to_string()))
 }
 
 pub(super) trait ClientMessageSink {
@@ -196,18 +197,18 @@ mod tests {
 
     #[test]
     fn server_reader_errors_keep_eof_io_and_decode_causes() {
-        let eof = framing_error_to_io(protocol::FramingError::UnexpectedEof);
+        let eof = framing_error_to_io(shepr_protocol::FramingError::UnexpectedEof);
         assert_eq!(eof.kind(), io::ErrorKind::UnexpectedEof);
         assert!(eof.to_string().contains("server closed connection"));
 
-        let io_error = framing_error_to_io(protocol::FramingError::Io(io::Error::new(
+        let io_error = framing_error_to_io(shepr_protocol::FramingError::Io(io::Error::new(
             io::ErrorKind::BrokenPipe,
             "peer reset",
         )));
         assert_eq!(io_error.kind(), io::ErrorKind::BrokenPipe);
         assert!(io_error.to_string().contains("peer reset"));
 
-        let decode_error = framing_error_to_io(protocol::FramingError::Oversized {
+        let decode_error = framing_error_to_io(shepr_protocol::FramingError::Oversized {
             claimed: 32,
             max: 16,
         });
@@ -218,13 +219,13 @@ mod tests {
                 .contains("frame size 32 exceeds maximum 16")
         );
 
-        let surface_error = framing_error_to_io(protocol::FramingError::SurfaceDecode(
+        let surface_error = framing_error_to_io(shepr_protocol::FramingError::SurfaceDecode(
             "baseline mismatch".into(),
         ));
         assert_eq!(surface_error.kind(), io::ErrorKind::InvalidData);
         assert!(matches!(
-            surface_error.get_ref().and_then(|error| error.downcast_ref::<protocol::FramingError>()),
-            Some(protocol::FramingError::SurfaceDecode(message)) if message == "baseline mismatch"
+            surface_error.get_ref().and_then(|error| error.downcast_ref::<shepr_protocol::FramingError>()),
+            Some(shepr_protocol::FramingError::SurfaceDecode(message)) if message == "baseline mismatch"
         ));
     }
 
@@ -232,8 +233,8 @@ mod tests {
     fn upload_cancellation_preserves_pending_endpoint_download() {
         let scratch = crate::test_support::ScratchDir::new("cancel");
         let path = scratch.join("s.sock");
-        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
-        let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
+        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let mut bridge = listener.accept().expect("test precondition");
         std::fs::remove_file(path).expect("test precondition");
         drop(listener);
@@ -261,7 +262,7 @@ mod tests {
         );
         let message = ClientMessage::ClientShellFocus { focused: false };
         let mut expected = Vec::new();
-        protocol::write_message(&mut expected, &message).expect("test precondition");
+        shepr_protocol::write_message(&mut expected, &message).expect("test precondition");
         writer.send(&message).expect("test precondition");
         let mut forwarded = Vec::new();
         while forwarded.len() < expected.len() {
@@ -281,7 +282,7 @@ mod tests {
         let flushed = writer.flush(Instant::now() + Duration::from_secs(3));
         if flushed.is_ok() {
             let received: ClientMessage =
-                protocol::read_message(&mut bridge, protocol::MAX_FRAME_SIZE)
+                shepr_protocol::read_message(&mut bridge, shepr_protocol::MAX_FRAME_SIZE)
                     .expect("test precondition");
             assert_eq!(received, ClientMessage::ClientShellFocus { focused: true });
         }

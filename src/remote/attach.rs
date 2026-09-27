@@ -16,16 +16,22 @@ use std::time::{Duration, Instant};
 mod tests {
     use super::*;
 
-    fn test_app_paths() -> crate::config::AppPaths {
+    fn test_app_paths() -> shepr_config::AppPaths {
         let root = crate::test_support::ScratchDir::new("remote-ssh-config").keep_until_exit();
-        crate::config::AppPaths::test_with_context(&root, Some(&root), None)
+        shepr_config::AppPaths::test_with_context(&root, Some(&root), None)
     }
 
-    fn upload_test_streams(name: &str) -> (crate::ipc::LocalStream, crate::ipc::LocalStream) {
+    fn upload_test_streams(
+        name: &str,
+    ) -> (
+        shepr_platform::ipc::LocalStream,
+        shepr_platform::ipc::LocalStream,
+    ) {
         let scratch = crate::test_support::ScratchDir::new(name);
         let socket = scratch.join("upload.sock");
-        let listener = crate::ipc::bind_private_local_listener(&socket).expect("test precondition");
-        let client = crate::ipc::connect_local_stream(&socket).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&socket).expect("test precondition");
+        let client = shepr_platform::ipc::connect_local_stream(&socket).expect("test precondition");
         let server = listener.accept().expect("test precondition");
         server.set_nonblocking(true).expect("test precondition");
         drop(listener);
@@ -198,9 +204,9 @@ mod tests {
     fn accepted_bridge_stream_is_reset_to_blocking() {
         use std::os::fd::AsRawFd as _;
 
-        fn is_nonblocking(stream: &crate::ipc::LocalStream) -> bool {
+        fn is_nonblocking(stream: &shepr_platform::ipc::LocalStream) -> bool {
             let fd = match stream {
-                crate::ipc::LocalStream::UdSocket(stream) => stream.inner().as_raw_fd(),
+                shepr_platform::ipc::LocalStream::UdSocket(stream) => stream.inner().as_raw_fd(),
             };
             // SAFETY: F_GETFL only reads flags from the live descriptor owned by `stream`.
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -210,11 +216,12 @@ mod tests {
 
         let scratch = crate::test_support::ScratchDir::new("bridge-blocking");
         let socket = scratch.join("bridge.sock");
-        let listener = crate::ipc::bind_private_local_listener(&socket).expect("bind listener");
-        let client = crate::ipc::connect_local_stream(&socket).expect("connect client");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind listener");
+        let client = shepr_platform::ipc::connect_local_stream(&socket).expect("connect client");
         let mut server = listener.accept().expect("accept client");
 
-        crate::ipc::set_local_stream_polling(&mut server, true)
+        shepr_platform::ipc::set_local_stream_polling(&mut server, true)
             .expect("force a nonblocking accepted stream");
         assert!(is_nonblocking(&server));
         let server = prepare_remote_bridge_stream(server).expect("prepare bridge stream");
@@ -462,7 +469,7 @@ mod tests {
             .expect("test precondition");
         let ssh = RemoteSsh::test_with_state(
             SshTarget::parse("example").expect("test precondition"),
-            crate::config::DEFAULT_SESSION_NAME.into(),
+            shepr_config::DEFAULT_SESSION_NAME.into(),
             Some(managed_config),
             false,
         );
@@ -650,7 +657,7 @@ mod tests {
                 format!("{} --session agents {command}", shepr.as_str())
             );
             assert_eq!(
-                shepr.session_command(crate::config::DEFAULT_SESSION_NAME, args),
+                shepr.session_command(shepr_config::DEFAULT_SESSION_NAME, args),
                 format!("{} {command}", shepr.as_str())
             );
         }
@@ -660,7 +667,7 @@ mod tests {
     fn remote_ssh_commands_compress_without_managed_config() {
         let ssh = RemoteSsh::test_with_state(
             SshTarget::parse("example").expect("test precondition"),
-            crate::config::DEFAULT_SESSION_NAME.into(),
+            shepr_config::DEFAULT_SESSION_NAME.into(),
             None,
             false,
         );
@@ -678,7 +685,7 @@ mod tests {
     fn an_attempt_deadline_shortens_and_then_refuses_noninteractive_commands() {
         let mut ssh = RemoteSsh::test_with_state(
             SshTarget::parse("example").expect("test precondition"),
-            crate::config::DEFAULT_SESSION_NAME.into(),
+            shepr_config::DEFAULT_SESSION_NAME.into(),
             None,
             true,
         );
@@ -755,7 +762,7 @@ mod tests {
             reattach_command(
                 "shepr",
                 "host name",
-                crate::config::DEFAULT_SESSION_NAME,
+                shepr_config::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Local,
             ),
             "shepr --remote 'host name'"
@@ -764,7 +771,7 @@ mod tests {
             reattach_command(
                 "shepr",
                 "host",
-                crate::config::DEFAULT_SESSION_NAME,
+                shepr_config::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Server,
             ),
             "shepr --remote host --remote-keybindings server"
@@ -785,7 +792,7 @@ mod tests {
     fn remote_bridge_command_uses_installed_binary() {
         let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         assert_eq!(
-            remote_shepr.bridge_command(crate::config::DEFAULT_SESSION_NAME, false),
+            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
             "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec /usr/bin/shepr remote-client-bridge'"
         );
         assert_eq!(
@@ -800,7 +807,7 @@ mod tests {
             remote_executable_from_path_discovery("/usr/bin/shepr\n").expect("path binary");
 
         assert_eq!(
-            remote_shepr.bridge_command(crate::config::DEFAULT_SESSION_NAME, false),
+            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
             "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec /usr/bin/shepr remote-client-bridge'"
         );
     }
@@ -811,7 +818,7 @@ mod tests {
             remote_executable_from_path_discovery("/opt/shepr bin/shepr\n").expect("path binary");
 
         assert_eq!(
-            remote_shepr.bridge_command(crate::config::DEFAULT_SESSION_NAME, false),
+            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
             "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec '\\''/opt/shepr bin/shepr'\\'' remote-client-bridge'"
         );
     }
@@ -948,7 +955,7 @@ mod tests {
             remote_executable_from_path_discovery("/opt/shepr's/bin/shepr\n").expect("path binary");
 
         assert_eq!(
-            remote_shepr.bridge_command(crate::config::DEFAULT_SESSION_NAME, false),
+            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
             posix_shell_command(
                 "echo; echo shepr-remote-output-ready:1; exec '/opt/shepr'\\''s/bin/shepr' remote-client-bridge"
             )

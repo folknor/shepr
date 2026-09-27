@@ -1,7 +1,8 @@
+use crate::client::input_wire::{WireMouseKind, WirePaneInput};
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use crate::protocol::{AttachScrollDirection, AttachScrollSource, ClientPaneInputEvent};
+use shepr_protocol::{AttachScrollDirection, AttachScrollSource, ClientPaneInputEvent};
 
 /// Why one piece of pane input did not reach the PTY.
 ///
@@ -117,7 +118,7 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
         else {
             continue;
         };
-        let crate::protocol::ClientMousePosition::Pixels { x, y, column, row } = *position else {
+        let shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } = *position else {
             continue;
         };
         let exact = pixel_mouse
@@ -132,7 +133,7 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
                     && y <= geometry.height_px
             });
         if !exact {
-            *position = crate::protocol::ClientMousePosition::Cell { column, row };
+            *position = shepr_protocol::ClientMousePosition::Cell { column, row };
             *geometry = None;
         }
     }
@@ -144,19 +145,19 @@ pub(super) fn terminal_attach_mouse_position(
     cell_size: crate::host_term::cell_size::HostCellSize,
     pixel_mouse: bool,
     host_sgr_pixels_active: bool,
-    position: crate::protocol::ClientMousePosition,
-    geometry: Option<crate::protocol::ClientMouseGeometry>,
-) -> Option<crate::protocol::ClientMousePosition> {
+    position: shepr_protocol::ClientMousePosition,
+    geometry: Option<shepr_protocol::ClientMouseGeometry>,
+) -> Option<shepr_protocol::ClientMousePosition> {
     let runtime_size = runtime.grid_size();
     let cell_fallback = |column, row| {
         (column < runtime_size.cols.get() && row < runtime_size.rows.get())
-            .then_some(crate::protocol::ClientMousePosition::Cell { column, row })
+            .then_some(shepr_protocol::ClientMousePosition::Cell { column, row })
     };
     let (x, y, column, row) = match position {
-        crate::protocol::ClientMousePosition::Cell { column, row } => {
+        shepr_protocol::ClientMousePosition::Cell { column, row } => {
             return cell_fallback(column, row);
         }
-        crate::protocol::ClientMousePosition::Pixels { x, y, column, row } => (x, y, column, row),
+        shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => (x, y, column, row),
     };
     let Some(geometry) = geometry else {
         return cell_fallback(column, row);
@@ -199,7 +200,7 @@ pub(super) fn terminal_attach_mouse_position(
         else {
             return None;
         };
-        Some(crate::protocol::ClientMousePosition::Pixels { x, y, column, row })
+        Some(shepr_protocol::ClientMousePosition::Pixels { x, y, column, row })
     })();
     exact.or_else(|| cell_fallback(column, row))
 }
@@ -329,15 +330,15 @@ fn apply_client_pane_input_event(
     } = event
     {
         let kind = kind.to_crossterm();
-        let modifiers = modifiers.to_crossterm();
+        let modifiers = crate::client::input_wire::host_modifiers(*modifiers);
         let position = match position {
-            crate::protocol::ClientMousePosition::Cell { column, row } => {
+            shepr_protocol::ClientMousePosition::Cell { column, row } => {
                 crate::input::mouse::Position::Cell {
                     column: *column,
                     row: *row,
                 }
             }
-            crate::protocol::ClientMousePosition::Pixels { x, y, column, row } => {
+            shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => {
                 if runtime.sgr_pixel_mouse_enabled() {
                     crate::input::mouse::Position::Pixels { x: *x, y: *y }
                 } else {
@@ -488,9 +489,9 @@ mod tests {
             ClientPaneInputEvent::TextCommit(secret.to_owned()),
             ClientPaneInputEvent::Paste(secret.to_owned()),
             ClientPaneInputEvent::Key {
-                code: crate::protocol::ClientKeyCode::Char('h'),
-                modifiers: crate::protocol::WireModifiers::NONE,
-                kind: crate::protocol::ClientKeyKind::Press,
+                code: shepr_protocol::ClientKeyCode::Char('h'),
+                modifiers: shepr_protocol::WireModifiers::NONE,
+                kind: shepr_protocol::ClientKeyKind::Press,
                 repeat_count: 1,
                 shifted_codepoint: None,
                 generated_text: Some(secret.to_owned()),
@@ -508,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {
         let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
-        let position = crate::protocol::ClientMousePosition::Pixels {
+        let position = shepr_protocol::ClientMousePosition::Pixels {
             x: 121,
             y: 81,
             column: 12,
@@ -526,14 +527,14 @@ mod tests {
                 true,
                 false,
                 position,
-                Some(crate::protocol::ClientMouseGeometry {
+                Some(shepr_protocol::ClientMouseGeometry {
                     cols: 20,
                     rows: 5,
                     width_px: 200,
                     height_px: 100,
                 }),
             ),
-            Some(crate::protocol::ClientMousePosition::Cell { column: 12, row: 4 })
+            Some(shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 })
         );
         assert_eq!(
             terminal_attach_mouse_position(
@@ -545,13 +546,13 @@ mod tests {
                 },
                 true,
                 false,
-                crate::protocol::ClientMousePosition::Pixels {
+                shepr_protocol::ClientMousePosition::Pixels {
                     x: 120,
                     y: 80,
                     column: 12,
                     row: 4,
                 },
-                Some(crate::protocol::ClientMouseGeometry {
+                Some(shepr_protocol::ClientMouseGeometry {
                     cols: 20,
                     rows: 5,
                     width_px: 200,
@@ -567,30 +568,30 @@ mod tests {
                 crate::host_term::cell_size::HostCellSize::default(),
                 false,
                 false,
-                crate::protocol::ClientMousePosition::Cell { column: 12, row: 4 },
+                shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 },
                 None,
             ),
-            Some(crate::protocol::ClientMousePosition::Cell { column: 12, row: 4 })
+            Some(shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 })
         );
     }
 
     #[test]
     fn ineligible_shell_pixel_mouse_uses_its_canonical_cell_position() {
         let mut events = vec![ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
-            position: crate::protocol::ClientMousePosition::Pixels {
+            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 121,
                 y: 81,
                 column: 12,
                 row: 4,
             },
-            geometry: Some(crate::protocol::ClientMouseGeometry {
+            geometry: Some(shepr_protocol::ClientMouseGeometry {
                 cols: 20,
                 rows: 5,
                 width_px: 200,
                 height_px: 100,
             }),
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
@@ -604,7 +605,7 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [ClientPaneInputEvent::Mouse {
-                position: crate::protocol::ClientMousePosition::Cell { column: 12, row: 4 },
+                position: shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 },
                 ..
             }]
         ));
@@ -612,22 +613,22 @@ mod tests {
 
     #[test]
     fn eligible_shell_pixel_mouse_remains_exact() {
-        let position = crate::protocol::ClientMousePosition::Pixels {
+        let position = shepr_protocol::ClientMousePosition::Pixels {
             x: 121,
             y: 81,
             column: 12,
             row: 4,
         };
         let mut events = vec![ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Moved,
+            kind: shepr_protocol::ClientMouseKind::Moved,
             position,
-            geometry: Some(crate::protocol::ClientMouseGeometry {
+            geometry: Some(shepr_protocol::ClientMouseGeometry {
                 cols: 20,
                 rows: 5,
                 width_px: 200,
                 height_px: 100,
             }),
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
@@ -650,20 +651,20 @@ mod tests {
     #[test]
     fn stale_shell_pixel_geometry_downgrades_to_its_canonical_cell() {
         let mut events = vec![ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::Moved,
-            position: crate::protocol::ClientMousePosition::Pixels {
+            kind: shepr_protocol::ClientMouseKind::Moved,
+            position: shepr_protocol::ClientMousePosition::Pixels {
                 x: 121,
                 y: 81,
                 column: 12,
                 row: 4,
             },
-            geometry: Some(crate::protocol::ClientMouseGeometry {
+            geometry: Some(shepr_protocol::ClientMouseGeometry {
                 cols: 20,
                 rows: 5,
                 width_px: 200,
                 height_px: 100,
             }),
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
@@ -677,7 +678,7 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [ClientPaneInputEvent::Mouse {
-                position: crate::protocol::ClientMousePosition::Cell { column: 12, row: 4 },
+                position: shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 },
                 geometry: None,
                 ..
             }]

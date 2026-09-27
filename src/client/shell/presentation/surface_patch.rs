@@ -1,8 +1,8 @@
 use super::*;
 
 pub(crate) struct ClientComposedSurfacePatch {
-    pub(crate) rows: Vec<crate::protocol::PaneSurfacePatchRow>,
-    pub(crate) cursor: Option<crate::protocol::CursorState>,
+    pub(crate) rows: Vec<shepr_protocol::PaneSurfacePatchRow>,
+    pub(crate) cursor: Option<shepr_protocol::CursorState>,
 }
 
 pub(crate) enum ClientPaneSurfacePatchOutcome {
@@ -10,14 +10,14 @@ pub(crate) enum ClientPaneSurfacePatchOutcome {
     Applied(Option<ClientComposedSurfacePatch>),
 }
 
-fn row_fits_frame(row: &crate::protocol::PaneSurfacePatchRow, frame: &FrameData) -> bool {
+fn row_fits_frame(row: &shepr_protocol::PaneSurfacePatchRow, frame: &FrameData) -> bool {
     row.x
         .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
         <= frame.width
         && row.y < frame.height
 }
 
-fn apply_row(row: &crate::protocol::PaneSurfacePatchRow, frame: &mut FrameData) -> bool {
+fn apply_row(row: &shepr_protocol::PaneSurfacePatchRow, frame: &mut FrameData) -> bool {
     if !row_fits_frame(row, frame) {
         return false;
     }
@@ -31,8 +31,8 @@ fn apply_row(row: &crate::protocol::PaneSurfacePatchRow, frame: &mut FrameData) 
 }
 
 fn apply_patch_to_surface(
-    surface: &mut crate::protocol::PaneSurfaceFrame,
-    patch: &crate::protocol::PaneSurfacePatch,
+    surface: &mut shepr_protocol::PaneSurfaceFrame,
+    patch: &shepr_protocol::PaneSurfacePatch,
 ) -> bool {
     for row in &patch.rows {
         if !apply_row(row, &mut surface.frame) {
@@ -56,7 +56,7 @@ fn apply_patch_to_surface(
 
 fn fast_path_blocker(
     state: &ClientShellState,
-    patch: &crate::protocol::PaneSurfacePatch,
+    patch: &shepr_protocol::PaneSurfacePatch,
     area: Rect,
 ) -> Option<&'static str> {
     if state
@@ -110,8 +110,8 @@ fn fast_path_blocker(
 }
 
 fn pane_geometry_matches(
-    left: &crate::protocol::PaneSurfacePane,
-    right: &crate::protocol::PaneSurfacePane,
+    left: &shepr_protocol::PaneSurfacePane,
+    right: &shepr_protocol::PaneSurfacePane,
 ) -> bool {
     left.pane_id == right.pane_id
         && left.rect == right.rect
@@ -124,7 +124,7 @@ fn pane_geometry_matches(
 impl ClientShellState {
     pub(crate) fn apply_pane_surface_patch(
         &mut self,
-        patch: &crate::protocol::PaneSurfacePatch,
+        patch: &shepr_protocol::PaneSurfacePatch,
     ) -> ClientPaneSurfacePatchOutcome {
         let Some(current) = self.pane_surface.as_ref() else {
             return ClientPaneSurfacePatchOutcome::Rejected;
@@ -189,7 +189,7 @@ impl ClientShellState {
             rows: patch
                 .rows
                 .iter()
-                .map(|row| crate::protocol::PaneSurfacePatchRow {
+                .map(|row| shepr_protocol::PaneSurfacePatchRow {
                     x: area.x.saturating_add(row.x),
                     y: area.y.saturating_add(row.y),
                     cells: row.cells.clone(),
@@ -198,7 +198,7 @@ impl ClientShellState {
             cursor: patch
                 .cursor
                 .clone()
-                .map(|cursor| crate::protocol::CursorState {
+                .map(|cursor| shepr_protocol::CursorState {
                     x: area.x.saturating_add(cursor.x),
                     y: area.y.saturating_add(cursor.y),
                     visible: cursor.visible,

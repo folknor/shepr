@@ -1,12 +1,29 @@
 //! Conversions between wire input and the host or pane input models.
 
-use crate::protocol::{
+pub(crate) fn wire_modifiers(
+    modifiers: crossterm::event::KeyModifiers,
+) -> shepr_protocol::WireModifiers {
+    shepr_protocol::WireModifiers::from_bits_retain(modifiers.bits())
+}
+
+pub(crate) fn host_modifiers(
+    modifiers: shepr_protocol::WireModifiers,
+) -> crossterm::event::KeyModifiers {
+    crossterm::event::KeyModifiers::from_bits_truncate(modifiers.bits())
+}
+
+use shepr_protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientMousePosition,
-    ClientPaneInputEvent, WireModifiers,
+    ClientPaneInputEvent,
 };
 
-impl ClientKeyKind {
-    pub(crate) fn from_crossterm(kind: crossterm::event::KeyEventKind) -> Self {
+pub(crate) trait WireKeyKind: Sized {
+    fn from_crossterm(kind: crossterm::event::KeyEventKind) -> Self;
+    fn to_crossterm(self) -> crossterm::event::KeyEventKind;
+}
+
+impl WireKeyKind for ClientKeyKind {
+    fn from_crossterm(kind: crossterm::event::KeyEventKind) -> Self {
         match kind {
             crossterm::event::KeyEventKind::Press => Self::Press,
             crossterm::event::KeyEventKind::Repeat => Self::Repeat,
@@ -14,7 +31,7 @@ impl ClientKeyKind {
         }
     }
 
-    pub(crate) fn to_crossterm(self) -> crossterm::event::KeyEventKind {
+    fn to_crossterm(self) -> crossterm::event::KeyEventKind {
         match self {
             Self::Press => crossterm::event::KeyEventKind::Press,
             Self::Repeat => crossterm::event::KeyEventKind::Repeat,
@@ -23,8 +40,13 @@ impl ClientKeyKind {
     }
 }
 
-impl ClientKeyCode {
-    pub(crate) fn from_crossterm(code: crossterm::event::KeyCode) -> Option<Self> {
+pub(crate) trait WireKeyCode: Sized {
+    fn from_crossterm(code: crossterm::event::KeyCode) -> Option<Self>;
+    fn to_crossterm(&self) -> crossterm::event::KeyCode;
+}
+
+impl WireKeyCode for ClientKeyCode {
+    fn from_crossterm(code: crossterm::event::KeyCode) -> Option<Self> {
         use crossterm::event::KeyCode;
         Some(match code {
             KeyCode::Backspace => Self::Backspace,
@@ -49,7 +71,7 @@ impl ClientKeyCode {
         })
     }
 
-    pub(crate) fn to_crossterm(&self) -> crossterm::event::KeyCode {
+    fn to_crossterm(&self) -> crossterm::event::KeyCode {
         use crossterm::event::KeyCode;
         match self {
             Self::Backspace => KeyCode::Backspace,
@@ -74,8 +96,13 @@ impl ClientKeyCode {
     }
 }
 
-impl ClientMouseButton {
-    pub(crate) fn from_crossterm(button: crossterm::event::MouseButton) -> Self {
+pub(crate) trait WireMouseButton: Sized {
+    fn from_crossterm(button: crossterm::event::MouseButton) -> Self;
+    fn to_crossterm(self) -> crossterm::event::MouseButton;
+}
+
+impl WireMouseButton for ClientMouseButton {
+    fn from_crossterm(button: crossterm::event::MouseButton) -> Self {
         match button {
             crossterm::event::MouseButton::Left => Self::Left,
             crossterm::event::MouseButton::Right => Self::Right,
@@ -83,7 +110,7 @@ impl ClientMouseButton {
         }
     }
 
-    pub(crate) fn to_crossterm(self) -> crossterm::event::MouseButton {
+    fn to_crossterm(self) -> crossterm::event::MouseButton {
         match self {
             Self::Left => crossterm::event::MouseButton::Left,
             Self::Right => crossterm::event::MouseButton::Right,
@@ -92,8 +119,13 @@ impl ClientMouseButton {
     }
 }
 
-impl ClientMouseKind {
-    pub(crate) fn from_crossterm(kind: crossterm::event::MouseEventKind) -> Option<Self> {
+pub(crate) trait WireMouseKind: Sized {
+    fn from_crossterm(kind: crossterm::event::MouseEventKind) -> Option<Self>;
+    fn to_crossterm(self) -> crossterm::event::MouseEventKind;
+}
+
+impl WireMouseKind for ClientMouseKind {
+    fn from_crossterm(kind: crossterm::event::MouseEventKind) -> Option<Self> {
         use crossterm::event::MouseEventKind;
         Some(match kind {
             MouseEventKind::Down(button) => Self::Down(ClientMouseButton::from_crossterm(button)),
@@ -107,7 +139,7 @@ impl ClientMouseKind {
         })
     }
 
-    pub(crate) fn to_crossterm(self) -> crossterm::event::MouseEventKind {
+    fn to_crossterm(self) -> crossterm::event::MouseEventKind {
         use crossterm::event::MouseEventKind;
         match self {
             Self::Down(button) => MouseEventKind::Down(button.to_crossterm()),
@@ -122,11 +154,17 @@ impl ClientMouseKind {
     }
 }
 
-impl ClientPaneInputEvent {
+pub(crate) trait WirePaneInput: Sized {
+    fn text_bytes(&self) -> usize;
+    fn from_terminal_key(key: crate::input::TerminalKey) -> Option<Self>;
+    fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent;
+}
+
+impl WirePaneInput for ClientPaneInputEvent {
     /// Text bytes this event delivers to the pane, as charged against
     /// `MAX_INPUT_PAYLOAD`: paste or committed text, or a key's generated text
     /// times its repeat count. Mouse events carry no text.
-    pub(crate) fn text_bytes(&self) -> usize {
+    fn text_bytes(&self) -> usize {
         match self {
             Self::Key {
                 repeat_count,
@@ -141,10 +179,10 @@ impl ClientPaneInputEvent {
         }
     }
 
-    pub(crate) fn from_terminal_key(key: crate::input::TerminalKey) -> Option<Self> {
+    fn from_terminal_key(key: crate::input::TerminalKey) -> Option<Self> {
         Some(Self::Key {
             code: ClientKeyCode::from_crossterm(key.code)?,
-            modifiers: WireModifiers::from(key.modifiers),
+            modifiers: wire_modifiers(key.modifiers),
             kind: ClientKeyKind::from_crossterm(key.kind),
             repeat_count: key.repeat_count,
             shifted_codepoint: key.shifted_codepoint,
@@ -152,7 +190,7 @@ impl ClientPaneInputEvent {
         })
     }
 
-    pub(crate) fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent {
+    fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent {
         match self {
             Self::Key {
                 code,
@@ -163,7 +201,7 @@ impl ClientPaneInputEvent {
                 generated_text,
             } => {
                 let mut key =
-                    crate::input::TerminalKey::new(code.to_crossterm(), modifiers.to_crossterm())
+                    crate::input::TerminalKey::new(code.to_crossterm(), host_modifiers(*modifiers))
                         .with_kind(kind.to_crossterm())
                         .with_repeat_count(*repeat_count)
                         .with_generated_text(generated_text.clone());
@@ -188,7 +226,7 @@ impl ClientPaneInputEvent {
                     kind: kind.to_crossterm(),
                     column,
                     row,
-                    modifiers: modifiers.to_crossterm(),
+                    modifiers: host_modifiers(*modifiers),
                 })
             }
             Self::Paste(text) => crate::raw_input::RawInputEvent::Paste(text.clone()),

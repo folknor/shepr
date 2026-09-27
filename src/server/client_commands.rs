@@ -63,16 +63,16 @@ pub(crate) fn error_response(
 }
 
 pub(crate) fn success_message_with_result(
-    boot_id: crate::protocol::BootId,
-    request_id: crate::protocol::RequestId,
+    boot_id: shepr_protocol::BootId,
+    request_id: shepr_protocol::RequestId,
     result: crate::api::schema::ResponseResult,
-) -> crate::protocol::ServerMessage {
+) -> shepr_protocol::ServerMessage {
     let success = crate::api::schema::SuccessResponse {
         id: request_id.to_string(),
         result,
     };
     let response = crate::api::serialize_response_or_error(&request_id, &success);
-    crate::protocol::ServerMessage::ClientShellEndpointResponseChunk {
+    shepr_protocol::ServerMessage::ClientShellEndpointResponseChunk {
         boot_id,
         request_id,
         final_chunk: true,
@@ -81,13 +81,13 @@ pub(crate) fn success_message_with_result(
 }
 
 pub(crate) fn error_message(
-    boot_id: crate::protocol::BootId,
-    request_id: crate::protocol::RequestId,
+    boot_id: shepr_protocol::BootId,
+    request_id: shepr_protocol::RequestId,
     code: impl Into<crate::api::error::ApiErrorCode>,
     message: impl Into<String>,
-) -> crate::protocol::ServerMessage {
+) -> shepr_protocol::ServerMessage {
     let response = error_response(&request_id, code, message);
-    crate::protocol::ServerMessage::ClientShellEndpointResponseChunk {
+    shepr_protocol::ServerMessage::ClientShellEndpointResponseChunk {
         boot_id,
         request_id,
         final_chunk: true,
@@ -97,8 +97,8 @@ pub(crate) fn error_message(
 
 pub(crate) fn spawn_response_waiter(
     client_id: ClientId,
-    boot_id: crate::protocol::BootId,
-    request_id: crate::protocol::RequestId,
+    boot_id: shepr_protocol::BootId,
+    request_id: shepr_protocol::RequestId,
     response_rx: mpsc::Receiver<crate::api::error::ApiResult>,
     server_event_tx: tokio_mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {

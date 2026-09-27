@@ -4,8 +4,8 @@ use crate::server::clients::ClientShellTopology;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ShellFocusTarget {
-    pub(super) tab_id: crate::protocol::PublicTabId,
-    pub(super) workspace_id: crate::protocol::WorkspaceId,
+    pub(super) tab_id: shepr_protocol::PublicTabId,
+    pub(super) workspace_id: shepr_protocol::WorkspaceId,
     pub(super) pane_id: shepr_core::layout::PaneId,
 }
 
@@ -110,11 +110,11 @@ impl HeadlessServer {
         for workspace in &self.app.state.workspaces {
             let workspace_id = workspace.id.clone();
             if let Some(tab) = workspace.tabs.get(workspace.active_tab_index()) {
-                let tab_id = crate::protocol::PublicTabId::new(workspace_id.as_str(), tab.number);
+                let tab_id = shepr_protocol::PublicTabId::new(workspace_id.as_str(), tab.number);
                 active_tab_ids.insert(workspace_id.clone(), tab_id);
             }
             for tab in &workspace.tabs {
-                let tab_id = crate::protocol::PublicTabId::new(workspace_id.as_str(), tab.number);
+                let tab_id = shepr_protocol::PublicTabId::new(workspace_id.as_str(), tab.number);
                 tab_workspace_ids.insert(tab_id, workspace_id.clone());
             }
         }

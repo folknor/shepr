@@ -193,7 +193,7 @@ impl HeadlessServer {
             };
             let serialized =
                 match Self::frame_server_message(&ServerMessage::DirectTerminalKeyboardProtocol {
-                    flags: crate::protocol::KittyKeyboardFlags::from_bits_retain(flags),
+                    flags: shepr_protocol::KittyKeyboardFlags::from_bits_retain(flags),
                     modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel::from_parameter(
                         u16::from(modify_other_keys_level),
                     ),
@@ -328,7 +328,7 @@ impl HeadlessServer {
     fn terminal_id_for_pane(
         &self,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&crate::protocol::TerminalId> {
+    ) -> Option<&shepr_protocol::TerminalId> {
         self.app
             .find_pane(pane_id)
             .map(|(_, pane)| &pane.attached_terminal_id)
@@ -535,7 +535,7 @@ impl HeadlessServer {
             } else {
                 None
             };
-            let mut shell_projection_revision = crate::protocol::ProjectionRevision::ZERO;
+            let mut shell_projection_revision = shepr_protocol::ProjectionRevision::ZERO;
             if is_shell {
                 let session = if last_shell_client {
                     shared_session_snapshot
@@ -569,7 +569,7 @@ impl HeadlessServer {
                     };
                     shell.projection_revision = shell.projection_revision.next();
                     candidate.revision = shell.projection_revision;
-                    let snapshot_message = crate::protocol::endpoint::snapshot_message(&candidate);
+                    let snapshot_message = shepr_protocol::endpoint::snapshot_message(&candidate);
                     let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
                         Ok(framed) => framed,
                         Err(err) => {
@@ -622,7 +622,7 @@ impl HeadlessServer {
                         self.send_to_client(
                             client_id,
                             &ServerMessage::ServerShutdown {
-                                reason: Some(crate::protocol::ShutdownReason::Message(format!(
+                                reason: Some(shepr_protocol::ShutdownReason::Message(format!(
                                     "terminal attach ended: terminal {terminal_id} not found"
                                 ))),
                             },
@@ -663,10 +663,10 @@ impl HeadlessServer {
             let prepared = if let Some((panes, splits)) = surface_parts {
                 client
                     .render_state
-                    .prepare_pane_surface(protocol::PaneSurfaceFrame {
+                    .prepare_pane_surface(shepr_protocol::PaneSurfaceFrame {
                         boot_id: self.client_shell_boot_id.clone(),
                         projection_revision: shell_projection_revision,
-                        surface_revision: crate::protocol::SurfaceRevision::new(0),
+                        surface_revision: shepr_protocol::SurfaceRevision::new(0),
                         frame,
                         panes,
                         splits,
@@ -680,7 +680,7 @@ impl HeadlessServer {
             };
             let serialized = match Self::frame_server_message(prepared.message()) {
                 Ok(frame) => frame,
-                Err(protocol::FramingError::Oversized { claimed, max }) => {
+                Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
                     // Nothing is committed, so the next render that has work
                     // for this client tries a full frame again: the frame fits
                     // again once the window shrinks or the content gets
@@ -731,11 +731,11 @@ impl HeadlessServer {
             }
             let notice = if shell {
                 ServerMessage::ClientShellError {
-                    kind: crate::protocol::NoticeKind::OversizedFrame { claimed, max },
+                    kind: shepr_protocol::NoticeKind::OversizedFrame { claimed, max },
                 }
             } else {
                 ServerMessage::DirectTerminalNotice {
-                    kind: crate::protocol::NoticeKind::OversizedFrame { claimed, max },
+                    kind: shepr_protocol::NoticeKind::OversizedFrame { claimed, max },
                 }
             };
             self.send_to_client(client_id, &notice);

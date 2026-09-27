@@ -42,9 +42,9 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
 /// reach this function.
 pub(super) fn run_integration_command(
     command: Command,
-    _paths: &crate::config::AppPaths,
+    _paths: &shepr_config::AppPaths,
 ) -> super::CliResult<i32> {
-    let integration_paths = crate::integration::AgentIntegrationPaths::resolve();
+    let integration_paths = shepr_agent::integration::AgentIntegrationPaths::resolve();
     match command {
         Command::Install { target } => Ok(integration_install(&target, &integration_paths)),
         Command::Uninstall { target } => Ok(integration_uninstall(&target, &integration_paths)),
@@ -56,16 +56,16 @@ pub(super) fn run_integration_command(
 }
 
 fn integration_status(
-    paths: &crate::integration::AgentIntegrationPaths,
+    paths: &shepr_agent::integration::AgentIntegrationPaths,
     outdated_only: bool,
 ) -> i32 {
     if outdated_only {
-        crate::integration::print_outdated_update_notice(paths);
+        shepr_agent::integration::print_outdated_update_notice(paths);
         return 0;
     }
 
-    for status in crate::integration::installed_integration_statuses(paths) {
-        let target = crate::integration::integration_target_label(status.target);
+    for status in shepr_agent::integration::installed_integration_statuses(paths) {
+        let target = shepr_agent::integration::integration_target_label(status.target);
         let state = describe_integration_state(
             status.state,
             status.installed_version,
@@ -78,7 +78,7 @@ fn integration_status(
 }
 
 fn describe_integration_state(
-    state: crate::integration::IntegrationStatusKind,
+    state: shepr_agent::integration::IntegrationStatusKind,
     installed_version: Option<u32>,
     expected_version: u32,
 ) -> String {
@@ -87,33 +87,41 @@ fn describe_integration_state(
         None => "legacy".to_string(),
     };
     match state {
-        crate::integration::IntegrationStatusKind::NotInstalled => "not installed".to_string(),
-        crate::integration::IntegrationStatusKind::Current => format!("current ({version})"),
-        crate::integration::IntegrationStatusKind::Outdated
+        shepr_agent::integration::IntegrationStatusKind::NotInstalled => {
+            "not installed".to_string()
+        }
+        shepr_agent::integration::IntegrationStatusKind::Current => format!("current ({version})"),
+        shepr_agent::integration::IntegrationStatusKind::Outdated
             if installed_version.is_some_and(|installed| installed >= expected_version) =>
         {
             format!("needs repair ({version})")
         }
-        crate::integration::IntegrationStatusKind::Outdated => {
+        shepr_agent::integration::IntegrationStatusKind::Outdated => {
             format!("outdated ({version} < v{expected_version})")
         }
     }
 }
 
-fn integration_install(label: &str, paths: &crate::integration::AgentIntegrationPaths) -> i32 {
+fn integration_install(
+    label: &str,
+    paths: &shepr_agent::integration::AgentIntegrationPaths,
+) -> i32 {
     let Some(target) = target_from_label(label) else {
         return unknown_target(label);
     };
 
-    report_outcome(crate::integration::install_target(paths, target))
+    report_outcome(shepr_agent::integration::install_target(paths, target))
 }
 
-fn integration_uninstall(label: &str, paths: &crate::integration::AgentIntegrationPaths) -> i32 {
+fn integration_uninstall(
+    label: &str,
+    paths: &shepr_agent::integration::AgentIntegrationPaths,
+) -> i32 {
     let Some(target) = target_from_label(label) else {
         return unknown_target(label);
     };
 
-    report_outcome(crate::integration::uninstall_target(paths, target))
+    report_outcome(shepr_agent::integration::uninstall_target(paths, target))
 }
 
 fn report_outcome(outcome: std::io::Result<Vec<String>>) -> i32 {
@@ -143,7 +151,7 @@ fn unknown_target(target: &str) -> i32 {
 /// step.
 fn target_from_label(label: &str) -> Option<IntegrationTarget> {
     IntegrationTarget::all()
-        .find(|target| crate::integration::integration_target_label(*target) == label)
+        .find(|target| shepr_agent::integration::integration_target_label(*target) == label)
 }
 
 #[cfg(test)]
@@ -154,7 +162,7 @@ mod tests {
     fn every_target_the_spec_accepts_resolves_to_a_target() {
         for action in ["install", "uninstall"] {
             for target in IntegrationTarget::all() {
-                let label = crate::integration::integration_target_label(target);
+                let label = shepr_agent::integration::integration_target_label(target);
                 assert_eq!(
                     target_from_label(label),
                     Some(target),

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::detect::{Agent, AgentDetection, AgentState};
+use shepr_agent::detect::{Agent, AgentDetection, AgentState};
 
 pub(super) const AGENT_PENDING_IDLE_RECHECK: std::time::Duration =
     std::time::Duration::from_millis(100);
@@ -331,9 +331,9 @@ pub(super) fn detection_update_for_publish_with_osc(
     osc_title: &str,
     osc_progress: &str,
     process_exited: bool,
-) -> Option<crate::detect::AgentDetection> {
+) -> Option<shepr_agent::detect::AgentDetection> {
     if process_exited {
-        return Some(crate::detect::AgentDetection {
+        return Some(shepr_agent::detect::AgentDetection {
             state: AgentState::Idle,
             skip_state_update: false,
             visible_idle: true,
@@ -342,7 +342,8 @@ pub(super) fn detection_update_for_publish_with_osc(
         });
     }
 
-    let detection = crate::detect::detect_agent_with_osc(agent, content, osc_title, osc_progress);
+    let detection =
+        shepr_agent::detect::detect_agent_with_osc(agent, content, osc_title, osc_progress);
     (!detection.skip_state_update).then_some(detection)
 }
 
@@ -444,8 +445,10 @@ mod tests {
     #[test]
     fn codex_startup_prompt_survives_terminal_wraps() {
         let wrapped = "header\n› Ask Codex to do\nanything\nfooter";
-        assert!(crate::agent::Agent::Codex.prompt_ready(wrapped));
-        assert!(!crate::agent::Agent::Codex.prompt_ready(&format!("model: load\ning\n{wrapped}")));
+        assert!(shepr_agent::agent::Agent::Codex.prompt_ready(wrapped));
+        assert!(
+            !shepr_agent::agent::Agent::Codex.prompt_ready(&format!("model: load\ning\n{wrapped}"))
+        );
     }
 
     #[test]

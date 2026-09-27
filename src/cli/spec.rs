@@ -377,8 +377,8 @@ fn agent_command() -> Command {
 }
 
 pub(super) fn agent_kind_values() -> Vec<&'static str> {
-    crate::detect::Agent::all()
-        .map(crate::detect::agent_label)
+    shepr_agent::detect::Agent::all()
+        .map(shepr_agent::detect::agent_label)
         .collect()
 }
 
@@ -779,7 +779,7 @@ fn integration_target_arg() -> Arg {
 
 fn integration_target_values() -> Vec<&'static str> {
     let values: Vec<&'static str> = crate::api::schema::IntegrationTarget::all()
-        .map(crate::integration::integration_target_label)
+        .map(shepr_agent::integration::integration_target_label)
         .collect();
     values
 }
@@ -1121,7 +1121,7 @@ mod tests {
         let cmd = super::command();
         let install = command_path(&cmd, &["integration", "install"]);
         let expected: Vec<String> = crate::api::schema::IntegrationTarget::all()
-            .map(crate::integration::integration_target_label)
+            .map(shepr_agent::integration::integration_target_label)
             .map(str::to_string)
             .collect();
         assert_eq!(
@@ -1281,8 +1281,8 @@ mod tests {
         assert!(has_option(agent_start, "kind"));
         assert_eq!(
             option_values(agent_start, "kind"),
-            crate::detect::Agent::all()
-                .map(|agent| crate::detect::agent_label(agent).to_string())
+            shepr_agent::detect::Agent::all()
+                .map(|agent| shepr_agent::detect::agent_label(agent).to_string())
                 .collect::<Vec<_>>()
         );
         assert!(has_option(agent_start, "pane"));

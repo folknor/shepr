@@ -26,7 +26,7 @@ pub(super) fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area
     }
 
     target.cursor = source.cursor.as_ref().and_then(|cursor| {
-        (cursor.x < copy_width && cursor.y < copy_height).then(|| crate::protocol::CursorState {
+        (cursor.x < copy_width && cursor.y < copy_height).then(|| shepr_protocol::CursorState {
             x: area.x + cursor.x,
             y: area.y + cursor.y,
             visible: cursor.visible,

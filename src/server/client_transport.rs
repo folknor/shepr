@@ -4,6 +4,7 @@
 //! It converts socket I/O into [`ServerEvent`] values consumed by
 //! `HeadlessServer`.
 
+use crate::client::input_wire::WirePaneInput;
 use crate::server::ClientId;
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -17,9 +18,9 @@ use interprocess::local_socket::traits::Stream as _;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::ipc::LocalStream;
-use crate::protocol::endpoint::EndpointServerWelcome;
-use crate::protocol::{
+use shepr_platform::ipc::LocalStream;
+use shepr_protocol::endpoint::EndpointServerWelcome;
+use shepr_protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
     MAX_FRAME_SIZE, MAX_INPUT_PAYLOAD, ServerMessage,
 };
@@ -35,7 +36,7 @@ const MIN_CLIENT_ROWS: u16 = 1;
 /// Total time a client gets to deliver its complete handshake frame.
 ///
 /// This is one deadline across every read of the hello, not a per-read idle
-/// timeout: `crate::ipc::DeadlineReader` re-arms the socket receive timeout
+/// timeout: `shepr_platform::ipc::DeadlineReader` re-arms the socket receive timeout
 /// with only the time left before each read, so a peer trickling bytes cannot
 /// hold the handshake thread open. Set to 4 seconds (rather than 5) so the
 /// connection is closed within 5 seconds even with OS timer slack, thread
@@ -52,12 +53,12 @@ const MAX_HANDSHAKE_FRAME: usize = 64 * 1024;
 // The cell limit is what one frame can carry (see `MAX_SURFACE_CELLS`), not
 // an arbitrary safety number: a grid past it renders frames that can never
 // be sent.
-const MAX_CLIENT_SHELL_DIMENSION: u16 = protocol::MAX_SURFACE_DIMENSION;
-const MAX_CLIENT_SHELL_CELLS: usize = protocol::MAX_SURFACE_CELLS;
-const MAX_CLIENT_CELL_SIZE_PX: u32 = protocol::MAX_CELL_SIZE_PX;
+const MAX_CLIENT_SHELL_DIMENSION: u16 = shepr_protocol::MAX_SURFACE_DIMENSION;
+const MAX_CLIENT_SHELL_CELLS: usize = shepr_protocol::MAX_SURFACE_CELLS;
+const MAX_CLIENT_CELL_SIZE_PX: u32 = shepr_protocol::MAX_CELL_SIZE_PX;
 
 fn client_shell_geometry_error(
-    surface_size: crate::protocol::ClientSurfaceSize,
+    surface_size: shepr_protocol::ClientSurfaceSize,
     cell_width_px: u32,
     cell_height_px: u32,
 ) -> Option<&'static str> {
@@ -94,29 +95,30 @@ fn bound_terminal_geometry(
     pixel_mouse: bool,
 ) -> TerminalGeometry {
     let (cols, rows) = clamp_terminal_size(cols, rows);
-    let cell = protocol::ProtocolCellSize::from_wire(cell_width_px, cell_height_px, pixel_mouse);
+    let cell =
+        shepr_protocol::ProtocolCellSize::from_wire(cell_width_px, cell_height_px, pixel_mouse);
     TerminalGeometry::new(cols, rows, cell.width(), cell.height(), cell.exact)
 }
 
 #[derive(serde::Deserialize)]
 struct EndpointRequestHead {
-    id: crate::protocol::RequestId,
+    id: shepr_protocol::RequestId,
     method: String,
 }
 
 enum DecodedEndpointRequest {
     Dispatch(Box<crate::api::schema::Request>),
     Error {
-        request_id: crate::protocol::RequestId,
+        request_id: shepr_protocol::RequestId,
         code: &'static str,
         message: String,
     },
 }
 
-fn write_endpoint_rejection(stream: &mut LocalStream, reason: protocol::HandshakeRefusal) {
+fn write_endpoint_rejection(stream: &mut LocalStream, reason: shepr_protocol::HandshakeRefusal) {
     let welcome = EndpointServerWelcome::incompatible(reason);
     let response = ServerMessage::EndpointWelcome(welcome);
-    let _ = protocol::write_message(stream, &response);
+    let _ = shepr_protocol::write_message(stream, &response);
 }
 
 fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointRequest> {
@@ -402,7 +404,7 @@ pub(crate) enum ServerEvent {
     /// A client requested direct attach to one terminal.
     ClientAttachTerminal {
         client_id: ClientId,
-        terminal_id: crate::protocol::TerminalId,
+        terminal_id: shepr_protocol::TerminalId,
         takeover: bool,
     },
     /// A direct terminal attach client requested scrollback movement.
@@ -413,15 +415,15 @@ pub(crate) enum ServerEvent {
         lines: u16,
         column: Option<u16>,
         row: Option<u16>,
-        modifiers: crate::protocol::WireModifiers,
+        modifiers: shepr_protocol::WireModifiers,
     },
     /// A direct terminal attach client delivered one structured mouse event.
     ClientAttachMouse {
         client_id: ClientId,
-        kind: crate::protocol::ClientMouseKind,
-        position: crate::protocol::ClientMousePosition,
-        geometry: Option<crate::protocol::ClientMouseGeometry>,
-        modifiers: crate::protocol::WireModifiers,
+        kind: shepr_protocol::ClientMouseKind,
+        position: shepr_protocol::ClientMousePosition,
+        geometry: Option<shepr_protocol::ClientMouseGeometry>,
+        modifiers: shepr_protocol::WireModifiers,
         lines: u16,
     },
     /// A client sent a resize message.
@@ -445,13 +447,13 @@ pub(crate) enum ServerEvent {
     /// A client-owned shell delivered semantic input to one stable pane target.
     ClientShellPaneInput {
         client_id: ClientId,
-        pane_id: crate::protocol::PublicPaneId,
+        pane_id: shepr_protocol::PublicPaneId,
         events: Vec<ClientPaneInputEvent>,
     },
     /// A client-owned shell published one host terminal theme observation.
     ClientShellHostTheme {
         client_id: ClientId,
-        update: crate::protocol::ClientHostThemeUpdate,
+        update: shepr_protocol::ClientHostThemeUpdate,
     },
     /// A client-owned shell reported whether its outer terminal has focus.
     ClientShellFocus { client_id: ClientId, focused: bool },
@@ -460,22 +462,22 @@ pub(crate) enum ServerEvent {
     /// A client-owned shell invoked one endpoint operation through this connection.
     ClientShellEndpointRequest {
         client_id: ClientId,
-        boot_id: crate::protocol::BootId,
+        boot_id: shepr_protocol::BootId,
         request: Box<crate::api::schema::Request>,
     },
     /// A well-framed endpoint request could not be dispatched by this server.
     ClientShellEndpointRequestError {
         client_id: ClientId,
-        boot_id: crate::protocol::BootId,
-        request_id: crate::protocol::RequestId,
+        boot_id: shepr_protocol::BootId,
+        request_id: shepr_protocol::RequestId,
         code: &'static str,
         message: String,
     },
     /// One chunk of a deferred endpoint operation's final response is ready.
     ClientShellEndpointResponseChunkReady {
         client_id: ClientId,
-        boot_id: crate::protocol::BootId,
-        request_id: crate::protocol::RequestId,
+        boot_id: shepr_protocol::BootId,
+        request_id: shepr_protocol::RequestId,
         final_chunk: bool,
         data: Vec<u8>,
     },
@@ -517,8 +519,8 @@ fn pane_input_event_limit(events: &[ClientPaneInputEvent]) -> InputEventLimit {
             ClientPaneInputEvent::Key { repeat_count, .. } => usize::from((*repeat_count).max(1)),
             ClientPaneInputEvent::Mouse {
                 kind:
-                    crate::protocol::ClientMouseKind::ScrollUp
-                    | crate::protocol::ClientMouseKind::ScrollDown,
+                    shepr_protocol::ClientMouseKind::ScrollUp
+                    | shepr_protocol::ClientMouseKind::ScrollDown,
                 lines,
                 ..
             } => usize::from((*lines).max(1)),
@@ -591,21 +593,23 @@ pub(crate) fn handle_client_handshake(
     // a client of any other build learns which build it reached even though
     // this side hangs up on it below. Probes that connect and close at once
     // (socket liveness checks) make this write fail; that is not an error.
-    if let Err(error) = protocol::preamble::write_preamble(&mut stream) {
+    if let Err(error) = shepr_protocol::preamble::write_preamble(&mut stream) {
         debug!(?client_id, %error, "client left before the build-identity preamble");
         return Ok(());
     }
 
     // The client's preamble and hello are read against one overall deadline.
-    let mut reader =
-        crate::ipc::DeadlineReader::new(&mut stream, std::time::Instant::now() + HANDSHAKE_TIMEOUT);
-    match protocol::preamble::read_preamble(&mut reader) {
+    let mut reader = shepr_platform::ipc::DeadlineReader::new(
+        &mut stream,
+        std::time::Instant::now() + HANDSHAKE_TIMEOUT,
+    );
+    match shepr_protocol::preamble::read_preamble(&mut reader) {
         Ok(()) => {}
-        Err(protocol::preamble::PreambleError::UnexpectedEof) => {
+        Err(shepr_protocol::preamble::PreambleError::UnexpectedEof) => {
             debug!(?client_id, "client disconnected before handshake");
             return Ok(());
         }
-        Err(protocol::preamble::PreambleError::Io(error)) => {
+        Err(shepr_protocol::preamble::PreambleError::Io(error)) => {
             debug!(?client_id, %error, "failed to read client preamble");
             return Ok(());
         }
@@ -616,14 +620,14 @@ pub(crate) fn handle_client_handshake(
             return Ok(());
         }
     }
-    let hello = protocol::read_message::<_, ClientMessage>(&mut reader, MAX_HANDSHAKE_FRAME);
+    let hello = shepr_protocol::read_message::<_, ClientMessage>(&mut reader, MAX_HANDSHAKE_FRAME);
     let hello: ClientMessage = match hello {
         Ok(msg) => msg,
-        Err(protocol::FramingError::UnexpectedEof) => {
+        Err(shepr_protocol::FramingError::UnexpectedEof) => {
             debug!(?client_id, "client disconnected before handshake");
             return Ok(());
         }
-        Err(protocol::FramingError::Oversized { claimed, max }) => {
+        Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
             warn!(?client_id, claimed, max, "oversized handshake from client");
             return Ok(());
         }
@@ -659,7 +663,7 @@ pub(crate) fn handle_client_handshake(
             )
         }
         ClientMessage::EndpointHello(hello) => {
-            let cell = protocol::ProtocolCellSize::from_wire(
+            let cell = shepr_protocol::ProtocolCellSize::from_wire(
                 hello.geometry.width(),
                 hello.geometry.height(),
                 hello.geometry.pixel_mouse,
@@ -669,7 +673,7 @@ pub(crate) fn handle_client_handshake(
                 hello.geometry.width(),
                 hello.geometry.height(),
             )
-            .map(|reason| protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
+            .map(|reason| shepr_protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
             if let Some(reason) = incompatibility {
                 write_endpoint_rejection(&mut stream, reason);
                 return Ok(());
@@ -686,9 +690,9 @@ pub(crate) fn handle_client_handshake(
         _ => {
             debug!(?client_id, "first message was not a handshake, closing");
             let welcome = ServerMessage::Welcome {
-                error: Some(protocol::HandshakeRefusal::ExpectedHello),
+                error: Some(shepr_protocol::HandshakeRefusal::ExpectedHello),
             };
-            let _ = protocol::write_message(&mut stream, &welcome);
+            let _ = shepr_protocol::write_message(&mut stream, &welcome);
             return Ok(());
         }
     };
@@ -702,7 +706,8 @@ pub(crate) fn handle_client_handshake(
     } else {
         ServerMessage::Welcome { error: None }
     };
-    protocol::write_message(&mut stream, &welcome).map_err(|e| io::Error::other(e.to_string()))?;
+    shepr_protocol::write_message(&mut stream, &welcome)
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     set_client_recv_timeout(
         &stream,
@@ -777,8 +782,8 @@ pub(crate) fn handle_client_handshake(
 }
 
 fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
-    if let Ok(framed) = protocol::encode_frame(&ServerMessage::ServerShutdown {
-        reason: Some(crate::protocol::ShutdownReason::Message(
+    if let Ok(framed) = shepr_protocol::encode_frame(&ServerMessage::ServerShutdown {
+        reason: Some(shepr_protocol::ShutdownReason::Message(
             "server is shutting down".to_owned(),
         )),
     }) {
@@ -843,19 +848,19 @@ fn client_read_loop_with_endpoint_controls(
     endpoint_control_writer: Option<&ClientControlWriter>,
 ) -> io::Result<()> {
     while !should_quit.load(Ordering::Acquire) {
-        let message = protocol::read_message(
+        let message = shepr_protocol::read_message(
             &mut shepr_platform::ClientStreamReader(&mut stream),
             MAX_FRAME_SIZE,
         );
         let msg: ClientMessage = match message {
             Ok(msg) => msg,
-            Err(protocol::FramingError::UnexpectedEof) => {
+            Err(shepr_protocol::FramingError::UnexpectedEof) => {
                 // Client disconnected.
                 let _ =
                     server_event_tx.blocking_send(ServerEvent::ClientDisconnected { client_id });
                 break;
             }
-            Err(protocol::FramingError::Oversized { claimed, max }) => {
+            Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
                 warn!(
                     ?client_id,
                     claimed, max, "oversized message from client, closing"
@@ -921,7 +926,7 @@ fn client_read_loop_with_endpoint_controls(
             }
             ClientMessage::ClientShellResize { geometry } => {
                 let surface_size = geometry.surface_size();
-                let cell = protocol::ProtocolCellSize::from_wire(
+                let cell = shepr_protocol::ProtocolCellSize::from_wire(
                     geometry.width(),
                     geometry.height(),
                     geometry.pixel_mouse,
@@ -948,7 +953,7 @@ fn client_read_loop_with_endpoint_controls(
             ClientMessage::ClientShellHostTheme { update } => {
                 if matches!(
                     &update,
-                    crate::protocol::ClientHostThemeUpdate::PaletteColors(colors)
+                    shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors)
                         if colors.len() > 256
                 ) {
                     warn!(
@@ -1074,7 +1079,7 @@ fn client_read_loop_with_endpoint_controls(
                 let Some(writer) = endpoint_control_writer else {
                     continue;
                 };
-                let Ok(framed) = protocol::encode_frame(&response) else {
+                let Ok(framed) = shepr_protocol::encode_frame(&response) else {
                     break;
                 };
                 if writer.send(framed).is_err() {
@@ -1165,15 +1170,15 @@ mod tests {
     fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, TestSocketPath) {
         let path = unique_test_path(name);
         let _ = std::fs::remove_file(&path);
-        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
-        let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
+        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
         (client, server, TestSocketPath(path))
     }
 
     fn endpoint_hello(surface_cols: u16, surface_rows: u16) -> ClientMessage {
-        let hello = crate::protocol::endpoint::EndpointClientHello {
-            geometry: crate::protocol::TerminalGeometry::new(
+        let hello = shepr_protocol::endpoint::EndpointClientHello {
+            geometry: shepr_protocol::TerminalGeometry::new(
                 surface_cols,
                 surface_rows,
                 8,
@@ -1189,9 +1194,9 @@ mod tests {
     /// Plays the client side of the opening: sends this build's preamble and
     /// `hello`, then consumes the server's preamble.
     fn open_as_client(client_stream: &mut LocalStream, hello: &ClientMessage) {
-        protocol::preamble::write_preamble(client_stream).expect("write client preamble");
-        protocol::write_message(client_stream, hello).expect("write hello");
-        protocol::preamble::read_preamble(client_stream).expect("server preamble");
+        shepr_protocol::preamble::write_preamble(client_stream).expect("write client preamble");
+        shepr_protocol::write_message(client_stream, hello).expect("write hello");
+        shepr_protocol::preamble::read_preamble(client_stream).expect("server preamble");
     }
 
     fn endpoint_welcome(message: ServerMessage) -> EndpointServerWelcome {
@@ -1236,7 +1241,7 @@ mod tests {
     }
 
     fn frame_server_message(message: &ServerMessage) -> Vec<u8> {
-        protocol::encode_frame(message).expect("frame server message")
+        shepr_protocol::encode_frame(message).expect("frame server message")
     }
 
     #[test]
@@ -1283,11 +1288,14 @@ mod tests {
             );
         });
 
-        match protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read control") {
+        match shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE)
+            .expect("read control")
+        {
             ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("control")),
             other => panic!("expected control message first, got {other:?}"),
         }
-        match protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read render") {
+        match shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read render")
+        {
             ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("render")),
             other => panic!("expected render message second, got {other:?}"),
         }
@@ -1350,7 +1358,7 @@ mod tests {
                 title: Some("cloned".into()),
             }))
             .expect("cloned writer still sends after original drops");
-        match protocol::read_message(&mut client_stream, MAX_FRAME_SIZE)
+        match shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE)
             .expect("read control from cloned writer")
         {
             ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("cloned")),
@@ -1508,7 +1516,7 @@ mod tests {
         open_as_client(
             &mut client_stream,
             &ClientMessage::TerminalHello {
-                geometry: crate::protocol::TerminalGeometry::new(
+                geometry: shepr_protocol::TerminalGeometry::new(
                     u16::MAX,
                     u16::MAX,
                     u32::MAX,
@@ -1518,7 +1526,7 @@ mod tests {
             },
         );
         let _welcome: ServerMessage =
-            protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
+            shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         match recv_server_event(&mut server_event_rx, "oversized terminal connect") {
             ServerEvent::ClientConnected {
                 cols,
@@ -1561,10 +1569,10 @@ mod tests {
             )
         });
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::Resize {
-                geometry: crate::protocol::TerminalGeometry::new(u16::MAX, u16::MAX, 8, 16, true),
+                geometry: shepr_protocol::TerminalGeometry::new(u16::MAX, u16::MAX, 8, 16, true),
             },
         )
         .expect("test precondition");
@@ -1581,7 +1589,8 @@ mod tests {
             other => panic!("expected ClientResize, got {other:?}"),
         }
 
-        protocol::write_message(&mut client_stream, &ClientMessage::Detach).expect("write detach");
+        shepr_protocol::write_message(&mut client_stream, &ClientMessage::Detach)
+            .expect("write detach");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach event"),
             ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
@@ -1611,17 +1620,17 @@ mod tests {
         });
 
         // A client of another build: right magic, different identity.
-        let mut preamble = protocol::preamble::local_preamble();
+        let mut preamble = shepr_protocol::preamble::local_preamble();
         let last = preamble.len() - 1;
         preamble[last] = if preamble[last] == b'0' { b'1' } else { b'0' };
         client_stream
             .write_all(&preamble)
             .expect("test precondition");
-        protocol::write_message(&mut client_stream, &endpoint_hello(80, 24))
+        shepr_protocol::write_message(&mut client_stream, &endpoint_hello(80, 24))
             .expect("test precondition");
 
         // The server still announced itself, then hung up without a welcome.
-        protocol::preamble::read_preamble(&mut client_stream).expect("server preamble");
+        shepr_protocol::preamble::read_preamble(&mut client_stream).expect("server preamble");
         let mut rest = Vec::new();
         client_stream
             .set_recv_timeout(Some(Duration::from_secs(2)))
@@ -1639,7 +1648,7 @@ mod tests {
     fn client_shell_geometry_rejects_unsafe_dimensions_and_cell_sizes() {
         assert!(
             client_shell_geometry_error(
-                crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
+                shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
                 8,
                 16,
             )
@@ -1647,7 +1656,7 @@ mod tests {
         );
         assert!(
             client_shell_geometry_error(
-                crate::protocol::ClientSurfaceSize {
+                shepr_protocol::ClientSurfaceSize {
                     cols: MAX_CLIENT_SHELL_DIMENSION,
                     rows: MAX_CLIENT_SHELL_DIMENSION,
                 },
@@ -1658,7 +1667,7 @@ mod tests {
         );
         assert!(
             client_shell_geometry_error(
-                crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
+                shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
                 MAX_CLIENT_CELL_SIZE_PX + 1,
                 16,
             )
@@ -1715,12 +1724,12 @@ mod tests {
         open_as_client(
             &mut client_stream,
             &ClientMessage::TerminalHello {
-                geometry: crate::protocol::TerminalGeometry::new(100, 30, 8, 16, true),
+                geometry: shepr_protocol::TerminalGeometry::new(100, 30, 8, 16, true),
             },
         );
 
         let welcome: ServerMessage =
-            protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
+            shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         match welcome {
             ServerMessage::Welcome { error } => {
                 assert_eq!(error, None);
@@ -1776,7 +1785,7 @@ mod tests {
         open_as_client(&mut client_stream, &endpoint_hello(80, 29));
 
         let welcome: ServerMessage =
-            protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
+            shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         let welcome = endpoint_welcome(welcome);
         assert!(welcome.error.is_none());
         match server_event_rx
@@ -1818,7 +1827,7 @@ mod tests {
         assert!(shepr_core::geometry::GridSize::new(0, 29).is_none());
         assert_eq!(
             client_shell_geometry_error(
-                crate::protocol::ClientSurfaceSize { cols: 0, rows: 29 },
+                shepr_protocol::ClientSurfaceSize { cols: 0, rows: 29 },
                 8,
                 16
             ),
@@ -1842,8 +1851,9 @@ mod tests {
         });
 
         let mut messages = Vec::new();
-        protocol::write_message(&mut messages, &ClientMessage::Detach).expect("test precondition");
-        protocol::write_message(
+        shepr_protocol::write_message(&mut messages, &ClientMessage::Detach)
+            .expect("test precondition");
+        shepr_protocol::write_message(
             &mut messages,
             &ClientMessage::ClientShellFocus { focused: true },
         )
@@ -1879,12 +1889,12 @@ mod tests {
             )
         });
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::HealthPing(String::new()),
         )
         .expect("test precondition");
-        protocol::write_message(&mut client_stream, &ClientMessage::Detach)
+        shepr_protocol::write_message(&mut client_stream, &ClientMessage::Detach)
             .expect("test precondition");
 
         assert!(matches!(
@@ -1913,10 +1923,10 @@ mod tests {
             )
         });
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellResize {
-                geometry: crate::protocol::TerminalGeometry::new(
+                geometry: shepr_protocol::TerminalGeometry::new(
                     MAX_CLIENT_SHELL_DIMENSION,
                     MAX_CLIENT_SHELL_DIMENSION,
                     8,
@@ -1952,7 +1962,7 @@ mod tests {
             )
         });
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::Input {
                 data: bracketed_paste_with_total_len(MAX_INPUT_PAYLOAD),
@@ -1968,7 +1978,7 @@ mod tests {
             other => panic!("expected maximum-size ClientInput, got {other:?}"),
         }
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::Input {
                 data: bracketed_paste_with_total_len(MAX_INPUT_PAYLOAD + 1),
@@ -1992,7 +2002,7 @@ mod tests {
             other => panic!("expected ClientPasteRejected, got {other:?}"),
         }
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::Input {
                 data: b"still connected".to_vec(),
@@ -2032,7 +2042,7 @@ mod tests {
             )
         });
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::Input {
                 data: vec![b'x'; MAX_INPUT_PAYLOAD + 1],
@@ -2073,7 +2083,7 @@ mod tests {
         let expected_size = data.len();
         data[marker_len] = 0xff;
 
-        protocol::write_message(&mut client_stream, &ClientMessage::Input { data })
+        shepr_protocol::write_message(&mut client_stream, &ClientMessage::Input { data })
             .expect("write marker-wrapped invalid UTF-8 input");
 
         // Only the bracketed-paste framing decides whether oversized input is
@@ -2116,10 +2126,10 @@ mod tests {
             )
         });
 
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellResize {
-                geometry: crate::protocol::TerminalGeometry::new(60, 15, 8, 16, true),
+                geometry: shepr_protocol::TerminalGeometry::new(60, 15, 8, 16, true),
             },
         )
         .expect("write shell resize");
@@ -2135,7 +2145,8 @@ mod tests {
             } if client_id == ClientId::test_new(7)
         ));
 
-        protocol::write_message(&mut client_stream, &ClientMessage::Detach).expect("write detach");
+        shepr_protocol::write_message(&mut client_stream, &ClientMessage::Detach)
+            .expect("write detach");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach event"),
             ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
@@ -2165,7 +2176,7 @@ mod tests {
             .map(|index| {
                 (
                     index,
-                    crate::protocol::ClientHostColor {
+                    shepr_protocol::ClientHostColor {
                         r: index,
                         g: 0,
                         b: 0,
@@ -2173,18 +2184,18 @@ mod tests {
                 )
             })
             .collect();
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellHostTheme {
-                update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors),
+                update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors),
             },
         )
         .expect("write bounded palette update");
-        protocol::write_message(
+        shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellHostTheme {
-                update: crate::protocol::ClientHostThemeUpdate::Appearance(
-                    crate::protocol::ClientHostAppearance::Dark,
+                update: shepr_protocol::ClientHostThemeUpdate::Appearance(
+                    shepr_protocol::ClientHostAppearance::Dark,
                 ),
             },
         )
@@ -2194,15 +2205,15 @@ mod tests {
             recv_server_event(&mut server_event_rx, "bounded palette update"),
             ServerEvent::ClientShellHostTheme {
                 client_id,
-                update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors),
+                update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors),
             } if client_id == ClientId::test_new(7) && colors.len() == 256
         ));
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "ordered appearance update"),
             ServerEvent::ClientShellHostTheme {
                 client_id,
-                update: crate::protocol::ClientHostThemeUpdate::Appearance(
-                    crate::protocol::ClientHostAppearance::Dark
+                update: shepr_protocol::ClientHostThemeUpdate::Appearance(
+                    shepr_protocol::ClientHostAppearance::Dark
                 ),
             } if client_id == ClientId::test_new(7)
         ));
@@ -2211,7 +2222,7 @@ mod tests {
             .map(|index| {
                 (
                     index,
-                    crate::protocol::ClientHostColor {
+                    shepr_protocol::ClientHostColor {
                         r: index,
                         g: 0,
                         b: 0,
@@ -2219,8 +2230,8 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let mut payload = protocol::codec::to_vec(&ClientMessage::ClientShellHostTheme {
-            update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors.clone()),
+        let mut payload = shepr_protocol::codec::to_vec(&ClientMessage::ClientShellHostTheme {
+            update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors.clone()),
         })
         .expect("encode the largest valid palette");
         // Raise the positional collection count and append one valid entry to
@@ -2253,10 +2264,10 @@ mod tests {
     #[test]
     fn pane_input_limits_charge_scroll_repeats() {
         let oversized_scroll = ClientPaneInputEvent::Mouse {
-            kind: crate::protocol::ClientMouseKind::ScrollUp,
-            position: crate::protocol::ClientMousePosition::Cell { column: 0, row: 0 },
+            kind: shepr_protocol::ClientMouseKind::ScrollUp,
+            position: shepr_protocol::ClientMousePosition::Cell { column: 0, row: 0 },
             geometry: None,
-            modifiers: crate::protocol::WireModifiers::NONE,
+            modifiers: shepr_protocol::WireModifiers::NONE,
             lines: u16::try_from(MAX_INPUT_EVENT_BATCH + 1).unwrap_or(u16::MAX),
         };
         assert_eq!(

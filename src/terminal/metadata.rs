@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::detect::AgentState;
+use shepr_agent::detect::AgentState;
 
 use super::{TerminalState, TerminalStateMutation};
 
@@ -138,15 +138,18 @@ impl TerminalState {
         source: &str,
         agent_label: Option<&str>,
         applies_to_source: Option<&str>,
-    ) -> Option<crate::detect::Agent> {
+    ) -> Option<shepr_agent::detect::Agent> {
         agent_label
-            .and_then(crate::detect::parse_agent_label)
+            .and_then(shepr_agent::detect::parse_agent_label)
             .or_else(|| {
-                crate::detect::Agent::all().find(|agent| {
-                    let agent_label = crate::detect::agent_label(*agent);
-                    crate::agent::resume::is_official_agent_source(source, agent_label)
+                shepr_agent::detect::Agent::all().find(|agent| {
+                    let agent_label = shepr_agent::detect::agent_label(*agent);
+                    shepr_agent::agent::resume::is_official_agent_source(source, agent_label)
                         || applies_to_source.is_some_and(|source| {
-                            crate::agent::resume::is_official_agent_source(source, agent_label)
+                            shepr_agent::agent::resume::is_official_agent_source(
+                                source,
+                                agent_label,
+                            )
                         })
                 })
             })
@@ -161,11 +164,11 @@ impl TerminalState {
         let Some(exit) = self.recent_agent_process_exit else {
             return false;
         };
-        let exited_agent_label = crate::detect::agent_label(exit.agent);
-        agent_label.and_then(crate::detect::parse_agent_label) == Some(exit.agent)
-            || crate::agent::resume::is_official_agent_source(source, exited_agent_label)
+        let exited_agent_label = shepr_agent::detect::agent_label(exit.agent);
+        agent_label.and_then(shepr_agent::detect::parse_agent_label) == Some(exit.agent)
+            || shepr_agent::agent::resume::is_official_agent_source(source, exited_agent_label)
             || applies_to_source.is_some_and(|source| {
-                crate::agent::resume::is_official_agent_source(source, exited_agent_label)
+                shepr_agent::agent::resume::is_official_agent_source(source, exited_agent_label)
             })
     }
 
@@ -174,7 +177,7 @@ impl TerminalState {
         source: &str,
         seq: Option<u64>,
         includes_tokens: bool,
-        agent: Option<crate::detect::Agent>,
+        agent: Option<shepr_agent::detect::Agent>,
     ) -> Result<bool, ()> {
         self.accept_metadata_report_at(source, seq, includes_tokens, agent, Instant::now())
     }
@@ -184,7 +187,7 @@ impl TerminalState {
         source: &str,
         seq: Option<u64>,
         includes_tokens: bool,
-        agent: Option<crate::detect::Agent>,
+        agent: Option<shepr_agent::detect::Agent>,
         now: Instant,
     ) -> Result<bool, ()> {
         let Some(seq) = seq else {
@@ -631,8 +634,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::detect::Agent;
-    use crate::protocol::TerminalId;
+    use shepr_agent::detect::Agent;
+    use shepr_protocol::TerminalId;
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())

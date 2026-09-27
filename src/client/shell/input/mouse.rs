@@ -3,6 +3,7 @@
 //! (log content-free kinds instead).
 
 use super::*;
+use crate::client::input_wire::WireMouseKind;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(30);
@@ -19,7 +20,7 @@ impl ClientShellState {
     /// clipped to the new pane area; the endpoint resize waits for the release (see
     /// `ClientChromeDrag::SidebarWidth`).
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
-        let bounds = crate::config::validated_sidebar_bounds(
+        let bounds = shepr_config::validated_sidebar_bounds(
             self.config.sidebar_min_width,
             self.config.sidebar_max_width,
         )
@@ -70,7 +71,7 @@ impl ClientShellState {
 
     pub(super) fn push_pane_scroll_offset(
         &mut self,
-        pane_id: crate::protocol::PublicPaneId,
+        pane_id: shepr_protocol::PublicPaneId,
         offset_from_bottom: usize,
         outcome: &mut ClientShellInput,
     ) {
@@ -85,7 +86,7 @@ impl ClientShellState {
 
     fn dispatch_pane_scroll_offset(
         &mut self,
-        pane_id: &crate::protocol::PublicPaneId,
+        pane_id: &shepr_protocol::PublicPaneId,
         offset_from_bottom: usize,
         outcome: &mut ClientShellInput,
     ) {
@@ -116,7 +117,7 @@ impl ClientShellState {
 
     pub(super) fn complete_pane_scroll(
         &mut self,
-        pane_id: &crate::protocol::PublicPaneId,
+        pane_id: &shepr_protocol::PublicPaneId,
         serial: u64,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
@@ -482,10 +483,10 @@ impl ClientShellState {
 
     fn pane_split_ratio(hit: &PaneSplitHit, grab_offset: i32, point: (u16, u16)) -> f32 {
         let (pointer, origin, length) = match hit.direction {
-            crate::protocol::PaneSurfaceSplitDirection::Horizontal => {
+            shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
                 (i32::from(point.0), i32::from(hit.area.x), hit.area.width)
             }
-            crate::protocol::PaneSurfaceSplitDirection::Vertical => {
+            shepr_protocol::PaneSurfaceSplitDirection::Vertical => {
                 (i32::from(point.1), i32::from(hit.area.y), hit.area.height)
             }
         };
@@ -1581,11 +1582,11 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.agent_sort_toggle, point) {
                     let sort = match self.config.agent_panel_sort {
-                        crate::config::AgentPanelSortConfig::Spaces => {
-                            crate::config::AgentPanelSortConfig::Priority
+                        shepr_config::AgentPanelSortConfig::Spaces => {
+                            shepr_config::AgentPanelSortConfig::Priority
                         }
-                        crate::config::AgentPanelSortConfig::Priority => {
-                            crate::config::AgentPanelSortConfig::Spaces
+                        shepr_config::AgentPanelSortConfig::Priority => {
+                            shepr_config::AgentPanelSortConfig::Spaces
                         }
                     };
                     self.config.agent_panel_sort = sort;
@@ -1767,8 +1768,8 @@ impl ClientShellState {
                         return;
                     };
                     let pointer = match hit.direction {
-                        crate::protocol::PaneSurfaceSplitDirection::Horizontal => mouse.column,
-                        crate::protocol::PaneSurfaceSplitDirection::Vertical => mouse.row,
+                        shepr_protocol::PaneSurfaceSplitDirection::Horizontal => mouse.column,
+                        shepr_protocol::PaneSurfaceSplitDirection::Vertical => mouse.row,
                     };
                     self.chrome_drag = Some(ClientChromeDrag::PaneSplit {
                         grab_offset: i32::from(hit.pos) - i32::from(pointer),
@@ -1932,12 +1933,12 @@ impl ClientShellState {
         modifiers: crossterm::event::KeyModifiers,
         outcome: &mut ClientShellInput,
     ) {
-        let Some(kind) = crate::protocol::ClientMouseKind::from_crossterm(mouse.kind) else {
+        let Some(kind) = shepr_protocol::ClientMouseKind::from_crossterm(mouse.kind) else {
             return;
         };
         let position = self.pane_mouse_position(hit, mouse);
         let geometry = matches!(position, ClientMousePosition::Pixels { .. }).then_some(
-            crate::protocol::ClientMouseGeometry {
+            shepr_protocol::ClientMouseGeometry {
                 cols: hit.inner_rect.width,
                 rows: hit.inner_rect.height,
                 width_px: hit.pixel_width,
@@ -1950,7 +1951,7 @@ impl ClientShellState {
                 kind,
                 position,
                 geometry,
-                modifiers: crate::protocol::WireModifiers::from(modifiers),
+                modifiers: crate::client::input_wire::wire_modifiers(modifiers),
                 lines: u16::try_from(self.config.mouse_scroll_lines).unwrap_or(u16::MAX),
             },
             outcome,

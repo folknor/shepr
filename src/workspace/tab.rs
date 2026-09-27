@@ -7,9 +7,9 @@ use ratatui::layout::Direction;
 use super::PaneSpawnHandles;
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
-use crate::protocol::TerminalId;
 use crate::terminal::TerminalState;
 use shepr_core::layout::{Node, PaneId, TileLayout};
+use shepr_protocol::TerminalId;
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 

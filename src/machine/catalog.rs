@@ -81,12 +81,12 @@ impl Default for EndpointCatalog {
 }
 
 impl EndpointCatalog {
-    pub(crate) fn load(paths: &crate::config::AppPaths) -> Result<Self, String> {
+    pub(crate) fn load(paths: &shepr_config::AppPaths) -> Result<Self, String> {
         Self::load_from_paths(&catalog_path(paths), &selection_path(paths))
     }
 
     pub(crate) fn load_profiles(
-        paths: &crate::config::AppPaths,
+        paths: &shepr_config::AppPaths,
     ) -> Result<Vec<SavedSshEndpoint>, String> {
         // Profiles only: each running client holds its selection in memory, and the
         // selection file only seeds the next launch (the last client to commit a
@@ -277,7 +277,7 @@ pub(crate) struct EndpointCatalogWatch {
 }
 
 impl EndpointCatalogWatch {
-    pub(crate) fn new(paths: &crate::config::AppPaths, now: Instant) -> Self {
+    pub(crate) fn new(paths: &shepr_config::AppPaths, now: Instant) -> Self {
         Self::for_path(catalog_path(paths), now)
     }
 
@@ -401,11 +401,11 @@ pub(super) fn store_private_json(
         .map_err(|error| format!("failed to persist {description} directory: {error}"))
 }
 
-pub(crate) fn catalog_path(paths: &crate::config::AppPaths) -> PathBuf {
+pub(crate) fn catalog_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.state_dir().join("client").join("endpoints.json")
 }
 
-fn selection_path(paths: &crate::config::AppPaths) -> PathBuf {
+fn selection_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths
         .state_dir()
         .join("client")

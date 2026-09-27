@@ -1,4 +1,4 @@
-use crate::protocol::{PublicPaneId, PublicTabId, WorkspaceId};
+use shepr_protocol::{PublicPaneId, PublicTabId, WorkspaceId};
 use shepr_pty::PtyCommand;
 
 /// Time allowed for a restored agent to appear after its resume launch.
@@ -109,7 +109,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     }
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
-    for key in crate::agent::launch_env_to_scrub() {
+    for key in shepr_agent::agent::launch_env_to_scrub() {
         cmd.env_remove(key);
     }
     for (key, value) in &launch_env.extra {
@@ -117,7 +117,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     }
     cmd.env(crate::SHEPR_ENV_VAR, crate::SHEPR_ENV_VALUE);
     cmd.env(
-        crate::config::SOCKET_PATH_ENV_VAR,
+        shepr_config::SOCKET_PATH_ENV_VAR,
         &launch_env.api_socket_path,
     );
     if let Ok(executable) = shepr_platform::launch_executable() {

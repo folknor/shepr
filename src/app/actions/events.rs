@@ -109,7 +109,10 @@ impl AppState {
                 seq,
                 session_ref,
             } => {
-                if crate::agent::resume::is_reserved_native_state_source(&source, &agent_label) {
+                if shepr_agent::agent::resume::is_reserved_native_state_source(
+                    &source,
+                    &agent_label,
+                ) {
                     self.update_terminal_state(pane_id, |terminal| {
                         terminal.set_agent_session_ref(source, agent_label, session_ref, seq)
                     })
@@ -197,7 +200,7 @@ impl AppState {
                 seq,
                 ..
             } => {
-                if crate::agent::resume::is_official_agent_source(&source, &agent_label) {
+                if shepr_agent::agent::resume::is_official_agent_source(&source, &agent_label) {
                     Vec::new()
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
@@ -325,7 +328,7 @@ impl AppState {
     /// snapshots.
     pub(super) fn record_agent_state_change_seq(
         &mut self,
-        terminal_id: &crate::protocol::TerminalId,
+        terminal_id: &shepr_protocol::TerminalId,
         change: &EffectiveStateChange,
     ) {
         if change.previous_state == change.state {

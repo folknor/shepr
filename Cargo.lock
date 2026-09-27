@@ -1709,8 +1709,11 @@ dependencies = [
  "serde_ignored",
  "serde_json",
  "sha2 0.11.0",
+ "shepr-agent",
+ "shepr-config",
  "shepr-core",
  "shepr-platform",
+ "shepr-protocol",
  "shepr-pty",
  "shepr-test-support",
  "shepr-vt",
@@ -1722,6 +1725,38 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "zbus",
+]
+
+[[package]]
+name = "shepr-agent"
+version = "0.1.0"
+dependencies = [
+ "jsonc-parser",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "shepr-core",
+ "shepr-platform",
+ "shepr-pty",
+ "shepr-test-support",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "shepr-config"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "shepr-core",
+ "shepr-test-support",
+ "time",
+ "toml",
 ]
 
 [[package]]
@@ -1747,7 +1782,20 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "zbus",
+]
+
+[[package]]
+name = "shepr-protocol"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+ "serde",
+ "serde_json",
+ "shepr-core",
+ "shepr-vt",
+ "tracing",
 ]
 
 [[package]]

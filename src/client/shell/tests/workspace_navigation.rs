@@ -295,7 +295,7 @@ fn empty_workspace_navigation_enter_exits_without_focusing() {
 fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
     let (mut state, _) = state_with_remote();
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
@@ -551,14 +551,14 @@ fn assert_local_highlight(state: &mut ClientShellState, selected_id: &str) {
 
 fn set_local_focus(state: &mut ClientShellState, workspace_id: &str, revision: u64) {
     let mut snapshot = workspaces(3);
-    snapshot.revision = crate::protocol::ProjectionRevision::new(revision);
+    snapshot.revision = shepr_protocol::ProjectionRevision::new(revision);
     snapshot.focused_workspace_id = Some(workspace_id.into());
     for workspace in &mut snapshot.workspaces {
         workspace.focused = workspace.workspace_id == workspace_id;
     }
     state.set_snapshot(Box::new(snapshot));
     let mut frame = surface();
-    frame.projection_revision = crate::protocol::ProjectionRevision::new(revision);
+    frame.projection_revision = shepr_protocol::ProjectionRevision::new(revision);
     state.set_pane_surface(frame);
 }
 
@@ -777,7 +777,7 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
 #[test]
 fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
     let mut config = Config::default();
-    config.keys.focus_agent = crate::config::BindingConfig::one("ctrl+alt+1");
+    config.keys.focus_agent = shepr_config::BindingConfig::one("ctrl+alt+1");
     let mut projected = workspaces(3);
     projected.agents.push(agent("agent", AgentStatus::Idle, 1));
 

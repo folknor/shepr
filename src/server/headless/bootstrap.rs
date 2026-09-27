@@ -1,7 +1,10 @@
 use super::*;
 
 /// Run the headless server. This is the entry point called from main.rs.
-pub fn run_server(config: &config::ValidatedConfig, paths: &config::AppPaths) -> io::Result<()> {
+pub fn run_server(
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
+) -> io::Result<()> {
     // Consume the startup-cwd hint before anything below starts a thread: the
     // API server thread, the tokio workers and session restore all run
     // concurrently afterwards, and unsetting a variable while another thread
@@ -12,9 +15,9 @@ pub fn run_server(config: &config::ValidatedConfig, paths: &config::AppPaths) ->
     let session_data_dir = crate::session::data_dir(paths);
     let lease = crate::persist::DataDirLease::acquire(&session_data_dir)?;
 
-    crate::logging::init_file_logging(
+    shepr_platform::logging::init_file_logging(
         &crate::session::data_dir(paths),
-        crate::logging::SERVER_LOG_FILE,
+        shepr_platform::logging::SERVER_LOG_FILE,
     );
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -80,7 +83,7 @@ pub fn run_server(config: &config::ValidatedConfig, paths: &config::AppPaths) ->
     });
 
     rt.shutdown_timeout(Duration::from_millis(100));
-    crate::logging::shutdown("server");
+    shepr_platform::logging::shutdown("server");
     result
 }
 
@@ -133,7 +136,7 @@ fn print_ready_message(api_socket: &Path, client_socket: &Path, session_data_dir
     eprintln!(
         "logs: {}",
         session_data_dir
-            .join(crate::logging::SERVER_LOG_FILE)
+            .join(shepr_platform::logging::SERVER_LOG_FILE)
             .display()
     );
     eprintln!("did you mean to open the Shepr TUI? run `shepr`; you do not need `shepr server`.");

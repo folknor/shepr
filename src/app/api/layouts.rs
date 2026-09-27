@@ -417,7 +417,7 @@ struct LayoutStaging<'a> {
     pane_terminals: &'a mut std::collections::HashMap<PaneId, crate::terminal::TerminalState>,
     pane_runtimes: &'a mut std::collections::HashMap<
         PaneId,
-        (crate::protocol::TerminalId, crate::pane::PaneRuntime),
+        (shepr_protocol::TerminalId, crate::pane::PaneRuntime),
     >,
     spawn: &'a crate::workspace::PaneSpawnHandles,
 }
@@ -464,9 +464,9 @@ fn stage_layout_node(
                 .map_err(crate::api::error::ApiError::into_message)?;
             let command = layout_command(second_leaf)?;
             let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
-                crate::protocol::WorkspaceId::new(staging.workspace_id),
-                crate::protocol::PublicTabId::new(staging.workspace_id, staging.tab_number),
-                crate::protocol::PublicPaneId::new(staging.workspace_id, *staging.next_pane_number),
+                shepr_protocol::WorkspaceId::new(staging.workspace_id),
+                shepr_protocol::PublicTabId::new(staging.workspace_id, staging.tab_number),
+                shepr_protocol::PublicPaneId::new(staging.workspace_id, *staging.next_pane_number),
             );
             let direction = match direction {
                 SplitDirection::Right => Direction::Horizontal,
@@ -634,9 +634,9 @@ mod tests {
     use super::*;
     use crate::{
         api::schema::{ErrorResponse, ResponseResult, SuccessResponse},
-        config::Config,
         workspace::Workspace,
     };
+    use shepr_config::Config;
 
     fn app_with_workspace() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

@@ -76,7 +76,8 @@ mod tests {
     fn stalled_server_reports_no_status_instead_of_an_error() {
         let scratch = crate::test_support::ScratchDir::new("status");
         let path = scratch.join("stalled.sock");
-        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
             let stream = listener.accept().expect("test precondition");

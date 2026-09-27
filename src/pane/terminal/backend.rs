@@ -84,7 +84,7 @@ impl GhosttyPaneTerminal {
             }
         }
 
-        let foreground_job = crate::detect::foreground_job(shell_pid);
+        let foreground_job = shepr_agent::detect::foreground_job(shell_pid);
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return false;
         };

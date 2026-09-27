@@ -94,7 +94,7 @@ fn shrink_for_one_cell_gap(size: u16) -> u16 {
 
 pub(crate) fn apply_pane_chrome(
     panes: &[LayoutPaneInfo],
-    pane_borders: crate::config::PaneBordersConfig,
+    pane_borders: shepr_config::PaneBordersConfig,
     pane_gaps: bool,
     pane_outer_borders: bool,
 ) -> Vec<PaneChromeInfo> {
@@ -171,7 +171,7 @@ pub(crate) fn apply_pane_chrome(
 pub(crate) struct PaneGeometry {
     /// Area the tab's panes are laid out in.
     pub area: Rect,
-    pub pane_borders: crate::config::PaneBordersConfig,
+    pub pane_borders: shepr_config::PaneBordersConfig,
     pub pane_gaps: bool,
     pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
@@ -264,7 +264,7 @@ mod tests {
     use super::*;
     use ratatui::layout::Direction;
 
-    fn geometry(pane_borders: crate::config::PaneBordersConfig, scrollbars: bool) -> PaneGeometry {
+    fn geometry(pane_borders: shepr_config::PaneBordersConfig, scrollbars: bool) -> PaneGeometry {
         PaneGeometry {
             area: Rect::new(0, 0, 100, 40),
             pane_borders,
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn sole_pane_without_borders_keeps_only_the_scrollbar_gutter() {
-        let geometry = geometry(crate::config::PaneBordersConfig::Off, true);
+        let geometry = geometry(shepr_config::PaneBordersConfig::Off, true);
         assert_eq!(geometry.sole_pane_size(), (40, 99));
         let geometry = PaneGeometry {
             pane_scrollbars: false,
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn split_pane_gets_its_own_half_not_the_split_target_size() {
-        let geometry = geometry(crate::config::PaneBordersConfig::Off, false);
+        let geometry = geometry(shepr_config::PaneBordersConfig::Off, false);
         let (mut layout, root) = TileLayout::new();
         let right = layout
             .split_pane(root, Direction::Horizontal, 0.5)
@@ -306,8 +306,8 @@ mod tests {
 
     #[test]
     fn bordered_split_excludes_border_cells() {
-        let borderless = geometry(crate::config::PaneBordersConfig::Off, false);
-        let bordered = geometry(crate::config::PaneBordersConfig::Always, false);
+        let borderless = geometry(shepr_config::PaneBordersConfig::Off, false);
+        let bordered = geometry(shepr_config::PaneBordersConfig::Always, false);
         let (mut layout, root) = TileLayout::new();
         let below = layout
             .split_pane(root, Direction::Vertical, 0.5)
@@ -322,14 +322,14 @@ mod tests {
 
     #[test]
     fn pane_outside_the_layout_has_no_size() {
-        let geometry = geometry(crate::config::PaneBordersConfig::Off, true);
+        let geometry = geometry(shepr_config::PaneBordersConfig::Off, true);
         let (layout, _) = TileLayout::new();
         assert_eq!(geometry.pane_size(&layout, false, PaneId::alloc()), None);
     }
 
     #[test]
     fn zoomed_tab_shows_only_the_focused_pane_over_the_whole_area() {
-        let geometry = geometry(crate::config::PaneBordersConfig::Always, false);
+        let geometry = geometry(shepr_config::PaneBordersConfig::Always, false);
         let (mut layout, root) = TileLayout::new();
         let right = layout
             .split_pane(root, Direction::Horizontal, 0.5)
@@ -357,30 +357,28 @@ mod tests {
         // A lone pane is never zoomed in practice, but the rule must still
         // agree with the tiled chrome: `Always` frames it, `Auto` does not.
         assert_eq!(
-            chrome(crate::config::PaneBordersConfig::Always, true).tab_panes(&layout, true)[0]
+            chrome(shepr_config::PaneBordersConfig::Always, true).tab_panes(&layout, true)[0]
                 .borders,
             Borders::ALL
         );
         assert_eq!(
-            chrome(crate::config::PaneBordersConfig::Auto, true).tab_panes(&layout, true)[0]
-                .borders,
+            chrome(shepr_config::PaneBordersConfig::Auto, true).tab_panes(&layout, true)[0].borders,
             Borders::NONE
         );
         layout
             .split_pane(root, Direction::Vertical, 0.5)
             .expect("test precondition");
         assert_eq!(
-            chrome(crate::config::PaneBordersConfig::Auto, true).tab_panes(&layout, true)[0]
-                .borders,
+            chrome(shepr_config::PaneBordersConfig::Auto, true).tab_panes(&layout, true)[0].borders,
             Borders::ALL
         );
         assert_eq!(
-            chrome(crate::config::PaneBordersConfig::Always, false).tab_panes(&layout, true)[0]
+            chrome(shepr_config::PaneBordersConfig::Always, false).tab_panes(&layout, true)[0]
                 .borders,
             Borders::NONE
         );
         assert_eq!(
-            chrome(crate::config::PaneBordersConfig::Off, true).tab_panes(&layout, true)[0].borders,
+            chrome(shepr_config::PaneBordersConfig::Off, true).tab_panes(&layout, true)[0].borders,
             Borders::NONE
         );
     }

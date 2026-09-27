@@ -1,0 +1,24 @@
+[package]
+name = "shepr-config"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+serde = { workspace = true }
+serde_ignored = { workspace = true }
+serde_json = { workspace = true }
+shepr-core = { path = "../shepr-core" }
+time = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

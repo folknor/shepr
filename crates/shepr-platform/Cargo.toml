@@ -5,15 +5,16 @@ edition = "2024"
 publish = false
 
 [dependencies]
-libc = { workspace = true }
 crossterm = { workspace = true }
+futures-util = { workspace = true }
+interprocess = { workspace = true }
+libc = { workspace = true }
+sha2 = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
-interprocess = { workspace = true }
-sha2 = { workspace = true }
-zbus = { workspace = true }
-futures-util = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
 
 [dev-dependencies]
 shepr-test-support = { path = "../shepr-test-support" }

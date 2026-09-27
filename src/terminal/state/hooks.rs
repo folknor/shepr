@@ -28,7 +28,7 @@ impl TerminalState {
         agent_label: String,
         state: AgentState,
         message: Option<String>,
-        session_ref: Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
     ) -> Option<TerminalStateMutation> {
         self.set_hook_authority_at(
@@ -48,16 +48,16 @@ impl TerminalState {
         agent_label: String,
         state: AgentState,
         message: Option<String>,
-        session_ref: Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         now: Instant,
     ) -> Option<TerminalStateMutation> {
-        if crate::detect::session_identity_only_integration(&source, &agent_label) {
+        if shepr_agent::detect::session_identity_only_integration(&source, &agent_label) {
             return None;
         }
-        if !crate::detect::full_lifecycle_hook_authority(&source, &agent_label)
+        if !shepr_agent::detect::full_lifecycle_hook_authority(&source, &agent_label)
             && self.recent_agent_process_exit.is_some_and(|exit| {
-                crate::detect::parse_agent_label(&agent_label) == Some(exit.agent)
+                shepr_agent::detect::parse_agent_label(&agent_label) == Some(exit.agent)
             })
         {
             return None;
@@ -179,7 +179,7 @@ impl TerminalState {
             return false;
         };
         self.hook_authority.as_ref().is_some_and(|authority| {
-            crate::detect::parse_agent_label(&authority.agent_label)
+            shepr_agent::detect::parse_agent_label(&authority.agent_label)
                 .is_some_and(|hook_agent| hook_agent != detected_agent)
         })
     }
@@ -195,7 +195,7 @@ impl TerminalState {
     }
 
     pub(super) fn persisted_agent_session_matches(&self, source: &str, agent: &str) -> bool {
-        let Some(source) = crate::agent::AgentSource::from_pair(source, agent) else {
+        let Some(source) = shepr_agent::agent::AgentSource::from_pair(source, agent) else {
             return false;
         };
         let Some(agent) = source.agent() else {
@@ -212,7 +212,7 @@ impl TerminalState {
     ) {
         if let Some((source, agent_label, session_ref)) =
             self.hook_authority.as_ref().and_then(|authority| {
-                crate::detect::full_lifecycle_hook_authority(
+                shepr_agent::detect::full_lifecycle_hook_authority(
                     &authority.source,
                     &authority.agent_label,
                 )
@@ -241,7 +241,7 @@ impl TerminalState {
         agent_label: &str,
         reason: FullLifecycleHookSuppressionReason,
     ) {
-        if crate::detect::full_lifecycle_hook_authority(source, agent_label) {
+        if shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label) {
             let session_ref = self
                 .hook_authority
                 .as_ref()
@@ -260,7 +260,7 @@ impl TerminalState {
         &mut self,
         source: String,
         agent_label: String,
-        session_ref: Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         reason: FullLifecycleHookSuppressionReason,
         observed_at: Instant,
     ) {
@@ -283,11 +283,11 @@ impl TerminalState {
         agent_label: &str,
         state: AgentState,
         message: Option<&str>,
-        session_ref: &Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: &Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         reported_at: Instant,
     ) -> FullLifecycleHookReportRoute {
-        if !crate::detect::full_lifecycle_hook_authority(source, agent_label) {
+        if !shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label) {
             return FullLifecycleHookReportRoute::Accept {
                 reanchor_sequence: false,
             };
@@ -296,7 +296,7 @@ impl TerminalState {
             return FullLifecycleHookReportRoute::Ignore;
         }
 
-        let known_agent = crate::detect::parse_agent_label(agent_label);
+        let known_agent = shepr_agent::detect::parse_agent_label(agent_label);
         let process_present = known_agent.is_some()
             && self.detected_agent == known_agent
             && self.recent_agent_process_exit.is_none();
@@ -413,9 +413,9 @@ impl TerminalState {
         &self,
         source: &str,
         agent_label: &str,
-        session_ref: &Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: &Option<shepr_agent::agent::resume::AgentSessionRef>,
     ) -> bool {
-        if !crate::detect::full_lifecycle_hook_authority(source, agent_label) {
+        if !shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label) {
             return false;
         }
         self.stale_full_lifecycle_hook_sessions
@@ -433,9 +433,9 @@ impl TerminalState {
         &self,
         source: &str,
         agent_label: &str,
-        session_ref: &Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: &Option<shepr_agent::agent::resume::AgentSessionRef>,
     ) -> bool {
-        if !crate::detect::full_lifecycle_hook_authority(source, agent_label) {
+        if !shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label) {
             return false;
         }
         self.stale_full_lifecycle_hook_sessions
@@ -456,13 +456,15 @@ impl TerminalState {
         &self,
         source: &str,
         agent_label: &str,
-        session_ref: &Option<crate::agent::resume::AgentSessionRef>,
+        session_ref: &Option<shepr_agent::agent::resume::AgentSessionRef>,
     ) -> bool {
         let Some(authority) = self.hook_authority.as_ref() else {
             return false;
         };
-        if !crate::detect::full_lifecycle_hook_authority(&authority.source, &authority.agent_label)
-        {
+        if !shepr_agent::detect::full_lifecycle_hook_authority(
+            &authority.source,
+            &authority.agent_label,
+        ) {
             return false;
         }
         if authority.source != source || authority.agent_label != agent_label {
@@ -479,11 +481,13 @@ impl TerminalState {
         &self,
         source: &str,
         agent_label: &str,
-        session_ref: &crate::agent::resume::AgentSessionRef,
-    ) -> Option<crate::agent::resume::AgentSessionRef> {
+        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
+    ) -> Option<shepr_agent::agent::resume::AgentSessionRef> {
         let authority = self.hook_authority.as_ref()?;
-        if !crate::detect::full_lifecycle_hook_authority(&authority.source, &authority.agent_label)
-            || authority.source != source
+        if !shepr_agent::detect::full_lifecycle_hook_authority(
+            &authority.source,
+            &authority.agent_label,
+        ) || authority.source != source
             || authority.agent_label != agent_label
         {
             return None;
@@ -506,12 +510,12 @@ impl TerminalState {
         if previous_detected_agent == Some(detected_agent) {
             return;
         }
-        let detected_label = crate::detect::agent_label(detected_agent);
+        let detected_label = shepr_agent::detect::agent_label(detected_agent);
         let mut stale_sessions = Vec::new();
         let mut validated_replacement_sessions = Vec::new();
         self.suppressed_full_lifecycle_hook_reports
             .retain(|source, suppressed| {
-                let should_clear = crate::detect::parse_agent_label(&suppressed.agent_label)
+                let should_clear = shepr_agent::detect::parse_agent_label(&suppressed.agent_label)
                     == Some(detected_agent);
                 if !should_clear {
                     return true;
@@ -573,16 +577,18 @@ impl TerminalState {
             validated_replacement_sessions
                 .iter()
                 .any(|(validated_source, _, _, _)| validated_source == source)
-                || !crate::detect::full_lifecycle_hook_authority(source, detected_label)
+                || !shepr_agent::detect::full_lifecycle_hook_authority(source, detected_label)
         });
         for (source, agent_label, session_ref, pending) in validated_replacement_sessions {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
             self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
-            let Some(persisted_session) = crate::agent::resume::PersistedAgentSession::from_report(
-                &source,
-                &agent_label,
-                session_ref,
-            ) else {
+            let Some(persisted_session) =
+                shepr_agent::agent::resume::PersistedAgentSession::from_report(
+                    &source,
+                    &agent_label,
+                    session_ref,
+                )
+            else {
                 continue;
             };
             self.persisted_agent_session = Some(persisted_session);
@@ -597,7 +603,7 @@ impl TerminalState {
         &mut self,
         source: String,
         agent_label: String,
-        session_ref: crate::agent::resume::AgentSessionRef,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef,
     ) {
         let stale_session = StaleFullLifecycleHookSession {
             agent_label,
@@ -619,7 +625,7 @@ impl TerminalState {
         &mut self,
         source: &str,
         agent_label: &str,
-        session_ref: &crate::agent::resume::AgentSessionRef,
+        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
     ) {
         let remove_source = self
             .stale_full_lifecycle_hook_sessions
@@ -646,17 +652,18 @@ impl TerminalState {
         self.suppressed_full_lifecycle_hook_reports
             .values()
             .any(|suppressed| {
-                crate::detect::parse_agent_label(&suppressed.agent_label) == Some(detected_agent)
+                shepr_agent::detect::parse_agent_label(&suppressed.agent_label)
+                    == Some(detected_agent)
                     && observed_at <= suppressed.observed_at
             })
     }
 
     pub(super) fn current_session_identity_for_persistence(
         &self,
-    ) -> Option<crate::agent::resume::PersistedAgentSession> {
+    ) -> Option<shepr_agent::agent::resume::PersistedAgentSession> {
         if let Some(authority) = self.hook_authority.as_ref()
             && let Some(session_ref) = authority.session_ref.as_ref()
-            && let Some(session) = crate::agent::resume::PersistedAgentSession::from_report(
+            && let Some(session) = shepr_agent::agent::resume::PersistedAgentSession::from_report(
                 &authority.source,
                 &authority.agent_label,
                 session_ref.clone(),
@@ -671,10 +678,10 @@ impl TerminalState {
         let Some(current) = self.current_session_identity_for_persistence() else {
             return false;
         };
-        let Some(agent) = crate::agent::Agent::parse_canonical_label(agent_label) else {
+        let Some(agent) = shepr_agent::agent::Agent::parse_canonical_label(agent_label) else {
             return true;
         };
-        let source = crate::agent::AgentSource::parse(source);
+        let source = shepr_agent::agent::AgentSource::parse(source);
         if source
             .agent()
             .is_some_and(|source_agent| source_agent != agent)
@@ -688,16 +695,16 @@ impl TerminalState {
         &self,
         source: &str,
         agent_label: &str,
-        session_ref: &crate::agent::resume::AgentSessionRef,
+        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
         session_start_source: Option<AgentSessionStartSource>,
-    ) -> Option<crate::agent::resume::AgentSessionRef> {
-        let source = crate::agent::AgentSource::from_pair(source, agent_label)?;
+    ) -> Option<shepr_agent::agent::resume::AgentSessionRef> {
+        let source = shepr_agent::agent::AgentSource::from_pair(source, agent_label)?;
         let agent = source.agent()?;
         let current = self.current_session_identity_for_persistence()?;
         (current.source == source
             && current.agent == agent
-            && current.session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
-            && session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
+            && current.session_ref.kind() == shepr_agent::agent::resume::AgentSessionRefKind::Id
+            && session_ref.kind() == shepr_agent::agent::resume::AgentSessionRefKind::Id
             && &current.session_ref != session_ref
             && !Self::session_report_allows_session_replacement(
                 source.as_str(),
@@ -711,7 +718,7 @@ impl TerminalState {
         &self,
         source: &str,
         agent_label: &str,
-        session_ref: &crate::agent::resume::AgentSessionRef,
+        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
     ) -> bool {
         self.hook_authority.is_none()
             && (source, agent_label) == ("shepr:mastracode", "mastracode")
@@ -722,8 +729,8 @@ impl TerminalState {
                     session.source.as_str() == source
                         && session.agent.label() == agent_label
                         && session.session_ref.kind()
-                            == crate::agent::resume::AgentSessionRefKind::Id
-                        && session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
+                            == shepr_agent::agent::resume::AgentSessionRefKind::Id
+                        && session_ref.kind() == shepr_agent::agent::resume::AgentSessionRefKind::Id
                         && &session.session_ref != session_ref
                 })
     }
@@ -733,7 +740,7 @@ impl TerminalState {
         agent_label: &str,
         session_start_source: Option<AgentSessionStartSource>,
     ) -> bool {
-        let Some(agent) = crate::agent::AgentSource::from_pair(source, agent_label)
+        let Some(agent) = shepr_agent::agent::AgentSource::from_pair(source, agent_label)
             .and_then(|source| source.agent())
         else {
             return false;

@@ -7,8 +7,8 @@
 pub(crate) fn decscusr_cursor_shape(
     style: shepr_vt::CursorVisualStyle,
     blinking: bool,
-) -> crate::protocol::CursorShapeParam {
-    use crate::protocol::CursorShapeParam;
+) -> shepr_protocol::CursorShapeParam {
+    use shepr_protocol::CursorShapeParam;
     match (style, blinking) {
         (shepr_vt::CursorVisualStyle::Block, true)
         | (shepr_vt::CursorVisualStyle::BlockHollow, true) => CursorShapeParam::BlinkingBlock,

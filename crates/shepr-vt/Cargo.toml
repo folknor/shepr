@@ -6,11 +6,11 @@ publish = false
 
 [dependencies]
 alacritty_terminal = { workspace = true }
-unicode-width = { workspace = true }
-unicode-segmentation = { workspace = true }
 serde = { workspace = true }
-tracing = { workspace = true }
 shepr-core = { path = "../shepr-core" }
+tracing = { workspace = true }
+unicode-segmentation = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
 shepr-test-support = { path = "../shepr-test-support" }

@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use crate::api::schema::{
     ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse,
 };
-use crate::ipc::LocalStream;
+use shepr_platform::ipc::LocalStream;
 
 /// API connection target resolved by clients at the process edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +32,7 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn local(paths: &crate::config::AppPaths) -> Self {
+    pub fn local(paths: &shepr_config::AppPaths) -> Self {
         Self::for_target(ConnectionTarget::SocketPath(crate::api::socket_path(paths)))
     }
 
@@ -80,7 +80,10 @@ impl ApiClient {
         write_request(&mut stream, request).map_err(normalize_socket_timeout)?;
 
         let deadline = deadline_after(timeout)?;
-        let mut reader = BufReader::new(crate::ipc::DeadlineReader::new(&mut stream, deadline));
+        let mut reader = BufReader::new(shepr_platform::ipc::DeadlineReader::new(
+            &mut stream,
+            deadline,
+        ));
         read_json_line(&mut reader).map_err(normalize_socket_timeout)
     }
 
@@ -108,8 +111,10 @@ impl ApiClient {
                 let mut stream = self.connect()?;
                 write_request(&mut stream, &request)?;
                 let deadline = deadline_after(timeout)?;
-                let mut reader =
-                    BufReader::new(crate::ipc::DeadlineReader::new(&mut stream, deadline));
+                let mut reader = BufReader::new(shepr_platform::ipc::DeadlineReader::new(
+                    &mut stream,
+                    deadline,
+                ));
                 parse_response_value(read_json_line(&mut reader)?)?
             }
             None => self.request(&request)?,
@@ -129,7 +134,7 @@ impl ApiClient {
     }
 
     fn connect(&self) -> io::Result<LocalStream> {
-        crate::ipc::connect_local_stream(&self.socket_path())
+        shepr_platform::ipc::connect_local_stream(&self.socket_path())
     }
 }
 
@@ -268,8 +273,8 @@ mod tests {
     #[test]
     fn local_session_target_resolves_named_session_socket() {
         let env = crate::test_support::IsolatedEnv::new();
-        env.set(crate::config::SESSION_ENV_VAR, "work");
-        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+        env.set(shepr_config::SESSION_ENV_VAR, "work");
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         let client = ApiClient::local(&paths);
         let socket = client.socket_path();
         assert!(socket.ends_with("sessions/work/shepr.sock"), "{socket:?}");
@@ -281,7 +286,8 @@ mod tests {
         use interprocess::local_socket::traits::Listener as _;
         let scratch = crate::test_support::ScratchDir::new("status-timeout");
         let path = scratch.join("api.sock");
-        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let server = std::thread::spawn(move || {
             let stream = listener.accept().expect("test precondition");
             let mut reader = BufReader::new(stream);
@@ -309,7 +315,8 @@ mod tests {
         use interprocess::local_socket::traits::Listener as _;
         let scratch = crate::test_support::ScratchDir::new("request-timeout");
         let path = scratch.join("api.sock");
-        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
             let stream = listener.accept().expect("test precondition");
@@ -340,7 +347,8 @@ mod tests {
         use interprocess::local_socket::traits::Listener as _;
         let scratch = crate::test_support::ScratchDir::new("partial-response");
         let path = scratch.join("api.sock");
-        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let server = std::thread::spawn(move || {
             let stream = listener.accept().expect("test precondition");
             let mut reader = BufReader::new(stream);

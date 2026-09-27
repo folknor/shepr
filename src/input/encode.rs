@@ -5,7 +5,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
-use crate::protocol::KittyKeyboardFlags;
+use shepr_protocol::KittyKeyboardFlags;
 
 use super::model::KITTY_FLAG_REPORT_ALL_KEYS;
 

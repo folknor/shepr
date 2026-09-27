@@ -24,7 +24,7 @@ pub(super) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) agent_panel_sort: Option<crate::config::AgentPanelSortConfig>,
+    pub(super) agent_panel_sort: Option<shepr_config::AgentPanelSortConfig>,
     /// Which of the values above config.toml sets. Taken from the config at
     /// launch, never from the file.
     #[serde(skip)]
@@ -40,17 +40,17 @@ pub(super) struct ConfiguredChrome {
 }
 
 impl ConfiguredChrome {
-    pub(super) fn from_validated_config(config: &crate::config::ValidatedConfig) -> Self {
+    pub(super) fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
         Self {
             sidebar_width: config
                 .provenance()
-                .is_explicit(crate::config::UiPreferenceKey::SidebarWidth),
+                .is_explicit(shepr_config::UiPreferenceKey::SidebarWidth),
             sidebar_collapsed: config
                 .provenance()
-                .is_explicit(crate::config::UiPreferenceKey::SidebarStartCollapsed),
+                .is_explicit(shepr_config::UiPreferenceKey::SidebarStartCollapsed),
             agent_panel_sort: config
                 .provenance()
-                .is_explicit(crate::config::UiPreferenceKey::AgentPanelSort),
+                .is_explicit(shepr_config::UiPreferenceKey::AgentPanelSort),
         }
     }
 }
@@ -140,7 +140,7 @@ mod tests {
             sidebar_width: Some(31),
             sidebar_section_split: super::super::sidebar_tokens::SectionSplit::new(0.3),
             sidebar_collapsed: Some(true),
-            agent_panel_sort: Some(crate::config::AgentPanelSortConfig::Priority),
+            agent_panel_sort: Some(shepr_config::AgentPanelSortConfig::Priority),
             configured: ConfiguredChrome::default(),
         };
 
@@ -169,13 +169,13 @@ mod tests {
 
     #[test]
     fn configured_chrome_follows_config_value_provenance() {
-        let default_config = crate::config::ValidatedConfig::test_default();
+        let default_config = shepr_config::ValidatedConfig::test_default();
         assert_eq!(
             ConfiguredChrome::from_validated_config(&default_config),
             ConfiguredChrome::default()
         );
-        let config = crate::config::ValidatedConfig::test_from_config(
-            crate::config::Config::default(),
+        let config = shepr_config::ValidatedConfig::test_from_config(
+            shepr_config::Config::default(),
             Some("[ui]\nsidebar_start_collapsed = false\n"),
         );
         assert_eq!(

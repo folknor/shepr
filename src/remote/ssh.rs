@@ -53,7 +53,7 @@ impl Drop for ManagedSshConfigDirectory {
 pub(super) enum TeardownResource {
     Socket {
         path: PathBuf,
-        identity: crate::ipc::SocketFileIdentity,
+        identity: shepr_platform::ipc::SocketFileIdentity,
     },
     Directory(PathBuf),
 }
@@ -62,7 +62,7 @@ impl TeardownResource {
     pub(super) fn remove(&self) {
         match self {
             Self::Socket { path, identity } => {
-                let _ = crate::ipc::remove_socket_file_if_owned(path, identity);
+                let _ = shepr_platform::ipc::remove_socket_file_if_owned(path, identity);
             }
             Self::Directory(path) => {
                 let _ = fs::remove_dir_all(path);
@@ -161,7 +161,7 @@ pub(crate) struct SshAuthenticationCommand {
 }
 
 pub(crate) fn ssh_authentication_command(
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
     target: &SshTarget,
     settings: super::SavedSshSettings,
 ) -> io::Result<SshAuthenticationCommand> {
@@ -215,7 +215,7 @@ impl RemoteSsh {
         target: SshTarget,
         manage_ssh_config: bool,
         session_name: String,
-        paths: &crate::config::AppPaths,
+        paths: &shepr_config::AppPaths,
     ) -> Self {
         let managed_config = if manage_ssh_config {
             write_managed_ssh_config(target.as_str(), paths)
@@ -240,12 +240,12 @@ impl RemoteSsh {
     pub(in crate::remote) fn new_noninteractive_with(
         target: SshTarget,
         manage_ssh_config: bool,
-        paths: &crate::config::AppPaths,
+        paths: &shepr_config::AppPaths,
     ) -> Self {
         let mut ssh = Self::new(
             target,
             manage_ssh_config,
-            crate::config::DEFAULT_SESSION_NAME.into(),
+            shepr_config::DEFAULT_SESSION_NAME.into(),
             paths,
         );
         ssh.noninteractive = true;
@@ -493,7 +493,7 @@ pub(super) fn ssh_config_include(path: Option<&Path>) -> Option<String> {
 /// OpenSSH's first-value-wins behavior preserves explicit user keepalives.
 pub(super) fn write_managed_ssh_config(
     target: &str,
-    app_paths: &crate::config::AppPaths,
+    app_paths: &shepr_config::AppPaths,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.config_file();
     let paths: shepr_platform::RemoteSshConfigPaths =

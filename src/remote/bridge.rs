@@ -31,7 +31,7 @@ thread_local! {
 
 pub(in crate::remote) struct SshStdioBridge {
     local_socket: PathBuf,
-    socket_identity: crate::ipc::SocketFileIdentity,
+    socket_identity: shepr_platform::ipc::SocketFileIdentity,
     should_stop: Arc<AtomicBool>,
     failure_rx: mpsc::Receiver<io::Error>,
     thread: Option<JoinHandle<()>>,
@@ -64,23 +64,26 @@ impl SshStdioBridge {
         ssh_options: Option<&ManagedSshOptions>,
         noninteractive: bool,
     ) -> io::Result<Self> {
-        crate::ipc::prepare_socket_path(&local_socket, |path| {
+        shepr_platform::ipc::prepare_socket_path(&local_socket, |path| {
             format!("remote bridge is already listening at {}", path.display())
         })?;
-        let listener = crate::ipc::bind_private_local_listener(&local_socket)?;
-        let socket_identity = crate::ipc::socket_file_identity(&local_socket)?;
+        let listener = shepr_platform::ipc::bind_private_local_listener(&local_socket)?;
+        let socket_identity = shepr_platform::ipc::socket_file_identity(&local_socket)?;
         let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
             path: local_socket.clone(),
             identity: socket_identity.clone(),
         });
-        if let Err(err) =
-            crate::ipc::restrict_socket_permissions(&local_socket, BRIDGE_SOCKET_PERMISSION_MODE)
-        {
-            let _ = crate::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
+        if let Err(err) = shepr_platform::ipc::restrict_socket_permissions(
+            &local_socket,
+            BRIDGE_SOCKET_PERMISSION_MODE,
+        ) {
+            let _ =
+                shepr_platform::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
             return Err(err);
         }
         if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
-            let _ = crate::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
+            let _ =
+                shepr_platform::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
             return Err(err);
         }
 
@@ -92,7 +95,7 @@ impl SshStdioBridge {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok(stream) => {
-                        match crate::ipc::peer_is_same_user(&stream) {
+                        match shepr_platform::ipc::peer_is_same_user(&stream) {
                             Ok(true) => {}
                             Ok(false) => {
                                 tracing::warn!(
@@ -165,16 +168,19 @@ impl SshStdioBridge {
 }
 
 pub(super) fn prepare_remote_bridge_stream(
-    mut stream: crate::ipc::LocalStream,
-) -> io::Result<crate::ipc::LocalStream> {
-    crate::ipc::set_local_stream_polling(&mut stream, false)?;
+    mut stream: shepr_platform::ipc::LocalStream,
+) -> io::Result<shepr_platform::ipc::LocalStream> {
+    shepr_platform::ipc::set_local_stream_polling(&mut stream, false)?;
     Ok(stream)
 }
 
 impl Drop for SshStdioBridge {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Release);
-        let _ = crate::ipc::remove_socket_file_if_owned(&self.local_socket, &self.socket_identity);
+        let _ = shepr_platform::ipc::remove_socket_file_if_owned(
+            &self.local_socket,
+            &self.socket_identity,
+        );
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -209,7 +215,7 @@ impl BridgeUploadStop {
 
 #[cfg(test)]
 pub(crate) fn bridge_upload_cancellation_for_test(
-    stream: crate::ipc::LocalStream,
+    stream: shepr_platform::ipc::LocalStream,
     mut writer: impl io::Write + Send + 'static,
 ) -> impl FnOnce() {
     stream
@@ -244,7 +250,7 @@ pub(crate) fn bridge_upload_cancellation_for_test(
 }
 
 pub(super) fn bridge_connection(
-    mut stream: crate::ipc::LocalStream,
+    mut stream: shepr_platform::ipc::LocalStream,
     target: &SshTarget,
     remote_command: &str,
     ssh_options: Option<&ManagedSshOptions>,
@@ -300,7 +306,7 @@ pub(super) fn bridge_connection(
             return Err(err);
         }
     };
-    if let Err(err) = crate::ipc::set_local_stream_polling(&mut stream, true) {
+    if let Err(err) = shepr_platform::ipc::set_local_stream_polling(&mut stream, true) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(err);
@@ -518,7 +524,7 @@ pub(super) fn terminate_bridge_child(
 
 pub(super) fn copy_reader_to_local_stream<R: io::Read>(
     reader: &mut R,
-    stream: &mut crate::ipc::LocalStream,
+    stream: &mut shepr_platform::ipc::LocalStream,
     connection_stop: &AtomicBool,
     bridge_stop: &AtomicBool,
 ) -> io::Result<u64> {
@@ -557,7 +563,7 @@ pub(super) fn copy_reader_to_local_stream<R: io::Read>(
 /// here on its way to the remote host. Like the download half above, it never logs the
 /// bytes it copies; bridge diagnostics carry errors and ssh's own stderr only.
 pub(super) fn copy_local_stream_to_writer<W: io::Write>(
-    mut stream: crate::ipc::LocalStream,
+    mut stream: shepr_platform::ipc::LocalStream,
     writer: &mut W,
     connection_stop: &BridgeUploadStop,
     bridge_stop: &AtomicBool,
@@ -573,16 +579,16 @@ pub(super) fn copy_local_stream_to_writer<W: io::Write>(
                 attempts.fetch_add(1, Ordering::Relaxed);
             }
         });
-        match crate::ipc::poll_local_stream_read_count(&mut stream, &mut buffer)? {
-            crate::ipc::LocalStreamReadCount::Data(read) => {
+        match shepr_platform::ipc::poll_local_stream_read_count(&mut stream, &mut buffer)? {
+            shepr_platform::ipc::LocalStreamReadCount::Data(read) => {
                 writer.write_all(&buffer[..read])?;
                 writer.flush()?;
                 total += read as u64;
             }
-            crate::ipc::LocalStreamReadCount::Pending => {
+            shepr_platform::ipc::LocalStreamReadCount::Pending => {
                 connection_stop.wake.wait(&stream)?;
             }
-            crate::ipc::LocalStreamReadCount::Closed => {
+            shepr_platform::ipc::LocalStreamReadCount::Closed => {
                 client_closed.store(true, Ordering::Release);
                 break;
             }
@@ -600,10 +606,10 @@ pub(super) fn run_client_process(
     let exe = shepr_platform::launch_executable()?;
     let status = Command::new(exe)
         .arg("client")
-        .env(crate::config::CLIENT_SOCKET_PATH_ENV_VAR, local_socket)
+        .env(shepr_config::CLIENT_SOCKET_PATH_ENV_VAR, local_socket)
         .env(REATTACH_COMMAND_ENV_VAR, reattach_command)
         .env(REMOTE_KEYBINDINGS_ENV_VAR, keybindings.as_str())
-        .env_remove(crate::config::SOCKET_PATH_ENV_VAR)
+        .env_remove(shepr_config::SOCKET_PATH_ENV_VAR)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

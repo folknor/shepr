@@ -23,7 +23,7 @@ pub(crate) struct SshMetadataCache {
 
 impl SshMetadataCache {
     pub(crate) fn new(
-        paths: &crate::config::AppPaths,
+        paths: &shepr_config::AppPaths,
         profile_id: &ProfileId,
         target: &str,
         session: &str,

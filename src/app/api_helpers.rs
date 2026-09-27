@@ -2,7 +2,7 @@ use crate::api::error::{ApiError, ApiErrorCode};
 
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
     let normalized = normalize_api_key_alias(key.trim());
-    let (code, modifiers) = crate::config::parse_key_combo(normalized)?;
+    let (code, modifiers) = shepr_config::parse_key_combo(normalized)?;
     Some(crossterm::event::KeyEvent::new(code, modifiers))
 }
 
@@ -76,31 +76,32 @@ pub(super) fn encode_api_input(
 
 pub(super) fn detect_state_from_api(
     state: crate::api::schema::PaneAgentState,
-) -> crate::detect::AgentState {
+) -> shepr_agent::detect::AgentState {
     match state {
-        crate::api::schema::PaneAgentState::Idle => crate::detect::AgentState::Idle,
-        crate::api::schema::PaneAgentState::Working => crate::detect::AgentState::Working,
-        crate::api::schema::PaneAgentState::Blocked => crate::detect::AgentState::Blocked,
-        crate::api::schema::PaneAgentState::Unknown => crate::detect::AgentState::Unknown,
+        crate::api::schema::PaneAgentState::Idle => shepr_agent::detect::AgentState::Idle,
+        crate::api::schema::PaneAgentState::Working => shepr_agent::detect::AgentState::Working,
+        crate::api::schema::PaneAgentState::Blocked => shepr_agent::detect::AgentState::Blocked,
+        crate::api::schema::PaneAgentState::Unknown => shepr_agent::detect::AgentState::Unknown,
     }
 }
 
 pub(super) fn pane_agent_status(
-    state: crate::detect::AgentState,
+    state: shepr_agent::detect::AgentState,
 ) -> crate::api::schema::AgentStatus {
     match state {
-        crate::detect::AgentState::Idle | crate::detect::AgentState::Unknown => {
+        shepr_agent::detect::AgentState::Idle | shepr_agent::detect::AgentState::Unknown => {
             crate::api::schema::AgentStatus::Idle
         }
-        crate::detect::AgentState::Working => crate::api::schema::AgentStatus::Working,
-        crate::detect::AgentState::Blocked => crate::api::schema::AgentStatus::Blocked,
+        shepr_agent::detect::AgentState::Working => crate::api::schema::AgentStatus::Working,
+        shepr_agent::detect::AgentState::Blocked => crate::api::schema::AgentStatus::Blocked,
     }
 }
 
 #[cfg(test)]
 mod agent_status_tests {
     use super::pane_agent_status;
-    use crate::{api::schema::AgentStatus, detect::AgentState};
+    use crate::api::schema::AgentStatus;
+    use shepr_agent::detect::AgentState;
 
     #[test]
     fn unknown_agent_state_presents_as_idle() {
@@ -303,8 +304,8 @@ pub(super) fn normalize_reported_agent_label(agent: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if let Some(agent) = crate::detect::parse_agent_label(trimmed) {
-        return Some(crate::detect::agent_label(agent).to_string());
+    if let Some(agent) = shepr_agent::detect::parse_agent_label(trimmed) {
+        return Some(shepr_agent::detect::agent_label(agent).to_string());
     }
     Some(trimmed.to_string())
 }

@@ -70,7 +70,7 @@ pub(super) fn client_shell_resize_message(
         super::terminal_geometry::bounded_cell_geometry(cell_width_px, cell_height_px, pixel_mouse);
     let size = shell.surface_size(cols, rows);
     ClientMessage::ClientShellResize {
-        geometry: crate::protocol::TerminalGeometry::new(
+        geometry: shepr_protocol::TerminalGeometry::new(
             size.cols,
             size.rows,
             cell_width_px,
@@ -434,7 +434,7 @@ pub(super) fn complete_endpoint_activation(
 fn correct_committed_surface_size(
     state: &ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
-    requested: Option<crate::protocol::ClientSurfaceSize>,
+    requested: Option<shepr_protocol::ClientSurfaceSize>,
 ) {
     if let Some(resize) = requested.and_then(|requested| committed_resize(state, requested)) {
         // A failed send surfaces through the registry's failure list.
@@ -444,7 +444,7 @@ fn correct_committed_surface_size(
 
 fn committed_resize(
     state: &ClientState,
-    requested: crate::protocol::ClientSurfaceSize,
+    requested: shepr_protocol::ClientSurfaceSize,
 ) -> Option<ClientMessage> {
     let shell = state.mode.shell()?;
     (shell.surface_size(
@@ -701,7 +701,7 @@ pub(super) fn follow_endpoint_catalog(
 pub(super) fn install_client_shell_snapshot(
     state: &mut ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
-    snapshot: Box<crate::protocol::ClientShellSnapshot>,
+    snapshot: Box<shepr_protocol::ClientShellSnapshot>,
     projection_pending: bool,
     endpoints: &mut endpoint::EndpointRegistry,
 ) -> Result<(), ClientError> {
@@ -915,7 +915,7 @@ mod tests {
 
         // A surface requested under the source's layout, one row off (the tab bar hides for a
         // single-tab workspace), is corrected to the committed layout.
-        let stale = crate::protocol::ClientSurfaceSize {
+        let stale = shepr_protocol::ClientSurfaceSize {
             cols: committed.cols,
             rows: committed.rows.saturating_add(1),
         };
@@ -947,12 +947,12 @@ mod tests {
         }
     }
 
-    fn snapshot(boot_id: &str) -> Box<crate::protocol::ClientShellSnapshot> {
-        Box::new(crate::protocol::ClientShellSnapshot {
+    fn snapshot(boot_id: &str) -> Box<shepr_protocol::ClientShellSnapshot> {
+        Box::new(shepr_protocol::ClientShellSnapshot {
             boot_id: boot_id.into(),
-            revision: crate::protocol::ProjectionRevision::new(1),
-            resolved_config: crate::protocol::codec::to_vec(
-                &crate::config::ValidatedConfig::test_default(),
+            revision: shepr_protocol::ProjectionRevision::new(1),
+            resolved_config: shepr_protocol::codec::to_vec(
+                &shepr_config::ValidatedConfig::test_default(),
             )
             .expect("test config encodes"),
             focused_workspace_id: None,
@@ -1092,7 +1092,7 @@ mod tests {
         let mut commands = endpoint::commands::EndpointCommands::default();
         let mut pending = None;
         let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
-            &crate::config::AppPaths::default(),
+            &shepr_config::AppPaths::default(),
             &catalog.ssh,
             crate::remote::SavedSshSettings {
                 manage_ssh_config: false,

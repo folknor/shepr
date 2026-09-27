@@ -39,10 +39,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-unicode-width = "0.2"
 unicode-segmentation = "1.13.1"
+unicode-width = "0.2"
 # logind's delay inhibitor lets the server save before host shutdown kills panes.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 
@@ -107,17 +108,25 @@ tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-unicode-width = { workspace = true }
 unicode-segmentation = { workspace = true }
+unicode-width = { workspace = true }
 zbus = { workspace = true }
+
 futures-util = { workspace = true }
+
+shepr-agent = { path = "crates/shepr-agent" }
+shepr-config = { path = "crates/shepr-config" }
 shepr-core = { path = "crates/shepr-core" }
 shepr-platform = { path = "crates/shepr-platform" }
-shepr-vt = { path = "crates/shepr-vt" }
+shepr-protocol = { path = "crates/shepr-protocol" }
 shepr-pty = { path = "crates/shepr-pty" }
+shepr-vt = { path = "crates/shepr-vt" }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+shepr-agent = { path = "crates/shepr-agent", features = ["test-support"] }
+shepr-config = { path = "crates/shepr-config", features = ["test-support"] }
+shepr-protocol = { path = "crates/shepr-protocol", features = ["test-support"] }
 shepr-test-support = { path = "crates/shepr-test-support" }

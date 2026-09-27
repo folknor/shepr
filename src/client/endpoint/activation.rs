@@ -4,19 +4,19 @@ use super::{ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointSe
 
 mod model;
 mod protocol;
+use self::protocol::*;
 pub(crate) use model::{
     ActivationBeginError, ActivationCompletion, ActivationRollback, EndpointActivationIntent,
     PendingEndpointActivation, SurfaceActivationProgress,
 };
 use model::{ActivationEvidence, ActivationPhase, EndpointLease};
-use protocol::*;
 
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn release_surface_best_effort(
     lease: &EndpointLease,
     endpoints: &mut EndpointRegistry,
-    request_id: &crate::protocol::RequestId,
+    request_id: &shepr_protocol::RequestId,
 ) {
     if !endpoints.accepts(&lease.endpoint_id, lease.generation) {
         return;
@@ -24,7 +24,7 @@ fn release_surface_best_effort(
     endpoints.set_surface_active(&lease.endpoint_id, false);
     let _ = endpoints.send_to(
         &lease.endpoint_id,
-        &crate::protocol::ClientMessage::ClientShellFocus { focused: false },
+        &shepr_protocol::ClientMessage::ClientShellFocus { focused: false },
     );
     match surface_interest_request(&lease.boot_id, request_id, false) {
         Ok(request) => {
@@ -40,7 +40,7 @@ impl PendingEndpointActivation {
         endpoints: &EndpointRegistry,
         target: &ClientEndpointId,
         focus: Option<crate::client::shell::ClientEndpointFocusTarget>,
-        resize: crate::protocol::ClientMessage,
+        resize: shepr_protocol::ClientMessage,
         serial: u64,
         now: Instant,
     ) -> Result<Self, ActivationBeginError> {
@@ -140,7 +140,7 @@ impl PendingEndpointActivation {
         // Old servers emit PTY focus loss only while the viewer is still active.
         if endpoints.send_to(
             &self.source.endpoint_id,
-            &crate::protocol::ClientMessage::ClientShellFocus { focused: false },
+            &shepr_protocol::ClientMessage::ClientShellFocus { focused: false },
         ) != EndpointSendOutcome::Sent
         {
             return Err("source endpoint focus revoke could not be sent".into());
@@ -164,7 +164,7 @@ impl PendingEndpointActivation {
         endpoints: &mut EndpointRegistry,
         target: &ClientEndpointId,
         focus: Option<crate::client::shell::ClientEndpointFocusTarget>,
-        resize: crate::protocol::ClientMessage,
+        resize: shepr_protocol::ClientMessage,
         serial: u64,
         now: Instant,
     ) -> Result<Self, ActivationBeginError> {
@@ -189,14 +189,14 @@ impl PendingEndpointActivation {
         &self.target.endpoint_id
     }
 
-    fn geometry(&self) -> crate::protocol::ClientSurfaceSize {
+    fn geometry(&self) -> shepr_protocol::ClientSurfaceSize {
         self.geometry
     }
 
     /// The surface size this handoff asked its endpoint to render. It was computed from the
     /// shell layout of the projection current when the handoff started (or last resized), which
     /// can differ from the committed projection's layout: the tab bar hides for a single tab.
-    pub(crate) fn requested_surface_size(&self) -> crate::protocol::ClientSurfaceSize {
+    pub(crate) fn requested_surface_size(&self) -> shepr_protocol::ClientSurfaceSize {
         self.geometry
     }
 
@@ -497,7 +497,7 @@ impl PendingEndpointActivation {
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: u64,
-        snapshot: &crate::protocol::ClientShellSnapshot,
+        snapshot: &shepr_protocol::ClientShellSnapshot,
     ) -> SurfaceActivationProgress {
         let lease = match &self.phase {
             ActivationPhase::ActivatingTarget { .. } => &self.target,
@@ -534,7 +534,7 @@ impl PendingEndpointActivation {
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: u64,
-        surface: crate::protocol::PaneSurfaceFrame,
+        surface: shepr_protocol::PaneSurfaceFrame,
     ) -> SurfaceActivationProgress {
         let lease = match &self.phase {
             ActivationPhase::ActivatingTarget { .. } => &self.target,
@@ -608,7 +608,7 @@ impl PendingEndpointActivation {
 
     pub(crate) fn update_resize(
         &mut self,
-        resize: &crate::protocol::ClientMessage,
+        resize: &shepr_protocol::ClientMessage,
         endpoints: &mut EndpointRegistry,
     ) -> Result<(), String> {
         self.geometry = resize_geometry(resize)
@@ -667,7 +667,7 @@ impl PendingEndpointActivation {
         if let Some(destination) = destination
             && endpoints.send_to(
                 destination,
-                &crate::protocol::ClientMessage::ClientShellFocus { focused },
+                &shepr_protocol::ClientMessage::ClientShellFocus { focused },
             ) != EndpointSendOutcome::Sent
         {
             return Err("pending endpoint focus baseline could not be sent".into());
@@ -682,7 +682,7 @@ impl PendingEndpointActivation {
 
     pub(crate) fn update_host_theme(
         &mut self,
-        update: crate::protocol::ClientHostThemeUpdate,
+        update: shepr_protocol::ClientHostThemeUpdate,
         endpoints: &mut EndpointRegistry,
     ) -> Result<(), String> {
         let restart = self.presentation_restart();
@@ -696,7 +696,7 @@ impl PendingEndpointActivation {
             _ => None,
         };
         if let Some(destination) = destination {
-            let message = crate::protocol::ClientMessage::ClientShellHostTheme { update };
+            let message = shepr_protocol::ClientMessage::ClientShellHostTheme { update };
             if endpoints.send_to(destination, &message) != EndpointSendOutcome::Sent {
                 return Err("pending endpoint host theme could not be sent".into());
             }
@@ -996,10 +996,10 @@ impl PendingEndpointActivation {
     fn start_target(
         &mut self,
         endpoints: &mut EndpointRegistry,
-        resize: &crate::protocol::ClientMessage,
+        resize: &shepr_protocol::ClientMessage,
     ) -> Result<(), String> {
         let request_id =
-            crate::protocol::RequestId::from(format!("client-shell-surface:{}:on", self.epoch));
+            shepr_protocol::RequestId::from(format!("client-shell-surface:{}:on", self.epoch));
         self.deadline = Instant::now() + ACTIVATION_TIMEOUT;
         // A transport may fail after writing any baseline or surface message. Enter the target
         // phase first so every uncertain target write is reversed through target-off before
@@ -1031,7 +1031,7 @@ impl PendingEndpointActivation {
         lease: &EndpointLease,
         completion: ActivationCompletion,
     ) -> Result<(), String> {
-        let request_id = crate::protocol::RequestId::from(format!(
+        let request_id = shepr_protocol::RequestId::from(format!(
             "client-shell-surface:{}:presentation-sync",
             self.epoch
         ));
@@ -1065,7 +1065,7 @@ impl PendingEndpointActivation {
             completion: Box::new(completion),
         };
         self.deadline = Instant::now() + ACTIVATION_TIMEOUT;
-        let message = crate::protocol::ClientMessage::PresentationSync(token);
+        let message = shepr_protocol::ClientMessage::PresentationSync(token);
         if endpoints.send_to(&lease.endpoint_id, &message) != EndpointSendOutcome::Sent {
             return Err("endpoint presentation effects fence could not be sent".into());
         }
@@ -1073,7 +1073,7 @@ impl PendingEndpointActivation {
     }
 
     fn start_target_release(&mut self, endpoints: &mut EndpointRegistry) -> Result<(), String> {
-        let request_id = crate::protocol::RequestId::from(format!(
+        let request_id = shepr_protocol::RequestId::from(format!(
             "client-shell-surface:{}:rollback-target-off",
             self.epoch
         ));
@@ -1091,9 +1091,9 @@ impl PendingEndpointActivation {
     fn start_source_restore(
         &mut self,
         endpoints: &mut EndpointRegistry,
-        resize: &crate::protocol::ClientMessage,
+        resize: &shepr_protocol::ClientMessage,
     ) -> Result<(), String> {
-        let request_id = crate::protocol::RequestId::from(format!(
+        let request_id = shepr_protocol::RequestId::from(format!(
             "client-shell-surface:{}:rollback-source-on",
             self.epoch
         ));
@@ -1159,7 +1159,7 @@ impl PendingEndpointActivation {
         Ok(())
     }
 
-    fn next_focus_request_id(&mut self) -> Option<crate::protocol::RequestId> {
+    fn next_focus_request_id(&mut self) -> Option<shepr_protocol::RequestId> {
         self.focus.as_ref()?;
         self.next_focus_serial = self.next_focus_serial.saturating_add(1);
         Some(
@@ -1208,7 +1208,7 @@ impl PendingEndpointActivation {
         }
     }
 
-    fn target_matches(&self, surface: &crate::protocol::PaneSurfaceFrame) -> bool {
+    fn target_matches(&self, surface: &shepr_protocol::PaneSurfaceFrame) -> bool {
         let evidence = match &self.phase {
             ActivationPhase::ActivatingTarget { evidence, .. } => evidence,
             _ => return false,

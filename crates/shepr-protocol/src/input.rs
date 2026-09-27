@@ -1,0 +1,360 @@
+use super::*;
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Server-side client render mode
+// ---------------------------------------------------------------------------
+
+/// Render pipeline selected by the kind of client handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderEncoding {
+    /// Send semantic surfaces for a client-owned shell.
+    SemanticFrame,
+    /// Send terminal ANSI frames to a direct terminal client.
+    TerminalAnsi,
+}
+
+// ---------------------------------------------------------------------------
+// Client → Server messages
+// ---------------------------------------------------------------------------
+
+/// Size of the pane surface requested by a client-owned shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientSurfaceSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl ClientSurfaceSize {
+    /// Fit a requested grid into one ordinary surface frame. Keep its width
+    /// first so the shell layout tracks the host; trim excess height.
+    pub fn clamped(self) -> Self {
+        let cols = self.cols.clamp(1, MAX_SURFACE_DIMENSION);
+        // Bounded by `MAX_SURFACE_DIMENSION` (a u16) via `.min(...)`, so this never truncates.
+        #[allow(clippy::cast_possible_truncation)]
+        let max_rows =
+            (MAX_SURFACE_CELLS / usize::from(cols)).min(usize::from(MAX_SURFACE_DIMENSION)) as u16;
+        Self {
+            cols,
+            rows: self.rows.clamp(1, max_rows),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientKeyKind {
+    Press,
+    Repeat,
+    Release,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ClientKeyCode {
+    Backspace,
+    Enter,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Tab,
+    BackTab,
+    Delete,
+    Insert,
+    Esc,
+    Char(char),
+    F(u8),
+    Null,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ClientMouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientMouseKind {
+    Down(ClientMouseButton),
+    Up(ClientMouseButton),
+    Drag(ClientMouseButton),
+    Moved,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientMousePosition {
+    Cell {
+        column: u16,
+        row: u16,
+    },
+    Pixels {
+        x: u32,
+        y: u32,
+        column: u16,
+        row: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMouseGeometry {
+    pub cols: u16,
+    pub rows: u16,
+    pub width_px: u32,
+    pub height_px: u32,
+}
+
+/// Modifier bits carried by semantic input messages.
+/// The host input edge translates these bits to and from crossterm.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WireModifiers(u8);
+
+impl WireModifiers {
+    pub const NONE: Self = Self(0);
+    pub const SHIFT: Self = Self(1);
+    pub const CONTROL: Self = Self(2);
+    pub const ALT: Self = Self(4);
+    pub const SUPER: Self = Self(8);
+    pub const HYPER: Self = Self(16);
+    pub const META: Self = Self(32);
+
+    pub const fn from_bits_retain(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+impl std::ops::BitOr for WireModifiers {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for WireModifiers {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// Kitty keyboard protocol flags. The terminal core only reports the low five
+/// defined bits, while the wire and host stack use the protocol's integer form.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct KittyKeyboardFlags(u16);
+
+impl KittyKeyboardFlags {
+    pub const NONE: Self = Self(0);
+    pub const DISAMBIGUATE: Self = Self(1);
+    pub const REPORT_EVENT_TYPES: Self = Self(2);
+    pub const REPORT_ALTERNATE_KEYS: Self = Self(4);
+    pub const REPORT_ALL_KEYS: Self = Self(8);
+    pub const REPORT_ASSOCIATED_TEXT: Self = Self(16);
+
+    pub const fn from_bits_retain(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl std::ops::BitOr for KittyKeyboardFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for KittyKeyboardFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// Pane-domain input after the client has classified and consumed shell actions.
+///
+/// Keys are semantic rather than outer-terminal VT bytes so the target pane can
+/// encode them for the child application's negotiated keyboard protocol.
+/// A key carries no physical key identity: the Linux host terminal reports
+/// none, so a key is identified by its code alone, and a press that committed
+/// `generated_text` gets no release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientPaneInputEvent {
+    Key {
+        code: ClientKeyCode,
+        modifiers: WireModifiers,
+        kind: ClientKeyKind,
+        repeat_count: u16,
+        shifted_codepoint: Option<u32>,
+        generated_text: Option<String>,
+    },
+    TextCommit(String),
+    Mouse {
+        kind: ClientMouseKind,
+        position: ClientMousePosition,
+        geometry: Option<ClientMouseGeometry>,
+        modifiers: WireModifiers,
+        lines: u16,
+    },
+    Paste(String),
+}
+
+/// Messages sent from the client to the server over the client protocol socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientMessage {
+    /// Direct terminal handshake: selects terminal ANSI frames and announces terminal dimensions.
+    TerminalHello { geometry: super::TerminalGeometry },
+
+    /// Raw input bytes read from the client's stdin.
+    Input {
+        /// Raw terminal input (possibly multi-byte escape sequences).
+        /// The server enforces `MAX_INPUT_PAYLOAD` after decoding so it can
+        /// distinguish a recoverable oversized paste from invalid input.
+        #[serde(
+            serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
+            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
+        )]
+        data: Vec<u8>,
+    },
+
+    /// Terminal resize notification from the client.
+    Resize { geometry: super::TerminalGeometry },
+
+    /// Graceful disconnect request.
+    Detach,
+
+    /// Switch this connection into direct terminal attach mode.
+    AttachTerminal {
+        /// Terminal id to attach to.
+        terminal_id: TerminalId,
+        /// Replace an existing writable attach owner for this terminal.
+        takeover: bool,
+    },
+
+    /// Scroll input handled by a direct terminal attach client.
+    AttachScroll {
+        /// Original input source for routing.
+        source: AttachScrollSource,
+        /// Scroll direction.
+        direction: AttachScrollDirection,
+        /// Number of terminal rows to move when using host scrollback.
+        lines: u16,
+        /// Mouse column relative to the attached terminal, when available.
+        column: Option<u16>,
+        /// Mouse row relative to the attached terminal, when available.
+        row: Option<u16>,
+        /// Crossterm-compatible modifier bits for forwarded mouse wheel events.
+        modifiers: WireModifiers,
+    },
+
+    /// Resize the pane viewport of a client-owned shell.
+    ClientShellResize { geometry: super::TerminalGeometry },
+
+    /// Deliver client-classified semantic input directly to a stable pane target.
+    ClientShellPaneInput {
+        pane_id: PublicPaneId,
+        #[serde(
+            serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+            deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+        )]
+        events: Vec<ClientPaneInputEvent>,
+    },
+
+    /// Invoke one endpoint operation through this client shell's selected connection.
+    ClientShellEndpointRequest { boot_id: BootId, request: String },
+
+    /// Deliver one structured mouse event to a directly attached terminal.
+    AttachMouse {
+        kind: ClientMouseKind,
+        position: ClientMousePosition,
+        geometry: Option<ClientMouseGeometry>,
+        modifiers: WireModifiers,
+        lines: u16,
+    },
+
+    /// Publish one host terminal color or appearance update observed by a client-owned shell.
+    ClientShellHostTheme { update: ClientHostThemeUpdate },
+
+    /// Publish whether the outer terminal containing a client shell has focus.
+    ClientShellFocus { focused: bool },
+
+    /// Open a client-owned shell connection.
+    EndpointHello(super::endpoint::EndpointClientHello),
+    /// Fence host presentation effects during endpoint activation.
+    PresentationSync(String),
+    /// Check that a connected endpoint is responsive.
+    HealthPing(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientHostColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientHostDefaultColorKind {
+    Foreground,
+    Background,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientHostAppearance {
+    Dark,
+    Light,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientHostThemeUpdate {
+    DefaultColor {
+        kind: ClientHostDefaultColorKind,
+        color: ClientHostColor,
+    },
+    PaletteColors(
+        #[serde(
+            serialize_with = "codec::serialize_bounded_vec::<256, _, _>",
+            deserialize_with = "codec::deserialize_bounded_vec::<256, _, _>"
+        )]
+        Vec<(u8, ClientHostColor)>,
+    ),
+    Appearance(ClientHostAppearance),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttachScrollDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttachScrollSource {
+    Wheel,
+    PageKey {
+        /// Original key bytes to forward when the child application owns page keys.
+        #[serde(
+            serialize_with = "codec::serialize_bounded_bytes::<MAX_INPUT_PAYLOAD, _>",
+            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_INPUT_PAYLOAD, _>"
+        )]
+        input: Vec<u8>,
+    },
+}

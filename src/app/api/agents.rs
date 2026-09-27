@@ -134,7 +134,7 @@ impl App {
         let Some(terminal) = self.state.terminals.get(&terminal_id) else {
             return Err(ApiError::agent_not_found(params.target.clone()));
         };
-        if terminal.state == crate::detect::AgentState::Blocked {
+        if terminal.state == shepr_agent::detect::AgentState::Blocked {
             return Err(ApiError::new(
                 ApiErrorCode::AgentBlocked,
                 format!(
@@ -161,7 +161,7 @@ impl App {
                 ),
             ));
         }
-        if expected_agent == crate::detect::Agent::GithubCopilot {
+        if expected_agent == shepr_agent::detect::Agent::GithubCopilot {
             // Copilot ignores synthetic Enter after focus loss until it receives focus gained.
             let focus = shepr_vt::encode_focus(shepr_vt::FocusEvent::Gained);
             if let Err(err) = runtime.try_send_bytes(Bytes::from_static(focus)) {
@@ -258,7 +258,7 @@ impl App {
         if terminal.full_lifecycle_hook_authority_active() {
             let explain = serde_json::json!({
                 "agent": terminal.effective_agent_label().unwrap_or("unknown"),
-                "state": crate::detect::manifest::agent_state_label(terminal.state),
+                "state": shepr_agent::detect::manifest::agent_state_label(terminal.state),
                 "manifest_source": null,
                 "matched_rule": null,
                 "visible_idle": false,
@@ -288,15 +288,15 @@ impl App {
         let screen = pane.detection_text();
         let osc_title = pane.agent_osc_title();
         let osc_progress = pane.agent_osc_progress();
-        let explain = crate::detect::manifest::explain_with_input(
+        let explain = shepr_agent::detect::manifest::explain_with_input(
             agent,
-            crate::detect::manifest::DetectionInput {
+            shepr_agent::detect::manifest::DetectionInput {
                 screen: &screen,
                 osc_title: &osc_title,
                 osc_progress: &osc_progress,
             },
         );
-        let value = crate::detect::manifest::explain_to_json_value(&explain);
+        let value = shepr_agent::detect::manifest::explain_to_json_value(&explain);
 
         success(id, ResponseResult::AgentExplain { explain: value })
     }
@@ -420,10 +420,10 @@ mod tests {
     use crate::{
         api::schema::{AgentStatus, SuccessResponse},
         app::Mode,
-        config::Config,
-        detect::{Agent, AgentState},
         workspace::Workspace,
     };
+    use shepr_agent::detect::{Agent, AgentState};
+    use shepr_config::Config;
 
     fn app_with_agent() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

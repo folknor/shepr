@@ -36,12 +36,12 @@ impl ClientShellConfig {
             preferences::ConfiguredChrome::default(),
             config
                 .resolve_palette()
-                .unwrap_or_else(|_| crate::theme::Palette::catppuccin()),
+                .unwrap_or_else(|_| shepr_config::theme::Palette::catppuccin()),
             config.live_keybinds(),
         )
     }
 
-    pub(crate) fn from_validated_config(config: &crate::config::ValidatedConfig) -> Self {
+    pub(crate) fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
         Self::from_config_with_configured(
             config,
             preferences::ConfiguredChrome::from_validated_config(config),
@@ -53,7 +53,7 @@ impl ClientShellConfig {
     fn from_config_with_configured(
         config: &Config,
         configured: preferences::ConfiguredChrome,
-        palette: crate::theme::Palette,
+        palette: shepr_config::theme::Palette,
         keybinds: LiveKeybindConfig,
     ) -> Self {
         Self {
@@ -114,7 +114,7 @@ impl ClientShellConfig {
 
     pub(super) fn apply_snapshot_config(
         &mut self,
-        config: &crate::config::ValidatedConfig,
+        config: &shepr_config::ValidatedConfig,
     ) -> Result<(), String> {
         let keybinds = match self.keybinding_source {
             ClientShellKeybindingSource::Endpoint => config.live_keybinds(),
@@ -199,14 +199,14 @@ mod tests {
 
     #[test]
     fn snapshot_config_applies_endpoint_keybindings_from_the_validated_value() {
-        let local = crate::config::ValidatedConfig::test_default();
+        let local = shepr_config::ValidatedConfig::test_default();
         let mut endpoint = ClientShellConfig::from_validated_config(&local)
             .with_keybinding_source(ClientShellKeybindingSource::Endpoint);
         let remote_source = "[keys]\nprefix = \"ctrl+a\"\n";
-        let mut remote_raw = crate::config::Config::default();
+        let mut remote_raw = shepr_config::Config::default();
         remote_raw.keys.prefix = "ctrl+a".to_owned();
         let remote =
-            crate::config::ValidatedConfig::test_from_config(remote_raw, Some(remote_source));
+            shepr_config::ValidatedConfig::test_from_config(remote_raw, Some(remote_source));
 
         endpoint
             .apply_snapshot_config(&remote)
@@ -255,7 +255,7 @@ mod tests {
             &preferences::ClientChromePreferences {
                 sidebar_width: Some(31),
                 sidebar_collapsed: Some(true),
-                agent_panel_sort: Some(crate::config::AgentPanelSortConfig::Priority),
+                agent_panel_sort: Some(shepr_config::AgentPanelSortConfig::Priority),
                 ..preferences::ClientChromePreferences::default()
             },
         )
@@ -263,7 +263,7 @@ mod tests {
 
         let mut values = Config::default();
         values.ui.sidebar_width = 24;
-        let config = crate::config::ValidatedConfig::test_from_config(
+        let config = shepr_config::ValidatedConfig::test_from_config(
             values,
             Some("[ui]\nsidebar_width = 24\nagent_panel_sort = \"spaces\"\n"),
         );
@@ -276,7 +276,7 @@ mod tests {
         assert!(!state.sidebar_width_manual);
         assert_eq!(
             state.config.agent_panel_sort,
-            crate::config::AgentPanelSortConfig::Spaces
+            shepr_config::AgentPanelSortConfig::Spaces
         );
         assert!(state.sidebar_collapsed);
 
@@ -284,7 +284,7 @@ mod tests {
         // for a value the config owns.
         state.sidebar_width = 30;
         state.sidebar_width_manual = true;
-        state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+        state.config.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
         state.agent_panel_sort_manual = true;
         state.persist_chrome_preferences(&mut ClientShellInput::default());
         let stored = preferences::load(&path).expect("stored chrome");

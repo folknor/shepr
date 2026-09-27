@@ -1,5 +1,5 @@
 use super::{App, api_helpers::pane_agent_status};
-use crate::protocol::TerminalId;
+use shepr_protocol::TerminalId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTarget {
@@ -37,9 +37,9 @@ enum TargetKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTargetCandidate {
     pub terminal_id: TerminalId,
-    pub pane_id: crate::protocol::PublicPaneId,
-    pub workspace_id: crate::protocol::WorkspaceId,
-    pub tab_id: crate::protocol::PublicTabId,
+    pub pane_id: shepr_protocol::PublicPaneId,
+    pub workspace_id: shepr_protocol::WorkspaceId,
+    pub tab_id: shepr_protocol::PublicTabId,
     pub cwd: Option<String>,
     pub agent_status: crate::api::schema::AgentStatus,
 }
@@ -196,9 +196,9 @@ impl App {
         let tab_number = ws.public_tab_number(tab_idx)?;
         Some(TerminalTargetCandidate {
             terminal_id: terminal.id.clone(),
-            pane_id: crate::protocol::PublicPaneId::new(&ws.id, pane_number),
-            workspace_id: crate::protocol::WorkspaceId::new(ws.id.clone()),
-            tab_id: crate::protocol::PublicTabId::new(&ws.id, tab_number),
+            pane_id: shepr_protocol::PublicPaneId::new(&ws.id, pane_number),
+            workspace_id: shepr_protocol::WorkspaceId::new(ws.id.clone()),
+            tab_id: shepr_protocol::PublicTabId::new(&ws.id, tab_number),
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),

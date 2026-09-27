@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 use unicode_width::UnicodeWidthStr;
 
-use crate::protocol::CellData;
 use shepr_core::layout::PaneId;
+use shepr_protocol::CellData;
 use shepr_vt::{AbsRow, Point, ScreenRow, ViewportRow};
 
 #[cfg(test)]
@@ -138,7 +138,7 @@ pub struct TerminalCursorState {
     pub y: u16,
     pub visible: bool,
     /// DECSCUSR cursor shape, or the terminal default.
-    pub shape: crate::protocol::CursorShapeParam,
+    pub shape: shepr_protocol::CursorShapeParam,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

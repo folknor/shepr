@@ -177,8 +177,8 @@ impl App {
         let mut demand = GitStatusRefreshDemand::default();
         for token in self.state.settings.sidebar_spaces.rows.iter().flatten() {
             match token.parts().0 {
-                crate::config::SpaceSidebarToken::Branch => demand.branch = true,
-                crate::config::SpaceSidebarToken::GitStatus => demand.ahead_behind = true,
+                shepr_config::SpaceSidebarToken::Branch => demand.branch = true,
+                shepr_config::SpaceSidebarToken::GitStatus => demand.ahead_behind = true,
                 _ => {}
             }
         }
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn git_refresh_item_collection_does_not_discover_uncached_cwd() {
-        let mut app = test_app(&crate::config::Config::default());
+        let mut app = test_app(&shepr_config::Config::default());
         let scratch = crate::test_support::ScratchDir::new("uncached-cwd");
         let cwd = scratch.join("cwd");
         let mut ws = Workspace::test_new("test");
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn git_refresh_item_collection_reuses_matching_cached_key() {
-        let mut app = test_app(&crate::config::Config::default());
+        let mut app = test_app(&shepr_config::Config::default());
         let cwd = PathBuf::from("/repo/deep/nested");
         let cache_key = PathBuf::from("/repo");
         let mut ws = Workspace::test_new("test");
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn periodic_repo_discovery_ignores_cached_key_hints() {
-        let mut app = test_app(&crate::config::Config::default());
+        let mut app = test_app(&shepr_config::Config::default());
         let cwd = PathBuf::from("/repo/deep/nested");
         let mut ws = Workspace::test_new("test");
         ws.identity_cwd = cwd.clone();
@@ -448,8 +448,8 @@ mod tests {
 
     #[test]
     fn cwd_identity_refresh_runs_once_without_sidebar_git_tokens() {
-        let mut config = crate::config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        let mut config = shepr_config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
         let mut app = test_app(&config);
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
@@ -464,8 +464,8 @@ mod tests {
 
     #[test]
     fn due_git_refresh_does_not_start_without_sidebar_consumer() {
-        let mut config = crate::config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        let mut config = shepr_config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
         let mut app = test_app(&config);
         let mut workspace = Workspace::test_new("test");
         // Identity already discovered and matching the resolved cwd: nothing
@@ -488,18 +488,18 @@ mod tests {
     fn git_refresh_demand_matches_sidebar_rows() {
         let cases = [
             (
-                crate::config::SpaceSidebarToken::Workspace,
+                shepr_config::SpaceSidebarToken::Workspace,
                 GitStatusRefreshDemand::default(),
             ),
             (
-                crate::config::SpaceSidebarToken::Branch,
+                shepr_config::SpaceSidebarToken::Branch,
                 GitStatusRefreshDemand {
                     branch: true,
                     ahead_behind: false,
                 },
             ),
             (
-                crate::config::SpaceSidebarToken::GitStatus,
+                shepr_config::SpaceSidebarToken::GitStatus,
                 GitStatusRefreshDemand {
                     branch: false,
                     ahead_behind: true,
@@ -508,7 +508,7 @@ mod tests {
         ];
 
         for (token, expected) in cases {
-            let mut config = crate::config::Config::default();
+            let mut config = shepr_config::Config::default();
             config.ui.sidebar.spaces.rows = vec![vec![token.clone()]];
             let mut app = test_app(&config);
             app.state.workspaces.push(Workspace::test_new("test"));
@@ -522,8 +522,8 @@ mod tests {
     #[test]
     fn settled_identity_without_git_tokens_spawns_no_refresh_worker() {
         for custom_name in [None, Some("custom".to_string())] {
-            let mut config = crate::config::Config::default();
-            config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+            let mut config = shepr_config::Config::default();
+            config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
             let mut app = test_app(&config);
             let mut ws = Workspace::test_new("test");
             ws.custom_name = custom_name;
@@ -544,8 +544,8 @@ mod tests {
 
     #[test]
     fn moved_cwd_without_osc7_or_git_tokens_rediscovers_the_label_identity() {
-        let mut config = crate::config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        let mut config = shepr_config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
         let mut app = test_app(&config);
         let mut ws = Workspace::test_new("test");
         ws.custom_name = None;
@@ -564,8 +564,8 @@ mod tests {
 
     #[test]
     fn undiscovered_workspace_identity_is_refreshed_without_git_tokens() {
-        let mut config = crate::config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        let mut config = shepr_config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
         let mut app = test_app(&config);
         let mut ws = Workspace::test_new("test");
         ws.mark_identity_undiscovered();
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn headless_deadline_can_suppress_git_refresh_timer() {
-        let mut app = test_app(&crate::config::Config::default());
+        let mut app = test_app(&shepr_config::Config::default());
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
         app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn explicit_git_refresh_invalidates_cached_non_git_results() {
-        let mut app = test_app(&crate::config::Config::default());
+        let mut app = test_app(&shepr_config::Config::default());
         let scratch = crate::test_support::ScratchDir::new("git-miss");
         let cwd = scratch.to_path_buf();
         let (_, entry) = crate::git::git_status_snapshot_for_cwd_with_demand(
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn git_refresh_due_request_survives_in_flight_refresh() {
-        let mut app = test_app(&crate::config::Config::default());
+        let mut app = test_app(&shepr_config::Config::default());
         let now = Instant::now();
         app.git_refresh.git_refresh_in_flight = true;
 
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn empty_refresh_after_a_panic_unwedges_the_refresh_deadline() {
-        let mut app = test_app(&crate::config::Config::default());
+        let mut app = test_app(&shepr_config::Config::default());
         app.state.workspaces.push(Workspace::test_new("test"));
         app.git_refresh.git_refresh_in_flight = true;
         assert_eq!(app.git_refresh_deadline(), None);
@@ -667,7 +667,7 @@ mod tests {
         assert!(app.git_refresh_deadline().is_some());
     }
 
-    fn test_app(config: &crate::config::Config) -> super::super::App {
+    fn test_app(config: &shepr_config::Config) -> super::super::App {
         super::super::App::new(
             config,
             crate::app::AppPolicy::TEST,

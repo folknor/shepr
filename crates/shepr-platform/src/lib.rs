@@ -8,6 +8,8 @@ mod client_stream;
 mod clipboard;
 mod config_file;
 mod host;
+pub mod ipc;
+pub mod logging;
 mod private_file;
 mod process;
 mod remote_bridge;

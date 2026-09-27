@@ -29,8 +29,8 @@ pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64
         write(
             &mut hash,
             &[match split.direction {
-                crate::protocol::PaneSurfaceSplitDirection::Horizontal => 0,
-                crate::protocol::PaneSurfaceSplitDirection::Vertical => 1,
+                shepr_protocol::PaneSurfaceSplitDirection::Horizontal => 0,
+                shepr_protocol::PaneSurfaceSplitDirection::Vertical => 1,
             }],
         );
         for branch in &split.path {

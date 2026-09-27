@@ -16,8 +16,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     assert!(matches!(
         inferred.requests.as_slice(),
         [ClientMessage::ClientShellHostTheme {
-            update: crate::protocol::ClientHostThemeUpdate::DefaultColor {
-                kind: crate::protocol::ClientHostDefaultColorKind::Background,
+            update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
+                kind: shepr_protocol::ClientHostDefaultColorKind::Background,
                 ..
             }
         }]
@@ -37,8 +37,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     assert!(matches!(
         explicit.requests.as_slice(),
         [ClientMessage::ClientShellHostTheme {
-            update: crate::protocol::ClientHostThemeUpdate::Appearance(
-                crate::protocol::ClientHostAppearance::Dark
+            update: shepr_protocol::ClientHostThemeUpdate::Appearance(
+                shepr_protocol::ClientHostAppearance::Dark
             )
         }]
     ));
@@ -98,7 +98,7 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
 
     let [
         ClientMessage::ClientShellHostTheme {
-            update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors),
+            update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors),
         },
     ] = outcome.requests.as_slice()
     else {
@@ -166,7 +166,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
@@ -307,8 +307,8 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
-                        kind: crate::protocol::ClientMouseKind::Up(
-                            crate::protocol::ClientMouseButton::Left
+                        kind: shepr_protocol::ClientMouseKind::Up(
+                            shepr_protocol::ClientMouseButton::Left
                         ),
                         position: ClientMousePosition::Cell { .. },
                         ..
@@ -334,7 +334,7 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
     assert!(matches!(
         &events[0],
         ClientPaneInputEvent::Key {
-            code: crate::protocol::ClientKeyCode::Char('h'),
+            code: shepr_protocol::ClientKeyCode::Char('h'),
             generated_text: Some(text),
             ..
         } if text == "h"
@@ -348,11 +348,11 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
     assert!(matches!(
         &events[..],
         [ClientPaneInputEvent::Key {
-            code: crate::protocol::ClientKeyCode::Char('c'),
+            code: shepr_protocol::ClientKeyCode::Char('c'),
             modifiers,
-            kind: crate::protocol::ClientKeyKind::Press,
+            kind: shepr_protocol::ClientKeyKind::Press,
             ..
-        }] if *modifiers == crate::protocol::WireModifiers::CONTROL
+        }] if *modifiers == shepr_protocol::WireModifiers::CONTROL
     ));
 
     let alt = state.handle_input_bytes(b"\x1b[120;3u");
@@ -362,10 +362,10 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
     assert!(matches!(
         &events[..],
         [ClientPaneInputEvent::Key {
-            code: crate::protocol::ClientKeyCode::Char('x'),
+            code: shepr_protocol::ClientKeyCode::Char('x'),
             modifiers,
             ..
-        }] if *modifiers == crate::protocol::WireModifiers::ALT
+        }] if *modifiers == shepr_protocol::WireModifiers::ALT
     ));
     assert!(!state.handle_input_bytes(&[0x02]).detach);
     let detach = state.handle_input_bytes(b"q");
@@ -398,7 +398,7 @@ fn pane_key_release_keeps_the_press_target() {
     assert!(matches!(
         &events[..],
         [ClientPaneInputEvent::Key {
-            kind: crate::protocol::ClientKeyKind::Release,
+            kind: shepr_protocol::ClientKeyKind::Release,
             ..
         }]
     ));
@@ -584,7 +584,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
 
     // Parking the next revision's surface leaves the visible pair, and its hits, alone.
     let mut parked = surface();
-    parked.projection_revision = crate::protocol::ProjectionRevision::new(3);
+    parked.projection_revision = shepr_protocol::ProjectionRevision::new(3);
     state.set_pane_surface(parked);
     assert!(state.pending_pane_surface.is_some());
     assert!(!state.hits.panes.is_empty());

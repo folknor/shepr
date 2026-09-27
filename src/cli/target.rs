@@ -17,7 +17,7 @@ enum ApiTarget {
 }
 
 pub(super) struct CliContext {
-    paths: crate::config::AppPaths,
+    paths: shepr_config::AppPaths,
     target: RefCell<ApiTarget>,
     protocol_checked: Cell<bool>,
     caller_pane_id: Option<String>,
@@ -25,18 +25,18 @@ pub(super) struct CliContext {
 }
 
 impl CliContext {
-    pub(super) fn local(paths: crate::config::AppPaths) -> Self {
+    pub(super) fn local(paths: shepr_config::AppPaths) -> Self {
         Self {
             paths,
             target: RefCell::new(ApiTarget::Local),
             protocol_checked: Cell::new(false),
             caller_pane_id: std::env::var(crate::pane::SHEPR_PANE_ID_ENV_VAR).ok(),
-            caller_socket: std::env::var_os(crate::config::SOCKET_PATH_ENV_VAR),
+            caller_socket: std::env::var_os(shepr_config::SOCKET_PATH_ENV_VAR),
         }
     }
 
     #[cfg(test)]
-    pub(super) fn test_local(paths: crate::config::AppPaths) -> Self {
+    pub(super) fn test_local(paths: shepr_config::AppPaths) -> Self {
         Self {
             paths,
             target: RefCell::new(ApiTarget::Local),
@@ -47,7 +47,7 @@ impl CliContext {
     }
 
     fn machine(
-        paths: crate::config::AppPaths,
+        paths: shepr_config::AppPaths,
         profile: SavedSshEndpoint,
         ssh_settings: crate::remote::SavedSshSettings,
     ) -> Self {
@@ -78,7 +78,7 @@ impl CliContext {
 }
 
 impl Deref for CliContext {
-    type Target = crate::config::AppPaths;
+    type Target = shepr_config::AppPaths;
 
     fn deref(&self) -> &Self::Target {
         &self.paths
@@ -88,7 +88,7 @@ impl Deref for CliContext {
 pub(super) fn run_on_machine(
     selector: &str,
     command: Option<&super::CliCommand>,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> super::CliResult<i32> {
     let Some(command) = command else {
         return usage_error("usage: shepr --machine <label-or-id> <command>");
@@ -448,7 +448,7 @@ mod tests {
 
         // A machine with no command to run is a usage error before any
         // catalog or network access.
-        let error = run_on_machine("mac", None, &crate::config::AppPaths::default())
+        let error = run_on_machine("mac", None, &shepr_config::AppPaths::default())
             .expect_err("a missing command is a usage error");
         assert_eq!(error.exit_code(), 2);
     }

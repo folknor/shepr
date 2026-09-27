@@ -1,18 +1,18 @@
 use super::*;
 use crate::api::schema::AgentStatus;
-use crate::protocol::{
+use crossterm::event::MouseEvent;
+use shepr_protocol::{
     ClientShellAgent, ClientShellPane, ClientShellTab, PaneSurfacePane, PaneSurfaceSplit,
     PaneSurfaceSplitDirection, SurfaceRect,
 };
-use crossterm::event::MouseEvent;
 mod text_editing;
 
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),
-        revision: crate::protocol::ProjectionRevision::new(1),
-        resolved_config: crate::protocol::codec::to_vec(
-            &crate::config::ValidatedConfig::test_default(),
+        revision: shepr_protocol::ProjectionRevision::new(1),
+        resolved_config: shepr_protocol::codec::to_vec(
+            &shepr_config::ValidatedConfig::test_default(),
         )
         .expect("test config encodes"),
         focused_workspace_id: Some("ws_1".into()),
@@ -61,15 +61,15 @@ fn surface() -> PaneSurfaceFrame {
     let surface_buffer = Buffer::with_lines(["LIVE", "PANE"]);
     PaneSurfaceFrame {
         boot_id: "boot-1".into(),
-        projection_revision: crate::protocol::ProjectionRevision::new(1),
-        surface_revision: crate::protocol::SurfaceRevision::new(1),
+        projection_revision: shepr_protocol::ProjectionRevision::new(1),
+        surface_revision: shepr_protocol::SurfaceRevision::new(1),
         frame: FrameData::from_ratatui_buffer_with_hyperlinks(
             &surface_buffer,
-            Some(crate::protocol::CursorState {
+            Some(shepr_protocol::CursorState {
                 x: 1,
                 y: 1,
                 visible: true,
-                shape: crate::protocol::CursorShapeParam::SteadyBlock,
+                shape: shepr_protocol::CursorShapeParam::SteadyBlock,
             }),
             &[],
         ),

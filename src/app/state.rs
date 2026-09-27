@@ -1,7 +1,7 @@
-use crate::config::NewTerminalCwdConfig;
 #[cfg(test)]
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
+use shepr_config::NewTerminalCwdConfig;
 
 use crate::workspace::PaneChromeInfo as PaneInfo;
 use shepr_core::layout::PaneId;
@@ -9,7 +9,7 @@ use shepr_core::layout::PaneId;
 use crate::host_term::theme::{HostAppearance, TerminalTheme};
 use crate::workspace::Workspace;
 
-pub use crate::theme::Palette;
+pub use shepr_config::theme::Palette;
 
 /// Geometry for the server-rendered active-tab pane surface.
 pub struct ViewState {
@@ -25,7 +25,7 @@ pub enum Mode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneFocusTarget {
-    pub workspace_id: crate::protocol::WorkspaceId,
+    pub workspace_id: shepr_protocol::WorkspaceId,
     pub pane_id: PaneId,
 }
 
@@ -43,18 +43,18 @@ pub enum TabBarStatusSegment {
 /// it is handed, keyed by terminal id.
 pub struct AppState {
     pub terminals:
-        std::collections::HashMap<crate::protocol::TerminalId, crate::terminal::TerminalState>,
+        std::collections::HashMap<shepr_protocol::TerminalId, crate::terminal::TerminalState>,
     /// Terminal ids whose size is currently owned by a direct attach client.
-    pub direct_attach_resize_locks: std::collections::HashSet<crate::protocol::TerminalId>,
+    pub direct_attach_resize_locks: std::collections::HashSet<shepr_protocol::TerminalId>,
     /// Keeps a pane's pre-move public id (`<old workspace>:p<n>`) resolving
     /// after a cross-workspace pane move.
     pub(crate) public_pane_id_aliases:
-        std::collections::HashMap<crate::protocol::PublicPaneId, PaneId>,
+        std::collections::HashMap<shepr_protocol::PublicPaneId, PaneId>,
     pub workspaces: Vec<Workspace>,
-    pub active: Option<crate::protocol::WorkspaceId>,
-    pub(crate) active_tab_id: Option<crate::protocol::PublicTabId>,
+    pub active: Option<shepr_protocol::WorkspaceId>,
+    pub(crate) active_tab_id: Option<shepr_protocol::PublicTabId>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
-    pub selected: Option<crate::protocol::WorkspaceId>,
+    pub selected: Option<shepr_protocol::WorkspaceId>,
     pub mode: Mode,
     pub should_quit: bool,
     // Geometry of the most recently computed server pane surface.
@@ -73,7 +73,7 @@ pub struct AppState {
     /// True when the foreground host explicitly reported appearance via Mode 2031.
     pub host_terminal_appearance_explicit: bool,
     /// Cached detection manifest summaries.
-    pub agent_manifest_summaries: Vec<crate::detect::manifest::AgentManifestSummary>,
+    pub agent_manifest_summaries: Vec<shepr_agent::detect::manifest::AgentManifestSummary>,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
     /// Last known foreground host terminal cell size in pixels.
@@ -82,7 +82,7 @@ pub struct AppState {
     pub session_dirty: bool,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
-    pub(crate) terminal_runtime_shutdowns: Vec<crate::protocol::TerminalId>,
+    pub(crate) terminal_runtime_shutdowns: Vec<shepr_protocol::TerminalId>,
 }
 
 /// Runtime-ready settings copied once from the immutable launch config.
@@ -90,9 +90,9 @@ pub struct AppState {
 pub(crate) struct AppSettings {
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: shepr_core::geometry::GridSize,
-    pub(crate) sidebar_agents: crate::config::AgentsSidebarConfig,
-    pub(crate) sidebar_spaces: crate::config::SpacesSidebarConfig,
-    pub(crate) pane_borders: crate::config::PaneBordersConfig,
+    pub(crate) sidebar_agents: shepr_config::AgentsSidebarConfig,
+    pub(crate) sidebar_spaces: shepr_config::SpacesSidebarConfig,
+    pub(crate) pane_borders: shepr_config::PaneBordersConfig,
     pub(crate) pane_outer_borders: bool,
     pub(crate) pane_scrollbars: bool,
     pub(crate) pane_gaps: bool,
@@ -102,7 +102,7 @@ pub(crate) struct AppSettings {
     pub(crate) reveal_hidden_cursor_for_cjk_ime: bool,
     /// Restrict cursor reveal to focused panes whose detected agent matches
     /// one of these. An empty vector applies to any focused pane.
-    pub(crate) cjk_ime_agents: Vec<crate::config::ConfigAgent>,
+    pub(crate) cjk_ime_agents: Vec<shepr_config::ConfigAgent>,
     /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
     pub(crate) cjk_ime_cursor_shape: u8,
     pub(crate) default_shell: String,
@@ -113,7 +113,7 @@ pub(crate) struct AppSettings {
 }
 
 impl AppSettings {
-    pub(crate) fn from_config(config: &crate::config::ValidatedConfig) -> Self {
+    pub(crate) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
         Self {
             headless_size: config.headless_size(),
             sidebar_agents: config.ui.sidebar.agents.clone(),
@@ -166,7 +166,7 @@ impl AppState {
         self.active_tab_id = self.active_index().and_then(|index| {
             let workspace = self.workspaces.get(index)?;
             let tab = workspace.tabs.get(workspace.active_tab)?;
-            Some(crate::protocol::PublicTabId::new(
+            Some(shepr_protocol::PublicTabId::new(
                 workspace.id.to_string(),
                 tab.number,
             ))
@@ -185,7 +185,7 @@ impl AppState {
     }
 
     pub(crate) fn refresh_agent_manifest_summaries(&mut self) {
-        self.agent_manifest_summaries = crate::detect::manifest::manifest_summaries();
+        self.agent_manifest_summaries = shepr_agent::detect::manifest::manifest_summaries();
     }
 
     /// Geometry a new pane's PTY is sized against: the most recently computed
@@ -237,7 +237,7 @@ pub fn key_matches(
     expected_code: KeyCode,
     expected_mods: KeyModifiers,
 ) -> bool {
-    crate::config::terminal_key_matches_combo(
+    shepr_config::terminal_key_matches_combo(
         &crate::input::TerminalKey::from(*key),
         (expected_code, expected_mods),
     )
@@ -267,7 +267,7 @@ impl AppState {
                 pane_infos: Vec::new(),
             },
             outer_terminal_focus: None,
-            settings: AppSettings::from_config(&crate::config::ValidatedConfig::test_default()),
+            settings: AppSettings::from_config(&shepr_config::ValidatedConfig::test_default()),
             next_agent_state_change_seq: 0,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
@@ -345,7 +345,7 @@ impl AppState {
         let active_tab = &active_workspace.tabs[active_workspace.active_tab];
         assert_eq!(
             self.active_tab_id.as_ref(),
-            Some(&crate::protocol::PublicTabId::new(
+            Some(&shepr_protocol::PublicTabId::new(
                 active_workspace.id.to_string(),
                 active_tab.number
             )),
@@ -399,7 +399,7 @@ impl AppState {
                 "{context} references missing pane {pane_id:?}"
             );
         };
-        let assert_workspace_pane = |workspace_id: &crate::protocol::WorkspaceId,
+        let assert_workspace_pane = |workspace_id: &shepr_protocol::WorkspaceId,
                                      pane_id: PaneId,
                                      context: &str| {
             let ws_idx = workspace_id_to_idx
@@ -439,7 +439,7 @@ mod tests {
     fn split_spawn_size_is_the_new_panes_content_size_not_the_first_panes_outer_rect() {
         let mut state = AppState::test_new();
         state.view.terminal_area = Rect::new(5, 2, 120, 40);
-        state.settings.pane_borders = crate::config::PaneBordersConfig::Always;
+        state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         state.settings.pane_scrollbars = true;
         let geometry = state.pane_geometry();
         assert_eq!(geometry.area, state.view.terminal_area);

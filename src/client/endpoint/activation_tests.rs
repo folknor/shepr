@@ -18,12 +18,12 @@ fn lease(id: ClientEndpointId, generation: u64, boot: &str) -> EndpointLease {
 
 #[derive(Clone)]
 struct FakeTransport {
-    sent: std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::ClientMessage>>>,
+    sent: std::sync::Arc<std::sync::Mutex<Vec<shepr_protocol::ClientMessage>>>,
     fail_after_write: bool,
 }
 
 impl super::super::EndpointTransport for FakeTransport {
-    fn send(&mut self, message: &crate::protocol::ClientMessage) -> std::io::Result<()> {
+    fn send(&mut self, message: &shepr_protocol::ClientMessage) -> std::io::Result<()> {
         self.sent
             .lock()
             .map_err(|_| std::io::Error::other("test precondition: lock poisoned"))?
@@ -36,12 +36,12 @@ impl super::super::EndpointTransport for FakeTransport {
     }
 }
 
-fn test_snapshot(boot_id: &str, revision: u64) -> crate::protocol::ClientShellSnapshot {
-    crate::protocol::ClientShellSnapshot {
+fn test_snapshot(boot_id: &str, revision: u64) -> shepr_protocol::ClientShellSnapshot {
+    shepr_protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
         revision: revision.into(),
-        resolved_config: crate::protocol::codec::to_vec(
-            &crate::config::ValidatedConfig::test_default(),
+        resolved_config: shepr_protocol::codec::to_vec(
+            &shepr_config::ValidatedConfig::test_default(),
         )
         .expect("test config encodes"),
         focused_workspace_id: None,
@@ -56,7 +56,7 @@ fn test_snapshot(boot_id: &str, revision: u64) -> crate::protocol::ClientShellSn
     }
 }
 
-type SentMessages = std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::ClientMessage>>>;
+type SentMessages = std::sync::Arc<std::sync::Mutex<Vec<shepr_protocol::ClientMessage>>>;
 type TestFixture = (
     crate::client::ClientShellState,
     EndpointRegistry,
@@ -70,7 +70,7 @@ fn shell_and_registry() -> TestFixture {
 
 fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> TestFixture {
     let mut shell = crate::client::ClientShellState::new(
-        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+        crate::client::ClientShellConfig::from_config(&shepr_config::Config::default()),
     );
     let profile = super::super::SavedSshEndpoint {
         id: super::super::ProfileId::parse("0123456789abcdef0123456789abcdef")
@@ -148,8 +148,8 @@ fn failure(id: &str, message: &str) -> Vec<u8> {
     .expect("test precondition")
 }
 
-fn surface_set_active(message: &crate::protocol::ClientMessage) -> Option<bool> {
-    let crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. } = message else {
+fn surface_set_active(message: &shepr_protocol::ClientMessage) -> Option<bool> {
+    let shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } = message else {
         return None;
     };
     let request: crate::api::schema::Request = serde_json::from_str(request).ok()?;
@@ -159,34 +159,34 @@ fn surface_set_active(message: &crate::protocol::ClientMessage) -> Option<bool> 
     }
 }
 
-fn resize() -> crate::protocol::ClientMessage {
-    crate::protocol::ClientMessage::ClientShellResize {
-        geometry: crate::protocol::TerminalGeometry::new(80, 24, 8, 16, false),
+fn resize() -> shepr_protocol::ClientMessage {
+    shepr_protocol::ClientMessage::ClientShellResize {
+        geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false),
     }
 }
 
-fn surface(boot_id: &str, revision: u64, pane: &str) -> crate::protocol::PaneSurfaceFrame {
-    crate::protocol::PaneSurfaceFrame {
+fn surface(boot_id: &str, revision: u64, pane: &str) -> shepr_protocol::PaneSurfaceFrame {
+    shepr_protocol::PaneSurfaceFrame {
         boot_id: boot_id.into(),
         projection_revision: revision.into(),
         surface_revision: revision.into(),
-        frame: crate::protocol::FrameData {
+        frame: shepr_protocol::FrameData {
             cells: Vec::new(),
             width: 80,
             height: 24,
             cursor: None,
             hyperlinks: Vec::new(),
         },
-        panes: vec![crate::protocol::PaneSurfacePane {
+        panes: vec![shepr_protocol::PaneSurfacePane {
             pane_id: pane.into(),
             content_revision: revision,
-            rect: crate::protocol::SurfaceRect {
+            rect: shepr_protocol::SurfaceRect {
                 x: 0,
                 y: 0,
                 width: 80,
                 height: 24,
             },
-            inner_rect: crate::protocol::SurfaceRect {
+            inner_rect: shepr_protocol::SurfaceRect {
                 x: 0,
                 y: 0,
                 width: 80,
@@ -317,7 +317,7 @@ fn observed_begin_write_failure_returns_recoverable_partial_activation() {
     assert!(error.contains("focus revoke"));
     assert_eq!(
         local_sent.lock().expect("test precondition").first(),
-        Some(&crate::protocol::ClientMessage::ClientShellFocus { focused: false })
+        Some(&shepr_protocol::ClientMessage::ClientShellFocus { focused: false })
     );
     assert!(remote_sent.lock().expect("test precondition").is_empty());
     assert!(matches!(
@@ -343,7 +343,7 @@ fn source_release_is_sent_and_acknowledged_before_target_activation() {
     let local = local_sent.lock().expect("test precondition");
     assert_eq!(
         local.first(),
-        Some(&crate::protocol::ClientMessage::ClientShellFocus { focused: false }),
+        Some(&shepr_protocol::ClientMessage::ClientShellFocus { focused: false }),
         "source focus is revoked before source-off"
     );
     assert_eq!(
@@ -375,11 +375,11 @@ fn source_release_is_sent_and_acknowledged_before_target_activation() {
     let remote = remote_sent.lock().expect("test precondition");
     assert!(matches!(
         remote[0],
-        crate::protocol::ClientMessage::ClientShellResize { .. }
+        shepr_protocol::ClientMessage::ClientShellResize { .. }
     ));
     assert_eq!(
         remote.get(2),
-        Some(&crate::protocol::ClientMessage::ClientShellFocus { focused: true })
+        Some(&shepr_protocol::ClientMessage::ClientShellFocus { focused: true })
     );
     assert_eq!(remote.get(1).and_then(surface_set_active), Some(true));
 }
@@ -388,11 +388,11 @@ fn source_release_is_sent_and_acknowledged_before_target_activation() {
 fn activation_requires_an_exact_snapshot_surface_revision_pair() {
     let mut activation = machine();
     let target = endpoint();
-    let snapshot = crate::protocol::ClientShellSnapshot {
+    let snapshot = shepr_protocol::ClientShellSnapshot {
         boot_id: "remote-boot".into(),
-        revision: crate::protocol::ProjectionRevision::new(2),
-        resolved_config: crate::protocol::codec::to_vec(
-            &crate::config::ValidatedConfig::test_default(),
+        revision: shepr_protocol::ProjectionRevision::new(2),
+        resolved_config: shepr_protocol::codec::to_vec(
+            &shepr_config::ValidatedConfig::test_default(),
         )
         .expect("test config encodes"),
         focused_workspace_id: None,
@@ -527,7 +527,7 @@ fn same_target_retarget_is_latest_wins() {
         .expect("test precondition")
         .iter()
         .find_map(|message| match message {
-            crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
                 if surface_set_active(message).is_none() =>
             {
                 Some(
@@ -568,7 +568,7 @@ fn same_target_retarget_is_latest_wins() {
         .expect("test precondition")
         .last()
         .and_then(|message| match message {
-            crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. } => Some(
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } => Some(
                 serde_json::from_str::<crate::api::schema::Request>(request)
                     .expect("test precondition")
                     .id,
@@ -607,7 +607,7 @@ fn latest_host_focus_is_replayed_to_the_eventual_target() {
     );
     assert_eq!(
         remote_sent.lock().expect("test precondition").get(2),
-        Some(&crate::protocol::ClientMessage::ClientShellFocus { focused: false })
+        Some(&shepr_protocol::ClientMessage::ClientShellFocus { focused: false })
     );
 
     activation
@@ -615,7 +615,7 @@ fn latest_host_focus_is_replayed_to_the_eventual_target() {
         .expect("test precondition");
     assert_eq!(
         remote_sent.lock().expect("test precondition").last(),
-        Some(&crate::protocol::ClientMessage::ClientShellFocus { focused: true })
+        Some(&shepr_protocol::ClientMessage::ClientShellFocus { focused: true })
     );
 }
 
@@ -740,8 +740,8 @@ fn resize_invalidates_already_recorded_surface_evidence() {
         activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "pane")),
         SurfaceActivationProgress::Ready
     );
-    let resize = crate::protocol::ClientMessage::ClientShellResize {
-        geometry: crate::protocol::TerminalGeometry::new(100, 30, 9, 17, true),
+    let resize = shepr_protocol::ClientMessage::ClientShellResize {
+        geometry: shepr_protocol::TerminalGeometry::new(100, 30, 9, 17, true),
     };
     activation
         .update_resize(&resize, &mut endpoints)
@@ -769,8 +769,8 @@ fn resize_during_activation_reaches_the_pending_target() {
         &surface_success("client-shell-surface:15:off", false, 1),
         &mut endpoints,
     );
-    let resized = crate::protocol::ClientMessage::ClientShellResize {
-        geometry: crate::protocol::TerminalGeometry::new(100, 30, 9, 17, true),
+    let resized = shepr_protocol::ClientMessage::ClientShellResize {
+        geometry: shepr_protocol::TerminalGeometry::new(100, 30, 9, 17, true),
     };
     activation
         .update_resize(&resized, &mut endpoints)
@@ -946,7 +946,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
             .any(|message| {
                 matches!(
                     message,
-                    crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
+                    shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
                         if serde_json::from_str::<crate::api::schema::Request>(request)
                             .is_ok_and(|request| request.id == "client-shell-surface:21:on")
                 )
@@ -1617,6 +1617,6 @@ fn target_loss_while_synchronizing_the_restored_source_keeps_that_restore() {
 fn resize_message_preserves_the_latest_surface_dimensions() {
     assert_eq!(
         resize_geometry(&resize()),
-        Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 })
+        Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 })
     );
 }

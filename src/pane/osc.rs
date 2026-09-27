@@ -346,14 +346,14 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn foreground_job_is_shell(job: &crate::detect::ForegroundJob, shell_pid: u32) -> bool {
+fn foreground_job_is_shell(job: &shepr_agent::detect::ForegroundJob, shell_pid: u32) -> bool {
     job.processes.iter().any(|process| process.pid == shell_pid)
 }
 
 /// The process group of the foreground program when it is not the shell.
 /// Scans `/proc`: never call it with the terminal lock held.
 pub(super) fn current_transient_default_color_owner(shell_pid: u32) -> Option<u32> {
-    let job = crate::detect::foreground_job(shell_pid)?;
+    let job = shepr_agent::detect::foreground_job(shell_pid)?;
     (!foreground_job_is_shell(&job, shell_pid)).then_some(job.process_group_id)
 }
 
@@ -361,7 +361,7 @@ pub(super) fn should_restore_host_terminal_theme(
     owner_pgid: u32,
     shell_pid: u32,
     alternate_screen: bool,
-    foreground_job: Option<&crate::detect::ForegroundJob>,
+    foreground_job: Option<&shepr_agent::detect::ForegroundJob>,
 ) -> bool {
     if alternate_screen {
         return false;
@@ -384,7 +384,7 @@ pub(super) fn restore_host_terminal_theme_if_needed(
     pane_id: PaneId,
     shell_pid: u32,
     alternate_screen: bool,
-    foreground_job: Option<&crate::detect::ForegroundJob>,
+    foreground_job: Option<&shepr_agent::detect::ForegroundJob>,
 ) -> bool {
     let Some(owner_pgid) = core.transient_default_color_owner_pgid else {
         return false;
@@ -467,10 +467,10 @@ mod tests {
         }
     }
 
-    fn shell_job(shell_pid: u32) -> crate::detect::ForegroundJob {
-        crate::detect::ForegroundJob {
+    fn shell_job(shell_pid: u32) -> shepr_agent::detect::ForegroundJob {
+        shepr_agent::detect::ForegroundJob {
             process_group_id: shell_pid,
-            processes: vec![crate::detect::ForegroundProcess {
+            processes: vec![shepr_agent::detect::ForegroundProcess {
                 pid: shell_pid,
                 name: "zsh".to_string(),
                 argv0: Some("zsh".to_string()),
@@ -887,9 +887,9 @@ mod tests {
             42,
             7,
             false,
-            Some(&crate::detect::ForegroundJob {
+            Some(&shepr_agent::detect::ForegroundJob {
                 process_group_id: 42,
-                processes: vec![crate::detect::ForegroundProcess {
+                processes: vec![shepr_agent::detect::ForegroundProcess {
                     pid: 42,
                     name: "droid".to_string(),
                     argv0: Some("droid".to_string()),

@@ -73,17 +73,17 @@ use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::endpoint::{ClientEndpointId, ClientEndpointStatus, SavedSshEndpoint};
-use crate::config::{
+#[cfg(test)]
+use crate::raw_input::RawInputEvent;
+use shepr_config::theme::Palette;
+use shepr_config::{
     Config, LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig,
     TabBarPositionConfig,
 };
-use crate::protocol::{
+use shepr_protocol::{
     ClientMessage, ClientMousePosition, ClientPaneInputEvent, ClientShellSnapshot, ClientShellTab,
     ClientShellWorkspace, ClientSurfaceSize, FrameData, PaneSurfaceFrame,
 };
-#[cfg(test)]
-use crate::raw_input::RawInputEvent;
-use crate::theme::Palette;
 
 #[path = "shell/input/events.rs"]
 mod input_events;

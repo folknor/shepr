@@ -352,7 +352,7 @@ impl ClientShellState {
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
-            let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+            let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
             let search_focused = matches!(
                 self.overlay,
                 Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
@@ -497,7 +497,7 @@ impl ClientShellState {
 
         if matches!(self.overlay, Some(ClientShellOverlay::Help(_))) {
             let text_character = crate::input::keybind_help_text_char(key);
-            let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+            let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
             let search_focused = matches!(
                 self.overlay,
                 Some(ClientShellOverlay::Help(ClientHelpOverlay {
@@ -721,7 +721,7 @@ impl ClientShellState {
 
     pub(super) fn request_tab_close(
         &mut self,
-        tab_id: &crate::protocol::PublicTabId,
+        tab_id: &shepr_protocol::PublicTabId,
         outcome: &mut ClientShellInput,
     ) {
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
@@ -785,7 +785,7 @@ impl ClientShellState {
     fn open_close_confirmation(
         &mut self,
         workspace_id: String,
-        tab_id: Option<crate::protocol::PublicTabId>,
+        tab_id: Option<shepr_protocol::PublicTabId>,
     ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;

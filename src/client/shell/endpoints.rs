@@ -21,7 +21,7 @@ pub(super) struct MachineHit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ClientEndpointFocusTarget {
     Workspace(String),
-    Pane(crate::protocol::PublicPaneId),
+    Pane(shepr_protocol::PublicPaneId),
 }
 
 impl ClientShellState {

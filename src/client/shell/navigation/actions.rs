@@ -254,7 +254,7 @@ impl ClientShellState {
         };
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
-        let request_id = crate::protocol::RequestId::from(format!("client-shell:{request_id}"));
+        let request_id = shepr_protocol::RequestId::from(format!("client-shell:{request_id}"));
         self.pending_requests.insert(
             request_id.clone(),
             PendingEndpointRequest {

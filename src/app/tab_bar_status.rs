@@ -11,13 +11,13 @@ use std::{
 use tokio::io::AsyncReadExt;
 
 use super::{App, state::TabBarStatusSegment};
-use crate::config::TabBarRightEntryConfig;
+use shepr_config::TabBarRightEntryConfig;
 
 impl App {
     /// Environment and working directory for tab bar status commands.
     fn status_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
         let mut env = vec![(
-            crate::config::SOCKET_PATH_ENV_VAR.to_string(),
+            shepr_config::SOCKET_PATH_ENV_VAR.to_string(),
             crate::api::socket_path(&self.paths).display().to_string(),
         )];
         // Not raw `current_exe()`: after an install replaces the binary, Linux
@@ -128,10 +128,7 @@ impl App {
         self.state.tab_bar_right_separator = sanitize_separator(separator);
 
         let now = std::time::Instant::now();
-        for entry in entries
-            .iter()
-            .take(crate::config::MAX_TAB_BAR_RIGHT_ENTRIES)
-        {
+        for entry in entries.iter().take(shepr_config::MAX_TAB_BAR_RIGHT_ENTRIES) {
             match entry {
                 TabBarRightEntryConfig::Zoom => {
                     self.state.tab_bar_right.push(TabBarStatusSegment::Zoom);
@@ -144,7 +141,7 @@ impl App {
                         )));
                 }
                 TabBarRightEntryConfig::Datetime { format } => {
-                    let Ok(format) = crate::config::parse_tab_bar_datetime_format(format) else {
+                    let Ok(format) = shepr_config::parse_tab_bar_datetime_format(format) else {
                         continue;
                     };
                     let value = format_local_datetime(&format);
@@ -169,9 +166,9 @@ impl App {
                 } => {
                     if command.trim().is_empty()
                         || *interval_seconds == 0
-                        || *interval_seconds > crate::config::MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS
+                        || *interval_seconds > shepr_config::MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS
                         || *timeout_seconds == 0
-                        || *timeout_seconds > crate::config::MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS
+                        || *timeout_seconds > shepr_config::MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS
                     {
                         continue;
                     }
@@ -581,7 +578,8 @@ async fn run_status_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::Config, events::AppEvent};
+    use crate::events::AppEvent;
+    use shepr_config::Config;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

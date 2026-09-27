@@ -5,9 +5,9 @@ use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
 use crate::pane::PaneRuntimeRegistry;
-use crate::protocol::TerminalId;
 use crate::workspace::Workspace;
 use shepr_core::layout::Node;
+use shepr_protocol::TerminalId;
 
 /// Current snapshot format version. Files with any other version are ignored.
 pub(crate) const SNAPSHOT_VERSION: u32 = 1;
@@ -127,9 +127,9 @@ pub struct PaneSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneAgentSessionSnapshot {
-    pub source: crate::agent::AgentSource,
-    pub agent: crate::agent::Agent,
-    pub session_ref: crate::agent::resume::AgentSessionRef,
+    pub source: shepr_agent::agent::AgentSource,
+    pub agent: shepr_agent::agent::Agent,
+    pub session_ref: shepr_agent::agent::resume::AgentSessionRef,
 }
 
 /// Saved screen history of one pane. Files written by older builds also carry
@@ -161,7 +161,7 @@ pub enum DirectionSnapshot {
 pub fn capture(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
-        crate::protocol::TerminalId,
+        shepr_protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &PaneRuntimeRegistry,
@@ -187,7 +187,7 @@ pub fn capture(
 fn capture_workspace(
     ws: &Workspace,
     terminals: &std::collections::HashMap<
-        crate::protocol::TerminalId,
+        shepr_protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &PaneRuntimeRegistry,
@@ -227,7 +227,7 @@ fn capture_workspace(
 fn capture_tab(
     tab: &crate::workspace::Tab,
     terminals: &std::collections::HashMap<
-        crate::protocol::TerminalId,
+        shepr_protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &PaneRuntimeRegistry,
@@ -250,7 +250,7 @@ fn capture_tab(
                     terminal.agent_name.clone(),
                     terminal
                         .managed_agent_kind()
-                        .map(|agent| crate::detect::agent_label(agent).to_string()),
+                        .map(|agent| shepr_agent::detect::agent_label(agent).to_string()),
                 )
             })
             .unwrap_or_default();
@@ -260,11 +260,13 @@ fn capture_tab(
                 && let Some(session_ref) = authority.session_ref.as_ref()
             {
                 return Some(PaneAgentSessionSnapshot {
-                    source: crate::agent::AgentSource::from_pair(
+                    source: shepr_agent::agent::AgentSource::from_pair(
                         &authority.source,
                         &authority.agent_label,
                     )?,
-                    agent: crate::agent::Agent::parse_canonical_label(&authority.agent_label)?,
+                    agent: shepr_agent::agent::Agent::parse_canonical_label(
+                        &authority.agent_label,
+                    )?,
                     session_ref: session_ref.clone(),
                 });
             }

@@ -17,7 +17,7 @@ use crate::api::schema::{
 use crate::api::subscriptions::{ActiveSubscription, SubscriptionStream};
 use crate::api::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
 use crate::api::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
-use crate::ipc::{
+use shepr_platform::ipc::{
     LocalStream, LocalStreamRead, SocketFileIdentity, bind_private_local_listener,
     is_connection_closed_error, local_stream_peer_closed, peer_is_same_user,
     poll_local_stream_read, remove_socket_file_if_owned, set_local_stream_polling,
@@ -97,7 +97,7 @@ impl ServerHandle {
         if !ours {
             return false;
         }
-        match crate::ipc::connect_local_stream(&self.path) {
+        match shepr_platform::ipc::connect_local_stream(&self.path) {
             Ok(_stream) => true,
             Err(err) => {
                 debug!(err = %err, "could not wake api listener for shutdown");
@@ -111,7 +111,7 @@ pub(crate) fn start_server_with_stop_control(
     api_tx: ApiRequestSender,
     event_hub: EventHub,
     server_stop: Arc<AtomicBool>,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
     start_server_inner(
         api_tx,
@@ -134,7 +134,7 @@ fn start_server_inner(
     event_hub: EventHub,
     mut capabilities: Option<ServerCapabilities>,
     server_stop: Option<Arc<AtomicBool>>,
-    paths: &crate::config::AppPaths,
+    paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
     let path = socket_path(paths);
     prepare_socket_path(&path)?;
@@ -223,7 +223,7 @@ fn start_server_inner(
 /// Runs the accept loop on its own thread, handing each accepted connection
 /// to `serve`, whose error (a failed thread spawn) feeds the backoff.
 fn spawn_listener_thread(
-    listener: crate::ipc::LocalListener,
+    listener: shepr_platform::ipc::LocalListener,
     running: Arc<AtomicBool>,
     mut serve: impl FnMut(LocalStream) -> io::Result<()> + Send + 'static,
 ) -> std::thread::JoinHandle<()> {
@@ -293,7 +293,7 @@ impl AcceptBackoff {
 }
 
 fn prepare_socket_path(path: &Path) -> std::io::Result<()> {
-    crate::ipc::prepare_socket_path(path, |path| {
+    shepr_platform::ipc::prepare_socket_path(path, |path| {
         format!(
             "shepr is already running (socket busy at {})",
             path.display()
@@ -365,7 +365,7 @@ fn handle_connection_with_stop(
 
     let request_id = request.id.clone();
     let method_traits = request.method.traits();
-    crate::logging::api_request_started(
+    shepr_platform::logging::api_request_started(
         &request_id,
         method_traits.name,
         method_traits.mutates_ui,
@@ -433,7 +433,7 @@ fn handle_connection_with_stop(
                 running,
             );
             match &result {
-                Ok(()) => crate::logging::api_request_completed(
+                Ok(()) => shepr_platform::logging::api_request_completed(
                     &request_id,
                     method_traits.name,
                     method_traits.mutates_ui,
@@ -441,7 +441,7 @@ fn handle_connection_with_stop(
                     "stream_closed",
                 ),
                 Err(err) => {
-                    crate::logging::api_request_failed(
+                    shepr_platform::logging::api_request_failed(
                         &request_id,
                         method_traits.name,
                         &err.to_string(),
@@ -510,7 +510,7 @@ fn finish_wait_response(
     method: MethodTraits,
 ) -> std::io::Result<()> {
     let Some(response) = response else {
-        crate::logging::api_request_completed(
+        shepr_platform::logging::api_request_completed(
             request_id,
             method.name,
             method.mutates_ui,
@@ -530,14 +530,16 @@ fn finish_api_response(
 ) -> std::io::Result<()> {
     let result = write_text_line_allow_disconnect(stream, response);
     match &result {
-        Ok(()) => crate::logging::api_request_completed(
+        Ok(()) => shepr_platform::logging::api_request_completed(
             request_id,
             method.name,
             method.mutates_ui,
             method.routine,
             api_response_outcome(response),
         ),
-        Err(err) => crate::logging::api_request_failed(request_id, method.name, &err.to_string()),
+        Err(err) => {
+            shepr_platform::logging::api_request_failed(request_id, method.name, &err.to_string());
+        }
     }
     result
 }
@@ -553,7 +555,7 @@ fn handle_request(
             id: request.id.clone(),
             result: ResponseResult::Pong {
                 version: crate::build_info::version(),
-                protocol: crate::protocol::PROTOCOL_VERSION,
+                protocol: shepr_protocol::PROTOCOL_VERSION,
                 capabilities,
             },
         };
@@ -643,7 +645,7 @@ fn read_request_line_blocking(
 ) -> std::io::Result<Option<String>> {
     use std::io::Read as _;
 
-    let mut reader = crate::ipc::DeadlineReader::new(stream, deadline);
+    let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, deadline);
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 8 * 1024];
     loop {
@@ -973,8 +975,8 @@ mod tests {
 
     fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, PathBuf) {
         let path = unique_test_path(name);
-        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
-        let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
+        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
         (client, server, path)
     }
@@ -1049,7 +1051,7 @@ mod tests {
     #[test]
     fn dropping_the_handle_stops_the_listener_thread() {
         let path = unique_test_path("listener-drop");
-        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
+        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let identity = socket_file_identity(&path).expect("test precondition");
         let running = Arc::new(AtomicBool::new(true));
         // The serve closure lives exactly as long as the listener thread.
@@ -1183,8 +1185,8 @@ mod tests {
     fn socket_path_prefers_explicit_env_override() {
         let env = IsolatedEnv::new();
         let unique = env.path().join("override.sock");
-        env.set(crate::config::SOCKET_PATH_ENV_VAR, &unique);
-        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+        env.set(shepr_config::SOCKET_PATH_ENV_VAR, &unique);
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         assert_eq!(socket_path(&paths), unique);
     }
 
@@ -1192,7 +1194,7 @@ mod tests {
     fn socket_path_defaults_to_runtime_dir() {
         let env = IsolatedEnv::new();
         env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
-        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(socket_path(&paths), paths.runtime_dir().join("shepr.sock"));
     }
@@ -1200,8 +1202,8 @@ mod tests {
     #[test]
     fn socket_path_uses_named_session_dir() {
         let env = IsolatedEnv::new();
-        env.set(crate::config::SESSION_ENV_VAR, "work");
-        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+        env.set(shepr_config::SESSION_ENV_VAR, "work");
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         let expected = paths
             .runtime_dir()

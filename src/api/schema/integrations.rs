@@ -1,1 +1,1 @@
-pub use crate::agent::IntegrationTarget;
+pub use shepr_agent::agent::IntegrationTarget;

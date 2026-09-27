@@ -150,7 +150,7 @@ fn git_user_config_paths() -> Vec<PathBuf> {
 #[cfg(test)]
 mod xdg_path_tests {
     use super::*;
-    use crate::test_support::IsolatedEnv;
+    use shepr_test_support::IsolatedEnv;
 
     #[test]
     fn git_user_config_ignores_empty_and_relative_xdg_home() {

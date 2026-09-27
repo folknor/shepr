@@ -2,14 +2,14 @@ use super::*;
 use crate::server::ClientId;
 use crate::server::clients::RenderTargetMode;
 
-fn rect_fits_frame(rect: protocol::SurfaceRect, frame: &FrameData) -> bool {
+fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
     rect.x.saturating_add(rect.width) <= frame.width
         && rect.y.saturating_add(rect.height) <= frame.height
 }
 
 fn patch_intersects_hyperlinks(
     frame: &FrameData,
-    area: protocol::SurfaceRect,
+    area: shepr_protocol::SurfaceRect,
     patch: &crate::pane::TerminalDirtyPatch,
 ) -> bool {
     if frame.hyperlinks.is_empty() || !rect_fits_frame(area, frame) {
@@ -30,7 +30,7 @@ fn patch_intersects_hyperlinks(
         })
 }
 
-fn patch_row_changed(frame: &FrameData, row: &protocol::PaneSurfacePatchRow) -> Option<bool> {
+fn patch_row_changed(frame: &FrameData, row: &shepr_protocol::PaneSurfacePatchRow) -> Option<bool> {
     if row.y >= frame.height
         || row.x.saturating_add(u16::try_from(row.cells.len()).ok()?) > frame.width
     {
@@ -46,9 +46,9 @@ fn patch_row_changed(frame: &FrameData, row: &protocol::PaneSurfacePatchRow) -> 
 
 fn changed_rows(
     frame: &FrameData,
-    area: protocol::SurfaceRect,
+    area: shepr_protocol::SurfaceRect,
     patch: &crate::pane::TerminalDirtyPatch,
-) -> Option<Vec<protocol::PaneSurfacePatchRow>> {
+) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
     if !rect_fits_frame(area, frame) {
         return None;
     }
@@ -81,7 +81,7 @@ fn changed_rows(
             // narrow-to-wide) transition repaints content covered by the old
             // grapheme width even when that logical neighbor is unchanged.
             let end = offset.saturating_add(1).min(width);
-            rows.push(protocol::PaneSurfacePatchRow {
+            rows.push(shepr_protocol::PaneSurfacePatchRow {
                 x: area.x.checked_add(u16::try_from(start).ok()?)?,
                 y,
                 cells: desired[start..end].to_vec(),
@@ -95,15 +95,15 @@ fn changed_rows(
 fn retained_scrollbar_patch(
     app: &app::App,
     frame: &FrameData,
-    pane: &mut protocol::PaneSurfacePane,
+    pane: &mut shepr_protocol::PaneSurfacePane,
     alternate_screen_active: bool,
     metrics: Option<crate::pane::ScrollMetrics>,
-) -> Option<Vec<protocol::PaneSurfacePatchRow>> {
+) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
     let next_rect = metrics
         .filter(|metrics| metrics.max_offset_from_bottom > 0)
         .filter(|_| app.state.settings.pane_scrollbars && !alternate_screen_active)
         .and_then(|_| {
-            let rect = protocol::SurfaceRect {
+            let rect = shepr_protocol::SurfaceRect {
                 x: pane.inner_rect.x.checked_add(pane.inner_rect.width)?,
                 y: pane.inner_rect.y,
                 width: 1,
@@ -134,11 +134,11 @@ fn retained_scrollbar_patch(
     let cells = buffer
         .content
         .iter()
-        .map(protocol::CellData::from_ratatui_cell)
+        .map(shepr_protocol::CellData::from_ratatui_cell)
         .collect::<Vec<_>>();
     let mut rows = Vec::new();
     for (offset, cell) in cells.into_iter().enumerate() {
-        let row = protocol::PaneSurfacePatchRow {
+        let row = shepr_protocol::PaneSurfacePatchRow {
             x: rect.x,
             y: rect.y.checked_add(u16::try_from(offset).ok()?)?,
             cells: vec![cell],
@@ -152,8 +152,8 @@ fn retained_scrollbar_patch(
 
 fn retained_cursor(
     app: &app::App,
-    panes: &[protocol::PaneSurfacePane],
-) -> Option<protocol::CursorState> {
+    panes: &[shepr_protocol::PaneSurfacePane],
+) -> Option<shepr_protocol::CursorState> {
     let pane = panes.iter().find(|pane| pane.focused)?;
     let (workspace_index, pane_id) = app.parse_pane_id(&pane.pane_id)?;
     let runtime = app.state.runtime_for_pane_in_workspace(
@@ -172,7 +172,7 @@ fn retained_cursor(
     );
     runtime
         .cursor_state(area, true)
-        .map(|cursor| protocol::CursorState {
+        .map(|cursor| shepr_protocol::CursorState {
             x: cursor.x,
             y: cursor.y,
             visible: cursor.visible && !crate::ui::pane_is_scrolled_back(runtime),
@@ -182,11 +182,11 @@ fn retained_cursor(
 
 struct RetainedRecipient<'a> {
     client_id: ClientId,
-    surface: &'a protocol::PaneSurfaceFrame,
+    surface: &'a shepr_protocol::PaneSurfaceFrame,
 }
 
 struct CollectedPanePatch {
-    pane_id: crate::protocol::PublicPaneId,
+    pane_id: shepr_protocol::PublicPaneId,
     patch: crate::pane::TerminalDirtyPatch,
     content_revision: u64,
     scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -197,10 +197,10 @@ struct CollectedPanePatch {
 
 struct RetainedRecipientUpdate {
     client_id: ClientId,
-    patch: protocol::PaneSurfacePatch,
+    patch: shepr_protocol::PaneSurfacePatch,
 }
 
-fn has_synchronized_pane(app: &app::App, surface: &protocol::PaneSurfaceFrame) -> bool {
+fn has_synchronized_pane(app: &app::App, surface: &shepr_protocol::PaneSurfaceFrame) -> bool {
     surface.panes.iter().any(|pane| {
         app.parse_pane_id(&pane.pane_id)
             .and_then(|(workspace_index, pane_id)| {
@@ -274,7 +274,7 @@ impl HeadlessServer {
                 || surface.projection_revision
                     != client
                         .shell_state()
-                        .map_or(crate::protocol::ProjectionRevision::ZERO, |shell| {
+                        .map_or(shepr_protocol::ProjectionRevision::ZERO, |shell| {
                             shell.projection_revision
                         })
                 || surface.frame.width != target.terminal_size.cols.get()
@@ -399,7 +399,7 @@ impl HeadlessServer {
                 pane.sgr_pixel_mouse = collected_pane.sgr_pixel_mouse;
                 pane.alternate_screen_active = collected_pane.alternate_screen_active;
                 pane.scroll = collected_pane.scroll_metrics.map(|metrics| {
-                    protocol::PaneSurfaceScrollMetrics {
+                    shepr_protocol::PaneSurfaceScrollMetrics {
                         offset_from_bottom: metrics.offset_from_bottom as u64,
                         max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
                         viewport_rows: metrics.viewport_rows as u64,
@@ -413,19 +413,23 @@ impl HeadlessServer {
             // Panes and scrollbars were collected pane by pane; clients accept only
             // sorted, disjoint spans, so order them and send a full surface instead of
             // a patch they would reject.
-            protocol::sort_patch_rows(&mut patch_rows);
-            if protocol::validate_patch_rows(surface.frame.width, surface.frame.height, &patch_rows)
-                .is_err()
+            shepr_protocol::sort_patch_rows(&mut patch_rows);
+            if shepr_protocol::validate_patch_rows(
+                surface.frame.width,
+                surface.frame.height,
+                &patch_rows,
+            )
+            .is_err()
             {
                 fallback!("invalid_patch");
             }
             let cursor = retained_cursor(&self.app, &panes);
             let cursor_changed = cursor != surface.frame.cursor;
-            let patch = protocol::PaneSurfacePatch {
+            let patch = shepr_protocol::PaneSurfacePatch {
                 boot_id: self.client_shell_boot_id.clone(),
                 projection_revision,
                 base_surface_revision,
-                surface_revision: crate::protocol::SurfaceRevision::new(0),
+                surface_revision: shepr_protocol::SurfaceRevision::new(0),
                 rows: patch_rows,
                 panes: changed_panes,
                 cursor,
@@ -502,12 +506,12 @@ impl HeadlessServer {
 mod tests {
     use super::*;
 
-    fn cell(symbol: &str) -> protocol::CellData {
-        protocol::CellData {
+    fn cell(symbol: &str) -> shepr_protocol::CellData {
+        shepr_protocol::CellData {
             symbol: symbol.to_owned(),
-            fg: protocol::WireColor::Reset,
-            bg: protocol::WireColor::Reset,
-            style: protocol::WireStyle::default(),
+            fg: shepr_protocol::WireColor::Reset,
+            bg: shepr_protocol::WireColor::Reset,
+            style: shepr_protocol::WireStyle::default(),
             skip: false,
             hyperlink: None,
         }
@@ -528,7 +532,7 @@ mod tests {
 
         let rows = changed_rows(
             &frame,
-            protocol::SurfaceRect {
+            shepr_protocol::SurfaceRect {
                 x: 1,
                 y: 1,
                 width: 4,
@@ -540,7 +544,7 @@ mod tests {
 
         assert_eq!(
             rows,
-            vec![protocol::PaneSurfacePatchRow {
+            vec![shepr_protocol::PaneSurfacePatchRow {
                 x: 2,
                 y: 1,
                 cells: vec![cell("x"), cell("y"), cell(" ")],
@@ -564,7 +568,7 @@ mod tests {
 
         let rows = changed_rows(
             &frame,
-            protocol::SurfaceRect {
+            shepr_protocol::SurfaceRect {
                 x: 0,
                 y: 0,
                 width: 3,
@@ -576,7 +580,7 @@ mod tests {
 
         assert_eq!(
             rows,
-            vec![protocol::PaneSurfacePatchRow {
+            vec![shepr_protocol::PaneSurfacePatchRow {
                 x: 0,
                 y: 0,
                 cells: vec![cell("x"), cell("z")],
@@ -599,7 +603,7 @@ mod tests {
 
         let rows = changed_rows(
             &frame,
-            protocol::SurfaceRect {
+            shepr_protocol::SurfaceRect {
                 x: 0,
                 y: 0,
                 width: 4,
