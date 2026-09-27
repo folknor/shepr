@@ -491,9 +491,9 @@ mod tests {
         let input = (0..128)
             .map(|index| format!("{index:04}: ordered input burst\n"))
             .collect::<String>();
-        let mut framer =
-            crate::raw_input::RawInputByteFramer::<crate::raw_input::NoHostReplies>::for_host_input(
-            );
+        let mut framer = shepr_termio::input::raw_input::RawInputByteFramer::<
+            shepr_termio::input::raw_input::NoHostReplies,
+        >::for_host_input();
         let mut expected = Vec::new();
         for data in framer.push(input.as_bytes()) {
             let message = ClientMessage::Input { data };

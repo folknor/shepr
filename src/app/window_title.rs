@@ -126,7 +126,7 @@ mod tests {
     use shepr_config::Config;
 
     fn test_app() -> App {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),

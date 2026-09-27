@@ -1,6 +1,6 @@
 use super::*;
-use crate::api::schema::Method;
 use crossterm::event::{MouseButton, MouseEventKind};
+use shepr_api::schema::Method;
 
 fn close_state(confirm: bool, tab_count: usize) -> ClientShellState {
     let mut projected = snapshot();
@@ -20,12 +20,14 @@ fn close_state(confirm: bool, tab_count: usize) -> ClientShellState {
 }
 
 fn click(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
-    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: rect.x,
-        row: rect.y,
-        modifiers: KeyModifiers::empty(),
-    })])
+    state.handle_raw_events(vec![shepr_termio::input::raw_input::RawInputEvent::Mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        },
+    )])
 }
 
 fn request_close(state: &mut ClientShellState, menu: bool) -> ClientShellInput {
@@ -37,7 +39,9 @@ fn request_close(state: &mut ClientShellState, menu: bool) -> ClientShellInput {
     } else {
         let mut outcome = ClientShellInput::default();
         state.record_binding(
-            &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CloseTab),
+            &shepr_termio::input::KeybindMatch::Action(
+                shepr_termio::input::KeybindAction::CloseTab,
+            ),
             &mut outcome,
         );
         outcome

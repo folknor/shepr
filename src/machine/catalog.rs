@@ -48,7 +48,7 @@ impl SavedSshEndpoint {
                 "SSH endpoint label must be at most {MAX_LABEL_BYTES} bytes and contain no control characters"
             ));
         }
-        crate::session::validate_name(&self.session)?;
+        shepr_api::session::validate_name(&self.session)?;
         Ok(())
     }
 }

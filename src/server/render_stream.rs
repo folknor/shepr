@@ -4,12 +4,12 @@ use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::layout::{Position, Rect, Size};
 
 use crate::app::state::AppState;
-use crate::blit::{BlitEncoder, EncodedBlit};
 use crate::pane::PaneRuntimeRegistry;
 use shepr_protocol::{
     CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
     SurfaceRevision, TerminalFrame,
 };
+use shepr_termio::blit::{BlitEncoder, EncodedBlit};
 
 /// Per-client render baseline for the selected render encoding.
 pub(crate) enum ClientRenderState {

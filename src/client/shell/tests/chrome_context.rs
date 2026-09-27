@@ -379,9 +379,9 @@ fn context_menus_capture_stable_targets_and_route_actions() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneSplit(params)
+        shepr_api::schema::Method::PaneSplit(params)
             if params.target_pane_id.as_deref() == Some("pane_1")
-                && params.direction == crate::api::schema::SplitDirection::Right
+                && params.direction == shepr_api::schema::SplitDirection::Right
     ));
 }
 
@@ -440,7 +440,7 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::NewTab),
         &mut open,
     );
     assert!(open.actions.is_empty());
@@ -474,7 +474,7 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::TabCreate(params)
+        shepr_api::schema::Method::TabCreate(params)
             if params.workspace_id.as_deref() == Some("ws_1")
                 && params.label.as_deref() == Some("logs")
     ));

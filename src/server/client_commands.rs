@@ -4,7 +4,7 @@ use std::sync::mpsc;
 
 use tokio::sync::mpsc as tokio_mpsc;
 
-use crate::api::schema::Method;
+use shepr_api::schema::Method;
 
 use super::client_transport::ServerEvent;
 
@@ -53,25 +53,25 @@ pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
 
 pub(crate) fn error_response(
     id: &str,
-    code: impl Into<crate::api::error::ApiErrorCode>,
+    code: impl Into<shepr_api::error::ApiErrorCode>,
     message: impl Into<String>,
 ) -> String {
-    crate::api::error::encode_result(
+    shepr_api::error::encode_result(
         id.to_owned(),
-        Err(crate::api::error::ApiError::new(code.into(), message)),
+        Err(shepr_api::error::ApiError::new(code.into(), message)),
     )
 }
 
 pub(crate) fn success_message_with_result(
     boot_id: shepr_protocol::BootId,
     request_id: shepr_protocol::RequestId,
-    result: crate::api::schema::ResponseResult,
+    result: shepr_api::schema::ResponseResult,
 ) -> shepr_protocol::ServerMessage {
-    let success = crate::api::schema::SuccessResponse {
+    let success = shepr_api::schema::SuccessResponse {
         id: request_id.to_string(),
         result,
     };
-    let response = crate::api::serialize_response_or_error(&request_id, &success);
+    let response = shepr_api::serialize_response_or_error(&request_id, &success);
     shepr_protocol::ServerMessage::ClientShellEndpointResponseChunk {
         boot_id,
         request_id,
@@ -83,7 +83,7 @@ pub(crate) fn success_message_with_result(
 pub(crate) fn error_message(
     boot_id: shepr_protocol::BootId,
     request_id: shepr_protocol::RequestId,
-    code: impl Into<crate::api::error::ApiErrorCode>,
+    code: impl Into<shepr_api::error::ApiErrorCode>,
     message: impl Into<String>,
 ) -> shepr_protocol::ServerMessage {
     let response = error_response(&request_id, code, message);
@@ -99,20 +99,20 @@ pub(crate) fn spawn_response_waiter(
     client_id: ClientId,
     boot_id: shepr_protocol::BootId,
     request_id: shepr_protocol::RequestId,
-    response_rx: mpsc::Receiver<crate::api::error::ApiResult>,
+    response_rx: mpsc::Receiver<shepr_api::error::ApiResult>,
     server_event_tx: tokio_mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name("shepr-client-endpoint-response".into())
         .spawn(move || {
             let response = response_rx.recv().unwrap_or_else(|_| {
-                Err(crate::api::error::ApiError::new(
-                    crate::api::error::ApiErrorCode::ServerUnavailable,
+                Err(shepr_api::error::ApiError::new(
+                    shepr_api::error::ApiErrorCode::ServerUnavailable,
                     "endpoint command ended without a response",
                 ))
             });
             let response =
-                crate::api::error::encode_result(request_id.to_string(), response).into_bytes();
+                shepr_api::error::encode_result(request_id.to_string(), response).into_bytes();
             if response.is_empty() {
                 let _ = server_event_tx.blocking_send(
                     ServerEvent::ClientShellEndpointResponseChunkReady {
@@ -177,28 +177,28 @@ mod tests {
     #[test]
     fn client_shell_lane_excludes_api_front_door_and_lifecycle_methods() {
         assert!(supports_client_shell_method(
-            &Method::ClientShellSurfaceSet(crate::api::schema::ClientShellSurfaceSetParams {
+            &Method::ClientShellSurfaceSet(shepr_api::schema::ClientShellSurfaceSetParams {
                 active: false,
             })
         ));
         assert!(supports_client_shell_method(&Method::PaneClear(
-            crate::api::schema::PaneTarget {
+            shepr_api::schema::PaneTarget {
                 pane_id: "pane-1".into(),
             },
         )));
         assert!(!supports_client_shell_method(&Method::Ping(
-            crate::api::schema::PingParams::default(),
+            shepr_api::schema::PingParams::default(),
         )));
         assert!(!supports_client_shell_method(&Method::ServerStop(
-            crate::api::schema::EmptyParams::default(),
+            shepr_api::schema::EmptyParams::default(),
         )));
     }
 
     #[test]
     fn endpoint_response_uses_the_client_request_id() {
-        let correlated = crate::api::error::encode_result(
+        let correlated = shepr_api::error::encode_result(
             "client-shell:1".into(),
-            Ok(crate::api::schema::ResponseResult::Ok {}),
+            Ok(shepr_api::schema::ResponseResult::Ok {}),
         );
         let decoded: serde_json::Value = serde_json::from_str(&correlated).expect("response json");
 
@@ -219,8 +219,8 @@ mod tests {
         .expect("test precondition");
         let response = "x".repeat(ENDPOINT_RESPONSE_CHUNK_BYTES + 17);
         response_tx
-            .send(Err(crate::api::error::ApiError::new(
-                crate::api::error::ApiErrorCode::InternalError,
+            .send(Err(shepr_api::error::ApiError::new(
+                shepr_api::error::ApiErrorCode::InternalError,
                 response.clone(),
             )))
             .expect("test precondition");
@@ -246,7 +246,7 @@ mod tests {
             }
         }
 
-        let decoded: crate::api::schema::ErrorResponse =
+        let decoded: shepr_api::schema::ErrorResponse =
             serde_json::from_slice(&received).expect("response json");
         assert_eq!(decoded.error.message, response);
     }

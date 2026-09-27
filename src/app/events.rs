@@ -7,13 +7,13 @@ impl App {
     pub(crate) fn handle_internal_event_with_render_demand(
         &mut self,
         ev: AppEvent,
-    ) -> crate::api::RenderDemand {
+    ) -> shepr_api::RenderDemand {
         self.handle_internal_event_with_updates_and_render(ev).1
     }
 
     #[cfg(test)]
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
-        self.handle_internal_event_with_render_demand(ev) != crate::api::RenderDemand::None
+        self.handle_internal_event_with_render_demand(ev) != shepr_api::RenderDemand::None
     }
 
     fn handle_git_status_refreshed(
@@ -48,10 +48,10 @@ impl App {
         ev: AppEvent,
     ) -> (
         Vec<crate::app::actions::PaneStateUpdate>,
-        crate::api::RenderDemand,
+        shepr_api::RenderDemand,
     ) {
         if matches!(&ev, AppEvent::ClipboardWrite { .. }) {
-            return (Vec::new(), crate::api::RenderDemand::None);
+            return (Vec::new(), shepr_api::RenderDemand::None);
         }
 
         if let AppEvent::GitStatusRefreshed {
@@ -98,8 +98,8 @@ impl App {
             && let Some(plan) = &pane_removal_plan
             && let Some(public_pane_id) = self.public_pane_id(plan.workspace_index, *pane_id)
         {
-            self.emit_event(crate::api::schema::EventEnvelope {
-                data: crate::api::schema::EventData::PaneExited {
+            self.emit_event(shepr_api::schema::EventEnvelope {
+                data: shepr_api::schema::EventData::PaneExited {
                     pane_id: public_pane_id,
                     workspace_id: self.public_workspace_id(plan.workspace_index),
                 },
@@ -123,7 +123,7 @@ impl App {
             };
             events
                 .into_iter()
-                .filter(|event| event.data.kind() != crate::api::schema::EventKind::PaneClosed)
+                .filter(|event| event.data.kind() != shepr_api::schema::EventKind::PaneClosed)
                 .collect()
         } else {
             Vec::new()
@@ -177,14 +177,14 @@ impl App {
         self.emit_events(pane_exit_container_events);
 
         self.shutdown_detached_terminal_runtimes();
-        (pane_updates, crate::api::RenderDemand::Full)
+        (pane_updates, shepr_api::RenderDemand::Full)
     }
 
-    fn render_demand_if(changed: bool) -> crate::api::RenderDemand {
+    fn render_demand_if(changed: bool) -> shepr_api::RenderDemand {
         if changed {
-            crate::api::RenderDemand::Full
+            shepr_api::RenderDemand::Full
         } else {
-            crate::api::RenderDemand::None
+            shepr_api::RenderDemand::None
         }
     }
 
@@ -230,8 +230,8 @@ impl App {
         }
 
         if update.previous.agent_label != update.current.agent_label || update.cause.released() {
-            self.emit_event(crate::api::schema::EventEnvelope {
-                data: crate::api::schema::EventData::PaneAgentDetected {
+            self.emit_event(shepr_api::schema::EventEnvelope {
+                data: shepr_api::schema::EventData::PaneAgentDetected {
                     pane_id: pane_id.clone(),
                     workspace_id: workspace_id.clone(),
                     agent: update.current.agent_label.clone(),
@@ -251,8 +251,8 @@ impl App {
             || update.previous.presentation != update.current.presentation
         {
             let presentation = update.current.presentation.clone();
-            self.emit_event(crate::api::schema::EventEnvelope {
-                data: crate::api::schema::EventData::PaneAgentStatusChanged {
+            self.emit_event(shepr_api::schema::EventEnvelope {
+                data: shepr_api::schema::EventData::PaneAgentStatusChanged {
                     pane_id,
                     workspace_id,
                     agent_status,
@@ -265,11 +265,11 @@ impl App {
         }
     }
 
-    pub(super) fn emit_event(&mut self, event: crate::api::schema::EventEnvelope) {
+    pub(super) fn emit_event(&mut self, event: shepr_api::schema::EventEnvelope) {
         self.event_hub.push(event);
     }
 
-    pub(super) fn emit_events(&mut self, events: Vec<crate::api::schema::EventEnvelope>) {
+    pub(super) fn emit_events(&mut self, events: Vec<shepr_api::schema::EventEnvelope>) {
         for event in events {
             self.emit_event(event);
         }
@@ -287,8 +287,8 @@ impl App {
         &self,
         ws_idx: usize,
         tab_idx: usize,
-    ) -> Vec<crate::api::schema::EventEnvelope> {
-        use crate::api::schema::{EventData, EventEnvelope};
+    ) -> Vec<shepr_api::schema::EventEnvelope> {
+        use shepr_api::schema::{EventData, EventEnvelope};
 
         let Some(tab) = self
             .state
@@ -327,8 +327,8 @@ impl App {
     pub(super) fn workspace_close_events(
         &self,
         ws_idx: usize,
-    ) -> Vec<crate::api::schema::EventEnvelope> {
-        use crate::api::schema::{EventData, EventEnvelope};
+    ) -> Vec<shepr_api::schema::EventEnvelope> {
+        use shepr_api::schema::{EventData, EventEnvelope};
 
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return Vec::new();
@@ -347,8 +347,8 @@ impl App {
 
     pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: shepr_core::layout::PaneId) {
         if let Some(pane) = self.pane_info(ws_idx, pane_id) {
-            self.emit_event(crate::api::schema::EventEnvelope {
-                data: crate::api::schema::EventData::PaneUpdated { pane },
+            self.emit_event(shepr_api::schema::EventEnvelope {
+                data: shepr_api::schema::EventData::PaneUpdated { pane },
             });
         }
     }
@@ -357,8 +357,8 @@ impl App {
         let Some(workspace) = self.workspace_info(ws_idx) else {
             return;
         };
-        self.event_hub.push(crate::api::schema::EventEnvelope {
-            data: crate::api::schema::EventData::WorkspaceMetadataUpdated { workspace },
+        self.event_hub.push(shepr_api::schema::EventEnvelope {
+            data: shepr_api::schema::EventData::WorkspaceMetadataUpdated { workspace },
         });
     }
 
@@ -396,8 +396,8 @@ impl App {
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
     ) {
-        self.emit_event(crate::api::schema::EventEnvelope {
-            data: crate::api::schema::EventData::WorkspaceFocused {
+        self.emit_event(shepr_api::schema::EventEnvelope {
+            data: shepr_api::schema::EventData::WorkspaceFocused {
                 workspace_id: self.public_workspace_id(ws_idx),
             },
         });
@@ -407,16 +407,16 @@ impl App {
             .get(ws_idx)
             .and_then(|ws| self.public_tab_id(ws_idx, ws.active_tab))
         {
-            self.emit_event(crate::api::schema::EventEnvelope {
-                data: crate::api::schema::EventData::TabFocused {
+            self.emit_event(shepr_api::schema::EventEnvelope {
+                data: shepr_api::schema::EventData::TabFocused {
                     tab_id,
                     workspace_id: self.public_workspace_id(ws_idx),
                 },
             });
         }
         if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
-            self.emit_event(crate::api::schema::EventEnvelope {
-                data: crate::api::schema::EventData::PaneFocused {
+            self.emit_event(shepr_api::schema::EventEnvelope {
+                data: shepr_api::schema::EventData::PaneFocused {
                     pane_id: public_pane_id,
                     workspace_id: self.public_workspace_id(ws_idx),
                 },

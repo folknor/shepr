@@ -1,5 +1,5 @@
-use crate::api::error::{ApiError, ApiErrorCode, ApiResult};
-use crate::api::schema::ResponseResult;
+use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
+use shepr_api::schema::ResponseResult;
 
 pub(crate) fn success(_id: String, result: ResponseResult) -> ApiResult {
     Ok(result)

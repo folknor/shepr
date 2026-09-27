@@ -29,7 +29,7 @@ pub(super) fn dispatch_client_shell_actions(
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
-                crate::host_term::title::write_clipboard_bytes(&bytes);
+                shepr_termio::host_term::title::write_clipboard_bytes(&bytes);
             }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
@@ -90,7 +90,7 @@ pub(super) fn sync_client_shell_keyboard_report_all(
     if desired == state.keyboard_report_all_active {
         return Ok(());
     }
-    crate::host_term::modes::set_host_kitty_keyboard_report_all(&mut io::stdout(), desired)
+    shepr_termio::host_term::modes::set_host_kitty_keyboard_report_all(&mut io::stdout(), desired)
         .map_err(ClientError::HostTerminal)?;
     state.keyboard_report_all_active = desired;
     Ok(())
@@ -113,7 +113,7 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
 /// must stay.
 fn reset_window_title(state: &mut ClientState, writer: &mut impl io::Write) -> io::Result<()> {
     if std::mem::take(&mut state.window_title_written) {
-        crate::host_term::title::write_window_title(writer, None)?;
+        shepr_termio::host_term::title::write_window_title(writer, None)?;
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-use crate::api::schema::IntegrationTarget;
+use shepr_api::schema::IntegrationTarget;
 
 use super::matches;
 

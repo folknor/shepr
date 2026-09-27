@@ -115,11 +115,13 @@ zbus = { workspace = true }
 futures-util = { workspace = true }
 
 shepr-agent = { path = "crates/shepr-agent" }
+shepr-api = { path = "crates/shepr-api" }
 shepr-config = { path = "crates/shepr-config" }
 shepr-core = { path = "crates/shepr-core" }
 shepr-platform = { path = "crates/shepr-platform" }
 shepr-protocol = { path = "crates/shepr-protocol" }
 shepr-pty = { path = "crates/shepr-pty" }
+shepr-termio = { path = "crates/shepr-termio" }
 shepr-vt = { path = "crates/shepr-vt" }
 
 [lints]
@@ -127,6 +129,8 @@ workspace = true
 
 [dev-dependencies]
 shepr-agent = { path = "crates/shepr-agent", features = ["test-support"] }
+shepr-api = { path = "crates/shepr-api", features = ["test-support"] }
 shepr-config = { path = "crates/shepr-config", features = ["test-support"] }
 shepr-protocol = { path = "crates/shepr-protocol", features = ["test-support"] }
+shepr-termio = { path = "crates/shepr-termio", features = ["test-support"] }
 shepr-test-support = { path = "crates/shepr-test-support" }

@@ -27,14 +27,14 @@ pub struct SessionSnapshot {
 /// Last observed physical terminal colours, retained for headless resumes.
 #[derive(Default, Serialize, Deserialize)]
 pub struct SavedHostTheme {
-    pub foreground: Option<crate::host_term::theme::RgbColor>,
-    pub background: Option<crate::host_term::theme::RgbColor>,
+    pub foreground: Option<shepr_termio::host_term::theme::RgbColor>,
+    pub background: Option<shepr_termio::host_term::theme::RgbColor>,
     #[serde(default)]
-    pub palette: Vec<Option<crate::host_term::theme::RgbColor>>,
+    pub palette: Vec<Option<shepr_termio::host_term::theme::RgbColor>>,
 }
 
-impl From<crate::host_term::theme::TerminalTheme> for SavedHostTheme {
-    fn from(theme: crate::host_term::theme::TerminalTheme) -> Self {
+impl From<shepr_termio::host_term::theme::TerminalTheme> for SavedHostTheme {
+    fn from(theme: shepr_termio::host_term::theme::TerminalTheme) -> Self {
         Self {
             foreground: theme.foreground,
             background: theme.background,
@@ -44,8 +44,8 @@ impl From<crate::host_term::theme::TerminalTheme> for SavedHostTheme {
 }
 
 impl SavedHostTheme {
-    pub fn to_theme(&self) -> crate::host_term::theme::TerminalTheme {
-        let mut theme = crate::host_term::theme::TerminalTheme {
+    pub fn to_theme(&self) -> shepr_termio::host_term::theme::TerminalTheme {
+        let mut theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: self.foreground,
             background: self.background,
             ..Default::default()
@@ -168,7 +168,7 @@ pub fn capture(
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
     selected: usize,
-    host_theme: crate::host_term::theme::TerminalTheme,
+    host_theme: shepr_termio::host_term::theme::TerminalTheme,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,

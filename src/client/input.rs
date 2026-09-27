@@ -124,7 +124,7 @@ fn consume_input_bytes(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
-    last_geometry: &mut Option<crate::input::mouse::HostPixelExtent>,
+    last_geometry: &mut Option<shepr_termio::input::mouse::HostPixelExtent>,
     host_sgr_pixels_active: &AtomicBool,
 ) -> bool {
     let sgr_pixels =
@@ -132,7 +132,7 @@ fn consume_input_bytes(
     if sgr_pixels {
         *last_geometry = retain_geometry(
             *last_geometry,
-            crate::input::mouse::HostPixelExtent::current(),
+            shepr_termio::input::mouse::HostPixelExtent::current(),
         );
     }
     let chunks = framer.push_framed(data);
@@ -157,7 +157,7 @@ fn flush_idle_input<R: AsRawFd>(
     pending_mode: &mut Option<bool>,
     host_mouse_capture_active: &AtomicBool,
     host_sgr_pixels_active: &AtomicBool,
-    geometry: Option<crate::input::mouse::HostPixelExtent>,
+    geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
 ) -> bool {
     if !framer.has_pending_input() && pending_palette.is_empty() {
         return true;
@@ -180,8 +180,10 @@ fn flush_idle_input<R: AsRawFd>(
         return false;
     }
     if held_escape
-        && stdin_read_ready(reader, crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS)
-            == Some(false)
+        && stdin_read_ready(
+            reader,
+            shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
+        ) == Some(false)
     {
         let chunks = framer.flush_timeout_framed();
         if !framer.has_pending_input() {
@@ -193,16 +195,16 @@ fn flush_idle_input<R: AsRawFd>(
 }
 
 fn send_unix_input_chunks(
-    chunks: Vec<crate::raw_input::FramedRawInputEvent>,
+    chunks: Vec<shepr_termio::input::raw_input::FramedRawInputEvent>,
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     sgr_pixels: bool,
-    geometry: Option<crate::input::mouse::HostPixelExtent>,
+    geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
 ) -> bool {
     for chunk in chunks {
         let palette_response = matches!(
             &chunk.event,
-            crate::raw_input::RawInputEvent::HostPaletteColors { .. }
+            shepr_termio::input::raw_input::RawInputEvent::HostPaletteColors { .. }
         );
         if palette_response {
             if let Some(input) = classify_unix_input(chunk, sgr_pixels, geometry) {
@@ -216,7 +218,7 @@ fn send_unix_input_chunks(
         }
         let default_color_response = matches!(
             &chunk.event,
-            crate::raw_input::RawInputEvent::HostDefaultColor { .. }
+            shepr_termio::input::raw_input::RawInputEvent::HostDefaultColor { .. }
         );
         if !default_color_response && !flush_unix_palette_input(event_tx, pending_palette) {
             return false;
@@ -235,23 +237,23 @@ fn send_unix_input_chunks(
 }
 
 fn retain_geometry(
-    last: Option<crate::input::mouse::HostPixelExtent>,
-    observed: Option<crate::input::mouse::HostPixelExtent>,
-) -> Option<crate::input::mouse::HostPixelExtent> {
+    last: Option<shepr_termio::input::mouse::HostPixelExtent>,
+    observed: Option<shepr_termio::input::mouse::HostPixelExtent>,
+) -> Option<shepr_termio::input::mouse::HostPixelExtent> {
     observed.or(last)
 }
 
 fn classify_unix_input(
-    input: crate::raw_input::FramedRawInputEvent,
+    input: shepr_termio::input::raw_input::FramedRawInputEvent,
     sgr_pixels: bool,
-    geometry: Option<crate::input::mouse::HostPixelExtent>,
+    geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
 ) -> Option<ParsedHostInput> {
     let pixel_mouse = if sgr_pixels && input.raw.starts_with(b"\x1b[<") {
         let geometry = geometry?;
-        let crate::raw_input::RawInputEvent::Mouse(mouse) = &input.event else {
+        let shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse) = &input.event else {
             return None;
         };
-        Some(crate::input::mouse::HostPixels {
+        Some(shepr_termio::input::mouse::HostPixels {
             x: u32::from(mouse.column) + 1,
             y: u32::from(mouse.row) + 1,
             geometry,
@@ -278,16 +280,16 @@ fn flush_unix_palette_input(
         .is_ok()
 }
 
-fn idle_flush_timeout_ms<P: crate::raw_input::HostReplyPolicy>(
-    framer: &crate::raw_input::RawInputFramer<P>,
+fn idle_flush_timeout_ms<P: shepr_termio::input::raw_input::HostReplyPolicy>(
+    framer: &shepr_termio::input::raw_input::RawInputFramer<P>,
     host_mouse_capture_active: bool,
 ) -> i32 {
     if host_mouse_capture_active
         && (framer.has_pending_lone_escape() || framer.has_pending_incomplete_mouse_sequence())
     {
-        crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+        shepr_termio::input::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
     } else {
-        crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
     }
 }
 
@@ -311,9 +313,10 @@ mod tests {
 
     use super::*;
 
-    fn framed(raw: &[u8]) -> Vec<crate::raw_input::FramedRawInputEvent> {
-        let mut framer =
-            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
+    fn framed(raw: &[u8]) -> Vec<shepr_termio::input::raw_input::FramedRawInputEvent> {
+        let mut framer = shepr_termio::input::raw_input::RawInputFramer::<
+            shepr_termio::input::raw_input::NoHostReplies,
+        >::default();
         let mut inputs = framer.push_framed(raw);
         inputs.extend(framer.flush_timeout_framed());
         inputs
@@ -329,14 +332,14 @@ mod tests {
         assert_eq!(input.raw, raw);
         assert!(matches!(
             &input.event,
-            crate::raw_input::RawInputEvent::Key(_)
+            shepr_termio::input::raw_input::RawInputEvent::Key(_)
         ));
     }
 
     #[test]
     fn pixel_mouse_classification_is_narrow_and_uses_read_geometry() {
-        let geometry =
-            crate::input::mouse::HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
+        let geometry = shepr_termio::input::mouse::HostPixelExtent::new(80, 24, 800, 480)
+            .expect("test precondition");
         let report = b"\x1b[<35;321;241M".to_vec();
         let mut report_events = framed(&report);
         assert_eq!(report_events.len(), 1);
@@ -346,7 +349,7 @@ mod tests {
         assert_eq!(input.raw, report);
         assert_eq!(
             input.pixel_mouse,
-            Some(crate::input::mouse::HostPixels {
+            Some(shepr_termio::input::mouse::HostPixels {
                 x: 321,
                 y: 241,
                 geometry
@@ -379,8 +382,8 @@ mod tests {
 
     #[test]
     fn transient_geometry_failure_keeps_last_real_value() {
-        let geometry =
-            crate::input::mouse::HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
+        let geometry = shepr_termio::input::mouse::HostPixelExtent::new(80, 24, 800, 480)
+            .expect("test precondition");
         assert_eq!(retain_geometry(Some(geometry), None), Some(geometry));
     }
 
@@ -408,7 +411,7 @@ mod tests {
             data.iter()
                 .filter(|input| matches!(
                     &input.event,
-                    crate::raw_input::RawInputEvent::HostPaletteColors { .. }
+                    shepr_termio::input::raw_input::RawInputEvent::HostPaletteColors { .. }
                 ))
                 .count(),
             2
@@ -418,44 +421,50 @@ mod tests {
 
     #[test]
     fn raw_input_idle_flush_timeout_keeps_escape_responsive() {
-        let timeout_ms = std::hint::black_box(crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS);
+        let timeout_ms =
+            std::hint::black_box(shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS);
         assert!(timeout_ms <= 20);
     }
 
     #[test]
     fn mouse_active_escape_sequences_get_longer_reassembly_window() {
-        let mut escape =
-            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
+        let mut escape = shepr_termio::input::raw_input::RawInputFramer::<
+            shepr_termio::input::raw_input::NoHostReplies,
+        >::default();
         assert!(escape.push(b"\x1b").is_empty());
-        let mut sgr_mouse =
-            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
+        let mut sgr_mouse = shepr_termio::input::raw_input::RawInputFramer::<
+            shepr_termio::input::raw_input::NoHostReplies,
+        >::default();
         assert!(sgr_mouse.push(b"\x1b[<3").is_empty());
-        let mut default_mouse =
-            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
+        let mut default_mouse = shepr_termio::input::raw_input::RawInputFramer::<
+            shepr_termio::input::raw_input::NoHostReplies,
+        >::default();
         assert!(default_mouse.push(b"\x1b[MC").is_empty());
-        let mut unrelated =
-            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
+        let mut unrelated = shepr_termio::input::raw_input::RawInputFramer::<
+            shepr_termio::input::raw_input::NoHostReplies,
+        >::default();
         assert!(unrelated.push(b"\x1b[49:33;2:").is_empty());
 
         for framer in [&escape, &sgr_mouse, &default_mouse, &unrelated] {
             assert_eq!(
                 idle_flush_timeout_ms(framer, false),
-                crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+                shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
             );
         }
         for framer in [&escape, &sgr_mouse, &default_mouse] {
             assert_eq!(
                 idle_flush_timeout_ms(framer, true),
-                crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+                shepr_termio::input::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
             );
         }
         assert_eq!(
             idle_flush_timeout_ms(&unrelated, true),
-            crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
         );
 
-        let mouse_timeout_ms =
-            std::hint::black_box(crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS);
+        let mouse_timeout_ms = std::hint::black_box(
+            shepr_termio::input::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS,
+        );
         assert!(mouse_timeout_ms > 100);
     }
 }

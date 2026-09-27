@@ -59,7 +59,7 @@ pub(super) struct ShellHitMap {
     pub(super) workspaces: Vec<WorkspaceHit>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
-    pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(super) workspace_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
     pub(super) workspace_max_scroll: usize,
     pub(super) tabs: Vec<(Rect, shepr_protocol::PublicTabId)>,
     pub(super) panes: Vec<PaneHit>,
@@ -68,7 +68,7 @@ pub(super) struct ShellHitMap {
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, shepr_protocol::PublicPaneId)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
-    pub(super) agent_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(super) agent_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
     pub(super) agent_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
     pub(super) sidebar_divider: Rect,
@@ -89,10 +89,10 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(super) navigator_scrollbar: Rect,
-    pub(super) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(super) navigator_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
     pub(super) help_popup: Rect,
     pub(super) help_scrollbar: Rect,
-    pub(super) help_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(super) help_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
     pub(super) help_max_scroll: usize,
 }
 
@@ -101,7 +101,7 @@ pub(super) struct PaneHit {
     pub(super) rect: Rect,
     pub(super) inner_rect: Rect,
     pub(super) scrollbar_rect: Option<Rect>,
-    pub(super) scroll: Option<crate::pane::ScrollMetrics>,
+    pub(super) scroll: Option<shepr_protocol::ScrollMetrics>,
     pub(super) pane_id: shepr_protocol::PublicPaneId,
     pub(super) mouse_reporting: bool,
     pub(super) sgr_pixel_mouse: bool,
@@ -196,7 +196,7 @@ pub(crate) enum ClientShellAction {
     Endpoint {
         endpoint_id: ClientEndpointId,
         boot_id: shepr_protocol::BootId,
-        request: Box<crate::api::schema::Request>,
+        request: Box<shepr_api::schema::Request>,
     },
     ClipboardWrite(Vec<u8>),
     ActivateEndpoint {
@@ -317,7 +317,7 @@ pub(super) struct ClientNavigatorRow {
     pub(super) meta: String,
     pub(super) detail: String,
     pub(super) agent: Option<String>,
-    pub(super) status: Option<crate::api::schema::AgentStatus>,
+    pub(super) status: Option<shepr_api::schema::AgentStatus>,
     pub(super) stale: bool,
     pub(super) current: bool,
     pub(super) target: ClientNavigatorTarget,
@@ -445,14 +445,14 @@ pub(super) enum PendingEndpointKind {
     },
     CopyMotion {
         pane_id: shepr_protocol::PublicPaneId,
-        origin: crate::api::schema::PaneTextPoint,
+        origin: shepr_api::schema::PaneTextPoint,
         session_generation: u64,
     },
     CopySearch {
         pane_id: shepr_protocol::PublicPaneId,
-        origin: crate::api::schema::PaneTextPoint,
+        origin: shepr_api::schema::PaneTextPoint,
         query: String,
-        direction: crate::api::schema::PaneCopySearchDirection,
+        direction: shepr_api::schema::PaneCopySearchDirection,
         repeat: bool,
         generation: u64,
         session_generation: u64,
@@ -502,7 +502,8 @@ pub(super) struct ClientInputContext {
     pub(super) retained_selection: bool,
 }
 
-type ClientInputLeases = crate::input::InputLeaseTable<u8, ClientInputContext, ClientInputTarget>;
+type ClientInputLeases =
+    shepr_termio::input::InputLeaseTable<u8, ClientInputContext, ClientInputTarget>;
 
 #[derive(Clone, Debug)]
 pub(super) struct ClientPaneClick {
@@ -550,23 +551,23 @@ pub(super) enum ClientCopySelection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ClientCopySearchPrompt {
-    pub(super) direction: crate::api::schema::PaneCopySearchDirection,
+    pub(super) direction: shepr_api::schema::PaneCopySearchDirection,
     pub(super) query: TextEditor,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ClientCopyOperation {
-    Motion(crate::api::schema::PaneCopyMotion),
+    Motion(shepr_api::schema::PaneCopyMotion),
     Search {
         query: String,
-        direction: crate::api::schema::PaneCopySearchDirection,
+        direction: shepr_api::schema::PaneCopySearchDirection,
         repeat: bool,
     },
 }
 
 pub(super) struct ClientCopySearchResult {
     pub(super) content_revision: u64,
-    pub(super) matches: Vec<crate::api::schema::PaneTextRange>,
+    pub(super) matches: Vec<shepr_api::schema::PaneTextRange>,
     pub(super) total: u64,
     pub(super) current: Option<usize>,
     pub(super) current_global: Option<u64>,
@@ -578,15 +579,15 @@ pub(super) struct ClientCopyModeState {
     pub(super) content_revision: u64,
     pub(super) geometry: (u16, u16),
     pub(super) alternate_screen_active: bool,
-    pub(super) cursor: crate::api::schema::PaneTextPoint,
+    pub(super) cursor: shepr_api::schema::PaneTextPoint,
     pub(super) offset_from_bottom: usize,
     pub(super) max_offset_from_bottom: usize,
     pub(super) entry_offset_from_bottom: usize,
     pub(super) selection: Option<ClientCopySelection>,
     pub(super) search_prompt: Option<ClientCopySearchPrompt>,
     pub(super) search_query: String,
-    pub(super) search_direction: Option<crate::api::schema::PaneCopySearchDirection>,
-    pub(super) search_matches: Vec<crate::api::schema::PaneTextRange>,
+    pub(super) search_direction: Option<shepr_api::schema::PaneCopySearchDirection>,
+    pub(super) search_matches: Vec<shepr_api::schema::PaneTextRange>,
     pub(super) search_total: u64,
     pub(super) search_current: Option<usize>,
     pub(super) search_current_global: Option<u64>,
@@ -655,12 +656,12 @@ pub(crate) struct ClientShellState {
     pub(super) copy_session_generation: u64,
     pub(super) copy_operation_in_flight: bool,
     pub(super) copy_operation_queue: VecDeque<ClientCopyOperation>,
-    pub(super) copy_input_queue: VecDeque<crate::input::TerminalKey>,
+    pub(super) copy_input_queue: VecDeque<shepr_termio::input::TerminalKey>,
     pub(super) next_scroll_serial: u64,
     pub(super) pane_scroll_in_flight: HashMap<shepr_protocol::PublicPaneId, u64>,
     pub(super) pane_scroll_queued: HashMap<shepr_protocol::PublicPaneId, usize>,
     pub(super) pane_scroll_targets: HashMap<shepr_protocol::PublicPaneId, usize>,
-    pub(super) host_mouse_pixels: Option<crate::input::mouse::HostPixels>,
+    pub(super) host_mouse_pixels: Option<shepr_termio::input::mouse::HostPixels>,
     pub(super) input_leases: ClientInputLeases,
     pub(super) next_request_id: u64,
     pub(super) pending_requests: HashMap<shepr_protocol::RequestId, PendingEndpointRequest>,
@@ -671,7 +672,7 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_notice_deadline:
         Option<(ClientEndpointNoticeKey, String, std::time::Instant)>,
     pub(super) outer_focused: Option<bool>,
-    pub(super) host_background: Option<crate::host_term::theme::RgbColor>,
+    pub(super) host_background: Option<shepr_termio::host_term::theme::RgbColor>,
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
 }

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use clap::ArgMatches;
 
-use crate::api::schema::{
+use shepr_api::schema::{
     AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
     AgentSendKeysParams, AgentStartParams, AgentStatus, AgentTarget, AgentWaitParams, EmptyParams,
     ErrorBody, ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource,
@@ -746,7 +746,7 @@ fn agent_read(paths: &super::target::CliContext, params: AgentReadParams) -> sup
 #[cfg(test)]
 mod parse_tests {
     use super::super::tests::group_matches;
-    use crate::api::schema::{AgentStatus, ReadFormat, ReadSource};
+    use shepr_api::schema::{AgentStatus, ReadFormat, ReadSource};
 
     fn command(args: &[&str]) -> super::Command {
         super::parse(&group_matches(args))

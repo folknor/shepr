@@ -62,8 +62,8 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
         &release.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method,
-                crate::api::schema::Method::PaneSelectionRead(params)
-                    if params.cursor == crate::api::schema::PaneSelectionPoint {
+                shepr_api::schema::Method::PaneSelectionRead(params)
+                    if params.cursor == shepr_api::schema::PaneSelectionPoint {
                         row: shepr_vt::AbsRow(0),
                         col: 2,
                     })
@@ -154,7 +154,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::LayoutSetSplitRatio(params)
+        shepr_api::schema::Method::LayoutSetSplitRatio(params)
             if params.tab_id.as_deref() == Some("tab_1")
                 && params.path == vec![false, true]
                 && (params.ratio - 0.6).abs() < f32::EPSILON
@@ -216,7 +216,7 @@ fn disabled_mouse_chrome_keeps_tab_wheel_but_removes_split_drag_hits() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2"
+                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "tab_2"
             )
     ));
 }
@@ -280,7 +280,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
         if copy_on_select {
             assert!(
                 matches!(&actions[..], [ClientShellAction::Endpoint { request, .. }]
-                if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+                if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
                     if params.anchor.col == 6 && params.cursor.col == 10))
             );
             let copied = word_row_reply(&mut state, &word_read_id(&actions), "bravo");
@@ -350,7 +350,7 @@ fn word_read_id(actions: &[ClientShellAction]) -> String {
             ClientShellAction::Endpoint { request, .. }
                 if matches!(
                     request.method,
-                    crate::api::schema::Method::PaneSelectionRead(_)
+                    shepr_api::schema::Method::PaneSelectionRead(_)
                 ) =>
             {
                 Some(request.id.clone())
@@ -365,7 +365,7 @@ fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<Cli
         .handle_endpoint_result(
             "boot-1",
             id,
-            Ok(crate::api::schema::ResponseResult::PaneSelection {
+            Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "pane_1".into(),
                 text: text.into(),
             }),
@@ -379,7 +379,7 @@ fn start_word_drag(state: &mut ClientShellState) -> String {
     assert!(state.selection.is_none(), "plain clicks must not select");
     let second = word_drag_mouse(state, MouseEventKind::Down(MouseButton::Left), 0, 8);
     assert!(second.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. }
-        if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+        if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
             if params.anchor.col == 0 && params.cursor.col == state.hits.panes[0].inner_rect.width - 1))));
     word_read_id(&second.actions)
 }
@@ -457,19 +457,19 @@ fn double_click_drag_waits_for_latest_row_before_copying() {
         };
         assert!(
             matches!(&final_read[..], [ClientShellAction::Endpoint { request, .. }]
-            if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
                 if params.anchor.row == shepr_vt::AbsRow(2)
                     && params.cursor.row == shepr_vt::AbsRow(2)))
         );
         let copy = word_row_reply(&mut state, &word_read_id(&final_read), "golf hotel india");
         assert!(
             matches!(&copy[..], [ClientShellAction::Endpoint { request, .. }]
-            if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
-                if params.anchor == crate::api::schema::PaneSelectionPoint {
+            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+                if params.anchor == shepr_api::schema::PaneSelectionPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 6,
                 }
-                    && params.cursor == crate::api::schema::PaneSelectionPoint {
+                    && params.cursor == shepr_api::schema::PaneSelectionPoint {
                         row: shepr_vt::AbsRow(2),
                         col: 9,
                     }))
@@ -744,7 +744,7 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
 #[test]
 fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     let mut state = word_drag_state(false);
-    state.hits.panes[0].scroll = Some(crate::pane::ScrollMetrics {
+    state.hits.panes[0].scroll = Some(shepr_protocol::ScrollMetrics {
         max_offset_from_bottom: 10,
         offset_from_bottom: 5,
         viewport_rows: 3,
@@ -975,12 +975,14 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
-    let geometry =
-        crate::input::mouse::HostPixelExtent::new(106, 20, 1060, 400).expect("host geometry");
+    let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
+        .expect("host geometry");
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
     let y = u32::from(pane.inner_rect.y) * 20 + 21;
     let report = format!("\x1b[<0;{x};{y}M");
-    let mut framer = crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
+    let mut framer = shepr_termio::input::raw_input::RawInputFramer::<
+        shepr_termio::input::raw_input::NoHostReplies,
+    >::default();
     let mut framed = framer.push_framed(report.as_bytes());
     framed.extend(framer.flush_timeout_framed());
     assert_eq!(framed.len(), 1);
@@ -988,7 +990,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     let outcome = state.handle_host_input(vec![crate::client::ParsedHostInput {
         raw: framed.raw,
         event: framed.event,
-        pixel_mouse: Some(crate::input::mouse::HostPixels { x, y, geometry }),
+        pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
     }]);
     assert!(matches!(
         &outcome.requests[..],
@@ -1134,7 +1136,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::TabMove(params)
+        shepr_api::schema::Method::TabMove(params)
             if params.tab_id == "tab_1" && params.insert_index == 3
     ));
 
@@ -1155,7 +1157,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     assert!(matches!(
         &click.actions[0],
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2")
+            if matches!(&request.method, shepr_api::schema::Method::TabFocus(target) if target.tab_id == "tab_2")
     ));
 }
 
@@ -1231,7 +1233,7 @@ fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_1"
+                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "tab_1"
             )
     ));
     assert_eq!(state.tab_scroll, 0);

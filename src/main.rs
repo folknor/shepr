@@ -11,28 +11,20 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
-mod api;
 mod app;
-mod blit;
-mod build_info;
 mod cli;
 mod client;
-mod copy_mode;
 mod events;
 mod git;
-mod host_term;
-mod input;
 mod machine;
 #[cfg(test)]
 mod netside_tests;
 mod pane;
 mod persist;
-pub(crate) use input::raw_input;
 mod remote;
 #[path = "server/render_signal.rs"]
 mod render_signal;
 mod server;
-mod session;
 mod terminal;
 #[cfg(test)]
 mod test_support;
@@ -154,7 +146,7 @@ fn main() -> io::Result<()> {
 
     if invocation.version_requested() {
         shepr_platform::begin_cli_output();
-        println!("shepr {}", crate::build_info::version());
+        println!("shepr {}", shepr_protocol::build_version());
         return Ok(());
     }
 

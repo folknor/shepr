@@ -1,4 +1,5 @@
 use crate::terminal::TerminalReadSnapshot;
+pub use shepr_protocol::ScrollMetrics;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -35,30 +36,6 @@ const MODE_MOUSE_X10: u16 = 9;
 const MODE_MOUSE_PRESS_RELEASE: u16 = 1000;
 const MODE_MOUSE_BUTTON_MOTION: u16 = 1002;
 const MODE_MOUSE_ANY_MOTION: u16 = 1003;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScrollMetrics {
-    pub offset_from_bottom: usize,
-    pub max_offset_from_bottom: usize,
-    pub viewport_rows: usize,
-    pub history_origin: shepr_vt::AbsRow,
-}
-
-impl ScrollMetrics {
-    /// The stable row ID at the top of the current viewport.
-    pub fn viewport_top_row(self) -> shepr_vt::AbsRow {
-        let screen_row = self
-            .max_offset_from_bottom
-            .saturating_sub(self.offset_from_bottom);
-        self.history_origin
-            .saturating_add(u64::try_from(screen_row).unwrap_or(u64::MAX))
-    }
-
-    /// Convert a viewport-relative row to its stable row ID.
-    pub fn absolute_row_at_viewport(self, row: shepr_vt::ViewportRow) -> shepr_vt::AbsRow {
-        shepr_vt::AbsRow::from_viewport_top(self.viewport_top_row(), row)
-    }
-}
 
 /// Scroll metrics together with the row origin read under one terminal lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,8 +158,8 @@ pub struct InputState {
     pub application_cursor: bool,
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
-    pub mouse_protocol_mode: crate::input::MouseProtocolMode,
-    pub mouse_protocol_encoding: crate::input::MouseProtocolEncoding,
+    pub mouse_protocol_mode: shepr_termio::input::MouseProtocolMode,
+    pub mouse_protocol_encoding: shepr_termio::input::MouseProtocolEncoding,
     pub mouse_alternate_scroll: bool,
     #[serde(default)]
     pub modify_other_keys: bool,
@@ -240,7 +217,7 @@ pub(crate) struct GhosttyPaneCore {
     pub render_state: shepr_vt::RenderState,
     pub initial_default_foreground: Option<shepr_vt::RgbColor>,
     pub initial_default_background: Option<shepr_vt::RgbColor>,
-    pub host_terminal_theme: crate::host_term::theme::TerminalTheme,
+    pub host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
     /// in the foreground. `None` while no override is in effect.
@@ -511,13 +488,13 @@ impl PaneTerminal {
         self.ghostty.visible_hyperlinks(area)
     }
 
-    pub fn apply_host_terminal_theme(&self, theme: crate::host_term::theme::TerminalTheme) {
+    pub fn apply_host_terminal_theme(&self, theme: shepr_termio::host_term::theme::TerminalTheme) {
         self.ghostty.apply_host_terminal_theme(theme);
     }
 
     pub fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<crate::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
         self.ghostty.apply_host_terminal_appearance(appearance)
     }
@@ -550,15 +527,15 @@ impl PaneTerminal {
 
     pub fn keyboard_protocol(
         &self,
-        fallback: crate::input::KeyboardProtocol,
-    ) -> crate::input::KeyboardProtocol {
+        fallback: shepr_termio::input::KeyboardProtocol,
+    ) -> shepr_termio::input::KeyboardProtocol {
         self.ghostty.keyboard_protocol().unwrap_or(fallback)
     }
 
     pub fn encode_terminal_key(
         &self,
-        key: crate::input::TerminalKey,
-        protocol: crate::input::KeyboardProtocol,
+        key: shepr_termio::input::TerminalKey,
+        protocol: shepr_termio::input::KeyboardProtocol,
     ) -> Vec<u8> {
         self.ghostty.encode_terminal_key(key, protocol)
     }
@@ -566,7 +543,7 @@ impl PaneTerminal {
     pub(crate) fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.ghostty.encode_mouse_button(kind, position, modifiers)
@@ -575,7 +552,7 @@ impl PaneTerminal {
     pub(crate) fn encode_mouse_motion(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.ghostty.encode_mouse_motion(kind, position, modifiers)
@@ -584,7 +561,7 @@ impl PaneTerminal {
     pub(crate) fn encode_mouse_wheel(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.ghostty.encode_mouse_wheel(kind, position, modifiers)

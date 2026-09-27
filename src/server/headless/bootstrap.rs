@@ -12,20 +12,20 @@ pub fn run_server(
     // function without having spawned any thread; keep it that way.
     let startup_cwd = take_startup_cwd();
 
-    let session_data_dir = crate::session::data_dir(paths);
+    let session_data_dir = shepr_api::session::data_dir(paths);
     let lease = crate::persist::DataDirLease::acquire(&session_data_dir)?;
 
     shepr_platform::logging::init_file_logging(
-        &crate::session::data_dir(paths),
+        &shepr_api::session::data_dir(paths),
         shepr_platform::logging::SERVER_LOG_FILE,
     );
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let event_hub = api::EventHub::default();
+    let event_hub = shepr_api::EventHub::default();
     let stop_requested = Arc::new(AtomicBool::new(false));
 
     // Start the JSON API socket server.
-    let _api_server = match api::start_server_with_stop_control(
+    let _api_server = match shepr_api::start_server_with_stop_control(
         api_tx.clone(),
         event_hub.clone(),
         Arc::clone(&stop_requested),
@@ -34,7 +34,7 @@ pub fn run_server(
         Ok(server) => server,
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
             eprintln!("error: shepr server is already running");
-            eprintln!("api socket: {}", api::socket_path(paths).display());
+            eprintln!("api socket: {}", shepr_api::socket_path(paths).display());
             std::process::exit(1);
         }
         Err(err) => return Err(err),
@@ -69,12 +69,12 @@ pub fn run_server(
         };
 
         info!(
-            api_socket = %api::socket_path(paths).display(),
+            api_socket = %shepr_api::socket_path(paths).display(),
             client_socket = %client_socket_path(paths).display(),
             "shepr server started"
         );
         print_ready_message(
-            &api::socket_path(paths),
+            &shepr_api::socket_path(paths),
             &client_socket_path(paths),
             &session_data_dir,
         );

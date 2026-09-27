@@ -11,7 +11,7 @@ use clap::builder::{
 };
 use clap::{Arg, ArgAction, ArgGroup, Command, ValueHint};
 
-use crate::api::schema::{
+use shepr_api::schema::{
     AgentStatus, PaneAgentState, PaneDirection, PaneRightClickTarget, ReadFormat, ReadSource,
     SplitDirection,
 };
@@ -778,7 +778,7 @@ fn integration_target_arg() -> Arg {
 }
 
 fn integration_target_values() -> Vec<&'static str> {
-    let values: Vec<&'static str> = crate::api::schema::IntegrationTarget::all()
+    let values: Vec<&'static str> = shepr_api::schema::IntegrationTarget::all()
         .map(shepr_agent::integration::integration_target_label)
         .collect();
     values
@@ -1120,7 +1120,7 @@ mod tests {
     fn spec_matches_all_integration_targets() {
         let cmd = super::command();
         let install = command_path(&cmd, &["integration", "install"]);
-        let expected: Vec<String> = crate::api::schema::IntegrationTarget::all()
+        let expected: Vec<String> = shepr_api::schema::IntegrationTarget::all()
             .map(shepr_agent::integration::integration_target_label)
             .map(str::to_string)
             .collect();

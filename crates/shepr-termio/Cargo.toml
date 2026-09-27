@@ -1,0 +1,25 @@
+[package]
+name = "shepr-termio"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+base64 = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+serde = { workspace = true }
+shepr-config = { path = "../shepr-config" }
+shepr-core = { path = "../shepr-core" }
+shepr-platform = { path = "../shepr-platform" }
+shepr-protocol = { path = "../shepr-protocol" }
+shepr-vt = { path = "../shepr-vt" }
+toml = { workspace = true }
+tracing = { workspace = true }
+unicode-width = { workspace = true }
+
+[lints]
+workspace = true

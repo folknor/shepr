@@ -41,7 +41,7 @@ pub(crate) struct TerminalTargetCandidate {
     pub workspace_id: shepr_protocol::WorkspaceId,
     pub tab_id: shepr_protocol::PublicTabId,
     pub cwd: Option<String>,
-    pub agent_status: crate::api::schema::AgentStatus,
+    pub agent_status: shepr_api::schema::AgentStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-use crate::api::schema::{ErrorBody, ErrorResponse};
+use shepr_api::schema::{ErrorBody, ErrorResponse};
 
 /// The error reported for a server whose protocol is another build's, as
 /// classified by `shepr_protocol::Compatibility`.
@@ -14,7 +14,7 @@ pub(super) fn mismatch_response(
     // server that is running is the one that has to go.
     let message = format!(
         "this shepr client (protocol {client_protocol}, {}) is a different build from the running server (protocol {server_protocol}); restart the Shepr server with this build before using this command. {restart_guidance}",
-        crate::build_info::version()
+        shepr_protocol::build_version()
     );
 
     ErrorResponse {

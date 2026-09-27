@@ -21,7 +21,7 @@ pub(super) fn snapshot(
 /// client.
 pub(super) fn snapshot_from_session(
     app: &app::App,
-    snapshot: crate::api::schema::SessionSnapshot,
+    snapshot: shepr_api::schema::SessionSnapshot,
     boot_id: &str,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
@@ -267,7 +267,7 @@ pub(super) fn render_pane_surface(
     app: &mut app::App,
     target: Option<&crate::ui::TabSurfaceTarget>,
     area: Rect,
-    cell_size: crate::host_term::cell_size::HostCellSize,
+    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
     let layout = crate::ui::compute_tab_surface_for(
         &app.state,
@@ -494,7 +494,7 @@ mod tests {
             &shepr_config::Config::default(),
             app::AppPolicy::TEST,
             tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         let mut first = crate::workspace::Workspace::test_new("first");
         // `test_new` always sets a custom name for identification; clear it

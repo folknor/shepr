@@ -3,16 +3,16 @@ use super::model::{ActivationEvidence, EndpointLease};
 
 pub(super) fn focus_result_matches(
     focus: Option<&crate::client::shell::ClientEndpointFocusTarget>,
-    result: &crate::api::schema::ResponseResult,
+    result: &shepr_api::schema::ResponseResult,
 ) -> bool {
     match (focus, result) {
         (
             Some(crate::client::shell::ClientEndpointFocusTarget::Pane(expected)),
-            crate::api::schema::ResponseResult::PaneInfo { pane },
+            shepr_api::schema::ResponseResult::PaneInfo { pane },
         ) => pane.focused && &pane.pane_id == expected,
         (
             Some(crate::client::shell::ClientEndpointFocusTarget::Workspace(expected)),
-            crate::api::schema::ResponseResult::WorkspaceInfo { workspace },
+            shepr_api::schema::ResponseResult::WorkspaceInfo { workspace },
         ) => workspace.focused && &workspace.workspace_id == expected,
         _ => false,
     }
@@ -139,16 +139,16 @@ pub(super) fn send_surface_activation(
 pub(super) fn decode_endpoint_response(
     request_id: &str,
     data: &[u8],
-) -> Result<crate::api::schema::ResponseResult, crate::client::shell::ClientShellEndpointError> {
+) -> Result<shepr_api::schema::ResponseResult, crate::client::shell::ClientShellEndpointError> {
     crate::client::endpoint::commands::parse_response(request_id, data)
 }
 
 pub(super) fn surface_set_revision(
-    result: &crate::api::schema::ResponseResult,
+    result: &shepr_api::schema::ResponseResult,
     expected_active: bool,
 ) -> Result<u64, String> {
     match result {
-        crate::api::schema::ResponseResult::ClientShellSurfaceSet {
+        shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
             active,
             projection_revision,
         } if *active == expected_active => Ok(*projection_revision),
@@ -163,19 +163,19 @@ pub(super) fn focus_request(
 ) -> std::io::Result<shepr_protocol::ClientMessage> {
     let method = match focus {
         crate::client::shell::ClientEndpointFocusTarget::Workspace(workspace_id) => {
-            crate::api::schema::Method::WorkspaceFocus(crate::api::schema::WorkspaceTarget {
+            shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
                 workspace_id: workspace_id.clone(),
             })
         }
         crate::client::shell::ClientEndpointFocusTarget::Pane(pane_id) => {
-            crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+            shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                 pane_id: pane_id.to_string(),
             })
         }
     };
     endpoint_request(
         boot_id,
-        &crate::api::schema::Request {
+        &shepr_api::schema::Request {
             id: request_id.to_string(),
             method,
         },
@@ -189,10 +189,10 @@ pub(super) fn surface_interest_request(
 ) -> std::io::Result<shepr_protocol::ClientMessage> {
     endpoint_request(
         boot_id,
-        &crate::api::schema::Request {
+        &shepr_api::schema::Request {
             id: request_id.to_string(),
-            method: crate::api::schema::Method::ClientShellSurfaceSet(
-                crate::api::schema::ClientShellSurfaceSetParams { active },
+            method: shepr_api::schema::Method::ClientShellSurfaceSet(
+                shepr_api::schema::ClientShellSurfaceSetParams { active },
             ),
         },
     )
@@ -200,7 +200,7 @@ pub(super) fn surface_interest_request(
 
 fn endpoint_request(
     boot_id: &str,
-    request: &crate::api::schema::Request,
+    request: &shepr_api::schema::Request,
 ) -> std::io::Result<shepr_protocol::ClientMessage> {
     Ok(shepr_protocol::ClientMessage::ClientShellEndpointRequest {
         boot_id: boot_id.into(),

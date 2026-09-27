@@ -1710,11 +1710,13 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "shepr-agent",
+ "shepr-api",
  "shepr-config",
  "shepr-core",
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
+ "shepr-termio",
  "shepr-test-support",
  "shepr-vt",
  "time",
@@ -1741,6 +1743,24 @@ dependencies = [
  "shepr-pty",
  "shepr-test-support",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "shepr-api"
+version = "0.1.0"
+dependencies = [
+ "interprocess",
+ "regex",
+ "serde",
+ "serde_json",
+ "shepr-agent",
+ "shepr-config",
+ "shepr-platform",
+ "shepr-protocol",
+ "shepr-test-support",
+ "shepr-vt",
+ "tokio",
  "tracing",
 ]
 
@@ -1808,6 +1828,24 @@ dependencies = [
  "shepr-test-support",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "shepr-termio"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "crossterm",
+ "ratatui",
+ "serde",
+ "shepr-config",
+ "shepr-core",
+ "shepr-platform",
+ "shepr-protocol",
+ "shepr-vt",
+ "toml",
+ "tracing",
+ "unicode-width",
 ]
 
 [[package]]

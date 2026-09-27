@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::api::schema::{ErrorBody, ErrorResponse};
+use shepr_api::schema::{ErrorBody, ErrorResponse};
 
 /// Builds the friendly `server_not_running` ErrorResponse shown when no
 /// server is listening on the resolved API socket.

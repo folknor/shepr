@@ -8,15 +8,15 @@ mod tabs;
 mod workspaces;
 
 use super::App;
-use crate::api::error::{ApiErrorCode, ApiResult};
-use crate::api::{Outcome, RenderDemand};
 #[cfg(test)]
 use crate::events::AppEvent;
+use shepr_api::error::{ApiErrorCode, ApiResult};
+use shepr_api::{Outcome, RenderDemand};
 
 impl App {
     pub(crate) fn handle_api_request_with_render(
         &mut self,
-        request: crate::api::schema::Request,
+        request: shepr_api::schema::Request,
     ) -> Outcome {
         let render = if request.method.traits().mutates_ui {
             RenderDemand::Full
@@ -28,10 +28,10 @@ impl App {
     }
 
     #[cfg(test)]
-    pub(crate) fn handle_api_request(&mut self, request: crate::api::schema::Request) -> String {
+    pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::Request) -> String {
         let id = request.id.clone();
         self.drain_all_internal_events();
-        crate::api::error::encode_result(
+        shepr_api::error::encode_result(
             id,
             self.handle_api_request_after_internal_events_drained(request),
         )
@@ -39,12 +39,12 @@ impl App {
 
     pub(crate) fn handle_api_request_after_internal_events_drained(
         &mut self,
-        request: crate::api::schema::Request,
+        request: shepr_api::schema::Request,
     ) -> ApiResult {
         self.sync_pending_terminal_titles();
-        use crate::api::schema::{Method, ResponseResult};
+        use shepr_api::schema::{Method, ResponseResult};
 
-        let method_name = crate::api::api_method_name(&request.method);
+        let method_name = shepr_api::api_method_name(&request.method);
         let response = match request.method {
             // Every one of these is answered before a request reaches the app:
             // the API server handles ping, SSH agent leases, subscriptions and
@@ -203,8 +203,8 @@ impl App {
 
 fn agent_manifest_info(
     summary: shepr_agent::detect::manifest::AgentManifestSummary,
-) -> crate::api::schema::AgentManifestInfo {
-    crate::api::schema::AgentManifestInfo {
+) -> shepr_api::schema::AgentManifestInfo {
+    shepr_api::schema::AgentManifestInfo {
         agent: shepr_agent::detect::agent_label(summary.agent).to_string(),
         source: summary.active_source.label(),
         source_kind: summary.active_source.kind().to_string(),
@@ -229,8 +229,8 @@ pub(super) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schema::ResponseResult;
     use shepr_agent::detect::{Agent, AgentState};
+    use shepr_api::schema::ResponseResult;
 
     #[tokio::test]
     async fn server_reload_agent_manifests_resets_detection_runtimes() {
@@ -239,7 +239,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("manifest-reload")];
         app.state.ensure_test_terminals();
@@ -252,10 +252,10 @@ mod tests {
         app.terminal_runtimes.insert(terminal_id, runtime);
 
         let response =
-            app.handle_api_request_after_internal_events_drained(crate::api::schema::Request {
+            app.handle_api_request_after_internal_events_drained(shepr_api::schema::Request {
                 id: "reload_manifests".into(),
-                method: crate::api::schema::Method::ServerReloadAgentManifests(
-                    crate::api::schema::EmptyParams::default(),
+                method: shepr_api::schema::Method::ServerReloadAgentManifests(
+                    shepr_api::schema::EmptyParams::default(),
                 ),
             });
         let ResponseResult::AgentManifestReload { manifests } = response.expect("reload succeeds")
@@ -279,7 +279,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("manifest-status")];
         app.state.ensure_test_terminals();
@@ -292,10 +292,10 @@ mod tests {
         app.terminal_runtimes.insert(terminal_id, runtime);
 
         let response =
-            app.handle_api_request_after_internal_events_drained(crate::api::schema::Request {
+            app.handle_api_request_after_internal_events_drained(shepr_api::schema::Request {
                 id: "manifest_status".into(),
-                method: crate::api::schema::Method::ServerAgentManifests(
-                    crate::api::schema::EmptyParams::default(),
+                method: shepr_api::schema::Method::ServerAgentManifests(
+                    shepr_api::schema::EmptyParams::default(),
                 ),
             });
         let ResponseResult::AgentManifestStatus { manifests } = response.expect("status succeeds")
@@ -321,7 +321,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("agent-explain")];
         app.state.ensure_test_terminals();
@@ -342,14 +342,14 @@ mod tests {
         app.terminal_runtimes.insert(terminal_id, runtime);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "agent_explain".into(),
-            method: crate::api::schema::Method::AgentExplain(crate::api::schema::AgentTarget {
+            method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
                 target,
             }),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&crate::api::error::test_json(&response))
+            serde_json::from_str(&shepr_api::error::test_json(&response))
                 .expect("test precondition");
 
         assert_eq!(response["result"]["type"], "agent_explain");
@@ -367,7 +367,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("agent-explain-omp")];
         app.state.ensure_test_terminals();
@@ -390,14 +390,14 @@ mod tests {
         app.terminal_runtimes.insert(terminal_id, runtime);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "agent_explain_omp".into(),
-            method: crate::api::schema::Method::AgentExplain(crate::api::schema::AgentTarget {
+            method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
                 target,
             }),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&crate::api::error::test_json(&response))
+            serde_json::from_str(&shepr_api::error::test_json(&response))
                 .expect("test precondition");
 
         assert_eq!(response["error"]["code"], "agent_not_found");
@@ -410,7 +410,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("process-info")];
         app.state.ensure_test_terminals();
@@ -422,16 +422,16 @@ mod tests {
         app.terminal_runtimes.insert(terminal_id, runtime);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "process_info".into(),
-            method: crate::api::schema::Method::PaneProcessInfo(
-                crate::api::schema::PaneProcessInfoParams {
+            method: shepr_api::schema::Method::PaneProcessInfo(
+                shepr_api::schema::PaneProcessInfoParams {
                     pane_id: Some(target.clone()),
                 },
             ),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&crate::api::error::test_json(&response))
+            serde_json::from_str(&shepr_api::error::test_json(&response))
                 .expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_process_info");
@@ -445,27 +445,27 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
 
         for method in [
-            crate::api::schema::Method::ClientWindowTitleClear(
-                crate::api::schema::EmptyParams::default(),
+            shepr_api::schema::Method::ClientWindowTitleClear(
+                shepr_api::schema::EmptyParams::default(),
             ),
-            crate::api::schema::Method::AgentWait(crate::api::schema::AgentWaitParams {
+            shepr_api::schema::Method::AgentWait(shepr_api::schema::AgentWaitParams {
                 target: "reviewer".into(),
                 until: Vec::new(),
                 timeout_ms: None,
             }),
-            crate::api::schema::Method::Ping(crate::api::schema::PingParams::default()),
+            shepr_api::schema::Method::Ping(shepr_api::schema::PingParams::default()),
         ] {
-            let name = crate::api::api_method_name(&method);
-            let response = app.handle_api_request(crate::api::schema::Request {
+            let name = shepr_api::api_method_name(&method);
+            let response = app.handle_api_request(shepr_api::schema::Request {
                 id: "misrouted".into(),
                 method,
             });
             let response: serde_json::Value =
-                serde_json::from_str(&crate::api::error::test_json(&response))
+                serde_json::from_str(&shepr_api::error::test_json(&response))
                     .expect("test precondition");
             assert_eq!(response["id"], "misrouted", "{name}");
             assert_eq!(response["error"]["code"], "internal_error", "{name}");
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn pane_exit_emits_layout_updated_when_tab_survives() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
@@ -497,25 +497,23 @@ mod tests {
         let events = event_hub.events_after(0);
         let pane_exited = events
             .iter()
-            .position(|(_, event)| event.data.kind() == crate::api::schema::EventKind::PaneExited)
+            .position(|(_, event)| event.data.kind() == shepr_api::schema::EventKind::PaneExited)
             .expect("pane.exited should be emitted");
         let layout_updated = events
             .iter()
-            .position(|(_, event)| {
-                event.data.kind() == crate::api::schema::EventKind::LayoutUpdated
-            })
+            .position(|(_, event)| event.data.kind() == shepr_api::schema::EventKind::LayoutUpdated)
             .expect("layout.updated should be emitted");
         assert!(pane_exited < layout_updated);
         assert!(matches!(
             &events[layout_updated].1.data,
-            crate::api::schema::EventData::LayoutUpdated { layout }
+            shepr_api::schema::EventData::LayoutUpdated { layout }
                 if layout.tab_id == tab_id && layout.panes.len() == 1
         ));
     }
 
     #[test]
     fn pane_state_update_resolves_workspace_after_an_earlier_workspace_closes() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
@@ -558,7 +556,7 @@ mod tests {
         let pane_id = app.public_pane_id(0, pane_id).expect("live pane id");
         assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
             &event.data,
-            crate::api::schema::EventData::PaneAgentDetected {
+            shepr_api::schema::EventData::PaneAgentDetected {
                 pane_id: emitted_pane_id,
                 workspace_id: emitted_workspace_id,
                 ..
@@ -568,7 +566,7 @@ mod tests {
 
     #[test]
     fn pane_exit_announces_the_tab_and_workspace_it_empties() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
@@ -591,17 +589,17 @@ mod tests {
             exit_reason: shepr_platform::ChildExitReason::Exited,
         });
         // Only the removal events are this test's subject.
-        let removals = |hub: &crate::api::EventHub, after: u64| {
+        let removals = |hub: &shepr_api::EventHub, after: u64| {
             hub.events_after(after)
                 .into_iter()
                 .map(|(_, event)| event)
                 .filter(|event| {
                     matches!(
                         event.data.kind(),
-                        crate::api::schema::EventKind::PaneExited
-                            | crate::api::schema::EventKind::PaneClosed
-                            | crate::api::schema::EventKind::TabClosed
-                            | crate::api::schema::EventKind::WorkspaceClosed
+                        shepr_api::schema::EventKind::PaneExited
+                            | shepr_api::schema::EventKind::PaneClosed
+                            | shepr_api::schema::EventKind::TabClosed
+                            | shepr_api::schema::EventKind::WorkspaceClosed
                     )
                 })
                 .collect::<Vec<_>>()
@@ -613,13 +611,13 @@ mod tests {
                 .map(|event| event.data.kind())
                 .collect::<Vec<_>>(),
             [
-                crate::api::schema::EventKind::PaneExited,
-                crate::api::schema::EventKind::TabClosed
+                shepr_api::schema::EventKind::PaneExited,
+                shepr_api::schema::EventKind::TabClosed
             ]
         );
         assert!(matches!(
             &events[1].data,
-            crate::api::schema::EventData::TabClosed { tab_id, .. } if tab_id == &first_tab
+            shepr_api::schema::EventData::TabClosed { tab_id, .. } if tab_id == &first_tab
         ));
 
         let before = event_hub.current_sequence();
@@ -634,18 +632,18 @@ mod tests {
                 .map(|event| event.data.kind())
                 .collect::<Vec<_>>(),
             [
-                crate::api::schema::EventKind::PaneExited,
-                crate::api::schema::EventKind::TabClosed,
-                crate::api::schema::EventKind::WorkspaceClosed
+                shepr_api::schema::EventKind::PaneExited,
+                shepr_api::schema::EventKind::TabClosed,
+                shepr_api::schema::EventKind::WorkspaceClosed
             ]
         );
         assert!(matches!(
             &events[1].data,
-            crate::api::schema::EventData::TabClosed { tab_id, .. } if tab_id == &second_tab
+            shepr_api::schema::EventData::TabClosed { tab_id, .. } if tab_id == &second_tab
         ));
         assert!(matches!(
             &events[2].data,
-            crate::api::schema::EventData::WorkspaceClosed { workspace_id: closed, .. }
+            shepr_api::schema::EventData::WorkspaceClosed { workspace_id: closed, .. }
                 if closed == &workspace_id
         ));
         assert!(app.state.workspaces.is_empty());
@@ -654,7 +652,7 @@ mod tests {
     #[test]
     fn idle_agent_exit_emits_release_event_without_a_state_change() {
         for agent_name in [None, Some("reviewer")] {
-            let event_hub = crate::api::EventHub::default();
+            let event_hub = shepr_api::EventHub::default();
             let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
             let mut app = App::new(
                 &shepr_config::Config::default(),
@@ -698,9 +696,9 @@ mod tests {
             );
             assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
                 &event.data,
-                crate::api::schema::EventData::PaneAgentDetected {
+                shepr_api::schema::EventData::PaneAgentDetected {
                     released: true,
-                    final_status: Some(crate::api::schema::AgentStatus::Idle),
+                    final_status: Some(shepr_api::schema::AgentStatus::Idle),
                     ..
                 }
             )));
@@ -709,7 +707,7 @@ mod tests {
 
     #[test]
     fn process_exit_releases_a_newer_hook_owned_agent() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
@@ -761,7 +759,7 @@ mod tests {
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
         assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
             event.data,
-            crate::api::schema::EventData::PaneAgentDetected { released: true, .. }
+            shepr_api::schema::EventData::PaneAgentDetected { released: true, .. }
         )));
     }
 }

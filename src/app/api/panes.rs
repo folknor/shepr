@@ -1,9 +1,13 @@
-use crate::api::error::{ApiError, ApiErrorCode, ApiResult};
 use bytes::Bytes;
+use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 
+use crate::app::App;
 #[cfg(test)]
-use crate::api::schema::EventKind;
-use crate::api::schema::{
+use crate::app::Mode;
+use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand, PaneZoomNoopReason};
+#[cfg(test)]
+use shepr_api::schema::EventKind;
+use shepr_api::schema::{
     EventData, EventEnvelope, PaneClearAgentAuthorityParams, PaneCopyMotion, PaneCopyMotionParams,
     PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams, PaneDirection,
     PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams, PaneFocusDirectionReason,
@@ -18,10 +22,6 @@ use crate::api::schema::{
     PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
     PaneZoomResult, ResponseResult,
 };
-use crate::app::App;
-#[cfg(test)]
-use crate::app::Mode;
-use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand, PaneZoomNoopReason};
 use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 
 use super::super::api_helpers::{
@@ -90,8 +90,8 @@ impl App {
             return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
         };
         let direction = match params.direction {
-            crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
-            crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
+            shepr_api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
+            shepr_api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
         };
         let shell_config =
             crate::pane::PaneShellConfig::new(&default_shell, self.state.settings.login_shell);
@@ -147,7 +147,7 @@ impl App {
             params.focus,
             matches!(
                 params.right_click,
-                crate::api::schema::PaneRightClickTarget::Pane
+                shepr_api::schema::PaneRightClickTarget::Pane
             ),
             previous_focus,
         ) else {
@@ -243,7 +243,7 @@ impl App {
         };
         pane.right_click_passthrough = matches!(
             params.right_click,
-            crate::api::schema::PaneRightClickTarget::Pane
+            shepr_api::schema::PaneRightClickTarget::Pane
         );
         success(id, ResponseResult::Ok {})
     }
@@ -518,7 +518,7 @@ impl App {
         let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
         let panes = tab.layout.panes(self.state.view.terminal_area);
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
-        find_in_direction(source, direction.into(), &panes)
+        find_in_direction(source, nav_direction(direction), &panes)
     }
 
     pub(super) fn pane_layout_snapshot(
@@ -546,7 +546,7 @@ impl App {
                 Some(PaneLayoutPane {
                     pane_id: self.public_pane_id(ws_idx, pane.id)?,
                     focused: pane.is_focused,
-                    rect: pane.rect.into(),
+                    rect: pane_layout_rect(pane.rect),
                 })
             })
             .collect();
@@ -562,14 +562,12 @@ impl App {
                 id: split_path_id(idx, &split.path),
                 direction: match split.direction {
                     ratatui::layout::Direction::Horizontal => {
-                        crate::api::schema::SplitDirection::Right
+                        shepr_api::schema::SplitDirection::Right
                     }
-                    ratatui::layout::Direction::Vertical => {
-                        crate::api::schema::SplitDirection::Down
-                    }
+                    ratatui::layout::Direction::Vertical => shepr_api::schema::SplitDirection::Down,
                 },
                 ratio: split.ratio,
-                rect: split.area.into(),
+                rect: pane_layout_rect(split.area),
             })
             .collect();
 
@@ -577,7 +575,7 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             zoomed: tab.zoomed,
-            area: area.into(),
+            area: pane_layout_rect(area),
             focused_pane_id,
             panes,
             splits,
@@ -597,14 +595,12 @@ impl App {
     }
 }
 
-impl From<PaneDirection> for NavDirection {
-    fn from(direction: PaneDirection) -> Self {
-        match direction {
-            PaneDirection::Left => NavDirection::Left,
-            PaneDirection::Right => NavDirection::Right,
-            PaneDirection::Up => NavDirection::Up,
-            PaneDirection::Down => NavDirection::Down,
-        }
+fn nav_direction(direction: PaneDirection) -> NavDirection {
+    match direction {
+        PaneDirection::Left => NavDirection::Left,
+        PaneDirection::Right => NavDirection::Right,
+        PaneDirection::Up => NavDirection::Up,
+        PaneDirection::Down => NavDirection::Down,
     }
 }
 
@@ -612,7 +608,7 @@ enum ResolvedPaneMoveDestination {
     ExistingTab {
         tab_id: String,
         target_pane_id: PaneId,
-        split: crate::api::schema::SplitDirection,
+        split: shepr_api::schema::SplitDirection,
         ratio: f32,
         cross_workspace: bool,
     },
@@ -668,22 +664,20 @@ fn encode_unchanged_pane_move(
 }
 
 fn split_direction_to_layout(
-    direction: &crate::api::schema::SplitDirection,
+    direction: &shepr_api::schema::SplitDirection,
 ) -> ratatui::layout::Direction {
     match direction {
-        crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
-        crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
+        shepr_api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
+        shepr_api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
     }
 }
 
-impl From<ratatui::layout::Rect> for PaneLayoutRect {
-    fn from(rect: ratatui::layout::Rect) -> Self {
-        Self {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-        }
+fn pane_layout_rect(rect: ratatui::layout::Rect) -> PaneLayoutRect {
+    PaneLayoutRect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
     }
 }
 

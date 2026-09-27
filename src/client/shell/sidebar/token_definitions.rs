@@ -297,7 +297,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
             let spans = super::super::resolved_token_spans(
                 &rows[0],
                 super::super::super::status_glyph(
-                    crate::api::schema::AgentStatus::Working,
+                    shepr_api::schema::AgentStatus::Working,
                     shepr_config::StatusIndicatorStyle::Dots,
                     &shepr_config::theme::Palette::catppuccin(),
                     false,

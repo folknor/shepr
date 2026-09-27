@@ -43,7 +43,7 @@ pub(super) fn forward_input(
     // messages, the host's raw markers would reach a pane that never asked
     // for them. The client shell rejects a paste over the same limit before
     // sending it.
-    if oversized && crate::raw_input::is_complete_text_bracketed_paste(data) {
+    if oversized && shepr_termio::input::raw_input::is_complete_text_bracketed_paste(data) {
         tracing::warn!(
             size = data.len(),
             max,
@@ -185,7 +185,7 @@ fn legacy_key_bytes(combo: KeyCombo) -> Option<Vec<u8>> {
     Some(ch.to_string().into_bytes())
 }
 
-fn matches_any(key: &crate::input::TerminalKey, combos: &[KeyCombo]) -> bool {
+fn matches_any(key: &shepr_termio::input::TerminalKey, combos: &[KeyCombo]) -> bool {
     combos
         .iter()
         .any(|combo| shepr_config::terminal_key_matches_combo(key, *combo))
@@ -242,7 +242,7 @@ impl AttachEscapeState {
     pub(super) fn filter_parsed_input(
         &mut self,
         data: Vec<u8>,
-        event: &crate::raw_input::RawInputEvent,
+        event: &shepr_termio::input::raw_input::RawInputEvent,
         viewport_rows: u16,
         mouse_scroll_lines: u16,
     ) -> AttachInputAction {
@@ -256,7 +256,7 @@ impl AttachEscapeState {
         viewport_rows: u16,
         mouse_scroll_lines: u16,
     ) -> AttachInputAction {
-        let mut events = crate::raw_input::parse_raw_input_bytes_sync(&data);
+        let mut events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(&data);
         if events.len() == 1 {
             let event = events.remove(0);
             return self.filter_parsed_input(data, &event, viewport_rows, mouse_scroll_lines);
@@ -313,11 +313,14 @@ impl AttachEscapeState {
     fn filter_parsed_input_inner(
         &mut self,
         data: Vec<u8>,
-        event: &crate::raw_input::RawInputEvent,
+        event: &shepr_termio::input::raw_input::RawInputEvent,
         viewport_rows: u16,
         mouse_scroll_lines: u16,
     ) -> AttachInputAction {
-        if matches!(event, crate::raw_input::RawInputEvent::Paste(_)) {
+        if matches!(
+            event,
+            shepr_termio::input::raw_input::RawInputEvent::Paste(_)
+        ) {
             return if let Some(prefix) = self.pending_prefix.take() {
                 AttachInputAction::ForwardPair(prefix, data)
             } else {
@@ -325,7 +328,7 @@ impl AttachEscapeState {
             };
         }
 
-        if let crate::raw_input::RawInputEvent::Key(key) = event {
+        if let shepr_termio::input::raw_input::RawInputEvent::Key(key) = event {
             let press = key.kind == KeyEventKind::Press;
             let is_prefix = shepr_config::terminal_key_matches_combo(key, self.keys.prefix);
             let is_direct_detach = press && matches_any(key, &self.keys.detach_direct);
@@ -386,14 +389,14 @@ impl AttachEscapeState {
 }
 
 pub(super) fn direct_attach_pixel_mouse(
-    event: &crate::raw_input::RawInputEvent,
-    pixels: crate::input::mouse::HostPixels,
+    event: &shepr_termio::input::raw_input::RawInputEvent,
+    pixels: shepr_termio::input::mouse::HostPixels,
 ) -> Option<(
     shepr_protocol::ClientMouseKind,
     shepr_protocol::ClientMousePosition,
     u8,
 )> {
-    let crate::raw_input::RawInputEvent::Mouse(mouse) = event else {
+    let shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse) = event else {
         return None;
     };
     let (column, row) = pixels.geometry.cell(pixels.x, pixels.y)?;
@@ -410,13 +413,13 @@ pub(super) fn direct_attach_pixel_mouse(
 }
 
 fn attach_scroll_action(
-    event: &crate::raw_input::RawInputEvent,
+    event: &shepr_termio::input::raw_input::RawInputEvent,
     data: &[u8],
     viewport_rows: u16,
     mouse_scroll_lines: u16,
 ) -> Option<AttachSemanticAction> {
     match event {
-        crate::raw_input::RawInputEvent::Mouse(mouse) => match mouse.kind {
+        shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let direction = if mouse.kind == MouseEventKind::ScrollUp {
                     AttachScrollDirection::Up
@@ -441,7 +444,7 @@ fn attach_scroll_action(
                 modifiers: mouse.modifiers.bits(),
             }),
         },
-        crate::raw_input::RawInputEvent::Key(key)
+        shepr_termio::input::raw_input::RawInputEvent::Key(key)
             if key.modifiers.is_empty()
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
         {
@@ -461,7 +464,7 @@ fn attach_scroll_action(
                 modifiers: KeyModifiers::empty().bits(),
             })
         }
-        crate::raw_input::RawInputEvent::Key(key)
+        shepr_termio::input::raw_input::RawInputEvent::Key(key)
             if key.modifiers.is_empty()
                 && key.kind == KeyEventKind::Release
                 && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) =>
@@ -911,20 +914,23 @@ mod tests {
 
     #[test]
     fn direct_attach_pixel_mouse_keeps_pixels_and_semantic_kind() {
-        let geometry =
-            crate::input::mouse::HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
-        let mut events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[<0;21;22M");
-        let Some(crate::raw_input::RawInputEvent::Mouse(mouse)) = events.pop() else {
+        let geometry = shepr_termio::input::mouse::HostPixelExtent::new(80, 24, 800, 480)
+            .expect("test precondition");
+        let mut events =
+            shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[<0;21;22M");
+        let Some(shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse)) = events.pop() else {
             panic!("expected parsed pixel mouse");
         };
-        let pixels = crate::input::mouse::HostPixels {
+        let pixels = shepr_termio::input::mouse::HostPixels {
             x: 21,
             y: 22,
             geometry,
         };
-        let (kind, position, modifiers) =
-            direct_attach_pixel_mouse(&crate::raw_input::RawInputEvent::Mouse(mouse), pixels)
-                .expect("pixel mouse");
+        let (kind, position, modifiers) = direct_attach_pixel_mouse(
+            &shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse),
+            pixels,
+        )
+        .expect("pixel mouse");
 
         assert_eq!(
             kind,

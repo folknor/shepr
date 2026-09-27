@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use super::{App, api_helpers::pane_agent_status};
-use crate::api::error::{ApiError, ApiErrorCode};
-use crate::api::schema::{EventData, EventEnvelope};
 use crate::workspace::Workspace;
+use shepr_api::error::{ApiError, ApiErrorCode};
+use shepr_api::schema::{EventData, EventEnvelope};
 use shepr_config::NewTerminalCwdConfig;
 
 pub(crate) fn resolve_new_terminal_cwd(
@@ -145,7 +145,7 @@ impl App {
     pub(super) fn collect_panes_for_workspace(
         &self,
         workspace_id: Option<&str>,
-    ) -> Result<Vec<crate::api::schema::PaneInfo>, ApiError> {
+    ) -> Result<Vec<shepr_api::schema::PaneInfo>, ApiError> {
         if let Some(workspace_id) = workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(workspace_id) else {
                 return Err(ApiError::new(
@@ -185,11 +185,11 @@ impl App {
         &self,
         ws_idx: usize,
         tab_idx: usize,
-    ) -> Option<crate::api::schema::TabInfo> {
+    ) -> Option<shepr_api::schema::TabInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs.get(tab_idx)?;
         let agg_state = tab.aggregate_state(&self.state.terminals);
-        Some(crate::api::schema::TabInfo {
+        Some(shepr_api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             workspace_id: self.public_workspace_id(ws_idx),
             number: tab.number,
@@ -232,8 +232,8 @@ impl App {
 
     fn emit_tab_and_pane_created_events(
         &mut self,
-        tab: crate::api::schema::TabInfo,
-        root_pane: crate::api::schema::PaneInfo,
+        tab: shepr_api::schema::TabInfo,
+        root_pane: shepr_api::schema::PaneInfo,
     ) {
         self.emit_event(EventEnvelope {
             data: EventData::TabCreated { tab },
@@ -246,8 +246,8 @@ impl App {
     pub(super) fn workspace_created_result(
         &self,
         ws_idx: usize,
-    ) -> Option<crate::api::schema::ResponseResult> {
-        Some(crate::api::schema::ResponseResult::WorkspaceCreated {
+    ) -> Option<shepr_api::schema::ResponseResult> {
+        Some(shepr_api::schema::ResponseResult::WorkspaceCreated {
             workspace: self.workspace_info(ws_idx)?,
             tab: self.tab_info(ws_idx, 0)?,
             root_pane: self.root_pane_info(ws_idx, 0)?,
@@ -258,8 +258,8 @@ impl App {
         &self,
         ws_idx: usize,
         tab_idx: usize,
-    ) -> Option<crate::api::schema::ResponseResult> {
-        Some(crate::api::schema::ResponseResult::TabCreated {
+    ) -> Option<shepr_api::schema::ResponseResult> {
+        Some(shepr_api::schema::ResponseResult::TabCreated {
             tab: self.tab_info(ws_idx, tab_idx)?,
             root_pane: self.root_pane_info(ws_idx, tab_idx)?,
         })
@@ -269,7 +269,7 @@ impl App {
         &self,
         ws_idx: usize,
         tab_idx: usize,
-    ) -> Option<crate::api::schema::PaneInfo> {
+    ) -> Option<shepr_api::schema::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs.get(tab_idx)?;
         self.pane_info(ws_idx, tab.root_pane)
@@ -279,7 +279,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<crate::api::schema::PaneInfo> {
+    ) -> Option<shepr_api::schema::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane = ws.pane_state(pane_id)?;
         let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
@@ -288,7 +288,7 @@ impl App {
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
             .and_then(crate::pane::PaneRuntime::scroll_metrics)
-            .map(|metrics| crate::api::schema::PaneScrollInfo {
+            .map(|metrics| shepr_api::schema::PaneScrollInfo {
                 offset_from_bottom: metrics.offset_from_bottom as u64,
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
                 viewport_rows: metrics.viewport_rows as u64,
@@ -300,7 +300,7 @@ impl App {
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
         let tab = ws.tabs.get(tab_idx)?;
-        Some(crate::api::schema::PaneInfo {
+        Some(shepr_api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
             workspace_id: self.public_workspace_id(ws_idx),
@@ -355,10 +355,10 @@ impl App {
     /// `None` when `index` names no workspace, like `tab_info` and
     /// `pane_info`: every caller either resolved the index a moment ago or
     /// carries it across an event, and a stale index must not panic the server.
-    pub(super) fn workspace_info(&self, index: usize) -> Option<crate::api::schema::WorkspaceInfo> {
+    pub(super) fn workspace_info(&self, index: usize) -> Option<shepr_api::schema::WorkspaceInfo> {
         let ws = self.state.workspaces.get(index)?;
         let agg_state = ws.aggregate_state(&self.state.terminals);
-        Some(crate::api::schema::WorkspaceInfo {
+        Some(shepr_api::schema::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index),
             number: index + 1,
             label: ws.display_name(),
@@ -376,11 +376,11 @@ impl App {
 
 fn terminal_agent_session_info(
     terminal: &crate::terminal::TerminalState,
-) -> Option<crate::api::schema::AgentSessionInfo> {
+) -> Option<shepr_api::schema::AgentSessionInfo> {
     if let Some(authority) = terminal.hook_authority.as_ref()
         && let Some(session_ref) = authority.session_ref.as_ref()
     {
-        return Some(crate::api::schema::AgentSessionInfo {
+        return Some(shepr_api::schema::AgentSessionInfo {
             source: authority.source.clone(),
             agent: authority.agent_label.clone(),
             kind: session_ref.kind(),
@@ -391,7 +391,7 @@ fn terminal_agent_session_info(
     terminal
         .persisted_agent_session
         .as_ref()
-        .map(|session| crate::api::schema::AgentSessionInfo {
+        .map(|session| shepr_api::schema::AgentSessionInfo {
             source: session.source.to_source_string(),
             agent: session.agent.label().to_owned(),
             kind: session.session_ref.kind(),

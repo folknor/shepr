@@ -19,7 +19,7 @@ impl GhosttyPaneTerminal {
                 render_state,
                 initial_default_foreground,
                 initial_default_background,
-                host_terminal_theme: crate::host_term::theme::TerminalTheme::default(),
+                host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
                 default_color_generation: 0,
                 osc_debug_tracker: OscDebugTracker::default(),
@@ -31,7 +31,7 @@ impl GhosttyPaneTerminal {
     /// Installs the host theme as the pane's default palette and default
     /// colours. They sit under whatever the child set itself (OSC 4/10/11),
     /// which stays in effect; nothing is written into the child's stream.
-    pub fn apply_host_terminal_theme(&self, theme: crate::host_term::theme::TerminalTheme) {
+    pub fn apply_host_terminal_theme(&self, theme: shepr_termio::host_term::theme::TerminalTheme) {
         if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             core.host_terminal_theme = theme;
             if !has_default_color_override(&core.terminal) {
@@ -52,7 +52,7 @@ impl GhosttyPaneTerminal {
 
     pub fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<crate::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
         let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         let color_scheme = appearance;
@@ -465,11 +465,11 @@ impl GhosttyPaneTerminal {
         search.finish()
     }
 
-    pub fn keyboard_protocol(&self) -> Option<crate::input::KeyboardProtocol> {
+    pub fn keyboard_protocol(&self) -> Option<shepr_termio::input::KeyboardProtocol> {
         let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             return None;
         };
-        Some(crate::input::KeyboardProtocol::from_kitty_flags(
+        Some(shepr_termio::input::KeyboardProtocol::from_kitty_flags(
             core.terminal.kitty_keyboard_flags(),
         ))
     }
@@ -536,24 +536,24 @@ impl GhosttyPaneTerminal {
             .terminal
             .mode_get(shepr_vt::MODE_MOUSE_ALTERNATE_SCROLL);
         let mouse_protocol_mode = if core.terminal.mode_get(MODE_MOUSE_ANY_MOTION) {
-            crate::input::MouseProtocolMode::AnyMotion
+            shepr_termio::input::MouseProtocolMode::AnyMotion
         } else if core.terminal.mode_get(MODE_MOUSE_BUTTON_MOTION) {
-            crate::input::MouseProtocolMode::ButtonMotion
+            shepr_termio::input::MouseProtocolMode::ButtonMotion
         } else if core.terminal.mode_get(MODE_MOUSE_PRESS_RELEASE) {
-            crate::input::MouseProtocolMode::PressRelease
+            shepr_termio::input::MouseProtocolMode::PressRelease
         } else if core.terminal.mode_get(MODE_MOUSE_X10) {
-            crate::input::MouseProtocolMode::Press
+            shepr_termio::input::MouseProtocolMode::Press
         } else {
-            crate::input::MouseProtocolMode::None
+            shepr_termio::input::MouseProtocolMode::None
         };
         let mouse_protocol_encoding = if mouse_sgr_pixels {
-            crate::input::MouseProtocolEncoding::SgrPixels
+            shepr_termio::input::MouseProtocolEncoding::SgrPixels
         } else if mouse_sgr {
-            crate::input::MouseProtocolEncoding::Sgr
+            shepr_termio::input::MouseProtocolEncoding::Sgr
         } else if mouse_utf8 {
-            crate::input::MouseProtocolEncoding::Utf8
+            shepr_termio::input::MouseProtocolEncoding::Utf8
         } else {
-            crate::input::MouseProtocolEncoding::Default
+            shepr_termio::input::MouseProtocolEncoding::Default
         };
         Some(InputState {
             alternate_screen,
@@ -618,8 +618,8 @@ impl GhosttyPaneTerminal {
 
     pub fn encode_terminal_key(
         &self,
-        key: crate::input::TerminalKey,
-        protocol: crate::input::KeyboardProtocol,
+        key: shepr_termio::input::TerminalKey,
+        protocol: shepr_termio::input::KeyboardProtocol,
     ) -> Vec<u8> {
         let repeat_count = key.repeat_count;
         let first = key.with_repeat_count(1);
@@ -636,16 +636,16 @@ impl GhosttyPaneTerminal {
 
     pub(super) fn encode_terminal_key_once(
         &self,
-        key: crate::input::TerminalKey,
-        protocol: crate::input::KeyboardProtocol,
+        key: shepr_termio::input::TerminalKey,
+        protocol: shepr_termio::input::KeyboardProtocol,
     ) -> Vec<u8> {
         // Character keys follow the caller's protocol; every other key follows
         // the modes the child negotiated with this pane.
         if matches!(key.code, crossterm::event::KeyCode::Char(_)) {
-            return crate::input::encode_terminal_key(key, protocol);
+            return shepr_termio::input::encode_terminal_key(key, protocol);
         }
         let Some(modes) = shepr_vt::lock_terminal_core(&self.core).ok().map(|core| {
-            crate::input::KeyEncodeModes {
+            shepr_termio::input::KeyEncodeModes {
                 kitty_flags: core.terminal.kitty_keyboard_flags(),
                 modify_other_keys: core.terminal.modify_other_keys_level().as_u8(),
                 application_cursor: core
@@ -653,15 +653,15 @@ impl GhosttyPaneTerminal {
                     .mode_get(shepr_vt::MODE_APPLICATION_CURSOR_KEYS),
             }
         }) else {
-            return crate::input::encode_terminal_key(key, protocol);
+            return shepr_termio::input::encode_terminal_key(key, protocol);
         };
-        crate::input::encode_terminal_key_with_modes(key, modes)
+        shepr_termio::input::encode_terminal_key_with_modes(key, modes)
     }
 
     pub(crate) fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         use crossterm::event::MouseEventKind;
@@ -677,7 +677,7 @@ impl GhosttyPaneTerminal {
     pub(crate) fn encode_mouse_motion(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         if kind != crossterm::event::MouseEventKind::Moved {
@@ -689,7 +689,7 @@ impl GhosttyPaneTerminal {
     pub(crate) fn encode_mouse_wheel(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         use crossterm::event::MouseEventKind;
@@ -708,29 +708,29 @@ impl GhosttyPaneTerminal {
     fn encode_mouse_event(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         let terminal = &core.terminal;
         let mode_enabled = |mode: u16| terminal.mode_get(mode);
         let mode = if mode_enabled(MODE_MOUSE_ANY_MOTION) {
-            crate::input::MouseProtocolMode::AnyMotion
+            shepr_termio::input::MouseProtocolMode::AnyMotion
         } else if mode_enabled(MODE_MOUSE_BUTTON_MOTION) {
-            crate::input::MouseProtocolMode::ButtonMotion
+            shepr_termio::input::MouseProtocolMode::ButtonMotion
         } else if mode_enabled(MODE_MOUSE_PRESS_RELEASE) {
-            crate::input::MouseProtocolMode::PressRelease
+            shepr_termio::input::MouseProtocolMode::PressRelease
         } else if mode_enabled(MODE_MOUSE_X10) {
-            crate::input::MouseProtocolMode::Press
+            shepr_termio::input::MouseProtocolMode::Press
         } else {
             return None;
         };
         let cell_encoding = if mode_enabled(shepr_vt::MODE_MOUSE_SGR) {
-            crate::input::MouseProtocolEncoding::Sgr
+            shepr_termio::input::MouseProtocolEncoding::Sgr
         } else if mode_enabled(shepr_vt::MODE_MOUSE_UTF8) {
-            crate::input::MouseProtocolEncoding::Utf8
+            shepr_termio::input::MouseProtocolEncoding::Utf8
         } else {
-            crate::input::MouseProtocolEncoding::Default
+            shepr_termio::input::MouseProtocolEncoding::Default
         };
         let sgr_pixels = mode_enabled(shepr_vt::MODE_MOUSE_SGR_PIXELS);
         // Reports are 1-based. Pixel positions already arrive 1-based; cell
@@ -749,29 +749,29 @@ impl GhosttyPaneTerminal {
                 .then(|| ((width_px / cols).max(1), (height_px / rows).max(1)))
         };
         let (encoding, x, y) = match position {
-            crate::input::mouse::Position::Cell { column, row } if sgr_pixels => {
+            shepr_termio::input::mouse::Position::Cell { column, row } if sgr_pixels => {
                 match cell_pitch() {
                     Some((cell_width, cell_height)) => (
-                        crate::input::MouseProtocolEncoding::SgrPixels,
+                        shepr_termio::input::MouseProtocolEncoding::SgrPixels,
                         u32::from(column)
                             .saturating_mul(cell_width)
                             .saturating_add(1),
                         u32::from(row).saturating_mul(cell_height).saturating_add(1),
                     ),
                     None => (
-                        crate::input::MouseProtocolEncoding::Sgr,
+                        shepr_termio::input::MouseProtocolEncoding::Sgr,
                         u32::from(column) + 1,
                         u32::from(row) + 1,
                     ),
                 }
             }
-            crate::input::mouse::Position::Cell { column, row } => {
+            shepr_termio::input::mouse::Position::Cell { column, row } => {
                 (cell_encoding, u32::from(column) + 1, u32::from(row) + 1)
             }
-            crate::input::mouse::Position::Pixels { x, y } if sgr_pixels => {
-                (crate::input::MouseProtocolEncoding::SgrPixels, x, y)
+            shepr_termio::input::mouse::Position::Pixels { x, y } if sgr_pixels => {
+                (shepr_termio::input::MouseProtocolEncoding::SgrPixels, x, y)
             }
-            crate::input::mouse::Position::Pixels { x, y } => {
+            shepr_termio::input::mouse::Position::Pixels { x, y } => {
                 let cols = u32::from(terminal.cols());
                 let rows = u32::from(terminal.rows());
                 let (cell_width, cell_height) = cell_pitch()?;
@@ -782,7 +782,7 @@ impl GhosttyPaneTerminal {
                 )
             }
         };
-        crate::input::encode_mouse_event(kind, x, y, modifiers, mode, encoding)
+        shepr_termio::input::encode_mouse_event(kind, x, y, modifiers, mode, encoding)
     }
 
     /// The active screen, its width and, on the alternate screen only, its

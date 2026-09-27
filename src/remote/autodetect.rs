@@ -81,15 +81,15 @@ fn is_server_listening_at(socket_path: &Path) -> bool {
 
 fn read_server_status(
     paths: &shepr_config::AppPaths,
-) -> io::Result<Option<crate::api::RuntimeStatus>> {
-    crate::api::read_runtime_status_at(&crate::api::socket_path(paths), STATUS_REQUEST_TIMEOUT)
+) -> io::Result<Option<shepr_api::RuntimeStatus>> {
+    shepr_api::read_runtime_status_at(&shepr_api::socket_path(paths), STATUS_REQUEST_TIMEOUT)
 }
 
 fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let Some(status) = read_server_status(paths)? else {
         return Err(io::Error::other(format!(
             "a shepr server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
-            crate::session::restart_after_update_guidance_for(paths)
+            shepr_api::session::restart_after_update_guidance_for(paths)
         )));
     };
 
@@ -105,9 +105,9 @@ fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::
             shepr_protocol::Compatibility::DifferentBuild(protocol) => protocol.to_string(),
             _ => "unavailable".to_string(),
         },
-        crate::build_info::version(),
+        shepr_protocol::build_version(),
         shepr_protocol::PROTOCOL_VERSION,
-        crate::session::restart_after_update_guidance_for(paths)
+        shepr_api::session::restart_after_update_guidance_for(paths)
     )))
 }
 
@@ -203,7 +203,7 @@ pub fn wait_for_server_socket(
             "server did not become ready within {}s (socket: {}). The background server may still be starting; try `shepr` again, or check {}",
             timeout.as_secs(),
             socket_path.display(),
-            crate::session::data_dir(paths)
+            shepr_api::session::data_dir(paths)
                 .join("shepr-server.log")
                 .display()
         ),
@@ -454,7 +454,7 @@ test "$sid" = "$$"
             stream.flush().expect("test precondition");
         });
 
-        let status = crate::api::read_runtime_status_at(&path, Duration::from_millis(200))
+        let status = shepr_api::read_runtime_status_at(&path, Duration::from_millis(200))
             .expect("test precondition")
             .expect("test precondition");
         let _ = handle.join();
@@ -482,7 +482,7 @@ test "$sid" = "$$"
         let env = IsolatedEnv::new();
         env.set(shepr_config::SESSION_ENV_VAR, "work");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-        let path = crate::session::api_socket_path_for(&paths, paths.session_id());
+        let path = shepr_api::session::api_socket_path_for(&paths, paths.session_id());
         std::fs::create_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener = UnixListener::bind(&path).expect("test precondition");

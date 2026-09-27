@@ -265,7 +265,7 @@ impl ClientShellState {
                             rect.height,
                         )
                     }),
-                    scroll: pane.scroll.map(|metrics| crate::pane::ScrollMetrics {
+                    scroll: pane.scroll.map(|metrics| shepr_protocol::ScrollMetrics {
                         offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
                             .unwrap_or(usize::MAX),
                         max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
@@ -407,14 +407,14 @@ impl ClientShellState {
                                 .is_some_and(|selection| selection.pane_id == hit.pane_id)
                     });
                 if !selection_is_stale_copy_projection {
-                    crate::ui::render_selection_highlight(
+                    shepr_termio::selection_render::render_selection_highlight(
                         self.selection.as_ref(),
                         &mut composed,
                         &hit.pane_id,
                         hit.inner_rect,
                         hit.scroll,
                         &self.config.palette,
-                        crate::host_term::theme::TerminalTheme {
+                        shepr_termio::host_term::theme::TerminalTheme {
                             background: self.host_background,
                             ..Default::default()
                         },
@@ -733,7 +733,7 @@ fn render_client_copy_search_highlights(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schema::{PaneTextPoint, PaneTextRange};
+    use shepr_api::schema::{PaneTextPoint, PaneTextRange};
 
     fn text_range(row: usize, start_col: u16, end_col: u16) -> PaneTextRange {
         PaneTextRange {
@@ -757,7 +757,7 @@ mod tests {
             rect: Rect::new(0, 0, 6, 4),
             inner_rect: Rect::new(0, 0, 6, 4),
             scrollbar_rect: None,
-            scroll: Some(crate::pane::ScrollMetrics {
+            scroll: Some(shepr_protocol::ScrollMetrics {
                 offset_from_bottom: 0,
                 max_offset_from_bottom: 0,
                 viewport_rows: 4,

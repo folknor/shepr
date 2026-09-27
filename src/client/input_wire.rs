@@ -6,20 +6,12 @@ pub(crate) fn wire_modifiers(
     shepr_protocol::WireModifiers::from_bits_retain(modifiers.bits())
 }
 
-pub(crate) fn host_modifiers(
-    modifiers: shepr_protocol::WireModifiers,
-) -> crossterm::event::KeyModifiers {
-    crossterm::event::KeyModifiers::from_bits_truncate(modifiers.bits())
-}
-
 use shepr_protocol::{
-    ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientMousePosition,
-    ClientPaneInputEvent,
+    ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientPaneInputEvent,
 };
 
 pub(crate) trait WireKeyKind: Sized {
     fn from_crossterm(kind: crossterm::event::KeyEventKind) -> Self;
-    fn to_crossterm(self) -> crossterm::event::KeyEventKind;
 }
 
 impl WireKeyKind for ClientKeyKind {
@@ -30,19 +22,10 @@ impl WireKeyKind for ClientKeyKind {
             crossterm::event::KeyEventKind::Release => Self::Release,
         }
     }
-
-    fn to_crossterm(self) -> crossterm::event::KeyEventKind {
-        match self {
-            Self::Press => crossterm::event::KeyEventKind::Press,
-            Self::Repeat => crossterm::event::KeyEventKind::Repeat,
-            Self::Release => crossterm::event::KeyEventKind::Release,
-        }
-    }
 }
 
 pub(crate) trait WireKeyCode: Sized {
     fn from_crossterm(code: crossterm::event::KeyCode) -> Option<Self>;
-    fn to_crossterm(&self) -> crossterm::event::KeyCode;
 }
 
 impl WireKeyCode for ClientKeyCode {
@@ -70,35 +53,10 @@ impl WireKeyCode for ClientKeyCode {
             _ => return None,
         })
     }
-
-    fn to_crossterm(&self) -> crossterm::event::KeyCode {
-        use crossterm::event::KeyCode;
-        match self {
-            Self::Backspace => KeyCode::Backspace,
-            Self::Enter => KeyCode::Enter,
-            Self::Left => KeyCode::Left,
-            Self::Right => KeyCode::Right,
-            Self::Up => KeyCode::Up,
-            Self::Down => KeyCode::Down,
-            Self::Home => KeyCode::Home,
-            Self::End => KeyCode::End,
-            Self::PageUp => KeyCode::PageUp,
-            Self::PageDown => KeyCode::PageDown,
-            Self::Tab => KeyCode::Tab,
-            Self::BackTab => KeyCode::BackTab,
-            Self::Delete => KeyCode::Delete,
-            Self::Insert => KeyCode::Insert,
-            Self::Esc => KeyCode::Esc,
-            Self::Char(ch) => KeyCode::Char(*ch),
-            Self::F(n) => KeyCode::F(*n),
-            Self::Null => KeyCode::Null,
-        }
-    }
 }
 
 pub(crate) trait WireMouseButton: Sized {
     fn from_crossterm(button: crossterm::event::MouseButton) -> Self;
-    fn to_crossterm(self) -> crossterm::event::MouseButton;
 }
 
 impl WireMouseButton for ClientMouseButton {
@@ -109,19 +67,10 @@ impl WireMouseButton for ClientMouseButton {
             crossterm::event::MouseButton::Middle => Self::Middle,
         }
     }
-
-    fn to_crossterm(self) -> crossterm::event::MouseButton {
-        match self {
-            Self::Left => crossterm::event::MouseButton::Left,
-            Self::Right => crossterm::event::MouseButton::Right,
-            Self::Middle => crossterm::event::MouseButton::Middle,
-        }
-    }
 }
 
 pub(crate) trait WireMouseKind: Sized {
     fn from_crossterm(kind: crossterm::event::MouseEventKind) -> Option<Self>;
-    fn to_crossterm(self) -> crossterm::event::MouseEventKind;
 }
 
 impl WireMouseKind for ClientMouseKind {
@@ -138,26 +87,11 @@ impl WireMouseKind for ClientMouseKind {
             MouseEventKind::ScrollRight => Self::ScrollRight,
         })
     }
-
-    fn to_crossterm(self) -> crossterm::event::MouseEventKind {
-        use crossterm::event::MouseEventKind;
-        match self {
-            Self::Down(button) => MouseEventKind::Down(button.to_crossterm()),
-            Self::Up(button) => MouseEventKind::Up(button.to_crossterm()),
-            Self::Drag(button) => MouseEventKind::Drag(button.to_crossterm()),
-            Self::Moved => MouseEventKind::Moved,
-            Self::ScrollUp => MouseEventKind::ScrollUp,
-            Self::ScrollDown => MouseEventKind::ScrollDown,
-            Self::ScrollLeft => MouseEventKind::ScrollLeft,
-            Self::ScrollRight => MouseEventKind::ScrollRight,
-        }
-    }
 }
 
 pub(crate) trait WirePaneInput: Sized {
     fn text_bytes(&self) -> usize;
-    fn from_terminal_key(key: crate::input::TerminalKey) -> Option<Self>;
-    fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent;
+    fn from_terminal_key(key: shepr_termio::input::TerminalKey) -> Option<Self>;
 }
 
 impl WirePaneInput for ClientPaneInputEvent {
@@ -179,7 +113,7 @@ impl WirePaneInput for ClientPaneInputEvent {
         }
     }
 
-    fn from_terminal_key(key: crate::input::TerminalKey) -> Option<Self> {
+    fn from_terminal_key(key: shepr_termio::input::TerminalKey) -> Option<Self> {
         Some(Self::Key {
             code: ClientKeyCode::from_crossterm(key.code)?,
             modifiers: wire_modifiers(key.modifiers),
@@ -188,48 +122,5 @@ impl WirePaneInput for ClientPaneInputEvent {
             shifted_codepoint: key.shifted_codepoint,
             generated_text: key.generated_text,
         })
-    }
-
-    fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent {
-        match self {
-            Self::Key {
-                code,
-                modifiers,
-                kind,
-                repeat_count,
-                shifted_codepoint,
-                generated_text,
-            } => {
-                let mut key =
-                    crate::input::TerminalKey::new(code.to_crossterm(), host_modifiers(*modifiers))
-                        .with_kind(kind.to_crossterm())
-                        .with_repeat_count(*repeat_count)
-                        .with_generated_text(generated_text.clone());
-                if let Some(shifted_codepoint) = shifted_codepoint {
-                    key = key.with_shifted_codepoint(*shifted_codepoint);
-                }
-                crate::raw_input::RawInputEvent::Key(key)
-            }
-            // Text commits are handled directly by pane input before this conversion.
-            Self::TextCommit(_) => crate::raw_input::RawInputEvent::Unsupported,
-            Self::Mouse {
-                kind,
-                position,
-                modifiers,
-                ..
-            } => {
-                let (column, row) = match position {
-                    ClientMousePosition::Cell { column, row }
-                    | ClientMousePosition::Pixels { column, row, .. } => (*column, *row),
-                };
-                crate::raw_input::RawInputEvent::Mouse(crossterm::event::MouseEvent {
-                    kind: kind.to_crossterm(),
-                    column,
-                    row,
-                    modifiers: host_modifiers(*modifiers),
-                })
-            }
-            Self::Paste(text) => crate::raw_input::RawInputEvent::Paste(text.clone()),
-        }
     }
 }

@@ -48,7 +48,7 @@ pub(super) fn setup_terminal_with_capabilities(
         restore_claimed: Arc::new(AtomicBool::new(false)),
         restored: false,
     };
-    crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    shepr_termio::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let host_color_scheme_reports =
         should_enable_host_color_scheme_reports(enable_client_protocols);
 
@@ -71,7 +71,7 @@ pub(super) fn setup_terminal_with_capabilities(
     };
 
     let modify_other_keys_mode = enable_client_protocols
-        .then(crate::input::host_modify_other_keys_mode)
+        .then(shepr_termio::input::host_modify_other_keys_mode)
         .flatten();
     if let Some(mode) = modify_other_keys_mode {
         terminal_guard.reset_modify_other_keys = true;
@@ -120,7 +120,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
     let stdin = io::stdin();
     let stdin_fd = stdin.as_raw_fd();
     let deadline = Instant::now() + HOST_KEYBOARD_QUERY_TIMEOUT;
-    let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
+    let mut responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
     while !responses.primary_device_attributes && buffered_input.len() < MAX_BUFFERED_HOST_INPUT {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             break;
@@ -145,7 +145,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
             Ok(0) => break,
             Ok(read) => {
                 buffered_input.extend_from_slice(&scratch[..read]);
-                crate::raw_input::consume_host_keyboard_probe_responses(
+                shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
                     &mut buffered_input,
                     &mut responses,
                 );
@@ -165,7 +165,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
 }
 
 fn host_escape_disambiguation_confirmed(
-    responses: &crate::raw_input::HostKeyboardProbeResponses,
+    responses: &shepr_termio::input::raw_input::HostKeyboardProbeResponses,
 ) -> bool {
     responses.primary_device_attributes
         && responses
@@ -178,9 +178,9 @@ pub(super) fn write_host_color_scheme_report_mode(
     enabled: bool,
 ) -> io::Result<()> {
     let sequence = if enabled {
-        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE
+        shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE
     } else {
-        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE
+        shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE
     };
     writer.write_all(sequence.as_bytes())?;
     writer.flush()
@@ -192,7 +192,7 @@ pub(super) fn write_terminal_restore_postlude(
 ) -> io::Result<()> {
     if reset_host_color_scheme_reports {
         writer.write_all(
-            crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+            shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
         )?;
     }
     // Restore a visible cursor and reset DECSCUSR back to the terminal default.
@@ -348,7 +348,7 @@ pub(super) fn host_mouse_capture_update(
 }
 
 pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
-    crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    shepr_termio::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     if enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
         if sgr_pixels {
@@ -411,7 +411,7 @@ fn push_keyboard_enhancement_flags() -> io::Result<()> {
     execute!(
         io::stdout(),
         PushKeyboardEnhancementFlags(
-            crate::host_term::modes::ime_compatible_keyboard_enhancement_flags()
+            shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags()
         )
     )
 }
@@ -479,11 +479,18 @@ mod tests {
 
         for split in 1..stream.len() {
             let mut buffered = Vec::new();
-            let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
+            let mut responses =
+                shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
             buffered.extend_from_slice(&stream[..split]);
-            crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
+                &mut buffered,
+                &mut responses,
+            );
             buffered.extend_from_slice(&stream[split..]);
-            crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
+                &mut buffered,
+                &mut responses,
+            );
 
             assert_eq!(responses.flags, Some(7), "split {split}");
             assert!(responses.primary_device_attributes, "split {split}");
@@ -494,9 +501,12 @@ mod tests {
     #[test]
     fn host_keyboard_probe_preserves_typed_input_before_responses() {
         let mut buffered = b"aPtyped\x1b[?7u\x1b[?1;2c".to_vec();
-        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
+        let mut responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
 
-        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
+            &mut buffered,
+            &mut responses,
+        );
 
         assert!(host_escape_disambiguation_confirmed(&responses));
         assert_eq!(buffered, b"aPtyped");
@@ -506,9 +516,13 @@ mod tests {
     fn host_keyboard_probe_requires_disambiguation_bit_and_device_attributes() {
         for (flags, expected) in [(0, false), (2, false), (7, true)] {
             let mut buffered = format!("\x1b[?{flags}u\x1b[?1;2c").into_bytes();
-            let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
+            let mut responses =
+                shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
 
-            crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
+                &mut buffered,
+                &mut responses,
+            );
 
             assert_eq!(host_escape_disambiguation_confirmed(&responses), expected);
             assert!(buffered.is_empty());
@@ -518,9 +532,12 @@ mod tests {
     #[test]
     fn host_keyboard_probe_requires_flags_before_device_attributes() {
         let mut buffered = b"\x1b[?1;2c\x1b[?7uinput".to_vec();
-        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
+        let mut responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
 
-        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
+            &mut buffered,
+            &mut responses,
+        );
 
         assert_eq!(responses.flags, None);
         assert!(responses.primary_device_attributes);
@@ -531,9 +548,12 @@ mod tests {
     fn host_keyboard_probe_preserves_response_shaped_payloads() {
         let opaque = b"\x1b[200~paste \x1b[?1u \x1b[?1;2c\x1b[201~-\x1bPdata \x1b[?7u\x1b\\";
         let mut buffered = [opaque.as_slice(), b"\x1b[?7u\x1b[?1;2c"].concat();
-        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
+        let mut responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
 
-        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
+            &mut buffered,
+            &mut responses,
+        );
 
         assert!(host_escape_disambiguation_confirmed(&responses));
         assert_eq!(buffered, opaque);
@@ -542,9 +562,12 @@ mod tests {
     #[test]
     fn host_keyboard_probe_preserves_malformed_responses() {
         let mut buffered = b"a\x1b[?7;1ub\x1b[?65536uc".to_vec();
-        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
+        let mut responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
 
-        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        shepr_termio::input::raw_input::consume_host_keyboard_probe_responses(
+            &mut buffered,
+            &mut responses,
+        );
 
         assert_eq!(responses.flags, None);
         assert!(!responses.primary_device_attributes);

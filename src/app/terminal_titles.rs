@@ -86,7 +86,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_keeps_latest_raw_title_and_emits_only_for_stripped_changes() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -127,7 +127,7 @@ mod tests {
             Some("修复\u{1F642}标题")
         );
         assert_eq!(pane.title, None);
-        assert_eq!(pane.agent_status, crate::api::schema::AgentStatus::Working);
+        assert_eq!(pane.agent_status, shepr_api::schema::AgentStatus::Working);
         assert_eq!(pane.revision, 1);
         let agent = app.collect_agent_infos().pop().expect("test precondition");
         assert_eq!(agent.terminal_title.as_deref(), Some("⠋ 修复\u{1F642}标题"));
@@ -177,7 +177,7 @@ mod tests {
 
     #[tokio::test]
     async fn syncing_pending_titles_preserves_sidebar_render_impact() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn sidebar_redraws_only_for_the_configured_title_form() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -240,11 +240,11 @@ mod tests {
         assert!(app.terminal_title_sidebar_changed(&spinner_only));
     }
 
-    fn pane_updated_events(event_hub: &crate::api::EventHub) -> usize {
+    fn pane_updated_events(event_hub: &shepr_api::EventHub) -> usize {
         event_hub
             .events_after(0)
             .iter()
-            .filter(|(_, event)| event.data.kind() == crate::api::schema::EventKind::PaneUpdated)
+            .filter(|(_, event)| event.data.kind() == shepr_api::schema::EventKind::PaneUpdated)
             .count()
     }
 }

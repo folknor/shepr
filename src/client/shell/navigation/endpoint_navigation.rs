@@ -93,10 +93,10 @@ impl ClientShellState {
 
     pub(super) fn handle_endpoint_navigation(
         &mut self,
-        action: crate::input::KeybindAction,
+        action: shepr_termio::input::KeybindAction,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        use crate::input::KeybindAction;
+        use shepr_termio::input::KeybindAction;
         if !self.multi_endpoint_active() {
             return false;
         }
@@ -263,12 +263,12 @@ impl ClientShellState {
         {
             let method = match target {
                 ClientEndpointFocusTarget::Workspace(workspace_id) => {
-                    crate::api::schema::Method::WorkspaceFocus(
-                        crate::api::schema::WorkspaceTarget { workspace_id },
-                    )
+                    shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
+                        workspace_id,
+                    })
                 }
                 ClientEndpointFocusTarget::Pane(pane_id) => {
-                    crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                    shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                         pane_id: pane_id.to_string(),
                     })
                 }

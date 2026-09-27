@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::io;
 use std::ops::Deref;
 
-use crate::api::client::{ApiClient, ConnectionTarget};
 use crate::machine::{EndpointCatalog, SavedSshEndpoint};
+use shepr_api::client::{ApiClient, ConnectionTarget};
 
 struct MachineTarget {
     profile: SavedSshEndpoint,
@@ -148,7 +148,7 @@ pub(super) fn api_client(context: &CliContext) -> super::CliResult<ApiClient> {
 pub(super) fn server_status(
     context: &CliContext,
     client: &ApiClient,
-) -> Result<crate::api::RuntimeStatus, crate::api::client::ApiClientError> {
+) -> Result<shepr_api::RuntimeStatus, shepr_api::client::ApiClientError> {
     let probe = || {
         if context.is_remote() {
             client.status_with_timeout(std::time::Duration::from_secs(15))
@@ -162,7 +162,7 @@ pub(super) fn server_status(
     };
     // Only this read-only probe may rediscover and retry. Requests that follow
     // the probe must never be replayed after an ambiguous SSH failure.
-    let retried: Result<(), crate::api::client::ApiClientError> = {
+    let retried: Result<(), shepr_api::client::ApiClientError> = {
         let mut target = context.target.borrow_mut();
         let ApiTarget::Machine(target) = &mut *target else {
             return Err(error);
@@ -219,7 +219,7 @@ pub(super) fn restart_guidance(context: &CliContext) -> String {
             "Update Shepr and restart the server on machine '{}' (session {}). Stopping the server exits its pane processes.",
             target.profile.label, target.profile.session
         ),
-        ApiTarget::Local => crate::session::restart_after_update_guidance_for(context),
+        ApiTarget::Local => shepr_api::session::restart_after_update_guidance_for(context),
     }
 }
 
@@ -236,7 +236,7 @@ pub(super) fn remote_identity(context: &CliContext) -> Option<(String, String)> 
 pub(super) fn socket_label(context: &CliContext) -> String {
     match remote_identity(context) {
         Some((id, session)) => format!("machine:{id}/{session}"),
-        None => crate::api::socket_path(context).display().to_string(),
+        None => shepr_api::socket_path(context).display().to_string(),
     }
 }
 
@@ -299,7 +299,7 @@ pub(super) fn caller_pane(context: &CliContext) -> CallerPane {
     caller_pane_from(
         context.caller_pane_id.clone(),
         context.caller_socket.clone(),
-        &crate::api::socket_path(context),
+        &shepr_api::socket_path(context),
     )
 }
 

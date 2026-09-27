@@ -5,8 +5,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
 
     let inferred = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
-        kind: crate::host_term::theme::DefaultColorKind::Background,
-        color: crate::host_term::theme::RgbColor {
+        kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
+        color: shepr_termio::host_term::theme::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -24,7 +24,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     ));
     assert_eq!(
         state.host_background,
-        Some(crate::host_term::theme::RgbColor {
+        Some(shepr_termio::host_term::theme::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -32,7 +32,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     );
 
     let explicit = state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(
-        crate::host_term::theme::HostAppearance::Dark,
+        shepr_termio::host_term::theme::HostAppearance::Dark,
     )]);
     assert!(matches!(
         explicit.requests.as_slice(),
@@ -44,8 +44,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     ));
 
     let repeated = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
-        kind: crate::host_term::theme::DefaultColorKind::Background,
-        color: crate::host_term::theme::RgbColor {
+        kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
+        color: shepr_termio::host_term::theme::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -59,8 +59,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
 fn host_appearance_switch_requeries_the_host_theme() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     for appearance in [
-        crate::host_term::theme::HostAppearance::Dark,
-        crate::host_term::theme::HostAppearance::Light,
+        shepr_termio::host_term::theme::HostAppearance::Dark,
+        shepr_termio::host_term::theme::HostAppearance::Light,
     ] {
         let outcome =
             state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(appearance)]);
@@ -116,20 +116,20 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
 
 #[test]
 fn modal_paste_shortcut_is_ctrl_v() {
-    let key = |code, modifiers| crate::input::TerminalKey::new(code, modifiers);
-    assert!(!input::is_modal_paste_shortcut(&key(
+    let key = |code, modifiers| shepr_termio::input::TerminalKey::new(code, modifiers);
+    assert!(!super::super::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('v'),
         KeyModifiers::CONTROL | KeyModifiers::ALT
     )));
-    assert!(input::is_modal_paste_shortcut(&key(
+    assert!(super::super::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('v'),
         KeyModifiers::CONTROL
     )));
-    assert!(input::is_modal_paste_shortcut(&key(
+    assert!(super::super::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('V'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT
     )));
-    assert!(!input::is_modal_paste_shortcut(&key(
+    assert!(!super::super::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('v'),
         KeyModifiers::SUPER
     )));
@@ -146,7 +146,7 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
         },
     }));
     let mut outcome = ClientShellInput::default();
-    let key = crate::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
 
     assert!(
         state.handle_modal_paste_shortcut_with(&key, &mut outcome, || {
@@ -176,39 +176,38 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let matches = vec![
-        crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint {
+        shepr_api::schema::PaneTextRange {
+            start: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(5),
                 col: 2,
             },
-            end: crate::api::schema::PaneTextPoint {
+            end: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(5),
                 col: 7,
             },
         },
-        crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint {
+        shepr_api::schema::PaneTextRange {
+            start: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(15),
                 col: 1,
             },
-            end: crate::api::schema::PaneTextPoint {
+            end: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(15),
                 col: 6,
             },
         },
     ];
 
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('/'),
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()),
+    )]);
     state.handle_raw_events(vec![RawInputEvent::Paste("needle".into())]);
     let initial = state.handle_raw_events(vec![RawInputEvent::Key(
-        crate::input::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+        shepr_termio::input::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &initial.actions[..] else {
         panic!("initial search request");
@@ -218,17 +217,16 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         &request.id,
         Ok(copy_search_result(matches.clone(), Some(0))),
     );
-    let repeat = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('n'),
-        KeyModifiers::empty(),
-    ))]);
+    let repeat = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()),
+    )]);
     let [ClientShellAction::Endpoint { request, .. }] = &repeat.actions[..] else {
         panic!("repeat search request");
     };
     let repeat_id = request.id.clone();
 
     let early_copy = state.handle_raw_events(vec![RawInputEvent::Key(
-        crate::input::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
     )]);
     assert!(early_copy.actions.is_empty());
     assert_eq!(state.mode, ClientShellMode::Copy);
@@ -247,7 +245,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
             ClientShellAction::Endpoint { request, .. }
                 if matches!(
                     request.method,
-                    crate::api::schema::Method::PaneSelectionRead(_)
+                    shepr_api::schema::Method::PaneSelectionRead(_)
                 ) =>
             {
                 Some(request.id.clone())
@@ -259,7 +257,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         .handle_endpoint_result(
             "boot-1",
             &selection_request_id,
-            Ok(crate::api::schema::ResponseResult::PaneSelection {
+            Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "pane_1".into(),
                 text: "needle".into(),
             }),
@@ -280,8 +278,8 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
-    let geometry =
-        crate::input::mouse::HostPixelExtent::new(106, 20, 1060, 400).expect("host geometry");
+    let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
+        .expect("host geometry");
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
     let y = u32::from(pane.inner_rect.y) * 20 + 21;
 
@@ -411,7 +409,7 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::Help),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
         &mut open,
     );
     let initial = state.compose(106, 30).expect("help overlay");
@@ -463,7 +461,7 @@ fn overlay_that_does_not_fit_still_presents_the_frame() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::Help),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
         &mut open,
     );
     // Help needs at least 10 rows; this terminal has 8.
@@ -555,7 +553,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::Help),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
         &mut open,
     );
     state.compose(106, 30).expect("help overlay");
@@ -599,7 +597,7 @@ fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     state.set_snapshot(Box::new(snapshot));
     let mut open = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::RenamePane),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::RenamePane),
         &mut open,
     );
     assert!(state.handle_input_bytes(&[0x15]).actions.is_empty());
@@ -609,7 +607,7 @@ fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneRename(params)
+        shepr_api::schema::Method::PaneRename(params)
             if params.pane_id == "pane_1" && params.label.as_deref() == Some("")
     ));
 }

@@ -152,7 +152,7 @@ impl TextEditor {
         self.repair_cursor();
     }
 
-    pub fn handle_key(&mut self, key: &crate::input::TerminalKey) -> Option<bool> {
+    pub fn handle_key(&mut self, key: &shepr_termio::input::TerminalKey) -> Option<bool> {
         if key.kind == KeyEventKind::Release {
             return None;
         }
@@ -218,7 +218,7 @@ impl TextEditor {
                         content_changed = self.insert(&self.killed.clone());
                     }
                     KeyCode::Char(_) if modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
-                        if let Some(ch) = crate::input::keybind_help_text_char(key) {
+                        if let Some(ch) = shepr_termio::input::keybind_help_text_char(key) {
                             content_changed = self.insert(&ch.to_string());
                         }
                     }
@@ -285,7 +285,7 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::TerminalKey;
+    use shepr_termio::input::TerminalKey;
 
     fn key(editor: &mut TextEditor, code: KeyCode, modifiers: KeyModifiers) -> bool {
         let result = editor

@@ -1,10 +1,10 @@
-use crate::api::error::{ApiError, ApiErrorCode};
+use shepr_api::error::{ApiError, ApiErrorCode};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
 use super::{App, terminal_targets::TerminalTargetError};
-use crate::api::schema::AgentStartParams;
+use shepr_api::schema::AgentStartParams;
 
 const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
@@ -21,7 +21,7 @@ fn valid_agent_name(name: &str) -> bool {
 }
 
 impl App {
-    pub(super) fn collect_agent_infos(&self) -> Vec<crate::api::schema::AgentInfo> {
+    pub(super) fn collect_agent_infos(&self) -> Vec<shepr_api::schema::AgentInfo> {
         self.state
             .workspaces
             .iter()
@@ -65,7 +65,7 @@ impl App {
     pub(super) fn agent_info_for_target(
         &self,
         target: &str,
-    ) -> Result<crate::api::schema::AgentInfo, ApiError> {
+    ) -> Result<shepr_api::schema::AgentInfo, ApiError> {
         self.agent_info_for_target_impl(target)
             .map_err(|err| self.agent_target_error(err))
     }
@@ -73,7 +73,7 @@ impl App {
     fn agent_info_for_target_impl(
         &self,
         target: &str,
-    ) -> Result<crate::api::schema::AgentInfo, TerminalTargetError> {
+    ) -> Result<shepr_api::schema::AgentInfo, TerminalTargetError> {
         let resolved = self.resolve_agent_target(target)?;
         self.agent_info(resolved.ws_idx, resolved.pane_id)
             .ok_or_else(|| TerminalTargetError::NotFound {
@@ -84,7 +84,7 @@ impl App {
     pub(super) fn focus_agent_target(
         &mut self,
         target: &str,
-    ) -> Result<crate::api::schema::AgentInfo, ApiError> {
+    ) -> Result<shepr_api::schema::AgentInfo, ApiError> {
         self.focus_agent_target_impl(target)
             .map_err(|err| self.agent_target_error(err))
     }
@@ -92,7 +92,7 @@ impl App {
     fn focus_agent_target_impl(
         &mut self,
         target: &str,
-    ) -> Result<crate::api::schema::AgentInfo, TerminalTargetError> {
+    ) -> Result<shepr_api::schema::AgentInfo, TerminalTargetError> {
         let resolved = self.resolve_agent_target(target)?;
         self.state
             .focus_pane_in_workspace(resolved.ws_idx, resolved.pane_id);
@@ -107,7 +107,7 @@ impl App {
         &mut self,
         target: &str,
         name: Option<String>,
-    ) -> Result<crate::api::schema::AgentInfo, ApiError> {
+    ) -> Result<shepr_api::schema::AgentInfo, ApiError> {
         self.rename_agent_target_impl(target, name)
             .map_err(|err| self.agent_rename_error(err))
     }
@@ -116,7 +116,7 @@ impl App {
         &mut self,
         target: &str,
         name: Option<String>,
-    ) -> Result<crate::api::schema::AgentInfo, AgentRenameError> {
+    ) -> Result<shepr_api::schema::AgentInfo, AgentRenameError> {
         let resolved = self
             .resolve_agent_target(target)
             .map_err(AgentRenameError::Target)?;
@@ -165,7 +165,7 @@ impl App {
     pub(super) fn start_agent(
         &mut self,
         params: AgentStartParams,
-    ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), ApiError> {
+    ) -> Result<(shepr_api::schema::AgentInfo, Vec<String>), ApiError> {
         self.start_agent_impl(params)
             .map_err(|err| self.agent_start_error(err))
     }
@@ -173,7 +173,7 @@ impl App {
     fn start_agent_impl(
         &mut self,
         params: AgentStartParams,
-    ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), AgentStartError> {
+    ) -> Result<(shepr_api::schema::AgentInfo, Vec<String>), AgentStartError> {
         let name = params.name;
         if !valid_agent_name(&name) {
             return Err(AgentStartError::InvalidName);
@@ -395,7 +395,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<crate::api::schema::AgentInfo> {
+    ) -> Option<shepr_api::schema::AgentInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_state = ws.pane_state(pane_id)?;
         let terminal = self.state.terminals.get(&pane_state.attached_terminal_id)?;
@@ -403,7 +403,7 @@ impl App {
             return None;
         }
         let pane = self.pane_info(ws_idx, pane_id)?;
-        Some(crate::api::schema::AgentInfo {
+        Some(shepr_api::schema::AgentInfo {
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
             agent: pane.agent,
@@ -433,7 +433,7 @@ impl App {
         &self,
         name: &str,
         except_terminal_id: &str,
-    ) -> Vec<crate::api::schema::AgentInfo> {
+    ) -> Vec<shepr_api::schema::AgentInfo> {
         self.collect_agent_infos()
             .into_iter()
             .filter(|agent| {
@@ -484,7 +484,7 @@ pub(super) enum AgentStartError {
     InputFailed(String),
     DuplicateName {
         name: String,
-        candidates: Vec<crate::api::schema::AgentInfo>,
+        candidates: Vec<shepr_api::schema::AgentInfo>,
     },
 }
 
@@ -495,7 +495,7 @@ pub(super) enum AgentRenameError {
     PendingLaunch,
     DuplicateName {
         name: String,
-        candidates: Vec<crate::api::schema::AgentInfo>,
+        candidates: Vec<shepr_api::schema::AgentInfo>,
     },
 }
 

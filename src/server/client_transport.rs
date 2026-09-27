@@ -4,8 +4,8 @@
 //! It converts socket I/O into [`ServerEvent`] values consumed by
 //! `HeadlessServer`.
 
-use crate::client::input_wire::WirePaneInput;
 use crate::server::ClientId;
+use crate::server::input_wire::WirePaneInput;
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -107,7 +107,7 @@ struct EndpointRequestHead {
 }
 
 enum DecodedEndpointRequest {
-    Dispatch(Box<crate::api::schema::Request>),
+    Dispatch(Box<shepr_api::schema::Request>),
     Error {
         request_id: shepr_protocol::RequestId,
         code: &'static str,
@@ -131,7 +131,7 @@ fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointR
         });
     }
     Ok(
-        match serde_json::from_str::<crate::api::schema::Request>(request) {
+        match serde_json::from_str::<shepr_api::schema::Request>(request) {
             Ok(request) => DecodedEndpointRequest::Dispatch(Box::new(request)),
             Err(error) => DecodedEndpointRequest::Error {
                 request_id: head.id,
@@ -463,7 +463,7 @@ pub(crate) enum ServerEvent {
     ClientShellEndpointRequest {
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
-        request: Box<crate::api::schema::Request>,
+        request: Box<shepr_api::schema::Request>,
     },
     /// A well-framed endpoint request could not be dispatched by this server.
     ClientShellEndpointRequestError {
@@ -881,7 +881,7 @@ fn client_read_loop_with_endpoint_controls(
             ClientMessage::Input { data } => {
                 // Validate input size.
                 if data.len() > MAX_INPUT_PAYLOAD {
-                    if crate::raw_input::is_complete_text_bracketed_paste(&data) {
+                    if shepr_termio::input::raw_input::is_complete_text_bracketed_paste(&data) {
                         warn!(
                             ?client_id,
                             size = data.len(),

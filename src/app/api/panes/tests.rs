@@ -1,9 +1,7 @@
 use super::*;
-use crate::{
-    api::schema::{ErrorResponse, SplitDirection, SuccessResponse},
-    workspace::Workspace,
-};
+use crate::workspace::Workspace;
 use shepr_agent::detect::{Agent, AgentState};
+use shepr_api::schema::{ErrorResponse, SplitDirection, SuccessResponse};
 use shepr_config::Config;
 
 fn app_with_test_workspace() -> (App, String) {
@@ -12,7 +10,7 @@ fn app_with_test_workspace() -> (App, String) {
         &Config::default(),
         crate::app::AppPolicy::TEST,
         api_rx,
-        crate::api::EventHub::default(),
+        shepr_api::EventHub::default(),
     );
     app.state.workspaces = vec![Workspace::test_new("metadata")];
     app.state.ensure_test_terminals();
@@ -31,11 +29,11 @@ fn pane_input_set_changes_only_the_target_pane() {
         "req".into(),
         &PaneInputSetParams {
             pane_id: public_pane_id,
-            right_click: crate::api::schema::PaneRightClickTarget::Pane,
+            right_click: shepr_api::schema::PaneRightClickTarget::Pane,
         },
     );
 
-    let response: SuccessResponse = crate::api::error::test_success(&response);
+    let response: SuccessResponse = shepr_api::error::test_success(&response);
     assert!(matches!(response.result, ResponseResult::Ok {}));
     assert!(
         app.state.workspaces[0]
@@ -103,9 +101,9 @@ fn metadata_error_code(response: &ApiResult) -> ApiErrorCode {
 async fn api_pane_send_keys_accepts_control_navigation_chords() {
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(4);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec![
                 "ctrl+h".into(),
@@ -116,7 +114,7 @@ async fn api_pane_send_keys_accepts_control_navigation_chords() {
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -131,15 +129,15 @@ async fn api_pane_send_keys_writes_the_sequence_as_one_write() {
     // reject the second after the first already reached the pane.
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec!["up".into(), "enter".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -152,15 +150,15 @@ async fn api_pane_send_keys_writes_the_sequence_as_one_write() {
 async fn api_pane_send_keys_encodes_shift_tab_as_backtab() {
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec!["shift+tab".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -172,15 +170,15 @@ async fn api_pane_send_keys_encodes_shift_tab_as_backtab() {
 #[tokio::test]
 async fn api_clear_pane_mutates_endpoint_owned_history() {
     let (mut app, public_pane_id, pane_id) = app_with_scrollback_runtime();
-    let request = crate::api::schema::Request {
+    let request = shepr_api::schema::Request {
         id: "clear".into(),
-        method: crate::api::schema::Method::PaneClear(PaneTarget {
+        method: shepr_api::schema::Method::PaneClear(PaneTarget {
             pane_id: public_pane_id,
         }),
     };
     assert!(request.method.traits().mutates_ui);
     let response = app.handle_api_request(request);
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     let runtime = app
         .state
@@ -211,7 +209,7 @@ async fn api_pane_get_exposes_scroll_metrics() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneInfo { pane } = success.result else {
         panic!("expected pane info response");
     };
@@ -241,7 +239,7 @@ async fn api_pane_scroll_sets_and_clamps_endpoint_owned_history() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneInfo { pane } = success.result else {
         panic!("expected pane info response");
     };
@@ -269,11 +267,11 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
     assert_ne!(runtime.content_seq(), revision);
     let mut params = PaneSelectionReadParams {
         pane_id: public_pane_id.clone(),
-        anchor: crate::api::schema::PaneSelectionPoint {
+        anchor: shepr_api::schema::PaneSelectionPoint {
             row: shepr_vt::AbsRow(0),
             col: 0,
         },
-        cursor: crate::api::schema::PaneSelectionPoint {
+        cursor: shepr_api::schema::PaneSelectionPoint {
             row: shepr_vt::AbsRow(0),
             col: 4,
         },
@@ -288,7 +286,7 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
     params.content_revision = None;
     let response = app.handle_pane_selection_read("req".into(), params);
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(
         success.result,
         ResponseResult::PaneSelection {
@@ -311,7 +309,7 @@ async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
         "req".into(),
         PaneCopyMotionParams {
             pane_id: public_pane_id.clone(),
-            cursor: crate::api::schema::PaneTextPoint {
+            cursor: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(0),
                 col: 0,
             },
@@ -320,12 +318,12 @@ async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(
         success.result,
         ResponseResult::PaneCopyMotion {
             pane_id: public_pane_id,
-            cursor: crate::api::schema::PaneTextPoint {
+            cursor: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(0),
                 col: 6
             },
@@ -354,7 +352,7 @@ async fn api_paragraph_motion_preserves_the_copy_cursor_column() {
             content_revision: None,
         },
     );
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(
         success.result,
         ResponseResult::PaneCopyMotion {
@@ -397,7 +395,7 @@ async fn api_copy_search_uses_endpoint_terminal_matches_and_wraps() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneCopySearch {
         pane_id,
         matches,
@@ -459,7 +457,7 @@ async fn api_copy_search_bounds_returned_matches_but_keeps_exact_total() {
             previous: None,
         },
     );
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneCopySearch { matches, total, .. } = success.result else {
         panic!("expected copy search response");
     };
@@ -489,7 +487,7 @@ async fn api_copy_search_rejects_stale_content_revision() {
             previous: None,
         },
     );
-    assert!(crate::api::error::test_json(&response).contains("stale_content"));
+    assert!(shepr_api::error::test_json(&response).contains("stale_content"));
 }
 
 #[tokio::test]
@@ -500,14 +498,14 @@ async fn api_pane_read_reports_when_older_rows_are_omitted() {
         "req".into(),
         &PaneReadParams {
             pane_id: public_pane_id,
-            source: crate::api::schema::ReadSource::Recent,
+            source: shepr_api::schema::ReadSource::Recent,
             lines: Some(2),
-            format: crate::api::schema::ReadFormat::Text,
+            format: shepr_api::schema::ReadFormat::Text,
             strip_ansi: true,
-            intent: crate::api::schema::ReadIntent::Interactive,
+            intent: shepr_api::schema::ReadIntent::Interactive,
         },
     );
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneRead { read } = success.result else {
         panic!("expected pane read response");
     };
@@ -523,21 +521,21 @@ async fn api_pane_read_honours_strip_ansi_and_reports_content_revision() {
             "req".into(),
             &PaneReadParams {
                 pane_id: public_pane_id.clone(),
-                source: crate::api::schema::ReadSource::Recent,
+                source: shepr_api::schema::ReadSource::Recent,
                 lines,
-                format: crate::api::schema::ReadFormat::Text,
+                format: shepr_api::schema::ReadFormat::Text,
                 strip_ansi,
-                intent: crate::api::schema::ReadIntent::Interactive,
+                intent: shepr_api::schema::ReadIntent::Interactive,
             },
         )
     };
 
     let kept = read(&mut app, false, Some(2));
-    let success: SuccessResponse = crate::api::error::test_success(&kept);
+    let success: SuccessResponse = shepr_api::error::test_success(&kept);
     let ResponseResult::PaneRead { read: kept } = success.result else {
         panic!("expected pane read response");
     };
-    assert_eq!(kept.format, crate::api::schema::ReadFormat::Ansi);
+    assert_eq!(kept.format, shepr_api::schema::ReadFormat::Ansi);
     assert_eq!(
         kept.revision,
         app.lookup_runtime_sender(0, pane_id)
@@ -546,18 +544,18 @@ async fn api_pane_read_honours_strip_ansi_and_reports_content_revision() {
     );
 
     let stripped = read(&mut app, true, Some(2));
-    let success: SuccessResponse = crate::api::error::test_success(&stripped);
+    let success: SuccessResponse = shepr_api::error::test_success(&stripped);
     let ResponseResult::PaneRead { read: stripped } = success.result else {
         panic!("expected pane read response");
     };
-    assert_eq!(stripped.format, crate::api::schema::ReadFormat::Text);
+    assert_eq!(stripped.format, shepr_api::schema::ReadFormat::Text);
 
     let oversized = read(
         &mut app,
         true,
         Some(crate::app::api_helpers::MAX_READ_LINES + 1),
     );
-    let error: ErrorResponse = crate::api::error::test_error(&oversized);
+    let error: ErrorResponse = shepr_api::error::test_error(&oversized);
     assert_eq!(error.error.code, "invalid_lines");
 }
 
@@ -573,7 +571,7 @@ fn api_pane_rename_emits_pane_updated() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert!(matches!(success.result, ResponseResult::PaneInfo { .. }));
     assert!(
         app.event_hub
@@ -591,15 +589,15 @@ fn api_pane_rename_emits_pane_updated() {
 async fn api_pane_send_keys_preserves_legacy_control_c_aliases() {
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(3);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec!["C-c".into(), "c-c".into(), "ctrl+c".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -616,18 +614,18 @@ async fn api_pane_send_keys_preserves_super_chord_in_legacy_pane() {
         app.lookup_runtime_sender(0, internal_pane_id)
             .expect("test precondition")
             .keyboard_protocol(),
-        crate::input::KeyboardProtocol::Legacy
+        shepr_termio::input::KeyboardProtocol::Legacy
     );
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec!["cmd+c".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -640,15 +638,15 @@ async fn api_pane_send_keys_preserves_super_chord_in_legacy_pane() {
 async fn api_pane_send_keys_accepts_literal_plus() {
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec!["+".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -665,15 +663,15 @@ async fn api_pane_send_keys_sends_shifted_punctuation_as_text_in_kitty_mode() {
         crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"\x1b[>7u", 1);
     app.insert_test_runtime(internal_pane_id, runtime);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec!["shift+?".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -690,16 +688,16 @@ async fn api_pane_send_input_brackets_text_and_enter_atomically() {
         .expect("test precondition")
         .test_process_pty_bytes(b"\x1b[?2004h");
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendInput(PaneSendInputParams {
+        method: shepr_api::schema::Method::PaneSendInput(PaneSendInputParams {
             pane_id,
             text: "A != B".into(),
             keys: vec!["Enter".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -712,16 +710,16 @@ async fn api_pane_send_input_brackets_text_and_enter_atomically() {
 async fn api_pane_send_input_keys_accept_key_combo_chords() {
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendInput(PaneSendInputParams {
+        method: shepr_api::schema::Method::PaneSendInput(PaneSendInputParams {
             pane_id,
             text: String::new(),
             keys: vec!["ctrl+j".into()],
         }),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(success.result, ResponseResult::Ok {});
     assert_eq!(
         rx.try_recv().expect("test precondition"),
@@ -734,15 +732,15 @@ async fn api_pane_send_input_keys_accept_key_combo_chords() {
 async fn api_pane_send_keys_rejects_invalid_keys_before_writing() {
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(2);
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
             pane_id,
             keys: vec!["ctrl+h".into(), "not-a-key".into()],
         }),
     });
 
-    let error: ErrorResponse = crate::api::error::test_error(&response);
+    let error: ErrorResponse = shepr_api::error::test_error(&response);
     assert_eq!(error.error.code, "invalid_key");
     assert_eq!(error.error.message, "unsupported key not-a-key");
     assert!(rx.try_recv().is_err());
@@ -753,16 +751,16 @@ async fn api_pane_send_input_rejects_prefix_bindings_before_writing_text_or_keys
     let (mut app, pane_id, mut rx) = app_with_send_key_runtime(4);
     let raw_key = " prefix+h ".to_string();
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneSendInput(PaneSendInputParams {
+        method: shepr_api::schema::Method::PaneSendInput(PaneSendInputParams {
             pane_id,
             text: "hello".into(),
             keys: vec!["ctrl+h".into(), raw_key.clone()],
         }),
     });
 
-    let error: ErrorResponse = crate::api::error::test_error(&response);
+    let error: ErrorResponse = shepr_api::error::test_error(&response);
     assert_eq!(error.error.code, "invalid_key");
     assert_eq!(error.error.message, format!("unsupported key {raw_key}"));
     assert!(rx.try_recv().is_err());
@@ -774,7 +772,7 @@ fn app_with_workspace() -> App {
         &Config::default(),
         crate::app::AppPolicy::TEST,
         api_rx,
-        crate::api::EventHub::default(),
+        shepr_api::EventHub::default(),
     );
     app.state.workspaces = vec![Workspace::test_new("issue")];
     app.state.ensure_test_terminals();
@@ -815,7 +813,7 @@ fn api_pane_close_of_last_pane_closes_workspace() {
         },
     );
 
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
     assert!(app.state.workspaces.is_empty());
     assert!(
         !app.state
@@ -852,7 +850,7 @@ fn api_pane_close_of_a_tabs_last_pane_announces_the_tab() {
         },
     );
 
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(app.state.workspaces[0].tabs.len(), 1);
     let events = app.event_hub.events_after(0);
     assert_eq!(events.len(), 2);
@@ -880,12 +878,12 @@ fn api_pane_current_prefers_caller_pane_id() {
 
     let response = app.handle_pane_current(
         "req".into(),
-        &crate::api::schema::PaneCurrentParams {
+        &shepr_api::schema::PaneCurrentParams {
             caller_pane_id: Some(right_public.clone()),
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneCurrent { pane } = success.result else {
         panic!("expected pane current response");
     };
@@ -906,10 +904,10 @@ fn api_pane_current_falls_back_to_focused_pane() {
 
     let response = app.handle_pane_current(
         "req".into(),
-        &crate::api::schema::PaneCurrentParams::default(),
+        &shepr_api::schema::PaneCurrentParams::default(),
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneCurrent { pane } = success.result else {
         panic!("expected pane current response");
     };
@@ -925,14 +923,14 @@ fn api_pane_current_dispatches_through_socket_request() {
     let root = app.state.workspaces[0].tabs[0].root_pane;
     let root_public = app.public_pane_id(0, root).expect("test precondition");
 
-    let response = app.handle_api_request(crate::api::schema::Request {
+    let response = app.handle_api_request(shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneCurrent(
-            crate::api::schema::PaneCurrentParams::default(),
+        method: shepr_api::schema::Method::PaneCurrent(
+            shepr_api::schema::PaneCurrentParams::default(),
         ),
     });
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneCurrent { pane } = success.result else {
         panic!("expected pane current response");
     };
@@ -945,7 +943,7 @@ fn api_pane_current_reports_invalid_caller_pane_id() {
 
     let response = app.handle_pane_current(
         "req".into(),
-        &crate::api::schema::PaneCurrentParams {
+        &shepr_api::schema::PaneCurrentParams {
             caller_pane_id: Some("missing".into()),
         },
     );
@@ -960,7 +958,7 @@ fn api_pane_current_reports_no_active_pane() {
 
     let response = app.handle_pane_current(
         "req".into(),
-        &crate::api::schema::PaneCurrentParams::default(),
+        &shepr_api::schema::PaneCurrentParams::default(),
     );
 
     assert_eq!(metadata_error_code(&response), ApiErrorCode::PaneNotFound);
@@ -985,7 +983,7 @@ fn api_pane_swap_explicit_source_and_target_preserves_focus_and_returns_layout()
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneSwap { swap } = success.result else {
         panic!("expected pane swap response");
     };
@@ -1016,7 +1014,7 @@ fn api_pane_swap_direction_no_neighbor_returns_unchanged_layout() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneSwap { swap } = success.result else {
         panic!("expected pane swap response");
     };
@@ -1043,7 +1041,7 @@ fn api_pane_swap_explicit_missing_target_returns_not_found_noop() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneSwap { swap } = success.result else {
         panic!("expected pane swap response");
     };
@@ -1069,7 +1067,7 @@ fn api_pane_swap_explicit_missing_source_returns_not_found_noop() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneSwap { swap } = success.result else {
         panic!("expected pane swap response");
     };
@@ -1098,7 +1096,7 @@ fn api_pane_swap_explicit_cross_workspace_preserves_target_id() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneSwap { swap } = success.result else {
         panic!("expected pane swap response");
     };
@@ -1139,7 +1137,7 @@ fn api_pane_move_to_existing_tab_preserves_internal_pane_and_terminal() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1196,7 +1194,7 @@ fn api_pane_move_to_existing_tab_across_workspace_reassigns_public_pane_id() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1258,7 +1256,7 @@ fn api_pane_move_target_tab_id_survives_source_workspace_removal() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1298,7 +1296,7 @@ fn api_pane_move_to_new_tab_creates_tab_without_spawning_terminal() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1377,7 +1375,7 @@ async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1409,7 +1407,7 @@ fn api_pane_move_to_new_workspace_closes_empty_source_workspace() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1500,7 +1498,7 @@ fn api_pane_move_same_tab_returns_same_tab_noop() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1536,8 +1534,8 @@ fn api_pane_move_rejects_target_pane_outside_target_tab() {
         },
     );
 
-    let error: crate::api::schema::ErrorResponse =
-        serde_json::from_str(&crate::api::error::test_json(&response)).expect("test precondition");
+    let error: shepr_api::schema::ErrorResponse =
+        serde_json::from_str(&shepr_api::error::test_json(&response)).expect("test precondition");
     assert_eq!(error.error.code, "target_pane_not_found");
     assert_eq!(app.state.workspaces[0].tabs.len(), 3);
 }
@@ -1578,7 +1576,7 @@ fn api_pane_move_existing_tab_no_focus_preserves_previous_target_focus() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1653,7 +1651,7 @@ fn api_pane_move_to_zoomed_target_returns_target_layout() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneMove { move_result } = success.result else {
         panic!("expected pane move response");
     };
@@ -1681,7 +1679,7 @@ fn api_pane_zoom_current_toggles_zoom() {
 
     let response = app.handle_pane_zoom("req".into(), &PaneZoomParams::default());
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1700,7 +1698,7 @@ fn api_pane_zoom_current_toggles_zoom() {
     ));
 
     let response = app.handle_pane_zoom("req".into(), &PaneZoomParams::default());
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1732,7 +1730,7 @@ fn api_pane_zoom_single_pane_returns_noop() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1762,7 +1760,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
             mode: PaneZoomMode::On,
         },
     );
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1778,7 +1776,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
             mode: PaneZoomMode::On,
         },
     );
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1795,7 +1793,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
             mode: PaneZoomMode::Off,
         },
     );
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1811,7 +1809,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
             mode: PaneZoomMode::Off,
         },
     );
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1841,7 +1839,7 @@ fn api_pane_zoom_idempotent_mode_reports_focus_change() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneZoom { zoom } = success.result else {
         panic!("expected pane zoom response");
     };
@@ -1860,9 +1858,9 @@ fn api_pane_zoom_idempotent_mode_reports_focus_change() {
 
 #[test]
 fn api_pane_zoom_params_serialize_modes() {
-    let request = crate::api::schema::Request {
+    let request = shepr_api::schema::Request {
         id: "req".into(),
-        method: crate::api::schema::Method::PaneZoom(PaneZoomParams {
+        method: shepr_api::schema::Method::PaneZoom(PaneZoomParams {
             pane_id: Some("issue-1".into()),
             mode: PaneZoomMode::On,
         }),
@@ -1872,9 +1870,9 @@ fn api_pane_zoom_params_serialize_modes() {
     assert!(encoded.contains("\"method\":\"pane.zoom\""));
     assert!(encoded.contains("\"mode\":\"on\""));
 
-    let decoded: crate::api::schema::Request =
-        serde_json::from_str(&crate::api::error::test_json(&encoded)).expect("test precondition");
-    let crate::api::schema::Method::PaneZoom(params) = decoded.method else {
+    let decoded: shepr_api::schema::Request =
+        serde_json::from_str(&shepr_api::error::test_json(&encoded)).expect("test precondition");
+    let shepr_api::schema::Method::PaneZoom(params) = decoded.method else {
         panic!("expected pane zoom request");
     };
     assert_eq!(params.pane_id, Some("issue-1".into()));
@@ -1916,12 +1914,12 @@ fn api_pane_layout_returns_public_ids_rects_and_splits() {
 
     let response = app.handle_pane_layout(
         "req".into(),
-        &crate::api::schema::PaneLayoutParams {
+        &shepr_api::schema::PaneLayoutParams {
             pane_id: Some(root_public.clone()),
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneLayout { layout } = success.result else {
         panic!("expected pane layout response");
     };
@@ -1931,7 +1929,7 @@ fn api_pane_layout_returns_public_ids_rects_and_splits() {
     assert_eq!(layout.splits.len(), 1);
     assert_eq!(
         layout.splits[0].direction,
-        crate::api::schema::SplitDirection::Right
+        shepr_api::schema::SplitDirection::Right
     );
 }
 
@@ -1947,13 +1945,13 @@ fn api_pane_neighbor_returns_directional_neighbor_public_id() {
 
     let response = app.handle_pane_neighbor(
         "req".into(),
-        &crate::api::schema::PaneNeighborParams {
+        &shepr_api::schema::PaneNeighborParams {
             pane_id: Some(root_public.clone()),
             direction: PaneDirection::Right,
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneNeighbor { neighbor } = success.result else {
         panic!("expected pane neighbor response");
     };
@@ -1973,12 +1971,12 @@ fn api_pane_edges_reports_physical_layout_edges() {
 
     let response = app.handle_pane_edges(
         "req".into(),
-        &crate::api::schema::PaneEdgesParams {
+        &shepr_api::schema::PaneEdgesParams {
             pane_id: Some(right_public.clone()),
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneEdges { edges } = success.result else {
         panic!("expected pane edges response");
     };
@@ -2001,14 +1999,14 @@ fn api_pane_resize_changes_target_ratio_without_changing_focus() {
 
     let response = app.handle_pane_resize(
         "req".into(),
-        &crate::api::schema::PaneResizeParams {
+        &shepr_api::schema::PaneResizeParams {
             pane_id: Some(root_public.clone()),
             direction: PaneDirection::Right,
             amount: Some(0.1),
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneResize { resize } = success.result else {
         panic!("expected pane resize response");
     };
@@ -2039,13 +2037,13 @@ fn api_pane_focus_direction_focuses_neighbor() {
 
     let response = app.handle_pane_focus_direction(
         "req".into(),
-        &crate::api::schema::PaneFocusDirectionParams {
+        &shepr_api::schema::PaneFocusDirectionParams {
             pane_id: Some(root_public.clone()),
             direction: PaneDirection::Right,
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneFocusDirection { focus } = success.result else {
         panic!("expected pane focus direction response");
     };
@@ -2073,12 +2071,12 @@ fn api_pane_focus_focuses_direct_target_across_tabs_and_workspaces() {
 
     let response = app.handle_pane_focus(
         "req".into(),
-        &crate::api::schema::PaneTarget {
+        &shepr_api::schema::PaneTarget {
             pane_id: target_public.clone(),
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneInfo { pane } = success.result else {
         panic!("expected pane info response");
     };
@@ -2114,11 +2112,11 @@ fn api_pane_focus_returns_idle_agent_status() {
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneInfo { pane } = success.result else {
         panic!("expected pane info response");
     };
-    assert_eq!(pane.agent_status, crate::api::schema::AgentStatus::Idle);
+    assert_eq!(pane.agent_status, shepr_api::schema::AgentStatus::Idle);
 }
 
 #[test]
@@ -2127,12 +2125,12 @@ fn api_pane_focus_rejects_invalid_pane_id() {
 
     let response = app.handle_pane_focus(
         "req".into(),
-        &crate::api::schema::PaneTarget {
+        &shepr_api::schema::PaneTarget {
             pane_id: "pane_missing".into(),
         },
     );
 
-    let error: ErrorResponse = crate::api::error::test_error(&response);
+    let error: ErrorResponse = shepr_api::error::test_error(&response);
     assert_eq!(error.error.code, "pane_not_found");
 }
 
@@ -2146,13 +2144,13 @@ fn api_pane_focus_direction_no_neighbor_is_noop() {
 
     let response = app.handle_pane_focus_direction(
         "req".into(),
-        &crate::api::schema::PaneFocusDirectionParams {
+        &shepr_api::schema::PaneFocusDirectionParams {
             pane_id: Some(root_public.clone()),
             direction: PaneDirection::Left,
         },
     );
 
-    let success: SuccessResponse = crate::api::error::test_success(&response);
+    let success: SuccessResponse = shepr_api::error::test_success(&response);
     let ResponseResult::PaneFocusDirection { focus } = success.result else {
         panic!("expected pane focus direction response");
     };
@@ -2188,20 +2186,20 @@ fn pane_metadata_tokens_patch_and_clear_through_dispatcher() {
         let mut params = metadata_params(pane_id.clone());
         params.title = None;
         params.tokens = tokens;
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "set".into(),
-            method: crate::api::schema::Method::PaneReportMetadata(params),
+            method: shepr_api::schema::Method::PaneReportMetadata(params),
         });
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "get".into(),
-            method: crate::api::schema::Method::PaneGet(PaneTarget {
+            method: shepr_api::schema::Method::PaneGet(PaneTarget {
                 pane_id: pane_id.clone(),
             }),
         });
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::PaneInfo { pane } = success.result else {
             panic!("expected pane info");
         };
@@ -2237,7 +2235,7 @@ fn pane_tokens_are_independent_from_presentation_guards() {
 
     let response = app.handle_pane_report_metadata("guarded".into(), params);
 
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
     assert_eq!(
         app.state.terminals[&terminal_id].metadata_tokens.values(),
         std::collections::HashMap::from([("summary".into(), "global".into())])
@@ -2250,7 +2248,7 @@ fn pane_metadata_uses_one_sequence_for_presentation_and_tokens() {
     let mut presentation = metadata_params(pane_id.clone());
     presentation.seq = Some(10);
     let response = app.handle_pane_report_metadata("presentation".into(), presentation);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let mut stale_token = metadata_params(pane_id.clone());
     stale_token.title = None;
@@ -2258,7 +2256,7 @@ fn pane_metadata_uses_one_sequence_for_presentation_and_tokens() {
         std::collections::HashMap::from([("summary".into(), Some("stale".into()))]);
     stale_token.seq = Some(9);
     let response = app.handle_pane_report_metadata("stale".into(), stale_token);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let (_, internal_pane_id) = app.parse_pane_id(&pane_id).expect("test precondition");
     let terminal_id = app.state.workspaces[0]
@@ -2294,7 +2292,7 @@ fn pane_metadata_ignored_after_process_exit_does_not_poison_sequence() {
     initial.agent = Some("pi".into());
     initial.seq = Some(100);
     let response = app.handle_pane_report_metadata("initial".into(), initial);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let mut initial_tokens = metadata_params(pane_id.clone());
     initial_tokens.source = "custom:pi-tokens".into();
@@ -2304,7 +2302,7 @@ fn pane_metadata_ignored_after_process_exit_does_not_poison_sequence() {
         std::collections::HashMap::from([("generation".into(), Some("old".into()))]);
     initial_tokens.seq = Some(100);
     let response = app.handle_pane_report_metadata("initial-tokens".into(), initial_tokens);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let exit_at = std::time::Instant::now() + std::time::Duration::from_millis(1);
     app.state
@@ -2336,13 +2334,13 @@ fn pane_metadata_ignored_after_process_exit_does_not_poison_sequence() {
     stale.title = Some("stale".into());
     stale.seq = Some(200);
     let response = app.handle_pane_report_metadata("stale".into(), stale);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let mut official = metadata_params(pane_id.clone());
     official.source = "shepr:pi".into();
     official.seq = Some(200);
     let response = app.handle_pane_report_metadata("official".into(), official);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let terminal = &app.state.terminals[&terminal_id];
     assert!(terminal.metadata_report_sequence_is_fresh("custom:pi-metadata", Some(1)));
@@ -2366,7 +2364,7 @@ fn pane_metadata_ignored_after_process_exit_does_not_poison_sequence() {
     fresh.title = Some("fresh".into());
     fresh.seq = Some(1);
     let response = app.handle_pane_report_metadata("fresh".into(), fresh);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let mut fresh_tokens = metadata_params(pane_id);
     fresh_tokens.source = "custom:pi-tokens".into();
@@ -2376,7 +2374,7 @@ fn pane_metadata_ignored_after_process_exit_does_not_poison_sequence() {
         std::collections::HashMap::from([("generation".into(), Some("new".into()))]);
     fresh_tokens.seq = Some(1);
     let response = app.handle_pane_report_metadata("fresh-tokens".into(), fresh_tokens);
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 
     let terminal = &app.state.terminals[&terminal_id];
     assert_eq!(
@@ -2403,7 +2401,7 @@ fn pane_report_metadata_accepts_documented_source_chars_and_max_ttl() {
 
     let response = app.handle_pane_report_metadata("req".into(), params);
 
-    let _: SuccessResponse = crate::api::error::test_success(&response);
+    let _: SuccessResponse = shepr_api::error::test_success(&response);
 }
 
 #[test]

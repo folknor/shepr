@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::api::error::{ApiError, ApiErrorCode};
+use shepr_api::error::{ApiError, ApiErrorCode};
 
 pub(super) fn normalize_launch_env(
     env: HashMap<String, String>,

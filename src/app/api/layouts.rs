@@ -1,13 +1,13 @@
-use crate::api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::{ApiErrorCode, ApiResult};
 use std::path::PathBuf;
 
 use ratatui::layout::Direction;
 
-use crate::api::schema::{
+use crate::app::{App, Mode};
+use shepr_api::schema::{
     EventData, EventEnvelope, LayoutApplyParams, LayoutDescription, LayoutExportParams, LayoutNode,
     LayoutPane, LayoutSetSplitRatioParams, ResponseResult, SplitDirection,
 };
-use crate::app::{App, Mode};
 use shepr_core::layout::{Node, PaneId};
 
 use super::responses::{failure, success};
@@ -409,8 +409,8 @@ struct LayoutStaging<'a> {
     default_shell: &'a str,
     login_shell: bool,
     scrollback_limit_bytes: usize,
-    host_terminal_theme: crate::host_term::theme::TerminalTheme,
-    host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
+    host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+    host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     default_cwd: &'a std::path::Path,
     next_pane_number: &'a mut usize,
     pane_cwds: &'a mut std::collections::HashMap<PaneId, PathBuf>,
@@ -461,7 +461,7 @@ fn stage_layout_node(
                 .or_else(|| staging.pane_cwds.get(&target_pane_id).cloned())
                 .unwrap_or_else(|| staging.default_cwd.to_path_buf());
             let extra_env = super::env::normalize_launch_env(second_leaf.env.clone())
-                .map_err(crate::api::error::ApiError::into_message)?;
+                .map_err(shepr_api::error::ApiError::into_message)?;
             let command = layout_command(second_leaf)?;
             let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
                 shepr_protocol::WorkspaceId::new(staging.workspace_id),
@@ -546,7 +546,7 @@ fn validate_layout_launches(node: &LayoutNode) -> Result<(), String> {
     match node {
         LayoutNode::Pane { pane } => {
             super::env::normalize_launch_env(pane.env.clone())
-                .map_err(crate::api::error::ApiError::into_message)?;
+                .map_err(shepr_api::error::ApiError::into_message)?;
             let _ = layout_command(pane)?;
             Ok(())
         }
@@ -610,7 +610,7 @@ fn validate_layout_node(
             }
             layout_command(pane)?;
             super::env::normalize_launch_env(pane.env.clone())
-                .map_err(crate::api::error::ApiError::into_message)?;
+                .map_err(shepr_api::error::ApiError::into_message)?;
             Ok(())
         }
         LayoutNode::Split {
@@ -632,10 +632,8 @@ fn validate_layout_node(
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
-    use crate::{
-        api::schema::{ErrorResponse, ResponseResult, SuccessResponse},
-        workspace::Workspace,
-    };
+    use crate::workspace::Workspace;
+    use shepr_api::schema::{ErrorResponse, ResponseResult, SuccessResponse};
     use shepr_config::Config;
 
     fn app_with_workspace() -> App {
@@ -644,7 +642,7 @@ mod tests {
             &Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
@@ -683,7 +681,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::LayoutExport { layout } = success.result else {
             panic!("expected layout export response");
         };
@@ -728,7 +726,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::LayoutSplitRatioSet { layout } = success.result else {
             panic!("expected layout split ratio set response");
         };
@@ -758,7 +756,7 @@ mod tests {
             },
         );
 
-        let error: ErrorResponse = crate::api::error::test_error(&response);
+        let error: ErrorResponse = shepr_api::error::test_error(&response);
         assert_eq!(error.error.code, "split_not_found");
     }
 
@@ -802,7 +800,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::LayoutApply { layout } = success.result else {
             panic!("expected layout apply response");
         };
@@ -886,7 +884,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
         let created = &app.state.workspaces[0].tabs[1];
         let created_terminal_id = created
@@ -936,7 +934,7 @@ mod tests {
             },
         );
 
-        let error: ErrorResponse = crate::api::error::test_error(&response);
+        let error: ErrorResponse = shepr_api::error::test_error(&response);
         assert_eq!(error.error.code, "invalid_layout");
         assert_eq!(app.state.workspaces[0].tabs.len(), original_tab_count);
     }

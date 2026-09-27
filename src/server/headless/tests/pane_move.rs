@@ -1,8 +1,8 @@
 use super::*;
-use crate::api::schema::{
+use bytes::Bytes;
+use shepr_api::schema::{
     ErrorResponse, PaneMoveDestination, PaneMoveParams, PaneMoveResult, ResponseResult,
 };
-use bytes::Bytes;
 
 fn pane_move_server() -> HeadlessServer {
     let mut server = test_headless_server();
@@ -22,10 +22,10 @@ fn public_move(
     params: PaneMoveParams,
 ) -> Result<PaneMoveResult, ErrorResponse> {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
-        request: crate::api::schema::Request {
+    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
             id: "move-pane".into(),
-            method: crate::api::schema::Method::PaneMove(params),
+            method: shepr_api::schema::Method::PaneMove(params),
         },
         respond_to,
     });
@@ -153,7 +153,7 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
             PaneMoveDestination::Tab {
                 tab_id: second_tab,
                 target_pane_id: None,
-                split: crate::api::schema::SplitDirection::Right,
+                split: shepr_api::schema::SplitDirection::Right,
                 ratio: None,
             }
         };
@@ -240,7 +240,7 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
                 destination: PaneMoveDestination::Tab {
                     tab_id,
                     target_pane_id: None,
-                    split: crate::api::schema::SplitDirection::Right,
+                    split: shepr_api::schema::SplitDirection::Right,
                     ratio: None,
                 },
                 focus: case != "no-focus",

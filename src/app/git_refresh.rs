@@ -672,7 +672,7 @@ mod tests {
             config,
             crate::app::AppPolicy::TEST,
             tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         )
     }
 }

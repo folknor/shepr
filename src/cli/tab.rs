@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
+use shepr_api::schema::{TabCreateParams, TabListParams, TabRenameParams};
 
 use super::matches::{flag, required, string, values, words};
 

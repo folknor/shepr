@@ -52,7 +52,7 @@ pub(super) struct ClientState {
     /// Latest physical host theme observations, retained so an endpoint selected after the
     /// observation receives the same client-owned baseline.
     pub(super) host_theme_updates: Vec<shepr_protocol::ClientHostThemeUpdate>,
-    pub(super) direct_keyboard_protocol: crate::host_term::modes::DirectHostKeyboardState,
+    pub(super) direct_keyboard_protocol: shepr_termio::host_term::modes::DirectHostKeyboardState,
     pub(super) pane_keyboard_report_all: bool,
     pub(super) keyboard_report_all_active: bool,
     pub(super) settings: ClientSettings,
@@ -74,7 +74,7 @@ pub(super) struct ClientState {
 impl Drop for ClientState {
     fn drop(&mut self) {
         if self.mode.is_escape_attach() {
-            let _ = crate::host_term::modes::set_direct_host_keyboard_protocol(
+            let _ = shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
                 &mut io::stdout(),
                 &mut self.direct_keyboard_protocol,
                 shepr_protocol::KittyKeyboardFlags::NONE,

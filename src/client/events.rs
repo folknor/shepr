@@ -3,8 +3,8 @@ use super::*;
 /// Internal events for the client event loop.
 pub(super) struct ParsedHostInput {
     pub(super) raw: Vec<u8>,
-    pub(super) event: crate::raw_input::RawInputEvent,
-    pub(super) pixel_mouse: Option<crate::input::mouse::HostPixels>,
+    pub(super) event: shepr_termio::input::raw_input::RawInputEvent,
+    pub(super) pixel_mouse: Option<shepr_termio::input::mouse::HostPixels>,
 }
 
 pub(super) enum ClientLoopEvent {

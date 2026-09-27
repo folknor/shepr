@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::api::client::{ApiClientError, parse_response_value};
-use crate::api::schema::{Method, Request, ResponseResult, ServerSshAgentRegisterParams};
+use shepr_api::client::{ApiClientError, parse_response_value};
+use shepr_api::schema::{Method, Request, ResponseResult, ServerSshAgentRegisterParams};
 use shepr_platform::ipc::{LocalStream, LocalStreamRead, LocalStreamReadCount};
 
 pub(super) struct Registration {
@@ -18,7 +18,7 @@ impl Registration {
         let path = std::env::var("SSH_AUTH_SOCK")
             .ok()
             .filter(|path| !path.is_empty())?;
-        Self::start_at(path, crate::api::socket_path(paths))
+        Self::start_at(path, shepr_api::socket_path(paths))
     }
 
     fn start_at(path: String, socket_path: PathBuf) -> Option<Self> {
@@ -70,7 +70,7 @@ impl Drop for Registration {
 
 fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     let timeout = Duration::from_millis(500);
-    let status = crate::api::read_runtime_status_at(socket_path, timeout)?.ok_or_else(|| {
+    let status = shepr_api::read_runtime_status_at(socket_path, timeout)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotConnected,
             "SSH agent status API is not ready",

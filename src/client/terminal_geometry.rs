@@ -237,7 +237,8 @@ pub(super) fn query_host_terminal_appearance() {
 }
 
 pub(super) fn write_host_terminal_appearance_query(mut writer: impl io::Write) -> io::Result<()> {
-    writer.write_all(crate::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())?;
+    writer
+        .write_all(shepr_termio::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())?;
     writer.flush()
 }
 
@@ -246,7 +247,7 @@ pub(super) fn query_host_terminal_theme() {
 }
 
 pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
-    let query = crate::host_term::theme::host_terminal_theme_query_sequence(
+    let query = shepr_termio::host_term::theme::host_terminal_theme_query_sequence(
         shepr_platform::should_query_host_terminal_palette(),
     );
     writer.write_all(query.as_bytes())?;
@@ -279,12 +280,12 @@ pub(super) fn store_reported_cell_size(
 }
 
 pub(super) fn reported_cell_size_from_events<'a>(
-    events: impl IntoIterator<Item = &'a crate::raw_input::RawInputEvent>,
+    events: impl IntoIterator<Item = &'a shepr_termio::input::raw_input::RawInputEvent>,
 ) -> Option<(u32, u32)> {
     events
         .into_iter()
         .filter_map(|event| match event {
-            crate::raw_input::RawInputEvent::HostCellSizeReport {
+            shepr_termio::input::raw_input::RawInputEvent::HostCellSizeReport {
                 width_px,
                 height_px,
             } => Some((*width_px, *height_px)),

@@ -3,14 +3,18 @@ use super::*;
 impl ClientShellState {
     pub(super) fn record_binding(
         &mut self,
-        binding: &crate::input::KeybindMatch,
+        binding: &shepr_termio::input::KeybindMatch,
         outcome: &mut ClientShellInput,
     ) {
         match binding {
-            crate::input::KeybindMatch::Action(crate::input::KeybindAction::Detach) => {
+            shepr_termio::input::KeybindMatch::Action(
+                shepr_termio::input::KeybindAction::Detach,
+            ) => {
                 outcome.detach = true;
             }
-            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
+            shepr_termio::input::KeybindMatch::Action(
+                shepr_termio::input::KeybindAction::ToggleSidebar,
+            ) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;
                 self.reveal_navigation_workspace = true;
@@ -20,13 +24,13 @@ impl ClientShellState {
                 outcome.resize = true;
                 self.persist_chrome_preferences(outcome);
             }
-            crate::input::KeybindMatch::Action(action) => {
+            shepr_termio::input::KeybindMatch::Action(action) => {
                 let action = *action;
                 if self.workspace_preview_action_blocked()
                     && matches!(
                         action,
-                        crate::input::KeybindAction::RenameWorkspace
-                            | crate::input::KeybindAction::CloseWorkspace
+                        shepr_termio::input::KeybindAction::RenameWorkspace
+                            | shepr_termio::input::KeybindAction::CloseWorkspace
                     )
                 {
                     self.receive_endpoint_unavailable(
@@ -36,12 +40,12 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::OpenNavigator {
+                if action == shepr_termio::input::KeybindAction::OpenNavigator {
                     self.open_navigator_overlay();
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::Help {
+                if action == shepr_termio::input::KeybindAction::Help {
                     self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                         query: TextEditor::default(),
                         search_focused: false,
@@ -50,13 +54,13 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::NewWorkspace {
+                if action == shepr_termio::input::KeybindAction::NewWorkspace {
                     if self.config.prompt_new_workspace_name {
                         self.open_new_workspace_overlay();
                     } else {
                         self.push_endpoint_method(
-                            crate::api::schema::Method::WorkspaceCreate(
-                                crate::api::schema::WorkspaceCreateParams {
+                            shepr_api::schema::Method::WorkspaceCreate(
+                                shepr_api::schema::WorkspaceCreateParams {
                                     source_workspace_id: self.workspace_action_id(),
                                     cwd: None,
                                     focus: true,
@@ -70,19 +74,19 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::RenameWorkspace {
+                if action == shepr_termio::input::KeybindAction::RenameWorkspace {
                     self.open_rename_workspace_overlay();
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::CloseWorkspace {
+                if action == shepr_termio::input::KeybindAction::CloseWorkspace {
                     if let Some(workspace_id) = self.workspace_action_id() {
                         if self.config.confirm_close {
                             self.open_confirm_close_overlay(workspace_id);
                         } else {
                             self.push_endpoint_method(
-                                crate::api::schema::Method::WorkspaceClose(
-                                    crate::api::schema::WorkspaceCloseParams { workspace_id },
+                                shepr_api::schema::Method::WorkspaceClose(
+                                    shepr_api::schema::WorkspaceCloseParams { workspace_id },
                                 ),
                                 outcome,
                             );
@@ -91,7 +95,7 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::CloseTab {
+                if action == shepr_termio::input::KeybindAction::CloseTab {
                     if let Some(tab_id) = self
                         .snapshot
                         .as_deref()
@@ -101,23 +105,24 @@ impl ClientShellState {
                     }
                     return;
                 }
-                if action == crate::input::KeybindAction::NewTab && self.config.prompt_new_tab_name
+                if action == shepr_termio::input::KeybindAction::NewTab
+                    && self.config.prompt_new_tab_name
                 {
                     self.open_new_tab_overlay();
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::RenameTab {
+                if action == shepr_termio::input::KeybindAction::RenameTab {
                     self.open_rename_tab_overlay();
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::RenamePane {
+                if action == shepr_termio::input::KeybindAction::RenamePane {
                     self.open_rename_pane_overlay();
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::WorkspacePicker {
+                if action == shepr_termio::input::KeybindAction::WorkspacePicker {
                     self.pending_workspace_highlight = None;
                     self.mode = ClientShellMode::Navigate;
                     self.navigate_workspace_id = self.focused_navigation_target();
@@ -125,12 +130,12 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::EnterResizeMode {
+                if action == shepr_termio::input::KeybindAction::EnterResizeMode {
                     self.mode = ClientShellMode::Resize;
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::CopyMode {
+                if action == shepr_termio::input::KeybindAction::CopyMode {
                     if self.enter_copy_mode(outcome) {
                         outcome.repaint = true;
                     }
@@ -161,14 +166,14 @@ impl ClientShellState {
             .filter(|_| !live);
         let (anchor, cursor) = selection.ordered_cells();
         self.push_endpoint_method_with_kind(
-            crate::api::schema::Method::PaneSelectionRead(
-                crate::api::schema::PaneSelectionReadParams {
+            shepr_api::schema::Method::PaneSelectionRead(
+                shepr_api::schema::PaneSelectionReadParams {
                     pane_id: pane_id.to_string(),
-                    anchor: crate::api::schema::PaneSelectionPoint {
+                    anchor: shepr_api::schema::PaneSelectionPoint {
                         row: anchor.0,
                         col: anchor.1,
                     },
-                    cursor: crate::api::schema::PaneSelectionPoint {
+                    cursor: shepr_api::schema::PaneSelectionPoint {
                         row: cursor.0,
                         col: cursor.1,
                     },
@@ -182,7 +187,7 @@ impl ClientShellState {
 
     pub(super) fn push_endpoint_method(
         &mut self,
-        method: crate::api::schema::Method,
+        method: shepr_api::schema::Method,
         outcome: &mut ClientShellInput,
     ) {
         self.push_endpoint_method_with_kind(method, PendingEndpointKind::Generic, outcome);
@@ -226,18 +231,18 @@ impl ClientShellState {
 
     pub(super) fn push_endpoint_method_with_kind(
         &mut self,
-        method: crate::api::schema::Method,
+        method: shepr_api::schema::Method,
         kind: PendingEndpointKind,
         outcome: &mut ClientShellInput,
     ) -> bool {
         let changes_focus = match &method {
-            crate::api::schema::Method::WorkspaceFocus(_)
-            | crate::api::schema::Method::TabFocus(_)
-            | crate::api::schema::Method::PaneFocus(_)
-            | crate::api::schema::Method::PaneFocusDirection(_) => true,
-            crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
-            crate::api::schema::Method::TabCreate(params) => params.focus,
-            crate::api::schema::Method::PaneSplit(params) => params.focus,
+            shepr_api::schema::Method::WorkspaceFocus(_)
+            | shepr_api::schema::Method::TabFocus(_)
+            | shepr_api::schema::Method::PaneFocus(_)
+            | shepr_api::schema::Method::PaneFocusDirection(_) => true,
+            shepr_api::schema::Method::WorkspaceCreate(params) => params.focus,
+            shepr_api::schema::Method::TabCreate(params) => params.focus,
+            shepr_api::schema::Method::PaneSplit(params) => params.focus,
             _ => false,
         };
         if changes_focus {
@@ -248,7 +253,7 @@ impl ClientShellState {
             outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));
             return false;
         }
-        let method_name = crate::api::api_method_name(&method).to_owned();
+        let method_name = shepr_api::api_method_name(&method).to_owned();
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };
@@ -266,7 +271,7 @@ impl ClientShellState {
         outcome.actions.push(ClientShellAction::Endpoint {
             endpoint_id: self.active_endpoint_id.clone(),
             boot_id: snapshot.boot_id.clone(),
-            request: Box::new(crate::api::schema::Request {
+            request: Box::new(shepr_api::schema::Request {
                 id: request_id.to_string(),
                 method,
             }),
@@ -298,12 +303,12 @@ impl ClientShellState {
     ) -> Vec<ClientShellAction> {
         let method = match target {
             ClientEndpointFocusTarget::Workspace(workspace_id) => {
-                crate::api::schema::Method::WorkspaceFocus(crate::api::schema::WorkspaceTarget {
+                shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
                     workspace_id,
                 })
             }
             ClientEndpointFocusTarget::Pane(pane_id) => {
-                crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                     pane_id: pane_id.to_string(),
                 })
             }
@@ -348,7 +353,7 @@ impl ClientShellState {
         &mut self,
         boot_id: &str,
         request_id: &str,
-        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
         let (repaint, actions) =
@@ -362,7 +367,7 @@ impl ClientShellState {
         &mut self,
         boot_id: &str,
         request_id: &str,
-        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) -> (bool, Vec<ClientShellAction>) {
         let Some(pending) = self.pending_requests.remove(request_id) else {
@@ -434,7 +439,7 @@ impl ClientShellState {
             }
             PendingEndpointKind::SelectionCopy => {
                 return match result {
-                    Ok(crate::api::schema::ResponseResult::PaneSelection { text, .. })
+                    Ok(shepr_api::schema::ResponseResult::PaneSelection { text, .. })
                         if !text.is_empty() =>
                     {
                         (
@@ -442,7 +447,7 @@ impl ClientShellState {
                             vec![ClientShellAction::ClipboardWrite(text.into_bytes())],
                         )
                     }
-                    Ok(crate::api::schema::ResponseResult::PaneSelection { .. }) => {
+                    Ok(shepr_api::schema::ResponseResult::PaneSelection { .. }) => {
                         (false, Vec::new())
                     }
                     Ok(_) => {
@@ -470,7 +475,7 @@ impl ClientShellState {
                 session_generation,
             } => {
                 let (repaint, continue_queue) = match result {
-                    Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+                    Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                         pane_id: returned_pane_id,
                         cursor,
                         content_revision,
@@ -484,7 +489,7 @@ impl ClientShellState {
                         ),
                         true,
                     ),
-                    Ok(crate::api::schema::ResponseResult::PaneCopyMotion { .. }) => (false, false),
+                    Ok(shepr_api::schema::ResponseResult::PaneCopyMotion { .. }) => (false, false),
                     Ok(_) => {
                         self.set_endpoint_error(
                             "endpoint returned an unexpected copy-motion result",
@@ -506,7 +511,7 @@ impl ClientShellState {
                 session_generation,
             } => {
                 let (repaint, continue_queue) = match result {
-                    Ok(crate::api::schema::ResponseResult::PaneCopySearch {
+                    Ok(shepr_api::schema::ResponseResult::PaneCopySearch {
                         pane_id: returned_pane_id,
                         content_revision,
                         matches,
@@ -535,7 +540,7 @@ impl ClientShellState {
                         }
                         (repaint, repaint)
                     }
-                    Ok(crate::api::schema::ResponseResult::PaneCopySearch { .. }) => {
+                    Ok(shepr_api::schema::ResponseResult::PaneCopySearch { .. }) => {
                         self.cancel_deferred_copy_after_search(generation);
                         (false, false)
                     }
@@ -562,14 +567,14 @@ impl ClientShellState {
 
     pub(super) fn endpoint_method_for_action(
         &mut self,
-        action: crate::input::KeybindAction,
-    ) -> Option<crate::api::schema::Method> {
-        use crate::api::schema::{
+        action: shepr_termio::input::KeybindAction,
+    ) -> Option<shepr_api::schema::Method> {
+        use shepr_api::schema::{
             Method, PaneDirection, PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams,
             PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
             TabCreateParams, TabMoveParams, TabTarget, WorkspaceTarget,
         };
-        use crate::input::KeybindAction;
+        use shepr_termio::input::KeybindAction;
 
         let snapshot = self.snapshot.as_deref()?;
         let focused_workspace = snapshot

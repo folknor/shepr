@@ -206,8 +206,8 @@ impl ClientShellState {
                     self.open_confirm_close_overlay(workspace_id);
                 } else {
                     self.push_endpoint_method(
-                        crate::api::schema::Method::WorkspaceClose(
-                            crate::api::schema::WorkspaceCloseParams { workspace_id },
+                        shepr_api::schema::Method::WorkspaceClose(
+                            shepr_api::schema::WorkspaceCloseParams { workspace_id },
                         ),
                         outcome,
                     );
@@ -224,7 +224,7 @@ impl ClientShellState {
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::api::schema::{Method, TabTarget};
+        use shepr_api::schema::{Method, TabTarget};
 
         self.push_endpoint_method(
             Method::TabFocus(TabTarget {
@@ -258,7 +258,7 @@ impl ClientShellState {
                     }));
                 } else {
                     self.push_endpoint_method(
-                        Method::TabCreate(crate::api::schema::TabCreateParams {
+                        Method::TabCreate(shepr_api::schema::TabCreateParams {
                             workspace_id: Some(workspace_id),
                             cwd: None,
                             focus: true,
@@ -302,7 +302,7 @@ impl ClientShellState {
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::api::schema::{
+        use shepr_api::schema::{
             Method, PaneInputSetParams, PaneRenameParams, PaneRightClickTarget, PaneSplitParams,
             PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
         };

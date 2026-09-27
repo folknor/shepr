@@ -742,7 +742,7 @@ pub(super) fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
 
 pub(super) fn ghostty_default_fg(
     color: shepr_vt::RgbColor,
-    host_theme: crate::host_term::theme::TerminalTheme,
+    host_theme: shepr_termio::host_term::theme::TerminalTheme,
     initial_default_foreground: Option<shepr_vt::RgbColor>,
 ) -> Option<Color> {
     if let Some(host_foreground) = host_theme.foreground {
@@ -760,7 +760,7 @@ pub(super) fn ghostty_default_fg(
 
 pub(super) fn ghostty_default_bg(
     color: shepr_vt::RgbColor,
-    host_theme: crate::host_term::theme::TerminalTheme,
+    host_theme: shepr_termio::host_term::theme::TerminalTheme,
     initial_default_background: Option<shepr_vt::RgbColor>,
 ) -> Option<Color> {
     if let Some(host_background) = host_theme.background {

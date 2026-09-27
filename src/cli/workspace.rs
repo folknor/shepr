@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{
+use shepr_api::schema::{
     Method, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams,
     WorkspaceReportMetadataParams,
 };

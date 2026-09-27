@@ -260,13 +260,13 @@ impl PaneRuntime {
         self.preserve_processes_on_drop = false;
     }
 
-    pub fn apply_host_terminal_theme(&self, theme: crate::host_term::theme::TerminalTheme) {
+    pub fn apply_host_terminal_theme(&self, theme: shepr_termio::host_term::theme::TerminalTheme) {
         self.terminal.apply_host_terminal_theme(theme);
     }
 
     pub fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<crate::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     ) {
         self.io
             .write_terminal_response(|| self.terminal.apply_host_terminal_appearance(appearance));
@@ -280,8 +280,8 @@ impl PaneRuntime {
         cols: u16,
         cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
+        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         shell_config: PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         events: &mpsc::Sender<AppEvent>,
@@ -313,8 +313,8 @@ impl PaneRuntime {
         cols: u16,
         cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
+        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         shell_config: PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         initial_history_ansi: Option<&str>,
@@ -353,8 +353,8 @@ impl PaneRuntime {
         argv: &[String],
         launch_env: &PaneLaunchEnv,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
+        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
@@ -394,8 +394,8 @@ impl PaneRuntime {
         rows: u16,
         cols: u16,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
+        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
@@ -1207,17 +1207,17 @@ impl PaneRuntime {
         self.terminal.visible_hyperlinks(area)
     }
 
-    pub fn keyboard_protocol(&self) -> crate::input::KeyboardProtocol {
+    pub fn keyboard_protocol(&self) -> shepr_termio::input::KeyboardProtocol {
         // Legacy only when the terminal core is unreadable (a poisoned lock).
         self.terminal
-            .keyboard_protocol(crate::input::KeyboardProtocol::Legacy)
+            .keyboard_protocol(shepr_termio::input::KeyboardProtocol::Legacy)
     }
 
     pub fn modify_other_keys_level(&self) -> u8 {
         self.terminal.modify_other_keys_level()
     }
 
-    pub fn encode_terminal_key(&self, key: crate::input::TerminalKey) -> Vec<u8> {
+    pub fn encode_terminal_key(&self, key: shepr_termio::input::TerminalKey) -> Vec<u8> {
         self.terminal
             .encode_terminal_key(key, self.keyboard_protocol())
     }
@@ -1298,7 +1298,7 @@ impl PaneRuntime {
     pub fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         if !self.mouse_reporting_enabled() {
@@ -1310,7 +1310,7 @@ impl PaneRuntime {
     pub(crate) fn encode_mouse_motion(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.terminal.encode_mouse_motion(kind, position, modifiers)
@@ -1319,7 +1319,7 @@ impl PaneRuntime {
     pub(crate) fn encode_mouse_wheel(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         if self.wheel_routing()? != WheelRouting::MouseReport {
@@ -1348,10 +1348,12 @@ impl PaneRuntime {
             crossterm::event::MouseEventKind::ScrollDown => crossterm::event::KeyCode::Down,
             _ => return None,
         };
-        Some(self.encode_terminal_key(crate::input::TerminalKey::new(
-            key,
-            crossterm::event::KeyModifiers::empty(),
-        )))
+        Some(
+            self.encode_terminal_key(shepr_termio::input::TerminalKey::new(
+                key,
+                crossterm::event::KeyModifiers::empty(),
+            )),
+        )
     }
 
     /// Get the current working directory of the child shell process.
@@ -1740,7 +1742,7 @@ mod tests {
         assert_eq!(cmd.get_env("TERM_PROGRAM"), Some(OsStr::new("shepr")));
         assert_eq!(
             cmd.get_env("TERM_PROGRAM_VERSION"),
-            Some(OsStr::new(&crate::build_info::version()))
+            Some(OsStr::new(&shepr_protocol::build_version()))
         );
     }
 
@@ -2179,11 +2181,14 @@ mod tests {
     #[tokio::test]
     async fn subscribed_idle_child_receives_color_scheme_transition() {
         let (runtime, mut rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime.apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Dark));
+        runtime.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Dark,
+        ));
         runtime.test_process_pty_bytes(b"\x1b[?2031h");
 
-        runtime
-            .apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Light));
+        runtime.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Light,
+        ));
 
         assert_eq!(rx.recv().await, Some(Bytes::from_static(b"\x1b[?997;2n")));
     }

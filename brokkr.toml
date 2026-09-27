@@ -14,12 +14,14 @@ name = "workspace"
 packages = [
     "shepr",
     "shepr-agent",
+    "shepr-api",
     "shepr-config",
     "shepr-core",
     "shepr-platform",
     "shepr-pty",
     "shepr-protocol",
     "shepr-test-support",
+    "shepr-termio",
     "shepr-vt",
 ]
 
@@ -79,4 +81,16 @@ kinds = ["normal"]
 name = "shepr-config-layer"
 from = "shepr-config"
 allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-core", "time", "toml"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-api-layer"
+from = "shepr-api"
+allow = ["interprocess", "regex", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-platform", "shepr-protocol", "shepr-vt", "tokio", "tracing"]
+kinds = ["normal"]
+
+[[dependency_rule]]
+name = "shepr-termio-layer"
+from = "shepr-termio"
+allow = ["base64", "crossterm", "ratatui", "serde", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "toml", "tracing", "unicode-width"]
 kinds = ["normal"]

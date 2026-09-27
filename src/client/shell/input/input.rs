@@ -1,12 +1,12 @@
 use super::*;
 use crate::client::input_wire::{WireMouseButton, WirePaneInput};
-use crate::raw_input::RawInputEvent;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use shepr_protocol::ClientPaneInputEvent;
+use shepr_termio::input::raw_input::RawInputEvent;
 
 const LOCAL_INPUT_SOURCE: u8 = 0;
 
-fn is_retained_selection_copy_key(key: &crate::input::TerminalKey) -> bool {
+fn is_retained_selection_copy_key(key: &shepr_termio::input::TerminalKey) -> bool {
     matches!(key.code, KeyCode::Char('c' | 'C'))
         && matches!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }
@@ -71,7 +71,7 @@ fn read_clipboard_text_bounded_with(
     }
 }
 
-pub(super) fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
+pub(super) fn is_modal_paste_shortcut(key: &shepr_termio::input::TerminalKey) -> bool {
     key.generated_text.as_deref().is_none_or(str::is_empty)
         && matches!(key.code, KeyCode::Char('v' | 'V'))
         && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
@@ -126,14 +126,16 @@ impl ClientShellState {
 
     #[cfg(test)]
     pub(crate) fn handle_input_bytes(&mut self, data: &[u8]) -> ClientShellInput {
-        self.handle_raw_events(crate::raw_input::parse_raw_input_bytes_sync(data))
+        self.handle_raw_events(shepr_termio::input::raw_input::parse_raw_input_bytes_sync(
+            data,
+        ))
     }
 
     #[cfg(test)]
     pub(crate) fn handle_pixel_mouse(
         &mut self,
         mut mouse: crossterm::event::MouseEvent,
-        pixels: crate::input::mouse::HostPixels,
+        pixels: shepr_termio::input::mouse::HostPixels,
     ) -> ClientShellInput {
         let Some((column, row)) = pixels.geometry.cell(pixels.x, pixels.y) else {
             return ClientShellInput::default();
@@ -178,19 +180,22 @@ impl ClientShellState {
     pub(crate) fn handle_pixel_mouse_bytes(
         &mut self,
         data: &[u8],
-        geometry: crate::input::mouse::HostPixelExtent,
+        geometry: shepr_termio::input::mouse::HostPixelExtent,
     ) -> ClientShellInput {
-        let Some((x, y)) = crate::input::mouse::parse_report(data) else {
+        let Some((x, y)) = shepr_termio::input::mouse::parse_report(data) else {
             return ClientShellInput::default();
         };
-        let mut events = crate::raw_input::parse_raw_input_bytes_sync(data);
+        let mut events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(data);
         if events.len() != 1 {
             return ClientShellInput::default();
         }
         let Some(RawInputEvent::Mouse(mouse)) = events.pop() else {
             return ClientShellInput::default();
         };
-        self.handle_pixel_mouse(mouse, crate::input::mouse::HostPixels { x, y, geometry })
+        self.handle_pixel_mouse(
+            mouse,
+            shepr_termio::input::mouse::HostPixels { x, y, geometry },
+        )
     }
 
     fn begin_input_batch(&mut self, has_events: bool, outcome: &mut ClientShellInput) {
@@ -239,7 +244,7 @@ impl ClientShellState {
                     .push(ClientMessage::ClientShellFocus { focused: false });
             }
             RawInputEvent::HostDefaultColor {
-                kind: crate::host_term::theme::DefaultColorKind::Background,
+                kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
                 color,
             } => {
                 if self.host_background != Some(color) {
@@ -291,14 +296,14 @@ impl ClientShellState {
 
     pub(super) fn handle_key(
         &mut self,
-        key: crate::input::TerminalKey,
+        key: shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         if self.copy_operation_in_flight {
             self.copy_input_queue.push_back(key);
             return;
         }
-        let lease_key = crate::input::InputLeaseKey::new(LOCAL_INPUT_SOURCE, &key);
+        let lease_key = shepr_termio::input::InputLeaseKey::new(LOCAL_INPUT_SOURCE, &key);
         let key = self.input_leases.normalize_press(&lease_key, key);
         match key.kind {
             KeyEventKind::Press => {
@@ -380,16 +385,16 @@ impl ClientShellState {
 
     fn execute_repeat_plan(
         &mut self,
-        lease_key: crate::input::InputLeaseKey<u8>,
-        key: crate::input::TerminalKey,
-        plan: crate::input::RepeatPlan<ClientInputContext, ClientInputTarget>,
+        lease_key: shepr_termio::input::InputLeaseKey<u8>,
+        key: shepr_termio::input::TerminalKey,
+        plan: shepr_termio::input::RepeatPlan<ClientInputContext, ClientInputTarget>,
         outcome: &mut ClientShellInput,
     ) {
         match plan {
-            crate::input::RepeatPlan::Forwarded(target) => {
+            shepr_termio::input::RepeatPlan::Forwarded(target) => {
                 self.push_pane_key(target, key, outcome);
             }
-            crate::input::RepeatPlan::Reprocess {
+            shepr_termio::input::RepeatPlan::Reprocess {
                 context,
                 repetitions,
                 tracked,
@@ -413,7 +418,7 @@ impl ClientShellState {
                     }
                 }
             }
-            crate::input::RepeatPlan::Ignore => {}
+            shepr_termio::input::RepeatPlan::Ignore => {}
         }
     }
 
@@ -449,7 +454,7 @@ impl ClientShellState {
 
     pub(super) fn handle_modal_paste_shortcut_with(
         &mut self,
-        key: &crate::input::TerminalKey,
+        key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
         read_clipboard_text: impl FnOnce() -> Option<String>,
     ) -> bool {
@@ -465,7 +470,7 @@ impl ClientShellState {
 
     fn route_key_press(
         &mut self,
-        key: &crate::input::TerminalKey,
+        key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) -> Option<ClientInputTarget> {
         if self.handle_modal_paste_shortcut_with(key, outcome, read_clipboard_text_bounded) {
@@ -507,7 +512,7 @@ impl ClientShellState {
         match self.mode {
             ClientShellMode::Terminal => {
                 if let Some(binding) =
-                    crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
+                    shepr_termio::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
                 {
                     self.record_binding(&binding, outcome);
                     return None;
@@ -538,7 +543,7 @@ impl ClientShellState {
                     return None;
                 }
                 if let Some(binding) =
-                    crate::input::resolve_prefix_binding(&self.config.keybinds.keybinds, key)
+                    shepr_termio::input::resolve_prefix_binding(&self.config.keybinds.keybinds, key)
                 {
                     self.mode = return_mode;
                     outcome.repaint = true;
@@ -586,10 +591,10 @@ impl ClientShellState {
 
     fn route_navigate_key(
         &mut self,
-        key: &crate::input::TerminalKey,
+        key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::input::{KeybindAction, KeybindDispatch, KeybindMatch};
+        use shepr_termio::input::{KeybindAction, KeybindDispatch, KeybindMatch};
 
         self.pending_workspace_highlight = None;
         if key.code == KeyCode::Esc
@@ -728,7 +733,7 @@ impl ClientShellState {
             return;
         }
 
-        let binding = crate::input::resolve_non_indexed_action(
+        let binding = shepr_termio::input::resolve_non_indexed_action(
             &self.config.keybinds.keybinds,
             key,
             KeybindDispatch::Prefix,
@@ -744,7 +749,7 @@ impl ClientShellState {
         })
         .map(KeybindMatch::Action)
         .or_else(|| {
-            crate::input::resolve_indexed_action(
+            shepr_termio::input::resolve_indexed_action(
                 &self.config.keybinds.keybinds,
                 key,
                 KeybindDispatch::Prefix,
@@ -758,11 +763,11 @@ impl ClientShellState {
 
     fn record_navigate_binding(
         &mut self,
-        binding: &crate::input::KeybindMatch,
+        binding: &shepr_termio::input::KeybindMatch,
         preserve_navigate: bool,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::input::{KeybindAction, KeybindMatch};
+        use shepr_termio::input::{KeybindAction, KeybindMatch};
 
         if !self.indexed_navigation_target_exists(binding) {
             return;
@@ -793,9 +798,9 @@ impl ClientShellState {
 
     pub(super) fn indexed_navigation_target_exists(
         &self,
-        binding: &crate::input::KeybindMatch,
+        binding: &shepr_termio::input::KeybindMatch,
     ) -> bool {
-        use crate::input::{KeybindAction, KeybindMatch};
+        use shepr_termio::input::{KeybindAction, KeybindMatch};
 
         match binding {
             KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)) => {
@@ -857,7 +862,7 @@ impl ClientShellState {
         };
         let pane_id = surface.panes[next].pane_id.clone();
         self.push_endpoint_method(
-            crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+            shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                 pane_id: pane_id.to_string(),
             }),
             outcome,
@@ -866,7 +871,7 @@ impl ClientShellState {
 
     fn route_resize_key(
         &mut self,
-        key: &crate::input::TerminalKey,
+        key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         let resize_bindings = &self.config.keybinds.keybinds.resize_mode;
@@ -881,16 +886,22 @@ impl ClientShellState {
         }
 
         let action = match key.code {
-            KeyCode::Char('h') | KeyCode::Left => Some(crate::input::KeybindAction::ResizePaneLeft),
-            KeyCode::Char('j') | KeyCode::Down => Some(crate::input::KeybindAction::ResizePaneDown),
-            KeyCode::Char('k') | KeyCode::Up => Some(crate::input::KeybindAction::ResizePaneUp),
+            KeyCode::Char('h') | KeyCode::Left => {
+                Some(shepr_termio::input::KeybindAction::ResizePaneLeft)
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                Some(shepr_termio::input::KeybindAction::ResizePaneDown)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                Some(shepr_termio::input::KeybindAction::ResizePaneUp)
+            }
             KeyCode::Char('l') | KeyCode::Right => {
-                Some(crate::input::KeybindAction::ResizePaneRight)
+                Some(shepr_termio::input::KeybindAction::ResizePaneRight)
             }
             _ => None,
         };
         if let Some(action) = action {
-            self.record_binding(&crate::input::KeybindMatch::Action(action), outcome);
+            self.record_binding(&shepr_termio::input::KeybindMatch::Action(action), outcome);
         }
     }
 
@@ -914,7 +925,7 @@ impl ClientShellState {
     fn push_pane_key(
         &self,
         target: ClientInputTarget,
-        key: crate::input::TerminalKey,
+        key: shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {

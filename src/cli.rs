@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 
-use crate::api::client::{ApiClient, ApiClientError};
-use crate::api::schema::{ClientWindowTitleSetParams, EmptyParams, Method, Request};
+use shepr_api::client::{ApiClient, ApiClientError};
+use shepr_api::schema::{ClientWindowTitleSetParams, EmptyParams, Method, Request};
 
 macro_rules! print {
     ($($arg:tt)*) => {{
@@ -396,7 +396,9 @@ pub(crate) fn print_help(requested_session: Option<shepr_config::SessionId>) {
             println!("Config: {}", paths.config_file().display());
             println!(
                 "Logs:   {}",
-                shepr_platform::logging::help_log_paths_summary(&crate::session::data_dir(&paths))
+                shepr_platform::logging::help_log_paths_summary(&shepr_api::session::data_dir(
+                    &paths
+                ))
             );
         }
         Err(errors) => {
@@ -643,7 +645,7 @@ fn run_session_command(command: SessionCommand, paths: &target::CliContext) -> C
 }
 
 fn session_list(paths: &shepr_config::AppPaths, json: bool) -> CliResult<i32> {
-    let sessions = crate::session::list_sessions(paths)?;
+    let sessions = shepr_api::session::list_sessions(paths)?;
     if json {
         let sessions = sessions
             .iter()
@@ -661,11 +663,11 @@ fn session_list(paths: &shepr_config::AppPaths, json: bool) -> CliResult<i32> {
 /// Deliberately skips the protocol check that `send_request` does: the
 /// protocol-mismatch error tells the user to run `session stop` / `server
 /// stop`, so stopping must keep working against a server from another build.
-/// `crate::session` sends a bare `server.stop` JSON line for that reason.
+/// `shepr_api::session` sends a bare `server.stop` JSON line for that reason.
 fn session_stop(name: &str, json: bool, paths: &shepr_config::AppPaths) -> CliResult<i32> {
-    let target = crate::session::parse_target_name(name)
+    let target = shepr_api::session::parse_target_name(name)
         .map_err(|message| CliError::Session(SessionCliError::InvalidName(message)))?;
-    match crate::session::stop_session(paths, &target) {
+    match shepr_api::session::stop_session(paths, &target) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
@@ -682,9 +684,9 @@ fn session_stop(name: &str, json: bool, paths: &shepr_config::AppPaths) -> CliRe
 }
 
 fn session_delete(name: &str, json: bool, paths: &shepr_config::AppPaths) -> CliResult<i32> {
-    let target = crate::session::parse_target_name(name)
+    let target = shepr_api::session::parse_target_name(name)
         .map_err(|message| CliError::Session(SessionCliError::InvalidName(message)))?;
-    match crate::session::delete_session(paths, &target) {
+    match shepr_api::session::delete_session(paths, &target) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
@@ -828,7 +830,7 @@ fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {
     }
 }
 
-fn print_session_table(sessions: &[crate::session::SessionInfo]) {
+fn print_session_table(sessions: &[shepr_api::session::SessionInfo]) {
     println!("{:<20} {:<8} {:<48} socket", "name", "status", "directory");
     for session in sessions {
         println!(
@@ -854,8 +856,8 @@ struct SessionInfoJson<'a> {
     session_dir: String,
 }
 
-impl<'a> From<&'a crate::session::SessionInfo> for SessionInfoJson<'a> {
-    fn from(info: &'a crate::session::SessionInfo) -> Self {
+impl<'a> From<&'a shepr_api::session::SessionInfo> for SessionInfoJson<'a> {
+    fn from(info: &'a shepr_api::session::SessionInfo) -> Self {
         Self {
             name: &info.name,
             default: info.default,
@@ -1129,7 +1131,7 @@ mod tests {
 
     #[test]
     fn maps_dead_server_connect_failure_to_friendly_error() {
-        use crate::api::client::{ApiClient, ApiClientError};
+        use shepr_api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-error");
         let paths =
@@ -1157,7 +1159,7 @@ mod tests {
 
     #[test]
     fn session_json_formats_paths_at_the_cli_edge() {
-        let info = crate::session::SessionInfo {
+        let info = shepr_api::session::SessionInfo {
             name: "work".into(),
             default: false,
             running: true,
@@ -1172,7 +1174,7 @@ mod tests {
 
     #[test]
     fn classifier_ignores_unrelated_io_kinds() {
-        use crate::api::client::{ApiClient, ApiClientError};
+        use shepr_api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
         let paths =

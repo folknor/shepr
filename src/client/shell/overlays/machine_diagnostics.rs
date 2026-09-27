@@ -2,8 +2,8 @@
 //! first; input content must stay out of logs and error messages here.
 
 use super::*;
-use crate::raw_input::RawInputEvent;
 use crossterm::event::{MouseButton, MouseEventKind};
+use shepr_termio::input::raw_input::RawInputEvent;
 
 #[derive(Default)]
 pub(super) struct MachineDiagnostics {

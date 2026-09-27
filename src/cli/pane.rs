@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use clap::ArgMatches;
 
-use crate::api::schema::{
+use shepr_api::schema::{
     Method, OutputMatch, PaneAgentState, PaneCurrentParams, PaneDirection, PaneEdgesParams,
     PaneFocusDirectionParams, PaneInputSetParams, PaneLayoutParams, PaneListParams,
     PaneMoveDestination, PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams, PaneReadParams,
@@ -504,7 +504,7 @@ fn read_params(matches: &ArgMatches) -> PaneReadParams {
         format,
         // Same params as `agent read`: an ANSI read keeps its escapes.
         strip_ansi: format != ReadFormat::Ansi,
-        intent: crate::api::schema::ReadIntent::Interactive,
+        intent: shepr_api::schema::ReadIntent::Interactive,
     }
 }
 

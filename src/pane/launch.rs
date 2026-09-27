@@ -25,7 +25,7 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
     cmd.env("TERM", shepr_vt::PANE_TERM);
     cmd.env("COLORTERM", PANE_COLORTERM);
     cmd.env("TERM_PROGRAM", "shepr");
-    cmd.env("TERM_PROGRAM_VERSION", crate::build_info::version());
+    cmd.env("TERM_PROGRAM_VERSION", shepr_protocol::build_version());
     // Host handles refer to the outer terminal, never to this pane.
     for key in [
         "ITERM_SESSION_ID",

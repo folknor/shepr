@@ -3,7 +3,7 @@ use super::App;
 impl App {
     pub(crate) fn set_host_terminal_appearance_state(
         &mut self,
-        appearance: Option<crate::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         explicit: bool,
     ) -> bool {
         if self.state.host_terminal_appearance == appearance
@@ -21,7 +21,7 @@ impl App {
 
     pub(crate) fn set_host_terminal_theme(
         &mut self,
-        theme: crate::host_term::theme::TerminalTheme,
+        theme: shepr_termio::host_term::theme::TerminalTheme,
     ) -> bool {
         if theme == self.state.host_terminal_theme {
             return false;

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::ops::Index;
 
-use crate::api::RenderDemand;
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
+use shepr_api::RenderDemand;
 use shepr_protocol::PublicTabId;
 use shepr_protocol::TerminalId;
 use shepr_protocol::{
@@ -92,9 +92,9 @@ pub(crate) struct ClientShellState {
     /// Whether this shell wants host mouse capture without pane demand.
     pub(crate) mouse_capture: bool,
     /// Last host terminal default colors reported by this shell.
-    pub(crate) host_terminal_theme: crate::host_term::theme::TerminalTheme,
+    pub(crate) host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
     /// Last host light/dark appearance reported by this shell.
-    pub(crate) host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
+    pub(crate) host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     /// Whether appearance came from an explicit host color-scheme report.
     pub(crate) host_terminal_appearance_explicit: bool,
     /// Last reported focus state for this shell's outer terminal.
@@ -127,11 +127,13 @@ impl ClientShellState {
 
         match update {
             shepr_protocol::ClientHostThemeUpdate::DefaultColor { kind, color } => {
-                let kind: crate::host_term::theme::DefaultColorKind = (*kind).into();
+                let kind: shepr_termio::host_term::theme::DefaultColorKind = (*kind).into();
                 let color = (*color).into();
                 next_theme = next_theme.with_color(kind, color);
-                if matches!(kind, crate::host_term::theme::DefaultColorKind::Background)
-                    && !self.host_terminal_appearance_explicit
+                if matches!(
+                    kind,
+                    shepr_termio::host_term::theme::DefaultColorKind::Background
+                ) && !self.host_terminal_appearance_explicit
                 {
                     changed |= self.set_host_appearance(Some(color.inferred_appearance()), false);
                 }
@@ -156,7 +158,7 @@ impl ClientShellState {
 
     fn set_host_appearance(
         &mut self,
-        appearance: Option<crate::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         explicit: bool,
     ) -> bool {
         if self.host_terminal_appearance_explicit && !explicit {
@@ -204,7 +206,7 @@ pub(crate) enum RenderTargetMode {
 pub(crate) struct RenderTarget {
     pub(crate) client_id: ClientId,
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
-    pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
+    pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     pub(crate) is_foreground: bool,
     pub(crate) mode: RenderTargetMode,
 }
@@ -590,7 +592,7 @@ pub(crate) struct ClientConnection {
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
     /// Pixel size of one client terminal cell.
-    pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
+    pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     /// Monotonic activity stamp used to choose the fallback foreground client.
     pub(crate) last_activity: ActivityStamp,
     /// Render baseline for the negotiated client encoding.
@@ -622,7 +624,7 @@ impl ClientConnection {
     #[cfg(test)]
     pub(crate) fn new(
         terminal_size: (u16, u16),
-        cell_size: crate::host_term::cell_size::HostCellSize,
+        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
         render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
@@ -640,7 +642,7 @@ impl ClientConnection {
     pub(crate) fn new_with_mode(
         mode: ClientConnectionMode,
         terminal_size: shepr_core::geometry::GridSize,
-        cell_size: crate::host_term::cell_size::HostCellSize,
+        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
         render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
@@ -919,7 +921,7 @@ mod tests {
     fn shell_client() -> ClientConnection {
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             shepr_protocol::RenderEncoding::SemanticFrame,
             None,
@@ -932,7 +934,7 @@ mod tests {
             ClientConnection::new_with_mode(
                 mode,
                 shepr_core::geometry::GridSize::clamped(80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
                 shepr_protocol::RenderEncoding::TerminalAnsi,
                 None,
@@ -963,7 +965,7 @@ mod tests {
         );
         let first = ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             shepr_protocol::RenderEncoding::SemanticFrame,
             None,
@@ -971,7 +973,7 @@ mod tests {
         let second = ClientConnection::new_with_mode(
             ClientConnectionMode::TerminalPending,
             shepr_core::geometry::GridSize::clamped(80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             shepr_protocol::RenderEncoding::TerminalAnsi,
             None,

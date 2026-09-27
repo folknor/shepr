@@ -41,14 +41,14 @@ pub(super) fn forward_proxied_api_response(
     proxy: Option<(
         String,
         &'static str,
-        std::sync::mpsc::Sender<api::error::ApiResult>,
-        std::sync::mpsc::Receiver<api::error::ApiResult>,
+        std::sync::mpsc::Sender<shepr_api::error::ApiResult>,
+        std::sync::mpsc::Receiver<shepr_api::error::ApiResult>,
     )>,
-) -> Option<api::schema::ResponseResult> {
+) -> Option<shepr_api::schema::ResponseResult> {
     let (request_id, method, respond_to, response_rx) = proxy?;
     let response = response_rx.recv().ok()?;
     let result = response.clone().ok();
-    api::send_api_response(&respond_to, &request_id, method, response);
+    shepr_api::send_api_response(&respond_to, &request_id, method, response);
     result
 }
 
@@ -225,8 +225,8 @@ impl HeadlessServer {
         self.focus_shell_client_on_tab(client_id, &tab_id)
     }
 
-    pub(super) fn shell_locations_may_need_reconcile(method: &api::schema::Method) -> bool {
-        use api::schema::Method;
+    pub(super) fn shell_locations_may_need_reconcile(method: &shepr_api::schema::Method) -> bool {
+        use shepr_api::schema::Method;
 
         matches!(
             method,
@@ -240,8 +240,8 @@ impl HeadlessServer {
         )
     }
 
-    pub(super) fn shell_endpoint_claims_geometry(method: &api::schema::Method) -> bool {
-        use api::schema::Method;
+    pub(super) fn shell_endpoint_claims_geometry(method: &shepr_api::schema::Method) -> bool {
+        use shepr_api::schema::Method;
 
         matches!(
             method,
@@ -274,8 +274,8 @@ impl HeadlessServer {
         )
     }
 
-    pub(super) fn public_request_may_change_geometry(method: &api::schema::Method) -> bool {
-        use api::schema::Method;
+    pub(super) fn public_request_may_change_geometry(method: &shepr_api::schema::Method) -> bool {
+        use shepr_api::schema::Method;
 
         matches!(
             method,
@@ -300,10 +300,10 @@ impl HeadlessServer {
     pub(super) fn apply_shell_navigation_request(
         &mut self,
         client_id: ClientId,
-        method: &api::schema::Method,
+        method: &shepr_api::schema::Method,
     ) -> bool {
         match method {
-            api::schema::Method::WorkspaceFocus(target) => {
+            shepr_api::schema::Method::WorkspaceFocus(target) => {
                 let Some(workspace_index) = self.app.parse_workspace_id(&target.workspace_id)
                 else {
                     return false;
@@ -329,10 +329,10 @@ impl HeadlessServer {
                 location.focus_workspace(workspace_id);
                 true
             }
-            api::schema::Method::TabFocus(target) => {
+            shepr_api::schema::Method::TabFocus(target) => {
                 self.focus_shell_client_on_tab(client_id, &target.tab_id)
             }
-            api::schema::Method::PaneFocus(target) => self
+            shepr_api::schema::Method::PaneFocus(target) => self
                 .app
                 .parse_pane_id(&target.pane_id)
                 .and_then(|(workspace_index, pane_id)| {
@@ -571,7 +571,7 @@ impl HeadlessServer {
         let cell_size = if client.cell_size.is_known() {
             client.cell_size
         } else {
-            crate::host_term::cell_size::HostCellSize::default()
+            shepr_termio::host_term::cell_size::HostCellSize::default()
         };
         let area = Rect::new(0, 0, cols, rows);
         if self.app_client_count() == 1 {

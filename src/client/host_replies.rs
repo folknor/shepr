@@ -1,4 +1,4 @@
-use crate::raw_input::{HostReplies, RawInputFramer};
+use shepr_termio::input::raw_input::{HostReplies, RawInputFramer};
 
 pub(super) struct HostInputFramer(RawInputFramer<HostReplies>);
 
@@ -25,7 +25,7 @@ impl std::ops::DerefMut for HostInputFramer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raw_input::{HostReplyPolicy, RawInputEvent};
+    use shepr_termio::input::raw_input::{HostReplyPolicy, RawInputEvent};
 
     #[test]
     fn focus_and_scheme_reports_update_only_armed_reply_windows() {
@@ -37,13 +37,13 @@ mod tests {
         replies.observe(&RawInputEvent::OuterFocusGained);
         assert!(replies.awaiting_appearance());
         replies.observe(&RawInputEvent::HostColorSchemeChanged(
-            crate::host_term::theme::HostAppearance::Dark,
+            shepr_termio::host_term::theme::HostAppearance::Dark,
         ));
         assert!(!replies.awaiting_reply());
 
         replies.enable_color_scheme_tracking();
         replies.observe(&RawInputEvent::HostColorSchemeChanged(
-            crate::host_term::theme::HostAppearance::Dark,
+            shepr_termio::host_term::theme::HostAppearance::Dark,
         ));
         assert!(replies.awaiting_reply());
         replies.clear_all();

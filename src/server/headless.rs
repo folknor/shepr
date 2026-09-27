@@ -32,7 +32,6 @@ use tracing::{debug, info, warn};
 
 use base64::Engine;
 
-use crate::api::{self, RenderDemand};
 use crate::app;
 use crate::events::AppEvent;
 use crate::server::client_accept::accept_pending_client_connections;
@@ -49,6 +48,7 @@ use crate::server::pane_input::{
     terminal_attach_mouse_position,
 };
 use crate::server::socket_paths::{client_socket_path, prepare_socket_path};
+use shepr_api::{self, RenderDemand};
 #[cfg(test)]
 use shepr_platform::ipc::bind_local_listener;
 use shepr_platform::ipc::{
@@ -87,7 +87,7 @@ use std::fs;
 enum LoopEvent {
     Timer,
     Internal(AppEvent),
-    Api(Box<api::ApiRequestMessage>),
+    Api(Box<shepr_api::ApiRequestMessage>),
     ServerEvent(ServerEvent),
     RenderRequested,
     ClientListenerReady,
@@ -142,7 +142,7 @@ impl AsRawFd for ListenerFd {
 pub struct HeadlessServer {
     app: app::App,
     /// Kept alive only for its `Drop` impl, which tears down the JSON API socket server.
-    _api_server: Option<api::ServerHandle>,
+    _api_server: Option<shepr_api::ServerHandle>,
     client_listener: LocalListener,
     client_socket_path: PathBuf,
     client_socket_identity: SocketFileIdentity,
@@ -202,7 +202,7 @@ impl HeadlessServer {
     /// 3. Returns the server ready to run
     pub fn new(
         app: app::App,
-        api_server: Option<api::ServerHandle>,
+        api_server: Option<shepr_api::ServerHandle>,
         stop_requested: Arc<AtomicBool>,
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
@@ -565,7 +565,8 @@ impl HeadlessServer {
         let Some(client_id) = foreground_client_id else {
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
-            self.app.state.host_cell_size = crate::host_term::cell_size::HostCellSize::default();
+            self.app.state.host_cell_size =
+                shepr_termio::host_term::cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
             return;
         };
@@ -573,7 +574,8 @@ impl HeadlessServer {
             self.clients.set_foreground_client_id(None);
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
-            self.app.state.host_cell_size = crate::host_term::cell_size::HostCellSize::default();
+            self.app.state.host_cell_size =
+                shepr_termio::host_term::cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
             return;
         };
@@ -581,7 +583,8 @@ impl HeadlessServer {
             self.clients.set_foreground_client_id(None);
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
-            self.app.state.host_cell_size = crate::host_term::cell_size::HostCellSize::default();
+            self.app.state.host_cell_size =
+                shepr_termio::host_term::cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
             return;
         };
@@ -590,7 +593,7 @@ impl HeadlessServer {
         let host_cell_size = if client.cell_size.is_known() {
             client.cell_size
         } else {
-            crate::host_term::cell_size::HostCellSize::default()
+            shepr_termio::host_term::cell_size::HostCellSize::default()
         };
         let host_terminal_theme = shell.host_terminal_theme;
         let host_terminal_appearance = shell.host_terminal_appearance;
@@ -1062,15 +1065,18 @@ impl HeadlessServer {
         sent
     }
 
-    fn handle_client_window_title_api(&mut self, title: Option<String>) -> api::error::ApiResult {
-        use api::schema::{ClientWindowTitleReason, ResponseResult};
+    fn handle_client_window_title_api(
+        &mut self,
+        title: Option<String>,
+    ) -> shepr_api::error::ApiResult {
+        use shepr_api::schema::{ClientWindowTitleReason, ResponseResult};
 
         let title = match title {
             Some(title) => match shepr_config::sanitize_window_title_text(&title) {
                 Some(title) => Some(title),
                 None => {
-                    return Err(api::error::ApiError::new(
-                        api::error::ApiErrorCode::InvalidParams,
+                    return Err(shepr_api::error::ApiError::new(
+                        shepr_api::error::ApiErrorCode::InvalidParams,
                         "window title is empty",
                     ));
                 }
@@ -1351,7 +1357,7 @@ impl HeadlessServer {
                     cols, rows, cell_width_px, cell_height_px, "direct terminal client connected"
                 );
                 let last_activity = self.clients.allocate_activity_stamp();
-                let observed = crate::host_term::cell_size::HostCellSize {
+                let observed = shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
                 };
@@ -1392,7 +1398,7 @@ impl HeadlessServer {
                 self.app.ensure_default_workspace();
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.clients.allocate_activity_stamp();
-                let observed = crate::host_term::cell_size::HostCellSize {
+                let observed = shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
                 };
@@ -1521,7 +1527,7 @@ impl HeadlessServer {
                     ?client_id,
                     cols, rows, cell_width_px, cell_height_px, pixel_mouse, "client resize"
                 );
-                let observed = crate::host_term::cell_size::HostCellSize {
+                let observed = shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
                 };
@@ -1587,7 +1593,7 @@ impl HeadlessServer {
                 }
                 client.terminal_size =
                     shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows);
-                let observed = crate::host_term::cell_size::HostCellSize {
+                let observed = shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
                 };
@@ -1871,14 +1877,14 @@ impl HeadlessServer {
     #[cfg(test)]
     fn agent_read_not_idle_error(
         &self,
-        request: &api::schema::Request,
-    ) -> Option<api::schema::ErrorBody> {
+        request: &shepr_api::schema::Request,
+    ) -> Option<shepr_api::schema::ErrorBody> {
         self.api_dispatcher.agent_read_not_idle_error(self, request)
     }
 
     fn handle_api_request_with_shutdown_check_inner(
         &mut self,
-        msg: api::ApiRequestMessage,
+        msg: shepr_api::ApiRequestMessage,
     ) -> bool {
         if self.lifecycle.stop_requested(self.app.state.should_quit) {
             self.initiate_shutdown();
@@ -1906,14 +1912,14 @@ impl HeadlessServer {
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
 
         match &msg.request.method {
-            api::schema::Method::ClientWindowTitleSet(params) => {
+            shepr_api::schema::Method::ClientWindowTitleSet(params) => {
                 let response = self.handle_client_window_title_api(Some(params.title.clone()));
-                api::send_api_response(&msg.respond_to, &request_id, method, response);
+                shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
                 return true;
             }
-            api::schema::Method::ClientWindowTitleClear(_) => {
+            shepr_api::schema::Method::ClientWindowTitleClear(_) => {
                 let response = self.handle_client_window_title_api(None);
-                api::send_api_response(&msg.respond_to, &request_id, method, response);
+                shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
                 return true;
             }
             _ => {}
@@ -1931,12 +1937,15 @@ impl HeadlessServer {
             .api_dispatcher
             .agent_read_not_idle_error(self, &msg.request)
         {
-            let response = Err(api::error::ApiError::from_body(error));
-            api::send_api_response(&msg.respond_to, &request_id, method, response);
+            let response = Err(shepr_api::error::ApiError::from_body(error));
+            shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
             return changed;
         }
         let alt_screen_read_spec = self.api_dispatcher.alt_screen_read_spec(self, &msg.request);
-        if matches!(&msg.request.method, api::schema::Method::AgentPrompt(_)) {
+        if matches!(
+            &msg.request.method,
+            shepr_api::schema::Method::AgentPrompt(_)
+        ) {
             let deferred_changed = self
                 .app
                 .handle_deferred_agent_api_request(msg.request, msg.respond_to);
@@ -1959,16 +1968,16 @@ impl HeadlessServer {
             );
         }
         let outcome = self.app.handle_api_request_with_render(msg.request);
-        changed |= outcome.render != api::RenderDemand::None;
+        changed |= outcome.render != shepr_api::RenderDemand::None;
         let mut response = outcome.response;
         if let Some(snapshot) = frozen_alt_screen_read
-            && let Ok(api::schema::ResponseResult::PaneRead { read }) = &mut response
+            && let Ok(shepr_api::schema::ResponseResult::PaneRead { read }) = &mut response
         {
             read.text = snapshot.text;
             read.truncated = snapshot.truncated;
         }
         if let Some(spec) = alt_screen_read_spec
-            && let Ok(api::schema::ResponseResult::PaneRead { read }) = &response
+            && let Ok(shepr_api::schema::ResponseResult::PaneRead { read }) = &response
         {
             let pending = crate::server::alt_screen_read::PendingAltScreenRead::start(
                 spec.terminal_id,
@@ -1985,7 +1994,7 @@ impl HeadlessServer {
             self.api_dispatcher.push_pending_read(pending);
             return changed;
         }
-        api::send_api_response(&msg.respond_to, &request_id, method, response);
+        shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
 
         if self.clients.latest_shell_client().is_some() {
             changed |= self.app.ensure_default_workspace();

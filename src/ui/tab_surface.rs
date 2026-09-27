@@ -105,7 +105,7 @@ pub(crate) fn resize_tab_surface(
     workspace_index: usize,
     tab_index: usize,
     area: Rect,
-    cell_size: crate::host_term::cell_size::HostCellSize,
+    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) {
     let pane_infos =
         compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area);
@@ -123,7 +123,7 @@ pub(crate) fn resize_tab_surface_layout(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     layout: &TabSurfaceLayout,
-    cell_size: crate::host_term::cell_size::HostCellSize,
+    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) {
     let Some((workspace_index, tab_index)) = layout
         .target

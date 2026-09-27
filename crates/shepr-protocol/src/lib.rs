@@ -14,6 +14,7 @@ pub mod preamble;
 mod projection;
 mod ratatui_conversion;
 mod revision;
+pub mod scroll;
 mod status;
 mod style;
 mod surface;
@@ -39,3 +40,25 @@ pub use status::*;
 pub use style::*;
 pub use style::{RATATUI_UNDERLINE_STYLE_MASK, RATATUI_UNDERLINE_STYLE_SHIFT};
 pub use surface::*;
+
+/// Version advertised by the JSON API, using the same build ID as the wire preamble.
+pub fn build_version() -> String {
+    format!("{}+{}", env!("CARGO_PKG_VERSION"), limits::BUILD_ID)
+}
+
+pub use scroll::ScrollMetrics;
+
+#[cfg(test)]
+mod build_version_tests {
+    use super::*;
+
+    #[test]
+    fn version_carries_the_build_fingerprint() {
+        assert_eq!(
+            build_version(),
+            format!("{}+{}", env!("CARGO_PKG_VERSION"), BUILD_ID)
+        );
+        assert_eq!(BUILD_ID.len(), 16);
+        assert!(BUILD_ID.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+}

@@ -6,8 +6,8 @@ use shepr_config::NewTerminalCwdConfig;
 use crate::workspace::PaneChromeInfo as PaneInfo;
 use shepr_core::layout::PaneId;
 
-use crate::host_term::theme::{HostAppearance, TerminalTheme};
 use crate::workspace::Workspace;
+use shepr_termio::host_term::theme::{HostAppearance, TerminalTheme};
 
 pub use shepr_config::theme::Palette;
 
@@ -77,7 +77,7 @@ pub struct AppState {
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
     /// Last known foreground host terminal cell size in pixels.
-    pub(crate) host_cell_size: crate::host_term::cell_size::HostCellSize,
+    pub(crate) host_cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
     /// Terminal runtimes that should be shut down by the app/runtime layer
@@ -238,7 +238,7 @@ pub fn key_matches(
     expected_mods: KeyModifiers,
 ) -> bool {
     shepr_config::terminal_key_matches_combo(
-        &crate::input::TerminalKey::from(*key),
+        &shepr_termio::input::TerminalKey::from(*key),
         (expected_code, expected_mods),
     )
 }
@@ -275,7 +275,7 @@ impl AppState {
             host_terminal_appearance_explicit: false,
             agent_manifest_summaries: Vec::new(),
             host_terminal_theme: TerminalTheme::default(),
-            host_cell_size: crate::host_term::cell_size::HostCellSize::default(),
+            host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
         }

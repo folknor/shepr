@@ -1,13 +1,13 @@
-use crate::api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::{ApiErrorCode, ApiResult};
 use std::path::PathBuf;
 
+use crate::app::App;
 #[cfg(test)]
-use crate::api::schema::EventKind;
-use crate::api::schema::{
+use shepr_api::schema::EventKind;
+use shepr_api::schema::{
     EventData, EventEnvelope, ResponseResult, TabCreateParams, TabListParams, TabMoveParams,
     TabRenameParams, TabTarget,
 };
-use crate::app::App;
 
 use super::responses::{failure, success};
 
@@ -252,7 +252,7 @@ impl App {
         success(id, ResponseResult::Ok {})
     }
 
-    fn tab_list_info(&self, ws_idx: usize) -> Vec<crate::api::schema::TabInfo> {
+    fn tab_list_info(&self, ws_idx: usize) -> Vec<shepr_api::schema::TabInfo> {
         self.state
             .workspaces
             .get(ws_idx)
@@ -285,12 +285,13 @@ fn tab_not_found(id: String, tab_id: &str) -> ApiResult {
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
-    use crate::{api::schema::SuccessResponse, workspace::Workspace};
+    use crate::workspace::Workspace;
+    use shepr_api::schema::SuccessResponse;
     use shepr_config::Config;
 
     #[test]
     fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -313,7 +314,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert!(app.state.workspaces.is_empty());
         assert!(app.state.active_index().is_none());
@@ -355,7 +356,7 @@ mod tests {
 
     #[test]
     fn api_tab_close_announces_every_pane_it_removes() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -390,7 +391,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         assert!(
@@ -423,7 +424,7 @@ mod tests {
 
     #[test]
     fn api_tab_move_reorders_tabs_in_target_workspace() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -448,7 +449,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::TabList { tabs } = success.result else {
             panic!("expected tab list");
         };
@@ -475,7 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn tab_create_follows_cached_focused_pane_cwd_without_runtime() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -514,7 +515,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
         let created = &app.state.workspaces[0].tabs[1];
         let created_terminal_id = created

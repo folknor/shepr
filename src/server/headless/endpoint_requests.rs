@@ -6,7 +6,7 @@ impl HeadlessServer {
         &mut self,
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
-        mut request: Box<api::schema::Request>,
+        mut request: Box<shepr_api::schema::Request>,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
@@ -20,7 +20,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                api::error::ApiErrorCode::UnsupportedEndpointCommand,
+                shepr_api::error::ApiErrorCode::UnsupportedEndpointCommand,
                 "this method is not available through the client shell command lane",
             );
             self.send_to_client(client_id, &message);
@@ -30,14 +30,14 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                api::error::ApiErrorCode::StaleBoot,
+                shepr_api::error::ApiErrorCode::StaleBoot,
                 "endpoint command targeted an earlier server boot",
             );
             self.send_to_client(client_id, &message);
             return false;
         }
         let surface_active = shell.surface_active;
-        if let api::schema::Method::ClientShellSurfaceSet(params) = &request.method {
+        if let shepr_api::schema::Method::ClientShellSurfaceSet(params) = &request.method {
             let Some((changed, projection_revision)) =
                 self.set_client_shell_surface_active(client_id, params.active)
             else {
@@ -48,7 +48,7 @@ impl HeadlessServer {
                 &crate::server::client_commands::success_message_with_result(
                     boot_id,
                     request_id,
-                    api::schema::ResponseResult::ClientShellSurfaceSet {
+                    shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
                         active: params.active,
                         projection_revision,
                     },
@@ -60,7 +60,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                api::error::ApiErrorCode::EndpointBusy,
+                shepr_api::error::ApiErrorCode::EndpointBusy,
                 "this endpoint is still processing another command",
             );
             self.send_to_client(client_id, &message);
@@ -70,7 +70,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                api::error::ApiErrorCode::SurfaceInactive,
+                shepr_api::error::ApiErrorCode::SurfaceInactive,
                 "this method requires an active client shell surface",
             );
             self.send_to_client(client_id, &message);
@@ -93,7 +93,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                api::error::ApiErrorCode::ServerUnavailable,
+                shepr_api::error::ApiErrorCode::ServerUnavailable,
                 format!("failed to start endpoint response bridge: {err}"),
             );
             self.send_to_client(client_id, &message);
@@ -108,7 +108,7 @@ impl HeadlessServer {
         foreground_changed
             | self.handle_client_shell_api_request(
                 client_id,
-                api::ApiRequestMessage {
+                shepr_api::ApiRequestMessage {
                     request: *request,
                     respond_to,
                 },

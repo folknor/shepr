@@ -1,4 +1,4 @@
-use crate::api::error::{ApiError, ApiErrorCode};
+use shepr_api::error::{ApiError, ApiErrorCode};
 
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
     let normalized = normalize_api_key_alias(key.trim());
@@ -75,33 +75,33 @@ pub(super) fn encode_api_input(
 }
 
 pub(super) fn detect_state_from_api(
-    state: crate::api::schema::PaneAgentState,
+    state: shepr_api::schema::PaneAgentState,
 ) -> shepr_agent::detect::AgentState {
     match state {
-        crate::api::schema::PaneAgentState::Idle => shepr_agent::detect::AgentState::Idle,
-        crate::api::schema::PaneAgentState::Working => shepr_agent::detect::AgentState::Working,
-        crate::api::schema::PaneAgentState::Blocked => shepr_agent::detect::AgentState::Blocked,
-        crate::api::schema::PaneAgentState::Unknown => shepr_agent::detect::AgentState::Unknown,
+        shepr_api::schema::PaneAgentState::Idle => shepr_agent::detect::AgentState::Idle,
+        shepr_api::schema::PaneAgentState::Working => shepr_agent::detect::AgentState::Working,
+        shepr_api::schema::PaneAgentState::Blocked => shepr_agent::detect::AgentState::Blocked,
+        shepr_api::schema::PaneAgentState::Unknown => shepr_agent::detect::AgentState::Unknown,
     }
 }
 
 pub(super) fn pane_agent_status(
     state: shepr_agent::detect::AgentState,
-) -> crate::api::schema::AgentStatus {
+) -> shepr_api::schema::AgentStatus {
     match state {
         shepr_agent::detect::AgentState::Idle | shepr_agent::detect::AgentState::Unknown => {
-            crate::api::schema::AgentStatus::Idle
+            shepr_api::schema::AgentStatus::Idle
         }
-        shepr_agent::detect::AgentState::Working => crate::api::schema::AgentStatus::Working,
-        shepr_agent::detect::AgentState::Blocked => crate::api::schema::AgentStatus::Blocked,
+        shepr_agent::detect::AgentState::Working => shepr_api::schema::AgentStatus::Working,
+        shepr_agent::detect::AgentState::Blocked => shepr_api::schema::AgentStatus::Blocked,
     }
 }
 
 #[cfg(test)]
 mod agent_status_tests {
     use super::pane_agent_status;
-    use crate::api::schema::AgentStatus;
     use shepr_agent::detect::AgentState;
+    use shepr_api::schema::AgentStatus;
 
     #[test]
     fn unknown_agent_state_presents_as_idle() {
@@ -119,20 +119,20 @@ pub(super) const MAX_READ_LINES: u32 = 1000;
 /// whatever `format` says; `strip_ansi: true` (the default) leaves `format` in
 /// charge. There is no raw PTY byte history to return instead.
 pub(super) fn effective_read_format(
-    format: crate::api::schema::ReadFormat,
+    format: shepr_api::schema::ReadFormat,
     strip_ansi: bool,
-) -> crate::api::schema::ReadFormat {
+) -> shepr_api::schema::ReadFormat {
     if strip_ansi {
         format
     } else {
-        crate::api::schema::ReadFormat::Ansi
+        shepr_api::schema::ReadFormat::Ansi
     }
 }
 
 pub(super) fn read_terminal_snapshot(
     terminal: &crate::pane::PaneRuntime,
-    source: crate::api::schema::ReadSource,
-    format: crate::api::schema::ReadFormat,
+    source: shepr_api::schema::ReadSource,
+    format: shepr_api::schema::ReadFormat,
     lines: Option<u32>,
 ) -> Result<crate::terminal::TerminalReadSnapshot, ApiError> {
     validate_read_request(source, format, lines)?;
@@ -142,11 +142,11 @@ pub(super) fn read_terminal_snapshot(
 }
 
 fn validate_read_request(
-    source: crate::api::schema::ReadSource,
-    format: crate::api::schema::ReadFormat,
+    source: shepr_api::schema::ReadSource,
+    format: shepr_api::schema::ReadFormat,
     lines: Option<u32>,
 ) -> Result<(), ApiError> {
-    use crate::api::schema::{ReadFormat, ReadSource};
+    use shepr_api::schema::{ReadFormat, ReadSource};
 
     if let Some(lines) = lines
         && lines > MAX_READ_LINES
@@ -167,11 +167,11 @@ fn validate_read_request(
 
 fn read_validated_terminal_snapshot(
     terminal: &crate::pane::PaneRuntime,
-    source: crate::api::schema::ReadSource,
-    format: crate::api::schema::ReadFormat,
+    source: shepr_api::schema::ReadSource,
+    format: shepr_api::schema::ReadFormat,
     lines: Option<u32>,
 ) -> crate::terminal::TerminalReadSnapshot {
-    use crate::api::schema::{ReadFormat, ReadSource};
+    use shepr_api::schema::{ReadFormat, ReadSource};
 
     let line_limit = lines.map(|lines| lines as usize);
     let recent_lines = line_limit.unwrap_or(80);
@@ -223,7 +223,7 @@ mod read_snapshot_tests {
     use super::{
         MAX_READ_LINES, effective_read_format, limit_snapshot_lines, validate_read_request,
     };
-    use crate::api::schema::{ReadFormat, ReadSource};
+    use shepr_api::schema::{ReadFormat, ReadSource};
 
     #[test]
     fn keeping_escapes_selects_the_ansi_renderer() {
@@ -257,7 +257,7 @@ mod read_snapshot_tests {
             Some(MAX_READ_LINES + 1),
         )
         .expect_err("test precondition");
-        assert_eq!(error.code, crate::api::error::ApiErrorCode::InvalidLines);
+        assert_eq!(error.code, shepr_api::error::ApiErrorCode::InvalidLines);
     }
 
     #[test]
@@ -266,7 +266,7 @@ mod read_snapshot_tests {
             .expect_err("test precondition");
         assert_eq!(
             error.code,
-            crate::api::error::ApiErrorCode::UnsupportedReadFormat
+            shepr_api::error::ApiErrorCode::UnsupportedReadFormat
         );
         assert!(validate_read_request(ReadSource::Detection, ReadFormat::Text, None).is_ok());
         assert!(validate_read_request(ReadSource::Visible, ReadFormat::Ansi, None).is_ok());

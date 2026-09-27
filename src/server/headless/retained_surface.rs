@@ -261,7 +261,7 @@ impl HeadlessServer {
             let Some(client) = self.clients.get(&target.client_id) else {
                 fallback!("client_missing");
             };
-            if client.deferred_render() != crate::api::RenderDemand::None {
+            if client.deferred_render() != shepr_api::RenderDemand::None {
                 continue;
             }
             if client.render_state.requires_recompute() {

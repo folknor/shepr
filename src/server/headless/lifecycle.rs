@@ -142,11 +142,11 @@ impl ShutdownLifecycle {
 
     /// The canonical rejection used for requests selected after the server
     /// entered its terminal stopping phase.
-    pub(super) fn shutdown_error(&self) -> Option<api::schema::ErrorBody> {
+    pub(super) fn shutdown_error(&self) -> Option<shepr_api::schema::ErrorBody> {
         if self.phase == ShutdownPhase::Stopping {
             Some(
-                api::error::ApiError::new(
-                    api::error::ApiErrorCode::ServerUnavailable,
+                shepr_api::error::ApiError::new(
+                    shepr_api::error::ApiErrorCode::ServerUnavailable,
                     "server is shutting down",
                 )
                 .into_body(),

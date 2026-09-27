@@ -1,4 +1,4 @@
-use crate::api::schema::{
+use shepr_api::schema::{
     EmptyParams, Method, PaneFocusDirectionParams, PaneInputSetParams, PaneMoveParams,
     PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
     PaneZoomParams, Request, TabCreateParams, TabListParams, TabRenameParams, TabTarget,

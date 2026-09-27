@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use crate::api;
 use crate::client::endpoint::{
     ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport, ProfileId,
     SavedSshEndpoint,
@@ -8,6 +7,7 @@ use crate::client::endpoint::{
 use crate::server::ClientId;
 use crate::server::client_transport::ServerEvent;
 use crate::server::headless::tests as headless_tests;
+use shepr_api as api;
 use shepr_protocol::ServerMessage;
 
 #[derive(Clone)]

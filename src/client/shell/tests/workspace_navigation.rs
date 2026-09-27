@@ -258,12 +258,14 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     state.config.prompt_new_workspace_name = false;
     let mut create = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorkspace),
+        &shepr_termio::input::KeybindMatch::Action(
+            shepr_termio::input::KeybindAction::NewWorkspace,
+        ),
         &mut create,
     );
     assert!(
         matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-        if matches!(&request.method, crate::api::schema::Method::WorkspaceCreate(params) if params.source_workspace_id.as_deref() == Some("ws_1")))
+        if matches!(&request.method, shepr_api::schema::Method::WorkspaceCreate(params) if params.source_workspace_id.as_deref() == Some("ws_1")))
     );
     preview_key(&mut state, b"\x1b");
     assert!(state.navigate_workspace_id.is_none());
@@ -311,13 +313,13 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         .as_mut()
         .expect("test precondition")
         .search_prompt = Some(ClientCopySearchPrompt {
-        direction: crate::api::schema::PaneCopySearchDirection::Forward,
+        direction: shepr_api::schema::PaneCopySearchDirection::Forward,
         query: "original".into(),
     });
     preview_key(&mut state, b"\x1b[B");
     assert!(state.workspace_preview_action_blocked());
     assert!(!state.modal_paste_target_active());
-    let key = crate::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
     assert!(!state.handle_modal_paste_shortcut_with(
         &key,
         &mut ClientShellInput::default(),
@@ -527,7 +529,7 @@ fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String
     };
     assert!(matches!(
         request.method,
-        crate::api::schema::Method::WorkspaceFocus(_)
+        shepr_api::schema::Method::WorkspaceFocus(_)
     ));
     request.id.clone()
 }
@@ -588,7 +590,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
                 state.handle_endpoint_result(
                     "boot-1",
                     &request_id,
-                    Ok(crate::api::schema::ResponseResult::Ok {}),
+                    Ok(shepr_api::schema::ResponseResult::Ok {}),
                 );
                 assert_local_highlight(&mut state, "ws_3");
             }
@@ -600,7 +602,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
                 state.handle_endpoint_result(
                     "boot-1",
                     &request_id,
-                    Ok(crate::api::schema::ResponseResult::Ok {}),
+                    Ok(shepr_api::schema::ResponseResult::Ok {}),
                 );
             }
             set_local_focus(&mut state, "ws_2", 4);
@@ -631,7 +633,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         state.handle_endpoint_result(
             "boot-1",
             &request_id,
-            Ok(crate::api::schema::ResponseResult::Ok {}),
+            Ok(shepr_api::schema::ResponseResult::Ok {}),
         );
         assert_local_highlight(&mut state, "ws_1");
     }
@@ -654,7 +656,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         state.handle_endpoint_result(
             "boot-1",
             &request_id,
-            Ok(crate::api::schema::ResponseResult::Ok {}),
+            Ok(shepr_api::schema::ResponseResult::Ok {}),
         );
         assert_local_highlight(&mut state, "ws_3");
         let mut snapshot = workspaces(3);
@@ -715,9 +717,7 @@ fn navigation_highlight_yields_to_new_intent() {
     request_local_navigation(&mut state, 2);
     let mut unrelated = ClientShellInput::default();
     state.push_endpoint_method(
-        crate::api::schema::Method::ServerAgentManifests(
-            crate::api::schema::EmptyParams::default(),
-        ),
+        shepr_api::schema::Method::ServerAgentManifests(shepr_api::schema::EmptyParams::default()),
         &mut unrelated,
     );
     let [ClientShellAction::Endpoint { request, .. }] = unrelated.actions.as_slice() else {
@@ -736,7 +736,7 @@ fn navigation_highlight_yields_to_new_intent() {
 
 #[test]
 fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
-    use crate::api::schema::{Method, PaneDirection, ResponseResult};
+    use shepr_api::schema::{Method, PaneDirection, ResponseResult};
 
     for (key, direction) in [
         (b'h', PaneDirection::Left),
@@ -792,14 +792,15 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
         }
 
         // Direct bindings do not inherit the repaint from leaving prefix mode.
-        let outcome =
-            state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
+            shepr_termio::input::TerminalKey::new(
                 KeyCode::Char('1'),
                 KeyModifiers::CONTROL | KeyModifiers::ALT,
-            ))]);
+            ),
+        )]);
         assert!(
             matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-            if matches!(&request.method, crate::api::schema::Method::PaneFocus(params)
+            if matches!(&request.method, shepr_api::schema::Method::PaneFocus(params)
                 if params.pane_id == "ws_1:p1"))
         );
         assert!(state.pending_workspace_highlight.is_none());
@@ -841,7 +842,7 @@ fn coalesced_navigation_focus_does_not_leave_a_permanent_highlight() {
     state.handle_endpoint_result(
         "boot-1",
         &request_id,
-        Ok(crate::api::schema::ResponseResult::Ok {}),
+        Ok(shepr_api::schema::ResponseResult::Ok {}),
     );
     // Another client can focus the original workspace before the server projects
     // either change, so a successful request need not produce a new snapshot.
@@ -863,16 +864,14 @@ fn navigation_highlight_ends_for_noop_focus_and_focused_creation() {
 
     for focus in [false, true] {
         for method in [
-            crate::api::schema::Method::WorkspaceCreate(
-                crate::api::schema::WorkspaceCreateParams {
-                    source_workspace_id: None,
-                    cwd: None,
-                    focus,
-                    label: None,
-                    env: Default::default(),
-                },
-            ),
-            crate::api::schema::Method::TabCreate(crate::api::schema::TabCreateParams {
+            shepr_api::schema::Method::WorkspaceCreate(shepr_api::schema::WorkspaceCreateParams {
+                source_workspace_id: None,
+                cwd: None,
+                focus,
+                label: None,
+                env: Default::default(),
+            }),
+            shepr_api::schema::Method::TabCreate(shepr_api::schema::TabCreateParams {
                 workspace_id: Some("ws_1".into()),
                 cwd: None,
                 focus,

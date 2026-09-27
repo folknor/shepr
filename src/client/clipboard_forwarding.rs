@@ -11,6 +11,6 @@ pub(super) fn forward_clipboard(data: &str) -> bool {
         warn!("received invalid clipboard payload from server");
         return false;
     };
-    crate::host_term::title::write_clipboard_bytes(&bytes);
+    shepr_termio::host_term::title::write_clipboard_bytes(&bytes);
     true
 }

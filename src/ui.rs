@@ -4,13 +4,9 @@ mod panes;
 mod scrollbar;
 mod tab_surface;
 mod text;
-mod widgets;
 
-pub(crate) use self::panes::{pane_is_scrolled_back, render_selection_highlight};
-pub(crate) use self::scrollbar::{
-    render_pane_scrollbar_buffer, render_scrollbar_buffer, scrollbar_offset_from_drag_row,
-    scrollbar_offset_from_row, scrollbar_thumb, scrollbar_thumb_grab_offset,
-};
+pub(crate) use self::panes::pane_is_scrolled_back;
+pub(crate) use self::scrollbar::render_pane_scrollbar_buffer;
 pub(crate) use self::tab_surface::{
     TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView, compute_tab_surface,
     compute_tab_surface_for, render_tab_surface, resize_tab_surface, resize_tab_surface_layout,
@@ -52,7 +48,7 @@ pub(crate) fn resize_all_tab_surfaces(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
-    cell_size: crate::host_term::cell_size::HostCellSize,
+    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) {
     for (workspace_index, workspace) in app.workspaces.iter().enumerate() {
         for tab_index in 0..workspace.tabs.len() {

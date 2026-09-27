@@ -443,7 +443,7 @@ mod tests {
 
     fn pane_default_theme(
         pane: &super::super::GhosttyPaneTerminal,
-    ) -> crate::host_term::theme::TerminalTheme {
+    ) -> shepr_termio::host_term::theme::TerminalTheme {
         let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         let super::super::terminal::GhosttyPaneCore {
             terminal,
@@ -452,13 +452,13 @@ mod tests {
         } = &mut *core;
         render_state.update(terminal);
         let colors = render_state.colors();
-        crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: colors.foreground.r,
                 g: colors.foreground.g,
                 b: colors.foreground.b,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: colors.background.r,
                 g: colors.background.g,
                 b: colors.background.b,
@@ -919,13 +919,13 @@ mod tests {
         let pane = super::super::GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         let shell_pid = 7;
-        let host_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        let host_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -942,7 +942,7 @@ mod tests {
         }
         assert_eq!(
             pane_default_theme(&pane).background,
-            Some(crate::host_term::theme::RgbColor {
+            Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0xdd,
                 g: 0xee,
                 b: 0xff,

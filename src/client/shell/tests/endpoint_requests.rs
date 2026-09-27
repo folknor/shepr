@@ -138,7 +138,7 @@ fn failed_selection_copy_does_not_send_terminal_input() {
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));
     for result in [
-        Ok(crate::api::schema::ResponseResult::PaneSelection {
+        Ok(shepr_api::schema::ResponseResult::PaneSelection {
             pane_id: "pane_1".into(),
             text: String::new(),
         }),

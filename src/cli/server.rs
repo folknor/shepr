@@ -1,4 +1,4 @@
-use crate::api::schema::{EmptyParams, Method, Request};
+use shepr_api::schema::{EmptyParams, Method, Request};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -57,7 +57,7 @@ fn server_stop(paths: &super::target::CliContext) -> super::CliResult<i32> {
         return super::send_ok_request(paths, Method::ServerStop(EmptyParams::default()));
     }
 
-    match crate::session::stop_active_server(paths) {
+    match shepr_api::session::stop_active_server(paths) {
         Ok(()) => Ok(0),
         Err(err) => {
             eprintln!("{err}");

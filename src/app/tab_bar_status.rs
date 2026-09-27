@@ -18,7 +18,7 @@ impl App {
     fn status_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
         let mut env = vec![(
             shepr_config::SOCKET_PATH_ENV_VAR.to_string(),
-            crate::api::socket_path(&self.paths).display().to_string(),
+            shepr_api::socket_path(&self.paths).display().to_string(),
         )];
         // Not raw `current_exe()`: after an install replaces the binary, Linux
         // reports the running one as "/…/shepr (deleted)", which a status
@@ -587,7 +587,7 @@ mod tests {
             &Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         )
     }
 

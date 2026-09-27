@@ -18,7 +18,7 @@ fn remote_profile() -> SavedSshEndpoint {
 
 fn agent(
     name: &str,
-    status: crate::api::schema::AgentStatus,
+    status: shepr_api::schema::AgentStatus,
     state_change_seq: u64,
 ) -> ClientShellAgent {
     ClientShellAgent {
@@ -163,7 +163,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
 
 #[test]
 fn agent_navigation_reveals_offscreen_targets() {
-    use crate::input::KeybindAction;
+    use shepr_termio::input::KeybindAction;
 
     for action in [
         KeybindAction::NextAgent,
@@ -218,12 +218,10 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
         let (mut state, remote) = state_with_scrollable_agents();
         let scroll = state.agent_scroll;
         let mut outcome = ClientShellInput::default();
-        assert!(
-            state.handle_endpoint_navigation(
-                crate::input::KeybindAction::PreviousAgent,
-                &mut outcome,
-            )
-        );
+        assert!(state.handle_endpoint_navigation(
+            shepr_termio::input::KeybindAction::PreviousAgent,
+            &mut outcome,
+        ));
         assert_eq!(state.agent_scroll, scroll);
         if select_pane {
             assert!(state.focus_or_activate(
@@ -257,7 +255,7 @@ fn agent_navigation_keeps_scroll_when_target_is_visible() {
         .expect("test precondition");
     let scroll = state.agent_scroll;
     assert!(state.handle_endpoint_navigation(
-        crate::input::KeybindAction::FocusAgent(index),
+        shepr_termio::input::KeybindAction::FocusAgent(index),
         &mut ClientShellInput::default(),
     ));
     state.compose(100, 28).expect("test precondition");
@@ -394,10 +392,9 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
 
     assert!(state.copy_mode.is_none());
     assert_eq!(state.mode, ClientShellMode::Terminal);
-    let input = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('x'),
-        KeyModifiers::NONE,
-    ))]);
+    let input = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::NONE),
+    )]);
     assert!(matches!(
         input.requests.as_slice(),
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
@@ -830,7 +827,7 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
 
 #[test]
 fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
-    use crate::api::schema::AgentStatus;
+    use shepr_api::schema::AgentStatus;
     use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
 
     let mut config = Config::default();
@@ -896,7 +893,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
 
 #[test]
 fn aggregate_priority_uses_client_observed_recency_across_machines() {
-    use crate::api::schema::AgentStatus;
+    use shepr_api::schema::AgentStatus;
     use shepr_config::AgentSidebarToken;
 
     let mut config = Config::default();
@@ -956,9 +953,10 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
             < text.find("Local · local agent").expect("local agent")
     );
     let mut outcome = ClientShellInput::default();
-    assert!(
-        state.handle_endpoint_navigation(crate::input::KeybindAction::FocusAgent(0), &mut outcome,)
-    );
+    assert!(state.handle_endpoint_navigation(
+        shepr_termio::input::KeybindAction::FocusAgent(0),
+        &mut outcome,
+    ));
     assert!(matches!(
         outcome.actions.as_slice(),
         [ClientShellAction::ActivateEndpoint {
@@ -970,7 +968,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
 
 #[test]
 fn unselected_endpoint_snapshot_keeps_server_idle_status() {
-    use crate::api::schema::AgentStatus;
+    use shepr_api::schema::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
     let mut remote = snapshot();
@@ -1421,7 +1419,7 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
 
 #[test]
 fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
-    use crate::api::schema::AgentStatus;
+    use shepr_api::schema::AgentStatus;
     use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
 
     let (mut state, endpoint_id) = state_with_remote();
@@ -1684,7 +1682,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
 
 #[test]
 fn focus_agent_index_uses_online_aggregate_rows() {
-    use crate::api::schema::AgentStatus;
+    use shepr_api::schema::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
     state
@@ -1696,8 +1694,11 @@ fn focus_agent_index_uses_online_aggregate_rows() {
         .as_mut()
         .expect("remote snapshot")
         .agents = vec![agent("remote agent", AgentStatus::Working, 2)];
-    let focus_agent =
-        |index| crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusAgent(index));
+    let focus_agent = |index| {
+        shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::FocusAgent(
+            index,
+        ))
+    };
 
     assert!(state.indexed_navigation_target_exists(&focus_agent(0)));
     assert!(!state.indexed_navigation_target_exists(&focus_agent(1)));
@@ -1741,7 +1742,7 @@ fn workspace_drag_rejects_foreign_endpoint_slots() {
 
 #[test]
 fn collapsed_aggregate_workspace_status_uses_its_status_color() {
-    use crate::api::schema::AgentStatus;
+    use shepr_api::schema::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
     state
@@ -1780,7 +1781,7 @@ fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
         (KeyCode::Left, ClientEndpointId::Local),
     ] {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            crate::input::TerminalKey::new(key, KeyModifiers::empty()),
+            shepr_termio::input::TerminalKey::new(key, KeyModifiers::empty()),
         )]);
         assert!(outcome.actions.is_empty());
         let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {

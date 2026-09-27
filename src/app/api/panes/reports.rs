@@ -5,7 +5,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneReportAgentParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -34,7 +34,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneReportAgentSessionParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -64,7 +64,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneReportMetadataParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -80,7 +80,7 @@ impl App {
             Err(message) => {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::InvalidMetadataSource,
+                    shepr_api::error::ApiErrorCode::InvalidMetadataSource,
                     message,
                 );
             }
@@ -96,7 +96,7 @@ impl App {
                 Err(message) => {
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::InvalidMetadataToken,
+                        shepr_api::error::ApiErrorCode::InvalidMetadataToken,
                         message,
                     );
                 }
@@ -107,7 +107,7 @@ impl App {
             Err(message) => {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::InvalidMetadataTtl,
+                    shepr_api::error::ApiErrorCode::InvalidMetadataTtl,
                     message,
                 );
             }
@@ -120,7 +120,7 @@ impl App {
                 Err(message) => {
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::InvalidMetadataSource,
+                        shepr_api::error::ApiErrorCode::InvalidMetadataSource,
                         message,
                     );
                 }
@@ -132,7 +132,7 @@ impl App {
             Err(status) => {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::InvalidStateLabel,
+                    shepr_api::error::ApiErrorCode::InvalidStateLabel,
                     format!("unknown state label: {status}"),
                 );
             }
@@ -143,7 +143,7 @@ impl App {
         {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::InvalidMetadataRequest,
+                shepr_api::error::ApiErrorCode::InvalidMetadataRequest,
                 "cannot set and clear the same metadata field",
             );
         }
@@ -157,7 +157,7 @@ impl App {
         {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::InvalidMetadataRequest,
+                shepr_api::error::ApiErrorCode::InvalidMetadataRequest,
                 "missing metadata field to set or clear",
             );
         }
@@ -200,7 +200,7 @@ impl App {
         {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::MetadataTokenLimit,
+                shepr_api::error::ApiErrorCode::MetadataTokenLimit,
                 format!(
                     "pane metadata may contain at most {MAX_METADATA_TOKEN_KEYS_PER_RESOURCE} tokens"
                 ),
@@ -213,7 +213,7 @@ impl App {
             Err(()) => {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::MetadataSequenceSourceLimit,
+                    shepr_api::error::ApiErrorCode::MetadataSequenceSourceLimit,
                     format!(
                         "pane metadata may track at most {} sequenced sources",
                         crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
@@ -259,7 +259,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneClearAgentAuthorityParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -276,7 +276,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneReleaseAgentParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };

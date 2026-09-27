@@ -107,9 +107,9 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
 }
 
 fn surface_success(id: &str, active: bool, projection_revision: u64) -> Vec<u8> {
-    serde_json::to_vec(&crate::api::schema::SuccessResponse {
+    serde_json::to_vec(&shepr_api::schema::SuccessResponse {
         id: id.into(),
-        result: crate::api::schema::ResponseResult::ClientShellSurfaceSet {
+        result: shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
             active,
             projection_revision,
         },
@@ -118,10 +118,10 @@ fn surface_success(id: &str, active: bool, projection_revision: u64) -> Vec<u8> 
 }
 
 fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
-    serde_json::to_vec(&crate::api::schema::SuccessResponse {
+    serde_json::to_vec(&shepr_api::schema::SuccessResponse {
         id: id.into(),
-        result: crate::api::schema::ResponseResult::WorkspaceInfo {
-            workspace: crate::api::schema::WorkspaceInfo {
+        result: shepr_api::schema::ResponseResult::WorkspaceInfo {
+            workspace: shepr_api::schema::WorkspaceInfo {
                 workspace_id: workspace_id.into(),
                 number: 1,
                 label: workspace_id.into(),
@@ -129,7 +129,7 @@ fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
                 pane_count: 1,
                 tab_count: 1,
                 active_tab_id: "tab".into(),
-                agent_status: crate::api::schema::AgentStatus::Idle,
+                agent_status: shepr_api::schema::AgentStatus::Idle,
                 tokens: Default::default(),
             },
         },
@@ -138,9 +138,9 @@ fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
 }
 
 fn failure(id: &str, message: &str) -> Vec<u8> {
-    serde_json::to_vec(&crate::api::schema::ErrorResponse {
+    serde_json::to_vec(&shepr_api::schema::ErrorResponse {
         id: id.into(),
-        error: crate::api::schema::ErrorBody {
+        error: shepr_api::schema::ErrorBody {
             code: "surface_rejected".into(),
             message: message.into(),
         },
@@ -152,9 +152,9 @@ fn surface_set_active(message: &shepr_protocol::ClientMessage) -> Option<bool> {
     let shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } = message else {
         return None;
     };
-    let request: crate::api::schema::Request = serde_json::from_str(request).ok()?;
+    let request: shepr_api::schema::Request = serde_json::from_str(request).ok()?;
     match request.method {
-        crate::api::schema::Method::ClientShellSurfaceSet(params) => Some(params.active),
+        shepr_api::schema::Method::ClientShellSurfaceSet(params) => Some(params.active),
         _ => None,
     }
 }
@@ -531,7 +531,7 @@ fn same_target_retarget_is_latest_wins() {
                 if surface_set_active(message).is_none() =>
             {
                 Some(
-                    serde_json::from_str::<crate::api::schema::Request>(request)
+                    serde_json::from_str::<shepr_api::schema::Request>(request)
                         .expect("test precondition")
                         .id,
                 )
@@ -569,7 +569,7 @@ fn same_target_retarget_is_latest_wins() {
         .last()
         .and_then(|message| match message {
             shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } => Some(
-                serde_json::from_str::<crate::api::schema::Request>(request)
+                serde_json::from_str::<shepr_api::schema::Request>(request)
                     .expect("test precondition")
                     .id,
             ),
@@ -947,7 +947,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
                 matches!(
                     message,
                     shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
-                        if serde_json::from_str::<crate::api::schema::Request>(request)
+                        if serde_json::from_str::<shepr_api::schema::Request>(request)
                             .is_ok_and(|request| request.id == "client-shell-surface:21:on")
                 )
             })

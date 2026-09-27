@@ -5,7 +5,7 @@ impl App {
         &mut self,
         id: String,
         target: &PaneTarget,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -17,7 +17,7 @@ impl App {
         };
         match runtime.clear_screen() {
             Ok(()) => success(id, ResponseResult::Ok {}),
-            Err(err) => failure(id, crate::api::error::ApiErrorCode::PaneClearFailed, err),
+            Err(err) => failure(id, shepr_api::error::ApiErrorCode::PaneClearFailed, err),
         }
     }
 
@@ -25,7 +25,7 @@ impl App {
         &mut self,
         id: String,
         params: &PaneScrollParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -91,7 +91,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneSelectionReadParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         match self.pane_selection_text(&params) {
             Ok(text) => success(
                 id,
@@ -108,7 +108,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneCopyMotionParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -125,7 +125,7 @@ impl App {
         {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::StaleContent,
+                shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
         }
@@ -146,14 +146,14 @@ impl App {
                 let Some(text) = runtime.extract_selection(&selection) else {
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::CopyMotionUnavailable,
+                        shepr_api::error::ApiErrorCode::CopyMotionUnavailable,
                         "terminal row is unavailable",
                     );
                 };
                 let col = if params.motion == PaneCopyMotion::LineEnd {
-                    crate::copy_mode::last_character_col(&text).unwrap_or(0)
+                    shepr_termio::copy_mode::last_character_col(&text).unwrap_or(0)
                 } else {
-                    crate::copy_mode::first_non_blank_col(&text).unwrap_or(0)
+                    shepr_termio::copy_mode::first_non_blank_col(&text).unwrap_or(0)
                 };
                 crate::pane::TerminalTextPoint {
                     row: params.cursor.row,
@@ -169,7 +169,7 @@ impl App {
                 let Some(motion) = terminal_word_motion(params.motion) else {
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::CopyMotionUnavailable,
+                        shepr_api::error::ApiErrorCode::CopyMotionUnavailable,
                         "copy motion is not a word motion",
                     );
                 };
@@ -202,7 +202,7 @@ impl App {
         if params.content_revision.is_some() && after != before {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::StaleContent,
+                shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
         }
@@ -210,7 +210,7 @@ impl App {
             id,
             ResponseResult::PaneCopyMotion {
                 pane_id: params.pane_id,
-                cursor: crate::api::schema::PaneTextPoint {
+                cursor: shepr_api::schema::PaneTextPoint {
                     row: target.row,
                     col: target.col,
                 },
@@ -223,7 +223,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneCopySearchParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -238,7 +238,7 @@ impl App {
         if params.query.len() > MAX_QUERY_BYTES {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::QueryTooLarge,
+                shepr_api::error::ApiErrorCode::QueryTooLarge,
                 "copy search query is too large",
             );
         }
@@ -246,7 +246,7 @@ impl App {
         if before != params.content_revision || !before.is_multiple_of(2) {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::StaleContent,
+                shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
         }
@@ -282,7 +282,7 @@ impl App {
         if after != before || !after.is_multiple_of(2) {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::StaleContent,
+                shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
         }

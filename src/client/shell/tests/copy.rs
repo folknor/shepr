@@ -23,7 +23,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         content_revision: 0,
         geometry: (80, 24),
         alternate_screen_active: false,
-        cursor: crate::api::schema::PaneTextPoint {
+        cursor: shepr_api::schema::PaneTextPoint {
             row: shepr_vt::ScreenRow(0),
             col: 0,
         },
@@ -32,7 +32,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         entry_offset_from_bottom: 0,
         selection: None,
         search_prompt: Some(ClientCopySearchPrompt {
-            direction: crate::api::schema::PaneCopySearchDirection::Forward,
+            direction: shepr_api::schema::PaneCopySearchDirection::Forward,
             query: TextEditor::default(),
         }),
         search_query: String::new(),
@@ -124,8 +124,8 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 
 #[test]
 fn client_selection_uses_host_background_and_repaints_when_it_changes() {
-    use crate::host_term::theme::{DefaultColorKind, HostAppearance, RgbColor};
     use ratatui::style::Color;
+    use shepr_termio::host_term::theme::{DefaultColorKind, HostAppearance, RgbColor};
 
     for explicit_appearance in [false, true] {
         let mut config = ClientShellConfig::from_config(&Config::default());
@@ -220,7 +220,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
+                shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
             )
     ));
     assert!(
@@ -265,13 +265,13 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     let request_id = request.id.clone();
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneSelectionRead(params)
+        shepr_api::schema::Method::PaneSelectionRead(params)
             if params.pane_id == "pane_1"
-                && params.anchor == crate::api::schema::PaneSelectionPoint {
+                && params.anchor == shepr_api::schema::PaneSelectionPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
                 }
-                && params.cursor == crate::api::schema::PaneSelectionPoint {
+                && params.cursor == shepr_api::schema::PaneSelectionPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 2,
                 }
@@ -282,7 +282,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         .handle_endpoint_result(
             "boot-1",
             &request_id,
-            Ok(crate::api::schema::ResponseResult::PaneSelection {
+            Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "pane_1".into(),
                 text: "LIV".into(),
             }),
@@ -372,16 +372,15 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     assert_ne!(selected_cell.bg, unselected.cells[cell_index].bg);
     state.selection = selection;
 
-    let copy = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('c'),
-        KeyModifiers::CONTROL,
-    ))]);
+    let copy = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    )]);
     assert!(state.selection.is_none());
     assert!(matches!(
         &copy.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
-            if matches!(request.method, crate::api::schema::Method::PaneSelectionRead(
-                crate::api::schema::PaneSelectionReadParams { content_revision: None, .. }
+            if matches!(request.method, shepr_api::schema::Method::PaneSelectionRead(
+                shepr_api::schema::PaneSelectionReadParams { content_revision: None, .. }
             ))
     ));
     assert!(copy.requests.is_empty());
@@ -393,7 +392,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         .handle_endpoint_result(
             "boot-1",
             &request_id,
-            Ok(crate::api::schema::ResponseResult::PaneSelection {
+            Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "pane_1".into(),
                 text: "yIV".into(),
             }),
@@ -433,7 +432,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneScroll(params)
+                shepr_api::schema::Method::PaneScroll(params)
                     if params.offset_from_bottom == 3
             )
     ));
@@ -453,7 +452,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneScroll(params)
+                shepr_api::schema::Method::PaneScroll(params)
                     if params.offset_from_bottom == 4
             )
     ));
@@ -476,7 +475,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
 
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     assert_eq!(state.mode, ClientShellMode::Copy);
@@ -486,21 +485,18 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     );
     assert!(enter.actions.is_empty());
 
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('b'),
-        KeyModifiers::CONTROL,
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Prefix);
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Copy);
 
-    let page = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::PageUp,
-        KeyModifiers::empty(),
-    ))]);
+    let page = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::PageUp, KeyModifiers::empty()),
+    )]);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
         Some(shepr_vt::ScreenRow(20))
@@ -510,7 +506,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneScroll(params)
+                shepr_api::schema::Method::PaneScroll(params)
                     if params.offset_from_bottom == 1
             )
     ));
@@ -519,10 +515,9 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         _ => unreachable!(),
     };
 
-    let top = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('g'),
-        KeyModifiers::empty(),
-    ))]);
+    let top = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('g'), KeyModifiers::empty()),
+    )]);
     assert!(top.actions.is_empty());
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
@@ -536,20 +531,18 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneScroll(params)
+        shepr_api::schema::Method::PaneScroll(params)
             if params.pane_id == "pane_1" && params.offset_from_bottom == 20
     ));
     let top_request_id = request.id.clone();
     state.handle_endpoint_result("boot-1", &top_request_id, Ok(pane_scroll_result(20, 20, 2)));
 
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('v'),
-        KeyModifiers::empty(),
-    ))]);
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('l'),
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()),
+    )]);
     assert!(
         state
             .selection
@@ -557,10 +550,9 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
             .is_some_and(shepr_vt::selection::Selection::is_visible)
     );
 
-    let copy = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('y'),
-        KeyModifiers::empty(),
-    ))]);
+    let copy = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(state.copy_mode.is_none());
     assert!(state.selection.is_none());
@@ -568,7 +560,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert!(copy.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
                 if params.content_revision.is_none())
     )));
     assert!(copy.actions.iter().any(|action| matches!(
@@ -576,7 +568,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         ClientShellAction::Endpoint { request, .. }
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneScroll(params)
+                shepr_api::schema::Method::PaneScroll(params)
                     if params.offset_from_bottom == 0
             )
     )));
@@ -632,7 +624,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
         assert!(copied.actions.iter().any(|action| matches!(
             action,
             ClientShellAction::Endpoint { request, .. }
-                if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+                if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
                     if params.content_revision.is_none()
                         && (params.anchor.row, params.anchor.col) == range.0
                         && (params.cursor.row, params.cursor.col) == range.1)
@@ -661,18 +653,18 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     let [ClientShellAction::Endpoint { request, .. }] = &search.actions[..] else {
         panic!("search request");
     };
-    let found = crate::api::schema::PaneTextRange {
-        start: crate::api::schema::PaneTextPoint {
+    let found = shepr_api::schema::PaneTextRange {
+        start: shepr_api::schema::PaneTextPoint {
             row: shepr_vt::ScreenRow(0),
             col: 0,
         },
-        end: crate::api::schema::PaneTextPoint {
+        end: shepr_api::schema::PaneTextPoint {
             row: shepr_vt::ScreenRow(0),
             col: 3,
         },
     };
     let to_selection_point =
-        |point: crate::api::schema::PaneTextPoint| crate::api::schema::PaneSelectionPoint {
+        |point: shepr_api::schema::PaneTextPoint| shepr_api::schema::PaneSelectionPoint {
             row: point.row.absolute(shepr_vt::AbsRow(0)),
             col: point.col,
         };
@@ -693,7 +685,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     assert!(copy.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
                 if params.anchor == to_selection_point(found.start)
                     && params.cursor == to_selection_point(found.end)
                     && params.content_revision == Some(0))
@@ -758,32 +750,31 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
 
-    let motion = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('w'),
-        KeyModifiers::empty(),
-    ))]);
+    let motion = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('w'), KeyModifiers::empty()),
+    )]);
     let [ClientShellAction::Endpoint { request, .. }] = &motion.actions[..] else {
         panic!("word motion should use endpoint semantics");
     };
     let request_id = request.id.clone();
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneCopyMotion(params)
+        shepr_api::schema::Method::PaneCopyMotion(params)
             if params.cursor == origin
-                && params.motion == crate::api::schema::PaneCopyMotion::NextWordStart
+                && params.motion == shepr_api::schema::PaneCopyMotion::NextWordStart
     ));
     let (repaint, actions) = state
         .handle_endpoint_result(
             "boot-1",
             &request_id,
-            Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+            Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "pane_1".into(),
-                cursor: crate::api::schema::PaneTextPoint {
+                cursor: shepr_api::schema::PaneTextPoint {
                     row: origin.row,
                     col: 3,
                 },
@@ -814,12 +805,16 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
-    let key =
-        |code| RawInputEvent::Key(crate::input::TerminalKey::new(code, KeyModifiers::empty()));
+    let key = |code| {
+        RawInputEvent::Key(shepr_termio::input::TerminalKey::new(
+            code,
+            KeyModifiers::empty(),
+        ))
+    };
 
     let motion = state.handle_raw_events(vec![key(KeyCode::Char('w'))]);
     let [ClientShellAction::Endpoint { request, .. }] = &motion.actions[..] else {
@@ -834,9 +829,9 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
     let outcome = state.handle_endpoint_result(
         "boot-1",
         &request_id,
-        Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+        Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
             pane_id: "pane_1".into(),
-            cursor: crate::api::schema::PaneTextPoint {
+            cursor: shepr_api::schema::PaneTextPoint {
                 row: origin.row,
                 col: 3,
             },
@@ -876,24 +871,22 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
 
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('?'),
-        KeyModifiers::SHIFT,
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('?'), KeyModifiers::SHIFT),
+    )]);
     assert!(state.copy_mode.as_ref().is_some_and(|mode| {
         mode.search_prompt.as_ref().is_some_and(|prompt| {
-            prompt.direction == crate::api::schema::PaneCopySearchDirection::Backward
+            prompt.direction == shepr_api::schema::PaneCopySearchDirection::Backward
         })
     }));
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    )]);
     assert!(
         state
             .copy_mode
@@ -901,21 +894,18 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
             .is_some_and(|mode| mode.search_prompt.is_none())
     );
 
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('/'),
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()),
+    )]);
     state.handle_raw_events(vec![RawInputEvent::Paste("junk".into())]);
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('u'),
-        KeyModifiers::CONTROL,
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    )]);
     state.handle_raw_events(vec![RawInputEvent::Paste("nee".into())]);
     state.handle_raw_events(vec![RawInputEvent::Paste("dleX".into())]);
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Backspace,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Backspace, KeyModifiers::empty()),
+    )]);
     assert_eq!(
         state
             .copy_mode
@@ -925,40 +915,39 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         Some("needle")
     );
 
-    let search = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Enter,
-        KeyModifiers::empty(),
-    ))]);
+    let search = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+    )]);
     let [ClientShellAction::Endpoint { request, .. }] = &search.actions[..] else {
         panic!("search should use endpoint terminal semantics");
     };
     let request_id = request.id.clone();
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneCopySearch(params)
+        shepr_api::schema::Method::PaneCopySearch(params)
             if params.pane_id == "pane_1"
                 && params.query == "needle"
-                && params.direction == crate::api::schema::PaneCopySearchDirection::Forward
+                && params.direction == shepr_api::schema::PaneCopySearchDirection::Forward
                 && params.cursor == origin
                 && params.previous.is_none()
     ));
     let matches = vec![
-        crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint {
+        shepr_api::schema::PaneTextRange {
+            start: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(5),
                 col: 2,
             },
-            end: crate::api::schema::PaneTextPoint {
+            end: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(5),
                 col: 7,
             },
         },
-        crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint {
+        shepr_api::schema::PaneTextRange {
+            start: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(15),
                 col: 1,
             },
-            end: crate::api::schema::PaneTextPoint {
+            end: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(15),
                 col: 6,
             },
@@ -981,7 +970,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         ClientShellAction::Endpoint { request, .. }
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneScroll(params)
+                shepr_api::schema::Method::PaneScroll(params)
                     if params.offset_from_bottom == 15
             )
     )));
@@ -989,7 +978,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .iter()
         .find_map(|action| match action {
             ClientShellAction::Endpoint { request, .. }
-                if matches!(request.method, crate::api::schema::Method::PaneScroll(_)) =>
+                if matches!(request.method, shepr_api::schema::Method::PaneScroll(_)) =>
             {
                 Some(request.id.clone())
             }
@@ -1017,22 +1006,20 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .expect("highlighted search cell");
     assert_eq!(highlighted.bg, state.config.palette.accent);
 
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('v'),
-        KeyModifiers::empty(),
-    ))]);
-    let repeat = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('n'),
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+    )]);
+    let repeat = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()),
+    )]);
     let [ClientShellAction::Endpoint { request, .. }] = &repeat.actions[..] else {
         panic!("repeat should use endpoint search");
     };
     let repeat_id = request.id.clone();
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneCopySearch(params)
-            if params.direction == crate::api::schema::PaneCopySearchDirection::Forward
+        shepr_api::schema::Method::PaneCopySearch(params)
+            if params.direction == shepr_api::schema::PaneCopySearchDirection::Forward
                 && params.previous == Some(matches[0])
     ));
     let (_, repeat_actions) = state
@@ -1044,7 +1031,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .into_parts();
     if let Some(scroll_id) = repeat_actions.iter().find_map(|action| match action {
         ClientShellAction::Endpoint { request, .. }
-            if matches!(request.method, crate::api::schema::Method::PaneScroll(_)) =>
+            if matches!(request.method, shepr_api::schema::Method::PaneScroll(_)) =>
         {
             Some(request.id.clone())
         }
@@ -1064,15 +1051,15 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     );
 
     let reverse = state.handle_raw_events(vec![RawInputEvent::Key(
-        crate::input::TerminalKey::new(KeyCode::Char('N'), KeyModifiers::SHIFT),
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('N'), KeyModifiers::SHIFT),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &reverse.actions[..] else {
         panic!("reverse search should use endpoint search");
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneCopySearch(params)
-            if params.direction == crate::api::schema::PaneCopySearchDirection::Backward
+        shepr_api::schema::Method::PaneCopySearch(params)
+            if params.direction == shepr_api::schema::PaneCopySearchDirection::Backward
                 && params.previous == Some(matches[1])
     ));
     let (_, reverse_actions) = state
@@ -1084,7 +1071,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .into_parts();
     if let Some(scroll_id) = reverse_actions.iter().find_map(|action| match action {
         ClientShellAction::Endpoint { request, .. }
-            if matches!(request.method, crate::api::schema::Method::PaneScroll(_)) =>
+            if matches!(request.method, shepr_api::schema::Method::PaneScroll(_)) =>
         {
             Some(request.id.clone())
         }
@@ -1093,10 +1080,9 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         state.handle_endpoint_result("boot-1", &scroll_id, Ok(pane_scroll_result(15, 20, 2)));
     }
 
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert!(
         state
@@ -1104,17 +1090,16 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
             .as_ref()
             .is_some_and(|mode| mode.search_query.is_empty() && mode.selection.is_none())
     );
-    let exit = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
+    let exit = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(exit.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneScroll(params)
+                shepr_api::schema::Method::PaneScroll(params)
                     if params.offset_from_bottom == 0
             )
     )));
@@ -1416,7 +1401,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     })]);
     assert!(
         matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-        if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "ws_1:p2"))
+        if matches!(&request.method, shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "ws_1:p2"))
     );
 }
 
@@ -1536,7 +1521,7 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
     state.open_navigator_overlay();
     let press = |state: &mut ClientShellState, code| {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            crate::input::TerminalKey::new(code, KeyModifiers::empty()),
+            shepr_termio::input::TerminalKey::new(code, KeyModifiers::empty()),
         )]);
         assert!(outcome.actions.is_empty());
     };
@@ -1663,7 +1648,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .offset_from_bottom,
         metrics.max_offset_from_bottom
     );
-    let thumb = crate::ui::scrollbar_thumb(metrics, track).expect("thumb");
+    let thumb = shepr_protocol::scroll::scrollbar_thumb(metrics, track).expect("thumb");
     let grab = thumb.len - 1;
     mouse(
         &mut state,
@@ -1707,10 +1692,9 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
         track.bottom() + 5,
     );
     assert!(state.chrome_drag.is_none());
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Up,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Up, KeyModifiers::empty()),
+    )]);
     state.compose(106, 24).expect("keyboard resumes after drag");
     assert_eq!(
         state
@@ -1862,7 +1846,9 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenNavigator),
+        &shepr_termio::input::KeybindMatch::Action(
+            shepr_termio::input::KeybindAction::OpenNavigator,
+        ),
         &mut open,
     );
     let navigator = state.compose(106, 30).expect("navigator overlay");
@@ -1946,7 +1932,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     };
     assert!(matches!(
         &request.method,
-        crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
+        shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
     ));
     assert!(state.overlay.is_none());
 }
@@ -1967,7 +1953,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
 
@@ -2011,16 +1997,14 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     );
 
     let (prefix_key, prefix_modifiers) = state.config.keybinds.prefix;
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        prefix_key,
-        prefix_modifiers,
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers),
+    )]);
     state.set_snapshot(Box::new(unfocused.clone()));
     assert_eq!(state.mode, ClientShellMode::Prefix);
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
 
     let mut other_selection = shepr_vt::selection::Selection::range(
@@ -2045,14 +2029,13 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     other_surface.panes[0].content_revision = 1;
     state.set_pane_surface(other_surface);
     assert!(state.selection.is_some());
-    let copy = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Char('c'),
-        KeyModifiers::CONTROL,
-    ))]);
+    let copy = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    )]);
     assert!(copy.requests.is_empty());
     assert!(
         matches!(&copy.actions[..], [ClientShellAction::Endpoint { request, .. }]
-        if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+        if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
             if params.pane_id == "pane_2" && params.content_revision.is_none()))
     );
 
@@ -2074,10 +2057,9 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     );
 
     state.mode = ClientShellMode::Navigate;
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert!(
         state
@@ -2086,10 +2068,9 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .is_some_and(|selection| selection.pane_id == "pane_1")
     );
     state.mode = ClientShellMode::Resize;
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    )]);
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert!(
         state
@@ -2114,12 +2095,12 @@ fn retained_selection_copy_suppresses_key_repeats() {
     assert!(selection.finish());
     state.selection = Some(selection);
 
-    let key = crate::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     let press = state.handle_raw_events(vec![RawInputEvent::Key(key.clone())]);
     assert!(press.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(request.method, crate::api::schema::Method::PaneSelectionRead(_))
+            if matches!(request.method, shepr_api::schema::Method::PaneSelectionRead(_))
     )));
     let repeat = state.handle_raw_events(vec![RawInputEvent::Key(
         key.clone()
@@ -2149,7 +2130,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
@@ -2162,7 +2143,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
     };
-    let intermediate = crate::api::schema::PaneTextPoint {
+    let intermediate = shepr_api::schema::PaneTextPoint {
         row: origin.row,
         col: 2,
     };
@@ -2170,7 +2151,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         .handle_endpoint_result(
             "boot-1",
             &first_id,
-            Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+            Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "pane_1".into(),
                 cursor: intermediate,
                 content_revision: 0,
@@ -2182,7 +2163,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneCopyMotion(params)
+                shepr_api::schema::Method::PaneCopyMotion(params)
                     if params.cursor == intermediate
             )
     ));
@@ -2203,17 +2184,16 @@ fn queued_copy_keys_preserve_prefix_order() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
     let motion = state.handle_input_bytes(b"w");
     state.handle_input_bytes(b"l");
     let (prefix_key, prefix_modifiers) = state.config.keybinds.prefix;
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        prefix_key,
-        prefix_modifiers,
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers),
+    )]);
     let motion_id = match &motion.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
@@ -2221,7 +2201,7 @@ fn queued_copy_keys_preserve_prefix_order() {
     state.handle_endpoint_result(
         "boot-1",
         &motion_id,
-        Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+        Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
             pane_id: "pane_1".into(),
             cursor: origin,
             content_revision: 0,
@@ -2284,7 +2264,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     state.handle_input_bytes(b"v");
@@ -2296,12 +2276,12 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
     };
-    let target = crate::api::schema::PaneTextPoint {
+    let target = shepr_api::schema::PaneTextPoint {
         row: origin.row,
         col: 2,
     };
     let selection_point =
-        |point: crate::api::schema::PaneTextPoint| crate::api::schema::PaneSelectionPoint {
+        |point: shepr_api::schema::PaneTextPoint| shepr_api::schema::PaneSelectionPoint {
             row: point.row.absolute(shepr_vt::AbsRow(0)),
             col: point.col,
         };
@@ -2309,7 +2289,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         .handle_endpoint_result(
             "boot-1",
             &motion_id,
-            Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+            Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "pane_1".into(),
                 cursor: target,
                 content_revision: 0,
@@ -2322,7 +2302,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         ClientShellAction::Endpoint { request, .. }
             if matches!(
                 &request.method,
-                crate::api::schema::Method::PaneSelectionRead(params)
+                shepr_api::schema::Method::PaneSelectionRead(params)
                     if params.anchor == selection_point(origin)
                         && params.cursor == selection_point(target)
             )
@@ -2344,19 +2324,19 @@ fn new_content_revision_invalidates_copy_search_coordinates() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let copy_mode = state.copy_mode.as_mut().expect("copy mode");
     copy_mode.search_query = "needle".into();
     copy_mode
         .search_matches
-        .push(crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint {
+        .push(shepr_api::schema::PaneTextRange {
+            start: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(0),
                 col: 0,
             },
-            end: crate::api::schema::PaneTextPoint {
+            end: shepr_api::schema::PaneTextPoint {
                 row: shepr_vt::ScreenRow(0),
                 col: 1,
             },
@@ -2394,7 +2374,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
         .handle_endpoint_result(
             "boot-1",
             &request_id,
-            Ok(crate::api::schema::ResponseResult::PaneSelection {
+            Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "pane_1".into(),
                 text: "hello world".into(),
             }),
@@ -2425,16 +2405,17 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         state.record_binding(
-            &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+            &shepr_termio::input::KeybindMatch::Action(
+                shepr_termio::input::KeybindAction::CopyMode,
+            ),
             &mut enter,
         );
         if selection_before_gap == Some(true) {
             state.handle_input_bytes(b"V");
         }
-        state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-            KeyCode::Char('k'),
-            KeyModifiers::empty(),
-        ))]);
+        state.handle_raw_events(vec![RawInputEvent::Key(
+            shepr_termio::input::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty()),
+        )]);
 
         let end_col = state.copy_mode.as_ref().expect("copy mode").geometry.0 - 1;
         let mut next = snapshot();
@@ -2462,13 +2443,13 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             crossterm::event::KeyEventKind::Repeat
         };
         let moved = state.handle_raw_events(vec![RawInputEvent::Key(
-            crate::input::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty())
+            shepr_termio::input::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty())
                 .with_kind(kind),
         )]);
         assert!(moved.actions.iter().any(|action| matches!(
             action,
             ClientShellAction::Endpoint { request, .. }
-                if matches!(&request.method, crate::api::schema::Method::PaneScroll(params)
+                if matches!(&request.method, shepr_api::schema::Method::PaneScroll(params)
                     if params.pane_id == "pane_1" && params.offset_from_bottom == 1)
         )));
         if selection_before_gap.is_some() {

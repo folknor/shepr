@@ -30,6 +30,7 @@ mod terminal_geometry;
 mod terminal_setup;
 mod timer;
 mod transport;
+mod workspace_label;
 
 #[cfg(test)]
 use clipboard_forwarding::decode_clipboard_payload;
@@ -86,9 +87,9 @@ use interprocess::TryClone as _;
 use interprocess::local_socket::traits::Stream as _;
 use tracing::{debug, info, warn};
 
-use crate::blit as render_ansi;
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::{ClientMessage, MAX_FRAME_SIZE, ServerMessage};
+use shepr_termio::blit as render_ansi;
 
 fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
     const MAX_NOTICES: usize = 64;
@@ -122,11 +123,11 @@ fn run_client_with_mode(
         } => (Some((terminal_id, takeover)), Some(escape)),
     };
     shepr_platform::logging::init_file_logging(
-        &crate::session::data_dir(paths),
+        &shepr_api::session::data_dir(paths),
         shepr_platform::logging::CLIENT_LOG_FILE,
     );
 
-    crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    shepr_termio::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = paths.server_address().client_socket().to_path_buf();
     let error_context = ClientErrorContext::new(
@@ -359,7 +360,8 @@ async fn run_client_loop(
             config.settings.mouse_capture_active,
         ),
         host_theme_updates: Vec::new(),
-        direct_keyboard_protocol: crate::host_term::modes::DirectHostKeyboardState::default(),
+        direct_keyboard_protocol: shepr_termio::host_term::modes::DirectHostKeyboardState::default(
+        ),
         pane_keyboard_report_all: false,
         keyboard_report_all_active: false,
         reported_geometry: shepr_core::geometry::HostGeometry::new(
@@ -720,7 +722,7 @@ impl ClientLoop<'_> {
             {
                 store_reported_cell_size(reported_cell_size, width_px, height_px);
             }
-            if crate::raw_input::events_require_host_mode_refresh(
+            if shepr_termio::input::raw_input::events_require_host_mode_refresh(
                 inputs.iter().map(|input| &input.event),
             ) && let Err(err) =
                 state
@@ -848,18 +850,18 @@ impl ClientLoop<'_> {
         if inputs.iter().any(|input| input.pixel_mouse.is_some()) {
             return Ok(ClientLoopAction::NextEvent);
         }
-        if crate::raw_input::events_require_host_surface_redraw(
+        if shepr_termio::input::raw_input::events_require_host_surface_redraw(
             inputs.iter().map(|input| &input.event),
             state.settings.redraw_on_focus_gained,
         ) {
             state.request_repaint();
         }
-        if crate::raw_input::events_require_host_terminal_appearance_query(
+        if shepr_termio::input::raw_input::events_require_host_terminal_appearance_query(
             inputs.iter().map(|input| &input.event),
         ) {
             query_host_terminal_appearance();
         }
-        if crate::raw_input::events_require_host_terminal_theme_query(
+        if shepr_termio::input::raw_input::events_require_host_terminal_theme_query(
             inputs.iter().map(|input| &input.event),
         ) {
             query_host_terminal_theme();
@@ -1375,7 +1377,7 @@ impl ClientLoop<'_> {
                 // resets to Shepr's default. A disabled `ui.window_title`
                 // never reaches here: the server sends nothing at all.
                 state.window_title_written = true;
-                let _ = crate::host_term::title::write_window_title(
+                let _ = shepr_termio::host_term::title::write_window_title(
                     &mut io::stdout(),
                     title.as_deref(),
                 );
@@ -1397,7 +1399,7 @@ impl ClientLoop<'_> {
                 modify_other_keys_level,
             } => {
                 if state.mode.is_escape_attach() {
-                    crate::host_term::modes::set_direct_host_keyboard_protocol(
+                    shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
                         &mut io::stdout(),
                         &mut state.direct_keyboard_protocol,
                         flags,

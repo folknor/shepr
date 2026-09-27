@@ -79,7 +79,7 @@ impl App {
         let pane_id = shepr_protocol::PublicPaneId::new(workspace.id.as_str(), pane_number);
         Some(
             crate::pane::PaneLaunchEnv::from_extra(extra_env)
-                .with_api_socket_path(crate::api::socket_path(&self.paths))
+                .with_api_socket_path(shepr_api::socket_path(&self.paths))
                 .with_identity(workspace_id, tab_id, pane_id),
         )
     }
@@ -159,7 +159,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
         app.state.ensure_test_terminals();

@@ -1,6 +1,6 @@
-use crate::api::error::ApiResult;
-use crate::api::schema::{ResponseResult, SessionSnapshot};
 use crate::app::App;
+use shepr_api::error::ApiResult;
+use shepr_api::schema::{ResponseResult, SessionSnapshot};
 
 use super::responses::success;
 
@@ -38,7 +38,7 @@ impl App {
         }
 
         SessionSnapshot {
-            version: crate::build_info::version(),
+            version: shepr_protocol::build_version(),
             protocol: shepr_protocol::PROTOCOL_VERSION,
             focused_workspace_id,
             focused_tab_id,
@@ -54,8 +54,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::schema::{EmptyParams, Method, ResponseResult, SuccessResponse};
     use crate::workspace::Workspace;
+    use shepr_api::schema::{EmptyParams, Method, ResponseResult, SuccessResponse};
     use shepr_config::Config;
 
     fn app_with_two_tabs() -> crate::app::App {
@@ -64,7 +64,7 @@ mod tests {
             &Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         let mut workspace = Workspace::test_new("snapshot");
         workspace.test_add_tab(None);
@@ -77,12 +77,12 @@ mod tests {
     #[test]
     fn session_snapshot_bootstraps_runtime_resources() {
         let mut app = app_with_two_tabs();
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_snapshot".into(),
             method: Method::SessionSnapshot(EmptyParams::default()),
         });
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::SessionSnapshot { snapshot } = success.result else {
             panic!("expected session snapshot response");
         };

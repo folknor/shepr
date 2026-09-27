@@ -1,7 +1,7 @@
 use serde::Serialize;
 
-use crate::api;
-use crate::api::client::ApiClientError;
+use shepr_api as api;
+use shepr_api::client::ApiClientError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -60,7 +60,7 @@ enum ServerRuntimeStatus {
     Running {
         version: Option<String>,
         protocol: Option<u32>,
-        capabilities: Option<crate::api::schema::ServerCapabilities>,
+        capabilities: Option<shepr_api::schema::ServerCapabilities>,
     },
     NotRunning,
 }
@@ -78,7 +78,7 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
     }
 
     println!("client:");
-    println!("  version: {}", crate::build_info::version());
+    println!("  version: {}", shepr_protocol::build_version());
     println!("  protocol: {}", shepr_protocol::PROTOCOL_VERSION);
     println!();
     println!("server:");
@@ -110,7 +110,7 @@ fn print_client_status(json: bool, paths: &shepr_config::AppPaths) -> super::Cli
         return Ok(());
     }
 
-    println!("version: {}", crate::build_info::version());
+    println!("version: {}", shepr_protocol::build_version());
     println!("protocol: {}", shepr_protocol::PROTOCOL_VERSION);
     println!("binary: {}", current_exe_label());
     Ok(())
@@ -234,7 +234,7 @@ struct UpdateStatusJson {
 
 fn client_status_json(paths: &shepr_config::AppPaths) -> ClientStatusJson {
     ClientStatusJson {
-        version: crate::build_info::version(),
+        version: shepr_protocol::build_version(),
         protocol: shepr_protocol::PROTOCOL_VERSION,
         binary: current_exe_label(),
         session: paths.session_id().name().map(str::to_owned),
@@ -308,7 +308,7 @@ fn server_binary_stale_bool(server: &ServerRuntimeStatus) -> Option<bool> {
     match server {
         ServerRuntimeStatus::Running { version, .. } => version
             .as_deref()
-            .map(|version| version != crate::build_info::version()),
+            .map(|version| version != shepr_protocol::build_version()),
         ServerRuntimeStatus::NotRunning => Some(false),
     }
 }
@@ -337,7 +337,7 @@ mod tests {
         ServerRuntimeStatus::Running {
             version: version.map(str::to_owned),
             protocol,
-            capabilities: Some(crate::api::schema::ServerCapabilities {
+            capabilities: Some(shepr_api::schema::ServerCapabilities {
                 detached_server_daemon: true,
                 ssh_agent_registration: false,
             }),
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn server_with_other_protocol_requires_restart() {
         let server = running_server(
-            Some(crate::build_info::version().as_str()),
+            Some(shepr_protocol::build_version().as_str()),
             Some(shepr_protocol::PROTOCOL_VERSION + 1),
         );
 

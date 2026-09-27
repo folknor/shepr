@@ -549,7 +549,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         )
     }
 
@@ -565,7 +565,7 @@ mod tests {
                 &config,
                 crate::app::AppPolicy::TEST,
                 api_rx,
-                crate::api::EventHub::default(),
+                shepr_api::EventHub::default(),
             );
             app.state.workspaces = (0..4)
                 .map(|_| crate::workspace::Workspace::test_new("restore"))
@@ -837,13 +837,13 @@ mod tests {
         assert!(!app.start_pending_agent_resumes(Instant::now(), false));
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
 
-        app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 220,
                 g: 220,
                 b: 220,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 20,
                 g: 20,
                 b: 20,
@@ -1008,13 +1008,13 @@ mod tests {
         app.state.workspaces = vec![active_workspace, hidden_workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 220,
                 g: 220,
                 b: 220,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 20,
                 g: 20,
                 b: 20,
@@ -1081,13 +1081,13 @@ mod tests {
                 .and_then(|ws| ws.tabs[0].terminal_id(active_pane))
                 .is_some()
         );
-        app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 220,
                 g: 220,
                 b: 220,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 20,
                 g: 20,
                 b: 20,
@@ -1143,13 +1143,13 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 220,
                 g: 220,
                 b: 220,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 20,
                 g: 20,
                 b: 20,
@@ -1202,13 +1202,13 @@ mod tests {
         app.state.workspaces = vec![previous_workspace, current_workspace];
         app.state.set_active_index(Some(1));
         app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 220,
                 g: 220,
                 b: 220,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 20,
                 g: 20,
                 b: 20,
@@ -1264,13 +1264,13 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 220,
                 g: 220,
                 b: 220,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 20,
                 g: 20,
                 b: 20,

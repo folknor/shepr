@@ -198,16 +198,16 @@ fn write_host_terminal_theme_query_emits_osc_queries() {
     write_host_terminal_theme_query(&mut output).expect("test precondition");
     assert_eq!(
         output,
-        crate::host_term::theme::host_terminal_theme_query_sequence(
+        shepr_termio::host_term::theme::host_terminal_theme_query_sequence(
             shepr_platform::should_query_host_terminal_palette(),
         )
         .as_bytes()
     );
     assert!(
         !output
-            .windows(crate::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
+            .windows(shepr_termio::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
             .any(|window| window
-                == crate::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())
+                == shepr_termio::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())
     );
 }
 
@@ -219,21 +219,19 @@ fn write_host_color_scheme_report_mode_emits_mode_sequences() {
 
     let mut expected = Vec::new();
     expected.extend_from_slice(
-        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE.as_bytes(),
+        shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE.as_bytes(),
     );
     expected.extend_from_slice(
-        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+        shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
     );
     assert_eq!(output, expected);
 }
 
 #[test]
 fn color_scheme_change_event_requests_host_theme_query() {
-    let events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
+    let events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
 
-    assert!(crate::raw_input::events_require_host_terminal_theme_query(
-        &events
-    ));
+    assert!(shepr_termio::input::raw_input::events_require_host_terminal_theme_query(&events));
 }
 
 #[test]
@@ -258,13 +256,14 @@ fn cell_size_fallback_prefers_reported_then_previous_size() {
 
 #[test]
 fn reported_cell_size_is_taken_from_host_cell_size_events() {
-    let events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
+    let events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
     assert_eq!(
         super::terminal_geometry::reported_cell_size_from_events(&events),
         None
     );
 
-    let events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
+    let events =
+        shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
     assert_eq!(
         super::terminal_geometry::reported_cell_size_from_events(&events),
         Some((9, 18))
@@ -300,7 +299,7 @@ fn terminal_restore_postlude_disables_color_scheme_reports_when_enabled() {
 
     let mut expected = Vec::new();
     expected.extend_from_slice(
-        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+        shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
     );
     expected.extend_from_slice(b"\x1b[?25h\x1b[0 q");
     assert_eq!(output, expected);

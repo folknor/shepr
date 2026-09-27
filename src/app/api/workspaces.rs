@@ -1,12 +1,12 @@
-use crate::api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::{ApiErrorCode, ApiResult};
 use std::path::PathBuf;
 
-use crate::api::schema::{
+use crate::app::{App, actions::PaneContextFallback};
+use shepr_api::schema::{
     EventData, EventEnvelope, ResponseResult, WorkspaceCloseParams, WorkspaceCreateParams,
     WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
     WorkspaceReportMetadataParams, WorkspaceTarget,
 };
-use crate::app::{App, actions::PaneContextFallback};
 
 use super::super::api_helpers::{normalize_metadata_source, normalize_metadata_ttl};
 use super::responses::{failure, success};
@@ -338,7 +338,7 @@ impl App {
         success(id, ResponseResult::Ok {})
     }
 
-    fn workspace_list_info(&self) -> Vec<crate::api::schema::WorkspaceInfo> {
+    fn workspace_list_info(&self) -> Vec<shepr_api::schema::WorkspaceInfo> {
         (0..self.state.workspaces.len())
             .filter_map(|idx| self.workspace_info(idx))
             .collect()
@@ -356,10 +356,8 @@ fn workspace_not_found(id: String, workspace_id: &str) -> ApiResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        api::schema::{ErrorResponse, SuccessResponse},
-        workspace::Workspace,
-    };
+    use crate::workspace::Workspace;
+    use shepr_api::schema::{ErrorResponse, SuccessResponse};
     use shepr_config::Config;
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
@@ -374,7 +372,7 @@ mod tests {
             &Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
@@ -386,7 +384,7 @@ mod tests {
         // Second tab becomes the focused pane, away from tab 1's root pane.
         let response = app.handle_tab_create(
             "tab".into(),
-            crate::api::schema::TabCreateParams {
+            shepr_api::schema::TabCreateParams {
                 workspace_id: None,
                 cwd: None,
                 focus: true,
@@ -394,7 +392,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let _: SuccessResponse = crate::api::error::test_success(&response);
+        let _: SuccessResponse = shepr_api::error::test_success(&response);
         // Drop runtimes so cwd resolution deterministically uses cached state.
         shutdown_test_runtimes(&mut app);
 
@@ -425,7 +423,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -451,7 +449,7 @@ mod tests {
             &Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
@@ -487,7 +485,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -511,7 +509,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let error: ErrorResponse = crate::api::error::test_error(&invalid);
+        let error: ErrorResponse = shepr_api::error::test_error(&invalid);
         assert_eq!(error.error.code, "workspace_not_found");
 
         let captured = app.handle_workspace_create(
@@ -524,7 +522,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let success: SuccessResponse = crate::api::error::test_success(&captured);
+        let success: SuccessResponse = shepr_api::error::test_success(&captured);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -543,7 +541,7 @@ mod tests {
 
     #[test]
     fn workspace_metadata_tokens_patch_clear_and_emit_snapshot() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -573,9 +571,9 @@ mod tests {
                 std::collections::HashMap::from([("summary".into(), "done".into())]),
             ),
         ] {
-            let response = app.handle_api_request(crate::api::schema::Request {
+            let response = app.handle_api_request(shepr_api::schema::Request {
                 id: "req".into(),
-                method: crate::api::schema::Method::WorkspaceReportMetadata(
+                method: shepr_api::schema::Method::WorkspaceReportMetadata(
                     WorkspaceReportMetadataParams {
                         workspace_id: workspace_id.clone(),
                         source: "user:test".into(),
@@ -585,7 +583,7 @@ mod tests {
                     },
                 ),
             });
-            let success: SuccessResponse = crate::api::error::test_success(&response);
+            let success: SuccessResponse = shepr_api::error::test_success(&response);
             assert_eq!(success.result, ResponseResult::Ok {});
             assert_eq!(
                 app.workspace_info(0).expect("test precondition").tokens,
@@ -603,7 +601,7 @@ mod tests {
 
     #[test]
     fn workspace_token_ttl_expires_through_runtime_and_emits_update() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -626,7 +624,7 @@ mod tests {
                 ttl_ms: Some(1),
             },
         );
-        let _: SuccessResponse = crate::api::error::test_success(&response);
+        let _: SuccessResponse = shepr_api::error::test_success(&response);
         let deadline = app.agent_metadata_deadline.expect("token deadline");
 
         app.expire_metadata_at(deadline, deadline);
@@ -645,7 +643,7 @@ mod tests {
 
     #[test]
     fn workspace_info_for_a_stale_index_is_none_and_emits_nothing() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -663,7 +661,7 @@ mod tests {
 
     #[test]
     fn api_workspace_move_reorders_workspaces() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -688,7 +686,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };
@@ -710,7 +708,7 @@ mod tests {
 
     #[test]
     fn api_workspace_move_block_reorders_atomically() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -736,7 +734,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };
@@ -768,7 +766,7 @@ mod tests {
 
     #[test]
     fn api_workspace_close_announces_panes_and_tabs_before_the_workspace() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -803,7 +801,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         let events = event_hub
             .events_after(0)
@@ -829,7 +827,7 @@ mod tests {
 
     #[test]
     fn api_workspace_move_noop_does_not_emit_event() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -848,7 +846,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };

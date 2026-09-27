@@ -164,7 +164,7 @@ impl ClientShellState {
         let suggested_name = cwd
             .as_deref()
             .map(std::path::Path::new)
-            .map(crate::git::derive_label_from_cwd)
+            .map(crate::client::workspace_label::derive_label_from_cwd)
             .unwrap_or_else(|| "workspace".to_owned());
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "new workspace",
@@ -294,7 +294,7 @@ impl ClientShellState {
 
     pub(super) fn route_overlay_key(
         &mut self,
-        key: &crate::input::TerminalKey,
+        key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         use crossterm::event::KeyModifiers;
@@ -496,7 +496,7 @@ impl ClientShellState {
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::Help(_))) {
-            let text_character = crate::input::keybind_help_text_char(key);
+            let text_character = shepr_termio::input::keybind_help_text_char(key);
             let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
             let search_focused = matches!(
                 self.overlay,
@@ -665,8 +665,8 @@ impl ClientShellState {
                 source_workspace_id,
                 cwd,
                 suggested_name,
-            } => Some(crate::api::schema::Method::WorkspaceCreate(
-                crate::api::schema::WorkspaceCreateParams {
+            } => Some(shepr_api::schema::Method::WorkspaceCreate(
+                shepr_api::schema::WorkspaceCreateParams {
                     source_workspace_id,
                     cwd,
                     focus: true,
@@ -676,8 +676,8 @@ impl ClientShellState {
                 },
             )),
             ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
-                crate::api::schema::Method::WorkspaceRename(
-                    crate::api::schema::WorkspaceRenameParams {
+                shepr_api::schema::Method::WorkspaceRename(
+                    shepr_api::schema::WorkspaceRenameParams {
                         workspace_id,
                         label: trimmed.to_owned(),
                     },
@@ -686,8 +686,8 @@ impl ClientShellState {
             ClientRenameTarget::NewTab {
                 workspace_id,
                 default_name,
-            } => Some(crate::api::schema::Method::TabCreate(
-                crate::api::schema::TabCreateParams {
+            } => Some(shepr_api::schema::Method::TabCreate(
+                shepr_api::schema::TabCreateParams {
                     workspace_id: Some(workspace_id),
                     cwd: None,
                     focus: true,
@@ -701,13 +701,13 @@ impl ClientShellState {
                 auto_name,
                 original_name,
             } => (!(trimmed.is_empty() || auto_name && trimmed == original_name)).then(|| {
-                crate::api::schema::Method::TabRename(crate::api::schema::TabRenameParams {
+                shepr_api::schema::Method::TabRename(shepr_api::schema::TabRenameParams {
                     tab_id: tab_id.to_string(),
                     label: trimmed.to_owned(),
                 })
             }),
-            ClientRenameTarget::Pane { pane_id } => Some(crate::api::schema::Method::PaneRename(
-                crate::api::schema::PaneRenameParams {
+            ClientRenameTarget::Pane { pane_id } => Some(shepr_api::schema::Method::PaneRename(
+                shepr_api::schema::PaneRenameParams {
                     pane_id: pane_id.to_string(),
                     label: Some(trimmed.to_owned()),
                 },
@@ -740,7 +740,7 @@ impl ClientShellState {
             return;
         }
         self.push_endpoint_method(
-            crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
+            shepr_api::schema::Method::TabClose(shepr_api::schema::TabTarget {
                 tab_id: tab_id.to_string(),
             }),
             outcome,
@@ -767,11 +767,11 @@ impl ClientShellState {
                 );
                 return;
             }
-            crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
+            shepr_api::schema::Method::TabClose(shepr_api::schema::TabTarget {
                 tab_id: target.tab_id.to_string(),
             })
         } else {
-            crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
+            shepr_api::schema::Method::WorkspaceClose(shepr_api::schema::WorkspaceCloseParams {
                 workspace_id: confirm.workspace_id,
             })
         };

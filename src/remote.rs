@@ -232,7 +232,7 @@ pub(crate) fn run_remote_api_bridge(
     if check {
         return Ok(());
     }
-    let path = crate::api::socket_path(paths);
+    let path = shepr_api::socket_path(paths);
     let stream = shepr_platform::ipc::connect_local_stream(&path).map_err(|error| {
         std::io::Error::new(
             error.kind(),

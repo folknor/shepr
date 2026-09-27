@@ -75,8 +75,8 @@ pub struct App {
     pub(crate) terminal_runtimes: crate::pane::PaneRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
-    pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
-    pub(crate) event_hub: crate::api::EventHub,
+    pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
+    pub(crate) event_hub: shepr_api::EventHub,
     pub(crate) last_focus: Option<(usize, shepr_core::layout::PaneId)>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
@@ -113,8 +113,8 @@ impl App {
     pub fn new(
         config: &Config,
         policy: AppPolicy,
-        api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
-        event_hub: crate::api::EventHub,
+        api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
+        event_hub: shepr_api::EventHub,
     ) -> Self {
         let scratch = crate::test_support::ScratchDir::new("app").keep_until_exit();
         let paths = shepr_config::AppPaths::test_at(&scratch);
@@ -123,7 +123,7 @@ impl App {
             None,
             paths.clone(),
         );
-        let lease = crate::persist::DataDirLease::acquire(&crate::session::data_dir(&paths))
+        let lease = crate::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
             .expect("test session lease");
         Self::with_paths(&config, &paths, lease, policy, api_rx, event_hub)
     }
@@ -133,8 +133,8 @@ impl App {
         paths: &shepr_config::AppPaths,
         lease: crate::persist::DataDirLease,
         policy: AppPolicy,
-        api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
-        event_hub: crate::api::EventHub,
+        api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
+        event_hub: shepr_api::EventHub,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
@@ -146,7 +146,7 @@ impl App {
         let mut restored_terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
         let mut pane_history_carry = crate::persist::HistoryCarry::default();
         let paths = paths.clone();
-        let session_data_dir = crate::session::data_dir(&paths);
+        let session_data_dir = shepr_api::session::data_dir(&paths);
         let snapshot = policy
             .persists_session()
             .then(|| crate::persist::load(&session_data_dir))
@@ -254,7 +254,7 @@ impl App {
             host_terminal_appearance_explicit: false,
             agent_manifest_summaries,
             host_terminal_theme: restored_host_theme,
-            host_cell_size: crate::host_term::cell_size::HostCellSize::default(),
+            host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
         };
@@ -398,7 +398,7 @@ mod tests {
             &Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.settings.default_shell = exiting_test_command().into();
         app
@@ -540,10 +540,10 @@ mod tests {
                 .expect("test precondition");
         }
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_workspace_list_after_events".into(),
-            method: crate::api::schema::Method::WorkspaceList(
-                crate::api::schema::EmptyParams::default(),
+            method: shepr_api::schema::Method::WorkspaceList(
+                shepr_api::schema::EmptyParams::default(),
             ),
         });
         let response: serde_json::Value =
@@ -563,7 +563,7 @@ mod tests {
             &config,
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
 
         assert_eq!(app.state.settings.palette, state::Palette::tokyo_night());
@@ -622,49 +622,47 @@ mod tests {
 
     #[test]
     fn read_only_api_requests_do_not_force_rerender() {
-        let read_only = crate::api::schema::Request {
+        let read_only = shepr_api::schema::Request {
             id: "req_1".into(),
-            method: crate::api::schema::Method::WorkspaceList(
-                crate::api::schema::EmptyParams::default(),
+            method: shepr_api::schema::Method::WorkspaceList(
+                shepr_api::schema::EmptyParams::default(),
             ),
         };
-        let mutating = crate::api::schema::Request {
+        let mutating = shepr_api::schema::Request {
             id: "req_2".into(),
-            method: crate::api::schema::Method::WorkspaceFocus(
-                crate::api::schema::WorkspaceTarget {
-                    workspace_id: "w1".into(),
-                },
-            ),
+            method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
+                workspace_id: "w1".into(),
+            }),
         };
-        let pane_rename = crate::api::schema::Request {
+        let pane_rename = shepr_api::schema::Request {
             id: "req_3".into(),
-            method: crate::api::schema::Method::PaneRename(crate::api::schema::PaneRenameParams {
+            method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
                 pane_id: "w1:p1".into(),
                 label: Some("logs".into()),
             }),
         };
-        let pane_swap = crate::api::schema::Request {
+        let pane_swap = shepr_api::schema::Request {
             id: "req_6".into(),
-            method: crate::api::schema::Method::PaneSwap(crate::api::schema::PaneSwapParams {
+            method: shepr_api::schema::Method::PaneSwap(shepr_api::schema::PaneSwapParams {
                 pane_id: Some("w1:p1".into()),
-                direction: Some(crate::api::schema::PaneDirection::Right),
-                ..crate::api::schema::PaneSwapParams::default()
+                direction: Some(shepr_api::schema::PaneDirection::Right),
+                ..shepr_api::schema::PaneSwapParams::default()
             }),
         };
-        let pane_focus_direction = crate::api::schema::Request {
+        let pane_focus_direction = shepr_api::schema::Request {
             id: "req_7".into(),
-            method: crate::api::schema::Method::PaneFocusDirection(
-                crate::api::schema::PaneFocusDirectionParams {
+            method: shepr_api::schema::Method::PaneFocusDirection(
+                shepr_api::schema::PaneFocusDirectionParams {
                     pane_id: Some("w1:p1".into()),
-                    direction: crate::api::schema::PaneDirection::Right,
+                    direction: shepr_api::schema::PaneDirection::Right,
                 },
             ),
         };
-        let pane_resize = crate::api::schema::Request {
+        let pane_resize = shepr_api::schema::Request {
             id: "req_8".into(),
-            method: crate::api::schema::Method::PaneResize(crate::api::schema::PaneResizeParams {
+            method: shepr_api::schema::Method::PaneResize(shepr_api::schema::PaneResizeParams {
                 pane_id: Some("w1:p1".into()),
-                direction: crate::api::schema::PaneDirection::Right,
+                direction: shepr_api::schema::PaneDirection::Right,
                 amount: Some(0.05),
             }),
         };
@@ -684,7 +682,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let crate::api::schema::ResponseResult::WorkspaceCreated {
+        let shepr_api::schema::ResponseResult::WorkspaceCreated {
             workspace,
             tab,
             root_pane,
@@ -703,7 +701,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_default_workspace_emits_creation_events() {
-        let event_hub = crate::api::EventHub::default();
+        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
@@ -722,10 +720,10 @@ mod tests {
                 .map(|(_, event)| event.data.kind())
                 .collect::<Vec<_>>(),
             [
-                crate::api::schema::EventKind::WorkspaceCreated,
-                crate::api::schema::EventKind::TabCreated,
-                crate::api::schema::EventKind::PaneCreated,
-                crate::api::schema::EventKind::LayoutUpdated,
+                shepr_api::schema::EventKind::WorkspaceCreated,
+                shepr_api::schema::EventKind::TabCreated,
+                shepr_api::schema::EventKind::PaneCreated,
+                shepr_api::schema::EventKind::LayoutUpdated,
             ]
         );
     }
@@ -740,7 +738,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let crate::api::schema::ResponseResult::TabCreated { tab, root_pane } =
+        let shepr_api::schema::ResponseResult::TabCreated { tab, root_pane } =
             app.tab_created_result(0, 1).expect("test precondition")
         else {
             panic!("expected tab_created response");
@@ -875,10 +873,10 @@ mod tests {
     fn workspace_list_request_keeps_server_running() {
         let mut app = test_app();
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_workspace_list".into(),
-            method: crate::api::schema::Method::WorkspaceList(
-                crate::api::schema::EmptyParams::default(),
+            method: shepr_api::schema::Method::WorkspaceList(
+                shepr_api::schema::EmptyParams::default(),
             ),
         });
         let response: serde_json::Value =
@@ -899,9 +897,9 @@ mod tests {
         app.state.set_selected_index(Some(0));
 
         let pane_id = app.pane_info(0, pane).expect("test precondition").pane_id;
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_rename".into(),
-            method: crate::api::schema::Method::PaneRename(crate::api::schema::PaneRenameParams {
+            method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
                 pane_id: pane_id.clone(),
                 label: Some("reviewer".into()),
             }),
@@ -926,9 +924,9 @@ mod tests {
             Some("reviewer")
         );
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_rename_clear".into(),
-            method: crate::api::schema::Method::PaneRename(crate::api::schema::PaneRenameParams {
+            method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
                 pane_id,
                 label: None,
             }),
@@ -1218,12 +1216,12 @@ mod tests {
             .public_tab_id(0, background_tab)
             .expect("test precondition");
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_split_focus_background_tab".into(),
-            method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+            method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
                 workspace_id: None,
                 target_pane_id: Some(target_pane_id),
-                direction: crate::api::schema::SplitDirection::Right,
+                direction: shepr_api::schema::SplitDirection::Right,
                 ratio: None,
                 cwd: None,
                 focus: true,
@@ -1264,16 +1262,16 @@ mod tests {
             .expect("test precondition")
             .pane_id;
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_split_ratio".into(),
-            method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+            method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
                 workspace_id: None,
                 target_pane_id: Some(target_pane_id),
-                direction: crate::api::schema::SplitDirection::Right,
+                direction: shepr_api::schema::SplitDirection::Right,
                 ratio: Some(0.333),
                 cwd: None,
                 focus: false,
-                right_click: crate::api::schema::PaneRightClickTarget::Pane,
+                right_click: shepr_api::schema::PaneRightClickTarget::Pane,
                 env: Default::default(),
             }),
         });
@@ -1319,12 +1317,12 @@ mod tests {
         app.state.set_selected_index(Some(0));
         app.state.focus_pane_in_workspace(0, target_pane);
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_split_current".into(),
-            method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+            method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
                 workspace_id: None,
                 target_pane_id: None,
-                direction: crate::api::schema::SplitDirection::Right,
+                direction: shepr_api::schema::SplitDirection::Right,
                 ratio: None,
                 cwd: None,
                 focus: false,
@@ -1359,9 +1357,9 @@ mod tests {
         app.state.set_selected_index(Some(0));
         let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_agent_start_target".into(),
-            method: crate::api::schema::Method::AgentStart(crate::api::schema::AgentStartParams {
+            method: shepr_api::schema::Method::AgentStart(shepr_api::schema::AgentStartParams {
                 name: "worker".into(),
                 kind: "pi".into(),
                 pane_id,
@@ -1402,9 +1400,9 @@ mod tests {
             .expect("test precondition");
         app.terminal_runtimes.insert(terminal_id.clone(), runtime);
 
-        let request = || crate::api::schema::Request {
+        let request = || shepr_api::schema::Request {
             id: "req_agent_start_input".into(),
-            method: crate::api::schema::Method::AgentStart(crate::api::schema::AgentStartParams {
+            method: shepr_api::schema::Method::AgentStart(shepr_api::schema::AgentStartParams {
                 name: "worker".into(),
                 kind: "codex".into(),
                 pane_id: pane_id.clone(),
@@ -1452,14 +1450,12 @@ mod tests {
             app.state.terminals[&terminal_id].agent_name.as_deref(),
             Some("worker")
         );
-        let rename = app.handle_api_request(crate::api::schema::Request {
+        let rename = app.handle_api_request(shepr_api::schema::Request {
             id: "req_agent_rename_pending".into(),
-            method: crate::api::schema::Method::AgentRename(
-                crate::api::schema::AgentRenameParams {
-                    target: pane_id,
-                    name: Some("replacement".into()),
-                },
-            ),
+            method: shepr_api::schema::Method::AgentRename(shepr_api::schema::AgentRenameParams {
+                target: pane_id,
+                name: Some("replacement".into()),
+            }),
         });
         let rename: serde_json::Value = serde_json::from_str(&rename).expect("test precondition");
         assert_eq!(rename["error"]["code"], "agent_launch_pending");
@@ -1486,9 +1482,9 @@ mod tests {
             .expect("test precondition")
             .pane_id;
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_close".into(),
-            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+            method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
                 pane_id: target_pane_id,
             }),
         });
@@ -1516,9 +1512,9 @@ mod tests {
             .expect("test precondition")
             .pane_id;
 
-        let response = app.handle_api_request(crate::api::schema::Request {
+        let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_close_last".into(),
-            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+            method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
                 pane_id: target_pane_id,
             }),
         });
@@ -1580,7 +1576,7 @@ mod tests {
         assert!(app.session_saver.session_save_deadline.is_none());
         app.save_session_now();
         assert!(
-            crate::session::data_dir(&app.paths)
+            shepr_api::session::data_dir(&app.paths)
                 .join("session.json")
                 .exists()
         );
@@ -1652,7 +1648,7 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        let snapshot = crate::persist::load(&crate::session::data_dir(&app.paths))
+        let snapshot = crate::persist::load(&shepr_api::session::data_dir(&app.paths))
             .expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
@@ -1672,7 +1668,7 @@ mod tests {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
-        assert!(crate::persist::load(&crate::session::data_dir(&app.paths)).is_some());
+        assert!(crate::persist::load(&shepr_api::session::data_dir(&app.paths)).is_some());
 
         app.start_background_session_save();
         if let Some(thread) = app.session_saver.session_save_thread.take() {
@@ -1681,7 +1677,7 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        assert!(crate::persist::load(&crate::session::data_dir(&app.paths)).is_none());
+        assert!(crate::persist::load(&shepr_api::session::data_dir(&app.paths)).is_none());
     }
 
     #[test]
@@ -1712,7 +1708,7 @@ mod tests {
             app.save_session_before_teardown();
             app.retire_session_writer();
 
-            let snapshot = crate::persist::load(&crate::session::data_dir(&app.paths))
+            let snapshot = crate::persist::load(&shepr_api::session::data_dir(&app.paths))
                 .expect("newer session should be saved");
             assert_eq!(snapshot.workspaces.len(), 1);
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));

@@ -104,7 +104,7 @@ impl SavedSshConnector {
         deadline: std::time::Instant,
         mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
-        crate::session::validate_name(&self.session)
+        shepr_api::session::validate_name(&self.session)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let target = &self.target;
         let metadata_cache = SshMetadataCache::new(
@@ -308,7 +308,7 @@ fn validated_saved_ssh(
     session: &str,
     settings: SavedSshSettings,
 ) -> io::Result<RemoteSsh> {
-    crate::session::validate_name(session)
+    shepr_api::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     Ok(RemoteSsh::new_noninteractive_with(
         target.clone(),

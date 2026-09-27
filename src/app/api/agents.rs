@@ -1,13 +1,13 @@
-use crate::api::error::{ApiError, ApiErrorCode, ApiResult};
+use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 use std::time::Duration;
 
 use bytes::Bytes;
 
-use crate::api::schema::{
+use crate::app::App;
+use shepr_api::schema::{
     AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
     PaneReadResult, ResponseResult,
 };
-use crate::app::App;
 use shepr_pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
 
 use super::responses::{failure, success};
@@ -55,10 +55,10 @@ impl App {
 
     pub(crate) fn handle_deferred_agent_api_request(
         &mut self,
-        request: crate::api::schema::Request,
+        request: shepr_api::schema::Request,
         respond_to: std::sync::mpsc::Sender<ApiResult>,
     ) -> bool {
-        let crate::api::schema::Method::AgentPrompt(params) = request.method else {
+        let shepr_api::schema::Method::AgentPrompt(params) = request.method else {
             return false;
         };
         // `agent.prompt --wait --timeout` sets this. A plain prompt has no
@@ -80,7 +80,7 @@ impl App {
                             failure(id, ApiErrorCode::AgentPromptFailed, message)
                         }
                     };
-                    crate::api::send_api_response(
+                    shepr_api::send_api_response(
                         &respond_to,
                         &request_id,
                         "agent.prompt",
@@ -89,7 +89,7 @@ impl App {
                 });
             }
             Err(response) => {
-                crate::api::send_api_response(
+                shepr_api::send_api_response(
                     &respond_to,
                     &request_id,
                     "agent.prompt",
@@ -107,7 +107,7 @@ impl App {
     ) -> Result<
         (
             String,
-            crate::api::schema::AgentInfo,
+            shepr_api::schema::AgentInfo,
             shepr_pty::actor::QueuedSubmission,
         ),
         ApiError,
@@ -189,7 +189,7 @@ impl App {
     pub(super) fn handle_agent_read(
         &mut self,
         id: String,
-        params: &crate::api::schema::AgentReadParams,
+        params: &shepr_api::schema::AgentReadParams,
     ) -> ApiResult {
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
@@ -417,12 +417,9 @@ fn agent_not_found(_id: String, target: &str) -> ApiResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        api::schema::{AgentStatus, SuccessResponse},
-        app::Mode,
-        workspace::Workspace,
-    };
+    use crate::{app::Mode, workspace::Workspace};
     use shepr_agent::detect::{Agent, AgentState};
+    use shepr_api::schema::{AgentStatus, SuccessResponse};
     use shepr_config::Config;
 
     fn app_with_agent() -> App {
@@ -431,7 +428,7 @@ mod tests {
             &Config::default(),
             crate::app::AppPolicy::TEST,
             api_rx,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         app.state.workspaces = vec![Workspace::test_new("agent")];
         app.state.ensure_test_terminals();
@@ -448,9 +445,9 @@ mod tests {
     ) -> std::sync::mpsc::Receiver<ApiResult> {
         let (respond_to, response_rx) = std::sync::mpsc::channel();
         assert!(app.handle_deferred_agent_api_request(
-            crate::api::schema::Request {
+            shepr_api::schema::Request {
                 id: id.into(),
-                method: crate::api::schema::Method::AgentPrompt(params),
+                method: shepr_api::schema::Method::AgentPrompt(params),
             },
             respond_to,
         ));
@@ -461,7 +458,7 @@ mod tests {
         let response = start_deferred_agent_prompt(app, id, params)
             .recv_timeout(Duration::from_secs(1))
             .expect("agent prompt responds after submission");
-        crate::api::error::encode_result(id.into(), response)
+        shepr_api::error::encode_result(id.into(), response)
     }
 
     #[tokio::test]
@@ -490,7 +487,7 @@ mod tests {
             },
         );
         assert!(
-            serde_json::from_str::<SuccessResponse>(&crate::api::error::test_json(&found)).is_ok(),
+            serde_json::from_str::<SuccessResponse>(&shepr_api::error::test_json(&found)).is_ok(),
             "the assigned name must resolve while the agent is running: {found:?}"
         );
 
@@ -524,7 +521,7 @@ mod tests {
             },
         );
         assert!(
-            serde_json::from_str::<SuccessResponse>(&crate::api::error::test_json(&after)).is_ok(),
+            serde_json::from_str::<SuccessResponse>(&shepr_api::error::test_json(&after)).is_ok(),
             "a live agent must stay reachable by its assigned name: {after:?}"
         );
     }
@@ -563,7 +560,7 @@ mod tests {
         let response = response_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("agent prompt responds after submission");
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::AgentPrompted { agent, .. } = success.result else {
             panic!("expected prompted response");
         };
@@ -591,7 +588,7 @@ mod tests {
                 wait: None,
             },
         );
-        let raw: SuccessResponse = crate::api::error::test_success(&raw);
+        let raw: SuccessResponse = shepr_api::error::test_success(&raw);
         assert!(matches!(raw.result, ResponseResult::AgentPrompted { .. }));
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -612,8 +609,8 @@ mod tests {
                 wait: None,
             },
         );
-        let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&crate::api::error::test_json(&rejected))
+        let error: shepr_api::schema::ErrorResponse =
+            serde_json::from_str(&shepr_api::error::test_json(&rejected))
                 .expect("test precondition");
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
@@ -704,8 +701,8 @@ mod tests {
             },
         );
 
-        let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&crate::api::error::test_json(&response))
+        let error: shepr_api::schema::ErrorResponse =
+            serde_json::from_str(&shepr_api::error::test_json(&response))
                 .expect("test precondition");
         assert_eq!(error.error.code, "agent_blocked");
         assert!(
@@ -747,7 +744,7 @@ mod tests {
                 wait: None,
             },
         );
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::AgentPrompted { .. }
@@ -790,8 +787,8 @@ mod tests {
                 keys: vec!["enter".into(), "not-a-key".into()],
             },
         );
-        let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&crate::api::error::test_json(&rejected))
+        let error: shepr_api::schema::ErrorResponse =
+            serde_json::from_str(&shepr_api::error::test_json(&rejected))
                 .expect("test precondition");
         assert_eq!(error.error.code, "invalid_key");
         assert!(rx.try_recv().is_err());
@@ -803,7 +800,7 @@ mod tests {
                 keys: vec!["up".into(), "enter".into()],
             },
         );
-        let success: SuccessResponse = crate::api::error::test_success(&sent);
+        let success: SuccessResponse = shepr_api::error::test_success(&sent);
         assert!(matches!(success.result, ResponseResult::Ok {}));
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -845,8 +842,8 @@ mod tests {
                 wait: None,
             },
         );
-        let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&crate::api::error::test_json(&response))
+        let error: shepr_api::schema::ErrorResponse =
+            serde_json::from_str(&shepr_api::error::test_json(&response))
                 .expect("test precondition");
         assert_eq!(error.error.code, "agent_not_ready");
         assert!(rx.try_recv().is_err());
@@ -874,7 +871,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = crate::api::error::test_success(&response);
+        let success: SuccessResponse = shepr_api::error::test_success(&response);
         let ResponseResult::AgentInfo { agent } = success.result else {
             panic!("expected agent info response");
         };
@@ -905,7 +902,7 @@ mod tests {
                     name,
                 },
             );
-            let success: SuccessResponse = crate::api::error::test_success(&response);
+            let success: SuccessResponse = shepr_api::error::test_success(&response);
             assert!(matches!(success.result, ResponseResult::AgentInfo { .. }));
             assert_eq!(
                 app.state.terminals[&terminal_id].manual_label.as_deref(),

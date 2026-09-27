@@ -103,10 +103,10 @@ pub(crate) fn client_shell_snapshot(
 }
 
 pub(crate) fn test_headless_server() -> HeadlessServer {
-    test_headless_server_with_event_hub(api::EventHub::default())
+    test_headless_server_with_event_hub(shepr_api::EventHub::default())
 }
 
-fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServer {
+fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> HeadlessServer {
     let config = shepr_config::Config::default();
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::TEST, api_rx, event_hub);
@@ -225,7 +225,7 @@ fn default_headless_size_is_effective_without_clients() {
 
 #[tokio::test]
 async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
-    let event_hub = api::EventHub::default();
+    let event_hub = shepr_api::EventHub::default();
     let mut server = test_headless_server_with_event_hub(event_hub.clone());
     server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
     server.app.state.ensure_test_terminals();
@@ -274,30 +274,32 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
     assert_eq!(pane_updated_events(&event_hub), 1);
 }
 
-fn headless_pane_list(server: &mut HeadlessServer) -> Vec<api::schema::PaneInfo> {
+fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::PaneInfo> {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
-        request: api::schema::Request {
+    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
             id: "list-titles".into(),
-            method: api::schema::Method::PaneList(api::schema::PaneListParams::default()),
+            method: shepr_api::schema::Method::PaneList(
+                shepr_api::schema::PaneListParams::default(),
+            ),
         },
         respond_to,
     });
-    let response: api::schema::SuccessResponse = serde_json::from_str(&api::error::test_json(
-        &response_rx.recv().expect("test precondition"),
-    ))
+    let response: shepr_api::schema::SuccessResponse = serde_json::from_str(
+        &shepr_api::error::test_json(&response_rx.recv().expect("test precondition")),
+    )
     .expect("test precondition");
-    let api::schema::ResponseResult::PaneList { panes } = response.result else {
+    let shepr_api::schema::ResponseResult::PaneList { panes } = response.result else {
         panic!("expected pane list");
     };
     panes
 }
 
-fn pane_updated_events(event_hub: &api::EventHub) -> usize {
+fn pane_updated_events(event_hub: &shepr_api::EventHub) -> usize {
     event_hub
         .events_after(0)
         .iter()
-        .filter(|(_, event)| event.data.kind() == api::schema::EventKind::PaneUpdated)
+        .filter(|(_, event)| event.data.kind() == shepr_api::schema::EventKind::PaneUpdated)
         .count()
 }
 
@@ -326,15 +328,17 @@ fn server_stop_interrupts_server_event_backlog() {
 fn shutdown_test_request(
     id: &str,
 ) -> (
-    api::ApiRequestMessage,
-    std::sync::mpsc::Receiver<api::error::ApiResult>,
+    shepr_api::ApiRequestMessage,
+    std::sync::mpsc::Receiver<shepr_api::error::ApiResult>,
 ) {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     (
-        api::ApiRequestMessage {
-            request: api::schema::Request {
+        shepr_api::ApiRequestMessage {
+            request: shepr_api::schema::Request {
                 id: id.into(),
-                method: api::schema::Method::ServerStop(api::schema::EmptyParams::default()),
+                method: shepr_api::schema::Method::ServerStop(
+                    shepr_api::schema::EmptyParams::default(),
+                ),
             },
             respond_to,
         },
@@ -343,7 +347,7 @@ fn shutdown_test_request(
 }
 
 fn assert_server_unavailable(
-    response_rx: &std::sync::mpsc::Receiver<api::error::ApiResult>,
+    response_rx: &std::sync::mpsc::Receiver<shepr_api::error::ApiResult>,
     id: &str,
 ) {
     let response = response_rx
@@ -352,7 +356,7 @@ fn assert_server_unavailable(
     let error = response.expect_err("shutdown must reject the request");
     assert_eq!(
         error.code,
-        api::error::ApiErrorCode::ServerUnavailable,
+        shepr_api::error::ApiErrorCode::ServerUnavailable,
         "{id}"
     );
 }
@@ -413,10 +417,12 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     // An empty git refresh has no render impact, so the returned `changed` flag is
     // not asserted; this test only covers draining past the per-batch limit.
-    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
-        request: api::schema::Request {
+    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
             id: "headless_list_after_events".into(),
-            method: api::schema::Method::WorkspaceList(api::schema::EmptyParams::default()),
+            method: shepr_api::schema::Method::WorkspaceList(
+                shepr_api::schema::EmptyParams::default(),
+            ),
         },
         respond_to,
     });
@@ -424,7 +430,7 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
         .recv_timeout(Duration::from_millis(100))
         .expect("test precondition");
     let response: serde_json::Value =
-        serde_json::from_str(&api::error::test_json(&response)).expect("test precondition");
+        serde_json::from_str(&shepr_api::error::test_json(&response)).expect("test precondition");
 
     assert_eq!(response["result"]["type"], "workspace_list");
     assert!(server.app.event_rx.try_recv().is_err());
@@ -441,7 +447,7 @@ fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<
         1,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -497,7 +503,7 @@ fn window_title_waits_for_a_foreground_client_to_exist() {
         1,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -531,7 +537,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -725,7 +731,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -904,15 +910,15 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
     let snapshot = client_shell_snapshot(&control_rx);
     assert_eq!(
         snapshot.agents[0].agent_status,
-        api::schema::AgentStatus::Idle
+        shepr_api::schema::AgentStatus::Idle
     );
     assert_eq!(
         snapshot.tabs[0].agent_status,
-        api::schema::AgentStatus::Idle
+        shepr_api::schema::AgentStatus::Idle
     );
     assert_eq!(
         snapshot.workspaces[0].agent_status,
-        api::schema::AgentStatus::Idle
+        shepr_api::schema::AgentStatus::Idle
     );
     assert!(control_rx.try_recv().is_err());
 }
@@ -941,7 +947,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let _initial_snapshot = client_shell_snapshot(&control_rx);
     let boot_id = server.client_shell_boot_id.clone();
     let rename = || {
-        api::schema::Method::WorkspaceRename(api::schema::WorkspaceRenameParams {
+        shepr_api::schema::Method::WorkspaceRename(shepr_api::schema::WorkspaceRenameParams {
             workspace_id: server.app.state.workspaces[0].id.to_string(),
             label: "renamed".into(),
         })
@@ -954,7 +960,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request: Box::new(api::schema::Request {
+            request: Box::new(shepr_api::schema::Request {
                 id: "client-shell:1".into(),
                 method: first_rename,
             }),
@@ -970,7 +976,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
         !server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request: Box::new(api::schema::Request {
+            request: Box::new(shepr_api::schema::Request {
                 id: "client-shell:busy".into(),
                 method: busy_rename,
             }),
@@ -982,8 +988,8 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     else {
         panic!("expected busy endpoint response");
     };
-    let response =
-        serde_json::from_slice::<api::schema::ErrorResponse>(&data).expect("typed busy response");
+    let response = serde_json::from_slice::<shepr_api::schema::ErrorResponse>(&data)
+        .expect("typed busy response");
     assert_eq!(response.error.code, "endpoint_busy");
 
     let response_ready = server
@@ -1008,12 +1014,12 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             assert_eq!(response_boot_id, boot_id);
             assert_eq!(request_id, "client-shell:1");
             assert!(final_chunk);
-            let response = serde_json::from_slice::<api::schema::SuccessResponse>(&data)
+            let response = serde_json::from_slice::<shepr_api::schema::SuccessResponse>(&data)
                 .expect("success response");
             assert_eq!(response.id, "client-shell:1");
             assert!(matches!(
                 response.result,
-                api::schema::ResponseResult::WorkspaceInfo { .. }
+                shepr_api::schema::ResponseResult::WorkspaceInfo { .. }
             ));
         }
         other => panic!("expected client shell endpoint response, got {other:?}"),
@@ -1933,9 +1939,9 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id: ClientId::test_new(8),
             boot_id: server.client_shell_boot_id.clone(),
-            request: Box::new(api::schema::Request {
+            request: Box::new(shepr_api::schema::Request {
                 id: "focus-second".into(),
-                method: api::schema::Method::TabFocus(api::schema::TabTarget {
+                method: shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
                     tab_id: second_tab_id.clone(),
                 }),
             }),
@@ -2021,10 +2027,10 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
     server.handle_client_shell_api_request(
         ClientId::test_new(62),
-        crate::api::ApiRequestMessage {
-            request: crate::api::schema::Request {
+        shepr_api::ApiRequestMessage {
+            request: shepr_api::schema::Request {
                 id: "focus-own-tab".into(),
-                method: crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                method: shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
                     tab_id: second_tab_id,
                 }),
             },
@@ -2039,9 +2045,9 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
 
 #[tokio::test]
 async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves() {
-    use api::schema::{EventData, Method, PaneTarget, TabTarget};
+    use shepr_api::schema::{EventData, Method, PaneTarget, TabTarget};
 
-    let event_hub = api::EventHub::default();
+    let event_hub = shepr_api::EventHub::default();
     let mut server = test_headless_server_with_event_hub(event_hub.clone());
     let mut workspace = crate::workspace::Workspace::test_new("focus-events");
     let first_pane = workspace.tabs[0].root_pane;
@@ -2121,8 +2127,8 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         let (respond_to, response_rx) = std::sync::mpsc::channel();
         server.handle_client_shell_api_request(
             client_id.into(),
-            api::ApiRequestMessage {
-                request: api::schema::Request {
+            shepr_api::ApiRequestMessage {
+                request: shepr_api::schema::Request {
                     id: "navigate".into(),
                     method,
                 },
@@ -2131,8 +2137,10 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         );
         let response = response_rx.recv().expect("navigation response");
         assert!(
-            serde_json::from_str::<api::schema::SuccessResponse>(&api::error::test_json(&response))
-                .is_ok(),
+            serde_json::from_str::<shepr_api::schema::SuccessResponse>(
+                &shepr_api::error::test_json(&response)
+            )
+            .is_ok(),
             "{response:?}"
         );
         server.app.sync_focus_events();
@@ -2261,11 +2269,11 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
 
     assert!(server.handle_client_shell_api_request(
         ClientId::test_new(65),
-        crate::api::ApiRequestMessage {
-            request: crate::api::schema::Request {
+        shepr_api::ApiRequestMessage {
+            request: shepr_api::schema::Request {
                 id: "resize-layout".into(),
-                method: crate::api::schema::Method::LayoutSetSplitRatio(
-                    crate::api::schema::LayoutSetSplitRatioParams {
+                method: shepr_api::schema::Method::LayoutSetSplitRatio(
+                    shepr_api::schema::LayoutSetSplitRatioParams {
                         tab_id: Some(tab_id),
                         pane_id: None,
                         path: Vec::new(),
@@ -2313,10 +2321,10 @@ async fn public_close_reapplies_controller_geometry() {
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
     assert!(
-        server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
-            request: crate::api::schema::Request {
+        server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+            request: shepr_api::schema::Request {
                 id: "public-close-geometry".into(),
-                method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+                method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
                     pane_id: second_pane_id,
                 }),
             },
@@ -2528,10 +2536,10 @@ async fn public_background_tab_create_preserves_client_locations() {
     assert!(server.focus_shell_client_on_tab(ClientId::test_new(71), &second_tab_id));
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
-        request: crate::api::schema::Request {
+    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
             id: "create-background-tab".into(),
-            method: crate::api::schema::Method::TabCreate(crate::api::schema::TabCreateParams {
+            method: shepr_api::schema::Method::TabCreate(shepr_api::schema::TabCreateParams {
                 workspace_id: Some(workspace_id),
                 cwd: None,
                 focus: false,
@@ -2583,14 +2591,12 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     assert!(server.focus_shell_client_on_tab(ClientId::test_new(41), &second_tab_id));
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
-        request: crate::api::schema::Request {
+    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
             id: "focus-second-workspace".into(),
-            method: crate::api::schema::Method::WorkspaceFocus(
-                crate::api::schema::WorkspaceTarget {
-                    workspace_id: second_workspace_id.clone(),
-                },
-            ),
+            method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
+                workspace_id: second_workspace_id.clone(),
+            }),
         },
         respond_to,
     });
@@ -2680,20 +2686,20 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         })
         .expect("test precondition");
     let (respond_to, response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
-        request: crate::api::schema::Request {
+    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
             id: "focus-first-agent".into(),
-            method: crate::api::schema::Method::AgentFocus(crate::api::schema::AgentTarget {
+            method: shepr_api::schema::Method::AgentFocus(shepr_api::schema::AgentTarget {
                 target: first_pane_id.clone(),
             }),
         },
         respond_to,
     });
-    let response: crate::api::schema::SuccessResponse = serde_json::from_str(
-        &api::error::test_json(&response_rx.recv().expect("agent focus response")),
+    let response: shepr_api::schema::SuccessResponse = serde_json::from_str(
+        &shepr_api::error::test_json(&response_rx.recv().expect("agent focus response")),
     )
     .expect("test precondition");
-    let crate::api::schema::ResponseResult::AgentInfo { agent } = response.result else {
+    let shepr_api::schema::ResponseResult::AgentInfo { agent } = response.result else {
         panic!("expected agent info");
     };
     assert_eq!(agent.pane_id, first_pane_id);
@@ -2755,14 +2761,12 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
     let initial_revision = client_shell_snapshot(&control_rx).revision;
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
-        request: crate::api::schema::Request {
+    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
             id: "test.client.shell.workspace.focus".into(),
-            method: crate::api::schema::Method::WorkspaceFocus(
-                crate::api::schema::WorkspaceTarget {
-                    workspace_id: second_id.clone(),
-                },
-            ),
+            method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
+                workspace_id: second_id.clone(),
+            }),
         },
         respond_to,
     });
@@ -2798,7 +2802,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -2907,7 +2911,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
         11,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -2974,7 +2978,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -3038,7 +3042,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -3084,7 +3088,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -3131,7 +3135,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         11,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(writer),
@@ -3219,7 +3223,7 @@ fn retained_test_server_with_control(
         1,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -3241,7 +3245,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         1,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -3251,7 +3255,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             None,
@@ -3302,7 +3306,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     );
     assert_eq!(
         server.app.state.host_terminal_appearance,
-        Some(crate::host_term::theme::HostAppearance::Dark)
+        Some(shepr_termio::host_term::theme::HostAppearance::Dark)
     );
     assert!(server.app.state.host_terminal_appearance_explicit);
 
@@ -3335,7 +3339,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     );
     assert_eq!(
         server.app.state.host_terminal_appearance,
-        Some(crate::host_term::theme::HostAppearance::Light)
+        Some(shepr_termio::host_term::theme::HostAppearance::Light)
     );
     assert!(!server.app.state.host_terminal_appearance_explicit);
 }
@@ -3357,7 +3361,7 @@ fn terminal_clients_store_known_cell_geometry_independently_of_pixel_mouse() {
     assert!(!server.clients[&7].pixel_mouse);
     assert_eq!(
         server.clients[&7].cell_size,
-        crate::host_term::cell_size::HostCellSize::default()
+        shepr_termio::host_term::cell_size::HostCellSize::default()
     );
 
     let (writer, _control_rx, _render_rx) = test_client_writer();
@@ -3373,7 +3377,7 @@ fn terminal_clients_store_known_cell_geometry_independently_of_pixel_mouse() {
     assert!(!server.clients[&8].pixel_mouse);
     assert_eq!(
         server.clients[&8].cell_size,
-        crate::host_term::cell_size::HostCellSize {
+        shepr_termio::host_term::cell_size::HostCellSize {
             width_px: 10,
             height_px: 20,
         }
@@ -3483,20 +3487,20 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
                 terminal_id,
                 crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"\x1b[?1049hworking"),
             );
-            let request = api::schema::Request {
+            let request = shepr_api::schema::Request {
                 id: "read".into(),
-                method: api::schema::Method::AgentRead(api::schema::AgentReadParams {
+                method: shepr_api::schema::Method::AgentRead(shepr_api::schema::AgentReadParams {
                     target: public_pane_id.clone(),
-                    source: api::schema::ReadSource::Recent,
+                    source: shepr_api::schema::ReadSource::Recent,
                     lines: Some(200),
-                    format: api::schema::ReadFormat::Text,
+                    format: shepr_api::schema::ReadFormat::Text,
                     strip_ansi: true,
                 }),
             };
 
             assert_eq!(
                 server.agent_read_not_idle_error(&request),
-                Some(api::schema::ErrorBody {
+                Some(shepr_api::schema::ErrorBody {
                     code: "agent_not_idle".into(),
                     message: format!(
                         "cannot read 200 lines while {public_pane_id} is working: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible"
@@ -3505,17 +3509,17 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
             );
 
             let mut default_request = request.clone();
-            let api::schema::Method::AgentRead(params) = &mut default_request.method else {
+            let shepr_api::schema::Method::AgentRead(params) = &mut default_request.method else {
                 unreachable!();
             };
             params.lines = None;
             assert_eq!(server.agent_read_not_idle_error(&default_request), None);
 
             let mut visible_request = request;
-            let api::schema::Method::AgentRead(params) = &mut visible_request.method else {
+            let shepr_api::schema::Method::AgentRead(params) = &mut visible_request.method else {
                 unreachable!();
             };
-            params.source = api::schema::ReadSource::Visible;
+            params.source = shepr_api::schema::ReadSource::Visible;
             assert_eq!(server.agent_read_not_idle_error(&visible_request), None);
         },
     );
@@ -3550,7 +3554,7 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
         1,
         ClientConnection::new(
             (120, 40),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -3633,13 +3637,13 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
                 terminal_id,
                 "read".into(),
                 respond_to,
-                Ok(api::schema::ResponseResult::Ok {}),
-                api::schema::PaneReadResult {
+                Ok(shepr_api::schema::ResponseResult::Ok {}),
+                shepr_api::schema::PaneReadResult {
                     pane_id: "w1:p1".into(),
                     workspace_id: "w1".into(),
                     tab_id: "w1:t1".into(),
-                    source: api::schema::ReadSource::Recent,
-                    format: api::schema::ReadFormat::Text,
+                    source: shepr_api::schema::ReadSource::Recent,
+                    format: shepr_api::schema::ReadFormat::Text,
                     text: String::new(),
                     revision: 0,
                     truncated: false,
@@ -4615,7 +4619,7 @@ fn client_page_key(
 ) -> shepr_protocol::ClientPaneInputEvent {
     shepr_protocol::ClientPaneInputEvent::Key {
         code,
-        modifiers: crate::client::input_wire::wire_modifiers(modifiers),
+        modifiers: shepr_protocol::WireModifiers::from_bits_retain(modifiers.bits()),
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
@@ -4923,10 +4927,10 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
             .events_after(0)
             .iter()
             .any(|(_, event)| {
-                event.data.kind() == crate::api::schema::EventKind::PaneAgentStatusChanged
+                event.data.kind() == shepr_api::schema::EventKind::PaneAgentStatusChanged
                     && matches!(
                         &event.data,
-                        crate::api::schema::EventData::PaneAgentStatusChanged {
+                        shepr_api::schema::EventData::PaneAgentStatusChanged {
                             title,
                             ..
                         } if title.is_none()
@@ -5037,7 +5041,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
     with_terminal_session_test_server(|server, _other_terminal_id, terminal_id, _pane_id| {
         let mut client = ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -5064,7 +5068,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
         );
         assert_eq!(
             server.clients[&1].cell_size,
-            crate::host_term::cell_size::HostCellSize {
+            shepr_termio::host_term::cell_size::HostCellSize {
                 width_px: 8,
                 height_px: 16,
             }
@@ -5088,7 +5092,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
         );
         assert_eq!(
             server.clients[&1].cell_size,
-            crate::host_term::cell_size::HostCellSize::default()
+            shepr_termio::host_term::cell_size::HostCellSize::default()
         );
         assert!(!server.clients[&1].pixel_mouse);
     });
@@ -5101,7 +5105,7 @@ fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
         1,
         ClientConnection::new(
             (100, 30),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             None,
@@ -5112,7 +5116,7 @@ fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::TerminalPending,
             shepr_core::geometry::GridSize::clamped(80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::TerminalAnsi,
             None,
@@ -5160,7 +5164,7 @@ async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry()
             ClientConnection::new_with_mode(
                 mode,
                 shepr_core::geometry::GridSize::clamped(80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
                 None,
@@ -5184,7 +5188,7 @@ fn client_shell_streams_focused_pane_report_all_demand() {
             1,
             ClientConnection::new(
                 (80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::SemanticFrame,
                 Some(client_tx),
@@ -5223,7 +5227,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             client_id,
             ClientConnection::new(
                 (80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 client_id,
                 RenderEncoding::SemanticFrame,
                 None,
@@ -5299,7 +5303,7 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
         1,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(writer),
@@ -5351,7 +5355,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             1,
             ClientConnection::new(
                 (80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::SemanticFrame,
                 None,
@@ -5361,7 +5365,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             2,
             ClientConnection::new(
                 (100, 30),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 2,
                 RenderEncoding::SemanticFrame,
                 None,
@@ -5444,7 +5448,7 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
                     terminal_id.clone(),
                 )),
                 shepr_core::geometry::GridSize::clamped(80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
                 Some(client_tx),
@@ -5595,7 +5599,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
                     terminal_id.clone(),
                 )),
                 shepr_core::geometry::GridSize::clamped(80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
                 None,
@@ -5640,7 +5644,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
                     terminal_id.clone(),
                 )),
                 shepr_core::geometry::GridSize::clamped(80, 24),
-                crate::host_term::cell_size::HostCellSize {
+                shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
                 },
@@ -5755,7 +5759,7 @@ fn clipboard_write_targets_foreground_client_only() {
         1,
         ClientConnection::new(
             (120, 40),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(background_tx),
@@ -5765,7 +5769,7 @@ fn clipboard_write_targets_foreground_client_only() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             Some(foreground_tx),
@@ -5820,7 +5824,7 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
         1,
         ClientConnection::new(
             (80, 24),
-            crate::host_term::cell_size::HostCellSize::default(),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(foreground_tx),

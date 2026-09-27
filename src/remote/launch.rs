@@ -43,7 +43,7 @@ pub(crate) fn check_saved_ssh(
     session: &str,
     settings: super::SavedSshSettings,
 ) -> io::Result<()> {
-    crate::session::validate_name(session)
+    shepr_api::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut ssh =
         RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths);
@@ -67,7 +67,7 @@ pub(crate) fn prepare_saved_ssh(
     session_name: &str,
     settings: super::SavedSshSettings,
 ) -> io::Result<RemoteExecutable> {
-    crate::session::validate_name(session_name)
+    shepr_api::session::validate_name(session_name)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let ssh = RemoteSsh::new(
         target.clone(),

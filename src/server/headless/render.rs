@@ -5,7 +5,7 @@ use crate::server::clients::RenderTargetMode;
 /// The session snapshot a shell projection is built from. The projection never
 /// reads the pane layout trees, so they are dropped before the snapshot is
 /// copied for each shell client.
-fn shell_session_snapshot(app: &app::App) -> crate::api::schema::SessionSnapshot {
+fn shell_session_snapshot(app: &app::App) -> shepr_api::schema::SessionSnapshot {
     let mut snapshot = app.session_snapshot();
     snapshot.layouts = Vec::new();
     snapshot
@@ -170,8 +170,8 @@ impl HeadlessServer {
                     .get(terminal_id)
                     .map_or((0, 0), |runtime| {
                         let flags = match runtime.keyboard_protocol() {
-                            crate::input::KeyboardProtocol::Legacy => 0,
-                            crate::input::KeyboardProtocol::Kitty { flags } => flags,
+                            shepr_termio::input::KeyboardProtocol::Legacy => 0,
+                            shepr_termio::input::KeyboardProtocol::Kitty { flags } => flags,
                         };
                         (flags, runtime.modify_other_keys_level())
                     });
@@ -224,10 +224,9 @@ impl HeadlessServer {
 
     pub(super) fn has_pending_presentation_work(
         &self,
-        render_demand: crate::api::RenderDemand,
+        render_demand: shepr_api::RenderDemand,
     ) -> bool {
-        render_demand == crate::api::RenderDemand::Full
-            || self.app.render_dirty.has_immediate_work()
+        render_demand == shepr_api::RenderDemand::Full || self.app.render_dirty.has_immediate_work()
     }
 
     pub(super) fn sync_immediate_pty_sources(&self) {
@@ -378,7 +377,7 @@ impl HeadlessServer {
                     &self.app.state,
                     &self.app.terminal_runtimes,
                     area,
-                    crate::host_term::cell_size::HostCellSize::default(),
+                    shepr_termio::host_term::cell_size::HostCellSize::default(),
                 );
             }
             self.app.full_redraw_pending = false;
@@ -466,7 +465,7 @@ impl HeadlessServer {
                     if cell_size.is_known() {
                         cell_size
                     } else {
-                        crate::host_term::cell_size::HostCellSize::default()
+                        shepr_termio::host_term::cell_size::HostCellSize::default()
                     },
                 );
             }
@@ -480,7 +479,7 @@ impl HeadlessServer {
             .iter()
             .filter(|target| matches!(&target.mode, RenderTargetMode::Shell))
             .count();
-        let mut shared_session_snapshot: Option<crate::api::schema::SessionSnapshot> = None;
+        let mut shared_session_snapshot: Option<shepr_api::schema::SessionSnapshot> = None;
         // (client, is shell client, claimed bytes, frame limit)
         let mut oversized_notices: Vec<(ClientId, bool, usize, usize)> = Vec::new();
         for target in render_targets {
@@ -509,7 +508,7 @@ impl HeadlessServer {
                 let render_cell_size = if cell_size.is_known() {
                     cell_size
                 } else {
-                    crate::host_term::cell_size::HostCellSize::default()
+                    shepr_termio::host_term::cell_size::HostCellSize::default()
                 };
                 let result = render_client_shell_pane_surface(
                     &mut self.app,

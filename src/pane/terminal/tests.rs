@@ -9,8 +9,8 @@ fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
             application_cursor: true,
             bracketed_paste: true,
             focus_reporting: false,
-            mouse_protocol_mode: crate::input::MouseProtocolMode::None,
-            mouse_protocol_encoding: crate::input::MouseProtocolEncoding::Default,
+            mouse_protocol_mode: shepr_termio::input::MouseProtocolMode::None,
+            mouse_protocol_encoding: shepr_termio::input::MouseProtocolEncoding::Default,
             mouse_alternate_scroll: false,
             modify_other_keys: false,
             color_scheme_reporting: false,
@@ -809,8 +809,8 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
     let pane_id = PaneId::from_raw(1);
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b[3");
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
@@ -935,13 +935,13 @@ fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
     {
         let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.transient_default_color_owner_pgid = Some(42);
-        core.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -961,13 +961,13 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
     {
         let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.transient_default_color_owner_pgid = Some(42);
-        core.host_terminal_theme = crate::host_term::theme::TerminalTheme {
-            foreground: Some(crate::host_term::theme::RgbColor {
+        core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -1010,7 +1010,7 @@ fn ghostty_keyboard_protocol_tracks_live_terminal_flags() {
 
     assert_eq!(
         pane.keyboard_protocol(),
-        Some(crate::input::KeyboardProtocol::Kitty { flags: 3 })
+        Some(shepr_termio::input::KeyboardProtocol::Kitty { flags: 3 })
     );
 }
 
@@ -1020,11 +1020,11 @@ fn ghostty_plain_text_chars_still_encode_as_text() {
     let pane = GhosttyPaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::empty(),
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
 
     assert_eq!(encoded, b"a");
@@ -1048,7 +1048,10 @@ fn ghostty_backtab_preserves_shift_across_keyboard_protocols() {
             crossterm::event::KeyModifiers::SHIFT,
         ] {
             let encoded = pane.encode_terminal_key(
-                crate::input::TerminalKey::new(crossterm::event::KeyCode::BackTab, modifiers),
+                shepr_termio::input::TerminalKey::new(
+                    crossterm::event::KeyCode::BackTab,
+                    modifiers,
+                ),
                 protocol,
             );
             assert_eq!(encoded, expected, "backtab with modifiers {modifiers:?}");
@@ -1058,11 +1061,11 @@ fn ghostty_backtab_preserves_shift_across_keyboard_protocols() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let encoded = pane.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Tab,
             crossterm::event::KeyModifiers::empty(),
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
     assert_eq!(encoded, b"\t");
 }
@@ -1071,13 +1074,13 @@ fn ghostty_backtab_preserves_shift_across_keyboard_protocols() {
 fn ghostty_ctrl_tab_matches_the_pane_keyboard_protocol() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let legacy = GhosttyPaneTerminal::new(terminal);
-    let key = crate::input::TerminalKey::new(
+    let key = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Tab,
         crossterm::event::KeyModifiers::CONTROL,
     );
 
     assert_eq!(
-        legacy.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy),
+        legacy.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy),
         b"\t"
     );
 
@@ -1087,7 +1090,10 @@ fn ghostty_ctrl_tab_matches_the_pane_keyboard_protocol() {
     // Flags 3 include REPORT_EVENT_TYPES; shepr's encoder always spells out
     // the press event type (`:1`), which the protocol allows.
     assert_eq!(
-        kitty.encode_terminal_key(key, crate::input::KeyboardProtocol::Kitty { flags: 3 }),
+        kitty.encode_terminal_key(
+            key,
+            shepr_termio::input::KeyboardProtocol::Kitty { flags: 3 }
+        ),
         b"\x1b[9;5:1u"
     );
 }
@@ -1098,7 +1104,7 @@ fn ghostty_legacy_modified_enter_is_shell_compatible() {
 
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let protocol = crate::input::KeyboardProtocol::Legacy;
+    let protocol = shepr_termio::input::KeyboardProtocol::Legacy;
 
     for modifiers in [
         KeyModifiers::empty(),
@@ -1110,7 +1116,7 @@ fn ghostty_legacy_modified_enter_is_shell_compatible() {
         KeyModifiers::ALT | KeyModifiers::SHIFT,
         KeyModifiers::ALT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
     ] {
-        let key = crate::input::TerminalKey::new(KeyCode::Enter, modifiers);
+        let key = shepr_termio::input::TerminalKey::new(KeyCode::Enter, modifiers);
         let expected = if modifiers.contains(KeyModifiers::ALT) {
             b"\x1b\r".as_slice()
         } else {
@@ -1181,9 +1187,9 @@ fn ghostty_modified_enter_tracks_live_protocol_negotiation() {
         .into_iter()
         .zip(expected)
         {
-            let key = crate::input::TerminalKey::new(KeyCode::Enter, modifiers);
+            let key = shepr_termio::input::TerminalKey::new(KeyCode::Enter, modifiers);
             assert_eq!(
-                pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy),
+                pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::Legacy),
                 expected.as_bytes(),
                 "{modifiers:?} after {sequence:?}"
             );
@@ -1196,13 +1202,13 @@ fn ghostty_modified_enter_respects_existing_terminal_mode() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>4;2m");
     let pane = GhosttyPaneTerminal::new(terminal);
-    let key = crate::input::TerminalKey::new(
+    let key = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::SHIFT,
     );
 
     assert_eq!(
-        pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy),
+        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::Legacy),
         b"\x1b[27;2;13~"
     );
 }
@@ -1217,13 +1223,13 @@ fn ghostty_enter_backspace_release_in_legacy_pane_emits_nothing() {
         crossterm::event::KeyCode::Backspace,
     ] {
         let press = pane.encode_terminal_key(
-            crate::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
-            crate::input::KeyboardProtocol::Legacy,
+            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
+            shepr_termio::input::KeyboardProtocol::Legacy,
         );
         let release = pane.encode_terminal_key(
-            crate::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
+            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
                 .with_kind(crossterm::event::KeyEventKind::Release),
-            crate::input::KeyboardProtocol::Legacy,
+            shepr_termio::input::KeyboardProtocol::Legacy,
         );
         assert!(!press.is_empty(), "{code:?} press should emit bytes");
         assert!(
@@ -1245,7 +1251,7 @@ fn ghostty_report_event_pane_keeps_basic_compatibility_keys_legacy() {
         (crossterm::event::KeyCode::Backspace, b"\x7f".as_slice()),
     ] {
         let press = pane.encode_terminal_key(
-            crate::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
+            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
             pane.keyboard_protocol().expect("test precondition"),
         );
         assert_eq!(
@@ -1254,7 +1260,7 @@ fn ghostty_report_event_pane_keeps_basic_compatibility_keys_legacy() {
         );
 
         let release = pane.encode_terminal_key(
-            crate::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
+            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
                 .with_kind(crossterm::event::KeyEventKind::Release),
             pane.keyboard_protocol().expect("test precondition"),
         );
@@ -1272,11 +1278,11 @@ fn ghostty_char_keys_still_use_shepr_encoding() {
     let pane = GhosttyPaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
 
     assert_eq!(encoded, vec![1]);
@@ -1291,11 +1297,11 @@ fn ghostty_key_encoding_honors_application_cursor_mode() {
     let pane = GhosttyPaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
 
     assert_eq!(encoded, b"\x1bOA");
@@ -1305,18 +1311,18 @@ fn ghostty_key_encoding_honors_application_cursor_mode() {
 fn grouped_key_repeats_expand_at_the_destination() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let key = crate::input::TerminalKey::new(
+    let key = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Char('x'),
         crossterm::event::KeyModifiers::empty(),
     )
     .with_repeat_count(3);
 
     assert_eq!(
-        pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy),
+        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::Legacy),
         b"xxx"
     );
 
-    let shifted = crate::input::TerminalKey::new(
+    let shifted = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Char('/'),
         crossterm::event::KeyModifiers::SHIFT,
     )
@@ -1324,7 +1330,10 @@ fn grouped_key_repeats_expand_at_the_destination() {
     .with_repeat_count(3);
     let legacy_expected = b"///".as_slice();
     assert_eq!(
-        pane.encode_terminal_key(shifted.clone(), crate::input::KeyboardProtocol::Legacy,),
+        pane.encode_terminal_key(
+            shifted.clone(),
+            shepr_termio::input::KeyboardProtocol::Legacy,
+        ),
         legacy_expected
     );
     // Flags 15 (disambiguate + event types + alternate keys + report all
@@ -1335,7 +1344,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>15u");
     let pane = GhosttyPaneTerminal::new(terminal);
-    let kitty_protocol = crate::input::KeyboardProtocol::Kitty { flags: 15 };
+    let kitty_protocol = shepr_termio::input::KeyboardProtocol::Kitty { flags: 15 };
     let pressed =
         pane.encode_terminal_key_once(shifted.clone().with_repeat_count(1), kitty_protocol);
     assert!(
@@ -1359,7 +1368,7 @@ fn grouped_release_is_encoded_once() {
     terminal.write(b"\x1b[>11u");
     let pane = GhosttyPaneTerminal::new(terminal);
     let protocol = pane.keyboard_protocol().expect("test precondition");
-    let release = crate::input::TerminalKey::new(
+    let release = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Up,
         crossterm::event::KeyModifiers::empty(),
     )
@@ -1382,22 +1391,22 @@ fn ghostty_key_encoder_updates_after_terminal_mode_changes() {
     let pane_id = PaneId::from_raw(1);
 
     let before = pane.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
     assert_eq!(before, b"\x1b[A");
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b[?1h");
 
     let after = pane.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
     assert_eq!(after, b"\x1bOA");
 }
@@ -1407,14 +1416,16 @@ fn ghostty_key_encoder_updates_after_kitty_flag_changes() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    let key = crate::input::TerminalKey::new(
+    let key = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
     );
 
-    let before = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
+    let before =
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
-    let after = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
+    let after =
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
 
     assert_ne!(before, after);
     assert_eq!(after, b"\x1b[13;6u");
@@ -1427,12 +1438,14 @@ fn ghostty_kitty_pane_encodes_shift_enter_as_csi_u() {
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
 
-    let key = crate::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
-    let encoded = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
+    let key =
+        shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
+    let encoded =
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
 
     assert_eq!(
         pane.keyboard_protocol(),
-        Some(crate::input::KeyboardProtocol::Kitty { flags: 5 })
+        Some(shepr_termio::input::KeyboardProtocol::Kitty { flags: 5 })
     );
     assert_eq!(encoded, b"\x1b[13;2u");
 }
@@ -1441,11 +1454,13 @@ fn ghostty_kitty_pane_encodes_shift_enter_as_csi_u() {
 fn ghostty_modify_other_keys_mode_one_preserves_shift_enter() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let key = crate::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
+    let key =
+        shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
 
     pane.seed_history_ansi("\x1b[>4;1m");
     assert_eq!(pane.modify_other_keys_level(), 1);
-    let encoded = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
+    let encoded =
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
 
     assert_eq!(encoded, b"\x1b[27;2;13~");
 }
@@ -1457,8 +1472,10 @@ fn ghostty_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
 
-    let key = crate::input::parse_terminal_key_sequence("\x1b\x7f").expect("test precondition");
-    let encoded = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
+    let key =
+        shepr_termio::input::parse_terminal_key_sequence("\x1b\x7f").expect("test precondition");
+    let encoded =
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
 
     assert_eq!(encoded, b"\x1b[127;3u");
 }
@@ -1470,8 +1487,8 @@ fn ghostty_kitty_pane_preserves_legacy_ctrl_alt_letter() {
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
 
-    let mut events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b\x06");
-    let crate::raw_input::RawInputEvent::Key(key) = events.remove(0) else {
+    let mut events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b\x06");
+    let shepr_termio::input::raw_input::RawInputEvent::Key(key) = events.remove(0) else {
         panic!("expected key event");
     };
     let encoded =
@@ -1484,24 +1501,27 @@ fn ghostty_kitty_pane_preserves_legacy_ctrl_alt_letter() {
 fn ghostty_pane_characterizes_ctrl_backspace_encoding() {
     let legacy = GhosttyPaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
 
-    let ctrl_backspace = crate::input::TerminalKey::new(
+    let ctrl_backspace = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Backspace,
         crossterm::event::KeyModifiers::CONTROL,
     );
     assert_eq!(
         legacy.encode_terminal_key(
             ctrl_backspace.clone(),
-            crate::input::KeyboardProtocol::Legacy
+            shepr_termio::input::KeyboardProtocol::Legacy
         ),
         b"\x08"
     );
 
-    let plain_backspace = crate::input::TerminalKey::new(
+    let plain_backspace = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Backspace,
         crossterm::event::KeyModifiers::empty(),
     );
     assert_eq!(
-        legacy.encode_terminal_key(plain_backspace, crate::input::KeyboardProtocol::Legacy),
+        legacy.encode_terminal_key(
+            plain_backspace,
+            shepr_termio::input::KeyboardProtocol::Legacy
+        ),
         b"\x7f"
     );
 
@@ -1510,7 +1530,10 @@ fn ghostty_pane_characterizes_ctrl_backspace_encoding() {
     kitty.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
 
     assert_eq!(
-        kitty.encode_terminal_key(ctrl_backspace, crate::input::KeyboardProtocol::Legacy),
+        kitty.encode_terminal_key(
+            ctrl_backspace,
+            shepr_termio::input::KeyboardProtocol::Legacy
+        ),
         b"\x1b[127;5u"
     );
 }
@@ -1523,18 +1546,18 @@ fn ghostty_key_encoders_are_isolated_per_pane() {
     first.process_pty_bytes(PaneId::from_raw(1), 0, b"\x1b[?1h");
 
     let first_encoded = first.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
     let second_encoded = second.encode_terminal_key(
-        crate::input::TerminalKey::new(
+        shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        crate::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::Legacy,
     );
 
     assert_eq!(first_encoded, b"\x1bOA");
@@ -1549,7 +1572,7 @@ fn ghostty_mouse_button_encoding_uses_live_terminal_state() {
 
     let encoded = pane.encode_mouse_button(
         crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
-        crate::input::mouse::Position::Cell { column: 11, row: 9 },
+        shepr_termio::input::mouse::Position::Cell { column: 11, row: 9 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1564,7 +1587,7 @@ fn ghostty_mouse_drag_encoding_uses_motion_reporting_state() {
 
     let encoded = pane.encode_mouse_button(
         crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
-        crate::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::SHIFT,
     );
 
@@ -1579,7 +1602,7 @@ fn ghostty_mouse_drag_without_motion_reporting_is_not_forwarded() {
 
     let encoded = pane.encode_mouse_button(
         crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
-        crate::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1594,7 +1617,7 @@ fn ghostty_mouse_moved_encoding_uses_any_motion_state() {
 
     let encoded = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        crate::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1610,12 +1633,12 @@ fn ghostty_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
 
     let exact = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        crate::input::mouse::Position::Pixels { x: 48, y: 139 },
+        shepr_termio::input::mouse::Position::Pixels { x: 48, y: 139 },
         crossterm::event::KeyModifiers::empty(),
     );
     let from_cell = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        crate::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1633,7 +1656,7 @@ fn ghostty_mouse_sgr_pixels_without_pixel_geometry_sends_cells() {
 
     let encoded = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        crate::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -2450,8 +2473,10 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
     let pane_id = PaneId::from_raw(1);
 
     assert!(
-        pane.apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Dark))
-            .is_none()
+        pane.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Dark
+        ))
+        .is_none()
     );
     let query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
     assert_eq!(
@@ -2461,11 +2486,15 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b[?2031h");
     assert!(
-        pane.apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Dark))
-            .is_none()
+        pane.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Dark
+        ))
+        .is_none()
     );
     assert_eq!(
-        pane.apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Light)),
+        pane.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Light
+        )),
         Some(Bytes::from_static(b"\x1b[?997;2n"))
     );
 
@@ -2473,14 +2502,18 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
     let unknown_query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
     assert!(unknown_query.terminal_responses.is_empty());
     assert!(
-        pane.apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Dark))
-            .is_none()
+        pane.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Dark
+        ))
+        .is_none()
     );
 
     pane.process_pty_bytes(pane_id, 0, b"\x1bc");
     assert!(
-        pane.apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Light))
-            .is_none()
+        pane.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Light
+        ))
+        .is_none()
     );
 }
 
@@ -2521,8 +2554,8 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
             let terminal = shepr_vt::Terminal::new(20, 5, 0);
             let pane = GhosttyPaneTerminal::new(terminal);
             let pane_id = PaneId::from_raw(1);
-            pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-                background: Some(crate::host_term::theme::RgbColor {
+            pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+                background: Some(shepr_termio::host_term::theme::RgbColor {
                     r: 0,
                     g: 0x2b,
                     b: 0x36,
@@ -2624,9 +2657,9 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -2654,9 +2687,9 @@ fn host_theme_update_preserves_child_default_color_override() {
     let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
     assert!(result.terminal_responses.is_empty());
 
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
@@ -2678,9 +2711,9 @@ fn child_default_color_reset_restores_cached_host_color() {
     let pane_id = PaneId::from_raw(1);
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
@@ -2716,8 +2749,8 @@ fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        background: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -2821,9 +2854,9 @@ fn process_pty_bytes_orders_default_color_reply_before_following_device_attribut
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -2847,9 +2880,9 @@ fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(
-        crate::host_term::theme::TerminalTheme::default().with_palette_color(
+        shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
             0,
-            crate::host_term::theme::RgbColor {
+            shepr_termio::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -2872,12 +2905,12 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    let mut theme = crate::host_term::theme::TerminalTheme::default();
+    let mut theme = shepr_termio::host_term::theme::TerminalTheme::default();
     let mut queries = String::new();
     for index in 0..=u8::MAX {
         theme = theme.with_palette_color(
             index,
-            crate::host_term::theme::RgbColor {
+            shepr_termio::host_term::theme::RgbColor {
                 r: index,
                 g: 0x22,
                 b: 0x33,
@@ -2906,9 +2939,9 @@ fn child_palette_override_survives_host_refresh_until_reset() {
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(
-        crate::host_term::theme::TerminalTheme::default().with_palette_color(
+        shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
             7,
-            crate::host_term::theme::RgbColor {
+            shepr_termio::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -2918,9 +2951,9 @@ fn child_palette_override_survives_host_refresh_until_reset() {
     pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;rgb:aa/bb/cc\x1b\\");
 
     pane.apply_host_terminal_theme(
-        crate::host_term::theme::TerminalTheme::default().with_palette_color(
+        shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
             7,
-            crate::host_term::theme::RgbColor {
+            shepr_termio::host_term::theme::RgbColor {
                 r: 0x44,
                 g: 0x55,
                 b: 0x66,
@@ -2985,9 +3018,9 @@ fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     let color = current_palette_color(&pane, 0);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -3014,9 +3047,9 @@ fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -3037,13 +3070,13 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
         }),
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3134,8 +3167,8 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallbac
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
@@ -3157,8 +3190,8 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground()
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
@@ -3181,8 +3214,8 @@ fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
@@ -3205,13 +3238,13 @@ fn process_pty_bytes_returns_default_color_query_responses_in_order() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
         }),
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3236,9 +3269,9 @@ fn process_pty_bytes_returns_split_default_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3263,8 +3296,8 @@ fn process_pty_bytes_returns_split_cursor_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3290,9 +3323,9 @@ fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3317,13 +3350,13 @@ fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
 fn render_leaves_host_default_background_transparent() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let host_theme = crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,
@@ -3355,13 +3388,13 @@ fn render_leaves_host_default_background_transparent() {
 fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let host_theme = crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,
@@ -3392,13 +3425,13 @@ fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
 fn render_keeps_explicit_default_background_when_it_differs_from_host() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let host_theme = crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,
@@ -3429,13 +3462,13 @@ fn render_keeps_explicit_default_background_when_it_differs_from_host() {
 fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let host_theme = crate::host_term::theme::TerminalTheme {
-        foreground: Some(crate::host_term::theme::RgbColor {
+    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
+        foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(crate::host_term::theme::RgbColor {
+        background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,

@@ -21,25 +21,13 @@ pub struct GitWorktreeInfo {
     pub is_linked_worktree: bool,
 }
 
-pub fn derive_label_from_cwd(cwd: &Path) -> String {
-    git_repo_root(cwd)
-        .map(|repo_root| automatic_workspace_label(cwd, &repo_root))
-        .unwrap_or_else(|| fallback_label_from_cwd(cwd))
+#[cfg(test)]
+fn derive_label_from_cwd(cwd: &Path) -> String {
+    shepr_platform::workspace_label_from_cwd(cwd, git_repo_root(cwd).as_deref())
 }
 
 pub fn fallback_label_from_cwd(cwd: &Path) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        let home = Path::new(&home);
-        if cwd == home {
-            return "~".to_string();
-        }
-    }
-
-    cwd.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| cwd.display().to_string())
+    shepr_platform::workspace_label_from_cwd(cwd, None)
 }
 
 pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
@@ -59,11 +47,7 @@ pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
 }
 
 pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
-    repo_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| fallback_label_from_cwd(cwd))
+    shepr_platform::workspace_label_from_cwd(cwd, Some(repo_root))
 }
 
 pub(super) fn git_space_metadata_from_info(info: &GitWorktreeInfo) -> GitSpaceMetadata {

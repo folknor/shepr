@@ -5,11 +5,11 @@ impl App {
         &mut self,
         id: String,
         params: &PaneLayoutParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -22,7 +22,7 @@ impl App {
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -34,25 +34,25 @@ impl App {
         &mut self,
         id: String,
         params: &PaneProcessInfoParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
         let Some((runtime, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -93,13 +93,13 @@ impl App {
         &mut self,
         id: String,
         params: &PaneNeighborParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -112,7 +112,7 @@ impl App {
         let Some(source_public_id) = self.public_pane_id(ws_idx, pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -122,7 +122,7 @@ impl App {
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -144,13 +144,13 @@ impl App {
         &mut self,
         id: String,
         params: &PaneEdgesParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -168,7 +168,7 @@ impl App {
         else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -187,14 +187,14 @@ impl App {
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -218,14 +218,14 @@ impl App {
         &mut self,
         id: String,
         params: &PaneFocusDirectionParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
         else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -240,7 +240,7 @@ impl App {
         let Some(source_public_id) = self.public_pane_id(ws_idx, source_pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -265,7 +265,7 @@ impl App {
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -288,13 +288,13 @@ impl App {
         &mut self,
         id: String,
         params: &PaneResizeParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -307,7 +307,7 @@ impl App {
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -318,7 +318,7 @@ impl App {
             .unwrap_or(0.05)
             .abs()
             .min(0.5);
-        let direction: NavDirection = params.direction.into();
+        let direction: NavDirection = super::nav_direction(params.direction);
         let area = self.state.view.terminal_area;
         let changed = self
             .state
@@ -333,7 +333,7 @@ impl App {
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -360,7 +360,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneSwapParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let directional = params.direction.is_some();
@@ -368,7 +368,7 @@ impl App {
         if directional == explicit {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::InvalidPaneSwap,
+                shepr_api::error::ApiErrorCode::InvalidPaneSwap,
                 "provide either direction with optional pane_id, or source_pane_id and target_pane_id",
             );
         }
@@ -381,7 +381,7 @@ impl App {
             else {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::PaneNotFound,
+                    shepr_api::error::ApiErrorCode::PaneNotFound,
                     "source pane not found",
                 );
             };
@@ -410,14 +410,14 @@ impl App {
             let Some(source_raw) = params.source_pane_id.as_deref() else {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::InvalidPaneSwap,
+                    shepr_api::error::ApiErrorCode::InvalidPaneSwap,
                     "missing source_pane_id",
                 );
             };
             let Some(target_raw) = params.target_pane_id.as_deref() else {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::InvalidPaneSwap,
+                    shepr_api::error::ApiErrorCode::InvalidPaneSwap,
                     "missing target_pane_id",
                 );
             };
@@ -444,7 +444,7 @@ impl App {
             let Some((ws_idx, tab_idx)) = response_context else {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                    shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                     "pane layout unavailable",
                 );
             };
@@ -529,7 +529,7 @@ impl App {
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -557,7 +557,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneMoveParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let PaneMoveParams {
             pane_id,
             destination,
@@ -566,14 +566,14 @@ impl App {
         let Some((source_ws_idx, source_pane_id)) = self.parse_pane_id(&pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "source pane not found",
             );
         };
         let Some(source_tab_idx) = self.tab_index_for_pane(source_ws_idx, source_pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "source pane not found",
             );
         };
@@ -585,14 +585,14 @@ impl App {
         else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "source pane not found",
             );
         };
         let Some(source_terminal_id) = source_tab.terminal_id(source_pane_id).cloned() else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "source pane not found",
             );
         };
@@ -607,7 +607,7 @@ impl App {
         let Some(previous_tab_id) = self.public_tab_id(source_ws_idx, source_tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::TabNotFound,
+                shepr_api::error::ApiErrorCode::TabNotFound,
                 "source tab not found",
             );
         };
@@ -623,14 +623,14 @@ impl App {
             let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx) else {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                    shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                     "pane layout unavailable",
                 );
             };
             let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::PaneNotFound,
+                    shepr_api::error::ApiErrorCode::PaneNotFound,
                     "source pane not found",
                 );
             };
@@ -656,7 +656,7 @@ impl App {
                 let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::TabNotFound,
+                        shepr_api::error::ApiErrorCode::TabNotFound,
                         format!("tab {tab_id} not found"),
                     );
                 };
@@ -669,7 +669,7 @@ impl App {
                 else {
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::TabNotFound,
+                        shepr_api::error::ApiErrorCode::TabNotFound,
                         format!("tab {tab_id} not found"),
                     );
                 };
@@ -678,14 +678,14 @@ impl App {
                     else {
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                            shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
                     };
                     let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::PaneNotFound,
+                            shepr_api::error::ApiErrorCode::PaneNotFound,
                             "source pane not found",
                         );
                     };
@@ -706,7 +706,7 @@ impl App {
                     else {
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                            shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
                     };
@@ -715,14 +715,14 @@ impl App {
                     else {
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                            shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
                     };
                     let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::PaneNotFound,
+                            shepr_api::error::ApiErrorCode::PaneNotFound,
                             "source pane not found",
                         );
                     };
@@ -742,7 +742,7 @@ impl App {
                         let Some((pane_ws_idx, pane_id)) = self.parse_pane_id(&raw) else {
                             return failure(
                                 id,
-                                crate::api::error::ApiErrorCode::TargetPaneNotFound,
+                                shepr_api::error::ApiErrorCode::TargetPaneNotFound,
                                 format!("target pane {raw} not found"),
                             );
                         };
@@ -750,7 +750,7 @@ impl App {
                         if pane_ws_idx != target_ws_idx || pane_tab_idx != Some(target_tab_idx) {
                             return failure(
                                 id,
-                                crate::api::error::ApiErrorCode::TargetPaneNotFound,
+                                shepr_api::error::ApiErrorCode::TargetPaneNotFound,
                                 format!("target pane {raw} is not in tab {tab_id}"),
                             );
                         }
@@ -761,7 +761,7 @@ impl App {
                 let Some(target_tab_id) = self.public_tab_id(target_ws_idx, target_tab_idx) else {
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::TabNotFound,
+                        shepr_api::error::ApiErrorCode::TabNotFound,
                         format!("tab {tab_id} not found"),
                     );
                 };
@@ -781,7 +781,7 @@ impl App {
                     let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::WorkspaceNotFound,
+                            shepr_api::error::ApiErrorCode::WorkspaceNotFound,
                             format!("workspace {workspace_id} not found"),
                         );
                     };
@@ -810,7 +810,7 @@ impl App {
             None => {
                 return failure(
                     id,
-                    crate::api::error::ApiErrorCode::PaneMoveFailed,
+                    shepr_api::error::ApiErrorCode::PaneMoveFailed,
                     "source pane could not be moved",
                 );
             }
@@ -880,7 +880,7 @@ impl App {
                     self.recover_failed_pane_move(recovery_context, moved);
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::PaneMoveFailed,
+                        shepr_api::error::ApiErrorCode::PaneMoveFailed,
                         "target tab disappeared",
                     );
                 };
@@ -902,7 +902,7 @@ impl App {
                         self.recover_failed_pane_move(recovery_context, moved);
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::PaneMoveFailed,
+                            shepr_api::error::ApiErrorCode::PaneMoveFailed,
                             "target pane could not be split",
                         );
                     }
@@ -917,7 +917,7 @@ impl App {
                     self.recover_failed_pane_move(recovery_context, moved);
                     return failure(
                         id,
-                        crate::api::error::ApiErrorCode::PaneMoveFailed,
+                        shepr_api::error::ApiErrorCode::PaneMoveFailed,
                         "target workspace disappeared",
                     );
                 };
@@ -928,7 +928,7 @@ impl App {
                         self.recover_failed_pane_move(recovery_context, moved);
                         return failure(
                             id,
-                            crate::api::error::ApiErrorCode::PaneMoveFailed,
+                            shepr_api::error::ApiErrorCode::PaneMoveFailed,
                             "target workspace disappeared",
                         );
                     }
@@ -987,7 +987,7 @@ impl App {
         let Some(pane) = self.pane_info(target_ws_idx, moved_pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneMoveFailed,
+                shepr_api::error::ApiErrorCode::PaneMoveFailed,
                 "moved pane is unavailable",
             );
         };
@@ -1000,7 +1000,7 @@ impl App {
         let Some(target_layout) = self.pane_layout_snapshot(target_ws_idx, target_tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
@@ -1097,11 +1097,11 @@ impl App {
         &mut self,
         id: String,
         params: &PaneZoomParams,
-    ) -> crate::api::error::ApiResult {
+    ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -1114,7 +1114,7 @@ impl App {
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneNotFound,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
                 "pane not found",
             );
         };
@@ -1133,7 +1133,7 @@ impl App {
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
                 id,
-                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };

@@ -1,4 +1,4 @@
-use crate::client::input_wire::{WireMouseKind, WirePaneInput};
+use crate::server::input_wire::{WireMouseKind, WirePaneInput};
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
@@ -142,7 +142,7 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
 pub(super) fn terminal_attach_mouse_position(
     runtime: &crate::pane::PaneRuntime,
     terminal_size: shepr_core::geometry::GridSize,
-    cell_size: crate::host_term::cell_size::HostCellSize,
+    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     pixel_mouse: bool,
     host_sgr_pixels_active: bool,
     position: shepr_protocol::ClientMousePosition,
@@ -162,7 +162,7 @@ pub(super) fn terminal_attach_mouse_position(
     let Some(geometry) = geometry else {
         return cell_fallback(column, row);
     };
-    let host_geometry = crate::input::mouse::HostPixelExtent::new(
+    let host_geometry = shepr_termio::input::mouse::HostPixelExtent::new(
         geometry.cols,
         geometry.rows,
         geometry.width_px,
@@ -187,16 +187,17 @@ pub(super) fn terminal_attach_mouse_position(
         {
             return None;
         }
-        let crate::input::mouse::Position::Pixels { x, y } = (crate::input::mouse::HostPixels {
-            x,
-            y,
-            geometry: host_geometry,
-        })
-        .pane_position(
-            ratatui::layout::Rect::new(0, 0, geometry.cols, geometry.rows),
-            child_width_px,
-            child_height_px,
-        )?
+        let shepr_termio::input::mouse::Position::Pixels { x, y } =
+            (shepr_termio::input::mouse::HostPixels {
+                x,
+                y,
+                geometry: host_geometry,
+            })
+            .pane_position(
+                ratatui::layout::Rect::new(0, 0, geometry.cols, geometry.rows),
+                child_width_px,
+                child_height_px,
+            )?
         else {
             return None;
         };
@@ -219,7 +220,7 @@ pub(super) fn apply_terminal_attach_scroll(
         source,
         direction,
         lines,
-        crate::input::mouse::Position::Cell {
+        shepr_termio::input::mouse::Position::Cell {
             column: column.unwrap_or(0),
             row: row.unwrap_or(0),
         },
@@ -232,7 +233,7 @@ fn apply_scroll(
     source: AttachScrollSource,
     direction: AttachScrollDirection,
     lines: u16,
-    position: crate::input::mouse::Position,
+    position: shepr_termio::input::mouse::Position,
     modifiers: u8,
 ) -> Result<(), PaneInputError> {
     let wheel_kind = match direction {
@@ -288,7 +289,7 @@ pub(super) fn apply_terminal_attach_input(
     data: Vec<u8>,
 ) -> Result<(), PaneInputError> {
     runtime.scroll_reset();
-    if let Some(text) = crate::raw_input::complete_text_bracketed_paste(&data) {
+    if let Some(text) = shepr_termio::input::raw_input::complete_text_bracketed_paste(&data) {
         send_paste(runtime, text.to_owned(), "terminal attach paste")
     } else {
         send_input(runtime, Bytes::from(data), "terminal attach input")
@@ -330,19 +331,19 @@ fn apply_client_pane_input_event(
     } = event
     {
         let kind = kind.to_crossterm();
-        let modifiers = crate::client::input_wire::host_modifiers(*modifiers);
+        let modifiers = crate::server::input_wire::host_modifiers(*modifiers);
         let position = match position {
             shepr_protocol::ClientMousePosition::Cell { column, row } => {
-                crate::input::mouse::Position::Cell {
+                shepr_termio::input::mouse::Position::Cell {
                     column: *column,
                     row: *row,
                 }
             }
             shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => {
                 if runtime.sgr_pixel_mouse_enabled() {
-                    crate::input::mouse::Position::Pixels { x: *x, y: *y }
+                    shepr_termio::input::mouse::Position::Pixels { x: *x, y: *y }
                 } else {
-                    crate::input::mouse::Position::Cell {
+                    shepr_termio::input::mouse::Position::Cell {
                         column: *column,
                         row: *row,
                     }
@@ -394,7 +395,7 @@ fn apply_client_pane_input_event(
     }
 
     match event.to_raw_input_event() {
-        crate::raw_input::RawInputEvent::Key(key) => {
+        shepr_termio::input::raw_input::RawInputEvent::Key(key) => {
             let key_event = key.as_key_event();
             if matches!(key_event.code, KeyCode::PageUp | KeyCode::PageDown)
                 && key_event.modifiers.is_empty()
@@ -421,18 +422,18 @@ fn apply_client_pane_input_event(
             }
             send_input(runtime, Bytes::from(bytes), "key input")
         }
-        crate::raw_input::RawInputEvent::Paste(text) => {
+        shepr_termio::input::raw_input::RawInputEvent::Paste(text) => {
             runtime.scroll_reset();
             send_paste(runtime, text, "paste")
         }
-        crate::raw_input::RawInputEvent::Mouse(_)
-        | crate::raw_input::RawInputEvent::OuterFocusGained
-        | crate::raw_input::RawInputEvent::OuterFocusLost
-        | crate::raw_input::RawInputEvent::HostDefaultColor { .. }
-        | crate::raw_input::RawInputEvent::HostPaletteColors { .. }
-        | crate::raw_input::RawInputEvent::HostColorSchemeChanged(_)
-        | crate::raw_input::RawInputEvent::HostCellSizeReport { .. }
-        | crate::raw_input::RawInputEvent::Unsupported => Err(PaneInputError::Other(
+        shepr_termio::input::raw_input::RawInputEvent::Mouse(_)
+        | shepr_termio::input::raw_input::RawInputEvent::OuterFocusGained
+        | shepr_termio::input::raw_input::RawInputEvent::OuterFocusLost
+        | shepr_termio::input::raw_input::RawInputEvent::HostDefaultColor { .. }
+        | shepr_termio::input::raw_input::RawInputEvent::HostPaletteColors { .. }
+        | shepr_termio::input::raw_input::RawInputEvent::HostColorSchemeChanged(_)
+        | shepr_termio::input::raw_input::RawInputEvent::HostCellSizeReport { .. }
+        | shepr_termio::input::raw_input::RawInputEvent::Unsupported => Err(PaneInputError::Other(
             "non-pane input reached targeted pane input".to_owned(),
         )),
     }
@@ -520,7 +521,7 @@ mod tests {
             terminal_attach_mouse_position(
                 &runtime,
                 shepr_core::geometry::GridSize::clamped(20, 5),
-                crate::host_term::cell_size::HostCellSize {
+                shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
                 },
@@ -540,7 +541,7 @@ mod tests {
             terminal_attach_mouse_position(
                 &runtime,
                 shepr_core::geometry::GridSize::clamped(20, 5),
-                crate::host_term::cell_size::HostCellSize {
+                shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
                 },
@@ -565,7 +566,7 @@ mod tests {
             terminal_attach_mouse_position(
                 &runtime,
                 shepr_core::geometry::GridSize::clamped(80, 24),
-                crate::host_term::cell_size::HostCellSize::default(),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
                 false,
                 false,
                 shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 },

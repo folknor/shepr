@@ -5,9 +5,9 @@ use bytes::Bytes;
 use crossterm::event::{KeyModifiers, MouseEventKind};
 use tracing::debug;
 
-use crate::api::schema::{PaneReadResult, ResponseResult};
 use crate::pane::PaneRuntime;
 use crate::terminal::{ScreenSnapshot, UpwardMerge};
+use shepr_api::schema::{PaneReadResult, ResponseResult};
 use shepr_protocol::TerminalId;
 
 const INITIAL_QUIET: Duration = Duration::from_millis(10);
@@ -29,8 +29,8 @@ enum Phase {
 pub(crate) struct PendingAltScreenRead {
     pub(crate) terminal_id: TerminalId,
     request_id: shepr_protocol::RequestId,
-    respond_to: mpsc::Sender<crate::api::error::ApiResult>,
-    fallback_response: crate::api::error::ApiResult,
+    respond_to: mpsc::Sender<shepr_api::error::ApiResult>,
+    fallback_response: shepr_api::error::ApiResult,
     read: PaneReadResult,
     lines: usize,
     unwrap: bool,
@@ -55,8 +55,8 @@ impl PendingAltScreenRead {
     pub(crate) fn start(
         terminal_id: TerminalId,
         request_id: shepr_protocol::RequestId,
-        respond_to: mpsc::Sender<crate::api::error::ApiResult>,
-        fallback_response: crate::api::error::ApiResult,
+        respond_to: mpsc::Sender<shepr_api::error::ApiResult>,
+        fallback_response: shepr_api::error::ApiResult,
         read: PaneReadResult,
         lines: usize,
         unwrap: bool,
@@ -96,22 +96,22 @@ impl PendingAltScreenRead {
 
     pub(crate) fn frozen_snapshot(
         &self,
-        source: crate::api::schema::ReadSource,
+        source: shepr_api::schema::ReadSource,
         lines: Option<u32>,
     ) -> crate::terminal::TerminalReadSnapshot {
         let line_limit = lines.map(|lines| lines.min(1000) as usize);
         match source {
-            crate::api::schema::ReadSource::Recent
-            | crate::api::schema::ReadSource::RecentUnwrapped => {
+            shepr_api::schema::ReadSource::Recent
+            | shepr_api::schema::ReadSource::RecentUnwrapped => {
                 let limit = line_limit.unwrap_or(80);
                 crate::terminal::snapshot_text(
                     &self.initial.rows,
                     limit,
-                    source == crate::api::schema::ReadSource::RecentUnwrapped,
+                    source == shepr_api::schema::ReadSource::RecentUnwrapped,
                     self.initial.rows.len() > limit,
                 )
             }
-            crate::api::schema::ReadSource::Visible | crate::api::schema::ReadSource::Detection => {
+            shepr_api::schema::ReadSource::Visible | shepr_api::schema::ReadSource::Detection => {
                 let snapshot = crate::terminal::snapshot_text(
                     &self.initial.rows,
                     self.initial.rows.len(),
@@ -447,7 +447,7 @@ impl PendingAltScreenRead {
         self.read.truncated = snapshot.truncated;
         let request_id = self.request_id.clone();
         let response = Ok(ResponseResult::PaneRead { read: self.read });
-        crate::api::send_api_response(&self.respond_to, &request_id, "pane.read", response);
+        shepr_api::send_api_response(&self.respond_to, &request_id, "pane.read", response);
         None
     }
 
@@ -460,7 +460,7 @@ impl PendingAltScreenRead {
             valid = self.valid,
             "alternate-screen read fell back to passive snapshot"
         );
-        crate::api::send_api_response(
+        shepr_api::send_api_response(
             &self.respond_to,
             &self.request_id,
             "pane.read",
@@ -500,7 +500,7 @@ fn send_wheel(
     let event = runtime
         .encode_mouse_wheel(
             kind,
-            crate::input::mouse::Position::Cell { column, row },
+            shepr_termio::input::mouse::Position::Cell { column, row },
             KeyModifiers::empty(),
         )
         .ok_or(WheelError::Unroutable)?;
@@ -516,7 +516,7 @@ fn send_wheel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schema::{ReadFormat, ReadSource};
+    use shepr_api::schema::{ReadFormat, ReadSource};
 
     fn draw(lines: &[&str], enter_alt_screen: bool) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -534,7 +534,7 @@ mod tests {
         lines: usize,
     ) -> (
         PendingAltScreenRead,
-        mpsc::Receiver<crate::api::error::ApiResult>,
+        mpsc::Receiver<shepr_api::error::ApiResult>,
     ) {
         let (_, initial) = runtime.screen_text_snapshot().expect("initial snapshot");
         let (respond_to, response_rx) = mpsc::channel();
@@ -568,7 +568,7 @@ mod tests {
         (pending, response_rx)
     }
 
-    fn response_text(response_rx: &mpsc::Receiver<crate::api::error::ApiResult>) -> String {
+    fn response_text(response_rx: &mpsc::Receiver<shepr_api::error::ApiResult>) -> String {
         let response = response_rx
             .recv_timeout(Duration::from_millis(50))
             .expect("read response")

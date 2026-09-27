@@ -1,5 +1,5 @@
 use super::*;
-use crate::input::{KeybindAction, KeybindMatch, TerminalKey};
+use shepr_termio::input::{KeybindAction, KeybindMatch, TerminalKey};
 
 fn shell(field: usize) -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -193,7 +193,7 @@ fn focused_filters_keep_ctrl_n_p_navigation_and_literal_commands() {
 
 #[test]
 fn all_naming_targets_preserve_submission_and_empty_semantics() {
-    use crate::api::schema::Method;
+    use shepr_api::schema::Method;
     for field in 0..5 {
         for empty in [false, true] {
             let mut state = shell(field);

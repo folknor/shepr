@@ -160,7 +160,7 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::TEST,
             tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
+            shepr_api::EventHub::default(),
         );
         let ws = Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;

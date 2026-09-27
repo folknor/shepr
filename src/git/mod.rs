@@ -13,7 +13,7 @@ use self::discovery::automatic_workspace_label;
 pub use self::status::git_status_snapshot_for_cwd;
 
 pub use self::{
-    discovery::{GitSpaceMetadata, derive_label_from_cwd, fallback_label_from_cwd},
+    discovery::{GitSpaceMetadata, fallback_label_from_cwd},
     status::{
         GitStatusCacheEntry, GitStatusRefreshDemand, git_status_cache_key,
         git_status_snapshot_for_cwd_with_demand,

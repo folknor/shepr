@@ -62,10 +62,13 @@ impl ClientShellState {
         let track = hit.scrollbar_rect?;
         let metrics = hit.scroll?;
         (metrics.max_offset_from_bottom > 0).then(|| match grab_row_offset {
-            Some(grab_row_offset) => {
-                crate::ui::scrollbar_offset_from_drag_row(metrics, track, row, grab_row_offset)
-            }
-            None => crate::ui::scrollbar_offset_from_row(metrics, track, row),
+            Some(grab_row_offset) => shepr_protocol::scroll::scrollbar_offset_from_drag_row(
+                metrics,
+                track,
+                row,
+                grab_row_offset,
+            ),
+            None => shepr_protocol::scroll::scrollbar_offset_from_row(metrics, track, row),
         })
     }
 
@@ -100,7 +103,7 @@ impl ClientShellState {
         self.pane_scroll_in_flight
             .insert(pane_id.to_owned(), serial);
         if !self.push_endpoint_method_with_kind(
-            crate::api::schema::Method::PaneScroll(crate::api::schema::PaneScrollParams {
+            shepr_api::schema::Method::PaneScroll(shepr_api::schema::PaneScrollParams {
                 pane_id: pane_id.to_string(),
                 offset_from_bottom: offset_from_bottom as u64,
             }),
@@ -119,7 +122,7 @@ impl ClientShellState {
         &mut self,
         pane_id: &shepr_protocol::PublicPaneId,
         serial: u64,
-        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) -> bool {
         if self.pane_scroll_in_flight.get(pane_id).copied() != Some(serial) {
@@ -127,7 +130,7 @@ impl ClientShellState {
         }
         self.pane_scroll_in_flight.remove(pane_id);
         let repaint = match result {
-            Ok(crate::api::schema::ResponseResult::PaneInfo { pane })
+            Ok(shepr_api::schema::ResponseResult::PaneInfo { pane })
                 if pane.pane_id == pane_id.as_str() =>
             {
                 if let Some(scroll) = pane.scroll
@@ -167,13 +170,13 @@ impl ClientShellState {
         usize::from(distance).saturating_mul(3).clamp(3, 15)
     }
 
-    fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<crate::pane::ScrollMetrics> {
+    fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<shepr_protocol::ScrollMetrics> {
         let metrics = hit.scroll?;
         Some(
             self.selection_autoscroll
                 .as_ref()
                 .filter(|autoscroll| autoscroll.pane_id == hit.pane_id)
-                .map_or(metrics, |autoscroll| crate::pane::ScrollMetrics {
+                .map_or(metrics, |autoscroll| shepr_protocol::ScrollMetrics {
                     offset_from_bottom: autoscroll.offset_from_bottom,
                     max_offset_from_bottom: autoscroll.max_offset_from_bottom,
                     viewport_rows: metrics.viewport_rows,
@@ -207,7 +210,7 @@ impl ClientShellState {
         hit: &PaneHit,
         column: u16,
         row: u16,
-        metrics: Option<crate::pane::ScrollMetrics>,
+        metrics: Option<shepr_protocol::ScrollMetrics>,
         outcome: &mut ClientShellInput,
     ) {
         if self.word_selection_gesture.is_some() {
@@ -243,7 +246,7 @@ impl ClientShellState {
             let anchor = selection.anchor_position();
             let top = metrics.map_or(
                 shepr_vt::AbsRow(0),
-                crate::pane::ScrollMetrics::viewport_top_row,
+                shepr_protocol::ScrollMetrics::viewport_top_row,
             );
             let anchor_row = hit
                 .inner_rect
@@ -312,7 +315,7 @@ impl ClientShellState {
             }
         };
         if offset_from_bottom != metrics.offset_from_bottom {
-            let projected = crate::pane::ScrollMetrics {
+            let projected = shepr_protocol::ScrollMetrics {
                 offset_from_bottom,
                 ..metrics
             };
@@ -360,7 +363,7 @@ impl ClientShellState {
             _ => unreachable!(),
         };
         if offset_from_bottom != metrics.offset_from_bottom {
-            let projected = crate::pane::ScrollMetrics {
+            let projected = shepr_protocol::ScrollMetrics {
                 offset_from_bottom,
                 ..metrics
             };
@@ -447,7 +450,7 @@ impl ClientShellState {
             return outcome;
         }
         autoscroll.offset_from_bottom = next_offset;
-        let metrics = crate::pane::ScrollMetrics {
+        let metrics = shepr_protocol::ScrollMetrics {
             offset_from_bottom: next_offset,
             max_offset_from_bottom: autoscroll.max_offset_from_bottom,
             viewport_rows: hit.scroll.map_or(0, |metrics| metrics.viewport_rows),
@@ -603,7 +606,7 @@ impl ClientShellState {
         &self,
         source_workspace_id: &str,
         before_workspace_id: Option<&str>,
-    ) -> Option<crate::api::schema::Method> {
+    ) -> Option<shepr_api::schema::Method> {
         let snapshot = self.snapshot.as_deref()?;
         let source = snapshot
             .workspaces
@@ -640,8 +643,8 @@ impl ClientShellState {
                         .position(|workspace| workspace.workspace_id == target)
                 })
                 .unwrap_or(snapshot.workspaces.len());
-            Some(crate::api::schema::Method::WorkspaceMove(
-                crate::api::schema::WorkspaceMoveParams {
+            Some(shepr_api::schema::Method::WorkspaceMove(
+                shepr_api::schema::WorkspaceMoveParams {
                     workspace_id: source.workspace_id.to_string(),
                     insert_index,
                 },
@@ -714,7 +717,7 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.workspace_scroll_metrics {
-                        let offset = crate::ui::scrollbar_offset_from_drag_row(
+                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.workspace_scrollbar,
                             mouse.row,
@@ -730,7 +733,7 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.agent_scroll_metrics {
-                        let offset = crate::ui::scrollbar_offset_from_drag_row(
+                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.agent_scrollbar,
                             mouse.row,
@@ -746,7 +749,7 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.navigator_scroll_metrics {
-                        let offset = crate::ui::scrollbar_offset_from_drag_row(
+                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.navigator_scrollbar,
                             mouse.row,
@@ -764,7 +767,7 @@ impl ClientShellState {
                     if let (Some(metrics), Some(ClientShellOverlay::Help(help))) =
                         (self.hits.help_scroll_metrics, self.overlay.as_mut())
                     {
-                        let offset = crate::ui::scrollbar_offset_from_drag_row(
+                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.help_scrollbar,
                             mouse.row,
@@ -853,8 +856,8 @@ impl ClientShellState {
                     }
                     if should_send {
                         self.push_endpoint_method(
-                            crate::api::schema::Method::LayoutSetSplitRatio(
-                                crate::api::schema::LayoutSetSplitRatioParams {
+                            shepr_api::schema::Method::LayoutSetSplitRatio(
+                                shepr_api::schema::LayoutSetSplitRatioParams {
                                     tab_id: Some(tab_id.to_string()),
                                     pane_id: None,
                                     path: hit
@@ -960,8 +963,8 @@ impl ClientShellState {
                         });
                         if valid_drop {
                             self.push_endpoint_method(
-                                crate::api::schema::Method::TabMove(
-                                    crate::api::schema::TabMoveParams {
+                                shepr_api::schema::Method::TabMove(
+                                    shepr_api::schema::TabMoveParams {
                                         tab_id: tab_id.to_string(),
                                         insert_index: insert_index.unwrap_or_default(),
                                     },
@@ -1022,8 +1025,8 @@ impl ClientShellState {
                                 .is_none_or(|sent| (sent - ratio).abs() > f32::EPSILON)
                         {
                             self.push_endpoint_method(
-                                crate::api::schema::Method::LayoutSetSplitRatio(
-                                    crate::api::schema::LayoutSetSplitRatioParams {
+                                shepr_api::schema::Method::LayoutSetSplitRatio(
+                                    shepr_api::schema::LayoutSetSplitRatioParams {
                                         tab_id: Some(tab_id.to_string()),
                                         pane_id: None,
                                         path: hit
@@ -1060,7 +1063,7 @@ impl ClientShellState {
             }
             if let Some(press) = self.tab_press.take() {
                 self.push_endpoint_method(
-                    crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                    shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
                         tab_id: press.tab_id.to_string(),
                     }),
                     outcome,
@@ -1150,15 +1153,17 @@ impl ClientShellState {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if super::contains(self.hits.help_scrollbar, point) {
                         if let Some(metrics) = self.hits.help_scroll_metrics {
-                            if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(
-                                metrics,
-                                self.hits.help_scrollbar,
-                                mouse.row,
-                            ) {
+                            if let Some(grab_row_offset) =
+                                shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                                    metrics,
+                                    self.hits.help_scrollbar,
+                                    mouse.row,
+                                )
+                            {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::HelpScrollbar { grab_row_offset });
                             } else {
-                                let offset = crate::ui::scrollbar_offset_from_row(
+                                let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
                                     metrics,
                                     self.hits.help_scrollbar,
                                     mouse.row,
@@ -1219,15 +1224,17 @@ impl ClientShellState {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if super::contains(self.hits.navigator_scrollbar, point) {
                         if let Some(metrics) = self.hits.navigator_scroll_metrics {
-                            if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(
-                                metrics,
-                                self.hits.navigator_scrollbar,
-                                mouse.row,
-                            ) {
+                            if let Some(grab_row_offset) =
+                                shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                                    metrics,
+                                    self.hits.navigator_scrollbar,
+                                    mouse.row,
+                                )
+                            {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset });
                             } else {
-                                let offset = crate::ui::scrollbar_offset_from_row(
+                                let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
                                     metrics,
                                     self.hits.navigator_scrollbar,
                                     mouse.row,
@@ -1374,7 +1381,7 @@ impl ClientShellState {
                             outcome,
                         );
                         self.push_endpoint_method(
-                            crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                            shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                                 pane_id: hit.pane_id.to_string(),
                             }),
                             outcome,
@@ -1433,7 +1440,9 @@ impl ClientShellState {
                     || super::contains(self.hits.new_tab, point) =>
             {
                 self.record_binding(
-                    &crate::input::KeybindMatch::Action(crate::input::KeybindAction::PreviousTab),
+                    &shepr_termio::input::KeybindMatch::Action(
+                        shepr_termio::input::KeybindAction::PreviousTab,
+                    ),
                     outcome,
                 );
             }
@@ -1448,7 +1457,9 @@ impl ClientShellState {
                     || super::contains(self.hits.new_tab, point) =>
             {
                 self.record_binding(
-                    &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextTab),
+                    &shepr_termio::input::KeybindMatch::Action(
+                        shepr_termio::input::KeybindAction::NextTab,
+                    ),
                     outcome,
                 );
             }
@@ -1534,15 +1545,17 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.workspace_scrollbar, point) {
                     if let Some(metrics) = self.hits.workspace_scroll_metrics {
-                        if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(
-                            metrics,
-                            self.hits.workspace_scrollbar,
-                            mouse.row,
-                        ) {
+                        if let Some(grab_row_offset) =
+                            shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                                metrics,
+                                self.hits.workspace_scrollbar,
+                                mouse.row,
+                            )
+                        {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset });
                         } else {
-                            let offset = crate::ui::scrollbar_offset_from_row(
+                            let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
                                 metrics,
                                 self.hits.workspace_scrollbar,
                                 mouse.row,
@@ -1558,15 +1571,17 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.agent_scrollbar, point) {
                     if let Some(metrics) = self.hits.agent_scroll_metrics {
-                        if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(
-                            metrics,
-                            self.hits.agent_scrollbar,
-                            mouse.row,
-                        ) {
+                        if let Some(grab_row_offset) =
+                            shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                                metrics,
+                                self.hits.agent_scrollbar,
+                                mouse.row,
+                            )
+                        {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset });
                         } else {
-                            let offset = crate::ui::scrollbar_offset_from_row(
+                            let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
                                 metrics,
                                 self.hits.agent_scrollbar,
                                 mouse.row,
@@ -1606,8 +1621,8 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.new_workspace, point) {
                     self.record_binding(
-                        &crate::input::KeybindMatch::Action(
-                            crate::input::KeybindAction::NewWorkspace,
+                        &shepr_termio::input::KeybindMatch::Action(
+                            shepr_termio::input::KeybindAction::NewWorkspace,
                         ),
                         outcome,
                     );
@@ -1615,7 +1630,9 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.new_tab, point) {
                     self.record_binding(
-                        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
+                        &shepr_termio::input::KeybindMatch::Action(
+                            shepr_termio::input::KeybindAction::NewTab,
+                        ),
                         outcome,
                     );
                     return;
@@ -1708,7 +1725,7 @@ impl ClientShellState {
                     .map(|(_, pane_id)| pane_id.clone());
                 if let Some(pane_id) = agent_pane_id {
                     self.push_endpoint_method(
-                        crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                        shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                             pane_id: pane_id.to_string(),
                         }),
                         outcome,
@@ -1730,7 +1747,7 @@ impl ClientShellState {
                 if let Some(hit) = scrollbar_hit {
                     self.mode = ClientShellMode::Terminal;
                     self.push_endpoint_method(
-                        crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                        shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                             pane_id: hit.pane_id.to_string(),
                         }),
                         outcome,
@@ -1739,7 +1756,9 @@ impl ClientShellState {
                         return;
                     };
                     if let Some(grab_row_offset) =
-                        crate::ui::scrollbar_thumb_grab_offset(metrics, track, mouse.row)
+                        shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                            metrics, track, mouse.row,
+                        )
                     {
                         self.chrome_drag = Some(ClientChromeDrag::PaneScrollbar {
                             hit,
@@ -1834,7 +1853,7 @@ impl ClientShellState {
                         }
                     }
                     self.push_endpoint_method(
-                        crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                        shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                             pane_id: hit.pane_id.to_string(),
                         }),
                         outcome,
@@ -1885,7 +1904,7 @@ impl ClientShellState {
                 {
                     if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {
                         self.push_endpoint_method(
-                            crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                            shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
                                 pane_id: hit.pane_id.to_string(),
                             }),
                             outcome,
@@ -1909,7 +1928,7 @@ impl ClientShellState {
                     pixels
                         .pane_position(hit.inner_rect, hit.pixel_width, hit.pixel_height)
                         .and_then(|position| match position {
-                            crate::input::mouse::Position::Pixels { x, y } => {
+                            shepr_termio::input::mouse::Position::Pixels { x, y } => {
                                 Some(ClientMousePosition::Pixels {
                                     x,
                                     y,
@@ -1917,7 +1936,7 @@ impl ClientShellState {
                                     row: mouse.row.saturating_sub(hit.inner_rect.y),
                                 })
                             }
-                            crate::input::mouse::Position::Cell { .. } => None,
+                            shepr_termio::input::mouse::Position::Cell { .. } => None,
                         })
                 })
                 .unwrap_or(cell)

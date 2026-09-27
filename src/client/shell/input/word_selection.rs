@@ -83,17 +83,17 @@ impl ClientShellState {
         }
         gesture.pending_row = Some(row);
         let pane_id = gesture.pane_id.clone();
-        let params = crate::api::schema::PaneSelectionReadParams {
+        let params = shepr_api::schema::PaneSelectionReadParams {
             pane_id: pane_id.to_string(),
-            anchor: crate::api::schema::PaneSelectionPoint { row, col: 0 },
-            cursor: crate::api::schema::PaneSelectionPoint {
+            anchor: shepr_api::schema::PaneSelectionPoint { row, col: 0 },
+            cursor: shepr_api::schema::PaneSelectionPoint {
                 row,
                 col: gesture.end_col,
             },
             content_revision: gesture.content_revision,
         };
         if !self.push_endpoint_method_with_kind(
-            crate::api::schema::Method::PaneSelectionRead(params),
+            shepr_api::schema::Method::PaneSelectionRead(params),
             PendingEndpointKind::WordSelection {
                 pane_id,
                 absolute_row: row,
@@ -178,7 +178,7 @@ impl ClientShellState {
         pane_id: &str,
         absolute_row: shepr_vt::AbsRow,
         generation: u64,
-        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {
         if self.word_selection_generation != generation
             || self.word_selection_gesture.as_ref().is_none_or(|gesture| {
@@ -196,12 +196,12 @@ impl ClientShellState {
             return (true, Vec::new());
         }
         let text = match result {
-            Ok(crate::api::schema::ResponseResult::PaneSelection {
+            Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: returned_pane_id,
                 text,
             }) if returned_pane_id == pane_id => text,
             other => {
-                if matches!(other, Ok(value) if !matches!(value, crate::api::schema::ResponseResult::PaneSelection { .. }))
+                if matches!(other, Ok(value) if !matches!(value, shepr_api::schema::ResponseResult::PaneSelection { .. }))
                 {
                     self.set_endpoint_error(
                         "endpoint returned an unexpected word-selection result",

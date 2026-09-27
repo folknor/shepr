@@ -1,8 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::api::client::ApiClientError;
-use crate::api::schema::{Request, ResponseResult};
+use shepr_api::client::ApiClientError;
+use shepr_api::schema::{Request, ResponseResult};
 use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
@@ -361,7 +361,7 @@ pub(in crate::client) fn parse_response(
         code: None,
         message: format!("invalid endpoint response: {error}"),
     })?;
-    match crate::api::client::parse_response_value(value) {
+    match shepr_api::client::parse_response_value(value) {
         Ok(response) if response.id == expected_id => Ok(response.result),
         Ok(response) => Err(ClientShellEndpointError {
             code: None,
@@ -393,7 +393,7 @@ pub(in crate::client) fn parse_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schema::{ResponseResult, SuccessResponse};
+    use shepr_api::schema::{ResponseResult, SuccessResponse};
 
     fn endpoint() -> ClientEndpointId {
         ClientEndpointId::Local
@@ -612,8 +612,8 @@ mod tests {
                 boot_id: "boot-a".into(),
                 request: Box::new(Request {
                     id: "queued-source".into(),
-                    method: crate::api::schema::Method::WorkspaceList(
-                        crate::api::schema::EmptyParams::default(),
+                    method: shepr_api::schema::Method::WorkspaceList(
+                        shepr_api::schema::EmptyParams::default(),
                     ),
                 }),
             });
@@ -625,8 +625,8 @@ mod tests {
                     boot_id: "boot-b".into(),
                     request: Box::new(Request {
                         id: "request-b".into(),
-                        method: crate::api::schema::Method::WorkspaceList(
-                            crate::api::schema::EmptyParams::default(),
+                        method: shepr_api::schema::Method::WorkspaceList(
+                            shepr_api::schema::EmptyParams::default(),
                         ),
                     }),
                 }]),
@@ -677,8 +677,8 @@ mod tests {
                 boot_id: "boot-a".into(),
                 request: Box::new(Request {
                     id: "queued-a".into(),
-                    method: crate::api::schema::Method::WorkspaceList(
-                        crate::api::schema::EmptyParams::default(),
+                    method: shepr_api::schema::Method::WorkspaceList(
+                        shepr_api::schema::EmptyParams::default(),
                     ),
                 }),
             });

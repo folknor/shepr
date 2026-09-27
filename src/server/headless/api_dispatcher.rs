@@ -1,4 +1,3 @@
-use crate::api;
 use crate::server::ClientId;
 
 pub(super) enum AltScreenReadConflict {
@@ -22,7 +21,7 @@ pub(super) struct AltScreenReadSpec {
 #[derive(Default)]
 pub(super) struct ApiDispatcher {
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
-    deferred_alt_screen_reads: Vec<api::ApiRequestMessage>,
+    deferred_alt_screen_reads: Vec<shepr_api::ApiRequestMessage>,
 }
 
 impl ApiDispatcher {
@@ -40,7 +39,7 @@ impl ApiDispatcher {
     pub(super) fn dispatch_request(
         &mut self,
         server: &mut super::HeadlessServer,
-        mut msg: api::ApiRequestMessage,
+        mut msg: shepr_api::ApiRequestMessage,
     ) -> bool {
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
@@ -48,7 +47,7 @@ impl ApiDispatcher {
         let method_claims_geometry =
             super::HeadlessServer::public_request_may_change_geometry(&msg.request.method);
         let explicit_public_focus_target = match &msg.request.method {
-            api::schema::Method::WorkspaceFocus(params) => server
+            shepr_api::schema::Method::WorkspaceFocus(params) => server
                 .app
                 .parse_workspace_id(&params.workspace_id)
                 .and_then(|workspace_index| {
@@ -59,7 +58,7 @@ impl ApiDispatcher {
                         workspace.active_tab_index(),
                     )
                 }),
-            api::schema::Method::TabFocus(params) => server
+            shepr_api::schema::Method::TabFocus(params) => server
                 .app
                 .parse_tab_id(&params.tab_id)
                 .and_then(|(workspace_index, tab_index)| {
@@ -69,7 +68,7 @@ impl ApiDispatcher {
                         tab_index,
                     )
                 }),
-            api::schema::Method::PaneFocus(params) => server
+            shepr_api::schema::Method::PaneFocus(params) => server
                 .app
                 .parse_pane_id(&params.pane_id)
                 .and_then(|(workspace_index, pane_id)| {
@@ -83,17 +82,17 @@ impl ApiDispatcher {
             _ => None,
         };
         let agent_focus_target = match &msg.request.method {
-            api::schema::Method::AgentFocus(params) => Some(params.target.clone()),
+            shepr_api::schema::Method::AgentFocus(params) => Some(params.target.clone()),
             _ => None,
         };
         let create_focus_requested = match &msg.request.method {
-            api::schema::Method::WorkspaceCreate(params) => params.focus,
-            api::schema::Method::TabCreate(params) => params.focus,
+            shepr_api::schema::Method::WorkspaceCreate(params) => params.focus,
+            shepr_api::schema::Method::TabCreate(params) => params.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(
             &msg.request.method,
-            api::schema::Method::PaneMove(params) if params.focus
+            shepr_api::schema::Method::PaneMove(params) if params.focus
         );
         let response_proxy = (agent_focus_target.is_some() || inspect_pane_move).then(|| {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
@@ -111,7 +110,7 @@ impl ApiDispatcher {
         let pane_move_focus_succeeded = inspect_pane_move
             && matches!(
                 &proxied_result,
-                Some(api::schema::ResponseResult::PaneMove { move_result }) if move_result.changed
+                Some(shepr_api::schema::ResponseResult::PaneMove { move_result }) if move_result.changed
             );
         let successful_agent_focus_target = proxied_request_succeeded
             .then(|| {
@@ -152,7 +151,7 @@ impl ApiDispatcher {
         &mut self,
         server: &mut super::HeadlessServer,
         client_id: ClientId,
-        msg: api::ApiRequestMessage,
+        msg: shepr_api::ApiRequestMessage,
     ) -> bool {
         let focus_before = server.shell_focus_target(client_id);
         let focused_tabs_before = server.focused_shell_tabs();
@@ -255,19 +254,19 @@ impl ApiDispatcher {
     pub(super) fn reject_request_for_shutdown(
         &self,
         server: &super::HeadlessServer,
-        msg: &api::ApiRequestMessage,
+        msg: &shepr_api::ApiRequestMessage,
     ) {
         let error = server.lifecycle.shutdown_error().unwrap_or_else(|| {
-            api::error::ApiError::new(
-                api::error::ApiErrorCode::ServerUnavailable,
+            shepr_api::error::ApiError::new(
+                shepr_api::error::ApiErrorCode::ServerUnavailable,
                 "server is shutting down",
             )
             .into_body()
         });
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
-        let response = Err(api::error::ApiError::from_body(error));
-        api::send_api_response(&msg.respond_to, &request_id, method, response);
+        let response = Err(shepr_api::error::ApiError::from_body(error));
+        shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
     }
 
     pub(super) fn next_deadline(&self) -> Option<std::time::Instant> {
@@ -296,11 +295,11 @@ impl ApiDispatcher {
         std::mem::take(&mut self.pending_alt_screen_reads)
     }
 
-    pub(super) fn defer(&mut self, msg: api::ApiRequestMessage) {
+    pub(super) fn defer(&mut self, msg: shepr_api::ApiRequestMessage) {
         self.deferred_alt_screen_reads.push(msg);
     }
 
-    pub(super) fn take_deferred(&mut self) -> Vec<api::ApiRequestMessage> {
+    pub(super) fn take_deferred(&mut self) -> Vec<shepr_api::ApiRequestMessage> {
         std::mem::take(&mut self.deferred_alt_screen_reads)
     }
 
@@ -315,7 +314,7 @@ impl ApiDispatcher {
     pub(super) fn read_conflict(
         &self,
         terminal_id: Option<&str>,
-        request: &api::schema::Request,
+        request: &shepr_api::schema::Request,
     ) -> AltScreenReadConflict {
         let Some(terminal_id) = terminal_id else {
             return AltScreenReadConflict::None;
@@ -328,11 +327,15 @@ impl ApiDispatcher {
             return AltScreenReadConflict::None;
         };
         let (source, lines, format) = match &request.method {
-            api::schema::Method::AgentRead(params) => (params.source, params.lines, params.format),
-            api::schema::Method::PaneRead(params) => (params.source, params.lines, params.format),
+            shepr_api::schema::Method::AgentRead(params) => {
+                (params.source, params.lines, params.format)
+            }
+            shepr_api::schema::Method::PaneRead(params) => {
+                (params.source, params.lines, params.format)
+            }
             _ => return AltScreenReadConflict::None,
         };
-        if format == api::schema::ReadFormat::Text {
+        if format == shepr_api::schema::ReadFormat::Text {
             AltScreenReadConflict::Frozen(pending.frozen_snapshot(source, lines))
         } else {
             AltScreenReadConflict::Defer
@@ -342,15 +345,15 @@ impl ApiDispatcher {
     pub(super) fn alt_screen_read_conflict(
         &self,
         server: &super::HeadlessServer,
-        request: &api::schema::Request,
+        request: &shepr_api::schema::Request,
     ) -> AltScreenReadConflict {
         let terminal_id = match &request.method {
-            api::schema::Method::AgentRead(params) => server
+            shepr_api::schema::Method::AgentRead(params) => server
                 .app
                 .resolve_agent_target(&params.target)
                 .ok()
                 .map(|target| target.terminal_id.clone()),
-            api::schema::Method::PaneRead(params) => server
+            shepr_api::schema::Method::PaneRead(params) => server
                 .app
                 .resolve_terminal_target(&params.pane_id)
                 .ok()
@@ -366,9 +369,9 @@ impl ApiDispatcher {
     pub(super) fn agent_read_not_idle_error(
         &self,
         server: &super::HeadlessServer,
-        request: &api::schema::Request,
-    ) -> Option<api::schema::ErrorBody> {
-        use api::schema::{Method, ReadFormat, ReadSource};
+        request: &shepr_api::schema::Request,
+    ) -> Option<shepr_api::schema::ErrorBody> {
+        use shepr_api::schema::{Method, ReadFormat, ReadSource};
 
         let Method::AgentRead(params) = &request.method else {
             return None;
@@ -397,8 +400,8 @@ impl ApiDispatcher {
             return None;
         }
         let status = shepr_agent::detect::manifest::agent_state_label(terminal.state);
-        Some(api::error::ApiError::new(
-            api::error::ApiErrorCode::AgentNotIdle,
+        Some(shepr_api::error::ApiError::new(
+            shepr_api::error::ApiErrorCode::AgentNotIdle,
             format!(
                 "cannot read {requested} lines while {} is {status}: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible",
                 params.target
@@ -409,9 +412,9 @@ impl ApiDispatcher {
     pub(super) fn alt_screen_read_spec(
         &self,
         server: &super::HeadlessServer,
-        request: &api::schema::Request,
+        request: &shepr_api::schema::Request,
     ) -> Option<AltScreenReadSpec> {
-        use api::schema::{Method, ReadFormat, ReadIntent, ReadSource};
+        use shepr_api::schema::{Method, ReadFormat, ReadIntent, ReadSource};
 
         let (target, source, lines, format) = match &request.method {
             Method::AgentRead(params) => (
@@ -503,7 +506,7 @@ impl super::HeadlessServer {
 
     pub(super) fn handle_api_request_with_shutdown_check(
         &mut self,
-        msg: api::ApiRequestMessage,
+        msg: shepr_api::ApiRequestMessage,
     ) -> bool {
         self.with_api_dispatcher(|dispatcher, server| dispatcher.dispatch_request(server, msg))
     }
@@ -511,7 +514,7 @@ impl super::HeadlessServer {
     pub(super) fn handle_client_shell_api_request(
         &mut self,
         client_id: ClientId,
-        msg: api::ApiRequestMessage,
+        msg: shepr_api::ApiRequestMessage,
     ) -> bool {
         self.with_api_dispatcher(|dispatcher, server| {
             dispatcher.dispatch_shell_request(server, client_id, msg)
@@ -542,7 +545,7 @@ impl super::HeadlessServer {
         });
     }
 
-    pub(super) fn reject_api_request_for_shutdown(&mut self, msg: &api::ApiRequestMessage) {
+    pub(super) fn reject_api_request_for_shutdown(&mut self, msg: &shepr_api::ApiRequestMessage) {
         self.with_api_dispatcher(|dispatcher, server| {
             dispatcher.reject_request_for_shutdown(server, msg);
         });
@@ -556,11 +559,11 @@ mod tests {
     #[test]
     fn deferred_requests_are_owned_until_the_headless_loop_retries_them() {
         let (respond_to, _response_rx) = std::sync::mpsc::channel();
-        let request = api::schema::Request {
+        let request = shepr_api::schema::Request {
             id: "queued".into(),
-            method: api::schema::Method::Ping(api::schema::PingParams {}),
+            method: shepr_api::schema::Method::Ping(shepr_api::schema::PingParams {}),
         };
-        let msg = api::ApiRequestMessage {
+        let msg = shepr_api::ApiRequestMessage {
             request,
             respond_to,
         };

@@ -1,4 +1,4 @@
-use crate::api::schema::ErrorResponse;
+use shepr_api::schema::ErrorResponse;
 
 #[derive(Debug)]
 pub(crate) enum CliError {
@@ -10,9 +10,9 @@ pub(crate) enum CliError {
 
 #[derive(Debug)]
 pub(crate) enum SessionCliError {
-    InvalidName(crate::session::SessionError),
-    Stop(crate::session::SessionError),
-    Delete(crate::session::SessionError),
+    InvalidName(shepr_api::session::SessionError),
+    Stop(shepr_api::session::SessionError),
+    Delete(shepr_api::session::SessionError),
 }
 
 impl SessionCliError {

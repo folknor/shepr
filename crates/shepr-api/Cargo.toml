@@ -1,0 +1,28 @@
+[package]
+name = "shepr-api"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+interprocess = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shepr-agent = { path = "../shepr-agent" }
+shepr-config = { path = "../shepr-config" }
+shepr-platform = { path = "../shepr-platform" }
+shepr-protocol = { path = "../shepr-protocol" }
+shepr-vt = { path = "../shepr-vt" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+shepr-config = { path = "../shepr-config", features = ["test-support"] }
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true
