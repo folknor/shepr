@@ -346,7 +346,10 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
             boot_id: updated.boot_id,
             projection_revision: updated.projection_revision,
             base_surface_revision: updated.surface_revision,
-            surface_revision: updated.surface_revision + 1,
+            surface_revision: updated
+                .surface_revision
+                .checked_next()
+                .expect("test precondition"),
             panes: updated.panes,
             rows: vec![shepr_protocol::PaneSurfacePatchRow {
                 x: 0,
@@ -598,7 +601,10 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             .expect("selected range")
             .ordered_cells();
 
-        pane_surface.surface_revision += 1;
+        pane_surface.surface_revision = pane_surface
+            .surface_revision
+            .checked_next()
+            .expect("test precondition");
         pane_surface.panes[0].content_revision += 2;
         pane_surface.frame.cells[0].symbol = "X".into();
         state.set_pane_surface(pane_surface);
@@ -709,7 +715,10 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
         state.handle_input_bytes(b"\x02[");
         state.handle_input_bytes(b"vk");
         assert!(state.selection.is_some());
-        pane_surface.surface_revision += 1;
+        pane_surface.surface_revision = pane_surface
+            .surface_revision
+            .checked_next()
+            .expect("test precondition");
         pane_surface.panes[0].content_revision += 2;
         if screen_switch {
             pane_surface.panes[0].alternate_screen_active = true;
@@ -2024,7 +2033,10 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     let mut other_surface = surface();
     other_surface.panes[0].pane_id = test_pane_id("ws_1:p2");
     state.set_pane_surface(other_surface.clone());
-    other_surface.surface_revision += 1;
+    other_surface.surface_revision = other_surface
+        .surface_revision
+        .checked_next()
+        .expect("test precondition");
     other_surface.panes[0].content_revision = 1;
     state.set_pane_surface(other_surface);
     assert!(state.selection.is_some());
@@ -2424,7 +2436,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
 
         let end_col = state.copy_mode.as_ref().expect("copy mode").geometry.0 - 1;
         let mut next = snapshot();
-        next.revision += 1;
+        next.revision = next.revision.checked_next().expect("test precondition");
         state.set_snapshot(Box::new(next));
         // The last composed frame is still on screen, so its hit map stays valid until
         // the matching surface is composed.

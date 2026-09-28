@@ -134,7 +134,14 @@ impl ClientRenderState {
         {
             return None;
         }
-        surface.surface_revision = surface_revision.next();
+        // The client accepts a surface only at its exact successor revision,
+        // so an exhausted counter (one step per sent frame, unreachable in
+        // practice) holds the last frame rather than repeating a revision.
+        let Some(next_revision) = surface_revision.checked_next() else {
+            tracing::error!("surface revisions exhausted; holding the last frame");
+            return None;
+        };
+        surface.surface_revision = next_revision;
         let committed_surface = surface.clone();
         let mut message = ServerMessage::PaneSurface(surface);
         let delta = last_surface.as_deref().and_then(|last| {
@@ -590,7 +597,10 @@ mod tests {
             .expect("test precondition");
         state.commit_sent_frame(initial);
 
-        surface.projection_revision += 1;
+        surface.projection_revision = surface
+            .projection_revision
+            .checked_next()
+            .expect("test precondition");
         let update = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
@@ -637,7 +647,10 @@ mod tests {
             .expect("test precondition");
         state.commit_sent_frame(patch);
         surface.frame.cells[0] = changed_cell;
-        surface.projection_revision += 1;
+        surface.projection_revision = surface
+            .projection_revision
+            .checked_next()
+            .expect("test precondition");
         let update = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
@@ -686,7 +699,10 @@ mod tests {
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
         state.commit_sent_frame(initial);
-        surface.projection_revision += 1;
+        surface.projection_revision = surface
+            .projection_revision
+            .checked_next()
+            .expect("test precondition");
         let update = state
             .prepare_pane_surface(surface)
             .expect("test precondition");
@@ -716,7 +732,10 @@ mod tests {
         assert!(apply_pane_surface_patch(&mut surface, &patch).is_err());
         assert_eq!(surface, before, "a rejected patch changes nothing");
         let mut stale_patch = patch.clone();
-        stale_patch.base_surface_revision += 1;
+        stale_patch.base_surface_revision = stale_patch
+            .base_surface_revision
+            .checked_next()
+            .expect("test precondition");
         assert!(apply_pane_surface_patch(&mut surface, &stale_patch).is_err());
         assert_eq!(surface, before, "a stale patch changes nothing");
 

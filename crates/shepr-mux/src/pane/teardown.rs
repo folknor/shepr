@@ -2,6 +2,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, Ordering},
 };
+use std::time::Duration;
 use tracing::{info, warn};
 
 use shepr_core::layout::PaneId;
@@ -63,48 +64,57 @@ impl ChildLiveness {
     }
 }
 
-/// Pane session teardowns still running on their background threads, so a
-/// process that is about to exit can let them finish first. This wait is
-/// process-wide because neither teardown starts nor waits carry a
-/// server-owned tracker; server-scoped waiting requires that owner to be
-/// threaded through both APIs.
-static PANE_TEARDOWNS_IN_FLIGHT: Mutex<usize> = Mutex::new(0);
-static PANE_TEARDOWNS_DONE: std::sync::Condvar = std::sync::Condvar::new();
+/// Pane session teardowns still running on their background threads, counted
+/// per owner: the application that spawns panes creates one, hands it to every
+/// pane it spawns (through `PaneSpawnHandles`), and waits on it at exit, so two
+/// servers in one process never wait on each other's teardowns.
+#[derive(Default)]
+pub struct PaneTeardownTracker {
+    in_flight: Mutex<usize>,
+    done: std::sync::Condvar,
+}
 
-/// Block until every pane session teardown started so far has finished, or
-/// `timeout` passes. Returns whether they all finished. For exit paths only:
-/// teardown runs off the caller's thread, and a process that exits right
-/// after dropping its panes would otherwise cut the SIGTERM/SIGKILL
-/// escalation short.
-pub fn wait_for_pane_session_teardowns(timeout: std::time::Duration) -> bool {
-    let guard = shepr_vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT);
-    match PANE_TEARDOWNS_DONE.wait_timeout_while(guard, timeout, |in_flight| *in_flight > 0) {
-        Ok((guard, _)) => *guard == 0,
-        Err(poisoned) => *shepr_vt::recover_auxiliary_poison(poisoned).0 == 0,
+impl PaneTeardownTracker {
+    fn start(self: &Arc<Self>) -> PaneTeardownInFlight {
+        *shepr_vt::lock_auxiliary(&self.in_flight) += 1;
+        PaneTeardownInFlight {
+            tracker: Arc::clone(self),
+        }
+    }
+
+    /// Block until every teardown started through this tracker so far has
+    /// finished, or `timeout` passes. Returns whether they all finished. For
+    /// exit paths only: teardown runs off the caller's thread, and a process
+    /// that exits right after dropping its panes would otherwise cut the
+    /// SIGTERM/SIGKILL escalation short.
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let guard = shepr_vt::lock_auxiliary(&self.in_flight);
+        match self
+            .done
+            .wait_timeout_while(guard, timeout, |in_flight| *in_flight > 0)
+        {
+            Ok((guard, _)) => *guard == 0,
+            Err(poisoned) => *shepr_vt::recover_auxiliary_poison(poisoned).0 == 0,
+        }
     }
 }
 
 /// The queued work owns this guard through completion or unwind, so a
 /// panicking teardown does not leak its in-flight count.
-struct PaneTeardownInFlight;
-
-impl PaneTeardownInFlight {
-    fn start() -> Self {
-        *shepr_vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT) += 1;
-        Self
-    }
+struct PaneTeardownInFlight {
+    tracker: Arc<PaneTeardownTracker>,
 }
 
 impl Drop for PaneTeardownInFlight {
     fn drop(&mut self) {
-        let mut in_flight = shepr_vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT);
+        let mut in_flight = shepr_vt::lock_auxiliary(&self.tracker.in_flight);
         if *in_flight == 0 {
             warn!("pane teardown completion had no matching start");
             return;
         }
         *in_flight -= 1;
         if *in_flight == 0 {
-            PANE_TEARDOWNS_DONE.notify_all();
+            self.tracker.done.notify_all();
         }
     }
 }
@@ -123,7 +133,11 @@ impl Drop for PaneTeardownInFlight {
 /// on kernels without pidfds a pid checked against its start time right
 /// before the kill), so a pid the kernel has handed to an unrelated process
 /// is not signalled.
-pub(super) fn shutdown_pane_processes(pane_id: PaneId, child_liveness: Arc<ChildLiveness>) {
+pub(super) fn shutdown_pane_processes(
+    pane_id: PaneId,
+    child_liveness: Arc<ChildLiveness>,
+    tracker: &Arc<PaneTeardownTracker>,
+) {
     let session_id = child_liveness.pid();
     if session_id == 0 {
         return;
@@ -135,10 +149,7 @@ pub(super) fn shutdown_pane_processes(pane_id: PaneId, child_liveness: Arc<Child
     }
     // `thread::Builder::spawn` drops its closure on failure, so the work is
     // parked in a shared slot that the inline fallback can still take back.
-    let work = Arc::new(Mutex::new(Some((
-        PaneTeardownInFlight::start(),
-        child_liveness,
-    ))));
+    let work = Arc::new(Mutex::new(Some((tracker.start(), child_liveness))));
     let thread_work = Arc::clone(&work);
     let spawned = std::thread::Builder::new()
         .name(format!("shepr-pane-{}-teardown", pane_id.raw()))
@@ -224,4 +235,22 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
         ?survivors,
         "pane session still alive after forced shutdown"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn teardown_trackers_wait_independently() {
+        let first = Arc::new(PaneTeardownTracker::default());
+        let second = Arc::new(PaneTeardownTracker::default());
+        let first_ticket = first.start();
+
+        assert!(!first.wait(Duration::ZERO));
+        assert!(second.wait(Duration::ZERO));
+
+        drop(first_ticket);
+        assert!(first.wait(Duration::ZERO));
+    }
 }

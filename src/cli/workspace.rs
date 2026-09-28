@@ -51,7 +51,16 @@ impl Command {
     }
 
     pub(super) fn can_run_on_machine(&self) -> bool {
-        !matches!(self, Self::Invalid)
+        match self {
+            Self::List
+            | Self::Create(_)
+            | Self::Get { .. }
+            | Self::Focus { .. }
+            | Self::Rename { .. }
+            | Self::ReportMetadata(_)
+            | Self::Close { .. } => true,
+            Self::Invalid => false,
+        }
     }
 }
 

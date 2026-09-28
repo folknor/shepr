@@ -102,9 +102,9 @@ const GROK_HOOK_CONFIG_INSTALL_NAME: &str = "shepr.json";
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 const GROK_INTEGRATION_VERSION: u32 = 2;
 
-// `install_target` returns display-ready strings to the CLI. Moving severity
-// out of the text requires changing that cross-crate result to carry a typed
-// warning for the CLI printer to render.
+// Keep the public result as strings until version warnings are typed at their
+// source and carried through the action layer. Parsing the prefix here would
+// keep severity encoded in text inside the agent crate.
 pub(crate) const INSTALL_WARNING_PREFIX: &str = "warning:";
 
 #[cfg(test)]

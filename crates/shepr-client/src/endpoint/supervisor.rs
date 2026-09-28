@@ -300,6 +300,18 @@ impl EndpointSupervisors {
             if state.in_flight || state.next_attempt.is_none_or(|deadline| deadline > now) {
                 continue;
             }
+            // Generations tell a live attempt's events from a stale one's, so
+            // a generation is never reused. Running out is unreachable (one per
+            // connection attempt); should it happen, the endpoint stops
+            // retrying rather than issuing a duplicate.
+            let Some(following_generation) = self.next_generation.checked_next() else {
+                tracing::error!(
+                    endpoint = ?endpoint_id,
+                    "connection generations exhausted; not starting another attempt"
+                );
+                state.next_attempt = None;
+                continue;
+            };
             let target = match &mut state.target {
                 ConnectTarget::Local {
                     path,
@@ -320,7 +332,7 @@ impl EndpointSupervisors {
             state.next_attempt = None;
             let generation = self.next_generation.get();
             state.generation = Some(generation.into());
-            self.next_generation = self.next_generation.next();
+            self.next_generation = following_generation;
             let endpoint_id = endpoint_id.clone();
             let event_tx = event_tx.clone();
             let shutdown = Arc::clone(&self.shutdown);

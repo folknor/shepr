@@ -212,39 +212,42 @@ impl From<WireBindingConfig> for BindingConfig {
     }
 }
 
-macro_rules! key_binding_fields {
-    ($apply:ident) => {
-        $apply! {
-            help new_workspace rename_workspace close_workspace workspace_picker goto
-            navigate_workspace_up navigate_workspace_down navigate_pane_left navigate_pane_down
-            navigate_pane_up navigate_pane_right detach previous_workspace next_workspace
-            previous_agent next_agent focus_agent new_tab rename_tab previous_tab next_tab
-            move_tab_previous move_tab_next switch_tab switch_workspace close_tab rename_pane
-            clear_pane copy_mode focus_pane_left focus_pane_down focus_pane_up focus_pane_right
-            swap_pane_left swap_pane_down swap_pane_up swap_pane_right cycle_pane_next
-            cycle_pane_previous last_pane split_vertical split_horizontal close_pane zoom
-            resize_mode resize_pane_left resize_pane_down resize_pane_up resize_pane_right
-            toggle_sidebar
-        }
-    };
-}
-
 macro_rules! count_key_binding_fields {
-    ($($field:ident)*) => {
-        [$(stringify!($field)),*].len()
+    (
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+    ) => {
+        [
+            $(stringify!($action_field),)*
+            $(stringify!($indexed_field),)*
+            $(stringify!($navigate_config_field),)*
+            $(stringify!($navigate_indexed_config_field),)*
+        ].len()
     };
 }
 
-const KEY_BINDING_COUNT: usize = key_binding_fields!(count_key_binding_fields);
+const KEY_BINDING_COUNT: usize = crate::keybinding_table!(count_key_binding_fields);
 
 impl WireKeysConfig {
     fn from_config(keys: &KeysConfig) -> Self {
         macro_rules! add_bindings {
-            ($($field:ident)*) => {
-                vec![$(WireBindingConfig::from(&keys.$field)),*]
+            (
+                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            ) => {
+                vec![
+                    $(WireBindingConfig::from(&keys.$action_field),)*
+                    $(WireBindingConfig::from(&keys.$indexed_field),)*
+                    $(WireBindingConfig::from(&keys.$navigate_config_field),)*
+                    $(WireBindingConfig::from(&keys.$navigate_indexed_config_field),)*
+                ]
             };
         }
-        let bindings = key_binding_fields!(add_bindings);
+        let bindings = crate::keybinding_table!(add_bindings);
         Self {
             prefix: keys.prefix.clone(),
             bindings,
@@ -260,11 +263,34 @@ impl WireKeysConfig {
         }
         let mut bindings = self.bindings.into_iter();
         macro_rules! take_bindings {
-            ($($field:ident)*) => {
+            (
+                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            ) => {
                 KeysConfig {
                     prefix: self.prefix,
                     $(
-                        $field: bindings
+                        $action_field: bindings
+                            .next()
+                            .ok_or("resolved config is missing a keybinding")?
+                            .into(),
+                    )*
+                    $(
+                        $indexed_field: bindings
+                            .next()
+                            .ok_or("resolved config is missing a keybinding")?
+                            .into(),
+                    )*
+                    $(
+                        $navigate_config_field: bindings
+                            .next()
+                            .ok_or("resolved config is missing a keybinding")?
+                            .into(),
+                    )*
+                    $(
+                        $navigate_indexed_config_field: bindings
                             .next()
                             .ok_or("resolved config is missing a keybinding")?
                             .into(),
@@ -272,7 +298,7 @@ impl WireKeysConfig {
                 }
             };
         }
-        Ok(key_binding_fields!(take_bindings))
+        Ok(crate::keybinding_table!(take_bindings))
     }
 }
 
@@ -663,5 +689,48 @@ impl From<WireSpaceSidebarToken> for SpaceSidebarToken {
                 rules: rules.into_iter().map(SidebarTokenRule::from_wire).collect(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every binding gets its own value, so a wire mapping that dropped,
+    /// duplicated or swapped two fields would come back different.
+    #[test]
+    fn every_keybinding_round_trips_through_the_wire_in_its_own_slot() {
+        let mut keys = KeysConfig {
+            prefix: "ctrl+a".into(),
+            ..KeysConfig::default()
+        };
+        let mut count = 0_usize;
+        macro_rules! distinct_values {
+            (
+                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            ) => {
+                $(count += 1; keys.$action_field = BindingConfig::one(format!("binding-{count}"));)*
+                $(count += 1; keys.$indexed_field = BindingConfig::one(format!("binding-{count}"));)*
+                $(count += 1; keys.$navigate_config_field = BindingConfig::one(format!("binding-{count}"));)*
+                $(count += 1; keys.$navigate_indexed_config_field = BindingConfig::one(format!("binding-{count}"));)*
+            };
+        }
+        crate::keybinding_table!(distinct_values);
+        assert_eq!(count, KEY_BINDING_COUNT);
+        assert_eq!(KEY_BINDING_COUNT, 56);
+
+        let wire = WireKeysConfig::from_config(&keys);
+        assert_eq!(wire.bindings.len(), KEY_BINDING_COUNT);
+        assert_eq!(wire.into_config().expect("test precondition"), keys);
+    }
+
+    #[test]
+    fn a_wire_keymap_of_the_wrong_length_is_refused() {
+        let mut wire = WireKeysConfig::from_config(&KeysConfig::default());
+        wire.bindings.pop();
+        assert!(wire.into_config().is_err());
     }
 }

@@ -220,12 +220,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a non-root test process because root bypasses mode-000 directory checks"]
     fn is_server_listening_returns_permission_errors_instead_of_false() {
-        // SAFETY: geteuid takes no arguments, cannot fail and touches no memory.
-        if unsafe { libc::geteuid() } == 0 {
-            return;
-        }
-
         let dir = ScratchDir::new("inaccessible");
         let parent = dir.join("private");
         std::fs::create_dir(&parent).expect("create inaccessible directory");

@@ -1,10 +1,14 @@
 //! The one reader of the process environment, and the one policy it applies.
 //!
-//! Every environment variable a shepr process interprets is an [`EnvVar`]
-//! variant with a declared [`EnvKind`], and every read goes through [`read`]
+//! Every fixed-name environment variable a shepr process interprets is an
+//! [`EnvVar`] variant with a declared [`EnvKind`], and every read goes through
+//! [`read`]
 //! and its typed wrappers (or [`resolve`], the pure half over a value handed
-//! in). Variables shepr only sets or removes on a child's environment are the
-//! separate [`ChildEnv`] vocabulary. `PATH` and `SHELL` appear in both tables:
+//! in). Git's indexed `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` families
+//! are registered by [`is_registered_name`] and read by
+//! [`read_git_config_parameters`]. Variables shepr only sets or removes on a
+//! child's environment are the separate [`ChildEnv`] vocabulary. `PATH` and
+//! `SHELL` appear in both tables:
 //! the process reads them to resolve its pane shell, then writes resolved
 //! values into the pane environment. The root `clippy.toml` denies
 //! `std::env::var`, `var_os`,
@@ -32,7 +36,8 @@
 //! [`EnvKind::Handoff`] and [`EnvKind::Raw`] preserve OS strings byte for byte.
 //! A handoff is written by one shepr process for a child. Raw values are
 //! inherited `PATH` and `SHELL` inputs, where non-UTF-8 bytes and whitespace
-//! can be meaningful; only empty reads as unset.
+//! can be meaningful, and `GIT_CONFIG_COUNT`, whose grammar belongs to Git;
+//! only empty reads as unset.
 //!
 //! What a value means beyond its kind (a session name's grammar, a log filter's
 //! syntax, which directory a relative path is joined to) stays with the site
@@ -207,6 +212,9 @@ env_vocabulary! {
         /// `GIT_CONFIG_NOSYSTEM`: Git's boolean setting that skips the system
         /// config file when true. Kept as text for Git's full boolean grammar.
         GitConfigNoSystem => "GIT_CONFIG_NOSYSTEM",
+        /// `GIT_CONFIG_COUNT`: the number of indexed command-scope config
+        /// pairs Git reads. Its decimal grammar follows Git's parser.
+        GitConfigCount => "GIT_CONFIG_COUNT",
     }
 }
 
@@ -357,9 +365,30 @@ impl EnvVar {
             | Self::WaylandDisplay
             | Self::Display => EnvKind::Presence,
             Self::SheprStartupCwd => EnvKind::Handoff,
-            Self::Shell | Self::Path => EnvKind::Raw,
+            Self::Shell | Self::Path | Self::GitConfigCount => EnvKind::Raw,
         }
     }
+}
+
+/// Whether `name` belongs to the fixed environment vocabulary or to one of
+/// Git's indexed command-scope config variable families. Indexed names use
+/// the canonical decimal spelling Git generates (`_0`, `_1`, ...).
+#[must_use]
+pub fn is_registered_name(name: &OsStr) -> bool {
+    EnvVar::ALL.iter().any(|var| OsStr::new(var.name()) == name)
+        || name.to_str().is_some_and(|name| {
+            is_indexed_git_config_name(name, "GIT_CONFIG_KEY_")
+                || is_indexed_git_config_name(name, "GIT_CONFIG_VALUE_")
+        })
+}
+
+fn is_indexed_git_config_name(name: &str, prefix: &str) -> bool {
+    let Some(index) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && (index == "0" || !index.starts_with('0'))
 }
 
 /// Why a present value was refused.
@@ -499,6 +528,15 @@ pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, Env
 )]
 fn raw(var: EnvVar) -> Option<OsString> {
     std::env::var_os(var.name())
+}
+
+/// The raw value of an indexed environment variable, before any text policy.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the one production environment read for Git's indexed config family"
+)]
+fn raw_name(name: &OsStr) -> Option<OsString> {
+    std::env::var_os(name)
 }
 
 /// Reads one variable from this process's environment under the policy.
@@ -679,7 +717,8 @@ pub fn read_path(var: EnvVar) -> Result<Option<PathBuf>, EnvError> {
     resolve_path(var, raw(var).as_deref())
 }
 
-/// Resolves one byte-preserving value such as `PATH` or `SHELL`.
+/// Resolves one byte-preserving value such as `PATH`, `SHELL` or
+/// `GIT_CONFIG_COUNT`.
 ///
 /// # Panics
 ///
@@ -697,13 +736,121 @@ pub fn resolve_os(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<OsString>, 
     }))
 }
 
-/// Reads one byte-preserving environment value such as `PATH` or `SHELL`.
+/// Reads one byte-preserving environment value such as `PATH`, `SHELL` or
+/// `GIT_CONFIG_COUNT`.
 ///
 /// # Panics
 ///
 /// As [`resolve_os`].
 pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
     resolve_os(var, raw(var).as_deref())
+}
+
+/// Reads Git's indexed command-scope config pairs in index order. Git treats
+/// an unset or empty count as zero, requires both variables for every index
+/// below the count, and rejects malformed counts or missing pairs.
+///
+/// # Errors
+///
+/// Returns an error when the count is not accepted by Git, an indexed key or
+/// value is missing, or a present pair is not valid UTF-8 for shepr's config
+/// reader.
+pub fn read_git_config_parameters() -> io::Result<Vec<(String, String)>> {
+    let count = read_os(EnvVar::GitConfigCount)?;
+    let Some(count) = count else {
+        return Ok(Vec::new());
+    };
+    let count = parse_git_config_count(&count)?;
+    let mut parameters = Vec::new();
+    for index in 0..count {
+        let key_name = format!("GIT_CONFIG_KEY_{index}");
+        let value_name = format!("GIT_CONFIG_VALUE_{index}");
+        let key = raw_name(OsStr::new(&key_name)).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("missing {key_name} for Git command-scope config"),
+            )
+        })?;
+        let value = raw_name(OsStr::new(&value_name)).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("missing {value_name} for Git command-scope config"),
+            )
+        })?;
+        let key = key.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{key_name} is not valid UTF-8"),
+            )
+        })?;
+        let value = value.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{value_name} is not valid UTF-8"),
+            )
+        })?;
+        parameters.push((key.to_owned(), value.to_owned()));
+    }
+    Ok(parameters)
+}
+
+fn parse_git_config_count(raw: &OsStr) -> io::Result<usize> {
+    let text = raw.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "GIT_CONFIG_COUNT is not valid UTF-8",
+        )
+    })?;
+    if text.is_empty() {
+        return Ok(0);
+    }
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+        index += 1;
+    }
+    let negative = match bytes.get(index) {
+        Some(b'+') => {
+            index += 1;
+            false
+        }
+        Some(b'-') => {
+            index += 1;
+            true
+        }
+        _ => false,
+    };
+    let first_digit = index;
+    let mut magnitude = 0_usize;
+    while let Some(byte) = bytes.get(index).filter(|byte| byte.is_ascii_digit()) {
+        magnitude = magnitude
+            .checked_mul(10)
+            .and_then(|count| count.checked_add(usize::from(*byte - b'0')))
+            .ok_or_else(too_many_git_config_parameters)?;
+        index += 1;
+    }
+    if index == first_digit || index != bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "GIT_CONFIG_COUNT is not a valid decimal count",
+        ));
+    }
+    let count = if negative {
+        0_usize.wrapping_sub(magnitude)
+    } else {
+        magnitude
+    };
+    if count > i32::MAX as usize {
+        return Err(too_many_git_config_parameters());
+    }
+    Ok(count)
+}
+
+fn too_many_git_config_parameters() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "GIT_CONFIG_COUNT exceeds Git's maximum entry count",
+    )
 }
 
 #[cfg(test)]
@@ -780,6 +927,7 @@ mod tests {
             (EnvVar::GitConfigGlobal, "GIT_CONFIG_GLOBAL", Path),
             (EnvVar::GitConfigSystem, "GIT_CONFIG_SYSTEM", Path),
             (EnvVar::GitConfigNoSystem, "GIT_CONFIG_NOSYSTEM", Text),
+            (EnvVar::GitConfigCount, "GIT_CONFIG_COUNT", Raw),
         ];
         assert_eq!(
             table.iter().map(|(var, _, _)| *var).collect::<Vec<_>>(),
@@ -791,6 +939,66 @@ mod tests {
             assert_eq!(var.kind(), *kind, "{name}");
             assert_eq!(var.to_string(), *name);
             assert_eq!(AsRef::<OsStr>::as_ref(var), OsStr::new(name));
+        }
+    }
+
+    #[test]
+    fn registry_covers_only_canonical_indexed_git_config_names() {
+        for name in [
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_KEY_12",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_VALUE_12",
+        ] {
+            assert!(is_registered_name(OsStr::new(name)), "{name}");
+        }
+        for name in [
+            "GIT_CONFIG_KEY_",
+            "GIT_CONFIG_KEY_00",
+            "GIT_CONFIG_KEY_x",
+            "GIT_CONFIG_VALUE_00",
+            "GIT_CONFIG_VALUE_1_EXTRA",
+            "OTHER_GIT_CONFIG_KEY_0",
+        ] {
+            assert!(!is_registered_name(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn git_config_count_uses_git_decimal_count_rules() {
+        assert_eq!(
+            parse_git_config_count(OsStr::new("")).expect("empty count"),
+            0
+        );
+        assert_eq!(
+            parse_git_config_count(OsStr::new("0")).expect("zero count"),
+            0
+        );
+        assert_eq!(
+            parse_git_config_count(OsStr::new("+2")).expect("signed count"),
+            2
+        );
+        assert_eq!(
+            parse_git_config_count(OsStr::new(" 2")).expect("leading space"),
+            2
+        );
+        assert_eq!(
+            parse_git_config_count(OsStr::new("-0")).expect("negative zero"),
+            0
+        );
+        let max_count = usize::MAX;
+        let negative_unsigned_max = format!("-{max_count}");
+        assert_eq!(
+            parse_git_config_count(OsStr::new(&negative_unsigned_max))
+                .expect("strtoul wraps a negative unsigned count"),
+            1
+        );
+        for count in ["  ", "2 ", "+", "-1", "2147483648"] {
+            assert!(
+                parse_git_config_count(OsStr::new(count)).is_err(),
+                "{count:?}"
+            );
         }
     }
 

@@ -49,7 +49,7 @@ pub(crate) fn serialize_response_or_error_with_outcome<T: serde::Serialize>(
     match serde_json::to_string(response) {
         Ok(body) => error::EncodedApiResponse {
             body,
-            outcome: "ok",
+            outcome: error::ApiLogOutcome::Ok,
         },
         Err(error) => {
             tracing::error!(request_id, %error, "failed to serialize API response");
@@ -62,7 +62,7 @@ pub(crate) fn serialize_response_or_error_with_outcome<T: serde::Serialize>(
                     },
                 })
                 .to_string(),
-                outcome: "error",
+                outcome: error::ApiLogOutcome::Error,
             }
         }
     }

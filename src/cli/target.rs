@@ -617,15 +617,24 @@ mod tests {
         let argv = ["shepr", "--machine", "mac", "session", "attach", "work"].map(str::to_owned);
         let invocation = super::super::parse_invocation(&argv)
             .expect("session attach should parse as a TUI launch");
+        assert_eq!(invocation.machine().as_deref(), Some("mac"));
         assert!(matches!(
-            invocation.launch,
+            &invocation.launch,
             super::super::Launch::Tui {
                 attached_session: Some(name)
             } if name == "work"
         ));
 
-        let error = run_on_machine("mac", None, &shepr_config::AppPaths::test_default())
-            .expect_err("a TUI launch has no API command to run on a machine");
+        // The command handed to the machine runner comes from the parsed
+        // invocation, as in `main`: a TUI launch has none, which is a usage
+        // error before any catalog or network access.
+        assert!(invocation.cli_command().is_none());
+        let error = run_on_machine(
+            "mac",
+            invocation.cli_command(),
+            &shepr_config::AppPaths::test_default(),
+        )
+        .expect_err("a TUI launch has no API command to run on a machine");
         assert_eq!(error.exit_code(), 2);
     }
 }

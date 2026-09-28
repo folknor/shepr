@@ -27,7 +27,7 @@ pub(crate) struct SessionSaver {
     failed_saves: u32,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     session_save_purpose: Option<SessionSavePurpose>,
-    pub(crate) session_writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>,
+    session_writer: SessionWriterHandle,
     pub(crate) pane_exit_checkpoint_pending: bool,
     pane_exit_checkpoint_requested: bool,
     pane_exit_checkpoint_generation: u64,
@@ -42,6 +42,23 @@ pub(crate) struct SessionSaver {
     host_shutdown_checkpoint_result: Option<(u64, bool)>,
 }
 
+/// Serializes operations on the session writer and owns their poison policy. A
+/// save retry checks the history digest and file stamp before trusting its
+/// cache. Retirement uses the same recovered guard to release the data
+/// directory lease.
+#[derive(Clone)]
+struct SessionWriterHandle(std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>);
+
+impl SessionWriterHandle {
+    fn new(writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>) -> Self {
+        Self(writer)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, shepr_mux::persist::SessionWriter> {
+        shepr_vt::lock_auxiliary(&self.0)
+    }
+}
+
 impl SessionSaver {
     pub(crate) fn new(
         writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>,
@@ -52,7 +69,7 @@ impl SessionSaver {
             failed_saves: 0,
             session_save_thread: None,
             session_save_purpose: None,
-            session_writer: writer,
+            session_writer: SessionWriterHandle::new(writer),
             pane_exit_checkpoint_pending: false,
             pane_exit_checkpoint_requested: false,
             pane_exit_checkpoint_generation: 0,
@@ -453,7 +470,7 @@ impl App {
         purpose: SessionSavePurpose,
         now: Instant,
     ) {
-        let writer = std::sync::Arc::clone(&self.session_saver.session_writer);
+        let writer = self.session_saver.session_writer.clone();
         match std::thread::Builder::new()
             .name("shepr-session-save".into())
             .spawn(move || run_session_save_job(job, &writer))
@@ -668,7 +685,7 @@ impl App {
         }
 
         let job = self.capture_session_save_job();
-        let writer = std::sync::Arc::clone(&self.session_saver.session_writer);
+        let writer = self.session_saver.session_writer.clone();
         let result =
             match tokio::task::spawn_blocking(move || run_session_save_job(job, &writer)).await {
                 Ok(result) => result,
@@ -694,20 +711,11 @@ impl App {
             self.record_session_save_result(result, Instant::now());
         }
         self.session_saver.clear_deadline();
-        // Retiring only drops the lock and marks the writer done; a panic in
-        // an earlier save cannot leave anything here half-updated.
-        self.session_saver
-            .session_writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retire();
+        self.session_saver.session_writer.lock().retire();
     }
 }
 
-fn run_session_save_job(
-    job: SessionSaveJob,
-    writer: &std::sync::Mutex<shepr_mux::persist::SessionWriter>,
-) -> std::io::Result<()> {
+fn run_session_save_job(job: SessionSaveJob, writer: &SessionWriterHandle) -> std::io::Result<()> {
     // Formatting pane history is the expensive part of a save; it happens
     // here, before the writer is locked.
     let job = match job {
@@ -717,13 +725,7 @@ fn run_session_save_job(
             Some((snapshot, history))
         }
     };
-    let mut writer = match writer.lock() {
-        Ok(writer) => writer,
-        Err(err) => {
-            tracing::warn!(err = %err, "session writer is poisoned; refusing to modify session");
-            return Err(std::io::Error::other("session writer mutex is poisoned"));
-        }
-    };
+    let mut writer = writer.lock();
     match job {
         None => writer.clear(),
         Some((snapshot, history)) => writer.save(&snapshot, history.as_ref()),

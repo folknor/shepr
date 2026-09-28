@@ -64,9 +64,11 @@ impl ValidatedConfigFixture for ValidatedConfig {
         source: Option<&str>,
         paths: AppPaths,
     ) -> Self {
-        // An empty shell setting is resolved from the process's inherited
-        // `SHELL` and `PATH`, which a test holding no `IsolatedEnv` must not
-        // depend on; a fixed absolute shell keeps the fixture deterministic.
+        // `from_values` reads `SHELL` and `PATH` even with an explicit shell.
+        // This fixed absolute path makes both values irrelevant for default
+        // fixtures; callers testing a relative shell must isolate their env.
+        // Do not acquire `IsolatedEnv` here: callers may already hold its
+        // non-reentrant process-environment lock while building a fixture.
         if config.terminal.default_shell.trim().is_empty() {
             config.terminal.default_shell = FIXTURE_SHELL.to_owned();
         }

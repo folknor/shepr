@@ -298,113 +298,39 @@ impl LoadedConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
-pub struct KeysConfig {
-    /// Prefix key to enter prefix mode (e.g. "ctrl+b", "f12", "esc").
-    pub prefix: String,
-    /// Open keybinding help. Default: "prefix+?"
-    pub help: BindingConfig,
-    /// Create a new workspace. Default: "prefix+shift+n"
-    pub new_workspace: BindingConfig,
-    /// Rename the selected workspace. Default: "prefix+shift+w"
-    pub rename_workspace: BindingConfig,
-    /// Close the selected workspace. Default: "prefix+shift+d"
-    pub close_workspace: BindingConfig,
-    /// Open the workspace navigation surface. Default: "prefix+w"
-    pub workspace_picker: BindingConfig,
-    /// Open the session navigator. Default: "prefix+g"
-    pub goto: BindingConfig,
-    /// Move workspace selection up in navigate mode. Default: "up".
-    pub navigate_workspace_up: BindingConfig,
-    /// Move workspace selection down in navigate mode. Default: "down".
-    pub navigate_workspace_down: BindingConfig,
-    /// Focus the pane to the left in navigate mode. Default: "h". Left arrow is always an alias.
-    pub navigate_pane_left: BindingConfig,
-    /// Focus the pane below in navigate mode. Default: "j".
-    pub navigate_pane_down: BindingConfig,
-    /// Focus the pane above in navigate mode. Default: "k".
-    pub navigate_pane_up: BindingConfig,
-    /// Focus the pane to the right in navigate mode. Default: "l". Right arrow is always an alias.
-    pub navigate_pane_right: BindingConfig,
-    /// Detach the current client from its Shepr server. Default: "prefix+q".
-    pub detach: BindingConfig,
-    /// Select the previous workspace. Unset by default.
-    pub previous_workspace: BindingConfig,
-    /// Select the next workspace. Unset by default.
-    pub next_workspace: BindingConfig,
-    /// Focus the previous agent shown in the agent panel. Unset by default.
-    pub previous_agent: BindingConfig,
-    /// Focus the next agent shown in the agent panel. Unset by default.
-    pub next_agent: BindingConfig,
-    /// Focus an agent by index 1-9. Unset by default.
-    pub focus_agent: BindingConfig,
-    /// Create a new tab in the active workspace. Default: "prefix+c"
-    pub new_tab: BindingConfig,
-    /// Rename the active tab. Default: "prefix+shift+t".
-    pub rename_tab: BindingConfig,
-    /// Select the previous tab. Default: "prefix+p".
-    pub previous_tab: BindingConfig,
-    /// Select the next tab. Default: "prefix+n".
-    pub next_tab: BindingConfig,
-    /// Move the active tab one position toward the front. Unset by default.
-    pub move_tab_previous: BindingConfig,
-    /// Move the active tab one position toward the back. Unset by default.
-    pub move_tab_next: BindingConfig,
-    /// Switch to tab 1-9. Default: "prefix+1..9".
-    pub switch_tab: BindingConfig,
-    /// Switch to workspace 1-9 from prefix mode. Unset by default.
-    pub switch_workspace: BindingConfig,
-    /// Close the active tab. Default: "prefix+shift+x".
-    pub close_tab: BindingConfig,
-    /// Rename the focused pane. Default: "prefix+shift+p".
-    pub rename_pane: BindingConfig,
-    pub clear_pane: BindingConfig,
-    /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
-    pub copy_mode: BindingConfig,
-    /// Focus the pane to the left. Default: "prefix+h".
-    pub focus_pane_left: BindingConfig,
-    /// Focus the pane below. Default: "prefix+j".
-    pub focus_pane_down: BindingConfig,
-    /// Focus the pane above. Default: "prefix+k".
-    pub focus_pane_up: BindingConfig,
-    /// Focus the pane to the right. Default: "prefix+l".
-    pub focus_pane_right: BindingConfig,
-    /// Swap the focused pane with the pane to the left. Default: "prefix+shift+h".
-    pub swap_pane_left: BindingConfig,
-    /// Swap the focused pane with the pane below. Default: "prefix+shift+j".
-    pub swap_pane_down: BindingConfig,
-    /// Swap the focused pane with the pane above. Default: "prefix+shift+k".
-    pub swap_pane_up: BindingConfig,
-    /// Swap the focused pane with the pane to the right. Default: "prefix+shift+l".
-    pub swap_pane_right: BindingConfig,
-    /// Cycle to the next pane. Default: "prefix+tab".
-    pub cycle_pane_next: BindingConfig,
-    /// Cycle to the previous pane. Default: "prefix+shift+tab".
-    pub cycle_pane_previous: BindingConfig,
-    /// Focus the last focused pane across workspaces and tabs. Unset by default.
-    pub last_pane: BindingConfig,
-    /// Split pane vertically (side by side). Default: "prefix+v"
-    pub split_vertical: BindingConfig,
-    /// Split pane horizontally (stacked). Default: "prefix+minus"
-    pub split_horizontal: BindingConfig,
-    /// Close the focused pane. Default: "prefix+x"
-    pub close_pane: BindingConfig,
-    /// Toggle zoom for the focused pane. Default: "prefix+z"
-    pub zoom: BindingConfig,
-    /// Enter resize mode. Default: "prefix+r"
-    pub resize_mode: BindingConfig,
-    /// Resize the focused pane toward the left. Unset by default.
-    pub resize_pane_left: BindingConfig,
-    /// Resize the focused pane downward. Unset by default.
-    pub resize_pane_down: BindingConfig,
-    /// Resize the focused pane upward. Unset by default.
-    pub resize_pane_up: BindingConfig,
-    /// Resize the focused pane toward the right. Unset by default.
-    pub resize_pane_right: BindingConfig,
-    /// Toggle sidebar collapse. Default: "prefix+b"
-    pub toggle_sidebar: BindingConfig,
+macro_rules! define_keys_config {
+    (
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+    ) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+        #[serde(default)]
+        pub struct KeysConfig {
+            /// Prefix key to enter prefix mode (for example, `ctrl+b` or `f12`).
+            pub prefix: String,
+            $(#[doc = $action_doc] pub $action_field: BindingConfig,)*
+            $(#[doc = $indexed_doc] pub $indexed_field: BindingConfig,)*
+            $(#[doc = $navigate_doc] pub $navigate_config_field: BindingConfig,)*
+            $(#[doc = $navigate_indexed_doc] pub $navigate_indexed_config_field: BindingConfig,)*
+        }
+
+        impl Default for KeysConfig {
+            fn default() -> Self {
+                Self {
+                    prefix: "ctrl+b".into(),
+                    $($action_field: BindingConfig::one($action_default),)*
+                    $($indexed_field: BindingConfig::one($indexed_default),)*
+                    $($navigate_config_field: BindingConfig::one($navigate_default),)*
+                    $($navigate_indexed_config_field: BindingConfig::one($navigate_indexed_default),)*
+                }
+            }
+        }
+    };
 }
+
+crate::keybinding_table!(define_keys_config);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -639,65 +565,6 @@ pub struct ExperimentalConfig {
     /// Cursor shape rendered for the IME anchor when
     /// `reveal_hidden_cursor_for_cjk_ime` is enabled. Default: "steady_block".
     pub cjk_ime_cursor_shape: ImeCursorShape,
-}
-
-impl Default for KeysConfig {
-    fn default() -> Self {
-        Self {
-            prefix: "ctrl+b".into(),
-            help: BindingConfig::one("prefix+?"),
-            new_workspace: BindingConfig::one("prefix+shift+n"),
-            rename_workspace: BindingConfig::one("prefix+shift+w"),
-            close_workspace: BindingConfig::one("prefix+shift+d"),
-            workspace_picker: BindingConfig::one("prefix+w"),
-            goto: BindingConfig::one("prefix+g"),
-            navigate_workspace_up: BindingConfig::one("up"),
-            navigate_workspace_down: BindingConfig::one("down"),
-            navigate_pane_left: BindingConfig::one("h"),
-            navigate_pane_down: BindingConfig::one("j"),
-            navigate_pane_up: BindingConfig::one("k"),
-            navigate_pane_right: BindingConfig::one("l"),
-            detach: BindingConfig::one("prefix+q"),
-            previous_workspace: BindingConfig::empty(),
-            next_workspace: BindingConfig::empty(),
-            previous_agent: BindingConfig::empty(),
-            next_agent: BindingConfig::empty(),
-            focus_agent: BindingConfig::empty(),
-            new_tab: BindingConfig::one("prefix+c"),
-            rename_tab: BindingConfig::one("prefix+shift+t"),
-            previous_tab: BindingConfig::one("prefix+p"),
-            next_tab: BindingConfig::one("prefix+n"),
-            move_tab_previous: BindingConfig::empty(),
-            move_tab_next: BindingConfig::empty(),
-            switch_tab: BindingConfig::one("prefix+1..9"),
-            switch_workspace: BindingConfig::empty(),
-            close_tab: BindingConfig::one("prefix+shift+x"),
-            rename_pane: BindingConfig::one("prefix+shift+p"),
-            clear_pane: BindingConfig::default(),
-            copy_mode: BindingConfig::one("prefix+["),
-            focus_pane_left: BindingConfig::one("prefix+h"),
-            focus_pane_down: BindingConfig::one("prefix+j"),
-            focus_pane_up: BindingConfig::one("prefix+k"),
-            focus_pane_right: BindingConfig::one("prefix+l"),
-            swap_pane_left: BindingConfig::one("prefix+shift+h"),
-            swap_pane_down: BindingConfig::one("prefix+shift+j"),
-            swap_pane_up: BindingConfig::one("prefix+shift+k"),
-            swap_pane_right: BindingConfig::one("prefix+shift+l"),
-            cycle_pane_next: BindingConfig::one("prefix+tab"),
-            cycle_pane_previous: BindingConfig::one("prefix+shift+tab"),
-            last_pane: BindingConfig::empty(),
-            split_vertical: BindingConfig::one("prefix+v"),
-            split_horizontal: BindingConfig::one("prefix+minus"),
-            close_pane: BindingConfig::one("prefix+x"),
-            zoom: BindingConfig::one("prefix+z"),
-            resize_mode: BindingConfig::one("prefix+r"),
-            resize_pane_left: BindingConfig::empty(),
-            resize_pane_down: BindingConfig::empty(),
-            resize_pane_up: BindingConfig::empty(),
-            resize_pane_right: BindingConfig::empty(),
-            toggle_sidebar: BindingConfig::one("prefix+b"),
-        }
-    }
 }
 
 impl Default for UiConfig {

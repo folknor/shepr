@@ -7,17 +7,14 @@ impl App {
         params: &PaneLayoutParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
-            return pane_not_found(
-                id,
-                &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
-            );
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, pane_id)
+                    .as_deref()
+                    .or(params.pane_id.as_deref()),
+            ));
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
@@ -36,25 +33,16 @@ impl App {
         params: &PaneProcessInfoParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
+        let public_pane_id = self.public_pane_id(ws_idx, pane_id);
         let Some((runtime, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(
+                public_pane_id.as_deref().or(params.pane_id.as_deref()),
+            ));
         };
-        let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+        let Some(public_pane_id) = public_pane_id else {
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let shell_pid = runtime.child_pid();
         let foreground_job = shell_pid.and_then(shepr_agent::detect::foreground_job);
@@ -95,24 +83,17 @@ impl App {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
-            return pane_not_found(
-                id,
-                &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
-            );
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, pane_id)
+                    .as_deref()
+                    .or(params.pane_id.as_deref()),
+            ));
         };
         let Some(source_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let neighbor_pane_id = self
             .directional_pane_target(ws_idx, tab_idx, pane_id, params.direction)
@@ -146,17 +127,14 @@ impl App {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
-            return pane_not_found(
-                id,
-                &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
-            );
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, pane_id)
+                    .as_deref()
+                    .or(params.pane_id.as_deref()),
+            ));
         };
         let Some(tab) = self
             .state
@@ -177,17 +155,14 @@ impl App {
             .into_iter()
             .find(|info| info.id == pane_id)
         else {
-            return pane_not_found(
-                id,
-                &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
-            );
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, pane_id)
+                    .as_deref()
+                    .or(params.pane_id.as_deref()),
+            ));
         };
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
@@ -221,26 +196,17 @@ impl App {
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
         else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, source_pane_id) else {
-            return pane_not_found(
-                id,
-                &self
-                    .public_pane_id(ws_idx, source_pane_id)
-                    .unwrap_or_default(),
-            );
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, source_pane_id)
+                    .as_deref()
+                    .or(params.pane_id.as_deref()),
+            ));
         };
         let Some(source_public_id) = self.public_pane_id(ws_idx, source_pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let target =
             self.directional_pane_target(ws_idx, tab_idx, source_pane_id, params.direction);
@@ -290,24 +256,17 @@ impl App {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
-            return pane_not_found(
-                id,
-                &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
-            );
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, pane_id)
+                    .as_deref()
+                    .or(params.pane_id.as_deref()),
+            ));
         };
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
 
         let amount = params
@@ -377,19 +336,14 @@ impl App {
             let Some((ws_idx, source_pane_id)) =
                 self.resolve_swap_source(params.pane_id.as_deref())
             else {
-                return failure(
-                    id,
-                    shepr_api::error::ApiErrorCode::PaneNotFound,
-                    "source pane not found",
-                );
+                return Err(pane_not_found(params.pane_id.as_deref()));
             };
             let Some(tab_idx) = self.tab_index_for_pane(ws_idx, source_pane_id) else {
-                return pane_not_found(
-                    id,
-                    &self
-                        .public_pane_id(ws_idx, source_pane_id)
-                        .unwrap_or_default(),
-                );
+                return Err(pane_not_found(
+                    self.public_pane_id(ws_idx, source_pane_id)
+                        .as_deref()
+                        .or(params.pane_id.as_deref()),
+                ));
             };
             let target = self.directional_pane_target(ws_idx, tab_idx, source_pane_id, direction);
             match target {
@@ -562,18 +516,10 @@ impl App {
             focus,
         } = params;
         let Some((source_ws_idx, source_pane_id)) = self.parse_pane_id(&pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "source pane not found",
-            );
+            return Err(pane_not_found(Some(&pane_id)));
         };
         let Some(source_tab_idx) = self.tab_index_for_pane(source_ws_idx, source_pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "source pane not found",
-            );
+            return Err(pane_not_found(Some(&pane_id)));
         };
         let Some((source_ws, source_tab)) = self
             .state
@@ -581,18 +527,10 @@ impl App {
             .get(source_ws_idx)
             .and_then(|ws| Some((ws, ws.tabs().get(source_tab_idx)?)))
         else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "source pane not found",
-            );
+            return Err(pane_not_found(Some(&pane_id)));
         };
         let Some(source_terminal_id) = source_tab.terminal_id(source_pane_id).cloned() else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "source pane not found",
-            );
+            return Err(pane_not_found(Some(&pane_id)));
         };
         let source_tab_zoomed = source_tab.zoomed;
         let previous_workspace_label = source_ws.custom_name.clone();
@@ -602,18 +540,10 @@ impl App {
             .public_pane_id(source_ws_idx, source_pane_id)
             .unwrap_or_else(|| pane_id.clone());
         let Some(previous_workspace_id) = self.public_workspace_id(source_ws_idx) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "source pane not found",
-            );
+            return Err(pane_not_found(Some(&pane_id)));
         };
         let Some(previous_tab_id) = self.public_tab_id(source_ws_idx, source_tab_idx) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::TabNotFound,
-                "source tab not found",
-            );
+            return Err(tab_for_pane_not_found(&pane_id));
         };
         let recovery_context = PaneMoveRecoveryContext {
             source_ws_idx,
@@ -632,11 +562,7 @@ impl App {
                 );
             };
             let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
-                return failure(
-                    id,
-                    shepr_api::error::ApiErrorCode::PaneNotFound,
-                    "source pane not found",
-                );
+                return Err(pane_not_found(Some(&pane_id)));
             };
             return encode_unchanged_pane_move(
                 id,
@@ -658,11 +584,7 @@ impl App {
                 ratio,
             } => {
                 let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
-                    return failure(
-                        id,
-                        shepr_api::error::ApiErrorCode::TabNotFound,
-                        format!("tab {tab_id} not found"),
-                    );
+                    return Err(tab_not_found(&tab_id));
                 };
                 let Some((target_tab_zoomed, target_tab_focused)) = self
                     .state
@@ -671,11 +593,7 @@ impl App {
                     .and_then(|ws| ws.tabs().get(target_tab_idx))
                     .map(|tab| (tab.zoomed, tab.layout.focused()))
                 else {
-                    return failure(
-                        id,
-                        shepr_api::error::ApiErrorCode::TabNotFound,
-                        format!("tab {tab_id} not found"),
-                    );
+                    return Err(tab_not_found(&tab_id));
                 };
                 if source_ws_idx == target_ws_idx && source_tab_idx == target_tab_idx {
                     let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
@@ -687,11 +605,7 @@ impl App {
                         );
                     };
                     let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
-                        return failure(
-                            id,
-                            shepr_api::error::ApiErrorCode::PaneNotFound,
-                            "source pane not found",
-                        );
+                        return Err(pane_not_found(Some(&pane_id)));
                     };
                     return encode_unchanged_pane_move(
                         id,
@@ -724,11 +638,7 @@ impl App {
                         );
                     };
                     let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
-                        return failure(
-                            id,
-                            shepr_api::error::ApiErrorCode::PaneNotFound,
-                            "source pane not found",
-                        );
+                        return Err(pane_not_found(Some(&pane_id)));
                     };
                     return encode_unchanged_pane_move(
                         id,
@@ -744,30 +654,18 @@ impl App {
                 let target_pane_id = match target_pane_id {
                     Some(raw) => {
                         let Some((pane_ws_idx, pane_id)) = self.parse_pane_id(&raw) else {
-                            return failure(
-                                id,
-                                shepr_api::error::ApiErrorCode::TargetPaneNotFound,
-                                format!("target pane {raw} not found"),
-                            );
+                            return Err(target_pane_not_found(&raw, None));
                         };
                         let pane_tab_idx = self.tab_index_for_pane(pane_ws_idx, pane_id);
                         if pane_ws_idx != target_ws_idx || pane_tab_idx != Some(target_tab_idx) {
-                            return failure(
-                                id,
-                                shepr_api::error::ApiErrorCode::TargetPaneNotFound,
-                                format!("target pane {raw} is not in tab {tab_id}"),
-                            );
+                            return Err(target_pane_not_found(&raw, Some(&tab_id)));
                         }
                         pane_id
                     }
                     None => target_tab_focused,
                 };
                 let Some(target_tab_id) = self.public_tab_id(target_ws_idx, target_tab_idx) else {
-                    return failure(
-                        id,
-                        shepr_api::error::ApiErrorCode::TabNotFound,
-                        format!("tab {tab_id} not found"),
-                    );
+                    return Err(tab_not_found(&tab_id));
                 };
                 ResolvedPaneMoveDestination::ExistingTab {
                     tab_id: target_tab_id,
@@ -783,18 +681,10 @@ impl App {
             } => {
                 let target_workspace_id = if let Some(workspace_id) = workspace_id {
                     let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                        return failure(
-                            id,
-                            shepr_api::error::ApiErrorCode::WorkspaceNotFound,
-                            format!("workspace {workspace_id} not found"),
-                        );
+                        return Err(workspace_not_found(&workspace_id));
                     };
                     let Some(target_workspace_id) = self.public_workspace_id(ws_idx) else {
-                        return failure(
-                            id,
-                            shepr_api::error::ApiErrorCode::WorkspaceNotFound,
-                            format!("workspace {workspace_id} not found"),
-                        );
+                        return Err(workspace_not_found(&workspace_id));
                     };
                     target_workspace_id
                 } else {
@@ -1145,24 +1035,17 @@ impl App {
         params: &PaneZoomParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
-            return pane_not_found(
-                id,
-                &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
-            );
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, pane_id)
+                    .as_deref()
+                    .or(params.pane_id.as_deref()),
+            ));
         };
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return failure(
-                id,
-                shepr_api::error::ApiErrorCode::PaneNotFound,
-                "pane not found",
-            );
+            return Err(pane_not_found(params.pane_id.as_deref()));
         };
         let command = match params.mode {
             PaneZoomMode::Toggle => PaneZoomCommand::Toggle,
@@ -1170,7 +1053,7 @@ impl App {
             PaneZoomMode::Off => PaneZoomCommand::Off,
         };
         let Some(outcome) = self.state.apply_pane_zoom(ws_idx, pane_id, command) else {
-            return pane_not_found(id, &pane_public_id);
+            return Err(pane_not_found(Some(&pane_public_id)));
         };
         if outcome.changed || outcome.focus_changed {
             self.schedule_session_save();

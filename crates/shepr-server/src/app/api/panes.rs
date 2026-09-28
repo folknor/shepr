@@ -27,7 +27,8 @@ use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 use super::super::api_helpers::{
     MAX_METADATA_TOKEN_KEYS_PER_RESOURCE, detect_state_from_api, encode_api_keys,
     normalize_metadata_source, normalize_metadata_tokens, normalize_metadata_ttl,
-    normalize_reported_agent_label,
+    normalize_reported_agent_label, pane_in_workspace_not_found, pane_not_found,
+    tab_for_pane_not_found, tab_not_found, target_pane_not_found, workspace_not_found,
 };
 #[cfg(test)]
 use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
@@ -42,7 +43,7 @@ impl App {
         let pane_target = match params.target_pane_id.as_deref() {
             Some(pane_id) => match self.parse_pane_id(pane_id) {
                 Some(target) => Some(target),
-                None => return failure(id, ApiErrorCode::PaneNotFound, "pane not found"),
+                None => return Err(pane_not_found(Some(pane_id))),
             },
             None => None,
         };
@@ -53,7 +54,7 @@ impl App {
                     .filter(|index| self.state.workspaces.get(*index).is_some())
                 {
                     Some(index) => Some(index),
-                    None => return failure(id, ApiErrorCode::PaneNotFound, "pane not found"),
+                    None => return Err(workspace_not_found(workspace_id)),
                 },
                 None => None,
             }
@@ -65,10 +66,19 @@ impl App {
             workspace_target,
             crate::app::actions::PaneContextFallback::ActiveWorkspace,
         ) else {
-            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
+            let error = match (
+                params.target_pane_id.as_deref(),
+                params.workspace_id.as_deref(),
+            ) {
+                (Some(pane_id), _) => pane_not_found(Some(pane_id)),
+                (None, Some(workspace_id)) => pane_in_workspace_not_found(workspace_id),
+                (None, None) => pane_not_found(None),
+            };
+            return Err(error);
         };
         let ws_idx = context.workspace_index;
         let target_pane_id = context.pane_id;
+        let target_pane_public_id = self.public_pane_id(ws_idx, target_pane_id);
         let extra_env = super::env::normalize_launch_env(params.env)?;
         let geometry = self.state.pane_geometry();
         let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
@@ -87,7 +97,11 @@ impl App {
         let previous_focus = self.state.current_pane_focus_target();
         let spawn = self.pane_spawn_handles();
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
+            return Err(pane_not_found(
+                target_pane_public_id
+                    .as_deref()
+                    .or(params.target_pane_id.as_deref()),
+            ));
         };
         let direction = match params.direction {
             shepr_api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
@@ -129,7 +143,13 @@ impl App {
         let (target_tab_idx, new_pane) = match split_result {
             Some(Ok(result)) => result,
             Some(Err(err)) => return failure(id, ApiErrorCode::PaneSplitFailed, err.to_string()),
-            None => return failure(id, ApiErrorCode::PaneNotFound, "pane not found"),
+            None => {
+                return Err(pane_not_found(
+                    target_pane_public_id
+                        .as_deref()
+                        .or(params.target_pane_id.as_deref()),
+                ));
+            }
         };
         let shepr_mux::workspace::NewPane {
             pane_id,
@@ -188,10 +208,14 @@ impl App {
             None => self.resolve_optional_pane(None),
         };
         let Some((ws_idx, pane_id)) = target else {
-            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
+            return Err(pane_not_found(params.caller_pane_id.as_deref()));
         };
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
+            return Err(pane_not_found(
+                self.public_pane_id(ws_idx, pane_id)
+                    .as_deref()
+                    .or(params.caller_pane_id.as_deref()),
+            ));
         };
 
         success(id, ResponseResult::PaneCurrent { pane })
@@ -199,10 +223,10 @@ impl App {
 
     pub(super) fn handle_pane_get(&mut self, id: String, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return pane_not_found(id, &target.pane_id);
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return pane_not_found(id, &target.pane_id);
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
 
         success(id, ResponseResult::PaneInfo { pane })
@@ -210,17 +234,17 @@ impl App {
 
     pub(super) fn handle_pane_focus(&mut self, id: String, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return pane_not_found(id, &target.pane_id);
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         let Some(_tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
-            return pane_not_found(id, &target.pane_id);
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
 
         self.state.focus_pane_in_workspace(ws_idx, pane_id);
         self.state.mode = crate::app::Mode::Terminal;
 
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return pane_not_found(id, &target.pane_id);
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         success(id, ResponseResult::PaneInfo { pane })
     }
@@ -231,7 +255,7 @@ impl App {
         params: &PaneInputSetParams,
     ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(pane) = self
             .state
@@ -239,7 +263,7 @@ impl App {
             .get_mut(ws_idx)
             .and_then(|workspace| workspace.pane_state_mut(pane_id))
         else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         pane.right_click_passthrough = matches!(
             params.right_click,
@@ -250,7 +274,7 @@ impl App {
 
     pub(super) fn handle_pane_rename(&mut self, id: String, params: PaneRenameParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(terminal_id) = self
             .state
@@ -259,10 +283,10 @@ impl App {
             .and_then(|ws| ws.terminal_id(pane_id))
             .cloned()
         else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         match params.label.map(|label| label.trim().to_string()) {
             Some(label) if !label.is_empty() => terminal.set_manual_label(label),
@@ -270,7 +294,7 @@ impl App {
         }
         self.state.mark_session_dirty();
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         // The label is part of `PaneInfo`, so subscribers see the rename the
         // same way they see agent renames and metadata changes.
@@ -283,13 +307,13 @@ impl App {
 
     pub(super) fn handle_pane_read(&mut self, id: String, params: &PaneReadParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some((pane, workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(tab_idx) = self
             .state
@@ -297,7 +321,7 @@ impl App {
             .get(ws_idx)
             .and_then(|ws| ws.find_tab_index_for_pane(pane_id))
         else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let format =
             crate::app::api_helpers::effective_read_format(params.format, params.strip_ansi);
@@ -312,11 +336,7 @@ impl App {
             params.lines,
         )?;
         let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
-            return failure(
-                id,
-                ApiErrorCode::TabNotFound,
-                "pane tab is no longer available",
-            );
+            return Err(tab_for_pane_not_found(&params.pane_id));
         };
 
         success(
@@ -342,10 +362,10 @@ impl App {
         params: PaneSendTextParams,
     ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
             return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
@@ -360,10 +380,10 @@ impl App {
         params: &PaneSendInputParams,
     ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let bytes =
             super::super::api_helpers::encode_api_input(runtime, &params.text, &params.keys)?;
@@ -384,16 +404,16 @@ impl App {
     /// Close a pane; errors remain typed until the API response is sent.
     pub(super) fn close_pane(&mut self, target: &PaneTarget) -> Result<(), ApiError> {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return Err(ApiError::pane_not_found(target.pane_id.clone()));
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return Err(ApiError::pane_not_found(target.pane_id.clone()));
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return Err(ApiError::pane_not_found(target.pane_id.clone()));
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         let Some(plan) = self.state.prepare_pane_removal(ws_idx, pane_id) else {
-            return Err(ApiError::pane_not_found(target.pane_id.clone()));
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         let layout_update_target = (plan.scope == shepr_mux::workspace::PaneRemovalScope::Pane)
             .then_some((ws_idx, plan.tab_index));
@@ -407,7 +427,7 @@ impl App {
             }
         };
         let PaneRemovalCommit::Removed(outcome) = self.state.commit_pane_removal(&plan) else {
-            return Err(ApiError::pane_not_found(target.pane_id.clone()));
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         self.shutdown_detached_terminal_runtimes();
         self.schedule_session_save();
@@ -436,10 +456,10 @@ impl App {
         params: &PaneSendKeysParams,
     ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let encoded_keys = encode_api_keys(runtime, &params.keys)?;
         // One write for the whole sequence: per-key writes let backpressure
@@ -478,10 +498,6 @@ fn terminal_word_motion(motion: PaneCopyMotion) -> Option<shepr_mux::pane::Termi
         | PaneCopyMotion::PreviousParagraph
         | PaneCopyMotion::NextParagraph => None,
     }
-}
-
-fn pane_not_found(_id: String, pane_id: &str) -> ApiResult {
-    Err(ApiError::pane_not_found(pane_id))
 }
 
 impl App {

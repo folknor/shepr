@@ -629,8 +629,21 @@ impl HeadlessServer {
                         let Some(shell) = client.shell_state_mut() else {
                             continue;
                         };
-                        shell.projection_revision = shell.projection_revision.next();
-                        candidate.revision = shell.projection_revision;
+                        // The counter is per connection and steps once per
+                        // changed snapshot, so exhaustion is unreachable in
+                        // practice. Should it happen, drop the client: it
+                        // reconnects with a fresh counter instead of receiving
+                        // a snapshot that repeats a revision.
+                        let Some(revision) = shell.projection_revision.checked_next() else {
+                            warn!(
+                                ?client_id,
+                                "projection revisions exhausted; dropping client"
+                            );
+                            broken_clients.push(client_id);
+                            continue;
+                        };
+                        shell.projection_revision = revision;
+                        candidate.revision = revision;
                         let snapshot_message =
                             shepr_protocol::endpoint::snapshot_message(&candidate);
                         let snapshot_framed = match Self::frame_server_message(&snapshot_message) {

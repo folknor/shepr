@@ -1181,6 +1181,8 @@ pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<Unin
 
     let mut outcome = UninstallOutcome::default();
     outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    // Install canonicalizes Cursor's hooks file; uninstall only removes
+    // shepr-owned entries, so its artifact role describes that narrower action.
     outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
     Ok(outcome)
 }

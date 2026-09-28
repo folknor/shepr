@@ -919,7 +919,7 @@ mod tests {
         })
         .expect("test precondition");
         let disappeared: ErrorResponse =
-            serde_json::from_str(&disappeared).expect("test precondition");
+            serde_json::from_str(&disappeared.body).expect("test precondition");
         assert_eq!(disappeared.id, "wait");
         assert_eq!(disappeared.error.code, "agent_not_running");
 
@@ -932,7 +932,7 @@ mod tests {
         })
         .expect("test precondition");
         let unavailable: ErrorResponse =
-            serde_json::from_str(&unavailable).expect("test precondition");
+            serde_json::from_str(&unavailable.body).expect("test precondition");
         assert_eq!(unavailable.id, "wait");
         assert_eq!(unavailable.error.code, "server_unavailable");
     }
@@ -940,7 +940,8 @@ mod tests {
     #[test]
     fn wait_matched_response_reports_undecodable_and_unsupported_events() {
         let garbage = wait_matched_response("wait", serde_json::json!({"nope": true}));
-        let garbage: ErrorResponse = serde_json::from_str(&garbage).expect("test precondition");
+        let garbage: ErrorResponse =
+            serde_json::from_str(&garbage.body).expect("test precondition");
         assert_eq!(garbage.id, "wait");
         assert_eq!(garbage.error.code, "internal_error");
 
@@ -959,7 +960,7 @@ mod tests {
         .expect("test precondition");
         let unsupported = wait_matched_response("wait", scroll);
         let unsupported: ErrorResponse =
-            serde_json::from_str(&unsupported).expect("test precondition");
+            serde_json::from_str(&unsupported.body).expect("test precondition");
         assert_eq!(unsupported.error.code, "unsupported_event_wait_match");
 
         let status = serde_json::to_value(SubscriptionEventEnvelope {
@@ -977,7 +978,7 @@ mod tests {
         })
         .expect("test precondition");
         let matched: serde_json::Value =
-            serde_json::from_str(&wait_matched_response("wait", status))
+            serde_json::from_str(&wait_matched_response("wait", status).body)
                 .expect("test precondition");
         assert_eq!(matched["result"]["type"], "wait_matched");
     }

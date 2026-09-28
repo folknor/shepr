@@ -1115,7 +1115,7 @@ impl ClientShellState {
         }) {
             return;
         }
-        if surface.projection_revision == snapshot.revision.next() {
+        if snapshot.revision.checked_next() == Some(surface.projection_revision) {
             // The next expected surface waits separately for its exact snapshot. Keeping the
             // current pair avoids treating this speculative successor as presentation evidence.
             // The visible pair and its hit map are untouched, so the hits stay live.

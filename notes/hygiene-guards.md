@@ -351,7 +351,11 @@ Enforcement named: walk the spec's full subcommand tree
 assert every leaf has an explicit machine-allowed classification, turning an
 enumeration into a rule. The same walk would make `matches::required`'s
 `String::default()` fallback unreachable in fact as well as in intent
-(HYGG-074).
+(HYGG-074). Machine eligibility is now an exhaustive match per command group,
+so a new typed variant must be classified; the leaf walk itself is still open,
+and with HYGG-074 and the HYGP-045 `Invalid` variants it needs a fixer holding
+all of `src/cli/` including `integration.rs` (47 `matches::required` call
+sites, two of them there).
 
 ## HYGG-034 - `EventHub::events_after` cannot report what its production sibling reports
 
@@ -380,16 +384,6 @@ where `index` is `% len`, and the test asserts the result is in
 `NESTED_SHEPR_MESSAGES`. The neighbouring
 `nested_message_strings_no_longer_repeat_shepr_prefix` can fail and is a real,
 if tiny, guard.
-
-## HYGG-037 - `machine_session_attach_is_rejected_as_a_tui_launch` names a situation it does not exercise
-
-`src/cli/target.rs`. The test parses `--machine mac session attach work`, asserts
-it became a `Tui` launch, then calls `run_on_machine("mac", None, ..)` -
-constructing the `None` by hand rather than deriving it from the invocation it
-just parsed. The assertion that a TUI launch yields no command for
-`run_on_machine` is therefore made by the test, not by the code. It is the same
-setup as `machine_prefix_rejects_missing_target_and_conflicting_global_options`,
-duplicated.
 
 ## HYGG-039 - `remote_executable_accepts_only_cacheable_absolute_paths` has no accepting case
 
@@ -476,14 +470,6 @@ asserting on it asserts `x == x` - both sides come from the same place. The
 function exists so a rule *could* live there; today it holds no rule. A test
 cannot enforce this; only deletion, or giving it the rule it was created to
 hold.
-
-## HYGG-051 - `help_lists_every_default_pane_binding` names five entries out of roughly seventy
-
-`shepr-client/src/keybind_help.rs`. The name claims "every default pane
-binding"; the body checks `copy mode` plus the four `swap pane` directions. It
-reads as coverage of the whole help screen and is coverage of five rows. The
-hunter's position is that the fix is not to widen this test but to make the help
-list structural - see HYGV-063.
 
 ## HYGG-053 - `IsolatedEnv` guarantees isolation from a list it does not own
 

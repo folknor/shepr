@@ -9,16 +9,17 @@ use shepr_api::schema::{
     TabRenameParams, TabTarget,
 };
 
+use super::super::api_helpers::{active_workspace_not_found, tab_not_found, workspace_not_found};
 use super::responses::{failure, success};
 
 impl App {
     pub(super) fn handle_tab_list(&mut self, id: String, params: TabListParams) -> ApiResult {
         let tabs = if let Some(workspace_id) = params.workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                return workspace_not_found(id, &workspace_id);
+                return Err(workspace_not_found(&workspace_id));
             };
             let Some(_) = self.state.workspaces.get(ws_idx) else {
-                return workspace_not_found(id, &workspace_id);
+                return Err(workspace_not_found(&workspace_id));
             };
             self.tab_list_info(ws_idx)
         } else {
@@ -38,10 +39,10 @@ impl App {
 
     pub(super) fn handle_tab_get(&mut self, id: String, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(&target.tab_id));
         };
         let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(&target.tab_id));
         };
 
         success(id, ResponseResult::TabInfo { tab })
@@ -57,13 +58,13 @@ impl App {
         } = params;
         let ws_idx = if let Some(workspace_id) = workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                return workspace_not_found(id, &workspace_id);
+                return Err(workspace_not_found(&workspace_id));
             };
             ws_idx
         } else if let Some(active) = self.state.active_index() {
             active
         } else {
-            return failure(id, ApiErrorCode::WorkspaceNotFound, "no active workspace");
+            return Err(active_workspace_not_found());
         };
         let cwd = cwd.map_or_else(
             || self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx)),
@@ -136,11 +137,11 @@ impl App {
 
     pub(super) fn handle_tab_focus(&mut self, id: String, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(&target.tab_id));
         };
         self.state.switch_workspace_tab(ws_idx, tab_idx);
         let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(&target.tab_id));
         };
 
         success(id, ResponseResult::TabInfo { tab })
@@ -148,16 +149,16 @@ impl App {
 
     pub(super) fn handle_tab_rename(&mut self, id: String, params: TabRenameParams) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         let Some(public_workspace_id) = self.public_workspace_id(ws_idx) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         let Some(workspace_id) = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         let Some(tab) = self
             .state
@@ -165,7 +166,7 @@ impl App {
             .get_mut(ws_idx)
             .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
         else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         tab.set_custom_name(params.label.clone());
         shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
@@ -178,7 +179,7 @@ impl App {
             },
         });
         let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
 
         success(id, ResponseResult::TabInfo { tab })
@@ -186,10 +187,10 @@ impl App {
 
     pub(super) fn handle_tab_move(&mut self, id: String, params: &TabMoveParams) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         if params.insert_index > ws.tabs().len() {
             return failure(
@@ -200,10 +201,10 @@ impl App {
         }
 
         let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return tab_not_found(id, &params.tab_id);
+            return Err(tab_not_found(&params.tab_id));
         };
         let insert_index = params.insert_index;
         let moved = self
@@ -230,13 +231,13 @@ impl App {
 
     pub(super) fn handle_tab_close(&mut self, id: String, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(&target.tab_id));
         };
         if self.public_tab_id(ws_idx, tab_idx).is_none() {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(&target.tab_id));
         }
         let Some(plan) = self.state.prepare_tab_removal(ws_idx, tab_idx) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(&target.tab_id));
         };
         let close_events = match plan.scope {
             crate::app::actions::TabRemovalScope::Tab => self.tab_close_events(ws_idx, tab_idx),
@@ -266,22 +267,6 @@ impl App {
                 .collect()
         })
     }
-}
-
-fn workspace_not_found(id: String, workspace_id: &str) -> ApiResult {
-    failure(
-        id,
-        ApiErrorCode::WorkspaceNotFound,
-        format!("workspace {workspace_id} not found"),
-    )
-}
-
-fn tab_not_found(id: String, tab_id: &str) -> ApiResult {
-    failure(
-        id,
-        ApiErrorCode::TabNotFound,
-        format!("tab {tab_id} not found"),
-    )
 }
 
 #[cfg(test)]

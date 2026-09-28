@@ -106,6 +106,51 @@ fn git_config_environment_files_follow_git_scope_precedence() {
     assert_eq!(git_repo_root(&bare.join("refs")), None);
 }
 
+#[test]
+fn relative_git_config_overrides_resolve_from_the_repository_root() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let bare = bare_layout("relative-git-config-override", "[core]\n");
+    std::fs::write(
+        bare.join("relative-global.gitconfig"),
+        "[core]\n\tbare = true\n",
+    )
+    .expect("test precondition");
+    env.set(
+        shepr_core::env::EnvVar::GitConfigGlobal,
+        "relative-global.gitconfig",
+    );
+
+    assert_eq!(git_repo_root(&bare.join("refs")), Some(bare));
+}
+
+#[test]
+fn git_command_scope_config_overrides_files_in_pair_order() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let bare = bare_layout("git-config-command-scope", "[core]\n\tbare = false\n");
+    env.set(shepr_core::env::EnvVar::GitConfigCount, "2");
+    env.set("GIT_CONFIG_KEY_0", "CORE.BARE");
+    env.set("GIT_CONFIG_VALUE_0", "true");
+    env.set("GIT_CONFIG_KEY_1", "core.bare");
+    env.set("GIT_CONFIG_VALUE_1", "false");
+    assert_eq!(git_repo_root(&bare), None, "the last pair wins");
+
+    env.set(shepr_core::env::EnvVar::GitConfigCount, "1");
+    assert_eq!(git_repo_root(&bare), Some(bare));
+}
+
+#[test]
+fn git_command_scope_config_requires_every_indexed_pair() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    env.set(shepr_core::env::EnvVar::GitConfigCount, "1");
+    env.set("GIT_CONFIG_KEY_0", "core.bare");
+
+    let error = match shepr_core::env::read_git_config_parameters() {
+        Ok(_) => panic!("missing config value must refuse"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("GIT_CONFIG_VALUE_0"), "{error}");
+}
+
 /// `core.bare` takes Git's boolean grammar, each spelling checked against
 /// `git rev-parse --is-bare-repository`. Git refuses to run on a malformed
 /// value such as `maybe`; discovery reads it as not bare.

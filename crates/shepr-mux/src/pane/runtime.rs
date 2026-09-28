@@ -196,6 +196,7 @@ pub struct PaneRuntime {
     io: Box<dyn ChildIo>,
     current_size: Cell<shepr_core::geometry::PaneGeometry>,
     child_liveness: Arc<ChildLiveness>,
+    teardown_tracker: Arc<super::teardown::PaneTeardownTracker>,
     reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     content_seq: Arc<AtomicU64>,
@@ -204,6 +205,7 @@ pub struct PaneRuntime {
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
+    process_probe_result_for_test: Option<(Option<String>, Option<Agent>)>,
     // Task handles for deterministic shutdown
     detect_handle: Option<tokio::task::AbortHandle>,
 }
@@ -648,6 +650,7 @@ impl PaneRuntime {
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
+        pane_teardowns: &Arc<PaneTeardownTracker>,
     ) -> std::io::Result<Self> {
         Self::spawn_with_initial_history(
             pane_id,
@@ -663,6 +666,7 @@ impl PaneRuntime {
             events,
             render_notify,
             render_dirty,
+            pane_teardowns,
         )
     }
 
@@ -684,6 +688,7 @@ impl PaneRuntime {
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
+        pane_teardowns: &Arc<PaneTeardownTracker>,
     ) -> std::io::Result<Self> {
         let mut cmd = pane_shell_command_builder(shell_config);
         cmd.cwd(cwd);
@@ -699,6 +704,7 @@ impl PaneRuntime {
             events,
             render_notify,
             render_dirty,
+            pane_teardowns,
             &cmd,
             "failed to spawn shell",
             initial_history_ansi,
@@ -723,6 +729,7 @@ impl PaneRuntime {
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
+        pane_teardowns: &Arc<PaneTeardownTracker>,
     ) -> std::io::Result<Self> {
         let Some((program, args)) = argv.split_first() else {
             return Err(std::io::Error::new(
@@ -745,6 +752,7 @@ impl PaneRuntime {
             events,
             render_notify,
             render_dirty,
+            pane_teardowns,
             &cmd,
             "failed to spawn argv command pane",
             None,
@@ -766,11 +774,13 @@ impl PaneRuntime {
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
+        pane_teardowns: &Arc<PaneTeardownTracker>,
         cmd: &PtyCommand,
         spawn_error_message: &'static str,
         initial_history_ansi: Option<&str>,
         launch_purpose: LaunchPurpose,
     ) -> std::io::Result<Self> {
+        let teardown_tracker = Arc::clone(pane_teardowns);
         let size = clamp_pane_size(rows, cols);
         let rows = size.rows.get();
         let cols = size.cols.get();
@@ -875,31 +885,27 @@ impl PaneRuntime {
                     core_broken: false,
                 }
             });
-            // A normal reader exit needs no report: the child watcher below
-            // sends PaneDied once the child is reaped. A panic in the terminal
-            // core is different, whether it hit this reader or another thread
-            // holding the core lock (the actor's `core_broken` check, or the
-            // next read, then finds the lock poisoned). The PTY actor closes the
-            // master, but a child that ignores SIGHUP keeps running and is
-            // never reaped, and the poisoned core leaves the pane frozen.
-            // Report the pane dead so the app removes it and tears down its
-            // session. The child watcher's own PaneDied that may follow is
-            // dropped by the app for a pane that no longer exists.
+            // Normal reader closure is followed by the child watcher reporting
+            // PaneDied. A terminal-core panic or a hard reader IO failure can
+            // leave the child alive with no reader, so report those exits and
+            // let the app remove the pane and tear down its session. The IO
+            // failure checkpoints the still-usable terminal; a panic does not.
+            // A later child-watcher report is dropped after pane removal.
             let on_reader_exit: Box<dyn FnOnce(ReaderExit) + Send> = {
                 Box::new(move |exit: ReaderExit| {
-                    if exit != ReaderExit::Panicked {
-                        return;
-                    }
-                    // Not Interrupted: that checkpoints the session first,
-                    // which would read history out of the broken core.
+                    let exit_reason = match exit {
+                        ReaderExit::Closed => return,
+                        ReaderExit::Panicked => shepr_platform::ChildExitReason::ReaderPanicked,
+                        ReaderExit::IoFailed => shepr_platform::ChildExitReason::ReaderIoFailed,
+                    };
                     if let Err(err) = reader_exit_events.blocking_send(AppEvent::PaneDied {
                         pane_id,
-                        exit_reason: shepr_platform::ChildExitReason::ReaderPanicked,
+                        exit_reason,
                     }) {
                         error!(
                             pane = pane_id.raw(),
                             err = %err,
-                            "failed to report a pane whose PTY reader panicked"
+                            "failed to report a pane whose PTY reader failed"
                         );
                     }
                 })
@@ -920,7 +926,11 @@ impl PaneRuntime {
                     // Actor startup consumes and closes the PTY master on
                     // failure, but the child and any session members still
                     // need the pane teardown sequence before we return.
-                    shutdown_pane_processes(pane_id, Arc::clone(&startup_child_liveness));
+                    shutdown_pane_processes(
+                        pane_id,
+                        Arc::clone(&startup_child_liveness),
+                        &teardown_tracker,
+                    );
                     if let Err(kill_err) = child.kill() {
                         warn!(
                             pane = pane_id.raw(),
@@ -1280,6 +1290,7 @@ impl PaneRuntime {
             io,
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
             child_liveness,
+            teardown_tracker,
             reported_cwd,
             persistence_cwd: Mutex::new(None),
             content_seq,
@@ -1288,6 +1299,7 @@ impl PaneRuntime {
             full_lifecycle_authority_active,
             detect_reset_notify,
             pending_release,
+            process_probe_result_for_test: None,
             detect_handle,
         })
     }
@@ -1313,6 +1325,8 @@ impl PaneRuntime {
             io,
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            // No child, so no teardown is ever started through this tracker.
+            teardown_tracker: Arc::default(),
             reported_cwd: Arc::new(Mutex::new(None)),
             persistence_cwd: Mutex::new(None),
             content_seq: Arc::new(AtomicU64::new(0)),
@@ -1321,6 +1335,7 @@ impl PaneRuntime {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: detection_reset,
             pending_release: Arc::new(Mutex::new(None)),
+            process_probe_result_for_test: None,
             detect_handle: None,
         }
     }
@@ -1799,6 +1814,37 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
+    /// Return the pane shell name observed from the live child process.
+    /// Childless test runtimes can use `set_process_probe_result_for_test` to
+    /// supply the observation without starting a shell.
+    pub fn pane_shell_name(&self) -> Option<String> {
+        if let Some((shell_name, _)) = &self.process_probe_result_for_test {
+            return shell_name.clone();
+        }
+        shepr_agent::detect::available_pane_shell(self.child_pid()?)
+    }
+
+    /// Return the agent identified in the pane's foreground process tree.
+    /// Childless test runtimes can use `set_process_probe_result_for_test` to
+    /// supply the observation without starting an agent process.
+    pub fn foreground_agent(&self) -> Option<Agent> {
+        if let Some((_, agent)) = &self.process_probe_result_for_test {
+            return *agent;
+        }
+        let job = shepr_agent::detect::foreground_job(self.child_pid()?)?;
+        shepr_agent::detect::identify_agent_in_job(&job).map(|(agent, _)| agent)
+    }
+
+    /// Set the process observations used by childless runtimes in tests.
+    /// Spawned runtimes leave this seam unset and inspect their real child.
+    pub fn set_process_probe_result_for_test(
+        &mut self,
+        shell_name: Option<String>,
+        foreground_agent: Option<Agent>,
+    ) {
+        self.process_probe_result_for_test = Some((shell_name, foreground_agent));
+    }
+
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
         let leader_cwd = self
             .child_pid()
@@ -1837,6 +1883,7 @@ impl Drop for PaneRuntime {
             super::teardown::shutdown_pane_processes(
                 self.pane_id,
                 Arc::clone(&self.child_liveness),
+                &self.teardown_tracker,
             );
         }
     }
@@ -2378,16 +2425,15 @@ mod tests {
         let members = shepr_platform::session_member_handles(leader_pid, || true);
         assert_eq!(members.len(), 1, "the background job survives its leader");
 
+        let tracker = Arc::new(PaneTeardownTracker::default());
         let started = std::time::Instant::now();
-        shutdown_pane_processes(PaneId::from_raw(0), child_liveness);
+        shutdown_pane_processes(PaneId::from_raw(0), child_liveness, &tracker);
         assert!(
             started.elapsed() < std::time::Duration::from_millis(200),
             "teardown must not block its caller through the grace periods"
         );
 
-        assert!(wait_for_pane_session_teardowns(
-            std::time::Duration::from_secs(10)
-        ));
+        assert!(tracker.wait(std::time::Duration::from_secs(10)));
         let handles: Vec<&shepr_platform::ProcessHandle> = members.iter().collect();
         assert!(
             shepr_platform::wait_for_process_exits(&handles, std::time::Duration::from_secs(1)),
@@ -2530,7 +2576,13 @@ mod tests {
 
     #[test]
     fn pane_teardown_without_a_session_does_nothing() {
-        shutdown_pane_processes(PaneId::from_raw(0), Arc::new(ChildLiveness::new(0, None)));
+        let tracker = Arc::new(PaneTeardownTracker::default());
+        shutdown_pane_processes(
+            PaneId::from_raw(0),
+            Arc::new(ChildLiveness::new(0, None)),
+            &tracker,
+        );
+        assert!(tracker.wait(std::time::Duration::ZERO));
     }
 
     /// The `TERM` and `COLORTERM` a pane child sees, one per line.
@@ -2694,6 +2746,7 @@ mod tests {
             io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            teardown_tracker: Arc::default(),
             reported_cwd: Arc::new(Mutex::new(None)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
@@ -2701,6 +2754,7 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
+            process_probe_result_for_test: None,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
@@ -2724,6 +2778,7 @@ mod tests {
             io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            teardown_tracker: Arc::default(),
             reported_cwd: Arc::new(Mutex::new(None)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
@@ -2731,6 +2786,7 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
+            process_probe_result_for_test: None,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 

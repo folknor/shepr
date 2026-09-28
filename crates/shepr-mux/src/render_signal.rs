@@ -35,20 +35,14 @@ impl RenderSignal {
     }
 
     pub fn request_generic(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
         state.request.generic = true;
         self.pending.store(true, Ordering::Release);
     }
 
     /// Returns true when the signal becomes pending or visible PTY work joins it.
     pub(crate) fn request_pty(&self, pane_id: PaneId) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
         let source_added = state.request.pty_sources.insert(pane_id);
         let wake_for_source = source_added && state.immediate_pty_sources.contains(&pane_id);
         let became_pending = !self.pending.swap(true, Ordering::AcqRel);
@@ -59,17 +53,11 @@ impl RenderSignal {
         // The headless loop refreshes this classification before checking
         // pending presentation work in that same iteration, so no extra wake
         // is needed when queued hidden work becomes immediately actionable.
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .immediate_pty_sources = sources;
+        shepr_vt::lock_auxiliary(&self.state).immediate_pty_sources = sources;
     }
 
     pub fn has_immediate_work(&self) -> bool {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = shepr_vt::lock_auxiliary(&self.state);
         state.request.generic
             || !state.request.terminal_title_sources.is_empty()
             || state
@@ -84,10 +72,7 @@ impl RenderSignal {
     /// title source makes hidden-only pending PTY work immediately actionable;
     /// later title sources join that already queued work.
     pub fn request_terminal_title(&self, pane_id: PaneId) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
         let first_title_source = state.request.terminal_title_sources.is_empty();
         let source_added = state.request.terminal_title_sources.insert(pane_id);
         let became_pending = !self.pending.swap(true, Ordering::AcqRel);
@@ -95,19 +80,14 @@ impl RenderSignal {
     }
 
     pub fn pending_terminal_title_sources(&self) -> HashSet<PaneId> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        shepr_vt::lock_auxiliary(&self.state)
             .request
             .terminal_title_sources
             .clone()
     }
 
     pub fn take(&self) -> RenderRequest {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
         self.pending.store(false, Ordering::Release);
         std::mem::take(&mut state.request)
     }

@@ -255,8 +255,9 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     let revision_pair = fingerprint.head_oid().zip(fingerprint.upstream_oid());
     let (ahead_behind, retry_after) = match revision_pair {
         Some((head_oid, upstream_oid)) => {
+            let repo_root = &fingerprint.repository_context.0.repo_root;
             let ahead_behind =
-                git_ahead_behind_between(cwd, head_oid, upstream_oid, &mut read_errors);
+                git_ahead_behind_between(repo_root, head_oid, upstream_oid, &mut read_errors);
             let retry_after = ahead_behind
                 .is_none()
                 .then_some(now + GIT_STATUS_RETRY_DELAY);
@@ -415,14 +416,14 @@ fn read_upstream(
 }
 
 fn git_ahead_behind_between(
-    cwd: &Path,
+    repo_root: &Path,
     head_oid: &str,
     upstream_oid: &str,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<AheadBehind> {
     let range = format!("{head_oid}...{upstream_oid}");
     let stdout = git_trimmed_stdout(
-        cwd,
+        repo_root,
         &["rev-list", "--left-right", "--count", &range],
         read_errors,
     )?;
@@ -430,7 +431,7 @@ fn git_ahead_behind_between(
         Some(ahead_behind) => Some(ahead_behind),
         None => {
             read_errors.push(GitReadError::InvalidOutput {
-                cwd: cwd.to_path_buf(),
+                cwd: repo_root.to_path_buf(),
                 arguments: "rev-list --left-right --count".into(),
                 output: stdout,
             });
@@ -587,9 +588,10 @@ mod tests {
             &["init", "--ref-format=reftable", "-b", "main"],
         )
         .expect("test precondition");
-        if !output.status.success() {
-            return;
-        }
+        assert!(
+            output.status.success(),
+            "this test needs a host Git with reftable support (2.45 or later): {output:?}"
+        );
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
 
@@ -896,9 +898,10 @@ mod tests {
             &["init", "--ref-format=reftable", "-b", "main"],
         )
         .expect("test precondition");
-        if !output.status.success() {
-            return;
-        }
+        assert!(
+            output.status.success(),
+            "this test needs a host Git with reftable support (2.45 or later): {output:?}"
+        );
         git_written_fixture(&root, &["config", "user.email", "shepr@example.invalid"]);
         git_written_fixture(&root, &["config", "user.name", "Shepr Test"]);
         git_written_fixture(&root, &["commit", "--allow-empty", "-m", "initial"]);

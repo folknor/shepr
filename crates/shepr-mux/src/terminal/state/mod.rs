@@ -225,7 +225,7 @@ pub struct TerminalState {
     metadata_token_sequence_sources: std::collections::HashSet<String>,
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
-    pub revision: u64,
+    revision: u64,
     pub launch_argv: Option<Vec<String>>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,

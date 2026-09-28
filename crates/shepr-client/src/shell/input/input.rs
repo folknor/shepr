@@ -23,10 +23,10 @@ static CLIPBOARD_READ_IN_FLIGHT: std::sync::atomic::AtomicBool =
 ///
 /// Key routing runs on the client's event loop, so a clipboard owner that never answers
 /// (e.g. `xclip -out` against an unresponsive X selection owner) would freeze rendering and
-/// input for every pane. The platform reader has no timeout of its own and cannot be
-/// cancelled, so it runs on its own thread and the paste is abandoned after
-/// `MODAL_PASTE_CLIPBOARD_TIMEOUT`. An abandoned read keeps its thread (and helper process)
-/// until the helper exits; later pastes are skipped immediately until then.
+/// input for every pane. The native reader has no timeout and cannot be cancelled, so it runs
+/// on its own thread. This wrapper waits only until `MODAL_PASTE_CLIPBOARD_TIMEOUT`; an
+/// abandoned read keeps its thread (and helper process) until the helper exits, and later
+/// pastes are skipped immediately until then.
 fn read_clipboard_text_bounded() -> Option<String> {
     read_clipboard_text_bounded_with(
         &CLIPBOARD_READ_IN_FLIGHT,
@@ -71,6 +71,95 @@ fn read_clipboard_text_bounded_with(
             None
         }
     }
+}
+
+fn navigate_alias_matches_left(key: &shepr_termio::input::TerminalKey) -> bool {
+    shepr_config::terminal_key_matches_combo(key, (KeyCode::Left, KeyModifiers::empty()))
+}
+
+fn navigate_alias_matches_right(key: &shepr_termio::input::TerminalKey) -> bool {
+    shepr_config::terminal_key_matches_combo(key, (KeyCode::Right, KeyModifiers::empty()))
+}
+
+macro_rules! define_navigate_actions {
+    (
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+    ) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum NavigateAction {
+            $($navigate_variant,)*
+            $($navigate_indexed_variant(usize),)*
+        }
+    };
+}
+
+shepr_config::keybinding_table!(define_navigate_actions);
+
+fn navigate_indexed_binding_index(
+    bindings: &[shepr_config::IndexedKeybind],
+    key: &shepr_termio::input::TerminalKey,
+) -> Option<usize> {
+    let actual_modifiers = shepr_config::normalize_key_combo((key.code, key.modifiers)).1;
+    for exact_modifiers in [true, false] {
+        for binding in bindings {
+            let expected_modifiers = shepr_config::normalize_key_combo(binding.trigger.combo()).1;
+            if binding.trigger.is_direct()
+                && (actual_modifiers == expected_modifiers) == exact_modifiers
+                && let Some(index) = binding.matched_index(key)
+            {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_navigate_binding(
+    keybinds: &shepr_config::Keybinds,
+    key: &shepr_termio::input::TerminalKey,
+) -> Option<NavigateAction> {
+    macro_rules! alias_matches {
+        (None, $key:expr) => {
+            false
+        };
+        (Left, $key:expr) => {
+            navigate_alias_matches_left($key)
+        };
+        (Right, $key:expr) => {
+            navigate_alias_matches_right($key)
+        };
+    }
+
+    macro_rules! resolve_navigate {
+        (
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        ) => {{
+            $(
+                if keybinds.navigate.$navigate_field.matches_direct_key(key)
+                    || alias_matches!($navigate_alias, key)
+                {
+                    return Some(NavigateAction::$navigate_variant);
+                }
+            )*
+            $(
+                if let Some(index) = navigate_indexed_binding_index(
+                    &keybinds.navigate.$navigate_indexed_field,
+                    key,
+                ) {
+                    return Some(NavigateAction::$navigate_indexed_variant(index));
+                }
+            )*
+            None
+        }};
+    }
+
+    shepr_config::keybinding_table!(resolve_navigate)
 }
 
 pub(super) fn is_modal_paste_shortcut(key: &shepr_termio::input::TerminalKey) -> bool {
@@ -599,6 +688,19 @@ impl ClientShellState {
         }
     }
 
+    /// How the user confirms the selected workspace, for notices: the
+    /// configured `navigate_open_workspace` key, or a plain instruction when
+    /// it is unbound.
+    pub(in crate::shell) fn open_workspace_hint(&self) -> String {
+        self.config
+            .keybinds
+            .keybinds
+            .navigate
+            .open_workspace
+            .label()
+            .map_or_else(|| "open it".to_owned(), |key| format!("press {key}"))
+    }
+
     fn route_navigate_key(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
@@ -607,139 +709,104 @@ impl ClientShellState {
         use shepr_termio::input::{KeybindAction, KeybindDispatch, KeybindMatch};
 
         self.pending_workspace_highlight = None;
-        if key.code == KeyCode::Esc
-            || shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
-        {
+        if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
             self.mode = self.copy_or_terminal_mode();
             self.navigate_workspace_id = None;
             outcome.repaint = true;
             return;
         }
 
-        if self
-            .config
-            .keybinds
-            .keybinds
-            .navigate
-            .workspace_up
-            .matches_direct_key(key)
-        {
-            self.move_navigate_workspace(-1);
-            outcome.repaint = true;
-            return;
-        }
-        if self
-            .config
-            .keybinds
-            .keybinds
-            .navigate
-            .workspace_down
-            .matches_direct_key(key)
-        {
-            self.move_navigate_workspace(1);
-            outcome.repaint = true;
-            return;
-        }
-
-        let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
-        if code == KeyCode::Enter && modifiers.is_empty() {
-            self.accept_navigate_workspace(outcome);
-            return;
+        let navigate_binding = resolve_navigate_binding(&self.config.keybinds.keybinds, key);
+        match navigate_binding.as_ref() {
+            Some(NavigateAction::Back) => {
+                self.mode = self.copy_or_terminal_mode();
+                self.navigate_workspace_id = None;
+                outcome.repaint = true;
+                return;
+            }
+            Some(NavigateAction::WorkspaceUp) => {
+                self.move_navigate_workspace(-1);
+                outcome.repaint = true;
+                return;
+            }
+            Some(NavigateAction::WorkspaceDown) => {
+                self.move_navigate_workspace(1);
+                outcome.repaint = true;
+                return;
+            }
+            Some(NavigateAction::OpenWorkspace) => {
+                self.accept_navigate_workspace(outcome);
+                return;
+            }
+            _ => {}
         }
         if self.workspace_preview_action_blocked() {
+            let open_workspace = self.open_workspace_hint();
             self.push_endpoint_notice(
                 ClientEndpointNoticeKind::Rejected,
                 "navigate_endpoint_inactive",
                 "Confirm workspace first",
-                "Select an available workspace and press Enter before using workspace or pane actions",
+                format!(
+                    "Select an available workspace and {open_workspace} before using workspace or pane actions"
+                ),
             );
             outcome.repaint = true;
             return;
         }
 
-        if let Some(index) = ('1'..='9').position(|digit| {
-            shepr_config::terminal_key_matches_combo(
-                key,
-                (KeyCode::Char(digit), KeyModifiers::empty()),
-            )
-        }) {
-            let valid = self.snapshot.as_deref().is_some_and(|snapshot| {
-                self.navigation_workspace_entries(snapshot)
-                    .get(index)
-                    .is_some()
-            });
-            if valid {
-                self.mode = ClientShellMode::Terminal;
-                self.navigate_workspace_id = None;
-                self.record_binding(
-                    &KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)),
+        if let Some(navigate_binding) = navigate_binding {
+            match navigate_binding {
+                NavigateAction::SwitchWorkspace(index) => {
+                    let valid = self.snapshot.as_deref().is_some_and(|snapshot| {
+                        self.navigation_workspace_entries(snapshot)
+                            .get(index)
+                            .is_some()
+                    });
+                    if valid {
+                        self.mode = ClientShellMode::Terminal;
+                        self.navigate_workspace_id = None;
+                        self.record_binding(
+                            &KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)),
+                            outcome,
+                        );
+                        outcome.repaint = true;
+                    }
+                }
+                NavigateAction::CyclePaneNext => self.record_navigate_binding(
+                    &KeybindMatch::Action(KeybindAction::CyclePaneNext),
+                    false,
                     outcome,
-                );
-                outcome.repaint = true;
+                ),
+                NavigateAction::CyclePanePrevious => self.record_navigate_binding(
+                    &KeybindMatch::Action(KeybindAction::CyclePanePrevious),
+                    false,
+                    outcome,
+                ),
+                NavigateAction::PaneLeft => self.record_navigate_binding(
+                    &KeybindMatch::Action(KeybindAction::FocusPaneLeft),
+                    true,
+                    outcome,
+                ),
+                NavigateAction::PaneDown => self.record_navigate_binding(
+                    &KeybindMatch::Action(KeybindAction::FocusPaneDown),
+                    true,
+                    outcome,
+                ),
+                NavigateAction::PaneUp => self.record_navigate_binding(
+                    &KeybindMatch::Action(KeybindAction::FocusPaneUp),
+                    true,
+                    outcome,
+                ),
+                NavigateAction::PaneRight => self.record_navigate_binding(
+                    &KeybindMatch::Action(KeybindAction::FocusPaneRight),
+                    true,
+                    outcome,
+                ),
+                NavigateAction::Back
+                | NavigateAction::WorkspaceUp
+                | NavigateAction::WorkspaceDown
+                | NavigateAction::OpenWorkspace => {}
             }
-            return;
-        }
-
-        if modifiers.is_empty() {
-            match code {
-                KeyCode::Tab => {
-                    self.record_navigate_binding(
-                        &KeybindMatch::Action(KeybindAction::CyclePaneNext),
-                        false,
-                        outcome,
-                    );
-                    return;
-                }
-                KeyCode::BackTab => {
-                    self.record_navigate_binding(
-                        &KeybindMatch::Action(KeybindAction::CyclePanePrevious),
-                        false,
-                        outcome,
-                    );
-                    return;
-                }
-                KeyCode::Left => {
-                    self.record_navigate_binding(
-                        &KeybindMatch::Action(KeybindAction::FocusPaneLeft),
-                        true,
-                        outcome,
-                    );
-                    return;
-                }
-                KeyCode::Right => {
-                    self.record_navigate_binding(
-                        &KeybindMatch::Action(KeybindAction::FocusPaneRight),
-                        true,
-                        outcome,
-                    );
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        let pane_action = [
-            (
-                &self.config.keybinds.keybinds.navigate.pane_left,
-                KeybindAction::FocusPaneLeft,
-            ),
-            (
-                &self.config.keybinds.keybinds.navigate.pane_down,
-                KeybindAction::FocusPaneDown,
-            ),
-            (
-                &self.config.keybinds.keybinds.navigate.pane_up,
-                KeybindAction::FocusPaneUp,
-            ),
-            (
-                &self.config.keybinds.keybinds.navigate.pane_right,
-                KeybindAction::FocusPaneRight,
-            ),
-        ]
-        .into_iter()
-        .find_map(|(bindings, action)| bindings.matches_direct_key(key).then_some(action));
-        if let Some(action) = pane_action {
-            self.record_navigate_binding(&KeybindMatch::Action(action), true, outcome);
             return;
         }
 

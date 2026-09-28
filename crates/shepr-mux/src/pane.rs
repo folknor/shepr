@@ -15,7 +15,7 @@ pub use runtime::WheelRouting;
 pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};
 pub use runtime_registry::PaneRuntimeRegistry;
 pub use state::PaneState;
-pub use teardown::wait_for_pane_session_teardowns;
+pub use teardown::PaneTeardownTracker;
 #[cfg(test)]
 use terminal::GhosttyPaneTerminal;
 pub use terminal::{PaneClearError, ScrollMetrics, TerminalCursorState};

@@ -357,7 +357,7 @@ pub(super) fn git_ref_storage_is_reftable(
 /// root.
 fn git_dir_is_bare(info: &GitWorktreeInfo) -> io::Result<bool> {
     let branch = git_head_branch(&info.git_dir);
-    let mut config_paths = super::config::git_user_config_paths();
+    let mut config_paths = super::config::git_user_config_paths_at(&info.repo_root);
     config_paths.push(info.git_dir.join("config"));
     let (value, _) =
         super::config::read_config_value(info, &branch, &config_paths, "core", "bare")?;
@@ -1084,9 +1084,10 @@ mod tests {
         // host-program-ok: a reftable store is written by Git; production reads it through Git
         let output = run_git_output(&root, &["init", "--ref-format=reftable", "-b", "main"])
             .expect("test precondition");
-        if !output.status.success() {
-            return;
-        }
+        assert!(
+            output.status.success(),
+            "this test needs a host Git with reftable support (2.45 or later): {output:?}"
+        );
 
         git_written_fixture(&root, &["config", "user.email", "shepr@example.invalid"]);
         git_written_fixture(&root, &["config", "user.name", "Shepr Test"]);

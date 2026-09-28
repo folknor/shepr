@@ -2,6 +2,7 @@ mod address;
 mod agent;
 mod diagnostic;
 mod io;
+mod keybinding_table;
 mod keybinds;
 mod model;
 mod session_id;
@@ -94,6 +95,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use super::model::KeysConfig;
     use super::*;
 
     #[test]
@@ -107,6 +109,124 @@ mod tests {
             let line_number = index + 1;
             panic!("active setting on line {line_number}: {line}");
         }
+    }
+
+    /// The commented `[keys]` settings in the template, uncommented, are
+    /// exactly the built-in keymap: every field is listed and every listed
+    /// value is the real default.
+    #[test]
+    fn default_template_lists_every_keybinding_with_its_default() {
+        let mut in_keys = false;
+        let mut uncommented = String::from("[keys]\n");
+        let mut listed = 0;
+        for line in DEFAULT_CONFIG.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_keys = trimmed == "[keys]";
+                continue;
+            }
+            let Some(setting) = trimmed.strip_prefix("# ") else {
+                continue;
+            };
+            let is_setting = setting
+                .split_once(" = \"")
+                .is_some_and(|(name, _)| name.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+            if in_keys && is_setting {
+                uncommented.push_str(setting);
+                uncommented.push('\n');
+                listed += 1;
+            }
+        }
+        let config: Config = toml::from_str(&uncommented).expect("template keys parse");
+        assert_eq!(config.keys, KeysConfig::default());
+        // The prefix plus every binding in the keybinding table.
+        assert_eq!(listed, 57, "{uncommented}");
+    }
+
+    #[test]
+    fn built_in_keymap_defaults_are_pinned() {
+        let keys = KeysConfig::default();
+        assert_eq!(keys.prefix, "ctrl+b");
+        for (binding, expected) in [
+            (&keys.help, "prefix+?"),
+            (&keys.detach, "prefix+q"),
+            (&keys.workspace_picker, "prefix+w"),
+            (&keys.goto, "prefix+g"),
+            (&keys.new_workspace, "prefix+shift+n"),
+            (&keys.rename_workspace, "prefix+shift+w"),
+            (&keys.close_workspace, "prefix+shift+d"),
+            (&keys.previous_workspace, ""),
+            (&keys.next_workspace, ""),
+            (&keys.previous_agent, ""),
+            (&keys.next_agent, ""),
+            (&keys.focus_agent, ""),
+            (&keys.new_tab, "prefix+c"),
+            (&keys.rename_tab, "prefix+shift+t"),
+            (&keys.previous_tab, "prefix+p"),
+            (&keys.next_tab, "prefix+n"),
+            (&keys.move_tab_previous, ""),
+            (&keys.move_tab_next, ""),
+            (&keys.switch_tab, "prefix+1..9"),
+            (&keys.switch_workspace, ""),
+            (&keys.close_tab, "prefix+shift+x"),
+            (&keys.rename_pane, "prefix+shift+p"),
+            (&keys.clear_pane, ""),
+            (&keys.copy_mode, "prefix+["),
+            (&keys.focus_pane_left, "prefix+h"),
+            (&keys.focus_pane_down, "prefix+j"),
+            (&keys.focus_pane_up, "prefix+k"),
+            (&keys.focus_pane_right, "prefix+l"),
+            (&keys.swap_pane_left, "prefix+shift+h"),
+            (&keys.swap_pane_down, "prefix+shift+j"),
+            (&keys.swap_pane_up, "prefix+shift+k"),
+            (&keys.swap_pane_right, "prefix+shift+l"),
+            (&keys.cycle_pane_next, "prefix+tab"),
+            (&keys.cycle_pane_previous, "prefix+shift+tab"),
+            (&keys.last_pane, ""),
+            (&keys.split_vertical, "prefix+v"),
+            (&keys.split_horizontal, "prefix+minus"),
+            (&keys.close_pane, "prefix+x"),
+            (&keys.zoom, "prefix+z"),
+            (&keys.resize_mode, "prefix+r"),
+            (&keys.resize_pane_left, ""),
+            (&keys.resize_pane_down, ""),
+            (&keys.resize_pane_up, ""),
+            (&keys.resize_pane_right, ""),
+            (&keys.toggle_sidebar, "prefix+b"),
+            (&keys.navigate_back, "esc"),
+            (&keys.navigate_workspace_up, "up"),
+            (&keys.navigate_workspace_down, "down"),
+            (&keys.navigate_pane_left, "h"),
+            (&keys.navigate_pane_down, "j"),
+            (&keys.navigate_pane_up, "k"),
+            (&keys.navigate_pane_right, "l"),
+            (&keys.navigate_cycle_pane_next, "tab"),
+            (&keys.navigate_cycle_pane_previous, "shift+tab"),
+            (&keys.navigate_open_workspace, "enter"),
+            (&keys.navigate_switch_workspace, "1..9"),
+        ] {
+            assert_eq!(binding, &BindingConfig::one(expected));
+        }
+    }
+
+    #[test]
+    fn a_prefix_shared_with_a_default_navigate_key_names_the_binding_to_set() {
+        let config: Config =
+            toml::from_str("[keys]\nprefix = \"esc\"\n").expect("test precondition");
+        let validation = config.compute_keybind_validation(|_| false);
+        assert!(validation.live.is_none());
+        assert!(
+            validation
+                .diagnostics
+                .iter()
+                .any(|diag| diag.contains("navigate_back") && diag.contains("keys.prefix")),
+            "{:?}",
+            validation.diagnostics
+        );
+
+        let config: Config = toml::from_str("[keys]\nprefix = \"esc\"\nnavigate_back = \"\"\n")
+            .expect("test precondition");
+        assert!(config.compute_keybind_validation(|_| false).live.is_some());
     }
 
     #[test]

@@ -545,8 +545,9 @@ mod tests {
             .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
-        let (runtime, mut rx) =
+        let (mut runtime, mut rx) =
             shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 2);
+        runtime.set_process_probe_result_for_test(None, Some(Agent::OpenCode));
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -735,8 +736,9 @@ mod tests {
             .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Idle);
-        let (runtime, mut rx) =
+        let (mut runtime, mut rx) =
             shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 3);
+        runtime.set_process_probe_result_for_test(None, Some(Agent::GithubCopilot));
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -782,7 +784,8 @@ mod tests {
             .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        let (runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
+        let (mut runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
+        runtime.set_process_probe_result_for_test(None, Some(Agent::Pi));
         app.insert_test_runtime(pane_id, runtime);
 
         let rejected = app.handle_agent_send_keys(

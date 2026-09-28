@@ -98,6 +98,9 @@ pub struct App {
     /// Last attempt that could update a connected presentation surface.
     pub(crate) last_presentation_at: Option<Instant>,
     pub render_notify: Arc<Notify>,
+    /// This app's pane session teardowns, handed to every pane it spawns and
+    /// waited on at exit.
+    pane_teardowns: Arc<shepr_mux::pane::PaneTeardownTracker>,
     pub(crate) render_dirty: Arc<shepr_mux::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
     pub(crate) paths: shepr_config::AppPaths,
@@ -148,6 +151,7 @@ impl App {
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
+        let pane_teardowns = Arc::new(shepr_mux::pane::PaneTeardownTracker::default());
         let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
 
@@ -207,6 +211,7 @@ impl App {
                 &event_tx,
                 &render_notify,
                 &render_dirty,
+                &pane_teardowns,
             );
             restored_terminals = restored.terminals;
             restored_terminal_runtimes = restored.terminal_runtimes.into();
@@ -323,6 +328,7 @@ impl App {
             last_focus,
             policy,
             render_notify,
+            pane_teardowns,
             render_dirty,
             full_redraw_pending: false,
             paths,
@@ -343,8 +349,15 @@ impl App {
             events: self.event_tx.clone(),
             render_notify: Arc::clone(&self.render_notify),
             render_dirty: Arc::clone(&self.render_dirty),
+            pane_teardowns: Arc::clone(&self.pane_teardowns),
             api_socket_path: shepr_api::socket_path(&self.paths),
         }
+    }
+
+    /// Block until this app's pane session teardowns have finished, or
+    /// `timeout` passes. Returns whether they all finished.
+    pub(crate) fn wait_for_pane_teardowns(&self, timeout: Duration) -> bool {
+        self.pane_teardowns.wait(timeout)
     }
 
     /// Installs `runtime` as the live runtime of `pane_id` in the same
@@ -1424,8 +1437,9 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .set_manual_label("shell".into());
-        let (runtime, mut receiver) =
+        let (mut runtime, mut receiver) =
             shepr_mux::pane::PaneRuntime::test_with_channel_capacity(80, 24, 1);
+        runtime.set_process_probe_result_for_test(Some("sh".into()), None);
         runtime
             .try_send_bytes(bytes::Bytes::from_static(b"occupied"))
             .expect("test precondition");

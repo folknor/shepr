@@ -136,7 +136,8 @@ prefix constant is a severity encoded in text.
 Enforcement named: return a typed `InstallWarning` and let the printer decide
 the prefix. The agent side is ready (install outcomes are one shape now), but
 `install_target` still returns `Vec<String>`, so the change spans
-`crates/shepr-agent/src/integration/mod.rs` and the CLI printer in
+`crates/shepr-agent/src/integration/version.rs` (where the warnings are built),
+the action layer (`actions.rs`), `mod.rs` and the CLI printer in
 `src/cli/integration.rs`; a comment at the agent site records this.
 
 ## HYGC-009 - The domain event catalogue, and one API level policy, live in the bottom platform crate
@@ -444,17 +445,10 @@ Gathered from six scopes.
   failure. `resolve_paths_from_env`'s `Err(vec!["application paths could not be
   resolved".to_string()])` is the same shape on the same path.
 
-`shepr-server`: "pane not found" is spelled about 30 times in three wordings and
-most omit the pane id - bare `"pane not found"` with no identifier at 6 sites in
-`app/api/panes.rs` and 14 in `app/api/panes/geometry.rs`;
-`format!("pane not found: {}", params.pane_id)` in `app/api/panes/copy.rs`;
-`format!("agent target pane {target} not found")` and
-`format!("agent target {target} not found")` in `app/agents.rs`; plus "source
-pane not found" / "target pane {raw} not found" / "source tab not found" across
-`app/api/panes/geometry.rs`. A `pane.resize` that fails tells you a pane was not
-found but not which one, even though the handler holds the id it just failed to
-resolve. The same for workspaces: `format!("workspace {id} not found")` at five
-sites versus bare `"workspace not found"` at two.
+`shepr-server`: the API not-found errors now go through shared helpers in
+`app/api_helpers.rs` that own the code and name the identifier. Open: the two
+agent-target texts in `app/agents.rs` (`"agent target pane {target} not found"`,
+`"agent target {target} not found"`) still build their own messages.
 
 `src/cli`: `target.rs::run_on_machine` returns
 `usage_error("usage: shepr --machine <label-or-id> <command>")` when no command

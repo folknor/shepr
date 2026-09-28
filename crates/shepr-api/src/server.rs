@@ -657,7 +657,7 @@ fn finish_api_response(
             method.name,
             method.mutates_ui,
             method.routine,
-            response.outcome,
+            response.outcome.as_str(),
         ),
         Err(err) => {
             shepr_platform::logging::api_request_failed(request_id, method.name, &err.to_string());
@@ -1537,7 +1537,7 @@ mod tests {
     fn api_response_logging_outcome_comes_from_the_typed_result() {
         let success =
             crate::error::encode_result_with_outcome("req".into(), Ok(ResponseResult::Ok {}));
-        assert_eq!(success.outcome, "ok");
+        assert_eq!(success.outcome.as_str(), "ok");
 
         let timeout = crate::error::encode_result_with_outcome(
             "req".into(),
@@ -1546,7 +1546,7 @@ mod tests {
                 "timed out waiting for output match",
             )),
         );
-        assert_eq!(timeout.outcome, "timeout");
+        assert_eq!(timeout.outcome.as_str(), "timeout");
 
         let generic_error = crate::error::encode_result_with_outcome(
             "req".into(),
@@ -1555,7 +1555,7 @@ mod tests {
                 "boom",
             )),
         );
-        assert_eq!(generic_error.outcome, "error");
+        assert_eq!(generic_error.outcome.as_str(), "error");
     }
 
     #[test]
@@ -1625,7 +1625,8 @@ mod tests {
             None,
         );
 
-        let parsed: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let parsed: SuccessResponse =
+            serde_json::from_str(&response.body).expect("test precondition");
         assert_eq!(parsed.id, "req_1");
         assert!(matches!(parsed.result, ResponseResult::Pong { .. }));
     }
@@ -1645,7 +1646,7 @@ mod tests {
         );
 
         let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+            serde_json::from_str(&response.body).expect("test precondition");
         assert_eq!(response["id"], "priority_stop");
         assert_eq!(response["result"]["type"], "ok");
         assert!(stop.load(Ordering::Acquire));
@@ -1660,7 +1661,7 @@ mod tests {
             Some(&stop),
         );
         let rejected: serde_json::Value =
-            serde_json::from_str(&rejected).expect("test precondition");
+            serde_json::from_str(&rejected.body).expect("test precondition");
         assert_eq!(rejected["error"]["code"], "server_unavailable");
         assert!(rx.try_recv().is_err());
     }
@@ -1684,7 +1685,8 @@ mod tests {
             .expect("test precondition");
 
         let response = thread.join().expect("test precondition");
-        let parsed: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let parsed: SuccessResponse =
+            serde_json::from_str(&response.body).expect("test precondition");
         assert_eq!(parsed.id, "req_2");
     }
 

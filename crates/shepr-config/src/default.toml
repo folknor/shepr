@@ -38,6 +38,8 @@
 [keys]
 # Prefix key to enter prefix mode (default: "ctrl+b")
 # Examples: "ctrl+b", "f12", "esc", "-"
+# A prefix that some default binding also uses ("esc" is navigate_back, "-" is
+# split_horizontal's key) fails the launch until that binding is set explicitly.
 # Action bindings use explicit syntax: "prefix+n" requires the prefix;
 # "ctrl+alt+n" is a direct terminal-mode shortcut.
 # Accepted key syntax: plain keys, ctrl/shift/alt/cmd/super modifiers ("meta" is an alias for alt),
@@ -96,13 +98,18 @@
 # toggle_sidebar = "prefix+b"
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
-# They are independent from focus_pane_*. Do not include prefix+, esc, enter, tab, or 1..9 here.
+# These are independent from focus_pane_* and do not include prefix+.
+# navigate_back = "esc"
 # navigate_workspace_up = "up"
 # navigate_workspace_down = "down"
 # navigate_pane_left = "h"      # left arrow always focuses the pane to the left
 # navigate_pane_down = "j"
 # navigate_pane_up = "k"
 # navigate_pane_right = "l"     # right arrow always focuses the pane to the right
+# navigate_cycle_pane_next = "tab"
+# navigate_cycle_pane_previous = "shift+tab"
+# navigate_open_workspace = "enter"
+# navigate_switch_workspace = "1..9"
 
 # Size of the virtual terminal used when no client is attached.
 # Attached clients always use their own terminal size.

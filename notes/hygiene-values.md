@@ -234,8 +234,9 @@ Owners of the names:
 - `crates/shepr-mux/src/git/config.rs::git_user_config_paths` is a fourth: it
   reads `XDG_CONFIG_HOME` directly, filters on `is_absolute()`, and falls back to
   `~/.config/git/config`. The mux hunter notes this duplication has a legitimate
-  answer (these are Git's paths, not shepr's, and the file says so) but that the
-  answer is incomplete - see BUG-064.
+  answer (these are Git's paths, not shepr's, and the file says so); it now also
+  follows git for `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`
+  and command-scope config.
 
 Owners of the rule (protocol/config hunter, inside `resolve_paths_from_env` /
 `platform_xdg_dir` / `socket_path_override` alone - five variables, four rules):
@@ -386,35 +387,6 @@ Fix by signature: give the resolvers an explicit environment argument (a
 read in the crate is at `resolve()`. The agent hunter adds that this also removes
 `GROK_CONFIG_DIR`, a production environment variable whose own comment says it
 exists primarily as a test seam.
-
-## HYGV-020 - "pane not found" is spelled about thirty times in three wordings, and one condition gets two error codes
-
-Reported by the server hunter.
-
-- Bare `"pane not found"` with no identifier: six sites in
-  `crates/shepr-server/src/app/api/panes.rs`, fourteen in
-  `app/api/panes/geometry.rs`.
-- `format!("pane not found: {}", params.pane_id)`: two sites in
-  `app/api/panes/copy.rs`.
-- `format!("agent target pane {target} not found")` and
-  `format!("agent target {target} not found")` in `app/agents.rs`.
-- `"source pane not found"` / `"target pane {raw} not found"` /
-  `"source tab not found"`: about ten sites in `app/api/panes/geometry.rs`.
-
-The same pattern for workspaces: `format!("workspace {id} not found")` in
-`app/creation.rs`, `app/api/tabs.rs`, `app/api/workspaces.rs`,
-`app/api/layouts.rs` and `app/api/panes/geometry.rs`, versus bare
-`"workspace not found"` twice in `app/api/layouts.rs`.
-
-Divergence today, not a prediction: `app/api/layouts.rs` answers a missing
-workspace with `ApiErrorCode::WorkspaceNotFound` in one place and with
-`ApiErrorCode::LayoutApplyFailed` plus the message `"workspace not found"` in the
-apply path, so a client switching on the code sees two classes for one fact.
-
-Enforcement: `api_helpers::pane_not_found(&pane_id) -> ApiError` and siblings, a
-single `resolve_workspace(...) -> Result<usize, ApiError>` that owns the code, a
-table test over the layout handlers asserting the code per resolution failure,
-and a text rule banning the bare literals.
 
 ## HYGV-021 - "Unknown presents as Idle" has four statements and two implementations
 
@@ -1057,58 +1029,6 @@ Reported by the vt/pty hunter.
 `shepr-vt`'s `scan.rs` advertises `Tc` and `RGB` independently of it. The
 terminal-identity claims should sit together in `shepr-vt`.
 
-## HYGV-063 - The keybinding action list is spelled at eight sites; three of the eight are compiler-checked
-
-**Decision:** either keys are rebindable or they are not, and they are. The six
-hard-coded help entries (`esc`, `tab / shift+tab`, `enter`, `1..9`) become
-ordinary configurable bindings with defaults. Do this together with the single
-declarative keybinding table so the new keys are not added to eight sites by
-hand. (`KEY_BINDING_COUNT` is now derived from the wire field list.)
-
-Scope for the fixer, established by a stopped attempt: the help builder is
-`crates/shepr-termio/src/input/keybind_help.rs` (there is no
-`shepr-client/src/keybind_help.rs`), and the navigate-mode keys (esc, tab,
-enter, 1..9) are dispatched in `crates/shepr-client/src/shell/input/input.rs`,
-alongside `shepr-config`'s `keybinds.rs`, `model.rs`, `wire.rs` and
-`default.toml` and `shepr-termio/src/input/keybindings.rs`. It needs all of
-those in one fixer's hands.
-
-Reported by the protocol/config hunter, who calls it the largest single finding
-in that scope.
-
-| site | checked against anything? |
-|---|---|
-| `crates/shepr-config/src/model.rs` `KeysConfig`, 51 `BindingConfig` fields | source of truth |
-| `model.rs` `impl Default for KeysConfig` | yes, struct literal |
-| `keybinds.rs` `Keybinds` + `NavigateKeybinds` structs | no |
-| `keybinds.rs` `Keybinds { ... empty_action!() ... }` literal | yes, against `Keybinds` |
-| `keybinds.rs` the ~51 `apply_action!` / `apply_indexed!` / `apply_navigate!` lines | no |
-| `wire.rs` `key_binding_fields!` macro list | yes, `take_bindings!` builds `KeysConfig` |
-| `default.toml` comment block | partly, see HYGV-065 |
-| `crates/shepr-termio/src/input/keybindings.rs` dispatch and `keybind_help.rs` entries | no |
-
-The uncovered one that bites: add a field to `KeysConfig` and forget its
-`apply_action!` line and it compiles, the user's binding parses, and the action
-never fires with no diagnostic. Same for a missing `keybindings.rs` dispatch row
-or `keybind_help.rs` entry.
-
-The termio/client hunter reached the same list from the other end:
-`keybind_help::keybind_help_groups` enumerates `keybinds.<field>` by hand for all
-47 `Keybinds` fields plus `NavigateKeybinds`' 6, and every field does appear
-today, so it is a true claim with nothing holding it. That function also
-hard-codes six entries that come from nowhere (`entry("esc", "back")`,
-`entry("tab / shift+tab", "cycle pane")`, `entry("enter", "open workspace")`,
-`entry("1..9", "switch workspace")`); if any is rebindable the help is lying, and
-if none is, they are undocumented fixed keys the config cannot reach.
-
-Enforcement, and both hunters recommend paying for it: collapse the list into one
-declarative table naming each action once with its kind (action / indexed /
-navigate), its default binding and its help text, generating `KeysConfig`, its
-`Default`, `Keybinds`, the apply loop, the wire mapping and the help entries, so
-every omission is a compile error. Cheaper intermediate step named by the
-termio/client hunter: destructure `Keybinds` exhaustively with no `..` at the top
-of `keybind_help_groups`, so adding a field fails to compile until it is placed.
-
 ## HYGV-065 - Every default appears twice, once in a `Default` impl and once as a `default.toml` comment, and only the keybindings are checked
 
 Reported by the protocol/config hunter.
@@ -1463,32 +1383,6 @@ in `crates/shepr-client/src/shell/endpoints.rs` - `cache_endpoint_snapshot`
 decodes and discards the error with `.ok()`, then `resolve_snapshot_config`
 decodes the same bytes again. Decoding once and keeping the `Result` removes the
 duplication.
-
-## HYGV-090 - `TerminalState::revision` is bumped at four sites under two different overflow policies
-
-Reported by the mux hunter, as an existing divergence.
-
-- `crates/shepr-mux/src/terminal/state/detection.rs`: `wrapping_add(1)`.
-- `crates/shepr-mux/src/terminal/state/detection.rs`, forty lines away:
-  `saturating_add(1)`.
-- `crates/shepr-server/src/app/actions/workspace.rs`: `saturating_add(1)`.
-- `crates/shepr-server/src/app/api/panes/reports.rs`: `saturating_add(1)`.
-
-Two spellings of one counter's increment, disagreeing at `u64::MAX`. Neither is
-obviously right, which is the point: nobody chose.
-
-Fix: make the field private behind a single `fn bump_revision(&mut self)`, after
-which the overflow behaviour has one answer by construction.
-
-The protocol/config hunter reports the same shape one layer down:
-`crates/shepr-protocol/src/revision.rs`'s `counter!` macro gives every counter
-both `next()` (saturating) and `checked_next()` (returns `None`), plus saturating
-`Add` / `AddAssign`. `surface_reuse::Baseline::accepts` relies on
-`checked_next()`; other callers use `next()`. A saturated `SurfaceRevision` at
-`u64::MAX` would silently stop advancing and every subsequent delta would be
-rejected as a baseline mismatch, forever, with nothing logged. Not reachable in
-practice, but the type offers two answers and lets the call site pick. Fix: keep
-one; if saturation is never acceptable, delete `next()`.
 
 ## HYGV-091 - Braille spinner glyphs are hard-coded next to a manifest-owned glyph set
 

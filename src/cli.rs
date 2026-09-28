@@ -119,6 +119,8 @@ impl CliCommand {
         }
     }
 
+    /// A command group may represent a valid invocation with no nested
+    /// command, such as the `status` overview; absent names use `None`.
     pub(crate) fn subcommand_name(&self) -> Option<&'static str> {
         match self {
             Self::Status(command) => command.name(),
@@ -215,7 +217,10 @@ impl TerminalCommand {
     }
 
     fn can_run_on_machine(&self) -> bool {
-        matches!(self, Self::TitleSet { .. } | Self::TitleClear)
+        match self {
+            Self::TitleSet { .. } | Self::TitleClear => true,
+            Self::Attach { .. } | Self::Invalid => false,
+        }
     }
 }
 
@@ -400,6 +405,15 @@ impl Invocation {
 }
 
 impl Invocation {
+    /// The CLI command this invocation runs, or `None` for a launch mode
+    /// (TUI, server, client) that is not a CLI command.
+    pub(crate) fn cli_command(&self) -> Option<&CliCommand> {
+        match &self.launch {
+            Launch::Cli(command) => Some(command.as_ref()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn has_subcommand(&self) -> bool {
         !matches!(
             &self.launch,

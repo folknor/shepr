@@ -207,66 +207,30 @@ impl IndexedKeybind {
 }
 
 /// Parsed keybinds for Shepr actions.
-#[derive(Debug, Clone)]
-pub struct NavigateKeybinds {
-    pub workspace_up: ActionKeybinds,
-    pub workspace_down: ActionKeybinds,
-    pub pane_left: ActionKeybinds,
-    pub pane_down: ActionKeybinds,
-    pub pane_up: ActionKeybinds,
-    pub pane_right: ActionKeybinds,
+macro_rules! define_resolved_keybinds {
+    (
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+    ) => {
+        #[derive(Debug, Clone, Default)]
+        pub struct NavigateKeybinds {
+            $(pub $navigate_field: ActionKeybinds,)*
+            $(pub $navigate_indexed_field: Vec<IndexedKeybind>,)*
+        }
+
+        /// Parsed keybinds for Shepr actions.
+        #[derive(Debug, Clone, Default)]
+        pub struct Keybinds {
+            pub navigate: NavigateKeybinds,
+            $(pub $action_field: ActionKeybinds,)*
+            $(pub $indexed_field: Vec<IndexedKeybind>,)*
+        }
+    };
 }
 
-/// Parsed keybinds for Shepr actions.
-#[derive(Debug, Clone)]
-pub struct Keybinds {
-    pub navigate: NavigateKeybinds,
-    pub help: ActionKeybinds,
-    pub new_workspace: ActionKeybinds,
-    pub rename_workspace: ActionKeybinds,
-    pub close_workspace: ActionKeybinds,
-    pub workspace_picker: ActionKeybinds,
-    pub goto: ActionKeybinds,
-    pub detach: ActionKeybinds,
-    pub previous_workspace: ActionKeybinds,
-    pub next_workspace: ActionKeybinds,
-    pub previous_agent: ActionKeybinds,
-    pub next_agent: ActionKeybinds,
-    pub focus_agent: Vec<IndexedKeybind>,
-    pub new_tab: ActionKeybinds,
-    pub rename_tab: ActionKeybinds,
-    pub previous_tab: ActionKeybinds,
-    pub next_tab: ActionKeybinds,
-    pub move_tab_previous: ActionKeybinds,
-    pub move_tab_next: ActionKeybinds,
-    pub switch_tab: Vec<IndexedKeybind>,
-    pub switch_workspace: Vec<IndexedKeybind>,
-    pub close_tab: ActionKeybinds,
-    pub rename_pane: ActionKeybinds,
-    pub clear_pane: ActionKeybinds,
-    pub copy_mode: ActionKeybinds,
-    pub focus_pane_left: ActionKeybinds,
-    pub focus_pane_down: ActionKeybinds,
-    pub focus_pane_up: ActionKeybinds,
-    pub focus_pane_right: ActionKeybinds,
-    pub swap_pane_left: ActionKeybinds,
-    pub swap_pane_down: ActionKeybinds,
-    pub swap_pane_up: ActionKeybinds,
-    pub swap_pane_right: ActionKeybinds,
-    pub cycle_pane_next: ActionKeybinds,
-    pub cycle_pane_previous: ActionKeybinds,
-    pub last_pane: ActionKeybinds,
-    pub split_vertical: ActionKeybinds,
-    pub split_horizontal: ActionKeybinds,
-    pub close_pane: ActionKeybinds,
-    pub zoom: ActionKeybinds,
-    pub resize_mode: ActionKeybinds,
-    pub resize_pane_left: ActionKeybinds,
-    pub resize_pane_down: ActionKeybinds,
-    pub resize_pane_up: ActionKeybinds,
-    pub resize_pane_right: ActionKeybinds,
-    pub toggle_sidebar: ActionKeybinds,
-}
+crate::keybinding_table!(define_resolved_keybinds);
 
 /// Parsing collects every diagnostic, but exposes no partial keymap when a
 /// prefix or any candidate binding is invalid.
@@ -376,68 +340,7 @@ impl Config {
             navigate_registry.reserve_direct(prefix, "keys.prefix", prefix_source);
         }
         reserve_navigate_runtime_keys(&mut navigate_registry);
-
-        macro_rules! empty_action {
-            () => {
-                ActionKeybinds::default()
-            };
-        }
-
-        let mut keybinds = Keybinds {
-            navigate: NavigateKeybinds {
-                workspace_up: empty_action!(),
-                workspace_down: empty_action!(),
-                pane_left: empty_action!(),
-                pane_down: empty_action!(),
-                pane_up: empty_action!(),
-                pane_right: empty_action!(),
-            },
-            help: empty_action!(),
-            new_workspace: empty_action!(),
-            rename_workspace: empty_action!(),
-            close_workspace: empty_action!(),
-            workspace_picker: empty_action!(),
-            goto: empty_action!(),
-            detach: empty_action!(),
-            previous_workspace: empty_action!(),
-            next_workspace: empty_action!(),
-            previous_agent: empty_action!(),
-            next_agent: empty_action!(),
-            focus_agent: Vec::new(),
-            new_tab: empty_action!(),
-            rename_tab: empty_action!(),
-            previous_tab: empty_action!(),
-            next_tab: empty_action!(),
-            move_tab_previous: empty_action!(),
-            move_tab_next: empty_action!(),
-            switch_tab: Vec::new(),
-            switch_workspace: Vec::new(),
-            close_tab: empty_action!(),
-            rename_pane: empty_action!(),
-            clear_pane: empty_action!(),
-            copy_mode: empty_action!(),
-            focus_pane_left: empty_action!(),
-            focus_pane_down: empty_action!(),
-            focus_pane_up: empty_action!(),
-            focus_pane_right: empty_action!(),
-            swap_pane_left: empty_action!(),
-            swap_pane_down: empty_action!(),
-            swap_pane_up: empty_action!(),
-            swap_pane_right: empty_action!(),
-            cycle_pane_next: empty_action!(),
-            cycle_pane_previous: empty_action!(),
-            last_pane: empty_action!(),
-            split_vertical: empty_action!(),
-            split_horizontal: empty_action!(),
-            close_pane: empty_action!(),
-            zoom: empty_action!(),
-            resize_mode: empty_action!(),
-            resize_pane_left: empty_action!(),
-            resize_pane_down: empty_action!(),
-            resize_pane_up: empty_action!(),
-            resize_pane_right: empty_action!(),
-            toggle_sidebar: empty_action!(),
-        };
+        let mut keybinds = Keybinds::default();
 
         macro_rules! field_source {
             ($field:ident) => {
@@ -487,68 +390,36 @@ impl Config {
                 }
             };
         }
-
-        for source in [BindingSource::User, BindingSource::Default] {
-            apply_navigate!(
-                keybinds.navigate.workspace_up,
-                navigate_workspace_up,
-                source
-            );
-            apply_navigate!(
-                keybinds.navigate.workspace_down,
-                navigate_workspace_down,
-                source
-            );
-            apply_navigate!(keybinds.navigate.pane_left, navigate_pane_left, source);
-            apply_navigate!(keybinds.navigate.pane_down, navigate_pane_down, source);
-            apply_navigate!(keybinds.navigate.pane_up, navigate_pane_up, source);
-            apply_navigate!(keybinds.navigate.pane_right, navigate_pane_right, source);
-            apply_action!(keybinds.help, help, source);
-            apply_action!(keybinds.new_workspace, new_workspace, source);
-            apply_action!(keybinds.rename_workspace, rename_workspace, source);
-            apply_action!(keybinds.close_workspace, close_workspace, source);
-            apply_action!(keybinds.workspace_picker, workspace_picker, source);
-            apply_action!(keybinds.goto, goto, source);
-            apply_action!(keybinds.detach, detach, source);
-            apply_action!(keybinds.previous_workspace, previous_workspace, source);
-            apply_action!(keybinds.next_workspace, next_workspace, source);
-            apply_action!(keybinds.previous_agent, previous_agent, source);
-            apply_action!(keybinds.next_agent, next_agent, source);
-            apply_indexed!(keybinds.focus_agent, focus_agent, source);
-            apply_action!(keybinds.new_tab, new_tab, source);
-            apply_action!(keybinds.rename_tab, rename_tab, source);
-            apply_action!(keybinds.previous_tab, previous_tab, source);
-            apply_action!(keybinds.next_tab, next_tab, source);
-            apply_action!(keybinds.move_tab_previous, move_tab_previous, source);
-            apply_action!(keybinds.move_tab_next, move_tab_next, source);
-            apply_indexed!(keybinds.switch_tab, switch_tab, source);
-            apply_indexed!(keybinds.switch_workspace, switch_workspace, source);
-            apply_action!(keybinds.close_tab, close_tab, source);
-            apply_action!(keybinds.rename_pane, rename_pane, source);
-            apply_action!(keybinds.clear_pane, clear_pane, source);
-            apply_action!(keybinds.copy_mode, copy_mode, source);
-            apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
-            apply_action!(keybinds.focus_pane_down, focus_pane_down, source);
-            apply_action!(keybinds.focus_pane_up, focus_pane_up, source);
-            apply_action!(keybinds.focus_pane_right, focus_pane_right, source);
-            apply_action!(keybinds.swap_pane_left, swap_pane_left, source);
-            apply_action!(keybinds.swap_pane_down, swap_pane_down, source);
-            apply_action!(keybinds.swap_pane_up, swap_pane_up, source);
-            apply_action!(keybinds.swap_pane_right, swap_pane_right, source);
-            apply_action!(keybinds.last_pane, last_pane, source);
-            apply_action!(keybinds.cycle_pane_next, cycle_pane_next, source);
-            apply_action!(keybinds.cycle_pane_previous, cycle_pane_previous, source);
-            apply_action!(keybinds.split_vertical, split_vertical, source);
-            apply_action!(keybinds.split_horizontal, split_horizontal, source);
-            apply_action!(keybinds.close_pane, close_pane, source);
-            apply_action!(keybinds.zoom, zoom, source);
-            apply_action!(keybinds.resize_mode, resize_mode, source);
-            apply_action!(keybinds.resize_pane_left, resize_pane_left, source);
-            apply_action!(keybinds.resize_pane_down, resize_pane_down, source);
-            apply_action!(keybinds.resize_pane_up, resize_pane_up, source);
-            apply_action!(keybinds.resize_pane_right, resize_pane_right, source);
-            apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
+        macro_rules! apply_navigate_indexed {
+            ($target:expr, $field:ident, $source:expr) => {
+                if field_source!($field) == $source {
+                    $target = parse_navigate_indexed_bindings(
+                        concat!("keys.", stringify!($field)),
+                        &self.keys.$field,
+                        &mut navigate_registry,
+                        &mut diagnostics,
+                        $source,
+                    );
+                }
+            };
         }
+        macro_rules! apply_keybinding_table {
+            (
+                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            ) => {
+                for source in [BindingSource::User, BindingSource::Default] {
+                    $(apply_action!(keybinds.$action_field, $action_field, source);)*
+                    $(apply_indexed!(keybinds.$indexed_field, $indexed_field, source);)*
+                    $(apply_navigate!(keybinds.navigate.$navigate_field, $navigate_config_field, source);)*
+                    $(apply_navigate_indexed!(keybinds.navigate.$navigate_indexed_field, $navigate_indexed_config_field, source);)*
+                }
+            };
+        }
+
+        crate::keybinding_table!(apply_keybinding_table);
 
         let live = match (diagnostics.is_empty(), prefix) {
             (true, Some(prefix)) => Some(LiveKeybindConfig { prefix, keybinds }),
@@ -560,23 +431,10 @@ impl Config {
 
 fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
     for combo in [
-        (KeyCode::Esc, KeyModifiers::empty()),
-        (KeyCode::Enter, KeyModifiers::empty()),
-        (KeyCode::Tab, KeyModifiers::empty()),
-        (KeyCode::BackTab, KeyModifiers::empty()),
-        (KeyCode::Tab, KeyModifiers::SHIFT),
         (KeyCode::Left, KeyModifiers::empty()),
         (KeyCode::Right, KeyModifiers::empty()),
     ] {
-        registry.reserve_direct(combo, "navigate reserved keys", BindingSource::Default);
-    }
-
-    for idx in '1'..='9' {
-        registry.reserve_direct(
-            (KeyCode::Char(idx), KeyModifiers::empty()),
-            "navigate reserved keys",
-            BindingSource::Default,
-        );
+        registry.reserve_direct(combo, "navigate pane arrow aliases", BindingSource::Default);
     }
 }
 
@@ -690,6 +548,50 @@ fn parse_indexed_bindings(
     bindings
 }
 
+fn parse_navigate_indexed_bindings(
+    field: &'static str,
+    config: &BindingConfig,
+    registry: &mut BindingRegistry,
+    diagnostics: &mut Vec<String>,
+    source: BindingSource,
+) -> Vec<IndexedKeybind> {
+    let mut bindings = Vec::new();
+    for raw in config.values() {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        match parse_binding_string(raw) {
+            Some(ParsedBinding::Single(binding)) => {
+                push_navigate_indexed_binding(
+                    field,
+                    binding,
+                    registry,
+                    diagnostics,
+                    source,
+                    &mut bindings,
+                );
+            }
+            Some(ParsedBinding::Range(range)) => {
+                for binding in range {
+                    push_navigate_indexed_binding(
+                        field,
+                        binding,
+                        registry,
+                        diagnostics,
+                        source,
+                        &mut bindings,
+                    );
+                }
+            }
+            None => {
+                diagnostics.push(format!("invalid keybinding: {field} = {raw:?}"));
+            }
+        }
+    }
+    bindings
+}
+
 fn push_indexed_binding(
     field: &str,
     binding: ResolvedBinding,
@@ -716,6 +618,31 @@ fn push_indexed_binding(
     });
 }
 
+fn push_navigate_indexed_binding(
+    field: &str,
+    binding: ResolvedBinding,
+    registry: &mut BindingRegistry,
+    diagnostics: &mut Vec<String>,
+    source: BindingSource,
+    bindings: &mut Vec<IndexedKeybind>,
+) {
+    if !matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
+        diagnostics.push(format!(
+            "indexed keybinding must use 1..9: {field} = {:?}",
+            binding.label
+        ));
+        return;
+    }
+    if reject_navigate_binding(field, &binding, registry, diagnostics, source) {
+        return;
+    }
+    registry.register(&binding, field, source);
+    bindings.push(IndexedKeybind {
+        trigger: binding.trigger,
+        label: binding.label,
+    });
+}
+
 fn reject_navigate_binding(
     field: &str,
     binding: &ResolvedBinding,
@@ -726,15 +653,6 @@ fn reject_navigate_binding(
     if binding.trigger.is_prefix() {
         let diag = format!(
             "navigate keybinding must not include prefix: {field} = {:?}",
-            binding.label
-        );
-        diagnostics.push(diag);
-        return true;
-    }
-
-    if matches!(normalize_key_combo(binding.trigger.combo()).0, KeyCode::Esc) {
-        let diag = format!(
-            "navigate keybinding cannot use esc: {field} = {:?}",
             binding.label
         );
         diagnostics.push(diag);
@@ -1646,11 +1564,11 @@ navigate_pane_down = "ctrl+j"
     }
 
     #[test]
-    fn navigate_bindings_reject_runtime_reserved_keys() {
+    fn navigate_bindings_reject_fixed_arrow_aliases() {
         let config: Config = toml::from_str(
             r#"
 [keys]
-navigate_workspace_up = ["esc", "alt+esc", "enter", "1", "tab", "shift+tab", "left", "right"]
+navigate_workspace_up = ["left", "right"]
 "#,
         )
         .expect("test precondition");
@@ -1662,12 +1580,11 @@ navigate_workspace_up = ["esc", "alt+esc", "enter", "1", "tab", "shift+tab", "le
             diagnostics
                 .iter()
                 .filter(|diag| {
-                    (diag.contains("navigate reserved keys")
-                        || diag.contains("navigate keybinding cannot use esc"))
+                    diag.contains("navigate pane arrow aliases")
                         && diag.contains("keys.navigate_workspace_up")
                 })
                 .count(),
-            8
+            2
         );
     }
 

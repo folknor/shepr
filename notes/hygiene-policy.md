@@ -513,58 +513,17 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   necessarily clears it.
 - Also in this class: `PaneId::NEXT_PANE_ID` and `NEXT_TERMINAL_ID` (HYGV-087).
 
-## HYGP-013 - Mutex poison policy is re-decided at every lock site, and one mutex has two policies
-
-- `shepr-mux`: `render_signal.rs` repeats
-  `.lock().unwrap_or_else(std::sync::PoisonError::into_inner)` at eight sites
-  (`request_generic`, `request_pty`, `set_immediate_pty_sources`,
-  `has_immediate_work`, `request_terminal_title`,
-  `pending_terminal_title_sources`, `take`, plus the wait path in `teardown.rs`
-  going through `shepr_vt::recover_auxiliary_poison`) - continue on poisoned
-  state, using the half-built `RenderRequest` a panicking thread left behind.
-  Meanwhile `shepr_vt::lock_terminal_core` treats poisoning as terminal for the
-  pane and `teardown.rs` routes through `shepr_vt::lock_auxiliary` /
-  `recover_auxiliary_poison`, which are shared helpers. Three policies, two with
-  owners, and `render_signal.rs` writing its own eight times. Suggested: route
-  `render_signal` through `shepr_vt::lock_auxiliary`, held by a text rule against
-  `PoisonError::into_inner` outside `shepr-vt`.
-- `shepr-server`: the same `Arc<Mutex<SessionWriter>>` has opposite rules about
-  twenty lines apart - `app/session.rs` recovers with
-  `unwrap_or_else(PoisonError::into_inner)` and retires it anyway at one site,
-  and refuses, logs "session writer is poisoned; refusing to modify session" and
-  returns an `io::Error` at the other. Elsewhere the crate is consistent
-  (`client_transport.rs`, `tab_bar_status.rs` twice, all `into_inner`).
-  Suggested: a `SessionWriterHandle` newtype owning the lock and the poison rule.
-- `shepr-agent`: `manifest.rs` unwraps poisoned locks into inner values at five
-  sites (`unwrap_or_else(PoisonError::into_inner)`,
-  `Err(poisoned) => poisoned.into_inner()`). The hunter calls this the right call
-  for a cache and consistent, but the choice is re-made at each site; a small
-  `fn read_cache(&self)` / `write_cache(&self)` pair would make it one decision.
-
 ## HYGP-014 - Clamp-or-reject, and overflow policy, are chosen by the call site
 
-- `shepr-protocol`: `revision.rs`'s `counter!` macro gives every counter both
-  `next()` (saturating) and `checked_next()` (returns `None`), plus saturating
-  `Add`/`AddAssign`. `surface_reuse::Baseline::accepts` relies on
-  `checked_next()`; other callers use `next()`. A saturated `SurfaceRevision` at
-  `u64::MAX` would silently stop advancing and every subsequent delta would be
-  rejected as a baseline mismatch, forever, with nothing logged. Not reachable in
-  practice, but the type offers two answers and lets the call site pick.
-  Suggested: keep one; if saturation is never acceptable, delete `next()`.
-  `geometry.rs::ProtocolCellSize::from_host` clamps and `from_wire` rejects (both
+- `shepr-protocol`: the counter half is resolved (`checked_next()` is the one
+  increment). `geometry.rs::ProtocolCellSize::from_host` clamps and `from_wire` rejects (both
   documented, reasoning sound); `input.rs::ClientSurfaceSize::clamped` clamps
   while `limits.rs::surface_grid_size` rejects, and the two express the same cell
   budget by different arithmetic (division vs multiplication) - that pair is tied
   by `wire_tests::client_surface_clamp_fits_server_geometry_limit`, which the
   hunter names as the pattern the other pairs lack.
-- `shepr-mux` / `shepr-core`: `TerminalState::revision` is bumped at four sites
-  under two overflow policies -
-  `src/terminal/state/detection.rs` uses `wrapping_add(1)` at one site and
-  `saturating_add(1)` forty lines later, and
-  `shepr-server/src/app/actions/workspace.rs` and
-  `app/api/panes/reports.rs` both use `saturating_add(1)`. Already diverged at
-  `u64::MAX`; neither is obviously right, which is the point - nobody chose. Fix:
-  make the field private behind one `fn bump_revision(&mut self)`.
+- `shepr-server` `app/state.rs`: `shell_projection_revision` is bumped with
+  `wrapping_add` while every other revision now saturates or checks.
 - `shepr-mux` restore path: `parse_snapshot` is `pub` and returns a
   `SessionSnapshot` whose types encode no validation (`ratio: f32`,
   `active: Option<usize>`, `selected: usize`, `active_tab: usize`,
@@ -1181,16 +1140,9 @@ for each is the hunter's.
   `restore.rs` test and the adversarial-identity helper in `workspace.rs` index
   `tabs[active_tab_index()]` where `active_tab()` would do.
 
-- `shepr-api`: the API log outcome is a string (`"ok"`, `"timeout"`,
-  `"error"`) rather than an enum; `EncodedApiResponse` carries both a string
-  conversion and `as_str`, and `encode_error_response_with_outcome` re-parses
-  the error code string it was handed.
 - `shepr-client` `loop_config.rs`: `ClientSettings::pixel_geometry_enabled` is
   true in every launch mode since settings resolve in one step, so the field
-  is dead state.
-- `shepr-agent` integration: Cursor records its hooks file under `UpdatedHooks`
-  on install and `Hooks` on uninstall; the messages are right but the role is
-  spelled two ways for one file.
+  is dead state; its three readers are in `shepr-client/src/lib.rs`.
 - `shepr-remote` `machine/executable.rs`: the comment on `needs_shell_quoting`
   describes a refactor boundary rather than the code; it goes when HYGP-060's
   typed rejection reason lands.
@@ -1198,17 +1150,13 @@ for each is the hunter's.
 - `shepr-client/src/input_wire.rs` and `shepr-server/src/server/input_wire.rs`
   keep one-line forwarding helpers (`WireMouseKind`, `WireMouseButton`,
   `wire_modifiers`, `host_modifiers`) over the protocol wire-type methods the
-  conversion moved to; callers can use the protocol methods directly.
+  conversion moved to; callers can use the protocol methods directly. Its
+  eight call sites are in client `attach.rs`, `shell/input/input.rs`,
+  `shell/input/mouse.rs` and server `server/pane_input.rs`.
 - `shepr-pty/src/command.rs` keeps its own `access_ok` beside
   `shepr_platform::has_execute_access`, because the layering keeps
   `shepr-pty` off `shepr-platform`; worth a comment naming the twin, or moving
   the helper below both.
-
-- `shepr-agent` `integration/`: every hook installer strips entries carrying
-  shepr's command from the event before writing the canonical one, so the
-  "already installed" early returns inside `ensure_command_hook`,
-  `ensure_flat_command_hook` and `ensure_simple_command_hook` never fire on
-  install. Either drop them or drop the strip step and let them decide.
 
 - `shepr-server` `app/actions/events.rs`: the `AppEvent::GitStatusRefreshed` arm
   of `AppState::handle_app_event` discards both payload fields and returns
@@ -1237,6 +1185,9 @@ for each is the hunter's.
   `Option<Command>` / `Result` and let `CliCommand::from_matches` propagate; the
   `Invalid` variants and the `""` names disappear together. The hunter calls this
   the single largest mechanical simplification available in `src/cli/`.
+  (Command names are `Option` now and machine eligibility is an exhaustive
+  match; the variants remain. One of them lives in `src/cli/integration.rs`,
+  so the fixer needs all of `src/cli/`.)
 
 ## HYGP-046 - Dead trait impls and duplicate flag constants the compiler will not flag
 
@@ -1442,7 +1393,8 @@ with a bad version and the four checks collapse to zero.
   `remote/discovery.rs` can explain a path `parse` already rejected, re-running
   the shared shell-word predicate from outside, so the rejection reason is
   computed twice. Fix: have `parse` return a typed rejection reason, use it in
-  `discovery.rs`, and delete `needs_shell_quoting`.
+  `discovery.rs`, and delete `needs_shell_quoting`. The typed error needs a
+  re-export from `crates/shepr-remote/src/machine.rs` as well.
 
 ## HYGP-061 - Vestigial section banners and a stray import in `shepr-server`
 

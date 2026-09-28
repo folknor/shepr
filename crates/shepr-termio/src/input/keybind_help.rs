@@ -64,128 +64,116 @@ pub fn keybind_help_groups(
     keybinds: &Keybinds,
     prefix: (crossterm::event::KeyCode, crossterm::event::KeyModifiers),
 ) -> Vec<KeybindHelpGroup> {
-    let groups = vec![
+    let mut groups = vec![
         (
             "global",
-            vec![
-                entry(shepr_config::format_key_combo(prefix), "prefix mode"),
-                entry(binding_label(&keybinds.help), "keybinds"),
-                entry(binding_label(&keybinds.detach), "detach"),
-            ],
+            vec![entry(shepr_config::format_key_combo(prefix), "prefix mode")],
         ),
-        (
-            "navigation",
-            vec![
-                entry("esc", "back"),
-                entry(
-                    format!(
-                        "{} / {}",
-                        binding_label(&keybinds.navigate.workspace_up),
-                        binding_label(&keybinds.navigate.workspace_down)
-                    ),
-                    "workspace list",
-                ),
-                entry(
-                    format!(
-                        "{} / {} / {} / {} / left / right",
-                        binding_label(&keybinds.navigate.pane_left),
-                        binding_label(&keybinds.navigate.pane_down),
-                        binding_label(&keybinds.navigate.pane_up),
-                        binding_label(&keybinds.navigate.pane_right)
-                    ),
-                    "move focus",
-                ),
-                entry("tab / shift+tab", "cycle pane"),
-                entry("enter", "open workspace"),
-                entry("1..9", "switch workspace"),
-            ],
-        ),
-        (
-            "workspaces / tabs",
-            vec![
-                entry(
-                    binding_label(&keybinds.workspace_picker),
-                    "workspace navigation",
-                ),
-                entry(binding_label(&keybinds.goto), "session navigator"),
-                entry(binding_label(&keybinds.new_workspace), "new workspace"),
-                entry(
-                    binding_label(&keybinds.rename_workspace),
-                    "rename workspace",
-                ),
-                entry(binding_label(&keybinds.close_workspace), "close workspace"),
-                entry(
-                    binding_label(&keybinds.previous_workspace),
-                    "previous workspace",
-                ),
-                entry(binding_label(&keybinds.next_workspace), "next workspace"),
-                entry(
-                    indexed_label(&keybinds.switch_workspace),
-                    "switch workspace 1-9",
-                ),
-                entry(binding_label(&keybinds.previous_agent), "previous agent"),
-                entry(binding_label(&keybinds.next_agent), "next agent"),
-                entry(indexed_label(&keybinds.focus_agent), "focus agent 1-9"),
-                entry(binding_label(&keybinds.new_tab), "new tab"),
-                entry(binding_label(&keybinds.rename_tab), "rename tab"),
-                entry(binding_label(&keybinds.previous_tab), "previous tab"),
-                entry(binding_label(&keybinds.next_tab), "next tab"),
-                entry(binding_label(&keybinds.move_tab_previous), "move tab left"),
-                entry(binding_label(&keybinds.move_tab_next), "move tab right"),
-                entry(indexed_label(&keybinds.switch_tab), "switch tab 1-9"),
-                entry(binding_label(&keybinds.close_tab), "close tab"),
-            ],
-        ),
-        (
-            "panes",
-            vec![
-                entry(binding_label(&keybinds.split_vertical), "split vertical"),
-                entry(
-                    binding_label(&keybinds.split_horizontal),
-                    "split horizontal",
-                ),
-                entry(binding_label(&keybinds.close_pane), "close pane"),
-                entry(binding_label(&keybinds.rename_pane), "rename pane"),
-                entry(binding_label(&keybinds.clear_pane), "clear pane"),
-                entry(binding_label(&keybinds.copy_mode), "copy mode"),
-                entry(binding_label(&keybinds.zoom), "zoom pane"),
-                entry(binding_label(&keybinds.resize_mode), "resize mode"),
-                entry(
-                    binding_label(&keybinds.resize_pane_left),
-                    "resize pane left",
-                ),
-                entry(
-                    binding_label(&keybinds.resize_pane_down),
-                    "resize pane down",
-                ),
-                entry(binding_label(&keybinds.resize_pane_up), "resize pane up"),
-                entry(
-                    binding_label(&keybinds.resize_pane_right),
-                    "resize pane right",
-                ),
-                entry(binding_label(&keybinds.toggle_sidebar), "toggle sidebar"),
-                entry(binding_label(&keybinds.focus_pane_left), "focus pane left"),
-                entry(binding_label(&keybinds.focus_pane_down), "focus pane down"),
-                entry(binding_label(&keybinds.focus_pane_up), "focus pane up"),
-                entry(
-                    binding_label(&keybinds.focus_pane_right),
-                    "focus pane right",
-                ),
-                entry(binding_label(&keybinds.swap_pane_left), "swap pane left"),
-                entry(binding_label(&keybinds.swap_pane_down), "swap pane down"),
-                entry(binding_label(&keybinds.swap_pane_up), "swap pane up"),
-                entry(binding_label(&keybinds.swap_pane_right), "swap pane right"),
-                entry(binding_label(&keybinds.cycle_pane_next), "cycle pane next"),
-                entry(
-                    binding_label(&keybinds.cycle_pane_previous),
-                    "cycle pane previous",
-                ),
-                entry(binding_label(&keybinds.last_pane), "last pane"),
-            ],
-        ),
+        ("navigation", Vec::new()),
+        ("workspaces / tabs", Vec::new()),
+        ("panes", Vec::new()),
     ];
 
+    // The fixed arrow aliases of navigate rows, listed after the configured
+    // keys of the help row they belong to.
+    let mut navigate_aliases: Vec<(&'static str, &'static str, &'static str)> = Vec::new();
+    macro_rules! navigate_alias {
+        (None, $group:expr, $label:expr) => {};
+        (Left, $group:expr, $label:expr) => {
+            navigate_aliases.push(($group, $label, "left"))
+        };
+        (Right, $group:expr, $label:expr) => {
+            navigate_aliases.push(($group, $label, "right"))
+        };
+    }
+
+    macro_rules! build_keybind_help {
+        (
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        ) => {
+            $(group_entries(&mut groups, $action_group)
+                .push(entry(binding_label(&keybinds.$action_field), $action_label));)*
+            $(insert_help_entry_after(
+                group_entries(&mut groups, $indexed_group),
+                $indexed_help_after,
+                entry(indexed_label(&keybinds.$indexed_field), $indexed_label),
+            );)*
+            $(
+                merge_help_entry(
+                    group_entries(&mut groups, $navigate_group),
+                    binding_label(&keybinds.navigate.$navigate_field),
+                    $navigate_label,
+                );
+                navigate_alias!($navigate_alias, $navigate_group, $navigate_label);
+            )*
+            $(
+                merge_help_entry(
+                    group_entries(&mut groups, $navigate_indexed_group),
+                    indexed_label(&keybinds.navigate.$navigate_indexed_field),
+                    $navigate_indexed_label,
+                );
+                navigate_alias!(
+                    $navigate_indexed_alias,
+                    $navigate_indexed_group,
+                    $navigate_indexed_label
+                );
+            )*
+        };
+    }
+
+    shepr_config::keybinding_table!(build_keybind_help);
+    for (group, label, alias) in navigate_aliases {
+        if let Some(existing) = group_entries(&mut groups, group)
+            .iter_mut()
+            .find(|existing| existing.1 == label)
+        {
+            existing.0.push_str(" / ");
+            existing.0.push_str(alias);
+        }
+    }
     groups
+}
+
+fn group_entries<'a>(
+    groups: &'a mut Vec<KeybindHelpGroup>,
+    group: &'static str,
+) -> &'a mut Vec<KeybindHelpEntry> {
+    let index = match groups.iter().position(|(name, _)| *name == group) {
+        Some(index) => index,
+        None => {
+            groups.push((group, Vec::new()));
+            groups.len() - 1
+        }
+    };
+    &mut groups[index].1
+}
+
+/// Places an indexed entry right after the entry labelled `after`, or last
+/// when no such entry exists.
+fn insert_help_entry_after(
+    entries: &mut Vec<KeybindHelpEntry>,
+    after: &str,
+    help_entry: KeybindHelpEntry,
+) {
+    match entries.iter().position(|existing| existing.1 == after) {
+        Some(index) => entries.insert(index + 1, help_entry),
+        None => entries.push(help_entry),
+    }
+}
+
+/// Navigate rows that share a help label share one row, keys joined in
+/// table order.
+fn merge_help_entry(entries: &mut Vec<KeybindHelpEntry>, keys: String, label: &'static str) {
+    match entries.iter_mut().find(|existing| existing.1 == label) {
+        Some(existing) => {
+            existing.0.push_str(" / ");
+            existing.0.push_str(&keys);
+        }
+        None => entries.push(entry(keys, label)),
+    }
 }
 
 pub fn filter_keybind_help_groups(
@@ -237,6 +225,122 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].1[0].1, "close pane");
         assert!(filter_keybind_help_groups(groups(), "panes").is_empty());
+    }
+
+    /// Pins the whole default help screen, row for row, so a change to the
+    /// keybinding table cannot reorder, relabel or drop a row unnoticed.
+    #[test]
+    fn default_help_screen_rows_are_pinned() {
+        let live = crate::test_config::validated("").live_keybinds();
+        let groups = keybind_help_groups(&live.keybinds, live.prefix);
+        let actual: Vec<(&str, Vec<(&str, &str)>)> = groups
+            .iter()
+            .map(|(group, entries)| {
+                (
+                    *group,
+                    entries
+                        .iter()
+                        .map(|(key, label)| (key.as_str(), label.as_ref()))
+                        .collect(),
+                )
+            })
+            .collect();
+        let expected: Vec<(&str, Vec<(&str, &str)>)> = vec![
+            (
+                "global",
+                vec![
+                    ("ctrl+b", "prefix mode"),
+                    ("prefix+?", "keybinds"),
+                    ("prefix+q", "detach"),
+                ],
+            ),
+            (
+                "navigation",
+                vec![
+                    ("esc", "back"),
+                    ("up / down", "workspace list"),
+                    ("h / j / k / l / left / right", "move focus"),
+                    ("tab / shift+tab", "cycle pane"),
+                    ("enter", "open workspace"),
+                    ("1..9", "switch workspace"),
+                ],
+            ),
+            (
+                "workspaces / tabs",
+                vec![
+                    ("prefix+w", "workspace navigation"),
+                    ("prefix+g", "session navigator"),
+                    ("prefix+shift+n", "new workspace"),
+                    ("prefix+shift+w", "rename workspace"),
+                    ("prefix+shift+d", "close workspace"),
+                    ("unset", "previous workspace"),
+                    ("unset", "next workspace"),
+                    ("unset", "switch workspace 1-9"),
+                    ("unset", "previous agent"),
+                    ("unset", "next agent"),
+                    ("unset", "focus agent 1-9"),
+                    ("prefix+c", "new tab"),
+                    ("prefix+shift+t", "rename tab"),
+                    ("prefix+p", "previous tab"),
+                    ("prefix+n", "next tab"),
+                    ("unset", "move tab left"),
+                    ("unset", "move tab right"),
+                    ("prefix+1..9", "switch tab 1-9"),
+                    ("prefix+shift+x", "close tab"),
+                ],
+            ),
+            (
+                "panes",
+                vec![
+                    ("prefix+v", "split vertical"),
+                    ("prefix+-", "split horizontal"),
+                    ("prefix+x", "close pane"),
+                    ("prefix+shift+p", "rename pane"),
+                    ("unset", "clear pane"),
+                    ("prefix+[", "copy mode"),
+                    ("prefix+z", "zoom pane"),
+                    ("prefix+r", "resize mode"),
+                    ("unset", "resize pane left"),
+                    ("unset", "resize pane down"),
+                    ("unset", "resize pane up"),
+                    ("unset", "resize pane right"),
+                    ("prefix+b", "toggle sidebar"),
+                    ("prefix+h", "focus pane left"),
+                    ("prefix+j", "focus pane down"),
+                    ("prefix+k", "focus pane up"),
+                    ("prefix+l", "focus pane right"),
+                    ("prefix+shift+h", "swap pane left"),
+                    ("prefix+shift+j", "swap pane down"),
+                    ("prefix+shift+k", "swap pane up"),
+                    ("prefix+shift+l", "swap pane right"),
+                    ("prefix+tab", "cycle pane next"),
+                    ("prefix+shift+tab", "cycle pane previous"),
+                    ("unset", "last pane"),
+                ],
+            ),
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn help_shows_configured_navigate_keys() {
+        let live = crate::test_config::validated(
+            "[keys]\nnavigate_back = \"q\"\nnavigate_cycle_pane_previous = \"\"\nnavigate_switch_workspace = \"alt+1..9\"\n",
+        )
+        .live_keybinds();
+        let groups = keybind_help_groups(&live.keybinds, live.prefix);
+        let navigation = &groups
+            .iter()
+            .find(|(group, _)| *group == "navigation")
+            .expect("navigation group")
+            .1;
+        let rows: Vec<(&str, &str)> = navigation
+            .iter()
+            .map(|(key, label)| (key.as_str(), label.as_ref()))
+            .collect();
+        assert!(rows.contains(&("q", "back")), "{rows:?}");
+        assert!(rows.contains(&("tab / unset", "cycle pane")), "{rows:?}");
+        assert!(rows.contains(&("alt+1..9", "switch workspace")), "{rows:?}");
     }
 
     #[test]

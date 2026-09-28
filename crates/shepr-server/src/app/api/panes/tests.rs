@@ -279,8 +279,8 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
     assert_eq!(
         app.pane_selection_text(&params)
             .expect_err("test precondition")
-            .0,
-        "stale_content"
+            .code,
+        shepr_api::error::ApiErrorCode::StaleContent
     );
     params.content_revision = None;
     let response = app.handle_pane_selection_read("req".into(), params);

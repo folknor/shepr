@@ -37,6 +37,9 @@ pub struct PaneSpawnHandles {
     pub events: mpsc::Sender<AppEvent>,
     pub render_notify: Arc<Notify>,
     pub render_dirty: Arc<RenderSignal>,
+    /// Counts this app's pane session teardowns, so its exit waits on them
+    /// and on no other app's.
+    pub pane_teardowns: Arc<crate::pane::PaneTeardownTracker>,
     /// Resolved API socket passed into every pane launched by this app.
     pub api_socket_path: PathBuf,
 }
@@ -1565,6 +1568,7 @@ mod tests {
 
     #[test]
     fn linked_worktree_auto_label_uses_checkout_name_not_repo_name() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let (_, repo, checkout) =
             crate::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
 

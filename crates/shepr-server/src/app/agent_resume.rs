@@ -458,6 +458,7 @@ impl App {
             &self.event_tx,
             &self.render_notify,
             &self.render_dirty,
+            &self.pane_teardowns,
         ) {
             Ok(runtime) => runtime,
             Err(err) => {

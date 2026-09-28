@@ -1192,7 +1192,10 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
                 patch.base_surface_revision,
                 initial_surface.surface_revision
             );
-            assert_eq!(patch.surface_revision, initial_surface.surface_revision + 1);
+            assert_eq!(
+                Some(patch.surface_revision),
+                initial_surface.surface_revision.checked_next()
+            );
             assert_eq!(patch.meta.as_ref().expect("metadata").panes.len(), 1);
             assert!(!patch.spans.is_empty());
             assert!(

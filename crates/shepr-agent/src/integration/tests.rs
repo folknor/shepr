@@ -145,8 +145,8 @@ fn enforce_agent_version_accepts_current_version() {
 
 /// Clears the one agent directory override outside the environment registry,
 /// so paths resolve against `HOME` unless a test sets one. `IsolatedEnv`
-/// already clears every registered variable, the agent config-directory
-/// overrides and the XDG base directories among them.
+/// clears all registered variables, including every agent config-directory
+/// override and the XDG base directories.
 fn clear_integration_path_env(env: &IsolatedEnv) {
     env.remove(GROK_CONFIG_DIR_TEST_SEAM);
 }

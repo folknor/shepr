@@ -1,5 +1,49 @@
 use shepr_api::error::{ApiError, ApiErrorCode};
 
+pub(crate) fn pane_not_found(pane_id: Option<&str>) -> ApiError {
+    match pane_id {
+        Some(pane_id) => ApiError::pane_not_found(pane_id),
+        None => ApiError::new(ApiErrorCode::PaneNotFound, "active pane not found"),
+    }
+}
+
+pub(crate) fn pane_in_workspace_not_found(workspace_id: &str) -> ApiError {
+    ApiError::new(
+        ApiErrorCode::PaneNotFound,
+        format!("no pane available in workspace {workspace_id}"),
+    )
+}
+
+pub(crate) fn workspace_not_found(workspace_id: &str) -> ApiError {
+    ApiError::new(
+        ApiErrorCode::WorkspaceNotFound,
+        format!("workspace {workspace_id} not found"),
+    )
+}
+
+pub(crate) fn active_workspace_not_found() -> ApiError {
+    ApiError::new(ApiErrorCode::WorkspaceNotFound, "no active workspace")
+}
+
+pub(crate) fn tab_not_found(tab_id: &str) -> ApiError {
+    ApiError::new(ApiErrorCode::TabNotFound, format!("tab {tab_id} not found"))
+}
+
+pub(crate) fn tab_for_pane_not_found(pane_id: &str) -> ApiError {
+    ApiError::new(
+        ApiErrorCode::TabNotFound,
+        format!("tab for pane {pane_id} not found"),
+    )
+}
+
+pub(crate) fn target_pane_not_found(pane_id: &str, tab_id: Option<&str>) -> ApiError {
+    let message = match tab_id {
+        Some(tab_id) => format!("target pane {pane_id} is not in tab {tab_id}"),
+        None => format!("target pane {pane_id} not found"),
+    };
+    ApiError::new(ApiErrorCode::TargetPaneNotFound, message)
+}
+
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
     let normalized = normalize_api_key_alias(key.trim());
     let (code, modifiers) = shepr_config::parse_key_combo(normalized)?;
@@ -422,5 +466,56 @@ mod metadata_token_tests {
             .map(|index| (format!("key{index}"), Some("value".into())))
             .collect();
         assert!(normalize_metadata_tokens(too_many).is_err());
+    }
+}
+
+#[cfg(test)]
+mod not_found_tests {
+    use super::{
+        active_workspace_not_found, pane_in_workspace_not_found, pane_not_found,
+        tab_for_pane_not_found, tab_not_found, target_pane_not_found, workspace_not_found,
+    };
+    use shepr_api::error::ApiErrorCode;
+
+    #[test]
+    fn not_found_helpers_keep_the_subject_and_code_together() {
+        let error = pane_not_found(Some("w1:p2"));
+        assert_eq!(error.code, ApiErrorCode::PaneNotFound);
+        assert_eq!(error.into_message(), "pane w1:p2 not found");
+
+        let error = pane_not_found(None);
+        assert_eq!(error.code, ApiErrorCode::PaneNotFound);
+        assert_eq!(error.into_message(), "active pane not found");
+
+        let error = pane_in_workspace_not_found("w1");
+        assert_eq!(error.code, ApiErrorCode::PaneNotFound);
+        assert_eq!(error.into_message(), "no pane available in workspace w1");
+
+        let error = workspace_not_found("w9");
+        assert_eq!(error.code, ApiErrorCode::WorkspaceNotFound);
+        assert_eq!(error.into_message(), "workspace w9 not found");
+
+        let error = active_workspace_not_found();
+        assert_eq!(error.code, ApiErrorCode::WorkspaceNotFound);
+        assert_eq!(error.into_message(), "no active workspace");
+
+        let error = tab_not_found("w1:t4");
+        assert_eq!(error.code, ApiErrorCode::TabNotFound);
+        assert_eq!(error.into_message(), "tab w1:t4 not found");
+
+        let error = tab_for_pane_not_found("w1:p2");
+        assert_eq!(error.code, ApiErrorCode::TabNotFound);
+        assert_eq!(error.into_message(), "tab for pane w1:p2 not found");
+
+        let error = target_pane_not_found("w1:p2", None);
+        assert_eq!(error.code, ApiErrorCode::TargetPaneNotFound);
+        assert_eq!(error.into_message(), "target pane w1:p2 not found");
+
+        let error = target_pane_not_found("w1:p2", Some("w1:t4"));
+        assert_eq!(error.code, ApiErrorCode::TargetPaneNotFound);
+        assert_eq!(
+            error.into_message(),
+            "target pane w1:p2 is not in tab w1:t4"
+        );
     }
 }

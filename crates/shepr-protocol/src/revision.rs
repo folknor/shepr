@@ -29,10 +29,6 @@ macro_rules! counter {
                 self.0
             }
 
-            pub fn next(self) -> Self {
-                Self(self.0.saturating_add(1))
-            }
-
             pub fn checked_next(self) -> Option<Self> {
                 self.0.checked_add(1).map(Self)
             }
@@ -67,20 +63,6 @@ macro_rules! counter {
                 self.0.partial_cmp(other)
             }
         }
-
-        impl std::ops::AddAssign<u64> for $name {
-            fn add_assign(&mut self, rhs: u64) {
-                self.0 = self.0.saturating_add(rhs);
-            }
-        }
-
-        impl std::ops::Add<u64> for $name {
-            type Output = Self;
-
-            fn add(self, rhs: u64) -> Self {
-                Self(self.0.saturating_add(rhs))
-            }
-        }
     };
 }
 
@@ -94,7 +76,10 @@ mod tests {
 
     #[test]
     fn counter_domains_advance_independently() {
-        assert_eq!(ProjectionRevision::ZERO.next().get(), 1);
+        assert_eq!(
+            ProjectionRevision::ZERO.checked_next(),
+            Some(ProjectionRevision::new(1))
+        );
         assert_eq!(
             SurfaceRevision::new(7)
                 .checked_next()

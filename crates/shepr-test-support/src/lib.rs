@@ -16,10 +16,10 @@
 //!   explicit-session flag) that another test changes, holds an
 //!   [`IsolatedEnv`] for its whole body. These tests serialize with one another
 //!   when they run in the same test process, whichever module they live in.
-//!   The guard clears every variable in shepr's registry
-//!   (`shepr_core::env::EnvVar`), so a variable added there is isolated with
-//!   no change here, then points `HOME` and `XDG_RUNTIME_DIR` at scratch and
-//!   sets `GIT_CEILING_DIRECTORIES` to [`scratch_base`], so a scratch
+//!   The guard clears every name in shepr's environment registry, including
+//!   Git's indexed command-config family, then points `HOME` and
+//!   `XDG_RUNTIME_DIR` at scratch and sets `GIT_CEILING_DIRECTORIES` to
+//!   [`scratch_base`], so a scratch
 //!   directory is never discovered as part of the enclosing checkout, and
 //!   sets `GIT_CONFIG_NOSYSTEM` so the host's system Git config is never
 //!   read. It also clears every other inherited `SHEPR_*` variable except
@@ -93,7 +93,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use shepr_core::env::EnvVar;
+use shepr_core::env::{EnvVar, is_registered_name};
 use shepr_core::socket_path::fits_unix_socket_path;
 
 pub mod fixture;
@@ -614,8 +614,13 @@ impl IsolatedEnv {
     /// `XDG_RUNTIME_DIR` at this guard's scratch directories, puts a Git
     /// ceiling at the scratch base and turns off Git's system config.
     fn isolate(&self) {
-        for var in EnvVar::ALL {
-            self.remove(var);
+        let registered: Vec<OsString> = environment_snapshot()
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|key| is_registered_name(key))
+            .collect();
+        for key in registered {
+            self.remove(key);
         }
         for key in FOREIGN_XDG_BASE_DIR_VARS {
             self.remove(key);
@@ -957,6 +962,11 @@ mod tests {
             env.set(key, "/leaked");
         }
         env.set("SHEPR_TEST_SUPPORT_UNREGISTERED", "leaked");
+        env.set("GIT_CONFIG_COUNT", "2");
+        env.set("GIT_CONFIG_KEY_0", "core.bare");
+        env.set("GIT_CONFIG_VALUE_0", "true");
+        env.set("GIT_CONFIG_KEY_1", "core.filemode");
+        env.set("GIT_CONFIG_VALUE_1", "false");
         env.set(SCRATCH_DIR_ENV, "/kept");
 
         env.isolate();
@@ -981,6 +991,15 @@ mod tests {
             }
         }
         assert_eq!(env.get("SHEPR_TEST_SUPPORT_UNREGISTERED"), None);
+        for key in [
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_KEY_1",
+            "GIT_CONFIG_VALUE_1",
+        ] {
+            assert_eq!(env.get(key), None, "{key} leaked into an isolated test");
+        }
         assert_eq!(env.get(SCRATCH_DIR_ENV), Some(OsString::from("/kept")));
     }
 }

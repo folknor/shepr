@@ -106,7 +106,7 @@ impl AppState {
             .filter_map(|(ws_idx, pane_id, terminal_id)| {
                 let terminal = self.terminals.get_mut(&terminal_id)?;
                 terminal.metadata_tokens.expire_at(now).then(|| {
-                    terminal.revision = terminal.revision.saturating_add(1);
+                    terminal.bump_revision();
                     (ws_idx, pane_id)
                 })
             })

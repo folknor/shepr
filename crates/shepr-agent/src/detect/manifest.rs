@@ -101,7 +101,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, RwLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use regex::Regex;
@@ -584,6 +584,15 @@ const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
 static MANIFESTS: OnceLock<ManifestRegistry> = OnceLock::new();
 static MANIFEST_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Manifest data and initialization state remain usable after a panic, so all
+/// manifest locks recover their inner guard by the same policy.
+fn recover_poison<T>(result: std::sync::LockResult<T>) -> T {
+    match result {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 const MAX_RULES_PER_MANIFEST: usize = 128;
 const MAX_GATE_DEPTH: usize = 8;
 const MAX_TOTAL_GATES: usize = 512;
@@ -612,25 +621,28 @@ impl ManifestRegistry {
         }
     }
 
+    fn lock_reload(&self) -> MutexGuard<'_, ()> {
+        recover_poison(self.reload_lock.lock())
+    }
+
+    fn read_cache(&self) -> RwLockReadGuard<'_, ManifestCache> {
+        recover_poison(self.cache.read())
+    }
+
+    fn write_cache(&self) -> RwLockWriteGuard<'_, ManifestCache> {
+        recover_poison(self.cache.write())
+    }
+
     fn reload(&self, override_dir: &Path) -> Vec<AgentManifestSummary> {
-        let _reload_guard = self
-            .reload_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _reload_guard = self.lock_reload();
         let cache = build_manifest_cache(Some(override_dir));
         let summaries = manifest_summaries_from_cache(&cache);
-        match self.cache.write() {
-            Ok(mut guard) => *guard = cache,
-            Err(poisoned) => *poisoned.into_inner() = cache,
-        }
+        *self.write_cache() = cache;
         summaries
     }
 
     fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
-        let guard = match self.cache.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let guard = self.read_cache();
         guard
             .manifests
             .iter()
@@ -639,10 +651,7 @@ impl ManifestRegistry {
     }
 
     fn summaries(&self) -> Vec<AgentManifestSummary> {
-        let guard = match self.cache.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let guard = self.read_cache();
         manifest_summaries_from_cache(&guard)
     }
 }
@@ -654,10 +663,7 @@ pub fn reload_manifests(config_dir: &Path) -> Vec<AgentManifestSummary> {
         return registry.reload(&override_dir);
     }
 
-    let _init_guard = MANIFEST_INIT_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _init_guard = recover_poison(MANIFEST_INIT_LOCK.get_or_init(|| Mutex::new(())).lock());
     if let Some(registry) = MANIFESTS.get() {
         return registry.reload(&override_dir);
     }
@@ -677,10 +683,7 @@ fn registry() -> &'static ManifestRegistry {
     if let Some(registry) = MANIFESTS.get() {
         return registry;
     }
-    let _init_guard = MANIFEST_INIT_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _init_guard = recover_poison(MANIFEST_INIT_LOCK.get_or_init(|| Mutex::new(())).lock());
     MANIFESTS.get_or_init(|| ManifestRegistry::new(None))
 }
 

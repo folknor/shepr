@@ -31,6 +31,20 @@ fn anchor_full_lifecycle_session(
 }
 
 #[test]
+fn revision_advances_and_saturates_instead_of_wrapping() {
+    let mut terminal = test_terminal();
+    let start = terminal.revision();
+    terminal.bump_revision();
+    assert_eq!(terminal.revision(), start + 1);
+
+    terminal.revision = u64::MAX - 1;
+    terminal.bump_revision();
+    assert_eq!(terminal.revision(), u64::MAX);
+    terminal.bump_revision();
+    assert_eq!(terminal.revision(), u64::MAX);
+}
+
+#[test]
 fn managed_agent_readiness_tracks_detection_state() {
     let mut terminal = test_terminal();
     let now = Instant::now();

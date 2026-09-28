@@ -33,10 +33,10 @@ impl ClientShellState {
                             | shepr_termio::input::KeybindAction::CloseWorkspace
                     )
                 {
-                    self.receive_endpoint_unavailable(
-                        "Select an available workspace and press Enter before renaming or closing it"
-                            .into(),
-                    );
+                    let open_workspace = self.open_workspace_hint();
+                    self.receive_endpoint_unavailable(format!(
+                        "Select an available workspace and {open_workspace} before renaming or closing it"
+                    ));
                     outcome.repaint = true;
                     return;
                 }

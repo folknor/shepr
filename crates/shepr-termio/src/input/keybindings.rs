@@ -10,59 +10,27 @@ pub enum KeybindDispatch {
     Prefix,
 }
 
-#[derive(Debug, Clone)]
-pub enum KeybindMatch {
-    Action(KeybindAction),
+macro_rules! define_keybinding_actions {
+    (
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+    ) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum KeybindAction {
+            $($action_variant,)*
+            $($indexed_variant(usize),)*
+        }
+
+        #[derive(Debug, Clone)]
+        pub enum KeybindMatch {
+            Action(KeybindAction),
+        }
+    };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeybindAction {
-    NewWorkspace,
-    RenameWorkspace,
-    CloseWorkspace,
-    SwitchWorkspace(usize),
-    SwitchTab(usize),
-    FocusAgent(usize),
-    WorkspacePicker,
-    PreviousWorkspace,
-    NextWorkspace,
-    PreviousAgent,
-    NextAgent,
-    NewTab,
-    RenameTab,
-    PreviousTab,
-    NextTab,
-    MoveTabPrevious,
-    MoveTabNext,
-    CloseTab,
-    RenamePane,
-    FocusPaneLeft,
-    FocusPaneDown,
-    FocusPaneUp,
-    FocusPaneRight,
-    SwapPaneLeft,
-    SwapPaneDown,
-    SwapPaneUp,
-    SwapPaneRight,
-    SplitVertical,
-    SplitHorizontal,
-    ClosePane,
-    ClearPane,
-    CopyMode,
-    Zoom,
-    EnterResizeMode,
-    ResizePaneLeft,
-    ResizePaneDown,
-    ResizePaneUp,
-    ResizePaneRight,
-    ToggleSidebar,
-    CyclePaneNext,
-    CyclePanePrevious,
-    LastPane,
-    Help,
-    Detach,
-    OpenNavigator,
-}
+shepr_config::keybinding_table!(define_keybinding_actions);
 
 pub fn resolve_direct_binding(keybinds: &Keybinds, key: &TerminalKey) -> Option<KeybindMatch> {
     resolve_exact_binding(keybinds, key, KeybindDispatch::Direct)
@@ -81,60 +49,21 @@ pub fn resolve_non_indexed_action(
     key: &TerminalKey,
     dispatch: KeybindDispatch,
 ) -> Option<KeybindAction> {
-    for (bindings, action) in [
-        (&keybinds.help, KeybindAction::Help),
-        (&keybinds.workspace_picker, KeybindAction::WorkspacePicker),
-        (&keybinds.new_workspace, KeybindAction::NewWorkspace),
-        (&keybinds.rename_workspace, KeybindAction::RenameWorkspace),
-        (&keybinds.close_workspace, KeybindAction::CloseWorkspace),
+    macro_rules! resolve_actions {
         (
-            &keybinds.previous_workspace,
-            KeybindAction::PreviousWorkspace,
-        ),
-        (&keybinds.next_workspace, KeybindAction::NextWorkspace),
-        (&keybinds.previous_agent, KeybindAction::PreviousAgent),
-        (&keybinds.next_agent, KeybindAction::NextAgent),
-        (&keybinds.new_tab, KeybindAction::NewTab),
-        (&keybinds.rename_tab, KeybindAction::RenameTab),
-        (&keybinds.previous_tab, KeybindAction::PreviousTab),
-        (&keybinds.next_tab, KeybindAction::NextTab),
-        (&keybinds.move_tab_previous, KeybindAction::MoveTabPrevious),
-        (&keybinds.move_tab_next, KeybindAction::MoveTabNext),
-        (&keybinds.close_tab, KeybindAction::CloseTab),
-        (&keybinds.rename_pane, KeybindAction::RenamePane),
-        (&keybinds.clear_pane, KeybindAction::ClearPane),
-        (&keybinds.copy_mode, KeybindAction::CopyMode),
-        (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
-        (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),
-        (&keybinds.focus_pane_up, KeybindAction::FocusPaneUp),
-        (&keybinds.focus_pane_right, KeybindAction::FocusPaneRight),
-        (&keybinds.swap_pane_left, KeybindAction::SwapPaneLeft),
-        (&keybinds.swap_pane_down, KeybindAction::SwapPaneDown),
-        (&keybinds.swap_pane_up, KeybindAction::SwapPaneUp),
-        (&keybinds.swap_pane_right, KeybindAction::SwapPaneRight),
-        (&keybinds.last_pane, KeybindAction::LastPane),
-        (&keybinds.cycle_pane_next, KeybindAction::CyclePaneNext),
-        (
-            &keybinds.cycle_pane_previous,
-            KeybindAction::CyclePanePrevious,
-        ),
-        (&keybinds.split_vertical, KeybindAction::SplitVertical),
-        (&keybinds.split_horizontal, KeybindAction::SplitHorizontal),
-        (&keybinds.close_pane, KeybindAction::ClosePane),
-        (&keybinds.zoom, KeybindAction::Zoom),
-        (&keybinds.resize_mode, KeybindAction::EnterResizeMode),
-        (&keybinds.resize_pane_left, KeybindAction::ResizePaneLeft),
-        (&keybinds.resize_pane_down, KeybindAction::ResizePaneDown),
-        (&keybinds.resize_pane_up, KeybindAction::ResizePaneUp),
-        (&keybinds.resize_pane_right, KeybindAction::ResizePaneRight),
-        (&keybinds.toggle_sidebar, KeybindAction::ToggleSidebar),
-        (&keybinds.detach, KeybindAction::Detach),
-        (&keybinds.goto, KeybindAction::OpenNavigator),
-    ] {
-        if action_matches(bindings, key, dispatch) {
-            return Some(action);
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        ) => {
+            $(
+                if action_matches(&keybinds.$action_field, key, dispatch) {
+                    return Some(KeybindAction::$action_variant);
+                }
+            )*
         }
     }
+    shepr_config::keybinding_table!(resolve_actions);
     None
 }
 
@@ -148,36 +77,32 @@ pub fn resolve_indexed_action(
     // The second pass only reaches combos accepted by the config matcher's full
     // code-and-modifier check, including its legacy shifted-key forms.
     for exact_modifiers in [true, false] {
-        let trigger_matches = |binding: &shepr_config::IndexedKeybind| {
-            let dispatch_matches = match dispatch {
-                KeybindDispatch::Direct => binding.trigger.is_direct(),
-                KeybindDispatch::Prefix => binding.trigger.is_prefix(),
+        macro_rules! resolve_indexed {
+            (
+                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            ) => {
+                $(
+                    for binding in &keybinds.$indexed_field {
+                        let dispatch_matches = match dispatch {
+                            KeybindDispatch::Direct => binding.trigger.is_direct(),
+                            KeybindDispatch::Prefix => binding.trigger.is_prefix(),
+                        };
+                        let expected_modifiers =
+                            shepr_config::normalize_key_combo(binding.trigger.combo()).1;
+                        if dispatch_matches
+                            && (actual_modifiers == expected_modifiers) == exact_modifiers
+                            && let Some(index) = binding.matched_index(key)
+                        {
+                            return Some(KeybindAction::$indexed_variant(index));
+                        }
+                    }
+                )*
             };
-            let expected_modifiers = shepr_config::normalize_key_combo(binding.trigger.combo()).1;
-            dispatch_matches && (actual_modifiers == expected_modifiers) == exact_modifiers
-        };
-
-        for binding in &keybinds.switch_tab {
-            if trigger_matches(binding)
-                && let Some(index) = binding.matched_index(key)
-            {
-                return Some(KeybindAction::SwitchTab(index));
-            }
         }
-        for binding in &keybinds.switch_workspace {
-            if trigger_matches(binding)
-                && let Some(index) = binding.matched_index(key)
-            {
-                return Some(KeybindAction::SwitchWorkspace(index));
-            }
-        }
-        for binding in &keybinds.focus_agent {
-            if trigger_matches(binding)
-                && let Some(index) = binding.matched_index(key)
-            {
-                return Some(KeybindAction::FocusAgent(index));
-            }
-        }
+        shepr_config::keybinding_table!(resolve_indexed);
     }
 
     None

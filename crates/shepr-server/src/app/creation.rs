@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
-use super::{App, api_helpers::pane_agent_status};
-use shepr_api::error::{ApiError, ApiErrorCode};
+use super::{
+    App,
+    api_helpers::{pane_agent_status, workspace_not_found},
+};
+use shepr_api::error::ApiError;
 use shepr_api::schema::{EventData, EventEnvelope};
 use shepr_config::NewTerminalCwd;
 use shepr_mux::workspace::Workspace;
@@ -144,16 +147,10 @@ impl App {
     ) -> Result<Vec<shepr_api::schema::PaneInfo>, ApiError> {
         if let Some(workspace_id) = workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(workspace_id) else {
-                return Err(ApiError::new(
-                    ApiErrorCode::WorkspaceNotFound,
-                    format!("workspace {workspace_id} not found"),
-                ));
+                return Err(workspace_not_found(workspace_id));
             };
             let Some(ws) = self.state.workspaces.get(ws_idx) else {
-                return Err(ApiError::new(
-                    ApiErrorCode::WorkspaceNotFound,
-                    format!("workspace {workspace_id} not found"),
-                ));
+                return Err(workspace_not_found(workspace_id));
             };
             Ok(ws
                 .tabs()
@@ -321,7 +318,7 @@ impl App {
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
             scroll,
-            revision: terminal.revision,
+            revision: terminal.revision(),
         })
     }
 

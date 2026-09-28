@@ -7,13 +7,13 @@ impl App {
         target: &PaneTarget,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return pane_not_found(id, &target.pane_id);
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return pane_not_found(id, &target.pane_id);
+            return Err(pane_not_found(Some(&target.pane_id)));
         };
         match runtime.clear_screen() {
             Ok(()) => success(id, ResponseResult::Ok {}),
@@ -27,19 +27,19 @@ impl App {
         params: &PaneScrollParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         runtime.set_scroll_offset_from_bottom(
             usize::try_from(params.offset_from_bottom).unwrap_or(usize::MAX),
         );
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         success(id, ResponseResult::PaneInfo { pane })
     }
@@ -47,28 +47,25 @@ impl App {
     pub(crate) fn pane_selection_text(
         &self,
         params: &PaneSelectionReadParams,
-    ) -> Result<String, (&'static str, String)> {
+    ) -> Result<String, shepr_api::error::ApiError> {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err((
-                "pane_not_found",
-                format!("pane not found: {}", params.pane_id),
-            ));
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err((
-                "pane_not_found",
-                format!("pane not found: {}", params.pane_id),
-            ));
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let before = runtime.content_seq();
         if params
             .content_revision
             .is_some_and(|revision| revision != before || !before.is_multiple_of(2))
         {
-            return Err(("stale_content", "pane content changed".to_owned()));
+            return Err(shepr_api::error::ApiError::new(
+                shepr_api::error::ApiErrorCode::StaleContent,
+                "pane content changed",
+            ));
         }
         let selection = shepr_vt::selection::Selection::range(
             pane_id,
@@ -76,13 +73,16 @@ impl App {
             shepr_vt::Point::new(params.cursor.row, params.cursor.col),
         );
         let Some(text) = runtime.extract_selection(&selection) else {
-            return Err((
-                "selection_unavailable",
-                "selection text is unavailable".to_owned(),
+            return Err(shepr_api::error::ApiError::new(
+                shepr_api::error::ApiErrorCode::SelectionUnavailable,
+                "selection text is unavailable",
             ));
         };
         if params.content_revision.is_some() && runtime.content_seq() != before {
-            return Err(("stale_content", "pane content changed".to_owned()));
+            return Err(shepr_api::error::ApiError::new(
+                shepr_api::error::ApiErrorCode::StaleContent,
+                "pane content changed",
+            ));
         }
         Ok(text)
     }
@@ -100,7 +100,7 @@ impl App {
                     text,
                 },
             ),
-            Err((code, message)) => failure(id, code, message),
+            Err(error) => Err(error),
         }
     }
 
@@ -110,13 +110,13 @@ impl App {
         params: PaneCopyMotionParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let before = runtime.content_seq();
         if params
@@ -227,13 +227,13 @@ impl App {
         params: PaneCopySearchParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         const MAX_QUERY_BYTES: usize = 4096;
         const MAX_RETURNED_MATCHES: usize = 1024;

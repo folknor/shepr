@@ -8,7 +8,9 @@ use shepr_api::schema::{
     WorkspaceReportMetadataParams, WorkspaceTarget,
 };
 
-use super::super::api_helpers::{normalize_metadata_source, normalize_metadata_ttl};
+use super::super::api_helpers::{
+    normalize_metadata_source, normalize_metadata_ttl, workspace_not_found,
+};
 use super::responses::{failure, success};
 
 impl App {
@@ -27,10 +29,10 @@ impl App {
         target: &WorkspaceTarget,
     ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
-            return workspace_not_found(id, &target.workspace_id);
+            return Err(workspace_not_found(&target.workspace_id));
         };
         let Some(workspace) = self.workspace_info(index) else {
-            return workspace_not_found(id, &target.workspace_id);
+            return Err(workspace_not_found(&target.workspace_id));
         };
 
         success(id, ResponseResult::WorkspaceInfo { workspace })
@@ -54,7 +56,7 @@ impl App {
                         Some(index),
                         PaneContextFallback::None,
                     ),
-                    None => return workspace_not_found(id, workspace_id),
+                    None => return Err(workspace_not_found(workspace_id)),
                 },
                 None => self.state.resolve_pane_context(
                     None,
@@ -106,14 +108,14 @@ impl App {
         target: &WorkspaceTarget,
     ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
-            return workspace_not_found(id, &target.workspace_id);
+            return Err(workspace_not_found(&target.workspace_id));
         };
         if self.state.workspaces.get(index).is_none() {
-            return workspace_not_found(id, &target.workspace_id);
+            return Err(workspace_not_found(&target.workspace_id));
         }
         self.state.switch_workspace(index);
         let Some(workspace) = self.workspace_info(index) else {
-            return workspace_not_found(id, &target.workspace_id);
+            return Err(workspace_not_found(&target.workspace_id));
         };
 
         success(id, ResponseResult::WorkspaceInfo { workspace })
@@ -125,13 +127,13 @@ impl App {
         params: WorkspaceRenameParams,
     ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         let Some(workspace_id) = self.public_workspace_id(index) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         let Some(ws) = self.state.workspaces.get_mut(index) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         ws.set_custom_name(params.label.clone());
         shepr_platform::logging::workspace_renamed(&ws.id);
@@ -143,7 +145,7 @@ impl App {
             },
         });
         let Some(workspace) = self.workspace_info(index) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
 
         success(id, ResponseResult::WorkspaceInfo { workspace })
@@ -155,10 +157,10 @@ impl App {
         params: &WorkspaceMoveParams,
     ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         if self.state.workspaces.get(index).is_none() {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         }
         if params.insert_index > self.state.workspaces.len() {
             return failure(
@@ -169,7 +171,7 @@ impl App {
         }
 
         let Some(workspace_id) = self.public_workspace_id(index) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         let insert_index = params.insert_index;
         let moved = self.state.move_workspace(index, insert_index);
@@ -204,10 +206,10 @@ impl App {
         let mut seen_ids = std::collections::HashSet::new();
         for requested_id in &params.workspace_ids {
             let Some(index) = self.parse_workspace_id(requested_id) else {
-                return workspace_not_found(id, requested_id);
+                return Err(workspace_not_found(requested_id));
             };
             let Some(workspace) = self.state.workspaces.get(index) else {
-                return workspace_not_found(id, requested_id);
+                return Err(workspace_not_found(requested_id));
             };
             if !seen_ids.insert(workspace.id.to_string()) {
                 return failure(
@@ -222,10 +224,10 @@ impl App {
         let before_workspace_id = match params.before_workspace_id {
             Some(requested_id) => {
                 let Some(index) = self.parse_workspace_id(&requested_id) else {
-                    return workspace_not_found(id, &requested_id);
+                    return Err(workspace_not_found(&requested_id));
                 };
                 let Some(workspace) = self.state.workspaces.get(index) else {
-                    return workspace_not_found(id, &requested_id);
+                    return Err(workspace_not_found(&requested_id));
                 };
                 if seen_ids.contains(workspace.id.as_str()) {
                     return failure(
@@ -262,7 +264,7 @@ impl App {
         params: WorkspaceReportMetadataParams,
     ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         let source = match normalize_metadata_source(&params.source) {
             Ok(source) => source,
@@ -277,7 +279,7 @@ impl App {
             Err(message) => return failure(id, ApiErrorCode::InvalidMetadataToken, message),
         };
         let Some(workspace) = self.state.workspaces.get_mut(index) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         let now = std::time::Instant::now();
         if !shepr_mux::terminal::metadata_tokens::sequence_is_fresh(
@@ -333,10 +335,10 @@ impl App {
         params: &WorkspaceCloseParams,
     ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         };
         if self.state.workspaces.get(index).is_none() {
-            return workspace_not_found(id, &params.workspace_id);
+            return Err(workspace_not_found(&params.workspace_id));
         }
         let close_events = self.workspace_close_events(index);
         self.state.close_workspace_at(index);
@@ -351,14 +353,6 @@ impl App {
             .filter_map(|idx| self.workspace_info(idx))
             .collect()
     }
-}
-
-fn workspace_not_found(id: String, workspace_id: &str) -> ApiResult {
-    failure(
-        id,
-        ApiErrorCode::WorkspaceNotFound,
-        format!("workspace {workspace_id} not found"),
-    )
 }
 
 #[cfg(test)]

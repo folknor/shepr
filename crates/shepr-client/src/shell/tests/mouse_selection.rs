@@ -654,7 +654,10 @@ fn double_click_drag_invalidates_cached_boundaries_outside_selected_cells() {
             .as_ref()
             .expect("test precondition")
             .clone();
-        changed.surface_revision += 1;
+        changed.surface_revision = changed
+            .surface_revision
+            .checked_next()
+            .expect("test precondition");
         changed.panes[0].content_revision += 2;
         changed.frame.cells[14].symbol = " ".into();
         state.set_pane_surface(changed);
@@ -729,7 +732,10 @@ fn double_click_release_ignores_reply_after_focus_or_content_changes() {
                 .as_ref()
                 .expect("test precondition")
                 .clone();
-            changed.surface_revision += 1;
+            changed.surface_revision = changed
+                .surface_revision
+                .checked_next()
+                .expect("test precondition");
             changed.panes[0].content_revision += 2;
             state.set_pane_surface(changed);
         }
@@ -759,7 +765,10 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
             .as_ref()
             .expect("test precondition")
             .clone();
-        resized.surface_revision += 1;
+        resized.surface_revision = resized
+            .surface_revision
+            .checked_next()
+            .expect("test precondition");
         resized.panes[0].rect.width += 5;
         resized.panes[0].inner_rect.width += 5;
         state.set_pane_surface(resized);

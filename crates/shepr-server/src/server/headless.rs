@@ -612,7 +612,7 @@ impl HeadlessServer {
             self.app.save_session_before_teardown_async().await;
         }
         self.app.terminal_runtimes.clear();
-        if !shepr_mux::pane::wait_for_pane_session_teardowns(Duration::from_secs(3)) {
+        if !self.app.wait_for_pane_teardowns(Duration::from_secs(3)) {
             warn!("pane session teardown did not finish before server exit");
         }
         self.app.retire_session_writer();

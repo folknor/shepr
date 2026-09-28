@@ -70,10 +70,14 @@ type CoreBrokenCheck = Box<dyn Fn() -> bool + Send + 'static>;
 /// Why the actor's IO loop ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderExit {
-    /// EOF, an IO error or a shutdown request. The
+    /// EOF, a PTY read error or a shutdown request. The
     /// child has gone or is being torn down; its own exit is reported by
     /// whoever reaps it.
     Closed,
+    /// The actor could no longer wait for or drain PTY readiness. The child
+    /// may still be running, so the owner must remove the pane and tear down
+    /// its session rather than waiting for the child watcher.
+    IoFailed,
     /// The read callback panicked, or reported the terminal core broken by a
     /// panic elsewhere (a terminal core bug either way). The loop stops and
     /// the master fd is closed, but the child may outlive the SIGHUP, so the
@@ -540,9 +544,11 @@ impl PtyIoActor {
             on_read: config.on_read,
             on_reader_exit: config.on_reader_exit,
             core_broken: config.core_broken,
-            read_callback_panicked: false,
+            exit_reason: ReaderExit::Closed,
             poll_observer,
             resize_pty: Box::new(resize_pty),
+            poll_pty_and_wake: fd::poll_pty_and_wake,
+            drain_wake_fd: fd::drain_wake_fd,
         };
         std::thread::Builder::new()
             .name(format!("shepr-pty-{}", config.pane_id.raw()))
@@ -575,9 +581,11 @@ struct PtyIoActorRunner {
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
     core_broken: Option<CoreBrokenCheck>,
-    read_callback_panicked: bool,
+    exit_reason: ReaderExit,
     poll_observer: Option<std_mpsc::Sender<()>>,
     resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
+    poll_pty_and_wake: fn(RawFd, RawFd, bool, i32) -> std::io::Result<fd::PtyWakeReadiness>,
+    drain_wake_fd: fn(RawFd) -> std::io::Result<()>,
 }
 
 struct ActiveSubmission {
@@ -626,7 +634,7 @@ impl PtyIoActorRunner {
                     pane = self.pane_id.raw(),
                     "terminal core is broken by a panic elsewhere; closing the pane"
                 );
-                self.read_callback_panicked = true;
+                self.exit_reason = ReaderExit::Panicked;
                 break;
             }
 
@@ -643,7 +651,10 @@ impl PtyIoActorRunner {
                 poll_observer.send(()).ok();
             }
 
-            match fd::poll_pty_and_wake(
+            // The poll helper retries EINTR. A hard poll or wake-drain error
+            // stops reads while the child may still be alive, so report an
+            // IO failure that makes the mux remove this pane and tear it down.
+            match (self.poll_pty_and_wake)(
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
                 self.has_writable_work(),
@@ -651,9 +662,14 @@ impl PtyIoActorRunner {
             ) {
                 Ok(readiness) => {
                     if readiness.wake_ready
-                        && let Err(err) = fd::drain_wake_fd(self.wake_read_fd.as_raw_fd())
+                        && let Err(err) = (self.drain_wake_fd)(self.wake_read_fd.as_raw_fd())
                     {
-                        debug!(pane = self.pane_id.raw(), err = %err, "PTY actor wake drain failed");
+                        error!(
+                            pane = self.pane_id.raw(),
+                            err = %err,
+                            "PTY actor wake drain failed; closing the pane"
+                        );
+                        self.exit_reason = ReaderExit::IoFailed;
                         break;
                     }
                     if readiness.pty_error {
@@ -674,7 +690,12 @@ impl PtyIoActorRunner {
                     }
                 }
                 Err(err) => {
-                    debug!(pane = self.pane_id.raw(), err = %err, "PTY actor poll failed");
+                    error!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        "PTY actor poll failed; closing the pane"
+                    );
+                    self.exit_reason = ReaderExit::IoFailed;
                     break;
                 }
             }
@@ -683,14 +704,9 @@ impl PtyIoActorRunner {
         self.close_inbox();
         if let Some(on_reader_exit) = self.on_reader_exit.take() {
             // `Closed` lets the mux defer pane removal to the child watcher.
-            // Poll and wake-pipe failures can leave the child alive, but they
-            // need a distinct child-exit reason before they can be reported
-            // here without misclassifying checkpoint policy.
-            on_reader_exit(if self.read_callback_panicked {
-                ReaderExit::Panicked
-            } else {
-                ReaderExit::Closed
-            });
+            // `IoFailed` makes a live-but-unreadable child's pane removable;
+            // `Panicked` marks a broken terminal core that cannot checkpoint.
+            on_reader_exit(self.exit_reason);
         }
         debug!(pane = self.pane_id.raw(), "PTY actor exiting");
     }
@@ -945,7 +961,7 @@ impl PtyIoActorRunner {
                                 panic = panic_payload_message(&*payload),
                                 "PTY read callback panicked; closing the pane"
                             );
-                            self.read_callback_panicked = true;
+                            self.exit_reason = ReaderExit::Panicked;
                             return ReadOutcome::Closed;
                         }
                     };
@@ -954,7 +970,7 @@ impl PtyIoActorRunner {
                         pane = self.pane_id.raw(),
                         "terminal core is broken by an earlier panic; closing the pane"
                     );
-                    self.read_callback_panicked = true;
+                    self.exit_reason = ReaderExit::Panicked;
                     return ReadOutcome::Closed;
                 }
                 let after_response_order = result.after_response_order;
@@ -980,7 +996,7 @@ impl PtyIoActorRunner {
                             panic = panic_payload_message(&*payload),
                             "PTY post-read effects panicked; closing the pane"
                         );
-                        self.read_callback_panicked = true;
+                        self.exit_reason = ReaderExit::Panicked;
                         return ReadOutcome::Closed;
                     }
                 }
@@ -1405,9 +1421,11 @@ mod tests {
             on_read,
             on_reader_exit: None,
             core_broken: None,
-            read_callback_panicked: false,
+            exit_reason: ReaderExit::Closed,
             poll_observer: None,
             resize_pty: Box::new(resize_pty),
+            poll_pty_and_wake: fd::poll_pty_and_wake,
+            drain_wake_fd: fd::drain_wake_fd,
         };
         (runner, handle, peer)
     }
@@ -2049,6 +2067,50 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("reader exit is reported after peer closure"),
             ReaderExit::Closed
+        );
+    }
+
+    #[test]
+    fn hard_poll_failure_reports_io_failed() {
+        let (mut runner, _handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let (exit_tx, exit_rx) = std_mpsc::channel();
+        runner.on_reader_exit = Some(Box::new(move |reason| {
+            exit_tx
+                .send(reason)
+                .expect("reader exit receiver stays alive");
+        }));
+        runner.poll_pty_and_wake = |_, _, _, _| Err(std::io::Error::other("injected poll failure"));
+
+        runner.run();
+
+        assert_eq!(
+            exit_rx.try_recv().expect("reader exit is reported"),
+            ReaderExit::IoFailed
+        );
+    }
+
+    #[test]
+    fn wake_drain_failure_reports_io_failed() {
+        let (mut runner, _handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let (exit_tx, exit_rx) = std_mpsc::channel();
+        runner.on_reader_exit = Some(Box::new(move |reason| {
+            exit_tx
+                .send(reason)
+                .expect("reader exit receiver stays alive");
+        }));
+        runner.poll_pty_and_wake = |_, _, _, _| {
+            Ok(fd::PtyWakeReadiness {
+                wake_ready: true,
+                ..Default::default()
+            })
+        };
+        runner.drain_wake_fd = |_| Err(std::io::Error::other("injected wake drain failure"));
+
+        runner.run();
+
+        assert_eq!(
+            exit_rx.try_recv().expect("reader exit is reported"),
+            ReaderExit::IoFailed
         );
     }
 

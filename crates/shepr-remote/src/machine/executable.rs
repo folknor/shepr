@@ -39,9 +39,8 @@ impl RemoteExecutable {
         &self.0
     }
 
-    // Discovery uses this after parse rejects a path to keep its shell-quoting
-    // explanation distinct from other rejection reasons; removing the second
-    // classification requires changing that caller to consume a typed reason.
+    // Keep this predicate until the typed parse error can be re-exported from
+    // `machine.rs`; callers need the rejection reason reachable through that API.
     /// Whether `value` would be rejected only because a nested remote shell
     /// command could not use it as a plain word.
     pub fn needs_shell_quoting(value: &str) -> bool {

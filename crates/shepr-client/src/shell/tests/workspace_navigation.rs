@@ -277,6 +277,37 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
 }
 
 #[test]
+fn blocked_preview_notice_names_the_configured_open_key() {
+    let (mut state, _) = state_with_remote();
+    state.compose(100, 28).expect("test precondition");
+    enter_navigation(&mut state);
+    preview_key(&mut state, b"\x1b[B");
+    preview_key(&mut state, b"W");
+    // The hint is the configured key's label, lowercase like every other
+    // key label, so a rebound navigate_open_workspace is named correctly.
+    let body = &state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("blocked preview notice")
+        .body;
+    assert!(body.contains("press enter before"), "{body}");
+}
+
+#[test]
+fn navigate_back_matches_its_configured_modifiers_exactly() {
+    let (mut state, _) = state_with_remote();
+    state.compose(100, 28).expect("test precondition");
+    enter_navigation(&mut state);
+    // Alt+Esc (kitty encoding) is not the configured "esc": navigate_back
+    // matches exactly like every other binding, so navigate mode stays open.
+    let alt_esc = state.handle_input_bytes(b"\x1b[27;3u");
+    assert!(alt_esc.actions.is_empty() && alt_esc.requests.is_empty());
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+    preview_key(&mut state, b"\x1b[27u");
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+}
+
+#[test]
 fn empty_workspace_navigation_enter_exits_without_focusing() {
     let (mut state, _) = state_with_remote();
     let mut empty = workspaces(0);
@@ -383,19 +414,19 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
         }
         assert_selected(&state, &remote_id, "ws_2");
         let selected = state.navigate_workspace_id.clone();
-        remote.revision += 1;
+        remote.revision = remote.revision.checked_next().expect("test precondition");
         state.set_endpoint_snapshot_for_generation(&remote_id, 7, Box::new(remote.clone()));
         assert_eq!(state.navigate_workspace_id, selected);
         assert!(state.navigation_target_valid(selected.as_ref().expect("test precondition")));
         let mut local = snapshot();
-        local.revision += 1;
+        local.revision = local.revision.checked_next().expect("test precondition");
         state.set_snapshot(Box::new(local));
         assert_eq!(state.navigate_workspace_id, selected);
         match invalidation {
             "offline" => state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting),
             "removed" => state.set_endpoint_catalog(&[]),
             "deleted" => {
-                remote.revision += 1;
+                remote.revision = remote.revision.checked_next().expect("test precondition");
                 remote.workspaces.pop();
                 state.set_endpoint_snapshot_for_generation(&remote_id, 7, Box::new(remote));
             }
@@ -451,7 +482,7 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
         match invalidation {
             "boot" => local.boot_id = "new-local-boot".into(),
             "deleted" => {
-                local.revision += 1;
+                local.revision = local.revision.checked_next().expect("test precondition");
                 local.workspaces.pop();
             }
             _ => {}

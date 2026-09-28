@@ -93,12 +93,8 @@ fn launch() -> CliResult<i32> {
         Err(exit_code) => return Ok(exit_code),
     };
 
-    let command = match &invocation.launch {
-        cli::Launch::Cli(command) => Some(command.as_ref()),
-        _ => None,
-    };
     if let Some(machine) = invocation.machine() {
-        return cli::run_on_machine(command, &machine);
+        return cli::run_on_machine(invocation.cli_command(), &machine);
     }
     let requested_session = invocation
         .requested_session()
@@ -143,7 +139,7 @@ fn launch() -> CliResult<i32> {
         return Ok(0);
     }
 
-    if let Some(command) = command {
+    if let Some(command) = invocation.cli_command() {
         return cli::run(command, requested_session.clone());
     }
 

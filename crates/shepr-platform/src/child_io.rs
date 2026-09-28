@@ -9,15 +9,20 @@ pub enum ChildExitReason {
     /// The child may still be running; the pane is ended so its session is
     /// torn down, and no checkpoint is taken because the core is broken.
     ReaderPanicked,
+    /// The PTY actor hit a hard poll or wake-pipe failure and can no longer
+    /// read the pane. Its terminal core remains usable, so checkpoint the
+    /// current pane state before removing it and tearing down its session.
+    ReaderIoFailed,
 }
 
 impl ChildExitReason {
-    /// A signaled status for a pane that is still present needs a final
-    /// session checkpoint. shepr-generated teardown signals follow pane
-    /// removal, or happen during startup failure before any pane exit event,
-    /// so they cannot skip a checkpoint for a pane that is still live.
+    /// A signal exit or a reader IO failure with an intact terminal core needs
+    /// a final session checkpoint before pane removal. shepr-generated
+    /// teardown signals follow pane removal, or happen during startup failure
+    /// before any pane exit event, so they cannot skip a checkpoint for a pane
+    /// that is still live. A reader panic skips it because the core is broken.
     pub fn requires_session_checkpoint(self) -> bool {
-        matches!(self, Self::Interrupted)
+        matches!(self, Self::Interrupted | Self::ReaderIoFailed)
     }
 }
 
@@ -118,5 +123,16 @@ pub(crate) fn read_limited_reader(
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(err) => Err(err),
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChildExitReason;
+
+    #[test]
+    fn reader_failure_checkpoint_policy_distinguishes_a_broken_core() {
+        assert!(ChildExitReason::ReaderIoFailed.requires_session_checkpoint());
+        assert!(!ChildExitReason::ReaderPanicked.requires_session_checkpoint());
     }
 }

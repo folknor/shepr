@@ -1471,12 +1471,12 @@ impl ClientLoop<'_> {
             ServerMessage::Clipboard { data } => {
                 // write_clipboard_bytes flushes its own OSC 52 fallback, so no flush is
                 // needed here. Once per user copy, so a warn cannot flood; only the
-                // length is logged because the payload is the user's selection.
+                // base64 length is logged because the payload is the user's selection.
                 if let Err(error) = forward_clipboard(&data) {
                     warn!(
                         endpoint = %endpoint_id.storage_key(),
                         generation,
-                        bytes = data.len(),
+                        encoded_bytes = data.len(),
                         %error,
                         "clipboard copy from the server did not reach the host clipboard"
                     );

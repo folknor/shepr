@@ -7,7 +7,7 @@ impl App {
         params: PaneReportAgentParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
@@ -36,7 +36,7 @@ impl App {
         params: PaneReportAgentSessionParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
@@ -66,7 +66,7 @@ impl App {
         params: PaneReportMetadataParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let agent_label = match params.agent.as_deref() {
             Some(agent) => match normalize_reported_agent_label(agent) {
@@ -158,10 +158,10 @@ impl App {
             .and_then(|workspace| workspace.pane_state(pane_id))
             .map(|pane| pane.attached_terminal_id.clone())
         else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         if terminal.metadata_report_blocked_by_process_exit(
             &source,
@@ -210,7 +210,7 @@ impl App {
                 .metadata_tokens
                 .patch(tokens, ttl, std::time::Instant::now());
             if changed {
-                terminal.revision = terminal.revision.saturating_add(1);
+                terminal.bump_revision();
             }
             changed
         });
@@ -243,7 +243,7 @@ impl App {
         params: PaneClearAgentAuthorityParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         self.handle_internal_event(shepr_mux::events::AppEvent::HookAuthorityCleared {
             pane_id,
@@ -260,7 +260,7 @@ impl App {
         params: PaneReleaseAgentParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+            return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);

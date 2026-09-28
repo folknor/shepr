@@ -200,31 +200,42 @@ pub fn encode_result(id: String, result: ApiResult) -> String {
     encode_result_with_outcome(id, result).body
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApiLogOutcome {
+    Ok,
+    Timeout,
+    Error,
+}
+
+impl ApiLogOutcome {
+    pub(crate) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Timeout => "timeout",
+            Self::Error => "error",
+        }
+    }
+
+    fn for_error_code(code: &str) -> Self {
+        if code == ApiErrorCode::Timeout.as_str() {
+            Self::Timeout
+        } else {
+            Self::Error
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct EncodedApiResponse {
     pub(crate) body: String,
-    pub(crate) outcome: &'static str,
-}
-
-impl EncodedApiResponse {
-    pub(crate) fn as_str(&self) -> &str {
-        &self.body
-    }
-}
-
-impl std::ops::Deref for EncodedApiResponse {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
+    pub(crate) outcome: ApiLogOutcome,
 }
 
 pub(crate) fn encode_result_with_outcome(id: String, result: ApiResult) -> EncodedApiResponse {
     let outcome = match &result {
-        Ok(_) => "ok",
-        Err(error) if error.code == ApiErrorCode::Timeout => "timeout",
-        Err(_) => "error",
+        Ok(_) => ApiLogOutcome::Ok,
+        Err(error) if error.code == ApiErrorCode::Timeout => ApiLogOutcome::Timeout,
+        Err(_) => ApiLogOutcome::Error,
     };
     let response = match result {
         Ok(result) => {
@@ -241,8 +252,8 @@ pub(crate) fn encode_result_with_outcome(id: String, result: ApiResult) -> Encod
     };
     EncodedApiResponse {
         body: response.body,
-        outcome: if response.outcome == "error" {
-            "error"
+        outcome: if response.outcome == ApiLogOutcome::Error {
+            ApiLogOutcome::Error
         } else {
             outcome
         },
@@ -250,15 +261,12 @@ pub(crate) fn encode_result_with_outcome(id: String, result: ApiResult) -> Encod
 }
 
 pub(crate) fn encode_error_response_with_outcome(response: &ErrorResponse) -> EncodedApiResponse {
-    let outcome = match ApiErrorCode::from(response.error.code.as_str()) {
-        ApiErrorCode::Timeout => "timeout",
-        _ => "error",
-    };
+    let outcome = ApiLogOutcome::for_error_code(response.error.code.as_str());
     let encoded = super::serialize_response_or_error_with_outcome(&response.id, &response);
     EncodedApiResponse {
         body: encoded.body,
-        outcome: if encoded.outcome == "error" {
-            "error"
+        outcome: if encoded.outcome == ApiLogOutcome::Error {
+            ApiLogOutcome::Error
         } else {
             outcome
         },
@@ -292,5 +300,23 @@ mod tests {
             message: "more than one agent matches".into(),
         });
         assert_eq!(error.code, ApiErrorCode::AgentTargetAmbiguous);
+    }
+
+    #[test]
+    fn prebuilt_error_responses_log_timeout_only_for_the_timeout_code() {
+        let response = |code: &ApiErrorCode| ErrorResponse {
+            id: "req".into(),
+            error: ErrorBody::new(code, "message"),
+        };
+        let timeout = encode_error_response_with_outcome(&response(&ApiErrorCode::Timeout));
+        assert_eq!(timeout.outcome, ApiLogOutcome::Timeout);
+        assert_eq!(timeout.outcome.as_str(), "timeout");
+        let parsed: ErrorResponse = serde_json::from_str(&timeout.body).expect("test precondition");
+        assert_eq!(parsed.error.code, ApiErrorCode::Timeout.as_str());
+
+        let other = encode_error_response_with_outcome(&response(&ApiErrorCode::PaneNotFound));
+        assert_eq!(other.outcome, ApiLogOutcome::Error);
+        assert_eq!(other.outcome.as_str(), "error");
+        assert_eq!(ApiLogOutcome::Ok.as_str(), "ok");
     }
 }

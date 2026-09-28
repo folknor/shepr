@@ -12,6 +12,28 @@ impl HeadlessServer {
         client_id: ClientId,
         active: bool,
     ) -> Option<(bool, u64)> {
+        // The floor is per connection and steps once per activation or
+        // changed snapshot, so exhaustion is unreachable in practice. Should
+        // it happen, drop the client: it reconnects with a fresh counter
+        // instead of receiving a floor that repeats a revision.
+        let raised_floor = if active {
+            let current = self
+                .clients
+                .get(&client_id)?
+                .shell_state()?
+                .projection_revision;
+            let Some(raised) = current.checked_next() else {
+                warn!(
+                    ?client_id,
+                    "projection revisions exhausted; dropping client"
+                );
+                self.remove_client_and_resize_if_needed(client_id);
+                return None;
+            };
+            Some(raised)
+        } else {
+            None
+        };
         let focus_before = self.shell_focus_targets();
         let focused_tabs_before = self.focused_shell_tabs();
         let (changed, projection_revision, held_inputs) = {
@@ -19,8 +41,8 @@ impl HeadlessServer {
             let (changed, projection_revision) = {
                 let shell = client.shell_state_mut()?;
                 let changed = shell.surface_active != active;
-                if active {
-                    shell.projection_revision = shell.projection_revision.next();
+                if let Some(raised) = raised_floor {
+                    shell.projection_revision = raised;
                     // Force the next control snapshot to carry this new floor instead of reusing a
                     // same-boot cached snapshot from the prior surface epoch.
                     shell.snapshot = None;

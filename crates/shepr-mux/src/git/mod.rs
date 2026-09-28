@@ -44,6 +44,8 @@ pub enum GitReadError {
         arguments: String,
         output: String,
     },
+    /// Git's indexed command-scope config environment is incomplete or invalid.
+    ConfigEnvironment { message: String },
     /// A repository file could not be read or was not safe to trust.
     FileRead { path: PathBuf, message: String },
 }
@@ -93,6 +95,12 @@ impl std::fmt::Display for GitReadError {
                 "git {arguments} returned unexpected output in {}: {output:?}",
                 cwd.display()
             ),
+            Self::ConfigEnvironment { message } => {
+                write!(
+                    formatter,
+                    "git command-scope config environment is invalid: {message}"
+                )
+            }
             Self::FileRead { path, message } => {
                 write!(formatter, "could not read {}: {message}", path.display())
             }

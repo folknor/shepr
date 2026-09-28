@@ -443,29 +443,14 @@ impl App {
 }
 
 fn available_shell_name(runtime: &shepr_mux::pane::PaneRuntime) -> Option<String> {
-    #[cfg(test)]
-    if runtime.child_pid().is_none() {
-        return Some("sh".into());
-    }
-    shepr_agent::detect::available_pane_shell(runtime.child_pid()?)
+    runtime.pane_shell_name()
 }
 
 pub(super) fn runtime_hosts_agent(
     runtime: &shepr_mux::pane::PaneRuntime,
     expected: shepr_agent::detect::Agent,
 ) -> bool {
-    #[cfg(test)]
-    if runtime.child_pid().is_none() {
-        return true;
-    }
-    live_runtime_agent(runtime) == Some(expected)
-}
-
-fn live_runtime_agent(
-    runtime: &shepr_mux::pane::PaneRuntime,
-) -> Option<shepr_agent::detect::Agent> {
-    let job = shepr_agent::detect::foreground_job(runtime.child_pid()?)?;
-    shepr_agent::detect::identify_agent_in_job(&job).map(|(agent, _)| agent)
+    runtime.foreground_agent() == Some(expected)
 }
 
 pub(super) enum AgentStartError {

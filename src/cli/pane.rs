@@ -139,7 +139,34 @@ impl Command {
     }
 
     pub(super) fn can_run_on_machine(&self) -> bool {
-        !matches!(self, Self::Invalid)
+        match self {
+            Self::List { .. }
+            | Self::Current { .. }
+            | Self::Get { .. }
+            | Self::Layout { .. }
+            | Self::ProcessInfo { .. }
+            | Self::Neighbor { .. }
+            | Self::Edges { .. }
+            | Self::Focus { .. }
+            | Self::Resize { .. }
+            | Self::Zoom { .. }
+            | Self::Read(_)
+            | Self::Rename(_)
+            | Self::Input { .. }
+            | Self::Split(_)
+            | Self::Swap(_)
+            | Self::Move(_)
+            | Self::Close { .. }
+            | Self::SendText(_)
+            | Self::SendKeys(_)
+            | Self::WaitOutput(_)
+            | Self::ReportAgent(_)
+            | Self::ReportAgentSession(_)
+            | Self::ReleaseAgent(_)
+            | Self::ReportMetadata(_)
+            | Self::Run { .. } => true,
+            Self::Invalid => false,
+        }
     }
 }
 
@@ -513,10 +540,10 @@ fn input_params(
     right_click: PaneRightClickTarget,
     caller: &CallerPane,
 ) -> Result<PaneInputSetParams, String> {
-    // The spec requires exactly one of the positional, `--pane` or `--current`,
-    // so the no-selector fallback never applies here.
+    // The spec requires exactly one selector, but preserve a usage error if
+    // this helper is called with matches that did not come from that spec.
     Ok(PaneInputSetParams {
-        pane_id: selected_pane(selector, caller)?.unwrap_or_default(),
+        pane_id: selected_pane(selector, caller)?.ok_or("missing required pane selector")?,
         right_click,
     })
 }
@@ -935,6 +962,19 @@ mod tests {
                 &OUTSIDE
             )
             .is_err()
+        );
+        assert_eq!(
+            super::input_params(
+                &super::PaneSelectorArgs {
+                    pane_id: None,
+                    pane: None,
+                    current: false,
+                },
+                PaneRightClickTarget::Shepr,
+                &OUTSIDE,
+            )
+            .expect_err("no selector is a usage error"),
+            "missing required pane selector"
         );
     }
 

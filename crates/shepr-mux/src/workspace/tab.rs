@@ -149,6 +149,7 @@ impl Tab {
                 &spawn.events,
                 &spawn.render_notify,
                 &spawn.render_dirty,
+                &spawn.pane_teardowns,
             )?
         } else {
             PaneRuntime::spawn(
@@ -164,6 +165,7 @@ impl Tab {
                 &spawn.events,
                 &spawn.render_notify,
                 &spawn.render_dirty,
+                &spawn.pane_teardowns,
             )?
         };
 
@@ -329,6 +331,7 @@ impl Tab {
                 &spawn.events,
                 &spawn.render_notify,
                 &spawn.render_dirty,
+                &spawn.pane_teardowns,
             ),
             None => PaneRuntime::spawn(
                 new_id,
@@ -343,6 +346,7 @@ impl Tab {
                 &spawn.events,
                 &spawn.render_notify,
                 &spawn.render_dirty,
+                &spawn.pane_teardowns,
             ),
         };
         let runtime = runtime?;

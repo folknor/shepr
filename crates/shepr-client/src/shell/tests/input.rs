@@ -608,7 +608,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
 
     // A newer snapshot arrives; its surface has not. The old frame is still on screen.
     let mut next = snapshot();
-    next.revision += 1;
+    next.revision = next.revision.checked_next().expect("test precondition");
     state.set_snapshot(Box::new(next));
     assert!(!state.hits.panes.is_empty());
     assert_eq!(state.hits.help_popup, popup);

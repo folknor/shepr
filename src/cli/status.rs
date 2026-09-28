@@ -21,7 +21,10 @@ impl Command {
     }
 
     pub(super) fn can_run_on_machine(self) -> bool {
-        matches!(self, Self::Overview { .. } | Self::Server { .. })
+        match self {
+            Self::Overview { .. } | Self::Server { .. } => true,
+            Self::Client { .. } | Self::Invalid => false,
+        }
     }
 }
 

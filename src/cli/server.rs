@@ -19,10 +19,10 @@ impl Command {
     }
 
     pub(super) fn can_run_on_machine(self) -> bool {
-        matches!(
-            self,
-            Self::Stop { .. } | Self::AgentManifests { .. } | Self::ReloadAgentManifests
-        )
+        match self {
+            Self::Stop { .. } | Self::AgentManifests { .. } | Self::ReloadAgentManifests => true,
+            Self::Invalid => false,
+        }
     }
 }
 

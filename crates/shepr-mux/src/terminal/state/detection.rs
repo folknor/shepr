@@ -37,7 +37,7 @@ impl TerminalState {
         self.terminal_title = title;
         let stripped_changed = previous_stripped != self.terminal_title_stripped();
         if stripped_changed {
-            self.revision = self.revision.wrapping_add(1);
+            self.bump_revision();
         }
         TerminalTitleChange {
             raw_changed: true,
@@ -78,6 +78,17 @@ impl TerminalState {
                 now,
             );
         }
+        self.bump_revision();
+    }
+
+    /// Returns the content revision used to reject stale pane reads.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Advances the content revision, preserving monotonicity at exhaustion.
+    /// Saturation avoids wrapping an old revision back into a current value.
+    pub fn bump_revision(&mut self) {
         self.revision = self.revision.saturating_add(1);
     }
 

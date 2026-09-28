@@ -10,6 +10,7 @@ use shepr_api::schema::{
 };
 use shepr_core::layout::{Node, PaneId};
 
+use super::super::api_helpers::{active_workspace_not_found, tab_not_found, workspace_not_found};
 use super::responses::{failure, success};
 
 const MAX_LAYOUT_PANES: usize = 24;
@@ -40,11 +41,7 @@ impl App {
             Some(tab_id) => match self.parse_tab_id(tab_id) {
                 Some(target) => Some(target),
                 None => {
-                    return failure(
-                        id,
-                        ApiErrorCode::TabNotFound,
-                        format!("tab {tab_id} not found"),
-                    );
+                    return Err(tab_not_found(tab_id));
                 }
             },
             None => None,
@@ -61,17 +58,13 @@ impl App {
             ws_idx
         } else if let Some(workspace_id) = params.workspace_id.as_deref() {
             let Some(ws_idx) = self.parse_workspace_id(workspace_id) else {
-                return failure(
-                    id,
-                    ApiErrorCode::WorkspaceNotFound,
-                    format!("workspace {workspace_id} not found"),
-                );
+                return Err(workspace_not_found(workspace_id));
             };
             ws_idx
         } else if let Some(active) = self.state.active_index() {
             active
         } else {
-            return failure(id, ApiErrorCode::WorkspaceNotFound, "no active workspace");
+            return Err(active_workspace_not_found());
         };
         if let Err(message) = validate_layout_tree(&params.root) {
             return failure(id, ApiErrorCode::InvalidLayout, message);
@@ -116,7 +109,10 @@ impl App {
         let spawn = self.pane_spawn_handles();
         let (workspace_id, root_pane_number, created) = {
             let Some(workspace) = self.state.workspaces.get(ws_idx) else {
-                return failure(id, ApiErrorCode::WorkspaceNotFound, "workspace not found");
+                return Err(match params.workspace_id.as_deref() {
+                    Some(workspace_id) => workspace_not_found(workspace_id),
+                    None => active_workspace_not_found(),
+                });
             };
             let workspace_id = workspace.id.clone();
             let root_pane_number = workspace.next_public_pane_number();
@@ -209,7 +205,9 @@ impl App {
                 .state
                 .prepare_tab_removal(target_ws_idx, target_tab_idx)
             else {
-                return failure(id, ApiErrorCode::TabNotFound, "tab not found");
+                return Err(tab_not_found(
+                    params.tab_id.as_deref().unwrap_or("replacement tab"),
+                ));
             };
             if matches!(
                 self.state.commit_tab_removal(&plan),

@@ -129,7 +129,7 @@ fn inactive_endpoint_with_an_undecodable_config_is_flagged_at_once() {
     };
     let good = endpoint(&state).snapshot.expect("remote snapshot");
     let mut bad = (*good).clone();
-    bad.revision = bad.revision.next();
+    bad.revision = bad.revision.checked_next().expect("test precondition");
     bad.resolved_config = vec![0xff; 3];
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(bad.clone()));
 
@@ -154,7 +154,7 @@ fn inactive_endpoint_with_an_undecodable_config_is_flagged_at_once() {
     );
 
     let mut fixed = (*good).clone();
-    fixed.revision = bad.revision.next();
+    fixed.revision = bad.revision.checked_next().expect("test precondition");
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(fixed));
     let recovered = endpoint(&state);
     assert_eq!(recovered.status, ClientEndpointStatus::Online);
@@ -172,7 +172,7 @@ fn inactive_endpoint_keeps_config_when_later_snapshots_omit_bytes() {
         .and_then(|endpoint| endpoint.snapshot.as_deref())
         .expect("remote snapshot")
         .clone();
-    later.revision = later.revision.next();
+    later.revision = later.revision.checked_next().expect("test precondition");
     later.resolved_config.clear();
     later.workspaces[0].label = "later".into();
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(later));
@@ -490,7 +490,10 @@ fn aggregate_agent_scroll_still_clamps_when_rows_shrink_on_activation() {
             .snapshot
             .clone()
             .expect("test precondition");
-        projection.revision += 1;
+        projection.revision = projection
+            .revision
+            .checked_next()
+            .expect("test precondition");
         projection.agents.truncate(1);
         state.set_endpoint_snapshot(&endpoint_id, projection);
     }
@@ -1463,7 +1466,10 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
             shepr_protocol::ProjectionRevision::new(previous_revision);
         previous_surface.surface_revision = shepr_protocol::SurfaceRevision::new(9);
         state.set_pane_surface(previous_surface.clone());
-        previous_surface.projection_revision += 1;
+        previous_surface.projection_revision = previous_surface
+            .projection_revision
+            .checked_next()
+            .expect("test precondition");
         state.set_pane_surface(previous_surface);
         assert!(state.pending_pane_surface.is_some());
         state.agent_scroll = 7;

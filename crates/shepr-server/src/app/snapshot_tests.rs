@@ -487,6 +487,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         &events,
         &std::sync::Arc::new(tokio::sync::Notify::new()),
         &std::sync::Arc::new(shepr_mux::render_signal::RenderSignal::new()),
+        &std::sync::Arc::default(),
     )
     .expect("test precondition");
     let pid = runtime.child_pid().expect("test precondition");
@@ -879,11 +880,26 @@ fn active_tab_default_is_zero() {
 
 #[test]
 fn snapshot_parsing_preserves_missing_cwd() {
+    let scratch = ScratchDir::new("snapshot-cwd");
+    let missing_cwd = scratch.join("missing-cwd");
+    let existing_cwd = scratch.to_path_buf();
+    assert_eq!(
+        std::fs::symlink_metadata(&missing_cwd)
+            .expect_err("test precondition")
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(
+        std::fs::metadata(&existing_cwd)
+            .expect("test precondition")
+            .is_dir()
+    );
+
     let mut panes = HashMap::new();
     panes.insert(
         0,
         PaneSnapshot {
-            cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-shepr-test"),
+            cwd: missing_cwd.clone(),
             label: None,
             agent_name: None,
             managed_agent_kind: None,
@@ -894,7 +910,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
     panes.insert(
         1,
         PaneSnapshot {
-            cwd: shepr_core::pathutil::home_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
+            cwd: existing_cwd.clone(),
             label: None,
             agent_name: None,
             managed_agent_kind: None,
@@ -909,7 +925,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         workspaces: vec![WorkspaceSnapshot {
             id: Some("test-ws".to_string()),
             custom_name: Some("fallback test".to_string()),
-            identity_cwd: PathBuf::from("/tmp"),
+            identity_cwd: existing_cwd,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -936,8 +952,5 @@ fn snapshot_parsing_preserves_missing_cwd() {
     let json = serde_json::to_string(&snap).expect("test precondition");
     let restored = parse_snapshot(&json).expect("test precondition");
     assert_eq!(restored.workspaces.len(), 1);
-    assert_eq!(
-        restored.workspaces[0].tabs[0].panes[&0].cwd,
-        PathBuf::from("/tmp/this-directory-does-not-exist-for-shepr-test")
-    );
+    assert_eq!(restored.workspaces[0].tabs[0].panes[&0].cwd, missing_cwd);
 }

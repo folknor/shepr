@@ -44,6 +44,7 @@ struct RestoreRuntimeContext<'a> {
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
     render_dirty: Arc<RenderSignal>,
+    pane_teardowns: Arc<crate::pane::PaneTeardownTracker>,
     history_carry: &'a HistoryCarry,
 }
 
@@ -100,6 +101,10 @@ type RestoredTab = (
     HashMap<PaneId, u32>,
 );
 /// Restore workspaces from a snapshot. Each pane gets a fresh shell in its saved cwd.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "restore threads geometry, launch policy and every handle a spawned pane reports through"
+)]
 pub fn restore(
     snapshot: &SessionSnapshot,
     history: Option<&SessionHistorySnapshot>,
@@ -112,6 +117,7 @@ pub fn restore(
     events: &mpsc::Sender<AppEvent>,
     render_notify: &Arc<Notify>,
     render_dirty: &Arc<RenderSignal>,
+    pane_teardowns: &Arc<crate::pane::PaneTeardownTracker>,
 ) -> RestoredSession {
     let history = history.filter(|history| {
         let matches = history.layout_fingerprint.is_some()
@@ -147,6 +153,7 @@ pub fn restore(
             events: events.clone(),
             render_notify: Arc::clone(render_notify),
             render_dirty: Arc::clone(render_dirty),
+            pane_teardowns: Arc::clone(pane_teardowns),
             history_carry: &history_carry,
         };
         let restored = restore_workspace(
@@ -611,6 +618,7 @@ fn restore_tab(
             &runtime_context.events,
             &runtime_context.render_notify,
             &runtime_context.render_dirty,
+            &runtime_context.pane_teardowns,
         );
 
         match runtime_result {
@@ -1076,6 +1084,7 @@ mod tests {
             &events,
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
+            &Arc::default(),
         );
         let tab = &workspaces[0].tabs()[0];
         assert_eq!(tab.layout.pane_ids(), vec![tab.root_pane]);
@@ -1156,6 +1165,7 @@ mod tests {
                 &events,
                 &Arc::new(Notify::new()),
                 &Arc::new(RenderSignal::new()),
+                &Arc::default(),
             );
             let case =
                 format!("resume={resume} missing_cwd={missing_cwd} missing_shell={missing_shell}");
@@ -1325,6 +1335,7 @@ mod tests {
             &events,
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
+            &Arc::default(),
         );
         assert!(restored.terminal_runtimes.is_empty());
         restored
@@ -1847,6 +1858,7 @@ mod tests {
                 &events,
                 &Arc::new(Notify::new()),
                 &Arc::new(RenderSignal::new()),
+                &Arc::default(),
             );
             let runtimes = crate::pane::PaneRuntimeRegistry::from(runtimes);
             let captured = crate::persist::capture(
@@ -1961,6 +1973,7 @@ mod tests {
             &events,
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
+            &Arc::default(),
         );
 
         let terminal = terminals
@@ -2052,6 +2065,7 @@ mod tests {
             &events,
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
+            &Arc::default(),
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
@@ -2269,6 +2283,7 @@ mod tests {
             &events,
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
+            &Arc::default(),
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
@@ -2344,6 +2359,7 @@ mod tests {
             &events,
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
+            &Arc::default(),
         );
 
         let terminal = terminals
@@ -2388,6 +2404,7 @@ mod tests {
             &events,
             &render_notify,
             &render_dirty,
+            &Arc::default(),
         );
         let runtime = runtimes
             .values()
@@ -2426,6 +2443,7 @@ mod tests {
             &events,
             &render_notify,
             &render_dirty,
+            &Arc::default(),
         );
         let runtime = runtimes
             .values()
@@ -2473,6 +2491,7 @@ mod tests {
                 &events,
                 &Arc::new(Notify::new()),
                 &Arc::new(RenderSignal::new()),
+                &Arc::default(),
             );
             let runtime = runtimes.values().next().expect("test precondition");
             assert!(

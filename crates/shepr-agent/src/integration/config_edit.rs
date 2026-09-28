@@ -67,6 +67,8 @@ pub(crate) fn ensure_command_hook(
         .as_array_mut()
         .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
 
+    // Claude preserves an already canonical entry so its settings text stays
+    // untouched; in that path this helper must not append a duplicate.
     let already_installed = entries.iter().any(|entry| {
         entry
             .get("hooks")
@@ -107,6 +109,8 @@ pub(crate) fn ensure_command_hook(
 //   { "type": "command", "matcher": "...", "bash": "...", ... }
 // Keep the helpers separate so install/uninstall preserves unrelated hooks in
 // each agent's native format instead of normalizing user configuration.
+// Appends unconditionally: the caller strips entries carrying the command
+// with `remove_flat_command_hook` first.
 pub(crate) fn ensure_flat_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -118,13 +122,6 @@ pub(crate) fn ensure_flat_command_hook(
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-
-    if entries.iter().any(|entry| {
-        entry.get("type").and_then(Value::as_str) == Some("command")
-            && entry.get("command").and_then(Value::as_str) == Some(command)
-    }) {
-        return Ok(());
-    }
 
     entries.push(json!({
         "type": "command",
@@ -286,6 +283,8 @@ pub(crate) fn remove_direct_command_hook(
 // Cursor hooks.json uses the minimal shape `{ "command": "..." }` documented at
 // https://cursor.com/docs/hooks. Keep this separate from the nested codex and
 // flat copilot helpers so install/uninstall does not rewrite unrelated hooks.
+// Appends unconditionally: the caller strips entries carrying the command
+// with `remove_simple_command_hook` first.
 pub(crate) fn ensure_simple_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -296,13 +295,6 @@ pub(crate) fn ensure_simple_command_hook(
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-
-    if entries
-        .iter()
-        .any(|entry| entry.get("command").and_then(Value::as_str) == Some(command))
-    {
-        return Ok(());
-    }
 
     entries.push(json!({ "command": command }));
     Ok(())

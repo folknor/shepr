@@ -373,7 +373,7 @@ fn attribute(file: &std::fs::File, name: &std::ffi::CStr) -> Option<Vec<u8>> {
 }
 
 #[test]
-fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access() {
+fn config_metadata_preserves_acl_without_inheriting_extra_access() {
     use std::os::unix::fs::MetadataExt;
 
     // Scratch lives on the build tree's filesystem, so this probe exercises
@@ -401,10 +401,6 @@ fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access()
         let target = dir.join(format!("target-{has_acl}"));
         std::fs::write(&source, b"old").expect("test precondition");
         let input = std::fs::File::open(&source).expect("test precondition");
-        if effective_uid() == 0 {
-            // SAFETY: fchown(2) on an fd `input` keeps open; integers only.
-            assert_eq!(unsafe { libc::fchown(input.as_raw_fd(), 1001, 1002) }, 0);
-        }
         if has_acl {
             set_attribute(&input, c"system.posix_acl_access", &acl);
         }
@@ -431,6 +427,34 @@ fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access()
         assert_eq!(std::fs::read(source).expect("test precondition"), b"old");
         assert_eq!(std::fs::read(target).expect("test precondition"), b"new");
     }
+}
+
+#[test]
+#[ignore = "requires root with mapped uid/gid 1001:1002 for fchown"]
+fn config_metadata_preserves_a_different_source_owner() {
+    use std::os::unix::fs::MetadataExt;
+
+    // A non-root process cannot create a differently owned source here. Testing
+    // the tolerated EPERM case itself needs an ownership seam in config_file.rs.
+    assert_eq!(effective_uid(), 0, "run this test as root");
+    let dir = shepr_test_support::ScratchDir::new("config-owner");
+    let source = dir.join("source");
+    let target = dir.join("target");
+    std::fs::write(&source, b"old").expect("test precondition");
+    let input = std::fs::File::open(&source).expect("test precondition");
+    // SAFETY: fchown(2) on an fd `input` keeps open; integers only.
+    assert_eq!(unsafe { libc::fchown(input.as_raw_fd(), 1001, 1002) }, 0);
+    let original = input.metadata().expect("test precondition");
+    drop(create_private_file(&target).expect("test precondition"));
+
+    write_config_temporary(Some(&source), &target, b"new").expect("test precondition");
+
+    let actual = std::fs::metadata(&target).expect("test precondition");
+    assert_eq!(
+        (actual.uid(), actual.gid()),
+        (original.uid(), original.gid())
+    );
+    assert_eq!(std::fs::read(&target).expect("test precondition"), b"new");
 }
 
 // ---------------------------------------------------------------------------
