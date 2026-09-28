@@ -647,8 +647,6 @@ mod tests {
         assert_eq!(identify_agent("ghcs"), Some(Agent::GithubCopilot));
         assert_eq!(identify_agent("grok"), Some(Agent::Grok));
         assert_eq!(identify_agent("grok-build"), Some(Agent::Grok));
-        assert_eq!(identify_agent("hermes"), Some(Agent::Hermes));
-        assert_eq!(identify_agent("hermes-agent"), Some(Agent::Hermes));
         assert_eq!(identify_agent("kilo"), Some(Agent::Kilo));
         assert_eq!(identify_agent("kilo-code"), Some(Agent::Kilo));
         assert_eq!(identify_agent("qwen"), Some(Agent::Qwen));
@@ -688,7 +686,6 @@ mod tests {
         assert_eq!(parse_agent_label("amp-local"), Some(Agent::Amp));
         assert_eq!(parse_agent_label("kiro-cli"), Some(Agent::Kiro));
         assert_eq!(parse_agent_label("grok-build"), Some(Agent::Grok));
-        assert_eq!(parse_agent_label("hermes-agent"), Some(Agent::Hermes));
         assert_eq!(parse_agent_label("qwen-code"), Some(Agent::Qwen));
         assert_eq!(parse_agent_label("letta-code"), Some(Agent::Letta));
         assert_eq!(parse_agent_label("maki"), Some(Agent::Maki));
@@ -724,7 +721,6 @@ mod tests {
             (Agent::Droid, "droid"),
             (Agent::Amp, "amp"),
             (Agent::Grok, "grok"),
-            (Agent::Hermes, "hermes"),
             (Agent::Kilo, "kilo"),
             (Agent::Qodercli, "qodercli"),
             (Agent::Qwen, "qwen"),
@@ -758,7 +754,6 @@ mod tests {
     #[test]
     fn session_identity_integrations_leave_state_to_screen_detection() {
         for (source, label, agent) in [
-            ("shepr:hermes", "hermes", Agent::Hermes),
             ("shepr:qwen", "qwen", Agent::Qwen),
             ("shepr:letta", "letta", Agent::Letta),
             ("shepr:agy", "agy", Agent::Antigravity),
@@ -1004,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn identify_agent_in_job_detects_python_version_wrapped_hermes() {
+    fn identify_agent_in_job_detects_python_version_wrapped_script() {
         let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
@@ -1012,16 +1007,16 @@ mod tests {
                 "python3.12",
                 &[
                     "/nix/store/example/bin/python3.12",
-                    "/nix/store/example/bin/hermes",
-                    "--resume",
-                    "session-id",
+                    "/nix/store/example/bin/codex",
+                    "--model",
+                    "gpt-5",
                 ],
             )],
         };
 
         assert_eq!(
             identify_agent_in_job(&job),
-            Some((Agent::Hermes, "hermes".to_string()))
+            Some((Agent::Codex, "codex".to_string()))
         );
     }
 

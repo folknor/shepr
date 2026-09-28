@@ -28,7 +28,6 @@ pub enum StatusIndicatorStyle {
 #[serde(rename_all = "lowercase")]
 pub enum HostCursorModeConfig {
     #[default]
-    Auto,
     Native,
     Drawn,
 }
@@ -710,7 +709,7 @@ impl Default for UiConfig {
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             mouse_capture: true,
             copy_on_select: true,
-            host_cursor: HostCursorModeConfig::Auto,
+            host_cursor: HostCursorModeConfig::Native,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,

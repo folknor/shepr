@@ -22,6 +22,23 @@ pass should expect that.
 
 ## HYGG-001 - Tests depend on host-installed programs rather than on anything the workspace builds
 
+**Decision (partial):** piece 3 of the test-isolation work adopted from
+broadarrow: tests stop invoking host programs (`sh`, `bash`, `sleep`, `printf`,
+`cat`, `yes`, `head`, `tr`, `ps`, `git`, `python3`, ...) in favour of
+workspace-built helper binaries, after broadarrow's `ba-mock-worker`, held by
+textlints on the model of `no-borrowed-process-stand-ins`,
+`no-interpreter-stand-ins`, `no-authored-shell-stubs` (which also covers the
+generated `#!/bin/sh` clipboard fakes) and `fixtures-compile-their-own-executables`.
+That settles the `/bin/sh` disagreement: those sites are findings. Decided: the
+helper is a `[[bin]]` in the dev-only `shepr-test-support`, not a feature-gated
+bin in each spawning crate (broadarrow's shape, which would keep test code in
+production crates against piece 4). Cargo builds it whenever
+`shepr-test-support` is among the tested packages, which `brokkr check` always
+is; tests locate it in the profile's output directory and fail naming how to
+build it when it is absent. Exempt from the ban: tests whose subject is the
+script itself - `shepr-remote`'s generated remote scripts under `sh`, and the
+shipped hook assets run under `sh` and `python3`.
+
 Reported independently from six scopes. Nothing in the repository provides these
 binaries, so the suite asserts against whatever the developer's machine happens
 to have.
@@ -70,6 +87,14 @@ about whether the `/bin/sh` sites are findings at all.
 
 ## HYGG-002 - Tests shell out to the host `git`
 
+**Decision (partial):** piece 3 (tests stop invoking host programs, `git`
+included, after broadarrow's `ba-mock-worker` and its
+`no-borrowed-process-stand-ins` textlint) removes `run_git` and the
+`git_refresh.rs` `git init`; fixtures become plain files as
+`write_fake_tracked_repo` already does. Decided exempt: `live_git_space` and any
+test that exercises production code which itself spawns `git` keep the real
+`git` - the production spawn has no injection point for a stand-in (BUG-066).
+
 `shepr-mux/src/git/test_support.rs::run_git` spawns `git` and
 `.expect("test precondition")`s the spawn. `init_repo_with_commit`,
 `create_repo_with_linked_worktree` and `create_bare_repo_with_linked_worktree`
@@ -98,6 +123,12 @@ Merged into BUG-047 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-004 - `failed_cli_registration_preserves_existing_config` re-executes the test binary through the host `bash`
 
+**Decision (partial):** the host `bash` re-exec falls under piece 3 (tests stop
+invoking host programs in favour of workspace-built helper binaries, after
+broadarrow's `ba-mock-worker`). Open: `SHEPR_TEST_3970_CONFIG_DIR`, which under
+piece 1 is a harness variable read raw under a scoped `#[expect]`, as
+broadarrow's harness reads are, or a registry entry - neither was chosen.
+
 `shepr-agent/src/integration/opencode_config.rs`. The test re-runs the test
 binary through the host shell with `ulimit -f 0`, so it depends on the host
 shell, on `trap '' XFSZ` semantics, on `std::env::current_exe`, and on the
@@ -110,6 +141,15 @@ hygiene rather than a defect. The environment variable it invents,
 repository and is a test-only name in a production-visible namespace.
 
 ## HYGG-005 - Tests that assert on the wall clock
+
+**Decision (partial):** the clock seam is adopted from broadarrow, incrementally
+as part of the hygiene work: time is passed in rather than read inside logic,
+held per subsystem by scoped textlints in the shape of broadarrow's
+`control-loop-reads-the-clock-seam` (full finding: HYGP-001 in
+`notes/hygiene-policy.md`). That is the injection point these tests lack, and it
+answers the enforcement named below with text rules rather than a workspace
+`disallowed_methods` entry. The `legacy_bridge_has_no_idle_deadline` sleep goes
+with HYGP-039's deletion. Open: each test, as its subsystem gets the seam.
 
 Reported from every scope that has timing at all. None can be made
 deterministic while the timeouts are `Instant`-based constants with no injection
@@ -160,6 +200,11 @@ in-repo models that already thread `now` and need no sleeps.
 
 ## HYGG-006 - A persist test fabricates a file mtime a day in the future to walk past a gate
 
+**Decision (partial):** the clock seam is adopted incrementally as part of the
+hygiene work (HYGP-001 in `notes/hygiene-policy.md`), and the enforcement named
+below - `now` as a parameter, held by a text rule scoped to `src/persist/` - is
+exactly its shape. Open: doing it for `persist`.
+
 `shepr-mux/src/persist/writer.rs` reaches `SystemTime::now()` directly at four
 sites (`preserve_snapshot_history`, `prepare_snapshot_history`,
 `preserve_existing_in` twice), so the 15-minute snapshot gate cannot be tested
@@ -195,6 +240,18 @@ the harness can be told to skip it. The same file hardcodes libtest CLI flags
 Merged into BUG-073 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-010 - Tests that take their inputs from the developer's directory layout
+
+**Decision (partial):** `snapshot_tests.rs`'s raw `std::env::var("HOME")` is
+banned by piece 1 (the `shepr-core` environment registry, raw reads denied in
+`clippy.toml`), and piece 2 (scratch under the project's `target/` tree) is where
+its existing cwd comes from instead. The owner also adopted broadarrow's rule
+that every child gets a stated working directory (a `clippy.toml` seal on
+`std::process::Command::new`, tests spawning through one helper that sets a
+scratch working directory), which settles that a test's directory comes from a
+`ScratchDir`; but the seal covers spawned children, not a test reading
+`std::env::current_dir()`, so it catches none of the sites below (HYGP-005).
+Open: the `std::env::current_dir()` sites, the fixed `/tmp/...` missing-cwd
+literal, and the `_env` binding name.
 
 `shepr-agent/src/agent/resume.rs` tests build paths from
 `std::env::current_dir()` (`absolute_test_path`). The test only needs "some
@@ -240,6 +297,11 @@ Enforcement rule named: a brokkr text rule forbidding `"/tmp` literals and
 
 ## HYGG-011 - `clear_integration_path_env` is a hand-maintained duplicate of the agent env-var inventory
 
+**Decision:** piece 1 (the `shepr-core` environment registry, after broadarrow's
+`core::env`): every agent directory variable is a registry entry and
+`IsolatedEnv` isolates from the registry, so the hand list is replaced by the
+one inventory the readers themselves go through.
+
 `shepr-agent/src/integration/tests.rs` lists fifteen variables to remove so
 paths resolve against the fake `HOME`. `env.rs` defines fourteen `*_ENV_VAR`
 constants plus the two XDG names. Add an agent env var and forget this list, and
@@ -256,6 +318,16 @@ variable name from the list. Related: HYGG-030 (the same shape one layer up, in
 `IsolatedEnv`).
 
 ## HYGG-012 - Scratch directories and test fixtures live under `/tmp`, against a project rule
+
+**Decision (partial):** piece 2 of the test-isolation work adopted from
+broadarrow: scratch directories move under the project's `target/` tree
+(broadarrow's `target/t`, with one documented override variable), named by
+fixed-width digests budgeted against `sun_path`, with per-process slot locks so a
+rerun reuses and clears its trees in place, a claim registry, and
+`std::env::temp_dir` banned (`clippy.toml` plus a `no-host-temp-dir` textlint).
+The `/tmp` rule then needs no exemption and the SIGKILL leak goes. Open: the
+fixed `/tmp` literals in test data (`writer.rs`, `aggregate.rs`,
+`socket_paths.rs`).
 
 `shepr-test-support/src/lib.rs` builds its scratch root as
 `std::env::temp_dir().join(format!("shepr-test-{pid}"))`, while `AGENTS.md` and
@@ -321,6 +393,12 @@ fail.
 
 ## HYGG-018 - Two pane-terminal-identity tests restate the values and the list they are checking
 
+**Decision (partial):** the second test runs `printf` through the host shell, so
+piece 3 (workspace-built helper binaries instead of host programs, after
+broadarrow's `ba-mock-worker`) rewrites it, which is the point to read
+`PANE_TERM` and the colorterm constant. Open: the restated scrub list in the
+first test.
+
 `pane_terminal_identity_removes_outer_terminal_identity` restates the production
 scrub list verbatim, so a key added to production is not tested. Enforcement
 named: export the list and iterate it.
@@ -341,6 +419,12 @@ test would close the gap.
 Merged into HYGV-043 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-021 - Four small `shepr-platform` assertions that cannot fail, or that hide a failure
+
+**Decision (partial):** the `Path::exists` seal is adopted from broadarrow
+(`clippy.toml`; `try_exists` or a match on `NotFound`), and it reaches test code,
+so the fourth bullet's `!stable.exists()` gets rewritten. `try_exists` follows
+the link too, so the pair still needs the comment saying the symlink is meant to
+dangle. Open: the first three bullets.
 
 - `logging.rs`: `assert!(!summary.contains("/shepr.log"))` - the asserted string
   is built by a `format!` that cannot produce it.
@@ -660,6 +744,12 @@ list structural - see HYGG-070.
 
 ## HYGG-052 - A test comment cites an unresolvable issue number and a second-precise timestamp
 
+**Decision:** broadarrow's issue-citation textlint is adopted in a narrow form
+(`no-upstream-issue-citations`, A4 in `notes/broadarrow-ports.md`: `issue #N`,
+`(#N)` and `on #N`, not a bare `#\d+`), so the over-breadth the hunter objected
+to does not arise. This comment is one of its violations; keep the behavioural
+content and drop the issue number and the timestamp.
+
 `shepr-client/src/input/raw_input.rs`: `// Issue #3911, 2026-09-13 07:02:14
 UTC: this prefix timed out, then its tail arrived 33 ms later.` Nobody working
 in this repository can look up issue #3911 (shepr is a personal fork with no
@@ -671,6 +761,12 @@ The hunter says no text rule is worth writing for this (`#\d+` in comments would
 be over-broad).
 
 ## HYGG-053 - `IsolatedEnv` guarantees isolation from a list it does not own
+
+**Decision:** piece 1 (the `shepr-core` environment registry, after broadarrow's
+`core::env`) is the `shepr-platform` hunter's fix: `IsolatedEnv` iterates the
+registry rather than its own lists, which means `shepr-test-support`'s
+`["libc"]` allowlist widens to `shepr-core`, and raw environment reads are banned
+in `clippy.toml` so a variable cannot be read without being an entry.
 
 `shepr-test-support`'s doc comment claims the guard means "nothing under test
 can reach the user's real config, state or agent directories, or the live shepr
@@ -725,6 +821,10 @@ best-effort branch that ignores failures. The comment says as much, which the
 hunter calls the honest version.
 
 ## HYGG-058 - The `SHEPR_` prefix scrub silently keeps a non-UTF-8 key
+
+**Decision:** piece 1 (the `shepr-core` environment registry): `IsolatedEnv`
+isolates from the registry's entries rather than by scanning for a `SHEPR_`
+prefix, so the fail-open string test goes.
 
 `shepr-test-support`:
 `key.to_str().is_some_and(|k| k.starts_with("SHEPR_"))`. Not reachable in
@@ -1238,6 +1338,12 @@ Merged into BUG-058 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-099 - The one-tab workspace invariant is enforced by opt-in test calls and one `Deref` panic
 
+**Decision (partial):** `debug_assert!` is banned (a `disallowed-macros` seal
+adopted from broadarrow; `assert!` where a panic is the containment, typed
+handling otherwise), so the first enforcement option below, calling the checker
+`debug_assert`-style, is out. Open: a real `assert!` at mutation exits or the
+structural non-empty-vec answer the hunter prefers, and the `Deref` half.
+
 `shepr-mux/src/workspace.rs`. `Workspace::assert_invariants_for_test` (150
 lines, `#[cfg(any(test, feature = "test-api"))]`) is the real statement of the
 invariant - non-empty tabs, `active_tab` in range, unique public tab and pane
@@ -1315,6 +1421,12 @@ the `SHEPR_*` asset-literal test and says together they are the whole mechanical
 answer to the forced duplication. Neither test exists.
 
 ## HYGG-103 - The same shape one level down: `SHEPR_*` names spelled as literals in shipped assets with no membership test
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) owns every name in `shepr-core` rather than
+`shepr-config`, and includes the asset-walking test that every `SHEPR_*`
+literal is a registry member. Open: the two bare Rust writers of
+`SHEPR_BIN_PATH` (no text rule against `"SHEPR_` literals was decided).
 
 `shepr-mux/src/pane/launch.rs` exports `SHEPR_PANE_ID_ENV_VAR` publicly but
 writes `"SHEPR_BIN_PATH"` as a bare literal; `shepr-server/src/app/tab_bar_status.rs`
@@ -1403,6 +1515,12 @@ restating a list the code generates. Fix named: delete the names from the
 comment.
 
 ## HYGG-113 - Four module docs in the terminal core cite a dependency and a directory that are not there
+
+**Decision (partial):** the root `Cargo.toml` citation of `research/alacritty`
+(and `shepr-mux`'s `pane/osc.rs` citation of `research/vte/src/lib.rs`, the same
+shape) is reworded to point at the pinned `alacritty_terminal` and `vte` sources
+in the cargo registry, as `AGENTS.md` already does. Open: the other three
+bullets and the Ghostty naming.
 
 - `shepr-vt/src/format.rs`'s module doc says the VT output is replayed "after
   some resizes"; `shepr-mux`'s `backend.rs::resize` says that replay was

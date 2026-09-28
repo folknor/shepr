@@ -10,9 +10,12 @@ use std::sync::{
 };
 use std::time::Duration;
 
-// The client endpoint sends HealthPing after five seconds without received data,
-// and the server answers HealthPong. Those protocol frames renew this byte-level
-// watchdog, so a healthy idle saved endpoint stays connected.
+// Every client bridge runs this watchdog: the saved-machine bridges and the one
+// behind an interactive `shepr --remote` client. In both cases the client
+// health-checks the endpoint on the far side of the bridge: it sends HealthPing
+// after five seconds without received data, and the server answers HealthPong.
+// That heartbeat renews this byte-level watchdog, so a healthy idle bridge of
+// either kind stays connected while a dead client's bridge exits.
 pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn now() -> io::Result<u64> {

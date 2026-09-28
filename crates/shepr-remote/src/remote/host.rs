@@ -3,10 +3,7 @@
 use std::io;
 use std::time::Duration;
 
-pub fn run_remote_client_bridge(
-    idle_timeout: bool,
-    paths: &shepr_config::AppPaths,
-) -> io::Result<()> {
+pub fn run_remote_client_bridge(paths: &shepr_config::AppPaths) -> io::Result<()> {
     ensure_remote_server_running(paths)?;
     let _ssh_agent = super::ssh_agent::Registration::start(paths);
 
@@ -21,7 +18,7 @@ pub fn run_remote_client_bridge(
         )
     })?;
 
-    shepr_platform::forward_remote_bridge_stdio(stream, idle_timeout)
+    shepr_platform::forward_remote_bridge_stdio(stream, true)
 }
 
 /// Starts the server when none is listening. A running server of another build

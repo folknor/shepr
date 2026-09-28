@@ -26,6 +26,15 @@ phantoms here.
 
 ## HYGV-001 - `SHEPR_ENV`, its value and its resolution rule are defined at four sites
 
+**Decision (partial):** piece 1 of the test-isolation work adopted from
+broadarrow (one environment reader and registry in `shepr-core`, after
+broadarrow's `core::env`) gives `SHEPR_ENV` one registry entry with a declared
+kind, and the reader's single policy replaces `should_block_nested_for_env`'s
+private exact-`"1"` rule. The asset spellings of the name are held by that
+piece's test that every `SHEPR_*` literal in the shipped assets is a registry
+member. Open: the assets' own value rule (`!== "1"`, `== "1"`) is not checkable
+from Rust, and a flag kind would accept `true` where the assets do not.
+
 Reported independently by the vt/pty, agent, api/cli and mux hunters.
 
 - `src/main.rs` defines `SHEPR_ENV_VAR` and `SHEPR_ENV_VALUE` privately for the
@@ -51,6 +60,12 @@ copies are forced (they run inside other agents' runtimes and cannot link Rust);
 what could keep them in step is the asset-grep test in HYGV-006.
 
 ## HYGV-002 - `SHEPR_BIN_PATH` is a bare literal in two crates and about twenty assets
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) makes `SHEPR_BIN_PATH` a registry entry, and its
+asset-membership test holds the twenty asset spellings to it. Open: the two Rust
+writers still spell the name bare (no text rule against `SHEPR_` literals was
+decided), and the per-asset "unset means `shepr`" fallback is not checkable.
 
 Reported by the vt/pty, agent, mux and server hunters.
 
@@ -79,6 +94,19 @@ The server hunter notes the repo already has the convention this family breaks
 `shepr-remote`'s `STARTUP_CWD_ENV_VAR`).
 
 ## HYGV-005 - The `SHEPR_*` namespace has no registry, and nothing answers "what environment variables does shepr read"
+
+**Decision (partial):** piece 1 adopts broadarrow's `core::env` shape, which is
+the core/platform hunter's fix: one registry in `shepr-core` where every variable
+is an entry with a declared kind, read under one policy (empty is unset,
+surrounding whitespace and non-UTF-8 refuse naming the variable, flags are
+exactly `1`/`0`/`true`/`false`, secrets never echoed), with a pure `resolve`
+beside `read`. `std::env::var`/`var_os`/`vars`/`vars_os` and
+`set_var`/`remove_var` are banned in `clippy.toml` with scoped `#[expect]`
+escapes (so the `unsafe remove_var` in `bootstrap.rs` must go), `IsolatedEnv`
+isolates from the registry rather than a `SHEPR_` prefix, `SHEPR_LOG` becomes an
+entry, and a test holds every `SHEPR_*` literal in the shipped assets to
+registry membership. Open: rendering the registry into `shepr --help`, and the
+pane-inheritance question (which entries a pane may inherit, HYGP-018).
 
 Reported by the core/platform, api/cli and mux hunters.
 
@@ -119,6 +147,11 @@ from pane env or explicitly allowed.
 
 ## HYGV-006 - The hook environment contract is restated in about twenty shipped assets (forced duplication)
 
+**Decision:** piece 1 (the `shepr-core` environment registry) includes exactly
+the mux hunter's proposal: a test that every `SHEPR_*` literal in
+`crates/shepr-agent/src/integration/assets/**` is a registry member. The
+semantics stay uncheckable from Rust, as the entry already says.
+
 Reported by the agent, mux, api/cli and vt/pty hunters.
 
 `SHEPR_ENV` must equal `"1"`, `SHEPR_SOCKET_PATH` and `SHEPR_PANE_ID` must be
@@ -140,6 +173,14 @@ name. The names are the part that can drift silently; the semantics are not
 checkable from Rust.
 
 ## HYGV-007 - Three different rules for resolving `$HOME`
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) makes `HOME` a registry entry and bans the raw
+`std::env::var_os` reads in `clippy.toml`, so the two ad-hoc `git/config.rs`
+expansions and `shepr-pty`'s `home_dir` must read through the one reader, which
+supplies one empty and non-UTF-8 rule. Open: which caller-side rule (the
+`pathutil.rs` error or `home_dir`'s passwd-then-`/` fallback) governs the pane
+cwd; the relative-path half of the policy is not the reader's.
 
 Reported by the core/platform hunter.
 
@@ -164,6 +205,15 @@ forbidding `"HOME"` as a literal outside `shepr-core/src/pathutil.rs` and
 since the offence is the argument rather than the method.
 
 ## HYGV-008 - The XDG variable set and its empty/relative rule have several owners
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) resolves the name ownership and the forced copy:
+every XDG and `SHEPR_*` name is a registry entry, `IsolatedEnv` isolates from the
+registry (so `shepr-test-support` takes `shepr-core` instead of restating the
+list), and the reader applies one rule for empty (unset) and non-UTF-8
+(refused). Open: the relative-path column of the table - what a relative
+`XDG_CONFIG_HOME` or `SHEPR_CONFIG_PATH` means stays with each owning site, as it
+does in broadarrow.
 
 Reported by the protocol/config, core/platform, mux and agent hunters.
 
@@ -210,6 +260,13 @@ pinning the matrix; and either widening the `shepr-test-support` allowlist to
 asserting every variable it reads is in the isolation list.
 
 ## HYGV-009 - `SSH_AUTH_SOCK` is resolved by three sites with three rules, already divergent
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) makes `SSH_AUTH_SOCK` a registry entry read under the
+one policy, so empty means unset at every reader and the `Some("")` divergence in
+`shepr-api/src/server.rs` goes; the raw reads are banned in `clippy.toml`. Open:
+the inline read in `start_server_inner` (no injection point) and a single owning
+function in `shepr_platform::ssh_agent`.
 
 Reported by the remote hunter (and the api/cli hunter, as an ambient read).
 
@@ -282,6 +339,13 @@ also HYGV-085 for the mode's missing injection point.
 
 ## HYGV-013 - `SHEPR_DEBUG_OSC_EVIDENCE` is resolved at pane creation, not at launch, and is documented nowhere
 
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) makes the variable a registry entry of flag kind, so a
+value outside `1`/`0`/`true`/`false` is refused naming the variable rather than
+read by `osc.rs`'s own `"1" | "true" | "yes" | "on"` list, and the registry is
+where it is named. Open: the read still happens per pane; resolving it once at
+launch and carrying it down is not part of the decision.
+
 Reported by the mux hunter.
 
 `crates/shepr-mux/src/pane/osc.rs`: `impl Default for OscDebugTracker` calls
@@ -296,6 +360,13 @@ Fix: resolve it in the same pass as the rest of the config and carry it in the
 validated config down to pane construction.
 
 ## HYGV-014 - `host_modify_other_keys_mode()` reads three environment variables at the moment of use, with three resolution rules
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) makes `TMUX`, `TERM_PROGRAM` and `WEZTERM_PANE`
+registry entries read under one policy, which removes the three divergent
+empty-value rules, and bans the raw reads in `clippy.toml` as the entry asks.
+Open: resolving them at launch into `ClientSettings` rather than when
+`setup_terminal_with_capabilities` runs.
 
 Reported by the termio/client hunter.
 
@@ -325,6 +396,13 @@ today).
 `running_inside_wsl()` combination) go with WSL support. The SSH and VS Code
 reads remain open.
 
+**Decision (partial):** for the SSH and VS Code reads, piece 1 (the `shepr-core`
+environment registry, after broadarrow's `core::env`) adopts the entry's
+enforcement: `SSH_CONNECTION`, `SSH_TTY` and `VSCODE_IPC_HOOK_CLI` become
+registry entries and raw `std::env::var_os` is banned in `clippy.toml`. Open:
+the per-call re-read; resolving "does this host have a local clipboard" once at
+startup.
+
 Reported by the core/platform hunter.
 
 `crates/shepr-platform/src/terminal_environment.rs` reads `SSH_CONNECTION`,
@@ -340,6 +418,14 @@ Enforcement: resolve once into a value the client carries, then a
 designated env module.
 
 ## HYGV-016 - `AgentIntegrationPaths::resolve()` captures the environment but the resolvers still read it directly
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) bans the resolvers' raw `std::env::var_os` in
+`clippy.toml` and makes every agent directory variable a registry entry, and
+broadarrow's pure `resolve(var, raw)` beside `read(var)` is the seam that lets
+path tests hand values in instead of mutating the process through `IsolatedEnv`.
+Open: the resolvers' signature change so `resolve()` is the crate's only read,
+and `GROK_CONFIG_DIR` as a production test seam (HYGP-033).
 
 Reported by the agent hunter.
 
@@ -501,6 +587,16 @@ claims a case the code cannot produce, and the sole consumer
 Fix: make the field a `PathBuf`; the type system does the rest.
 
 ## HYGV-025 - The Unix socket path limit is restated in prose, in a test literal, and in another crate's doc comment
+
+**Decision (partial):** piece 2 (scratch directories under the project's
+`target/` tree, adopting broadarrow's `test-scratch`/`test-support` scheme)
+replaces the `shepr-test-support` prose copy: broadarrow names scratch roots with
+fixed-width digests and proves a socket-leaf budget at the deepest handed-out
+path through the production `sun_path` check (`check_unix_socket_path`), rather
+than restating the number. Decided: the `sun_path` limit and its check move
+from `shepr-platform` down to `shepr-core`, so the scratch code can prove the
+budget without depending on the platform crate. Open: the `ipc.rs` prose, the
+`platform/src/tests.rs` literals and the `bridge.rs` shim.
 
 Reported by the core/platform and remote hunters.
 
@@ -672,6 +768,15 @@ config key, which moves it into HYGV-036.
 
 ## HYGV-036 - Nothing answers "what are this crate's tunables", in any crate
 
+**Decision (partial):** per-crate `limits` modules are adopted from broadarrow,
+incrementally as part of the hygiene work rather than wholesale: each crate's
+constants move into its `limits` module (the `shepr-protocol` model below), and
+the crate is then held by scoped textlints in the shape of broadarrow's
+`numeric-consts-live-in-limits` and `duration-and-capacity-literals-live-in-limits`
+(B8 in `notes/broadarrow-ports.md`). That settles the enforcement the hunters
+converge on, with the name `limits`. Open: every crate, one at a time, and which
+knobs should become config keys.
+
 Every hunter reported this independently, for their own scope. The shape is
 always the same: each constant is individually defined once, which is why none
 reads as a finding on its own, and the finding is that a person tuning any
@@ -839,6 +944,13 @@ both asserting `IDLE_TIMEOUT >= HEARTBEAT_INTERVAL * k`.
 
 ## HYGV-038 - Four independent fifteen-second SSH budgets, and the two `wait_for_server_socket` callers disagree in the wrong direction
 
+**Decision (partial):** the two inline `Duration::from_secs` literals
+(`src/cli/target.rs`'s 15 and `host.rs`'s 5) are what the duration-literal
+textlint of the per-crate `limits` modules forbids, adopted incrementally with
+the hygiene work (HYGV-036), so they get names when their crate's turn comes.
+Open: the shared owner for the 15-second budget, the `wait_for_server_socket`
+parameter, and deriving `ATTEMPT_BUDGET` from the values it cites.
+
 Reported by the remote hunter, as fact, with the api/cli hunter's timeout table
 naming two of the same values.
 
@@ -926,6 +1038,10 @@ the root package would make this coupling a deliberate allowlist entry.
 
 ## HYGV-041 - Unnamed durations and capacities in the server, beside named siblings
 
+**Decision:** per-crate `limits` modules are adopted incrementally as part of
+the hygiene work (HYGV-036); when `shepr-server` gets its module, these three
+become named constants there and the duration-and-capacity textlint holds them.
+
 Reported by the server hunter.
 
 - `crates/shepr-server/src/app/session.rs` writes
@@ -946,6 +1062,11 @@ Naming them removes the sites; see HYGV-036 for where they should live.
 
 ## HYGV-042 - One megabyte is the cap on "one client request" in three unrelated places
 
+**Decision (partial):** per-crate `limits` modules are adopted incrementally with
+the hygiene work (HYGV-036), which gives each of the three constants a findable
+home. Open: whether the three are one knob owned by `shepr-protocol::limits`, as
+the enforcement below proposes, or three knobs in three crates' modules.
+
 Reported by the server hunter.
 
 - `shepr_protocol::MAX_INPUT_PAYLOAD = 1024 * 1024`.
@@ -963,6 +1084,12 @@ forbidding `1024 * 1024` outside that module.
 
 ## HYGV-043 - The clipboard byte caps have two unrelated owners, and one is restated as a magic number in its own test
 
+**Decision (partial):** per-crate `limits` modules are adopted incrementally with
+the hygiene work (HYGV-036); a numeric `const` declared inside a function body is
+a violation of the `numeric-consts-live-in-limits` textlint, so
+`MAX_CLIPBOARD_TEXT_BYTES` leaves the function when `shepr-platform` gets its
+module. Open: the test's magic number and one owner for the pair.
+
 Reported by the vt/pty and core/platform hunters.
 
 `shepr-vt`'s `MAX_CLIPBOARD_BYTES` silently drops OSC 52 payloads over 192 KiB,
@@ -978,6 +1105,12 @@ Enforcement: hoist the const to module scope and have the test compute
 `MAX_CLIPBOARD_TEXT_BYTES + 2`; decide one owner for the pair, or state why two.
 
 ## HYGV-044 - Retry counts and poll intervals are invented per site inside one crate
+
+**Decision (partial):** the enforcement named below is adopted, incrementally as
+part of the hygiene work: `shepr-platform` gets a `limits` module held by the
+duration-and-capacity textlint (HYGV-036). Open: collapsing the duplicated
+values (the two `POLL_INTERVAL`s, 4 versus 16 attempts, the two copy buffers)
+when they move.
 
 Reported by the core/platform hunter as a question 1 finding (the hunters also
 filed the broader "retry policy per call site" pattern under per-call-site
@@ -996,6 +1129,11 @@ it.
 
 ## HYGV-045 - The pane teardown budget and the server's wait for it are unrelated numbers in different crates
 
+**Decision (partial):** per-crate `limits` modules are adopted incrementally with
+the hygiene work (HYGV-036), so the three `250` ms spellings and the server's
+`3` s wait become named constants in their crates' modules. Open: deriving the
+server's wait from an exported teardown budget and asserting the relation.
+
 Reported by the mux hunter.
 
 `crates/shepr-mux/src/pane/teardown.rs` spells `Duration::from_millis(250)` three
@@ -1010,6 +1148,13 @@ have the server derive its wait from it, with a compile-time or test assertion
 that the wait is the larger.
 
 ## HYGV-046 - Client-side throttles and timeouts are unnamed, duplicated, or typed differently from their siblings
+
+**Decision (partial):** per-crate `limits` modules are adopted incrementally with
+the hygiene work (HYGV-036); the inline `Duration::from_millis(350)`, `(33)`,
+`(100)`, `Duration::from_secs(1)` and `(5)` become named constants in
+`shepr-client`'s module, and the two `_SECS: u64` constants move there as
+`Duration`s. The `attach.rs` deadline read also falls under the clock seam
+(HYGP-001). Open: the `Throttle` type and the `finish_client` teardown.
 
 Reported by the termio/client hunter.
 
@@ -1204,6 +1349,14 @@ Merged into HYGP-020 (`notes/hygiene-policy.md`), which carries the full finding
 
 ## HYGV-058 - `PANE_TERM` has one owner but `PANE_COLORTERM` lives in another crate, and a test re-spells both
 
+**Decision (partial):** piece 3 (tests stop invoking host programs in favour of
+workspace-built helper binaries, after broadarrow's `ba-mock-worker` and its
+`no-borrowed-process-stand-ins` textlint) rewrites the re-spelling test, which
+today runs `printf` through the host shell via `capture_shell_output`; the
+rewrite is the natural point to assert against `PANE_TERM` and the colorterm
+constant. Open: `PANE_COLORTERM`'s owner and XTGETTCAP's independent `Tc`/`RGB`
+claim.
+
 Reported by the vt/pty hunter.
 
 `PANE_TERM` is single-owned (good), while its sibling
@@ -1282,6 +1435,10 @@ Fix: delete all five constants and call `KittyKeyboardFlags::contains`, which
 makes the raw literal unrepresentable.
 
 ## HYGV-062 - The synchronized-output clock has no injection point
+
+**Decision (partial):** the clock seam is adopted incrementally as part of the
+hygiene work (HYGP-001 in `notes/hygiene-policy.md`), and the fix below is this
+subsystem's instance of it. Open: the shepr-owned `Timeout` impl.
 
 Reported by the vt/pty hunter.
 
@@ -1467,6 +1624,12 @@ independent. Fix: delete the aliases and use the protocol constants directly.
 Merged into BUG-063 (`notes/bugs.md`) and BUG-064 (`notes/bugs.md`), which carry the full finding.
 
 ## HYGV-072 - Three boolean-from-string parsers, no owner, and one is an incomplete implementation of an external grammar
+
+**Decision (partial):** the `env_bool()` half is piece 1 (the `shepr-core`
+environment registry, after broadarrow's `core::env`): shepr env flags have one
+kind and one rule, exactly `1`/`0`/`true`/`false`, so `osc.rs`'s
+`"1" | "true" | "yes" | "on"` goes (and `yes`/`on` become refusals). Open: the
+`git_bool()` half against Git's grammar.
 
 Reported by the mux hunter.
 
@@ -1684,6 +1847,12 @@ some point; ask before deleting. The deletion question itself is filed with the
 dead-code findings.
 
 ## HYGV-085 - Version-probe timing has no injection point at the outer entry
+
+**Decision (partial):** the clock seam (HYGP-001 in `notes/hygiene-policy.md`)
+and per-crate `limits` modules (HYGV-036) are both adopted incrementally as part
+of the hygiene work; `run_version_probe`'s `Instant::now()` and the probe budgets
+fall under them when `shepr-agent`'s turn comes. Open: the outer entry taking
+the timeout.
 
 Reported by the agent hunter.
 
@@ -1915,6 +2084,12 @@ the parser.
 Merged into HYGG-080 (`notes/hygiene-guards.md`), which carries the full finding.
 
 ## HYGV-098 - The `local` / `server` keybinding-role round trip is spelled twice, in two crates
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) takes the absent and non-UTF-8 handling out of
+`ClientProcessRole::from_env`: the variable becomes a registry entry and the
+reader answers those cases once. Open: the `"local"`/`"server"` value mapping,
+which stays with the owning site as broadarrow's text kinds do.
 
 Reported by the remote hunter, as fact.
 

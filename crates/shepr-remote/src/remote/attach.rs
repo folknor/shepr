@@ -741,7 +741,7 @@ mod tests {
     fn remote_output_framing_discards_any_banner_and_preserves_binary() {
         let payload = [0, 1, 2, 0xff, b'\n'];
         let mut input = vec![b'x'; 4 * 1024 * 1024];
-        input.extend_from_slice(b"\r\nshepr-remote-output-ready:1\r\n");
+        input.extend_from_slice(b"\r\nshepr-remote-output-ready\r\n");
         input.extend_from_slice(&payload);
         let mut reader = io::BufReader::with_capacity(17, io::Cursor::new(input));
 
@@ -755,7 +755,7 @@ mod tests {
         normalize_remote_stdout(&mut missing, false).expect("test precondition");
         assert_eq!(missing, b"profile output without marker");
 
-        let mut framed = b"profile output\nshepr-remote-output-ready:1\nhello\n".to_vec();
+        let mut framed = b"profile output\nshepr-remote-output-ready\nhello\n".to_vec();
         normalize_remote_stdout(&mut framed, true).expect("test precondition");
         assert_eq!(framed, b"hello\n");
     }
@@ -792,19 +792,21 @@ mod tests {
     }
 
     #[test]
-    fn noninteractive_remote_bridge_requests_idle_timeout() {
+    fn remote_bridge_command_passes_a_named_session() {
         let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-        assert!(remote.bridge_command("agents", true).contains(
-            " --session agents remote-client-bridge --idle-timeout-v1; shepr_exit_status="
-        ));
+        assert!(
+            remote
+                .bridge_command("agents")
+                .contains(" --session agents remote-client-bridge; shepr_exit_status=")
+        );
     }
 
     #[test]
     fn remote_bridge_command_uses_installed_binary() {
         let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         assert_eq!(
-            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
-            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
+            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME),
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
         );
         assert_eq!(
             remote_shepr.saved_bridge_command("agents"),
@@ -818,8 +820,8 @@ mod tests {
             remote_executable_from_path_discovery("/usr/bin/shepr\n").expect("path binary");
 
         assert_eq!(
-            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
-            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
+            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME),
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
         );
     }
 
@@ -840,7 +842,7 @@ mod tests {
     #[test]
     fn saved_bridge_command_does_not_depend_on_a_posix_login_shell() {
         let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-        let command = remote.bridge_command("agents", true);
+        let command = remote.bridge_command("agents");
         let script = command
             .strip_prefix("/bin/sh -c '")
             .and_then(|rest| rest.strip_suffix('\''))

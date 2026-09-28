@@ -29,9 +29,8 @@ pub use clipboard::{read_clipboard_text, write_clipboard};
 pub use config_file::{config_file_link_count, create_config_temporary, write_config_temporary};
 pub use host::{
     begin_cli_output, current_process_is_detached_server_daemon, detach_server_daemon_command,
-    hostname, launch_executable, local_datetime, running_inside_wsl,
-    should_draw_host_cursor_by_default, should_query_host_terminal_palette,
-    take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
+    hostname, launch_executable, local_datetime, take_terminal_resize_signal, terminal_grid_size,
+    watch_terminal_resize_signal,
 };
 pub use private_file::{create_private_file, sync_directory};
 pub use process::{
@@ -69,7 +68,7 @@ use clipboard::{
     run_clipboard_command, write_clipboard_with,
 };
 #[cfg(test)]
-use host::{is_detached_session, resolve_launch_executable, text_indicates_wsl};
+use host::{is_detached_session, resolve_launch_executable};
 #[cfg(any(test, feature = "test-support"))]
 pub use process::signal_processes;
 #[cfg(test)]

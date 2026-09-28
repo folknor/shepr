@@ -30,7 +30,6 @@ pub enum Agent {
     Droid,
     Amp,
     Grok,
-    Hermes,
     Kilo,
     Qodercli,
     Qwen,
@@ -52,7 +51,6 @@ pub enum IntegrationTarget {
     Kimi,
     Opencode,
     Kilo,
-    Hermes,
     Qodercli,
     Qwen,
     Cursor,
@@ -195,11 +193,6 @@ const LETTA_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     None,
     Some(IntegrationHookAction::Session),
 )];
-const HERMES_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
-    "SessionStart",
-    None,
-    Some(IntegrationHookAction::Session),
-)];
 const CURSOR_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     "sessionStart",
     None,
@@ -268,7 +261,7 @@ pub struct AgentDescriptor {
 
 const CLAUDE_ACTIVITY_GLYPHS: &str = "·\u{2722}\u{2733}\u{2736}\u{273B}\u{273D}◐◓◑◒";
 
-pub const AGENTS: [AgentDescriptor; 24] = [
+pub const AGENTS: [AgentDescriptor; 23] = [
     AgentDescriptor {
         agent: Agent::Pi,
         label: "pi",
@@ -590,25 +583,6 @@ pub const AGENTS: [AgentDescriptor; 24] = [
         integration_hook_events: &[],
     },
     AgentDescriptor {
-        agent: Agent::Hermes,
-        label: "hermes",
-        aliases: &["hermes-agent"],
-        executable: "hermes",
-        integration_target: Some(IntegrationTarget::Hermes),
-        integration_source: Some("shepr:hermes"),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: true,
-        session_ref_policy: Some(SessionRefPolicy::Id),
-        resume_args: Some(ResumeArgs::FlagValue("--resume")),
-        screen_manifest: true,
-        env_to_scrub: &[],
-        title_activity_glyphs: "",
-        prompt_observation: false,
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(HERMES_HOOK_EVENTS),
-    AgentDescriptor {
         agent: Agent::Kilo,
         label: "kilo",
         aliases: &["kilo-code", "kilo code"],
@@ -904,7 +878,6 @@ impl IntegrationTarget {
             Self::Kimi => Agent::Kimi,
             Self::Opencode => Agent::OpenCode,
             Self::Kilo => Agent::Kilo,
-            Self::Hermes => Agent::Hermes,
             Self::Qodercli => Agent::Qodercli,
             Self::Qwen => Agent::Qwen,
             Self::Cursor => Agent::Cursor,

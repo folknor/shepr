@@ -2,7 +2,7 @@ use super::*;
 
 use std::io;
 
-pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready:1";
+pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
 pub fn run_remote(
     remote: RemoteLaunch,
@@ -144,13 +144,8 @@ impl RemoteExecutable {
         format!("test -x {path} && {status} && {check} </dev/null")
     }
 
-    pub(super) fn bridge_command(&self, session_name: &str, idle_timeout: bool) -> String {
-        let command = if idle_timeout {
-            &["remote-client-bridge", "--idle-timeout-v1"][..]
-        } else {
-            &["remote-client-bridge"][..]
-        };
-        let args = Self::session_args(session_name, command);
+    pub(super) fn bridge_command(&self, session_name: &str) -> String {
+        let args = Self::session_args(session_name, &["remote-client-bridge"]);
         // sshd hands this string to the user's login shell, which need not be POSIX
         // (xonsh, fish, nushell). Run the script under /bin/sh, as the API bridge does
         // (discovery feeds its script to `/bin/sh -s` instead), so the login shell only
@@ -195,7 +190,7 @@ pub(super) struct PreparedRemoteShepr {
     pub(super) remote_shepr: RemoteExecutable,
 }
 
-pub(crate) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale-v1";
+pub(crate) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale";
 pub(crate) const STALE_API_METADATA_EXIT_CODE: i32 = 78;
 
 pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: &str) -> String {

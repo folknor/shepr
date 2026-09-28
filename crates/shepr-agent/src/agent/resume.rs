@@ -604,16 +604,6 @@ mod tests {
         );
         assert_eq!(
             plan_for_labels(
-                "shepr:hermes",
-                "hermes",
-                &AgentSessionRef::id("hermes-session").expect("test precondition")
-            )
-            .expect("test precondition")
-            .argv,
-            vec!["hermes", "--resume", "hermes-session"]
-        );
-        assert_eq!(
-            plan_for_labels(
                 "shepr:opencode",
                 "opencode",
                 &AgentSessionRef::id("opencode-session").expect("test precondition")
@@ -970,19 +960,10 @@ mod tests {
 
     #[test]
     fn planner_rejects_path_refs_for_id_only_agents() {
-        let hermes_session = absolute_test_path("hermes-session");
         let opencode_session = absolute_test_path("opencode-session");
         let kilo_session = absolute_test_path("kilo-session");
         let copilot_session = absolute_test_path("copilot-session");
         let devin_session = absolute_test_path("devin-session");
-        assert!(
-            plan_for_labels(
-                "shepr:hermes",
-                "hermes",
-                &AgentSessionRef::path(&hermes_session).expect("test precondition")
-            )
-            .is_none()
-        );
         assert!(
             plan_for_labels(
                 "shepr:opencode",
@@ -1021,15 +1002,6 @@ mod tests {
                 "mastracode",
                 AgentSessionRefKind::Id,
                 "mastracode-session"
-            )
-            .is_some()
-        );
-        assert!(
-            snapshot_session_for_labels(
-                "shepr:hermes",
-                "hermes",
-                AgentSessionRefKind::Id,
-                "hermes-session"
             )
             .is_some()
         );

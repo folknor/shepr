@@ -755,10 +755,6 @@ impl TerminalState {
                 Agent::Codex,
                 Some(Start::Startup | Start::Clear | Start::Resume | Start::Compact)
             ) | (Agent::Mastracode, Some(Start::Startup))
-                | (
-                    Agent::Hermes,
-                    Some(Start::Startup | Start::New | Start::Resume)
-                )
                 | (Agent::OpenCode, Some(Start::Select))
                 | (Agent::Pi, Some(Start::New | Start::Resume | Start::Fork))
                 | (Agent::Grok, Some(Start::New))

@@ -6,99 +6,6 @@ use super::*;
 use std::{cell::RefCell, collections::HashMap};
 
 #[test]
-fn process_detection_mode_requires_explicit_child_groups_value() {
-    assert_eq!(
-        parse_process_detection_mode(None),
-        Ok(ProcessDetectionMode::Native)
-    );
-    assert_eq!(
-        parse_process_detection_mode(Some("")),
-        Ok(ProcessDetectionMode::Native)
-    );
-    assert_eq!(
-        parse_process_detection_mode(Some("native")),
-        Ok(ProcessDetectionMode::Native)
-    );
-    assert_eq!(
-        parse_process_detection_mode(Some("child-groups")),
-        Ok(ProcessDetectionMode::ChildGroups)
-    );
-    assert_eq!(parse_process_detection_mode(Some("gvisor")), Err("gvisor"));
-}
-
-#[test]
-fn child_groups_foreground_group_picks_the_newest_job() {
-    let tasks = HashMap::from([(100, vec![100])]);
-    let children = HashMap::from([((100, 100), vec![200, 300])]);
-    let groups = HashMap::from([(200, 200), (300, 300)]);
-
-    let group = child_groups_foreground_process_group_with(
-        100,
-        100,
-        |pid, _budget| tasks.get(&pid).cloned().unwrap_or_default(),
-        |pid, tid, _budget| children.get(&(pid, tid)).cloned().unwrap_or_default(),
-        |pid| groups.get(&pid).copied(),
-    );
-
-    assert_eq!(group, Some(300));
-}
-
-#[test]
-fn child_groups_foreground_group_returns_to_the_shell_group() {
-    let tasks = HashMap::from([(100, vec![100])]);
-    let children = HashMap::from([((100, 100), vec![150, 160])]);
-    let groups = HashMap::from([(150, 90), (160, 90)]);
-
-    let group = child_groups_foreground_process_group_with(
-        100,
-        90,
-        |pid, _budget| tasks.get(&pid).cloned().unwrap_or_default(),
-        |pid, tid, _budget| children.get(&(pid, tid)).cloned().unwrap_or_default(),
-        |pid| groups.get(&pid).copied(),
-    );
-
-    assert_eq!(group, Some(90));
-}
-
-#[test]
-fn child_groups_foreground_group_skips_the_shell_group() {
-    let tasks = HashMap::from([(100, vec![100])]);
-    let children = HashMap::from([((100, 100), vec![150, 160, 300])]);
-    let groups = HashMap::from([(150, 90), (160, 90), (300, 300)]);
-
-    let group = child_groups_foreground_process_group_with(
-        100,
-        90,
-        |pid, _budget| tasks.get(&pid).cloned().unwrap_or_default(),
-        |pid, tid, _budget| children.get(&(pid, tid)).cloned().unwrap_or_default(),
-        |pid| groups.get(&pid).copied(),
-    );
-
-    assert_eq!(group, Some(300));
-}
-
-#[test]
-fn child_groups_foreground_group_fails_closed_at_the_scan_limit() {
-    let limit = u32::try_from(CHILD_GROUPS_SCAN_LIMIT).expect("scan limit fits in u32");
-    let children: Vec<u32> = (1..=(limit + 10)).collect();
-    let mut inspected = 0usize;
-
-    let group = child_groups_foreground_process_group_with(
-        100,
-        100,
-        |_, _budget| vec![100],
-        |_, _, _budget| children.clone(),
-        |pid| {
-            inspected += 1;
-            Some(i32::try_from(pid).expect("test pid fits in i32"))
-        },
-    );
-
-    assert_eq!(inspected, CHILD_GROUPS_SCAN_LIMIT);
-    assert_eq!(group, None);
-}
-
-#[test]
 fn foreground_members_follow_the_pane_tree_and_filter_by_process_group() {
     let tasks = HashMap::from([
         (100, vec![100, 101]),
@@ -419,38 +326,6 @@ fn foreground_job_does_not_read_remote_memory_for_uninterruptible_members() {
                 state: 'S',
             },
         ],
-        true,
-        |pid| {
-            argv_reads.borrow_mut().push(pid);
-            Some(vec![format!("process-{pid}")])
-        },
-    )
-    .expect("test precondition");
-
-    assert_eq!(argv_reads.into_inner(), vec![201]);
-    assert_eq!(job.processes[0].name, "codex");
-    assert_eq!(job.processes[0].argv, None);
-    assert_eq!(job.processes[1].argv, Some(vec!["process-201".to_string()]));
-}
-
-#[test]
-fn foreground_job_on_wsl_skips_known_agents_but_reads_wrappers() {
-    let argv_reads = RefCell::new(Vec::new());
-    let job = foreground_job_from_members(
-        200,
-        vec![
-            ProcGroupMember {
-                pid: 200,
-                comm: "codex".to_string(),
-                state: 'S',
-            },
-            ProcGroupMember {
-                pid: 201,
-                comm: "node".to_string(),
-                state: 'S',
-            },
-        ],
-        true,
         |pid| {
             argv_reads.borrow_mut().push(pid);
             Some(vec![format!("process-{pid}")])

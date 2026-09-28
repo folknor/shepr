@@ -26,6 +26,16 @@ expected to find phantoms among them.
 
 ## HYGC-001 - No owner for "how shepr addresses an operator", and library crates write to stderr directly
 
+**Decision (partial):** the text rule named below is adopted: a `brokkr.toml`
+textlint forbidding `print!` / `println!` / `eprint!` / `eprintln!` in the
+library crates outside test code, leaving `src/` alone (B1 in
+`notes/broadarrow-ports.md`). The workspace clippy seal on the print macros is
+not adopted, so the CLI is not held by it (HYGC-004). Every library `eprintln!`
+site below is a violation and leaves its crate: log through `tracing`, or return
+the text for the binary to print. Open: the operator-message owner itself,
+`writeln!(io::stderr(), ..)` (not a print macro, so the rule does not catch it),
+and `prepare_socket_path`'s `busy_message` closure.
+
 Six scopes reported the same shape: there is no function that owns operator
 output, so the destination (stderr vs the log vs a returned value), the `shepr: `
 prefix and the capitalisation are re-decided per site, and several of the sites
@@ -94,6 +104,11 @@ cannot be held mechanically.
 
 ## HYGC-002 - An interactive terminal prompt lives in a library crate
 
+**Decision (partial):** the library-crate print-macro textlint is adopted
+(HYGC-001), and this function's `eprintln!` wall and `eprint!` prompt are among
+its violations, so the prompt has to move out of `shepr-remote`: the seam
+proposed below is how. Open: the seam, and the two copies of the default.
+
 `shepr-remote/src/remote/server_lifecycle.rs::confirm_remote_server_stop` checks
 `io::stdin().is_terminal()`, prints five lines to stderr, prints a `[y/N]`
 prompt, flushes, and reads from `stdin().lock()` - from a crate that also serves
@@ -141,6 +156,12 @@ Enforcement named: one owned writer handed to the client loop, plus a text rule
 dependency allowlists.
 
 ## HYGC-004 - CLI failures travel through two channels, chosen per site
+
+**Decision (partial):** the owner adopted the print-macro rule in its
+library-crate form (HYGC-001) and not the workspace clippy seal that would have
+reached `src/cli`, so no mechanical rule holds these sites. Open: all of it -
+returning `CliError` from these paths, the hand-spelled `Ok(2)` exit codes, and
+whether a CLI-scoped rule is wanted afterwards.
 
 `CliError` (printed as JSON on stderr with an exit code, `src/cli/error.rs`) is
 the owner. Roughly a dozen sites print with `eprintln!` and return an exit code
@@ -299,6 +320,11 @@ lever; the remote hunter suggested a text rule could at least require every
 `tracing::` call in that crate to carry the endpoint identifier (HYGC-012).
 
 ## HYGC-011 - One failure, two channels, chosen by which file or which function it landed in
+
+**Decision (partial):** the third bullet is settled by the library-crate
+print-macro textlint (HYGC-001): the `eprintln!` branch in `bridge.rs` is a
+violation, leaving `tracing` as the one channel in the transport. Open: the
+first two bullets.
 
 - `shepr-mux/src/persist/writer.rs::finish_save_with_snapshot_plan` uses the
   project's owned channel for save outcomes
@@ -696,6 +722,17 @@ contains `\n`.
 
 ## HYGC-025 - `std::process::exit` from library crates, and exit codes spelled outside their owner
 
+**Decision (partial):** `process::exit` is confined to `src/main.rs`, held by the
+`exits-from-main` textlint adopted from broadarrow (B2 in
+`notes/broadarrow-ports.md`). The three library bullets are its violations and
+return outcomes to `main` as the enforcement below proposes. The
+`remote_bridge.rs` watchdog is harder than it reads: it exits from its own
+thread because the relay's copy may be blocked in a read that returning cannot
+interrupt, so `main` also needs a way to unblock that copy (shut the fds down,
+or poll with a deadline). The rule allows `main.rs`'s own eight exits. Open: the
+`main.rs` consolidation into one exit site, and moving every exit code into
+`exit_code` as a named constant.
+
 `src/cli/error.rs::exit_code()` is the owner of shepr's exit statuses. Bypassing
 it:
 
@@ -912,6 +949,11 @@ make the `matches::required` fallback unreachable in fact as well as in intent;
 to deserialization.
 
 ## HYGC-033 - Aborts and panics on state a caller or operator can reach
+
+**Decision (partial):** the `bridge_upload_cancellation_for_test` bullet goes
+with piece 4 of the test-isolation work adopted from broadarrow (test-only code
+leaves production crates' `test-support` features for dev-only crates, held by
+`never-ships` dependency rules). Open: every other bullet.
 
 - `shepr-mux/src/workspace.rs`: `impl Deref for Workspace` resolves to
   `self.tabs.get(self.active_tab).expect("workspace must have a tab when

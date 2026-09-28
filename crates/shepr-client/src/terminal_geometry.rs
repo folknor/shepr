@@ -247,9 +247,7 @@ pub(super) fn query_host_terminal_theme() {
 }
 
 pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
-    let query = shepr_termio::host_term::theme::host_terminal_theme_query_sequence(
-        shepr_platform::should_query_host_terminal_palette(),
-    );
+    let query = shepr_termio::host_term::theme::host_terminal_theme_query_sequence();
     writer.write_all(query.as_bytes())?;
     writer.flush()
 }

@@ -201,9 +201,6 @@ pub(super) fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io
 
 pub(super) fn should_draw_host_cursor(mode: shepr_config::HostCursorModeConfig) -> bool {
     match mode {
-        shepr_config::HostCursorModeConfig::Auto => {
-            shepr_platform::should_draw_host_cursor_by_default()
-        }
         shepr_config::HostCursorModeConfig::Native => false,
         shepr_config::HostCursorModeConfig::Drawn => true,
     }

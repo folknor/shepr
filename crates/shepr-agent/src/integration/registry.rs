@@ -102,14 +102,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         events: Target::Kilo.hook_events(),
     },
     IntegrationSpec {
-        target: Target::Hermes,
-        asset: super::HERMES_PLUGIN_INIT_ASSET,
-        directory: "hermes_plugin",
-        path: &[super::HERMES_PLUGIN_INIT_INSTALL_NAME],
-        version: super::HERMES_INTEGRATION_VERSION,
-        events: Target::Hermes.hook_events(),
-    },
-    IntegrationSpec {
         target: Target::Qodercli,
         asset: super::QODERCLI_HOOK_ASSET,
         directory: "qodercli",
@@ -555,18 +547,6 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
         }),
         Target::Kimi => ancestor(hook_path, 2)
             .is_some_and(|dir| kimi_hooks_registered(&dir.join("config.toml"), hook_path)),
-        // The hook path is `<hermes>/plugins/<plugin>/__init__.py`.
-        Target::Hermes => {
-            hook_path
-                .with_file_name(super::HERMES_PLUGIN_MANIFEST_INSTALL_NAME)
-                .is_file()
-                && ancestor(hook_path, 3).is_some_and(|dir| {
-                    fs::read_to_string(dir.join("config.yaml")).is_ok_and(|config| {
-                        super::config_edit::ensure_hermes_plugin_enabled(&config)
-                            .is_ok_and(|updated| updated == config)
-                    })
-                })
-        }
     }
 }
 

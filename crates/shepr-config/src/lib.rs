@@ -122,9 +122,9 @@ mod tests {
     }
 
     #[test]
-    fn ui_host_cursor_defaults_to_auto_and_parses_overrides() {
+    fn ui_host_cursor_defaults_to_native_and_parses_overrides() {
         let default_config = Config::default();
-        assert_eq!(default_config.ui.host_cursor, HostCursorModeConfig::Auto);
+        assert_eq!(default_config.ui.host_cursor, HostCursorModeConfig::Native);
 
         let native: Config =
             toml::from_str("[ui]\nhost_cursor = 'native'\n").expect("test precondition");
@@ -133,5 +133,7 @@ mod tests {
         let drawn: Config =
             toml::from_str("[ui]\nhost_cursor = 'drawn'\n").expect("test precondition");
         assert_eq!(drawn.ui.host_cursor, HostCursorModeConfig::Drawn);
+
+        assert!(toml::from_str::<Config>("[ui]\nhost_cursor = 'auto'\n").is_err());
     }
 }

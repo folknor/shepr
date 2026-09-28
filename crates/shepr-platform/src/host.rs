@@ -2,7 +2,6 @@ use super::*;
 use std::{
     path::{Path, PathBuf},
     process::Command,
-    sync::OnceLock,
 };
 
 pub fn terminal_grid_size() -> std::io::Result<(u16, u16)> {
@@ -133,44 +132,6 @@ pub(super) fn resolve_launch_executable(
         }
     }
     executable
-}
-
-const WSL_MARKER_ENV_VARS: &[shepr_core::env::EnvVar] = &[
-    shepr_core::env::EnvVar::WslDistroName,
-    shepr_core::env::EnvVar::WslInterop,
-];
-
-pub fn should_draw_host_cursor_by_default() -> bool {
-    running_inside_wsl()
-}
-
-pub fn should_query_host_terminal_palette() -> bool {
-    !running_inside_wsl()
-}
-
-pub fn running_inside_wsl() -> bool {
-    static RUNNING_INSIDE_WSL: OnceLock<bool> = OnceLock::new();
-    *RUNNING_INSIDE_WSL.get_or_init(detect_running_inside_wsl)
-}
-
-fn detect_running_inside_wsl() -> bool {
-    proc_file_indicates_wsl("/proc/sys/kernel/osrelease")
-        || proc_file_indicates_wsl("/proc/version")
-        || WSL_MARKER_ENV_VARS
-            .iter()
-            .any(|&var| crate::env_present(var))
-        || Path::new("/run/WSL").exists()
-}
-
-fn proc_file_indicates_wsl(path: &str) -> bool {
-    std::fs::read_to_string(path)
-        .map(|text| text_indicates_wsl(&text))
-        .unwrap_or(false)
-}
-
-pub(super) fn text_indicates_wsl(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    text.contains("microsoft") || text.contains("wsl")
 }
 
 /// The machine's node name, as shown by tmux's `#h`.

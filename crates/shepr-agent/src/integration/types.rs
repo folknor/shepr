@@ -56,12 +56,6 @@ pub(crate) struct OmpInstallPaths {
 }
 
 #[derive(Debug)]
-pub(crate) struct HermesInstallPaths {
-    pub plugin_dir: PathBuf,
-    pub config_path: PathBuf,
-}
-
-#[derive(Debug)]
 pub(crate) struct QodercliInstallPaths {
     pub hook_path: PathBuf,
     pub settings_path: PathBuf,
@@ -243,14 +237,6 @@ pub(crate) struct OpenCodeUninstallResult {
 pub(crate) struct KiloUninstallResult {
     pub plugin_path: PathBuf,
     pub removed_plugin: bool,
-}
-
-#[derive(Debug)]
-pub(crate) struct HermesUninstallResult {
-    pub plugin_dir: PathBuf,
-    pub config_path: PathBuf,
-    pub removed_plugin_dir: bool,
-    pub updated_config: bool,
 }
 
 #[derive(Debug)]

@@ -2,7 +2,6 @@ use std::{
     collections::{HashSet, VecDeque},
     io::Read,
     path::PathBuf,
-    sync::OnceLock,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +19,6 @@ pub struct ForegroundJob {
     pub processes: Vec<ForegroundProcess>,
 }
 
-const CHILD_GROUPS_SCAN_LIMIT: usize = 64;
 /// Upper bound on the number of processes visited while resolving a pane's
 /// foreground process-group tree. Foreground-job detection reads /proc/<pid>/stat
 /// and task/children files for every visited process on a repeated (per-tick/5s)
@@ -66,44 +64,11 @@ impl ForegroundScanBudget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProcessDetectionMode {
-    Native,
-    ChildGroups,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcGroupMember {
     pid: u32,
     comm: String,
     state: char,
-}
-
-fn parse_process_detection_mode(value: Option<&str>) -> Result<ProcessDetectionMode, &str> {
-    match value {
-        None | Some("") | Some("native") => Ok(ProcessDetectionMode::Native),
-        Some("child-groups") => Ok(ProcessDetectionMode::ChildGroups),
-        Some(value) => Err(value),
-    }
-}
-
-fn process_detection_mode() -> ProcessDetectionMode {
-    static MODE: OnceLock<ProcessDetectionMode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        let variable = shepr_core::env::EnvVar::SheprProcessDetection;
-        let value = shepr_core::env::read_text(variable).unwrap_or_else(|error| {
-            tracing::warn!(%error, "using native process detection");
-            None
-        });
-        parse_process_detection_mode(value.as_deref()).unwrap_or_else(|value| {
-            tracing::warn!(
-                variable = variable.name(),
-                %value,
-                "unknown process detection mode; using native detection"
-            );
-            ProcessDetectionMode::Native
-        })
-    })
 }
 
 /// Collect the foreground terminal job for a given child PID.
@@ -125,41 +90,24 @@ pub(crate) fn available_pane_shell_from_job(child_pid: u32, job: ForegroundJob) 
 }
 
 pub fn foreground_job(child_pid: u32) -> Option<ForegroundJob> {
-    let process_group_id = foreground_process_group_id(child_pid).or_else(|| {
-        (process_detection_mode() == ProcessDetectionMode::ChildGroups)
-            .then(|| child_groups_foreground_process_group(child_pid))
-            .flatten()
-    })?;
-    foreground_job_for_group(child_pid, process_group_id)
-}
-
-fn foreground_job_for_group(child_pid: u32, process_group_id: u32) -> Option<ForegroundJob> {
+    let process_group_id = foreground_process_group_id(child_pid)?;
     let members = foreground_process_group_members(child_pid, process_group_id)?;
-    foreground_job_from_members(
-        process_group_id,
-        members,
-        shepr_platform::running_inside_wsl(),
-        process_argv,
-    )
+    foreground_job_from_members(process_group_id, members, process_argv)
 }
 
 fn foreground_job_from_members(
     process_group_id: u32,
     members: Vec<ProcGroupMember>,
-    running_inside_wsl: bool,
     mut read_argv: impl FnMut(u32) -> Option<Vec<String>>,
 ) -> Option<ForegroundJob> {
     let processes = members
         .into_iter()
         .map(|member| {
-            // Reading procfs cmdline enters access_remote_vm. On WSL, that read can
-            // block indefinitely while a multithreaded process is exiting. A state
-            // check alone has a race, so WSL uses the cheap comm-based identity when
-            // it already identifies a supported agent without inspecting cmdline.
-            let argv =
-                process_allows_remote_memory_read(member.state, &member.comm, running_inside_wsl)
-                    .then(|| read_argv(member.pid))
-                    .flatten();
+            // Reading procfs cmdline enters access_remote_vm, which can block on a
+            // process that is exiting or in uninterruptible sleep.
+            let argv = process_state_allows_remote_memory_read(member.state)
+                .then(|| read_argv(member.pid))
+                .flatten();
             ForegroundProcess {
                 pid: member.pid,
                 name: member.comm,
@@ -178,61 +126,6 @@ fn foreground_job_from_members(
         process_group_id,
         processes,
     })
-}
-
-/// Best-effort foreground group for environments that do not expose terminal
-/// foreground groups. This mode is explicit because background jobs cannot be
-/// distinguished from foreground jobs without the native terminal signal.
-fn child_groups_foreground_process_group(child_pid: u32) -> Option<u32> {
-    let shell_group_id = u32::try_from(
-        process_pgrp_comm_and_state(child_pid)
-            .map(|(pgrp, _, _)| pgrp)
-            .filter(|pgrp| *pgrp > 0)?,
-    )
-    .ok()?;
-
-    child_groups_foreground_process_group_with(
-        child_pid,
-        shell_group_id,
-        process_task_ids,
-        process_task_children,
-        |pid| process_pgrp_comm_and_state(pid).map(|(pgrp, _, _)| pgrp),
-    )
-}
-
-fn child_groups_foreground_process_group_with(
-    child_pid: u32,
-    shell_group_id: u32,
-    mut task_ids: impl FnMut(u32, &mut ForegroundScanBudget) -> Vec<u32>,
-    mut task_children: impl FnMut(u32, u32, &mut ForegroundScanBudget) -> Vec<u32>,
-    mut process_group_id: impl FnMut(u32) -> Option<i32>,
-) -> Option<u32> {
-    let mut budget = ForegroundScanBudget::for_probe();
-    let mut newest = None;
-    let mut scanned = 0usize;
-    for tid in task_ids(child_pid, &mut budget) {
-        for child in task_children(child_pid, tid, &mut budget) {
-            if scanned >= CHILD_GROUPS_SCAN_LIMIT {
-                return None;
-            }
-            scanned += 1;
-
-            let Some(pgrp) = process_group_id(child) else {
-                continue;
-            };
-            if pgrp <= 0 {
-                continue;
-            }
-            let Ok(pgrp) = u32::try_from(pgrp) else {
-                continue;
-            };
-            if pgrp == shell_group_id {
-                continue;
-            }
-            newest = Some(newest.map_or(pgrp, |current: u32| current.max(pgrp)));
-        }
-    }
-    newest.or(Some(shell_group_id))
 }
 
 fn foreground_process_group_members(
@@ -417,10 +310,9 @@ pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJo
         return None;
     }
 
-    let argv =
-        process_allows_remote_memory_read(state, &name, shepr_platform::running_inside_wsl())
-            .then(|| process_argv(process_group_id))
-            .flatten();
+    let argv = process_state_allows_remote_memory_read(state)
+        .then(|| process_argv(process_group_id))
+        .flatten();
     Some(ForegroundJob {
         process_group_id,
         processes: vec![ForegroundProcess {
@@ -461,11 +353,6 @@ fn process_pgrp_comm_and_state_from_stat(stat: &str) -> Option<(i32, String, cha
 
 fn process_state_allows_remote_memory_read(state: char) -> bool {
     !matches!(state, 'D' | 'Z' | 'X' | 'x')
-}
-
-fn process_allows_remote_memory_read(state: char, comm: &str, running_inside_wsl: bool) -> bool {
-    process_state_allows_remote_memory_read(state)
-        && (!running_inside_wsl || crate::detect::identify_agent(comm).is_none())
 }
 
 fn process_argv(pid: u32) -> Option<Vec<String>> {

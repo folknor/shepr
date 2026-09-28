@@ -27,6 +27,15 @@ the entry says so.
 
 ## HYGP-001 - The clock is reached ambiently from logic, workspace-wide
 
+**Decision (partial):** the clock seam is adopted from broadarrow, incrementally
+as part of the hygiene work rather than wholesale: time is passed in instead of
+`Instant::now()` / `SystemTime::now()` being read inside logic, and each
+subsystem that gets its seam is held by a scoped textlint in the shape of
+broadarrow's `control-loop-reads-the-clock-seam` (drafted for
+`shepr-server/src/app/` as B7 in `notes/broadarrow-ports.md`). That settles the
+enforcement named below as text rules, not a workspace `disallowed_methods`
+entry. Open: every site, subsystem by subsystem.
+
 Reported from every scope. `Instant::now()` / `SystemTime::now()` /
 `clock_gettime` are called inside the logic that uses them rather than being
 handed in, so behaviour that depends on time is untestable without sleeping.
@@ -104,6 +113,14 @@ their wall-clock test findings.
 
 ## HYGP-002 - The process environment is read at the moment of use, from logic
 
+**Decision (partial):** piece 1 of the test-isolation work adopted from
+broadarrow (one environment reader and registry in `shepr-core`, after
+broadarrow's `core::env`) supplies the enforcement named here: raw
+`std::env::var`/`var_os`/`vars`/`vars_os` banned in `clippy.toml` with scoped
+`#[expect]` escapes, every variable a registry entry read under one policy, and a
+pure `resolve` beside `read` as the testable inner function. Open: moving each
+read from the moment of use to launch; the reader bans raw reads, not late ones.
+
 Reported from six scopes. The pattern that works is a pure inner function taking
 the values plus one resolution at the edge; several sites have the inner function
 and skip the caching or the launch-time resolution.
@@ -167,6 +184,11 @@ Merged into HYGV-087 (`notes/hygiene-values.md`), which carries the full finding
 
 ## HYGP-004 - The process id and the randomness source are reached from logic, with the randomness utility living in the SSH module
 
+**Decision (partial):** the four `shepr-test-support` sites go with piece 2
+(scratch under the project's `target/` tree with broadarrow's slot-lock scheme),
+whose directory names are keyed on the test executable's stable identity and a
+per-process slot rather than the pid. Open: every production site.
+
 - `std::process::id()` appears in `shepr-platform` (`logging.rs` twice,
   `ssh_paths.rs`, `ssh_agent.rs`, `remote_bridge_tests.rs`), `shepr-test-support`
   (4 sites), `shepr-agent` (both temp-name generators), `shepr-mux`
@@ -189,6 +211,16 @@ Merged into HYGV-087 (`notes/hygiene-values.md`), which carries the full finding
   paths. Either a sharper comment or a getrandom-or-fail policy.
 
 ## HYGP-005 - The working directory is a silent dependency on two paths
+
+**Decision (partial):** the owner adopted broadarrow's rule that every child
+process gets a stated working directory (a `clippy.toml` seal on
+`std::process::Command::new`, with tests spawning through one helper that sets a
+scratch working directory; B6 in `notes/broadarrow-ports.md`). That settles the
+direction here - a test's directory comes from a `ScratchDir`, never from where
+the runner was invoked - but the seal covers spawned children only and catches
+none of these sites: `std::env::current_dir()` read as an input and the
+`Path::new(".")` fallback are other spellings (A5's dot-directory textlint needs
+a name after the dot). Open: every site.
 
 - `shepr-platform`: `ipc.rs` falls back to `Path::new(".")` for the staging
   parent when the socket path has no parent, so a security-relevant 0700
@@ -248,6 +280,12 @@ test can assert the policy and the call sites become data. One hunter notes no
 rule can hold this - a shared type is the only lever.
 
 ## HYGP-007 - "A deadline and the remaining time until it" is implemented five ways in the client, and is a type nowhere
+
+**Decision (partial):** the `Instant::now()` reads are covered by the clock seam
+adopted incrementally with the hygiene work (HYGP-001), and the inline
+`Duration::from_secs(5)` in `attach.rs` by the per-crate `limits` modules
+adopted the same way (HYGV-036). Open: the `Deadline` type and the two
+`DeadlineReader`s.
 
 From `shepr-client` / `shepr-termio`:
 
@@ -312,6 +350,11 @@ Enforcement named: guard types make the leak unrepresentable; no lint catches th
 manual form.
 
 ## HYGP-009 - Resources that can grow without bound when something upstream misbehaves
+
+**Decision (partial):** the `shepr-test-support` kept-scratch leak goes with
+piece 2 (scratch under the project's `target/` tree, adopting broadarrow's
+per-process slot locks so a rerun takes the same slot and clears its trees in
+place; nothing relies on `atexit`). Open: every other bullet.
 
 Reported from seven scopes. Several crates are careful, which is what makes the
 gaps visible; the hunters recorded the good cases too so the absence is on the
@@ -430,6 +473,11 @@ record.
   await in that scope.
 
 ## HYGP-011 - Process-global mutable state whose consistency rests on the order calls happen to be made in
+
+**Decision (partial):** the `shepr-test-support` statics bullet goes with piece 2
+(scratch under the project's `target/` tree, adopting broadarrow's scheme): the
+`atexit`/`Drop` pair is replaced by a once-resolved base, a claim registry keyed
+by resolved path and a lifetime slot lock. Open: every other bullet.
 
 - `shepr-platform`: `logging.rs::init_file_logging` installs a process-global
   subscriber and discards a second call's error, so a second caller (two roles in
@@ -599,6 +647,13 @@ depend on it) returning one `ApiError`; the CLI's parser then only splits and
 delegates.
 
 ## HYGP-018 - The environment handed to panes is inherited wholesale and scrubbed by a denylist split across crates
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) supplies the list of shepr's variables and bans
+`set_var`/`remove_var` in `clippy.toml`, so the `unsafe remove_var` of
+`SHEPR_STARTUP_CWD` in `bootstrap.rs` has to become something else. Open: the
+wholesale `vars_os()` inheritance, the split denylist, and the test that every
+registry entry is either scrubbed from or allowed into pane env.
 
 From `shepr-pty` / `shepr-mux` / `shepr-agent`: `base_env` is
 `std::env::vars_os()`, then scrubbed by a denylist split between
@@ -849,6 +904,23 @@ recorded here so the absence is not re-hunted.
 
 ## HYGP-031 - Test-only code is compiled into production libraries through Cargo feature unification (`test-api`, `test-support`)
 
+**Decision (partial):** piece 4 of the test-isolation work adopted from
+broadarrow: test-only code moves out of production crates' `test-api` and
+`test-support` features into dev-only crates, held by `never-ships` dependency
+rules (after broadarrow's `test-support-never-ships` and
+`test-scratch-never-ships`, which forbid a normal or build edge to the dev-only
+crates), plus a gate check that compiles the shipped feature set. That answers
+the mechanism, the gate gap and the `shepr-server` normal-dependency case. Open:
+the items not behind a feature at all (`TerminalId::test_new`, `WorkspaceId::new`
+and the `From<&str>` id constructors), and how `PaneRuntimeIo::TestChannel`
+leaves `shepr-mux` - it needs a seam (trait or generic) before a dev-only crate
+can hold it. Separately, `#[allow]` gives way to `#[expect(.., reason)]`
+workspace-wide (B9 in `notes/broadarrow-ports.md`), so the narrow per-item
+allows the `shepr-server` bullet calls the house style become `#[expect]`s,
+with a `cfg_attr` on the `dead_code` ones that tests use. Building the release
+profile in the gate is decided against; the shipped-feature-set check is about
+features, not the profile.
+
 Reported from six scopes; several hunters marked the unification mechanics as an
 inference they had not verified by building. Gathered here as one entry.
 
@@ -1076,6 +1148,15 @@ in `brokkr.toml`, which would also catch `terminal/metadata.rs` (1438 lines) and
 
 ## HYGP-036 - `migration_tests.rs` and `SHEPR_MIGRATION_OBSERVATIONS`: scaffolding for a finished migration
 
+**Decision (partial):** the droid pid gate's host `bash` spawn falls under piece 3
+(tests stop invoking host programs, after broadarrow's
+`no-borrowed-process-stand-ins` textlint). The stale prose turns out to be
+partly lintable: the older-peer compatibility textlint adopted from broadarrow
+(A3 in `notes/broadarrow-ports.md`) matches "during the migration", so the
+`terminal/state/mod.rs` comment is one of its violations and goes when it lands.
+Open: the tautological test, the env var, the rename, and the module header and
+`pane/state.rs` prose the textlint does not match.
+
 Reported by the `shepr-vt`/`shepr-pty` and `shepr-mux` hunters. The file (461
 lines) is headed "Bounded semantic migration gates ... Keep the same runner for
 old/candidate captures". The "old" side is the pre-fork upstream terminal layer;
@@ -1113,6 +1194,11 @@ Enforcement named: deletion of the tautological test and the env var, a rename o
 the module, and a text rule against `SHEPR_MIGRATION_OBSERVATIONS`.
 
 ## HYGP-037 - `shepr-platform`'s `test-support` feature gates one nine-line function with one caller
+
+**Decision:** piece 4 of the test-isolation work adopted from broadarrow (test-only
+code leaves production crates' features for dev-only crates, held by
+`never-ships` dependency rules and a shipped-feature-set gate check) removes the
+feature; `signal_processes` moves to the test side.
 
 Delete the feature, the function (`process.rs::signal_processes`) and the
 `features = ["test-support"]` entry in `shepr-server/Cargo.toml`. Full context in
@@ -1181,6 +1267,12 @@ compatibility obligations", "client and server are always the same build".
   state in one place why they exist. Not enforceable; a decision to record.
 
 ## HYGP-040 - The world-readable-log tightening path is for a build nobody ran
+
+**Decision:** the older-peer compatibility textlint is adopted from broadarrow
+(A3 in `notes/broadarrow-ports.md`), and this branch's comment and its test are
+two of its violations. They are cleared the way recommended below - delete the
+tightening branch and the legacy half of the test - not by rewording the
+comment.
 
 From `shepr-platform` `logging.rs`: a branch re-chmods an existing log "left
 behind by an older build that created logs world-readable", with a dedicated
@@ -1399,6 +1491,12 @@ for each is the hunter's.
 
 ## HYGP-046 - Dead trait impls and duplicate flag constants the compiler will not flag
 
+**Decision (partial):** `#[allow]` gives way to `#[expect(.., reason)]`
+workspace-wide (B9 in `notes/broadarrow-ports.md`); the third bullet's two
+`#[allow(dead_code)]`s become `#[cfg_attr(not(test), expect(dead_code, reason =
+..))]`, since tests read the items. Whether "documents the table" is reason
+enough to keep them is open, as are the first two bullets.
+
 - `shepr-core` `geometry.rs`: `impl From<bool> for SplitBranch` has no callers.
   Evidence: the hunter grepped the workspace for `SplitBranch::from`, `.into()`
   producing a `SplitBranch`, and any `bool`-to-`SplitBranch` coercion - zero
@@ -1458,6 +1556,13 @@ Merged into HYGV-059 (`notes/hygiene-values.md`), which carries the full finding
   `pub use ids::*`-style re-export. Minor; listed as one more symbol read as API.
 
 ## HYGP-049 - Enum variants that are constructed but never discriminated
+
+**Decision (partial):** for the `RefFileRead` bullet: the `Path::exists` seal is
+adopted from broadarrow (`clippy.toml`; use `try_exists` or match `NotFound`, B4
+in `notes/broadarrow-ports.md`), so the stat-error-preserving distinction
+`RefFileRead` draws is now the house rule, not dead reasoning. Its collapse to
+`None` in `read_git_ref_file` is BUG-065's defect and stays open there. Open: the
+other three bullets.
 
 - `shepr-config` `ConfigDiagnostic`'s six variants (`Read`, `Parse`,
   `Provenance`, `Unknown`, `Validation`, `Path`) are never distinguished: every

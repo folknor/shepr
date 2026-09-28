@@ -13,10 +13,10 @@ use super::command::hook_command;
 use super::command::shell_single_quote;
 use super::config_edit::{
     build_codex_config_with_hooks, build_kimi_config_with_hooks, ensure_command_hook,
-    ensure_direct_command_hook, ensure_flat_command_hook, ensure_hermes_plugin_enabled,
-    ensure_hooks_object, ensure_simple_command_hook, hooks_object_if_present,
-    remove_direct_hook_commands, remove_flat_command_hook, remove_hermes_plugin_enabled,
-    remove_hook_commands, remove_kimi_config_block, remove_simple_command_hook,
+    ensure_direct_command_hook, ensure_flat_command_hook, ensure_hooks_object,
+    ensure_simple_command_hook, hooks_object_if_present, remove_direct_hook_commands,
+    remove_flat_command_hook, remove_hook_commands, remove_kimi_config_block,
+    remove_simple_command_hook,
 };
 use super::config_file::{check_config_targets, lock_config_for_update, write_config};
 use super::env::AgentIntegrationPaths;
@@ -30,11 +30,11 @@ use super::types::{
     ClaudeUninstallResult, CodexInstallPaths, CodexUninstallResult, CopilotInstallPaths,
     CopilotUninstallResult, CursorInstallPaths, CursorUninstallResult, DevinInstallPaths,
     DevinUninstallResult, DroidInstallPaths, DroidUninstallResult, GrokInstallPaths,
-    GrokUninstallResult, HermesInstallPaths, HermesUninstallResult, KiloInstallPaths,
-    KiloUninstallResult, KimiInstallPaths, KimiUninstallResult, LettaInstallPaths,
-    LettaUninstallResult, MastracodeInstallPaths, MastracodeUninstallResult, OmpInstallPaths,
-    OmpUninstallResult, OpenCodeInstallPaths, OpenCodeUninstallResult, PiUninstallResult,
-    QodercliInstallPaths, QodercliUninstallResult, QwenInstallPaths, QwenUninstallResult,
+    GrokUninstallResult, KiloInstallPaths, KiloUninstallResult, KimiInstallPaths,
+    KimiUninstallResult, LettaInstallPaths, LettaUninstallResult, MastracodeInstallPaths,
+    MastracodeUninstallResult, OmpInstallPaths, OmpUninstallResult, OpenCodeInstallPaths,
+    OpenCodeUninstallResult, PiUninstallResult, QodercliInstallPaths, QodercliUninstallResult,
+    QwenInstallPaths, QwenUninstallResult,
 };
 use super::{
     ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
@@ -42,13 +42,12 @@ use super::{
     CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME,
     CURSOR_HOOK_INSTALL_NAME, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_EVENTS,
     DROID_HOOK_INSTALL_NAME, GROK_HOOK_CONFIG_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
-    HERMES_PLUGIN_INIT_INSTALL_NAME, HERMES_PLUGIN_MANIFEST_ASSET,
-    HERMES_PLUGIN_MANIFEST_INSTALL_NAME, KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME,
-    LETTA_HOOK_INSTALL_NAME, LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_EVENTS,
-    MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS, OMP_EXTENSION_INSTALL_NAME,
-    OPENCODE_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME,
-    OPENCODE_TUI_PLUGIN_SPEC, PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_EVENTS,
-    QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
+    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME, LETTA_HOOK_INSTALL_NAME,
+    LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_EVENTS, MASTRACODE_HOOK_INSTALL_NAME,
+    MASTRACODE_HOOK_TIMEOUT_MS, OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME,
+    OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
+    PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_EVENTS, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS,
+    QWEN_HOOK_INSTALL_NAME,
 };
 
 // Install order for targets that register the hook in an agent config: read,
@@ -453,50 +452,6 @@ pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloInst
     Ok(KiloInstallPaths { plugin_path })
 }
 
-pub(crate) fn install_hermes(paths: &AgentIntegrationPaths) -> io::Result<HermesInstallPaths> {
-    let dir = paths.directory("hermes")?;
-    check_config_targets(&dir, &["config.yaml"])?;
-    if !dir.is_dir() {
-        return Err(io::Error::other(format!(
-            "hermes config directory not found at {}. install hermes agent first",
-            dir.display()
-        )));
-    }
-
-    let config_path = dir.join("config.yaml");
-    let _config_lock = lock_config_for_update(&config_path)?;
-    let existing_config = if config_path.is_file() {
-        fs::read_to_string(&config_path)?
-    } else {
-        String::new()
-    };
-    // Prepare the config edit before writing assets; persist it after the
-    // plugin files are in place so Hermes never enables a missing plugin.
-    let new_config = ensure_hermes_plugin_enabled(&existing_config)?;
-
-    let plugin_dir = paths.directory("hermes_plugin")?;
-    fs::create_dir_all(&plugin_dir)?;
-    write_managed_asset(
-        &plugin_dir.join(HERMES_PLUGIN_MANIFEST_INSTALL_NAME),
-        HERMES_PLUGIN_MANIFEST_ASSET.as_bytes(),
-        false,
-    )?;
-    write_target_asset(
-        Target::Hermes,
-        &plugin_dir.join(HERMES_PLUGIN_INIT_INSTALL_NAME),
-        false,
-    )?;
-
-    if new_config != existing_config {
-        write_config(&config_path, new_config)?;
-    }
-
-    Ok(HermesInstallPaths {
-        plugin_dir,
-        config_path,
-    })
-}
-
 pub(crate) fn uninstall_pi(paths: &AgentIntegrationPaths) -> io::Result<PiUninstallResult> {
     let extension_path = paths
         .directory("pi_extension")?
@@ -818,37 +773,6 @@ pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloUn
     Ok(KiloUninstallResult {
         plugin_path,
         removed_plugin,
-    })
-}
-
-pub(crate) fn uninstall_hermes(paths: &AgentIntegrationPaths) -> io::Result<HermesUninstallResult> {
-    let dir = paths.directory("hermes")?;
-    check_config_targets(&dir, &["config.yaml"])?;
-    let plugin_dir = paths.directory("hermes_plugin")?;
-    let config_path = dir.join("config.yaml");
-    let _config_lock = lock_config_for_update(&config_path)?;
-
-    // Edit the config in memory first: a layout the editor refuses leaves the
-    // plugin in place instead of enabling a plugin that no longer exists.
-    let config_edit = if config_path.is_file() {
-        let existing_config = fs::read_to_string(&config_path)?;
-        let new_config = remove_hermes_plugin_enabled(&existing_config)?;
-        (new_config != existing_config).then_some(new_config)
-    } else {
-        None
-    };
-
-    let removed_plugin_dir = remove_dir_all_if_exists(&plugin_dir)?;
-    let updated_config = config_edit.is_some();
-    if let Some(new_config) = config_edit {
-        write_config(&config_path, new_config)?;
-    }
-
-    Ok(HermesUninstallResult {
-        plugin_dir,
-        config_path,
-        removed_plugin_dir,
-        updated_config,
     })
 }
 

@@ -5,12 +5,12 @@ use super::env::AgentIntegrationPaths;
 use super::registry::integration_target_label;
 use super::targets::{
     install_antigravity_cli, install_claude, install_codex, install_copilot, install_cursor,
-    install_devin, install_droid, install_grok, install_hermes, install_kilo, install_kimi,
-    install_letta, install_mastracode, install_omp, install_opencode, install_pi, install_qodercli,
-    install_qwen, uninstall_antigravity_cli, uninstall_claude, uninstall_codex, uninstall_copilot,
-    uninstall_cursor, uninstall_devin, uninstall_droid, uninstall_grok, uninstall_hermes,
-    uninstall_kilo, uninstall_kimi, uninstall_letta, uninstall_mastracode, uninstall_omp,
-    uninstall_opencode, uninstall_pi, uninstall_qodercli, uninstall_qwen,
+    install_devin, install_droid, install_grok, install_kilo, install_kimi, install_letta,
+    install_mastracode, install_omp, install_opencode, install_pi, install_qodercli, install_qwen,
+    uninstall_antigravity_cli, uninstall_claude, uninstall_codex, uninstall_copilot,
+    uninstall_cursor, uninstall_devin, uninstall_droid, uninstall_grok, uninstall_kilo,
+    uninstall_kimi, uninstall_letta, uninstall_mastracode, uninstall_omp, uninstall_opencode,
+    uninstall_pi, uninstall_qodercli, uninstall_qwen,
 };
 use super::version::{agent_version_requirement, enforce_agent_version};
 
@@ -156,19 +156,6 @@ fn install_target_inner(
                 "installed kilo integration plugin to {}",
                 installed.plugin_path.display()
             )]
-        }
-        crate::agent::IntegrationTarget::Hermes => {
-            let installed = install_hermes(paths)?;
-            vec![
-                format!(
-                    "installed hermes integration plugin to {}",
-                    installed.plugin_dir.display()
-                ),
-                format!(
-                    "enabled hermes plugin in {}",
-                    installed.config_path.display()
-                ),
-            ]
         }
         crate::agent::IntegrationTarget::Qodercli => {
             let installed = install_qodercli(paths)?;
@@ -525,33 +512,6 @@ fn uninstall_target_inner(
                     result.plugin_path.display()
                 )]
             }
-        }
-        crate::agent::IntegrationTarget::Hermes => {
-            let result = uninstall_hermes(paths)?;
-            let mut messages = Vec::new();
-            if result.removed_plugin_dir {
-                messages.push(format!(
-                    "removed hermes integration plugin at {}",
-                    result.plugin_dir.display()
-                ));
-            } else {
-                messages.push(format!(
-                    "no hermes integration plugin found at {}",
-                    result.plugin_dir.display()
-                ));
-            }
-            if result.updated_config {
-                messages.push(format!(
-                    "disabled hermes plugin in {}",
-                    result.config_path.display()
-                ));
-            } else {
-                messages.push(format!(
-                    "no hermes plugin entry found in {}",
-                    result.config_path.display()
-                ));
-            }
-            messages
         }
         crate::agent::IntegrationTarget::Qodercli => {
             let result = uninstall_qodercli(paths)?;

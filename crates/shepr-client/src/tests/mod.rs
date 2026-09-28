@@ -167,17 +167,7 @@ fn keybinding_source_refuses_unknown_values() {
 }
 
 #[test]
-fn host_cursor_policy_auto_uses_platform_default() {
-    // Both sides read the terminal environment another test changes.
-    let _env = IsolatedEnv::new();
-    assert_eq!(
-        should_draw_host_cursor(shepr_config::HostCursorModeConfig::Auto),
-        shepr_platform::should_draw_host_cursor_by_default()
-    );
-}
-
-#[test]
-fn host_cursor_policy_native_and_drawn_override_auto_detection() {
+fn host_cursor_policy_native_and_drawn_ignore_the_terminal() {
     let env = IsolatedEnv::new();
     env.set("TERM_PROGRAM", "WezTerm");
 
@@ -202,10 +192,7 @@ fn write_host_terminal_theme_query_emits_osc_queries() {
     write_host_terminal_theme_query(&mut output).expect("test precondition");
     assert_eq!(
         output,
-        shepr_termio::host_term::theme::host_terminal_theme_query_sequence(
-            shepr_platform::should_query_host_terminal_palette(),
-        )
-        .as_bytes()
+        shepr_termio::host_term::theme::host_terminal_theme_query_sequence().as_bytes()
     );
     assert!(
         !output

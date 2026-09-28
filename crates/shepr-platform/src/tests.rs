@@ -107,14 +107,6 @@ fn read_limited_reader_retries_interrupted_reads() {
 }
 
 #[test]
-fn wsl_marker_detection_matches_kernel_release_text() {
-    assert!(text_indicates_wsl("5.15.167.4-microsoft-standard-WSL2"));
-    assert!(text_indicates_wsl("4.4.0-19041-Microsoft"));
-    assert!(!text_indicates_wsl("6.8.0-64-generic"));
-    assert!(!text_indicates_wsl(""));
-}
-
-#[test]
 fn proc_stat_yields_session_and_controlling_tty() {
     assert_eq!(
         session_and_tty_from_stat("4242 (shepr (srv) x) S 1 4242 4242 0 -1 4194560"),

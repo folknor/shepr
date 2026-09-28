@@ -132,9 +132,6 @@ env_vocabulary! {
         /// `SHEPR_DEBUG_OSC_EVIDENCE`: logs selected OSC sequences each pane
         /// receives, pane content included.
         SheprDebugOscEvidence => "SHEPR_DEBUG_OSC_EVIDENCE",
-        /// `SHEPR_PROCESS_DETECTION`: `native` or `child-groups`, the
-        /// foreground-process discovery mode.
-        SheprProcessDetection => "SHEPR_PROCESS_DETECTION",
         /// `HOME`: the user's home directory, the parent of every default path.
         Home => "HOME",
         /// `XDG_CONFIG_HOME`: the config tree's parent.
@@ -166,10 +163,6 @@ env_vocabulary! {
         WaylandDisplay => "WAYLAND_DISPLAY",
         /// `DISPLAY`: its presence offers the X11 clipboard helpers.
         Display => "DISPLAY",
-        /// `WSL_DISTRO_NAME`: set inside WSL; one of the WSL markers.
-        WslDistroName => "WSL_DISTRO_NAME",
-        /// `WSL_INTEROP`: set inside WSL; one of the WSL markers.
-        WslInterop => "WSL_INTEROP",
         /// `PI_CODING_AGENT_DIR`: pi's config directory override.
         PiCodingAgentDir => "PI_CODING_AGENT_DIR",
         /// `PI_CONFIG_DIR`: omp's config directory name under `HOME`.
@@ -193,8 +186,6 @@ env_vocabulary! {
         AntigravityCliConfigDir => "ANTIGRAVITY_CLI_CONFIG_DIR",
         /// `GROK_HOME`: the grok CLI's config home override.
         GrokHome => "GROK_HOME",
-        /// `HERMES_HOME`: Hermes's config directory override.
-        HermesHome => "HERMES_HOME",
     }
 }
 
@@ -312,7 +303,6 @@ impl EnvVar {
             | Self::SheprReattachCommand
             | Self::SheprRemoteKeybindings
             | Self::SheprLog
-            | Self::SheprProcessDetection
             | Self::TermProgram => EnvKind::Text,
             Self::SheprSession => EnvKind::Selector,
             Self::SheprConfigPath
@@ -327,8 +317,7 @@ impl EnvVar {
             | Self::QwenHome
             | Self::CursorConfigDir
             | Self::AntigravityCliConfigDir
-            | Self::GrokHome
-            | Self::HermesHome => EnvKind::Path,
+            | Self::GrokHome => EnvKind::Path,
             Self::Home | Self::XdgConfigHome | Self::XdgStateHome | Self::XdgRuntimeDir => {
                 EnvKind::AbsolutePath
             }
@@ -339,9 +328,7 @@ impl EnvVar {
             | Self::Tmux
             | Self::WeztermPane
             | Self::WaylandDisplay
-            | Self::Display
-            | Self::WslDistroName
-            | Self::WslInterop => EnvKind::Presence,
+            | Self::Display => EnvKind::Presence,
             Self::SheprStartupCwd => EnvKind::Handoff,
         }
     }
@@ -697,11 +684,6 @@ mod tests {
                 "SHEPR_DEBUG_OSC_EVIDENCE",
                 Flag,
             ),
-            (
-                EnvVar::SheprProcessDetection,
-                "SHEPR_PROCESS_DETECTION",
-                Text,
-            ),
             (EnvVar::Home, "HOME", AbsolutePath),
             (EnvVar::XdgConfigHome, "XDG_CONFIG_HOME", AbsolutePath),
             (EnvVar::XdgStateHome, "XDG_STATE_HOME", AbsolutePath),
@@ -715,8 +697,6 @@ mod tests {
             (EnvVar::WeztermPane, "WEZTERM_PANE", Presence),
             (EnvVar::WaylandDisplay, "WAYLAND_DISPLAY", Presence),
             (EnvVar::Display, "DISPLAY", Presence),
-            (EnvVar::WslDistroName, "WSL_DISTRO_NAME", Presence),
-            (EnvVar::WslInterop, "WSL_INTEROP", Presence),
             (EnvVar::PiCodingAgentDir, "PI_CODING_AGENT_DIR", Path),
             (EnvVar::PiConfigDir, "PI_CONFIG_DIR", Path),
             (EnvVar::ClaudeConfigDir, "CLAUDE_CONFIG_DIR", Path),
@@ -732,7 +712,6 @@ mod tests {
                 Path,
             ),
             (EnvVar::GrokHome, "GROK_HOME", Path),
-            (EnvVar::HermesHome, "HERMES_HOME", Path),
         ];
         assert_eq!(
             table.iter().map(|(var, _, _)| *var).collect::<Vec<_>>(),

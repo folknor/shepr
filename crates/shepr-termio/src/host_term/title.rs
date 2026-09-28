@@ -26,7 +26,7 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// Write clipboard bytes with native Linux tools when the host has a local
 /// clipboard, falling back to an OSC 52 write through the host terminal.
 ///
-/// Remote, VS Code remote, and WSL sessions use OSC 52 so bytes reach the
+/// Remote and VS Code remote sessions use OSC 52 so bytes reach the
 /// terminal on the user's machine. Some terminals still only honor BEL-
 /// terminated writes, so OSC 52 uses BEL here.
 pub fn write_clipboard_bytes(bytes: &[u8]) {

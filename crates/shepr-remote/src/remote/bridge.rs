@@ -52,7 +52,7 @@ impl SshStdioBridge {
     ) -> io::Result<Self> {
         Self::start_command(
             target,
-            remote_shepr.bridge_command(session_name, noninteractive),
+            remote_shepr.bridge_command(session_name),
             local_socket,
             ssh_options,
             noninteractive,

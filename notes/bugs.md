@@ -313,6 +313,20 @@ spec row) so every call site goes through one function.
 
 ## BUG-021 - `app_dir_name()`'s `cfg!(test)` guard does not hold outside its own crate
 
+**Decision (partial):** piece 1 of the test-isolation work adopted from
+broadarrow (the `shepr-core` environment registry, after broadarrow's
+`core::env`) makes the protection that actually works complete by construction:
+`IsolatedEnv` isolates from the registry, and raw reads are banned in
+`clippy.toml`, so no variable that steers a path can be missed. The
+`cfg!(debug_assertions)` arm is removed (owner's decision, with the
+`debug_assert!` ban adopted from broadarrow), so dev and release builds resolve
+the same directory; that also removes the separate dev runtime directory that
+`AGENTS.md`'s recipe for testing a dev build inside a running shepr relies on.
+Building the release profile in `brokkr check` is decided against. The text
+below predates `brokkr.toml`'s `[test] debug = true`: `brokkr test` builds dev
+unless `--release` is passed, so "builds release by default" no longer holds.
+Open: the `cfg!(test)` guard and its false comment.
+
 `crates/shepr-config/src/io.rs`:
 `if cfg!(test) { "shepr-test" } else if cfg!(debug_assertions) { "shepr-dev" } else { "shepr" }`,
 with a comment claiming unit tests get a directory of their own in every profile.
@@ -619,6 +633,10 @@ too large": a bound that misreports.
 
 ## BUG-041 - `~` expansion in Git config resolves against the cwd when `HOME` is unset
 
+**Decision (partial):** piece 1 (the `shepr-core` environment registry) bans the
+raw `std::env::var_os("HOME")` in `clippy.toml`, so both sites must be rewritten.
+Open: the fix itself, routing them through `expand_tilde_path`.
+
 `crates/shepr-mux/src/git/config.rs::normalize_gitdir_include_pattern` and
 `::resolve_include_path` both do
 `std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest)` for a
@@ -666,6 +684,12 @@ for its own mutexes) so the state is recovered; the existing
 `writer_recovers_after_an_io_error_and_notes_the_gap` test shape extends to it.
 
 ## BUG-044 - An invalid `SHEPR_LOG` filter degrades silently, and a second logging init is discarded
+
+**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
+broadarrow's `core::env`) makes `SHEPR_LOG` a registry entry, so surrounding
+whitespace and non-UTF-8 are refused naming the variable. Open: a filter that
+fails to parse (the owning site's text, as in broadarrow) and the discarded
+second init.
 
 `crates/shepr-platform/src/logging.rs`:
 `EnvFilter::try_from_env("SHEPR_LOG").unwrap_or_else(|_| EnvFilter::new("shepr=info"))`.
@@ -745,6 +769,12 @@ Fix suggested: make the `let _ =` sites explicit, and a startup sweep keyed on
 
 ## BUG-049 - Kept scratch directories leak indefinitely after a SIGKILL
 
+**Decision:** piece 2 of the test-isolation work adopted from broadarrow: scratch
+directories move under the project's `target/` tree with broadarrow's
+per-process slot locks, so a rerun takes the same slot and clears its trees in
+place, and `temp_dir` is banned. Nothing relies on `atexit` or on pid reuse, and
+the `/tmp` question disappears.
+
 `crates/shepr-test-support/src/lib.rs`: the scratch root is
 `std::env::temp_dir().join(format!("shepr-test-{pid}"))`, and
 `ScratchDir::keep_until_exit` relies on `atexit`, so a test process killed with
@@ -794,6 +824,12 @@ Fix suggested: feed `join()` into `record_session_save_result`.
 
 ## BUG-053 - Bootstrap aborts the process on `AddrInUse`, skipping the log flush
 
+**Decision (partial):** two rules adopted from broadarrow hold both halves:
+`process::exit` is confined to `src/main.rs` (so `run_server` returns a typed
+error), and the library-crate print-macro textlint forbids the six `eprintln!`
+lines (so the refusal goes through `tracing` or back to `main`). Open: the fix
+itself, and the three hand-built "already running" variants.
+
 `crates/shepr-server/src/server/headless/bootstrap.rs` calls
 `std::process::exit(1)` on `AddrInUse` from inside `run_server`, which returns
 `io::Result<()>` and is called from `main`. "Another server is already running"
@@ -828,6 +864,14 @@ owns the code, plus a table test over the layout handlers.
 
 ## BUG-056 - A crate-wide `allow(dead_code)` is active in exactly the builds that would report it
 
+**Decision (partial):** piece 4 of the test-isolation work adopted from broadarrow
+removes `shepr-server`'s `test-api` feature (test-only code moves to dev-only
+crates held by `never-ships` dependency rules), and the crate-wide allow goes
+with it. `#[allow]` is also denied workspace-wide in favour of
+`#[expect(.., reason)]` (adopted from broadarrow), so the attribute could not
+return in this form. Open: the three deletion candidates, which the compiler can
+confirm once `dead_code` reports again.
+
 `crates/shepr-server/src/lib.rs`:
 `#![cfg_attr(feature = "test-api", allow(dead_code))]`. The root package depends
 on `shepr-server` normally and with `features = ["test-api"]` as a
@@ -842,6 +886,15 @@ deletion candidates unconfirmed for that reason
 `ShutdownLifecycle::set_frozen_session_policy_for_test`).
 
 ## BUG-057 - The gate never compiles the feature set that ships, and test-only items are reachable from production builds
+
+**Decision:** piece 4 of the test-isolation work adopted from broadarrow:
+test-only code moves out of production crates' `test-api` and `test-support`
+features into dev-only crates, held by `never-ships` dependency rules (after
+broadarrow's `test-support-never-ships` and `test-scratch-never-ships`), plus a
+gate check of the shipped feature set. `PaneRuntimeIo::TestChannel` needs a seam
+before it can leave `shepr-mux` (HYGP-031). The gate check compiles the shipped
+feature set, not the release profile: building release in `brokkr check` is
+decided against (the owner's choice).
 
 Reported independently from four scopes, all resting on cargo feature
 unification and none verified by a build:
@@ -881,9 +934,15 @@ behind traits or into separate crates so production modules cannot name them.
 
 ## BUG-058 - Invariant checks that vanish in the build that ships
 
-**Decision (partial):** `unregister_moved_pane` is deleted along with its call
-site; `take_pane_for_move` already removes the record and number together. The
-lifecycle phase assertions remain open.
+**Decision:** `unregister_moved_pane` is deleted along with its call site;
+`take_pane_for_move` already removes the record and number together. For the
+lifecycle phase, `debug_assert!` is banned workspace-wide (a `disallowed-macros`
+seal adopted from broadarrow), so the two `debug_assert_eq!`s become `assert_eq!`
+where a panic is the right containment, or typed handling (the `Result`-returning
+transitions suggested below) otherwise. Building the release profile in
+`brokkr check` is decided against, so the answer is to remove the profile
+dependence, not to test the other profile. The text below predates
+`[test] debug = true`: `brokkr test` builds dev unless `--release` is passed.
 
 - `crates/shepr-mux/src/workspace.rs::unregister_moved_pane` has a body of
   exactly `debug_assert!(self.pane_state(_pane_id).is_none());` and is called
@@ -1004,6 +1063,12 @@ writing; it will fail today".
 
 ## BUG-065 - Every Git failure is `None`, so a missing `git` binary is retried forever in silence
 
+**Decision (partial):** the `Path::exists` seal is adopted from broadarrow
+(`clippy.toml`; `try_exists` or a match on `NotFound`), which makes
+`RefFileRead`'s `Absent` / `Unavailable` split the house rule rather than
+reasoning the caller may discard. Open: the defect - carrying the distinction
+to the refresh task, and the client's copy.
+
 `crates/shepr-mux/src/git`: every Git read returns `Option`. Spawn failure,
 non-zero exit, non-UTF-8 output, a permission error on `.git/config` and a
 64 KiB-exceeding ref file all become `None`, and `None` means "this repo has no
@@ -1026,6 +1091,15 @@ Fix suggested: a `GitReadError` travelling to the refresh task, logged once per
 distinct cause rather than per attempt, with `Absent` staying `None`.
 
 ## BUG-066 - `git` is spawned with the environment and stdin inherited whole, and no deadline
+
+**Decision (partial):** the `git/test_support.rs::run_git` site goes with piece 3
+of the test-isolation work adopted from broadarrow (tests stop invoking host
+programs, `git` included). The child working-directory seal is adopted from
+broadarrow (`clippy.toml` on `std::process::Command::new`), so the production
+spawns must state a working directory, which the suggested `run_git(dir, ..)`
+can set from `dir`. The two `Instant::now()` reads fall under the clock seam,
+adopted incrementally with the hygiene work (HYGP-001). Open: the four
+production sites, which are the defect.
 
 `crates/shepr-mux/src/git/discovery.rs::git_trimmed_stdout`,
 `git/status.rs::git_ahead_behind_between`, `git/test_support.rs::run_git` and
@@ -1135,6 +1209,14 @@ outcome is a visible `let _ =` at one site.
 
 ## BUG-072 - Library crates terminate the process
 
+**Decision (partial):** the suggested fix is adopted: `process::exit` is
+confined to `src/main.rs`, held by broadarrow's `exits-from-main` textlint form,
+and the library crates return outcomes. The bridge bullet is harder than it
+reads: the watchdog exits from its own thread because the relay's copy may be
+blocked in a read that returning cannot interrupt, so `main` also needs a way to
+unblock that copy (shut the fds down, or poll with a deadline). Open: the three
+sites, and the bridge's missing log line.
+
 - `crates/shepr-platform/src/remote_bridge.rs`: a watchdog thread calls
   `std::process::exit(1)` when the relay has been idle for 60 seconds. The
   comment justifies why returning is insufficient, and for the dedicated bridge
@@ -1176,6 +1258,14 @@ privilege condition is not met, or restructure so privilege is not needed.
 
 ## BUG-074 - Tests that reach the developer's real environment
 
+**Decision (partial):** the first bullet is piece 1 of the test-isolation work
+adopted from broadarrow (the `shepr-core` environment registry): every agent
+variable is an entry and `IsolatedEnv` isolates from the registry, replacing the
+hand list. In the second, piece 1 bans the raw `std::env::var("HOME")` and
+piece 2 (scratch under the project's `target/` tree) supplies the existing cwd.
+Open: the fixed `/tmp/this-directory-does-not-exist-...` literal standing in for
+a missing cwd.
+
 - `crates/shepr-agent/src/integration/tests.rs::clear_integration_path_env` is a
   hand-maintained list of fifteen variables to remove so paths resolve against
   the fake `HOME`, while `integration/env.rs` defines fourteen `*_ENV_VAR`
@@ -1195,6 +1285,13 @@ See also BUG-021, which is what makes this class dangerous rather than merely
 untidy.
 
 ## BUG-075 - Tests whose assertions are races against the wall clock
+
+**Decision (partial):** the clock seam is adopted from broadarrow, incrementally
+as part of the hygiene work: time is passed in rather than read inside logic,
+held per subsystem by scoped textlints in the shape of broadarrow's
+`control-loop-reads-the-clock-seam` (HYGP-001). That is the injection point the
+common cause below names. Open: each of the four tests, as its subsystem gets
+the seam.
 
 Called out as flaky (not merely slow) by their hunters:
 
@@ -1218,6 +1315,13 @@ constants with no injection point; `SshAgentLease::refresh_at(now)`,
 the pattern that works.
 
 ## BUG-076 - Tests that clean up by hand, so a failure leaks the directory or socket
+
+**Decision (partial):** piece 2 of the test-isolation work adopted from
+broadarrow answers this the other way from the fix suggested below: broadarrow
+rejected a `Drop`-owned scratch tree (`scratch_root("x").join("y")` deletes the
+tree before the caller uses it) in favour of trees cleared on claim and reused in
+place per slot, so a failing test's leftovers are removed by the next run and
+`keep_until_exit` goes. Open: dropping the hand cleanup calls once that lands.
 
 - `crates/shepr-mux/src/git/test_support.rs::temp_test_dir` returns
   `ScratchDir::new(name).keep_until_exit()` and its doc says callers that clean

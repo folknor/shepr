@@ -77,8 +77,7 @@ pub(super) fn command() -> Command {
         .subcommand(
             Command::new("remote-client-bridge")
                 .hide(true)
-                .about("Relay a remote client connection over stdio")
-                .arg(flag("idle-timeout-v1")),
+                .about("Relay a remote client connection over stdio"),
         )
         .subcommand(
             Command::new("remote-api-bridge")

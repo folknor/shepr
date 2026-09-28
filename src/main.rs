@@ -171,7 +171,7 @@ fn main() -> io::Result<()> {
                 })?;
             return shepr_remote::run_remote_api_bridge(*check, &paths);
         }
-        cli::Launch::ClientBridge { idle_timeout_v1 } => {
+        cli::Launch::ClientBridge => {
             let paths = shepr_config::AppPaths::resolve_with_session(requested_session.clone())
                 .map_err(|errors| {
                     io::Error::other(format!(
@@ -179,7 +179,7 @@ fn main() -> io::Result<()> {
                         errors.join("; ")
                     ))
                 })?;
-            return shepr_remote::run_remote_client_bridge(*idle_timeout_v1, &paths);
+            return shepr_remote::run_remote_client_bridge(&paths);
         }
         _ => {}
     }
@@ -196,7 +196,7 @@ fn main() -> io::Result<()> {
             return shepr_client::run_client(&loaded_config, paths);
         }
         cli::Launch::Tui { .. } => {}
-        cli::Launch::ApiBridge { .. } | cli::Launch::ClientBridge { .. } | cli::Launch::Cli(_) => {
+        cli::Launch::ApiBridge { .. } | cli::Launch::ClientBridge | cli::Launch::Cli(_) => {
             return Err(io::Error::other("launch was already handled"));
         }
     }

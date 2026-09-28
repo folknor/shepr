@@ -10,7 +10,7 @@ const TIMEOUT: Duration = Duration::from_millis(300);
 #[test]
 #[expect(
     clippy::disallowed_methods,
-    reason = "SHEPR_BRIDGE_TEST_SOCKET and SHEPR_BRIDGE_TEST_LEGACY are this test's own re-exec harness probes, not shepr settings"
+    reason = "SHEPR_BRIDGE_TEST_SOCKET is this test's own re-exec harness probe, not a shepr setting"
 )]
 fn bridge_child() {
     let Some(path) = std::env::var_os("SHEPR_BRIDGE_TEST_SOCKET") else {
@@ -20,8 +20,8 @@ fn bridge_child() {
         .to_fs_name::<interprocess::local_socket::GenericFilePath>()
         .expect("test precondition");
     let stream = interprocess::local_socket::Stream::connect(name).expect("test precondition");
-    let timeout = (std::env::var_os("SHEPR_BRIDGE_TEST_LEGACY").is_none()).then_some(TIMEOUT);
-    super::forward_remote_bridge_stdio_with_timeout(stream, timeout).expect("test precondition");
+    super::forward_remote_bridge_stdio_with_timeout(stream, Some(TIMEOUT))
+        .expect("test precondition");
 }
 
 struct Bridge {
@@ -31,7 +31,7 @@ struct Bridge {
 }
 
 impl Bridge {
-    fn start(legacy: bool) -> Self {
+    fn start() -> Self {
         // Kept until the test process exits; `Drop` removes the socket.
         let path = shepr_test_support::ScratchDir::new("bridge")
             .keep_until_exit()
@@ -46,13 +46,9 @@ impl Bridge {
                 "--nocapture",
             ])
             .env("SHEPR_BRIDGE_TEST_SOCKET", &path)
-            .env_remove("SHEPR_BRIDGE_TEST_LEGACY")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        if legacy {
-            command.env("SHEPR_BRIDGE_TEST_LEGACY", "1");
-        }
         let mut child = command.spawn().expect("test precondition");
         let deadline = Instant::now() + Duration::from_secs(3);
         let stream = loop {
@@ -132,7 +128,7 @@ impl Drop for Bridge {
 #[test]
 fn bridge_expires_when_silent_or_stdout_is_blocked() {
     for blocked in [false, true] {
-        let mut bridge = Bridge::start(false);
+        let mut bridge = Bridge::start();
         if blocked {
             let buffer = vec![b'x'; 64 * 1024];
             let deadline = Instant::now() + Duration::from_secs(2);
@@ -147,7 +143,7 @@ fn bridge_expires_when_silent_or_stdout_is_blocked() {
 #[test]
 fn bridge_preserves_one_way_progress_and_drains_after_stdin_eof() {
     for upload in [false, true] {
-        let mut bridge = Bridge::start(false);
+        let mut bridge = Bridge::start();
         for _ in 0..12 {
             if upload {
                 bridge
@@ -178,18 +174,4 @@ fn bridge_preserves_one_way_progress_and_drains_after_stdin_eof() {
         }
         assert!(bridge.finish().contains("final-output-after-stdin-eof"));
     }
-}
-
-#[test]
-fn legacy_bridge_has_no_idle_deadline() {
-    let mut bridge = Bridge::start(true);
-    std::thread::sleep(TIMEOUT * 2);
-    assert!(
-        bridge
-            .child
-            .try_wait()
-            .expect("test precondition")
-            .is_none()
-    );
-    assert!(bridge.finish().contains("final-output-after-stdin-eof"));
 }

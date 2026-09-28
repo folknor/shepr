@@ -40,8 +40,6 @@ impl AgentIntegrationPaths {
             ("opencode", opencode_dir()),
             ("opencode_state", opencode_state_dir()),
             ("kilo", kilo_dir()),
-            ("hermes", hermes_dir()),
-            ("hermes_plugin", hermes_plugin_dir()),
             ("qodercli", qodercli_dir()),
             ("qwen", qwen_dir()),
             ("letta", letta_dir()),
@@ -166,20 +164,6 @@ pub(crate) fn kilo_dir() -> io::Result<PathBuf> {
     }
 
     Ok(home_dir()?.join(".config/kilo"))
-}
-
-pub(crate) fn hermes_dir() -> io::Result<PathBuf> {
-    if let Some(value) = shepr_core::env::read_path(EnvVar::HermesHome)? {
-        return expand_tilde_path(value);
-    }
-
-    Ok(home_dir()?.join(".hermes"))
-}
-
-pub(crate) fn hermes_plugin_dir() -> io::Result<PathBuf> {
-    Ok(hermes_dir()?
-        .join("plugins")
-        .join(super::HERMES_PLUGIN_INSTALL_NAME))
 }
 
 pub(crate) fn qodercli_dir() -> io::Result<PathBuf> {

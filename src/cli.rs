@@ -66,7 +66,7 @@ pub(crate) enum Launch {
     HeadlessServer,
     Client,
     ApiBridge { check: bool },
-    ClientBridge { idle_timeout_v1: bool },
+    ClientBridge,
     Cli(Box<CliCommand>),
 }
 
@@ -276,9 +276,7 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                 Some(("remote-api-bridge", matches)) => Launch::ApiBridge {
                     check: matches::flag(matches, "check"),
                 },
-                Some(("remote-client-bridge", matches)) => Launch::ClientBridge {
-                    idle_timeout_v1: matches::flag(matches, "idle-timeout-v1"),
-                },
+                Some(("remote-client-bridge", _)) => Launch::ClientBridge,
                 Some(("session", matches))
                     if matches
                         .subcommand()
@@ -1128,16 +1126,8 @@ mod tests {
     #[test]
     fn hidden_launch_modes_keep_typed_options() {
         assert!(matches!(
-            parse(&[
-                "--session",
-                "work",
-                "remote-client-bridge",
-                "--idle-timeout-v1"
-            ])
-            .launch,
-            Launch::ClientBridge {
-                idle_timeout_v1: true
-            }
+            parse(&["--session", "work", "remote-client-bridge"]).launch,
+            Launch::ClientBridge
         ));
         assert!(matches!(
             parse(&["remote-api-bridge", "--check"]).launch,

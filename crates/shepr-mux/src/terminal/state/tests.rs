@@ -506,120 +506,113 @@ fn startup_session_claim_activates_full_lifecycle_integrations() {
 
 #[test]
 fn session_identity_claims_leave_state_to_detection() {
-    for (source, label, agent, start_source, replacement_source) in [
-        (
-            "shepr:hermes",
-            "hermes",
-            Agent::Hermes,
-            Some("startup"),
-            Some("resume"),
-        ),
-        ("shepr:agy", "agy", Agent::Antigravity, None, None),
-    ] {
-        let mut terminal = test_terminal();
-        terminal.set_detected_state(Some(agent), AgentState::Idle);
-        let first_ref = shepr_agent::agent::resume::AgentSessionRef::id(format!("{label}-root"))
+    // Antigravity reports its session with no start source.
+    let (source, label, agent) = ("shepr:agy", "agy", Agent::Antigravity);
+    let start_source: Option<&str> = None;
+    let replacement_source: Option<&str> = None;
+    let mut terminal = test_terminal();
+    terminal.set_detected_state(Some(agent), AgentState::Idle);
+    let first_ref = shepr_agent::agent::resume::AgentSessionRef::id(format!("{label}-root"))
+        .expect("test precondition");
+    let first = terminal.set_agent_session_ref_for_session_start(
+        source.into(),
+        label.into(),
+        Some(first_ref.clone()),
+        Some(10),
+        start_source,
+    );
+
+    assert!(first.is_some(), "{label} should accept its session");
+    assert!(terminal.hook_authority.is_none());
+    assert_eq!(terminal.state, AgentState::Idle);
+    assert_eq!(
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| &session.session_ref),
+        Some(&first_ref)
+    );
+
+    terminal.set_detected_state(Some(agent), AgentState::Working);
+    let replacement_ref =
+        shepr_agent::agent::resume::AgentSessionRef::id(format!("{label}-replacement"))
             .expect("test precondition");
-        let first = terminal.set_agent_session_ref_for_session_start(
-            source.into(),
-            label.into(),
-            Some(first_ref.clone()),
-            Some(10),
-            start_source,
-        );
+    let replacement = terminal.set_agent_session_ref_for_session_start(
+        source.into(),
+        label.into(),
+        Some(replacement_ref.clone()),
+        Some(11),
+        start_source,
+    );
 
-        assert!(first.is_some(), "{label} should accept its session");
-        assert!(terminal.hook_authority.is_none());
-        assert_eq!(terminal.state, AgentState::Idle);
-        assert_eq!(
-            terminal
-                .persisted_agent_session
-                .as_ref()
-                .map(|session| &session.session_ref),
-            Some(&first_ref)
-        );
+    assert!(
+        replacement.is_some_and(|mutation| mutation.session_ref_changed),
+        "{label} should replace its detected session"
+    );
+    assert!(terminal.hook_authority.is_none());
+    assert_eq!(terminal.state, AgentState::Working);
+    assert_eq!(
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| &session.session_ref),
+        Some(&replacement_ref)
+    );
 
-        terminal.set_detected_state(Some(agent), AgentState::Working);
-        let replacement_ref =
-            shepr_agent::agent::resume::AgentSessionRef::id(format!("{label}-replacement"))
-                .expect("test precondition");
-        let replacement = terminal.set_agent_session_ref_for_session_start(
-            source.into(),
-            label.into(),
-            Some(replacement_ref.clone()),
-            Some(11),
-            start_source,
-        );
+    let legacy_state = terminal.set_hook_authority_with_session_ref(
+        source.into(),
+        label.into(),
+        AgentState::Blocked,
+        None,
+        Some(replacement_ref.clone()),
+        Some(12),
+    );
+    assert!(legacy_state.is_none());
+    assert!(terminal.hook_authority.is_none());
+    assert_eq!(terminal.state, AgentState::Working);
 
-        assert!(
-            replacement.is_some_and(|mutation| mutation.session_ref_changed),
-            "{label} should replace its detected session"
-        );
-        assert!(terminal.hook_authority.is_none());
-        assert_eq!(terminal.state, AgentState::Working);
-        assert_eq!(
-            terminal
-                .persisted_agent_session
-                .as_ref()
-                .map(|session| &session.session_ref),
-            Some(&replacement_ref)
-        );
+    terminal.set_detected_state(None, AgentState::Unknown);
+    let background_ref =
+        shepr_agent::agent::resume::AgentSessionRef::id(format!("{label}-background"))
+            .expect("test precondition");
+    let background_replacement = terminal.set_agent_session_ref_for_session_start(
+        source.into(),
+        label.into(),
+        Some(background_ref.clone()),
+        Some(13),
+        replacement_source,
+    );
+    assert!(
+        background_replacement.is_none(),
+        "{label} should reject a background replacement"
+    );
+    assert_eq!(
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| &session.session_ref),
+        Some(&replacement_ref)
+    );
 
-        let legacy_state = terminal.set_hook_authority_with_session_ref(
-            source.into(),
-            label.into(),
-            AgentState::Blocked,
-            None,
-            Some(replacement_ref.clone()),
-            Some(12),
-        );
-        assert!(legacy_state.is_none());
-        assert!(terminal.hook_authority.is_none());
-        assert_eq!(terminal.state, AgentState::Working);
-
-        terminal.set_detected_state(None, AgentState::Unknown);
-        let background_ref =
-            shepr_agent::agent::resume::AgentSessionRef::id(format!("{label}-background"))
-                .expect("test precondition");
-        let background_replacement = terminal.set_agent_session_ref_for_session_start(
-            source.into(),
-            label.into(),
-            Some(background_ref.clone()),
-            Some(13),
-            replacement_source,
-        );
-        assert!(
-            background_replacement.is_none(),
-            "{label} should reject a background replacement"
-        );
-        assert_eq!(
-            terminal
-                .persisted_agent_session
-                .as_ref()
-                .map(|session| &session.session_ref),
-            Some(&replacement_ref)
-        );
-
-        terminal.set_detected_state(Some(agent), AgentState::Idle);
-        let retried_replacement = terminal.set_agent_session_ref_for_session_start(
-            source.into(),
-            label.into(),
-            Some(background_ref.clone()),
-            Some(14),
-            replacement_source,
-        );
-        assert!(
-            retried_replacement.is_some_and(|mutation| mutation.session_ref_changed),
-            "{label} should replace the session once detected"
-        );
-        assert_eq!(
-            terminal
-                .persisted_agent_session
-                .as_ref()
-                .map(|session| &session.session_ref),
-            Some(&background_ref)
-        );
-    }
+    terminal.set_detected_state(Some(agent), AgentState::Idle);
+    let retried_replacement = terminal.set_agent_session_ref_for_session_start(
+        source.into(),
+        label.into(),
+        Some(background_ref.clone()),
+        Some(14),
+        replacement_source,
+    );
+    assert!(
+        retried_replacement.is_some_and(|mutation| mutation.session_ref_changed),
+        "{label} should replace the session once detected"
+    );
+    assert_eq!(
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| &session.session_ref),
+        Some(&background_ref)
+    );
 }
 
 #[test]
@@ -3801,14 +3794,14 @@ fn launch_command_alone_does_not_make_a_terminal_an_agent() {
 fn release_agent_clears_matching_restored_session_ref_before_detection() {
     let mut terminal = test_terminal();
     terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:hermes".into(),
-        agent: shepr_agent::agent::Agent::Hermes,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("hermes-session")
+        source: "shepr:letta".into(),
+        agent: shepr_agent::agent::Agent::Letta,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("letta-session")
             .expect("test precondition"),
     });
 
     let mutation = terminal
-        .release_agent_with_mutation("shepr:hermes", "hermes", Some(21))
+        .release_agent_with_mutation("shepr:letta", "letta", Some(21))
         .expect("accepted release");
 
     assert!(mutation.session_ref_changed);
@@ -3978,9 +3971,9 @@ fn detected_agent_disappearance_preserves_matching_persisted_session_ref() {
 fn initial_unknown_detection_preserves_restored_session_ref() {
     let mut terminal = test_terminal();
     terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:hermes".into(),
-        agent: shepr_agent::agent::Agent::Hermes,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("hermes-session")
+        source: "shepr:letta".into(),
+        agent: shepr_agent::agent::Agent::Letta,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("letta-session")
             .expect("test precondition"),
     });
 

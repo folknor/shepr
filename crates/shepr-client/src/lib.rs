@@ -474,6 +474,15 @@ async fn run_client_loop(
         );
     });
 
+    // A `--remote` child reaches its server through the SSH bridge, so its Local slot is
+    // health-checked like a saved machine. Only the shell marks an endpoint ready (on its
+    // first snapshot), so a direct attach keeps the plain socket rule.
+    let local_link =
+        if matches!(config.role, ClientProcessRole::Remote { .. }) && state.mode.is_shell() {
+            endpoint::LocalEndpointLink::SshBridge
+        } else {
+            endpoint::LocalEndpointLink::Socket
+        };
     let write_stream = if let Some(stream) = initial {
         let max_frame_size = shepr_protocol::MAX_FRAME_SIZE;
         let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
@@ -486,13 +495,13 @@ async fn run_client_loop(
             max_frame_size,
             surface_decoder,
         )?;
-        let mut registry = endpoint::EndpointRegistry::new(transport, 1);
+        let mut registry = endpoint::EndpointRegistry::with_local_link(transport, 1, local_link);
         if state.mode.is_shell() {
             registry.send(&ClientMessage::ClientShellFocus { focused: true });
         }
         registry
     } else {
-        endpoint::EndpointRegistry::empty()
+        endpoint::EndpointRegistry::empty(local_link)
     };
     let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
         &config.paths,
