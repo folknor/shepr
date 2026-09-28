@@ -20,129 +20,20 @@ pass should expect that.
 
 ---
 
-## HYGG-001 - Tests depend on host-installed programs rather than on anything the workspace builds
-
-**Decision (partial):** piece 3 of the test-isolation work adopted from
-broadarrow: tests stop invoking host programs (`sh`, `bash`, `sleep`, `printf`,
-`cat`, `yes`, `head`, `tr`, `ps`, `git`, `python3`, ...) in favour of
-workspace-built helper binaries, after broadarrow's `ba-mock-worker`, held by
-textlints on the model of `no-borrowed-process-stand-ins`,
-`no-interpreter-stand-ins`, `no-authored-shell-stubs` (which also covers the
-generated `#!/bin/sh` clipboard fakes) and `fixtures-compile-their-own-executables`.
-That settles the `/bin/sh` disagreement: those sites are findings. Decided: the
-helper is a `[[bin]]` in the dev-only `shepr-test-support`, not a feature-gated
-bin in each spawning crate (broadarrow's shape, which would keep test code in
-production crates against piece 4). Cargo builds it whenever
-`shepr-test-support` is among the tested packages, which `brokkr check` always
-is; tests locate it in the profile's output directory and fail naming how to
-build it when it is absent. Exempt from the ban: tests whose subject is the
-script itself - `shepr-remote`'s generated remote scripts under `sh`, and the
-shipped hook assets run under `sh` and `python3`.
-
-Reported independently from six scopes. Nothing in the repository provides these
-binaries, so the suite asserts against whatever the developer's machine happens
-to have.
-
-`shepr-platform` (`tests.rs`, `process.rs`): `/bin/sleep`, `/bin/sh`,
-`/bin/cat`, and `sh`, `printf`, `yes`, `head` resolved from `PATH`. `printf` is
-used as an *executable*, so on a host where it exists only as a shell builtin
-the test fails. The generated fake clipboard helpers carry `#!/bin/sh`
-shebangs.
-
-`shepr-pty`: `/bin/sh`, `/bin/cat`, `sleep`, `printf`.
-
-`shepr-mux`: `bash` in `pane/terminal/migration_tests.rs`; `/bin/sh` at three
-sites in `pane/runtime.rs`.
-
-`shepr-agent`: `bash` in the `detect` tests; `/bin/sh` in
-`version_probe_deadline_includes_inherited_stdout`; `python3`, which is
-skipped-if-absent (the same finding with a nicer failure mode).
-
-`shepr-remote`: `local_server.rs::server_daemon_detach_creates_new_session`
-shells out to `sh -c 'ps -o sid= -p $$ | tr -d " "'`, so it needs `ps` with
-BSD-ish `-o sid=` support and `tr` - and it tests
-`shepr_platform::detach_server_daemon_command`, another crate's function, from
-this crate's test module. `attach.rs` (three sites) and `launch.rs` (one) spawn
-`/bin/sh` to execute generated remote scripts; the hunter calls that defensible
-since POSIX-shell behaviour is the thing under test, but says it should be
-stated. `process.rs::timeout_kills_the_child` and
-`a_stderr_pipe_held_by_a_background_process_does_not_block_the_result` spawn
-`sh` and `sleep`.
-
-`shepr-server`: `app/tab_bar_status.rs` uses `printf 'old\nfinal\n'`,
-`head -c 5000 /dev/zero | tr '\0' x`, and `sleep 0.3` (fractional sleep is a
-coreutils extension, not POSIX); hardcoded `/bin/sh` in `tab_bar_status.rs`,
-`app/snapshot_tests.rs`, `app/agent_resume.rs` and
-`server/headless/tests/mod.rs`.
-
-Enforcement rules the hunters named: a tiny test helper binary built by the
-workspace (a `[[bin]]` in `shepr-test-support` that can sleep, echo, exit with a
-code and hold a pipe open) replaces almost all of it and makes the tests depend
-only on what the repo builds - the `shepr-platform` hunter calls this a
-structural fix worth the effort because the same shapes recur in `shepr-pty` and
-`shepr-agent`. The `shepr-remote` hunter proposes a brokkr text rule that test
-modules may not name `ps`, `tr`, `sleep`. Two hunters note that `/bin/sh` on a
-Linux-only project is a defensible dependency, so there is partial disagreement
-about whether the `/bin/sh` sites are findings at all.
-
-## HYGG-002 - Tests shell out to the host `git`
-
-**Decision (partial):** piece 3 (tests stop invoking host programs, `git`
-included, after broadarrow's `ba-mock-worker` and its
-`no-borrowed-process-stand-ins` textlint) removes `run_git` and the
-`git_refresh.rs` `git init`; fixtures become plain files as
-`write_fake_tracked_repo` already does. Decided exempt: `live_git_space` and any
-test that exercises production code which itself spawns `git` keep the real
-`git` - the production spawn has no injection point for a stand-in (BUG-066).
-Separately: shepr's own git discovery now honours `GIT_CEILING_DIRECTORIES`
-with git's semantics, and `IsolatedEnv` sets the ceiling to the scratch base, so
-a fixture repo under scratch cannot have its upward walk escape into a real
-ancestor repository.
-
-`shepr-mux/src/git/test_support.rs::run_git` spawns `git` and
-`.expect("test precondition")`s the spawn. `init_repo_with_commit`,
-`create_repo_with_linked_worktree` and `create_bare_repo_with_linked_worktree`
-all need `git worktree` and `git clone --bare`, i.e. a reasonably modern `git`
-installed on the machine running the suite, and `live_git_space` exercises
-production code that shells out again. The `shepr-mux` hunter calls this the
-sharpest of the host dependencies: nothing this repository builds provides
-`git`, its version governs reftable and worktree behaviour - which is exactly
-what the tests check - and `brokkr check` is the gate, so a machine without
-`git`, or with one old enough to lack `extensions.refstorage`, fails or silently
-passes differently. The crate already has `write_fake_tracked_repo`, which
-writes a fixture repo as plain files, so most of the fixtures need no binary;
-the few that genuinely need a real `git` should assert the binary's presence and
-version up front so a missing one is a failure with a subject rather than a
-spawn panic.
-
-`shepr-server/src/app/git_refresh.rs` shells out to `git init` via
-`Command::new("git")` resolved from `PATH`, in a test that asserts cache-key
-deduplication - the `git` dependency is incidental to what is being checked, and
-the hunter notes the code under test only canonicalises paths, so writing a
-`.git` directory by hand removes the dependency entirely.
-
 ## HYGG-003 - The only behavioural test of the logind protocol never runs
 
 Merged into BUG-047 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-004 - `failed_cli_registration_preserves_existing_config` re-executes the test binary through the host `bash`
 
-**Decision (partial):** the host `bash` re-exec falls under piece 3 (tests stop
-invoking host programs in favour of workspace-built helper binaries, after
-broadarrow's `ba-mock-worker`). Open: `SHEPR_TEST_3970_CONFIG_DIR`, which under
-piece 1 is a harness variable read raw under a scoped `#[expect]`, as
-broadarrow's harness reads are, or a registry entry - neither was chosen.
-
-`shepr-agent/src/integration/opencode_config.rs`. The test re-runs the test
-binary through the host shell with `ulimit -f 0`, so it depends on the host
-shell, on `trap '' XFSZ` semantics, on `std::env::current_exe`, and on the
-literal test path string
-`integration::opencode_config::tests::failed_cli_registration_preserves_existing_config`
-duplicating the function's own name. It does fail closed - the stdout assertion
-catches a filter that matches nothing - which is why the hunter files it as
-hygiene rather than a defect. The environment variable it invents,
-`SHEPR_TEST_3970_CONFIG_DIR`, carries an issue number nobody can look up in this
-repository and is a test-only name in a production-visible namespace.
+**Decision:** the host `bash` re-exec is resolved: the test now re-executes
+itself through `shepr_test_support::fixture::command` (`Ignore`, `LimitFileSize`
+and `Exec` steps), so it no longer depends on the host shell or on `trap ''
+XFSZ` semantics. Open: `SHEPR_TEST_3970_CONFIG_DIR` is still a raw
+`std::env::var_os` read under a scoped `#[expect]`, carries an issue number
+nobody can look up in this repository, and is a test-only name in a
+production-visible namespace; neither a registry entry nor another naming
+scheme was chosen for it.
 
 ## HYGG-005 - Tests that assert on the wall clock
 
@@ -378,19 +269,15 @@ fail.
 
 ## HYGG-018 - Two pane-terminal-identity tests restate the values and the list they are checking
 
-**Decision (partial):** the second test runs `printf` through the host shell, so
-piece 3 (workspace-built helper binaries instead of host programs, after
-broadarrow's `ba-mock-worker`) rewrites it, which is the point to read
-`PANE_TERM` and the colorterm constant. Open: the restated scrub list in the
-first test.
+**Decision (partial):** `pane_terminal_identity_overrides_outer_terminal_env`
+no longer runs `printf` through the host shell and reads `shepr_vt::PANE_TERM`
+and `PANE_COLORTERM` directly instead of the hard-coded
+`"xterm-256color\ntruecolor\n"`. Open: the restated scrub list in
+`pane_terminal_identity_removes_outer_terminal_identity`.
 
 `pane_terminal_identity_removes_outer_terminal_identity` restates the production
 scrub list verbatim, so a key added to production is not tested. Enforcement
 named: export the list and iterate it.
-
-`pane_terminal_identity_overrides_outer_terminal_env` in
-`shepr-mux/src/pane/runtime.rs` hard-codes `"xterm-256color\ntruecolor\n"`
-instead of reading `PANE_TERM` and the colorterm constant.
 
 ## HYGG-019 - The PTY actor's tests use `UnixStream` socket pairs, so PTY-specific behaviour is never exercised
 

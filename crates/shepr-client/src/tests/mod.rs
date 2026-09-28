@@ -1,5 +1,6 @@
 use super::*;
 use shepr_core::env::EnvVar;
+use shepr_test_fixtures::*;
 use shepr_test_support::IsolatedEnv;
 
 #[test]
@@ -220,7 +221,7 @@ fn write_host_color_scheme_report_mode_emits_mode_sequences() {
 
 #[test]
 fn color_scheme_change_event_requests_host_theme_query() {
-    let events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
+    let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
 
     assert!(shepr_termio::input::raw_input::events_require_host_terminal_theme_query(&events));
 }
@@ -247,14 +248,13 @@ fn cell_size_fallback_prefers_reported_then_previous_size() {
 
 #[test]
 fn reported_cell_size_is_taken_from_host_cell_size_events() {
-    let events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
+    let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
     assert_eq!(
         super::terminal_geometry::reported_cell_size_from_events(&events),
         None
     );
 
-    let events =
-        shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
+    let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
     assert_eq!(
         super::terminal_geometry::reported_cell_size_from_events(&events),
         Some((9, 18))
@@ -377,7 +377,7 @@ fn client_error_display_detached_default_session_reattach_hint() {
     let err = ClientError::ServerShutdown {
         reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
-    let paths = shepr_config::AppPaths::default();
+    let paths = shepr_config::AppPaths::test_default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         reattach_command_from_env().expect("test precondition"),
@@ -397,7 +397,7 @@ fn client_error_display_detached_named_session_reattach_hint() {
         reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
     let session = shepr_config::SessionId::parse("work").expect("test precondition");
-    let paths = shepr_config::AppPaths::default();
+    let paths = shepr_config::AppPaths::test_default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(&session),
         reattach_command_from_env().expect("test precondition"),
@@ -420,7 +420,7 @@ fn client_error_display_detached_remote_reattach_hint_takes_precedence() {
     let err = ClientError::ServerShutdown {
         reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
-    let paths = shepr_config::AppPaths::default();
+    let paths = shepr_config::AppPaths::test_default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         reattach_command_from_env().expect("test precondition"),
@@ -452,7 +452,7 @@ fn client_error_display_remote_connection_lost_has_reattach_hint() {
         "shepr --remote host --session work",
     );
     let err = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
-    let paths = shepr_config::AppPaths::default();
+    let paths = shepr_config::AppPaths::test_default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         reattach_command_from_env().expect("test precondition"),
@@ -476,7 +476,7 @@ fn client_error_display_remote_connection_lost_has_reattach_hint() {
 fn client_error_context_keeps_launch_reattach_command() {
     let env = IsolatedEnv::new();
     env.set(EnvVar::SheprReattachCommand, "shepr --remote first");
-    let paths = shepr_config::AppPaths::default();
+    let paths = shepr_config::AppPaths::test_default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         reattach_command_from_env().expect("test precondition"),

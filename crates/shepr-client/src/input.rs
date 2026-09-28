@@ -431,19 +431,19 @@ mod tests {
         let mut escape = shepr_termio::input::raw_input::RawInputFramer::<
             shepr_termio::input::raw_input::NoHostReplies,
         >::default();
-        assert!(escape.push(b"\x1b").is_empty());
+        assert!(escape.push_framed(b"\x1b").is_empty());
         let mut sgr_mouse = shepr_termio::input::raw_input::RawInputFramer::<
             shepr_termio::input::raw_input::NoHostReplies,
         >::default();
-        assert!(sgr_mouse.push(b"\x1b[<3").is_empty());
+        assert!(sgr_mouse.push_framed(b"\x1b[<3").is_empty());
         let mut default_mouse = shepr_termio::input::raw_input::RawInputFramer::<
             shepr_termio::input::raw_input::NoHostReplies,
         >::default();
-        assert!(default_mouse.push(b"\x1b[MC").is_empty());
+        assert!(default_mouse.push_framed(b"\x1b[MC").is_empty());
         let mut unrelated = shepr_termio::input::raw_input::RawInputFramer::<
             shepr_termio::input::raw_input::NoHostReplies,
         >::default();
-        assert!(unrelated.push(b"\x1b[49:33;2:").is_empty());
+        assert!(unrelated.push_framed(b"\x1b[49:33;2:").is_empty());
 
         for framer in [&escape, &sgr_mouse, &default_mouse, &unrelated] {
             assert_eq!(

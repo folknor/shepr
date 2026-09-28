@@ -241,6 +241,7 @@ pub(crate) fn tab_surface_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Direction;

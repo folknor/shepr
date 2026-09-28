@@ -1,7 +1,7 @@
 use super::*;
 
 impl TerminalState {
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn set_hook_authority(
         &mut self,
         source: String,

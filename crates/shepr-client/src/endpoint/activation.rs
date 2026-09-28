@@ -36,7 +36,7 @@ fn release_surface_best_effort(
 }
 
 impl PendingEndpointActivation {
-    pub(crate) fn prepare(
+    pub fn prepare(
         shell: &crate::shell::ClientShellState,
         endpoints: &EndpointRegistry,
         target: &ClientEndpointId,
@@ -110,10 +110,7 @@ impl PendingEndpointActivation {
         })
     }
 
-    pub(crate) fn start(
-        mut self,
-        endpoints: &mut EndpointRegistry,
-    ) -> Result<Self, ActivationBeginError> {
+    pub fn start(mut self, endpoints: &mut EndpointRegistry) -> Result<Self, ActivationBeginError> {
         endpoints.freeze_input();
         match self.start_prepared(endpoints) {
             Ok(()) => Ok(self),
@@ -159,7 +156,7 @@ impl PendingEndpointActivation {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn begin(
         shell: &crate::shell::ClientShellState,
         endpoints: &mut EndpointRegistry,
@@ -320,7 +317,7 @@ impl PendingEndpointActivation {
         now >= self.deadline
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn receive_response(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -344,7 +341,7 @@ impl PendingEndpointActivation {
         )
     }
 
-    pub(crate) fn receive_response_for_boot(
+    pub fn receive_response_for_boot(
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: u64,

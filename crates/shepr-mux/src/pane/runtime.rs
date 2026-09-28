@@ -7,8 +7,6 @@ use std::sync::{
 
 use bytes::Bytes;
 use ratatui::{Frame, layout::Rect};
-#[cfg(any(test, feature = "test-api"))]
-use tokio::sync::watch;
 use tokio::sync::{Notify, mpsc};
 use tracing::{error, info, warn};
 
@@ -30,8 +28,8 @@ use shepr_agent::detect::Agent;
 #[cfg(test)]
 use shepr_agent::detect::AgentState;
 use shepr_core::layout::PaneId;
-use shepr_pty::PtyCommand;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
+use shepr_pty::{ChildIo, PtyCommand};
 
 pub struct TerminalDirtyPatchSnapshot {
     pub patch: TerminalDirtyPatchOutcome,
@@ -187,7 +185,7 @@ impl SyncTimeoutRender {
 pub struct PaneRuntime {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
-    io: PaneRuntimeIo,
+    io: Box<dyn ChildIo>,
     current_size: Cell<shepr_core::geometry::PaneGeometry>,
     child_liveness: Arc<ChildLiveness>,
     reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
@@ -202,102 +200,69 @@ pub struct PaneRuntime {
     detect_handle: Option<tokio::task::AbortHandle>,
 }
 
-enum PaneRuntimeIo {
-    Actor(PtyIoActorHandle),
-    #[cfg(any(test, feature = "test-api"))]
-    TestChannel {
-        sender: mpsc::Sender<Bytes>,
-        resize_tx: watch::Sender<(u16, u16, u32, u32)>,
-    },
+/// Hand a once-only terminal-reply closure to a [`ChildIo`], whose methods
+/// take `FnMut` to stay object-safe.
+fn write_terminal_response(io: &dyn ChildIo, response: impl FnOnce() -> Option<Bytes>) {
+    let mut response = Some(response);
+    io.write_terminal_response(&mut || response.take().and_then(|response| response()));
 }
 
-impl PaneRuntimeIo {
-    fn shutdown(&self) {
-        match self {
-            PaneRuntimeIo::Actor(actor) => actor.shutdown(),
-            #[cfg(any(test, feature = "test-api"))]
-            PaneRuntimeIo::TestChannel { .. } => {}
+/// Writes the child's output into the pane terminal. Each write is announced
+/// through the content revision, odd while it is in progress and even once it
+/// has landed, under the content write lock that a render also holds while it
+/// pairs a snapshot with its revision (`collect_dirty_patch_snapshot`). The
+/// PTY reader writes through one; so does anything else that feeds a pane its
+/// child's output.
+#[derive(Clone)]
+pub struct PaneOutputWriter {
+    pane_id: PaneId,
+    terminal: Arc<PaneTerminal>,
+    content_seq: Arc<AtomicU64>,
+    content_write_lock: Arc<Mutex<()>>,
+}
+
+/// A write that holds the content write lock and has announced itself.
+pub struct PaneOutputWrite<'a> {
+    writer: &'a PaneOutputWriter,
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
+
+impl PaneOutputWriter {
+    /// Wait for the content write lock, then announce the write.
+    pub fn begin(&self) -> PaneOutputWrite<'_> {
+        let guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
+        self.content_seq.fetch_add(1, Ordering::AcqRel);
+        PaneOutputWrite {
+            writer: self,
+            _guard: guard,
         }
     }
 
-    fn owns_child_process(&self) -> bool {
-        match self {
-            PaneRuntimeIo::Actor(_) => true,
-            #[cfg(any(test, feature = "test-api"))]
-            PaneRuntimeIo::TestChannel { .. } => false,
-        }
+    /// Announce the write only if no render or other write holds the content
+    /// write lock.
+    pub fn try_begin(&self) -> Option<PaneOutputWrite<'_>> {
+        let guard = shepr_vt::try_lock_auxiliary(&self.content_write_lock)?;
+        self.content_seq.fetch_add(1, Ordering::AcqRel);
+        Some(PaneOutputWrite {
+            writer: self,
+            _guard: guard,
+        })
+    }
+}
+
+impl PaneOutputWrite<'_> {
+    /// Process `bytes` as output of the child `shell_pid` and land the write.
+    pub fn write(self, shell_pid: u32, bytes: &[u8]) {
+        let _ = self.process(shell_pid, bytes);
     }
 
-    fn resize(
-        &self,
-        geometry: shepr_core::geometry::PaneGeometry,
-        terminal_responses: impl FnOnce() -> Vec<Bytes>,
-    ) {
-        match self {
-            PaneRuntimeIo::Actor(actor) => {
-                actor.resize(geometry, terminal_responses);
-            }
-            #[cfg(any(test, feature = "test-api"))]
-            PaneRuntimeIo::TestChannel { resize_tx, .. } => {
-                let _ = terminal_responses();
-                let _ = resize_tx.send((
-                    geometry.rows(),
-                    geometry.cols(),
-                    geometry.cell_width(),
-                    geometry.cell_height(),
-                ));
-            }
-        }
-    }
-
-    fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        match self {
-            PaneRuntimeIo::Actor(actor) => actor.try_write_user_input(bytes),
-            #[cfg(any(test, feature = "test-api"))]
-            PaneRuntimeIo::TestChannel { sender, .. } => sender.try_send(bytes),
-        }
-    }
-
-    fn write_terminal_response(&self, response: impl FnOnce() -> Option<Bytes>) {
-        match self {
-            PaneRuntimeIo::Actor(actor) => actor.write_terminal_response(response),
-            #[cfg(any(test, feature = "test-api"))]
-            PaneRuntimeIo::TestChannel { sender, .. } => {
-                if let Some(bytes) = response() {
-                    let _ = sender.try_send(bytes);
-                }
-            }
-        }
-    }
-
-    fn queue_user_input_submission(
-        &self,
-        text: Bytes,
-        enter: Bytes,
-        delay: std::time::Duration,
-    ) -> std::io::Result<shepr_pty::actor::QueuedSubmission> {
-        match self {
-            PaneRuntimeIo::Actor(actor) => actor.queue_user_input_submission(text, enter, delay),
-            #[cfg(any(test, feature = "test-api"))]
-            PaneRuntimeIo::TestChannel { sender, .. } => {
-                let sender = sender.clone();
-                let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let result = sender
-                        .try_send(text)
-                        .map_err(std::io::Error::other)
-                        .and_then(|()| {
-                            std::thread::sleep(delay);
-                            sender.try_send(enter).map_err(std::io::Error::other)
-                        });
-                    let _ = reply_tx.send(result);
-                });
-                Ok(shepr_pty::actor::QueuedSubmission {
-                    completion: reply_rx,
-                    cancel: shepr_pty::actor::SubmissionCancel::untracked(),
-                })
-            }
-        }
+    fn process(self, shell_pid: u32, bytes: &[u8]) -> ProcessBytesResult {
+        let result = self
+            .writer
+            .terminal
+            .process_pty_bytes(self.writer.pane_id, shell_pid, bytes);
+        self.writer.content_seq.fetch_add(1, Ordering::Release);
+        result
     }
 }
 
@@ -439,8 +404,9 @@ impl PaneRuntime {
         &self,
         appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     ) {
-        self.io
-            .write_terminal_response(|| self.terminal.apply_host_terminal_appearance(appearance));
+        write_terminal_response(self.io.as_ref(), || {
+            self.terminal.apply_host_terminal_appearance(appearance)
+        });
     }
 
     // Runtime construction threads PTY geometry, host context, launch policy, and render hooks.
@@ -635,13 +601,16 @@ impl PaneRuntime {
             let rt = tokio::runtime::Handle::current();
             let sync_timeout_render = Arc::new(SyncTimeoutRender::default());
             let timer_writer_for_read = Arc::clone(&timer_writer);
+            let output = PaneOutputWriter {
+                pane_id,
+                terminal: Arc::clone(&terminal),
+                content_seq: Arc::clone(&content_seq),
+                content_write_lock: Arc::clone(&content_write_lock),
+            };
             let on_read = Box::new(move |bytes: &[u8]| {
-                let _content_write_guard = shepr_vt::lock_auxiliary(&content_write_lock);
-                content_seq.fetch_add(1, Ordering::AcqRel);
+                let write = output.begin();
                 let shell_pid = child_liveness.pid();
-                let result = terminal.process_pty_bytes(pane_id, shell_pid, bytes);
-                content_seq.fetch_add(1, Ordering::Release);
-                drop(_content_write_guard);
+                let result = write.process(shell_pid, bytes);
                 if result.core_poisoned {
                     // The actor ends the loop and reports the pane dead.
                     return PtyReadResult {
@@ -801,7 +770,7 @@ impl PaneRuntime {
                 }
             };
             let _ = timer_writer.set(actor.clone());
-            PaneRuntimeIo::Actor(actor)
+            Box::new(actor) as Box<dyn ChildIo>
         };
 
         // Start the watcher only after the PTY actor exists. If actor setup
@@ -1145,6 +1114,56 @@ impl PaneRuntime {
         })
     }
 
+    /// A runtime whose child is reached through `io` instead of a spawned
+    /// PTY: no child process, no child watcher and no detection task. The
+    /// terminal starts with `screen` written to it. `detection_reset` is the
+    /// signal a detection task would wait on; with none running, the caller
+    /// may watch it to see the resets the runtime is asked for.
+    pub fn with_child_io(
+        cols: u16,
+        rows: u16,
+        scrollback_limit_bytes: usize,
+        screen: &[u8],
+        io: Box<dyn ChildIo>,
+        detection_reset: Arc<Notify>,
+    ) -> Self {
+        let mut terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
+        terminal.write(screen);
+        Self {
+            pane_id: PaneId::from_raw(0),
+            terminal: Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal))),
+            io,
+            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
+            child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            reported_cwd: Arc::new(Mutex::new(None)),
+            persistence_cwd: Mutex::new(None),
+            content_seq: Arc::new(AtomicU64::new(0)),
+            content_write_lock: Arc::new(Mutex::new(())),
+            detection_content_seq: Arc::new(AtomicU64::new(0)),
+            full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
+            detect_reset_notify: detection_reset,
+            pending_release: Arc::new(Mutex::new(None)),
+            detect_handle: None,
+        }
+    }
+
+    /// A writer that feeds this pane its child's output, as the PTY reader
+    /// does.
+    pub fn output_writer(&self) -> PaneOutputWriter {
+        PaneOutputWriter {
+            pane_id: self.pane_id,
+            terminal: Arc::clone(&self.terminal),
+            content_seq: Arc::clone(&self.content_seq),
+            content_write_lock: Arc::clone(&self.content_write_lock),
+        }
+    }
+
+    /// Run `hook` inside the next dirty-patch collection, while it holds the
+    /// terminal core and the content write lock.
+    pub fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
+        self.terminal.on_next_dirty_collection(hook);
+    }
+
     pub fn begin_graceful_release(&self, agent: Agent) {
         *shepr_vt::lock_auxiliary(&self.pending_release) = Some(PendingAgentRelease {
             agent,
@@ -1157,7 +1176,7 @@ impl PaneRuntime {
         self.detect_reset_notify.notify_one();
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn agent_detection_reset_notify_for_test(&self) -> Arc<Notify> {
         Arc::clone(&self.detect_reset_notify)
     }
@@ -1175,7 +1194,7 @@ impl PaneRuntime {
         self.current_size.get().grid
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn current_size(&self) -> (u16, u16) {
         let grid = self.grid_size();
         (grid.rows.get(), grid.cols.get())
@@ -1195,7 +1214,7 @@ impl PaneRuntime {
             return;
         }
         self.current_size.set(size);
-        self.io.resize(size, || {
+        self.io.resize(size, &mut || {
             // A PTY read holds the same actor reply-order lock while it
             // parses bytes and queues any replies. Resizing the terminal
             // under that lock keeps its replies in the same order as the
@@ -1431,7 +1450,7 @@ impl PaneRuntime {
     }
 
     pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        self.io.try_send_bytes(bytes)
+        self.io.try_write_user_input(bytes)
     }
 
     pub fn queue_user_input_submission(
@@ -1498,7 +1517,7 @@ impl PaneRuntime {
         None
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn recent_unwrapped_text(&self, lines: usize) -> String {
         self.recent_unwrapped_text_snapshot(lines).text
     }
@@ -1645,75 +1664,20 @@ impl Drop for PaneRuntime {
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+/// This crate's own unit tests build runtimes through the same seam other
+/// crates' tests use (`with_child_io` and the fixture channel).
+#[cfg(test)]
 impl PaneRuntime {
     pub fn test_with_channel(cols: u16, rows: u16) -> (Self, mpsc::Receiver<Bytes>) {
         Self::test_with_channel_and_scrollback_bytes(cols, rows, 0, &[], 4)
-    }
-
-    pub fn test_with_channel_capacity(
-        cols: u16,
-        rows: u16,
-        capacity: usize,
-    ) -> (Self, mpsc::Receiver<Bytes>) {
-        Self::test_with_channel_and_scrollback_bytes(cols, rows, 0, &[], capacity)
     }
 
     pub fn test_with_screen_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Self {
         Self::test_with_scrollback_bytes(cols, rows, 0, bytes)
     }
 
-    pub fn test_contend_during_dirty_collection(
-        &self,
-        bytes: Vec<u8>,
-    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<bool>) {
-        let terminal = Arc::clone(&self.terminal);
-        let sequence = Arc::clone(&self.content_seq);
-        let write_lock = Arc::clone(&self.content_write_lock);
-        let pane_id = self.pane_id;
-        let (start_tx, start_rx) = std::sync::mpsc::channel();
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        shepr_vt::lock_terminal_core(&self.terminal.ghostty.core)
-            .expect("test terminal core lock is not poisoned")
-            .dirty_collection_hook = Some(Box::new(move || {
-            start_tx.send(()).expect("test start channel is open");
-            ready_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("test ready signal arrives within timeout");
-        }));
-        let writer = std::thread::spawn(move || {
-            start_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("test start signal arrives within timeout");
-            let guard = shepr_vt::try_lock_auxiliary(&write_lock);
-            let announced = guard.is_some();
-            if announced {
-                sequence.fetch_add(1, Ordering::AcqRel);
-                assert!(matches!(
-                    shepr_vt::try_lock_terminal_core(&terminal.ghostty.core),
-                    Err(shepr_vt::TerminalCoreTryLockError::WouldBlock)
-                ));
-            }
-            ready_tx.send(()).expect("test ready channel is open");
-            let _ = release_rx.recv();
-            let _guard = guard.unwrap_or_else(|| {
-                let guard = shepr_vt::lock_auxiliary(&write_lock);
-                sequence.fetch_add(1, Ordering::AcqRel);
-                guard
-            });
-            let _ = terminal.process_pty_bytes(pane_id, 0, &bytes);
-            sequence.fetch_add(1, Ordering::Release);
-            announced
-        });
-        (release_tx, writer)
-    }
-
     pub fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        let _content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
-        self.content_seq.fetch_add(1, Ordering::AcqRel);
-        let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes);
-        self.content_seq.fetch_add(1, Ordering::Release);
+        self.output_writer().begin().write(0, bytes);
     }
 
     pub fn test_with_scrollback_bytes(
@@ -1732,33 +1696,16 @@ impl PaneRuntime {
         bytes: &[u8],
         channel_capacity: usize,
     ) -> (Self, mpsc::Receiver<Bytes>) {
-        let (tx, rx) = mpsc::channel(channel_capacity);
-        let (resize_tx, _resize_rx) = watch::channel((rows, cols, 0, 0));
-        let mut terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
-        terminal.write(bytes);
-        let pane_id = PaneId::from_raw(0);
-        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
-
+        let (io, rx) = shepr_test_fixtures::ChannelChildIo::new(channel_capacity);
         (
-            Self {
-                pane_id,
-                terminal,
-                io: PaneRuntimeIo::TestChannel {
-                    sender: tx,
-                    resize_tx,
-                },
-                current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
-                child_liveness: Arc::new(ChildLiveness::new(0, None)),
-                reported_cwd: Arc::new(Mutex::new(None)),
-                persistence_cwd: Mutex::new(None),
-                content_seq: Arc::new(AtomicU64::new(0)),
-                content_write_lock: Arc::new(Mutex::new(())),
-                detection_content_seq: Arc::new(AtomicU64::new(0)),
-                full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
-                detect_reset_notify: Arc::new(Notify::new()),
-                pending_release: Arc::new(Mutex::new(None)),
-                detect_handle: Some(tokio::spawn(async {}).abort_handle()),
-            },
+            Self::with_child_io(
+                cols,
+                rows,
+                scrollback_limit_bytes,
+                bytes,
+                Box::new(io),
+                Arc::new(Notify::new()),
+            ),
             rx,
         )
     }
@@ -2428,8 +2375,7 @@ mod tests {
 
     #[tokio::test]
     async fn focus_events_are_forwarded_when_enabled() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
+        let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
         let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
         terminal
             .mode_set(shepr_vt::MODE_FOCUS_EVENT, true)
@@ -2440,10 +2386,7 @@ mod tests {
             persistence_cwd: Mutex::new(None),
             pane_id,
             terminal,
-            io: PaneRuntimeIo::TestChannel {
-                sender: tx,
-                resize_tx,
-            },
+            io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),
@@ -2465,8 +2408,7 @@ mod tests {
 
     #[tokio::test]
     async fn focus_events_are_suppressed_when_disabled() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
+        let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
         let terminal = shepr_vt::Terminal::new(80, 24, 0);
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
@@ -2474,10 +2416,7 @@ mod tests {
             persistence_cwd: Mutex::new(None),
             pane_id,
             terminal,
-            io: PaneRuntimeIo::TestChannel {
-                sender: tx,
-                resize_tx,
-            },
+            io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),

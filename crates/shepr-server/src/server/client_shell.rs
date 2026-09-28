@@ -490,6 +490,7 @@ fn split_hit_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
 
     #[test]
     fn snapshot_state_fields_follow_ids_not_positions() {
@@ -515,7 +516,7 @@ mod tests {
         let second_workspace_id = app.state.workspaces[1].id.clone();
         let zoomed_tab_id = app.public_tab_id(1, 0).expect("zoomed tab id");
         let resolved_config =
-            shepr_protocol::codec::to_vec(&shepr_config::ValidatedConfig::test_default())
+            shepr_test_fixtures::encode_to_vec(&shepr_config::ValidatedConfig::test_default())
                 .expect("encode test config");
         let snapshot = snapshot(&app, &resolved_config, "boot", 1, None);
 

@@ -292,6 +292,7 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use shepr_mux::workspace::Workspace;
 
     #[test]

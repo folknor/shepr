@@ -286,6 +286,7 @@ fn tab_not_found(id: String, tab_id: &str) -> ApiResult {
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
+    use crate::test_support::*;
     use shepr_api::schema::SuccessResponse;
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
@@ -315,7 +316,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert!(app.state.workspaces.is_empty());
         assert!(app.state.active_index().is_none());
@@ -392,7 +393,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);
         assert!(
@@ -450,7 +451,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::TabList { tabs } = success.result else {
             panic!("expected tab list");
         };
@@ -516,7 +517,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
         let created = &app.state.workspaces[0].tabs()[1];
         let created_terminal_id = created

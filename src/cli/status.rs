@@ -314,6 +314,7 @@ fn current_exe_label() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::*;
 
     fn running_server(version: Option<&str>, build_id: &str) -> ServerRuntimeStatus {
         ServerRuntimeStatus::Running {
@@ -329,7 +330,8 @@ mod tests {
     #[test]
     fn status_exposes_only_dynamic_server_capabilities() {
         let server = running_server(Some("test"), shepr_protocol::BUILD_ID);
-        let paths = super::super::target::CliContext::test_local(shepr_config::AppPaths::default());
+        let paths =
+            super::super::target::CliContext::test_local(shepr_config::AppPaths::test_default());
         let value =
             serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
         assert_eq!(value["capabilities"]["ssh_agent_registration"], false);

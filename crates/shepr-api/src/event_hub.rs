@@ -12,9 +12,12 @@ struct EventHubState {
     events: Vec<(u64, crate::schema::EventEnvelope)>,
 }
 
+/// Why the retained event history cannot answer a read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum EventHistoryError {
+pub enum EventHistoryError {
+    /// Events after the requested sequence were dropped from the history.
     Lost,
+    /// The history lock was poisoned.
     Unavailable,
 }
 
@@ -39,20 +42,8 @@ impl EventHub {
             .fetch_max(sequence, std::sync::atomic::Ordering::Release);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn events_after(&self, sequence: u64) -> Vec<(u64, crate::schema::EventEnvelope)> {
-        let Ok(state) = self.inner.lock() else {
-            return Vec::new();
-        };
-        state
-            .events
-            .iter()
-            .filter(|(event_sequence, _)| *event_sequence > sequence)
-            .cloned()
-            .collect()
-    }
-
-    pub(super) fn events_after_checked(
+    /// Every retained event after `sequence`, or why the history cannot say.
+    pub fn events_after_checked(
         &self,
         sequence: u64,
     ) -> Result<Vec<(u64, crate::schema::EventEnvelope)>, EventHistoryError> {

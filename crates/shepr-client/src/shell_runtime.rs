@@ -898,6 +898,7 @@ pub(super) fn finish_client_shell_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::*;
 
     #[test]
     fn committed_handoff_resizes_only_when_its_requested_size_is_stale() {
@@ -946,7 +947,7 @@ mod tests {
         Box::new(shepr_protocol::ClientShellSnapshot {
             boot_id: boot_id.into(),
             revision: shepr_protocol::ProjectionRevision::new(1),
-            resolved_config: shepr_protocol::codec::to_vec(
+            resolved_config: shepr_test_fixtures::encode_to_vec(
                 &shepr_config::ValidatedConfig::test_default(),
             )
             .expect("test config encodes"),
@@ -1087,7 +1088,7 @@ mod tests {
         let mut commands = endpoint::commands::EndpointCommands::default();
         let mut pending = None;
         let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
-            &shepr_config::AppPaths::default(),
+            &shepr_config::AppPaths::test_default(),
             &catalog.ssh,
             shepr_remote::SavedSshSettings {
                 manage_ssh_config: false,

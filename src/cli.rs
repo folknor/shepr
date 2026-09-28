@@ -902,6 +902,7 @@ fn print_json(value: &serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::{CliCommand, Invocation, Launch, SessionCommand};
+    use shepr_test_fixtures::*;
 
     pub(super) fn parse(args: &[&str]) -> Invocation {
         let mut argv = vec!["shepr".to_string()];

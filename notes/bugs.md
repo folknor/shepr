@@ -1159,20 +1159,21 @@ distinct cause rather than per attempt, with `Absent` staying `None`.
 
 ## BUG-066 - `git` is spawned with the environment and stdin inherited whole, and no deadline
 
-**Decision (partial):** the `git/test_support.rs::run_git` site goes with piece 3
-of the test-isolation work adopted from broadarrow (tests stop invoking host
-programs, `git` included). The child working-directory seal is adopted from
-broadarrow (`clippy.toml` on `std::process::Command::new`), so the production
-spawns must state a working directory, which the suggested `run_git(dir, ..)`
-can set from `dir`. The two `Instant::now()` reads fall under the clock seam,
-adopted incrementally with the hygiene work (HYGP-001). Open: the four
-production sites, which are the defect.
+**Decision (partial):** `git/test_support.rs::run_git` is gone; fixtures write
+plain files or, where only Git can write the fixture (reftable stores, linked
+worktrees), go through `git_written_fixture`, which is exempt as a
+host-program-ok site since the fixture itself is what the test exercises. The
+child working-directory seal is adopted from broadarrow (`clippy.toml` on
+`std::process::Command::new`), so the production spawns must state a working
+directory, which the suggested `run_git(dir, ..)` can set from `dir`. The two
+`Instant::now()` reads fall under the clock seam, adopted incrementally with
+the hygiene work (HYGP-001). Open: the four production sites, which are the
+defect.
 
 `crates/shepr-mux/src/git/discovery.rs::git_trimmed_stdout`,
-`git/status.rs::git_ahead_behind_between`, `git/test_support.rs::run_git` and
+`git/status.rs::git_ahead_behind_between` and
 `crates/shepr-client/src/workspace_label.rs` each build
-`Command::new("git").arg("-C")...` independently, and
-`crates/shepr-server/src/app/git_refresh.rs` is a fifth site. Consequently:
+`Command::new("git").arg("-C")...` independently. Consequently:
 
 - No timeout budget. `git rev-list --left-right --count` on a repository whose
   objects live on a stalled network filesystem blocks the calling thread
@@ -1319,9 +1320,17 @@ error) and let `src/main.rs` exit, plus a `disallowed_methods` entry for
 - `crates/shepr-remote/src/remote/local_server.rs::is_server_listening_returns_permission_errors_instead_of_false`
   returns early when running as root, so it silently passes as a no-op in a root
   container.
+- `crates/shepr-mux/src/git/discovery.rs::git_rev_parse_verify_reads_reftable_refs`,
+  `git/status.rs::branch_reads_unborn_symbolic_head_from_reftable_repo` and
+  `git/status.rs::git_status_fingerprint_reads_reftable_branch_identity` each
+  `return` right after `git init --ref-format=reftable` if that command fails,
+  so a host `git` too old for `extensions.refstorage` (or built without
+  reftable support) makes all three pass having exercised nothing.
 
 Fixes suggested: `#[ignore]` with a stated reason, or fail loudly when the
-privilege condition is not met, or restructure so privilege is not needed.
+privilege condition is not met, or restructure so privilege is not needed. For
+the reftable trio: assert the `git init` succeeded, or `#[ignore]` with a
+reason naming the required `git` version, rather than returning silently.
 
 ## BUG-074 - Tests that reach the developer's real environment
 

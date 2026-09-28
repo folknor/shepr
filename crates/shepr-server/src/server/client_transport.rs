@@ -169,12 +169,12 @@ impl ClientWriter {
         self.control.flush()
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn test_close(&self) {
         self.render.queue.close_writer();
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn test_channel(
         control: std::sync::mpsc::Sender<Vec<u8>>,
         render: std::sync::mpsc::SyncSender<Vec<u8>>,
@@ -211,14 +211,14 @@ impl ClientWriter {
 #[derive(Debug)]
 pub(crate) struct ClientControlWriter {
     queue: Arc<ClientWriterQueue>,
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     test_render: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ClientRenderWriter {
     queue: Arc<ClientWriterQueue>,
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     test_render: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
 }
 
@@ -229,7 +229,7 @@ macro_rules! writer_handle {
                 self.queue.add_sender();
                 Self {
                     queue: self.queue.clone(),
-                    #[cfg(any(test, feature = "test-api"))]
+                    #[cfg(test)]
                     test_render: self.test_render.clone(),
                 }
             }
@@ -249,7 +249,7 @@ impl ClientControlWriter {
         queue.add_sender();
         Self {
             queue,
-            #[cfg(any(test, feature = "test-api"))]
+            #[cfg(test)]
             test_render: None,
         }
     }
@@ -268,13 +268,13 @@ impl ClientRenderWriter {
         queue.add_sender();
         Self {
             queue,
-            #[cfg(any(test, feature = "test-api"))]
+            #[cfg(test)]
             test_render: None,
         }
     }
 
     pub(crate) fn try_send(&self, data: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
-        #[cfg(any(test, feature = "test-api"))]
+        #[cfg(test)]
         if let Some(sender) = &self.test_render {
             return sender.try_send(data);
         }
@@ -892,7 +892,7 @@ fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
 }
 
 /// The client read loop - reads messages from the client and forwards to the server event channel.
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 fn client_read_loop(
     stream: LocalStream,
     client_id: ClientId,
@@ -2282,10 +2282,11 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let mut payload = shepr_protocol::codec::to_vec(&ClientMessage::ClientShellHostTheme {
-            update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors.clone()),
-        })
-        .expect("encode the largest valid palette");
+        let mut payload =
+            shepr_test_fixtures::encode_to_vec(&ClientMessage::ClientShellHostTheme {
+                update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors.clone()),
+            })
+            .expect("encode the largest valid palette");
         // Raise the positional collection count and append one valid entry to
         // make a malformed frame the bounded serializer correctly refuses.
         let count_offset = payload.len() - 2 - colors.len() * 4;

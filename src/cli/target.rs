@@ -377,6 +377,7 @@ fn validate_machine_command(command: &super::CliCommand) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::*;
 
     fn parse(values: &[&str]) -> Result<clap::ArgMatches, clap::Error> {
         let mut argv = vec!["shepr"];
@@ -477,7 +478,7 @@ mod tests {
 
         // A machine with no command to run is a usage error before any
         // catalog or network access.
-        let error = run_on_machine("mac", None, &shepr_config::AppPaths::default())
+        let error = run_on_machine("mac", None, &shepr_config::AppPaths::test_default())
             .expect_err("a missing command is a usage error");
         assert_eq!(error.exit_code(), 2);
     }
@@ -578,7 +579,7 @@ mod tests {
             } if name == "work"
         ));
 
-        let error = run_on_machine("mac", None, &shepr_config::AppPaths::default())
+        let error = run_on_machine("mac", None, &shepr_config::AppPaths::test_default())
             .expect_err("a TUI launch has no API command to run on a machine");
         assert_eq!(error.exit_code(), 2);
     }

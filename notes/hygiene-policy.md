@@ -1119,11 +1119,11 @@ in `brokkr.toml`, which would also catch `terminal/metadata.rs` (1438 lines) and
 
 ## HYGP-036 - `migration_tests.rs` and `SHEPR_MIGRATION_OBSERVATIONS`: scaffolding for a finished migration
 
-**Decision (partial):** the droid pid gate's host `bash` spawn falls under piece 3
-(tests stop invoking host programs, after broadarrow's
-`no-borrowed-process-stand-ins` textlint). The stale prose turns out to be
-partly lintable: the older-peer compatibility textlint adopted from broadarrow
-(A3 in `notes/broadarrow-ports.md`) matches "during the migration", and the
+**Decision (partial):** the droid pid gate no longer spawns the host `bash`: it
+now launches a `shepr_test_support::fixture::stand_in` named `droid` under a
+scratch `PATH`. The stale prose turns out to be partly lintable: the older-peer
+compatibility textlint adopted from broadarrow (A3 in
+`notes/broadarrow-ports.md`) matches "during the migration", and the
 `terminal/state/mod.rs` and `pane/state.rs` prose are gone. Open: the
 tautological test, the env var, and the module header.
 
@@ -1139,10 +1139,7 @@ committed fixture to compare against, an env var
 `capture_bounded_migration_observations` whose only assertion compares the last
 observation against observing the same unchanged terminal again - so it passes
 for any behaviour the emulator could have while reading as coverage of eleven
-semantic dimensions across four geometries. The droid pid gate in
-`primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries` is the same
-shape: it spawns host `bash` and polls `/proc` for a process named "droid" to
-pass a real pid to `process_pty_bytes`, which ignores `_shell_pid`.
+semantic dimensions across four geometries.
 
 What is not dead, per the `shepr-mux` hunter: the file's other six tests
 (`incremental_rows_reconstruct_full_render`,

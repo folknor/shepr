@@ -44,7 +44,7 @@ impl App {
         Outcome { response, render }
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::Request) -> String {
         let id = request.id.clone();
         self.drain_all_internal_events();
@@ -230,7 +230,7 @@ fn agent_manifest_info(
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 pub(super) mod test_support {
     /// A program that exits 0 at once: the fixture program with no script.
     pub(crate) fn exiting_test_command() -> &'static str {
@@ -238,6 +238,7 @@ pub(super) mod test_support {
     }
 
     pub(crate) fn shutdown_test_runtimes(app: &mut crate::app::App) {
+        use crate::test_support::PaneRuntimeRegistryFixture as _;
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
             drop(runtime);
@@ -248,6 +249,7 @@ pub(super) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_api::schema::ResponseResult;
 
@@ -266,8 +268,8 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
-        let reset_notify = runtime.agent_detection_reset_notify_for_test();
+        let (runtime, _rx, reset_notify) =
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_reset_notify(80, 24);
         app.terminal_runtimes.insert(terminal_id, runtime);
 
         let summaries = shepr_agent::detect::manifest::reload_manifests(app.paths.config_dir());
@@ -308,8 +310,8 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
-        let reset_notify = runtime.agent_detection_reset_notify_for_test();
+        let (runtime, _rx, reset_notify) =
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_reset_notify(80, 24);
         app.terminal_runtimes.insert(terminal_id, runtime);
 
         let response =
@@ -371,7 +373,7 @@ mod tests {
             }),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&shepr_api::error::test_json(&response))
+            serde_json::from_str(&crate::test_support::test_json(&response))
                 .expect("test precondition");
 
         assert_eq!(response["result"]["type"], "agent_explain");
@@ -421,7 +423,7 @@ mod tests {
             }),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&shepr_api::error::test_json(&response))
+            serde_json::from_str(&crate::test_support::test_json(&response))
                 .expect("test precondition");
 
         assert_eq!(response["error"]["code"], "agent_not_found");
@@ -455,7 +457,7 @@ mod tests {
             ),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&shepr_api::error::test_json(&response))
+            serde_json::from_str(&crate::test_support::test_json(&response))
                 .expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_process_info");
@@ -489,7 +491,7 @@ mod tests {
                 method,
             });
             let response: serde_json::Value =
-                serde_json::from_str(&shepr_api::error::test_json(&response))
+                serde_json::from_str(&crate::test_support::test_json(&response))
                     .expect("test precondition");
             assert_eq!(response["id"], "misrouted", "{name}");
             assert_eq!(response["error"]["code"], "internal_error", "{name}");

@@ -33,19 +33,6 @@ impl<'de> Deserialize<'de> for ServerAddress {
     }
 }
 
-// Only for test fixtures; production addresses come from `AppPaths::resolve`,
-// which validates process environment paths.
-#[cfg(any(test, feature = "test-support"))]
-impl Default for ServerAddress {
-    fn default() -> Self {
-        Self {
-            api_socket: PathBuf::from("shepr.sock"),
-            client_socket: PathBuf::from("shepr-client.sock"),
-            source: AddressSource::Session,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum AddressSource {
     Session,

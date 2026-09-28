@@ -684,6 +684,7 @@ pub fn validate_name(name: &str) -> Result<(), SessionError> {
 mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
+    use shepr_test_fixtures::AppPathsFixture as _;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::sync::atomic::Ordering;
 

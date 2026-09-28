@@ -16,14 +16,13 @@ mod wire;
 pub use self::address::ServerAddress;
 pub use self::address::derive_client_socket_from_api_socket;
 pub use self::agent::ConfigAgent;
-#[cfg(feature = "test-support")]
+/// The raw config values, as deserialized. Runtime code receives a
+/// [`ValidatedConfig`]; raw values become one only through validation
+/// ([`ValidatedConfig::from_values`] or a launch load).
 pub use self::model::Config;
-#[cfg(not(feature = "test-support"))]
-pub(crate) use self::model::Config;
 pub use self::session_id::{
     DEFAULT_SESSION_NAME, SessionId, SessionName, SessionNameError, validate_session_name,
 };
-#[cfg(any(test, feature = "test-support"))]
 pub use self::theme_config::CustomThemeColors;
 pub use self::{
     diagnostic::ConfigDiagnostic,
@@ -51,10 +50,6 @@ pub use self::{
 };
 
 pub use self::keybinds::parse_key_combo;
-// Runtime code receives tab-bar entries already parsed on `ValidatedConfig`;
-// the raw-entry parser is exported only for test fixtures.
-#[cfg(any(test, feature = "test-support"))]
-pub use self::tab_bar::parse_tab_bar_right_entries as parse_validated_tab_bar_entries;
 pub use self::{tab_bar::ValidatedTabBarRightEntry, window_title::sanitize_window_title_text};
 
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
@@ -65,7 +60,7 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
 impl Config {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
         self.resolve_palette_with_ui_accent(false)
     }
@@ -77,7 +72,7 @@ impl Config {
         theme_config::resolve_palette(self, ui_accent_is_explicit)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn collect_diagnostics(&self) -> Vec<String> {
         let provenance = ConfigProvenance::defaults(self);
         let resolution = validated::ConfigResolution::parse(

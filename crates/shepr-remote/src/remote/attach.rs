@@ -20,7 +20,7 @@ mod tests {
     /// config directories are created in.
     fn test_app_paths() -> shepr_config::AppPaths {
         let root = shepr_test_support::ScratchDir::new("remote-ssh");
-        shepr_config::AppPaths::test_with_context(&root, Some(&root), None)
+        shepr_config::AppPaths::rooted_at(&root, Some(&root), None)
     }
 
     /// The control socket's directory. These tests render config text and

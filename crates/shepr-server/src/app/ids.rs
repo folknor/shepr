@@ -148,6 +148,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::*;
     use shepr_mux::workspace::Workspace;
 
     fn test_app_with_workspaces(names: &[&str]) -> super::App {

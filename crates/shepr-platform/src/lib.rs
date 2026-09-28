@@ -69,8 +69,6 @@ use clipboard::{
 };
 #[cfg(test)]
 use host::{is_detached_session, resolve_launch_executable};
-#[cfg(any(test, feature = "test-support"))]
-pub use process::signal_processes;
 #[cfg(test)]
 use process::{process_exists, session_member_handles_with, state_and_start_time_from_stat};
 #[cfg(test)]

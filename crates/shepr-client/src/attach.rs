@@ -143,6 +143,7 @@ impl AttachKeys {
 #[cfg(test)]
 impl Default for AttachKeys {
     fn default() -> Self {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
         Self::from_config(&shepr_config::ValidatedConfig::test_default())
     }
 }
@@ -256,7 +257,7 @@ impl AttachEscapeState {
         viewport_rows: u16,
         mouse_scroll_lines: u16,
     ) -> AttachInputAction {
-        let mut events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(&data);
+        let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(&data);
         if events.len() == 1 {
             let event = events.remove(0);
             return self.filter_parsed_input(data, &event, viewport_rows, mouse_scroll_lines);
@@ -513,6 +514,7 @@ pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<Cl
 mod tests {
     use super::*;
     use shepr_protocol::{AttachScrollDirection, AttachScrollSource};
+    use shepr_test_fixtures::*;
 
     #[test]
     fn oversized_attach_input_is_split_into_valid_frames() {
@@ -916,8 +918,7 @@ mod tests {
     fn direct_attach_pixel_mouse_keeps_pixels_and_semantic_kind() {
         let geometry = shepr_termio::input::mouse::HostPixelExtent::new(80, 24, 800, 480)
             .expect("test precondition");
-        let mut events =
-            shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b[<0;21;22M");
+        let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[<0;21;22M");
         let Some(shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse)) = events.pop() else {
             panic!("expected parsed pixel mouse");
         };

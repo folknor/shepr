@@ -29,8 +29,9 @@ impl ClientShellState {
 }
 
 impl ClientShellConfig {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn from_config(config: &Config) -> Self {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
         let validated = shepr_config::ValidatedConfig::test_from_config(config.clone(), None);
         Self::from_config_with_configured(
             validated.ui(),
@@ -40,7 +41,7 @@ impl ClientShellConfig {
         )
     }
 
-    pub(crate) fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
+    pub fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
         Self::from_config_with_configured(
             config.ui(),
             preferences::ConfiguredChrome::from_validated_config(config),
@@ -195,6 +196,7 @@ impl ClientShellConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::*;
 
     #[test]
     fn snapshot_config_applies_endpoint_keybindings_from_the_validated_value() {

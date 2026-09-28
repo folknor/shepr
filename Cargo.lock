@@ -1287,7 +1287,7 @@ dependencies = [
  "shepr-protocol",
  "shepr-remote",
  "shepr-server",
- "shepr-termio",
+ "shepr-test-fixtures",
  "shepr-test-support",
  "tokio",
  "toml",
@@ -1325,6 +1325,7 @@ dependencies = [
  "shepr-core",
  "shepr-platform",
  "shepr-protocol",
+ "shepr-test-fixtures",
  "shepr-test-support",
  "shepr-vt",
  "tokio",
@@ -1350,6 +1351,7 @@ dependencies = [
  "shepr-protocol",
  "shepr-remote",
  "shepr-termio",
+ "shepr-test-fixtures",
  "shepr-test-support",
  "shepr-vt",
  "tokio",
@@ -1402,6 +1404,7 @@ dependencies = [
  "shepr-protocol",
  "shepr-pty",
  "shepr-termio",
+ "shepr-test-fixtures",
  "shepr-test-support",
  "shepr-vt",
  "tokio",
@@ -1466,6 +1469,7 @@ dependencies = [
  "shepr-core",
  "shepr-platform",
  "shepr-protocol",
+ "shepr-test-fixtures",
  "shepr-test-support",
  "tracing",
 ]
@@ -1485,6 +1489,7 @@ dependencies = [
  "serde_json",
  "shepr-agent",
  "shepr-api",
+ "shepr-client",
  "shepr-config",
  "shepr-core",
  "shepr-mux",
@@ -1493,6 +1498,7 @@ dependencies = [
  "shepr-pty",
  "shepr-remote",
  "shepr-termio",
+ "shepr-test-fixtures",
  "shepr-test-support",
  "shepr-vt",
  "time",
@@ -1518,6 +1524,20 @@ dependencies = [
  "toml",
  "tracing",
  "unicode-width",
+]
+
+[[package]]
+name = "shepr-test-fixtures"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "serde",
+ "shepr-config",
+ "shepr-core",
+ "shepr-protocol",
+ "shepr-pty",
+ "shepr-termio",
+ "tokio",
 ]
 
 [[package]]

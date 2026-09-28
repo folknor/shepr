@@ -4,14 +4,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[features]
-test-api = [
-    "dep:shepr-test-support",
-    "shepr-api/test-support",
-    "shepr-mux/test-api",
-    "shepr-config/test-support",
-]
-
 [dependencies]
 base64 = { workspace = true }
 bytes = { workspace = true }
@@ -32,7 +24,6 @@ shepr-protocol = { path = "../shepr-protocol" }
 shepr-pty = { path = "../shepr-pty" }
 shepr-remote = { path = "../shepr-remote" }
 shepr-termio = { path = "../shepr-termio" }
-shepr-test-support = { path = "../shepr-test-support", optional = true }
 shepr-vt = { path = "../shepr-vt" }
 time = { workspace = true }
 tokio = { workspace = true }
@@ -40,13 +31,10 @@ tracing = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
-shepr-agent = { path = "../shepr-agent", features = ["test-support"] }
-shepr-api = { path = "../shepr-api", features = ["test-support"] }
-shepr-config = { path = "../shepr-config", features = ["test-support"] }
-shepr-mux = { path = "../shepr-mux", features = ["test-api"] }
-shepr-platform = { path = "../shepr-platform", features = ["test-support"] }
-shepr-protocol = { path = "../shepr-protocol", features = ["test-support"] }
-shepr-termio = { path = "../shepr-termio", features = ["test-support"] }
+# The endpoint handoff test drives a real client shell state machine against
+# two in-process servers, whose internals only this crate's own tests reach.
+shepr-client = { path = "../shepr-client" }
+shepr-test-fixtures = { path = "../shepr-test-fixtures" }
 shepr-test-support = { path = "../shepr-test-support" }
 toml = { workspace = true }
 

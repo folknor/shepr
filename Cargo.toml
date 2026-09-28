@@ -120,13 +120,7 @@ shepr-server = { path = "crates/shepr-server" }
 workspace = true
 
 [dev-dependencies]
-shepr-agent = { path = "crates/shepr-agent", features = ["test-support"] }
-shepr-api = { path = "crates/shepr-api", features = ["test-support"] }
-shepr-client = { path = "crates/shepr-client", features = ["test-support"] }
-shepr-config = { path = "crates/shepr-config", features = ["test-support"] }
-shepr-protocol = { path = "crates/shepr-protocol", features = ["test-support"] }
-shepr-server = { path = "crates/shepr-server", features = ["test-api"] }
-shepr-termio = { path = "crates/shepr-termio", features = ["test-support"] }
+shepr-test-fixtures = { path = "crates/shepr-test-fixtures" }
 shepr-test-support = { path = "crates/shepr-test-support" }
 tokio = { workspace = true }
 toml = { workspace = true }

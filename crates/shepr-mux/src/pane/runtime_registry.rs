@@ -38,7 +38,7 @@ impl PaneRuntimeRegistry {
         self.runtimes.values()
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn drain(&mut self) -> impl Iterator<Item = (TerminalId, PaneRuntime)> + '_ {
         self.runtimes.drain()
     }
@@ -47,5 +47,14 @@ impl PaneRuntimeRegistry {
 impl From<HashMap<TerminalId, PaneRuntime>> for PaneRuntimeRegistry {
     fn from(runtimes: HashMap<TerminalId, PaneRuntime>) -> Self {
         Self { runtimes }
+    }
+}
+
+impl IntoIterator for PaneRuntimeRegistry {
+    type Item = (TerminalId, PaneRuntime);
+    type IntoIter = std::collections::hash_map::IntoIter<TerminalId, PaneRuntime>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.runtimes.into_iter()
     }
 }

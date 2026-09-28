@@ -44,12 +44,15 @@ pub struct AppPaths {
     provenance: PathProvenance,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+/// Absolute, so a config built on them survives the resolved-path check on
+/// the wire, and identical across calls, so two test configs compare equal.
+/// The root cannot be created by an unprivileged user: a test that writes
+/// through these paths fails instead of leaving files in a shared location.
+#[cfg(test)]
 impl Default for AppPaths {
     fn default() -> Self {
-        // Keep no-I/O fixtures wire-resolvable; filesystem tests use ScratchDir-backed paths.
         let root = Path::new("/nonexistent/shepr-test-config");
-        Self::test_with_context(root, Some(root), None)
+        Self::rooted_at(root, Some(root), None)
     }
 }
 
@@ -195,17 +198,18 @@ impl AppPaths {
         resolve_paths_from_env(Some(super::SessionId::Default), None, true)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn test_at(root: &Path) -> Self {
-        Self::test_with_context(root, None, None)
+        Self::rooted_at(root, None, None)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn test_with_context(
-        root: &Path,
-        home_dir: Option<&Path>,
-        current_dir: Option<&Path>,
-    ) -> Self {
+    /// Paths laid out under one directory: `config`, `state` and `runtime`
+    /// below `root`, with `root` as the XDG runtime directory, the default
+    /// session and its sockets, and every value's source the default. Nothing
+    /// is resolved or checked, so the caller passes absolute paths; this is
+    /// how a caller that is not a launch, which resolves from the
+    /// environment, places a config somewhere it chose.
+    pub fn rooted_at(root: &Path, home_dir: Option<&Path>, current_dir: Option<&Path>) -> Self {
         Self {
             config_dir: root.join("config"),
             state_dir: root.join("state"),
@@ -1070,8 +1074,7 @@ tab_bar_right = [
     #[test]
     fn config_check_reports_cwd_path_when_another_value_fails_to_parse() {
         let scratch = shepr_test_support::ScratchDir::new("config-check-cwd-path");
-        let paths =
-            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
         std::fs::write(
             paths.config_file(),
@@ -1418,7 +1421,7 @@ id = "example"
     #[test]
     fn app_paths_wire_deserialization_rejects_unresolved_paths() {
         let scratch = shepr_test_support::ScratchDir::new("app-paths-wire");
-        let paths = AppPaths::test_with_context(scratch.path(), Some(scratch.path()), None);
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None);
         let wire = serde_json::to_value(&paths).expect("serialize test paths");
         assert!(serde_json::from_value::<AppPaths>(wire.clone()).is_ok());
 

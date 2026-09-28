@@ -1487,7 +1487,7 @@ fn ghostty_kitty_pane_preserves_legacy_ctrl_alt_letter() {
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
 
-    let mut events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(b"\x1b\x06");
+    let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b\x06");
     let shepr_termio::input::raw_input::RawInputEvent::Key(key) = events.remove(0) else {
         panic!("expected key event");
     };
@@ -2841,7 +2841,11 @@ fn full_frame_preserves_curly_underline_style() {
         .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
         .expect("test precondition");
 
-    let frame = shepr_protocol::FrameData::from_ratatui_buffer(terminal.backend().buffer(), None);
+    let frame = shepr_protocol::FrameData::from_ratatui_buffer_with_hyperlinks(
+        terminal.backend().buffer(),
+        None,
+        &[],
+    );
     assert_eq!(frame.cells[0].symbol, "U");
     assert_eq!(
         frame.cells[0].style.underline,

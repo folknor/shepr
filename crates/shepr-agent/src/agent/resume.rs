@@ -410,17 +410,6 @@ fn valid_session_path(value: &str) -> bool {
         && Path::new(value).is_absolute()
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn test_codex_plan(identity: &str, argv: Vec<String>) -> AgentResumePlan {
-    let session_id = identity.rsplit('\0').next().unwrap_or(identity);
-    let session = PersistedAgentSession::new(
-        AgentSource::Official(Agent::Codex),
-        Agent::Codex,
-        AgentSessionRef::id(session_id).expect("test precondition"),
-    )
-    .expect("test precondition");
-    AgentResumePlan::with_argv(&session, argv).expect("test precondition")
-}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -190,13 +190,6 @@ pub enum MouseProtocolMode {
     AnyMotion,
 }
 
-impl MouseProtocolMode {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn reporting_enabled(self) -> bool {
-        self != Self::None
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseProtocolEncoding {

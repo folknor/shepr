@@ -1286,13 +1286,10 @@ Merged into HYGP-020 (`notes/hygiene-policy.md`), which carries the full finding
 
 ## HYGV-058 - `PANE_TERM` has one owner but `PANE_COLORTERM` lives in another crate, and a test re-spells both
 
-**Decision (partial):** piece 3 (tests stop invoking host programs in favour of
-workspace-built helper binaries, after broadarrow's `ba-mock-worker` and its
-`no-borrowed-process-stand-ins` textlint) rewrites the re-spelling test, which
-today runs `printf` through the host shell via `capture_shell_output`; the
-rewrite is the natural point to assert against `PANE_TERM` and the colorterm
-constant. Open: `PANE_COLORTERM`'s owner and XTGETTCAP's independent `Tc`/`RGB`
-claim.
+**Decision (partial):** `pane_terminal_identity_overrides_outer_terminal_env`
+no longer runs `printf` through the host shell and now reads `PANE_TERM` and the
+colorterm constant directly, so the re-spelling half is resolved. Open:
+`PANE_COLORTERM`'s owner and XTGETTCAP's independent `Tc`/`RGB` claim.
 
 Reported by the vt/pty hunter.
 
@@ -1300,10 +1297,6 @@ Reported by the vt/pty hunter.
 `PANE_COLORTERM = "truecolor"` lives in `shepr-mux`, and XTGETTCAP in
 `shepr-vt`'s `scan.rs` advertises `Tc` and `RGB` independently of it. The
 terminal-identity claims should sit together in `shepr-vt`.
-
-`pane_terminal_identity_overrides_outer_terminal_env` in
-`crates/shepr-mux/src/pane/runtime.rs` hard-codes `"xterm-256color\ntruecolor\n"`
-instead of reading `PANE_TERM` and the colorterm constant.
 
 ## HYGV-059 - The modifyOtherKeys level has two enums and the client recovers the number by sniffing a byte string
 

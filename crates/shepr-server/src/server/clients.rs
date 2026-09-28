@@ -20,14 +20,14 @@ pub struct ClientId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ActivityStamp(u64);
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl From<u64> for ActivityStamp {
     fn from(value: u64) -> Self {
         Self(value)
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl From<i32> for ActivityStamp {
     fn from(value: i32) -> Self {
         Self(u64::try_from(value).expect("test activity stamp must be nonnegative"))
@@ -35,7 +35,7 @@ impl From<i32> for ActivityStamp {
 }
 
 impl ClientId {
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn test_new(value: u64) -> Self {
         Self(value)
     }
@@ -47,28 +47,28 @@ impl std::fmt::Display for ClientId {
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl From<u64> for ClientId {
     fn from(value: u64) -> Self {
         Self::test_new(value)
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl From<i32> for ClientId {
     fn from(value: i32) -> Self {
         Self::test_new(u64::try_from(value).expect("test client id must be nonnegative"))
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl PartialEq<u64> for ClientId {
     fn eq(&self, other: &u64) -> bool {
         self.0 == *other
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl PartialEq<i32> for ClientId {
     fn eq(&self, other: &i32) -> bool {
         u64::try_from(*other).is_ok_and(|other| self.0 == other)
@@ -294,7 +294,7 @@ impl ClientRegistry {
         self.connections.insert(client_id.into(), client)
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
         self.connections.contains_key(&(*client_id).into())
     }
@@ -491,7 +491,7 @@ impl ClientRegistry {
         self.attach_owners.contains_key(terminal_id)
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn attach_owners(&self) -> &HashMap<TerminalId, ClientId> {
         &self.attach_owners
     }
@@ -619,7 +619,7 @@ pub(crate) struct ClientConnection {
 }
 
 impl ClientConnection {
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn new(
         terminal_size: (u16, u16),
         cell_size: shepr_termio::host_term::cell_size::HostCellSize,

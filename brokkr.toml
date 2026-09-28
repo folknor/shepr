@@ -276,6 +276,7 @@ packages = [
     "shepr-protocol",
     "shepr-remote",
     "shepr-server",
+    "shepr-test-fixtures",
     "shepr-test-support",
     "shepr-termio",
     "shepr-vt",
@@ -284,6 +285,15 @@ packages = [
 # (`shepr_test_support::fixture`). Testing shepr-test-support builds it too;
 # this also builds it for a `brokkr test -p` that names another package.
 build_packages = ["shepr-test-support"]
+
+# The workspace sweep unifies every member's features, dev-dependencies
+# included, so it never compiles the binary alone. The install-feature phase
+# checks `shepr` as `cargo install` resolves it, with nothing a sibling member
+# or a dev-dependency contributes. It is a `cargo check` (no codegen) in the
+# profile `brokkr install` uses; it builds and runs nothing.
+[bin]
+install = ["shepr"]
+install_feature_check = "always"
 
 [manifest]
 sort_dependencies = true
@@ -320,6 +330,32 @@ kinds = ["normal"]
 name = "shepr-test-support-layer"
 from = "shepr-test-support"
 allow = ["libc", "shepr-core"]
+kinds = ["normal"]
+
+# Test fixtures are crates, not features of production crates: a feature is
+# switched on for every consumer in a build that compiles any consumer's
+# tests, while an absent normal or build edge holds under every feature
+# resolution. These two rules are that absence. The fixture crates' module
+# docs say why each is a crate.
+[[dependency_rule]]
+name = "test-support-never-ships"
+from = "*"
+forbid = "shepr-test-support"
+kinds = ["normal", "build"]
+
+[[dependency_rule]]
+name = "test-fixtures-never-ships"
+from = "*"
+forbid = "shepr-test-fixtures"
+kinds = ["normal", "build"]
+
+# Built on the public API of the crates it stands in for. A crate it depends
+# on cannot take it as a dev-dependency without linking a second copy of
+# itself, so the list stays low: config, protocol, pty and termio.
+[[dependency_rule]]
+name = "shepr-test-fixtures-layer"
+from = "shepr-test-fixtures"
+allow = ["bytes", "serde", "shepr-config", "shepr-core", "shepr-protocol", "shepr-pty", "shepr-termio", "tokio"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -379,5 +415,5 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-server-layer"
 from = "shepr-server"
-allow = ["base64", "bytes", "crossterm", "ctrlc", "interprocess", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-mux", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-remote", "shepr-termio", "shepr-test-support", "shepr-vt", "time", "tokio", "tracing", "unicode-width"]
+allow = ["base64", "bytes", "crossterm", "ctrlc", "interprocess", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-mux", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-remote", "shepr-termio", "shepr-vt", "time", "tokio", "tracing", "unicode-width"]
 kinds = ["normal"]

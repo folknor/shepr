@@ -356,6 +356,7 @@ fn workspace_not_found(id: String, workspace_id: &str) -> ApiResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use shepr_api::schema::{ErrorResponse, SuccessResponse};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
@@ -392,7 +393,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let _: SuccessResponse = shepr_api::error::test_success(&response);
+        let _: SuccessResponse = crate::test_support::test_success(&response);
         // Drop runtimes so cwd resolution deterministically uses cached state.
         shutdown_test_runtimes(&mut app);
 
@@ -423,7 +424,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -485,7 +486,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -509,7 +510,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let error: ErrorResponse = shepr_api::error::test_error(&invalid);
+        let error: ErrorResponse = crate::test_support::test_error(&invalid);
         assert_eq!(error.error.code, "workspace_not_found");
 
         let captured = app.handle_workspace_create(
@@ -522,7 +523,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let success: SuccessResponse = shepr_api::error::test_success(&captured);
+        let success: SuccessResponse = crate::test_support::test_success(&captured);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -583,7 +584,7 @@ mod tests {
                     },
                 ),
             });
-            let success: SuccessResponse = shepr_api::error::test_success(&response);
+            let success: SuccessResponse = crate::test_support::test_success(&response);
             assert_eq!(success.result, ResponseResult::Ok {});
             assert_eq!(
                 app.workspace_info(0).expect("test precondition").tokens,
@@ -624,7 +625,7 @@ mod tests {
                 ttl_ms: Some(1),
             },
         );
-        let _: SuccessResponse = shepr_api::error::test_success(&response);
+        let _: SuccessResponse = crate::test_support::test_success(&response);
         let deadline = app.agent_metadata_deadline.expect("token deadline");
 
         app.expire_metadata_at(deadline, deadline);
@@ -686,7 +687,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };
@@ -734,7 +735,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };
@@ -801,7 +802,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         let events = event_hub
             .events_after(0)
@@ -846,7 +847,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };

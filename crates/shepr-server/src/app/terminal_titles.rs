@@ -68,6 +68,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;

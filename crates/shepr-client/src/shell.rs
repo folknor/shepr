@@ -73,7 +73,7 @@ use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::endpoint::{ClientEndpointId, ClientEndpointStatus, SavedSshEndpoint};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use shepr_config::Config;
 use shepr_config::theme::Palette;
 use shepr_config::{

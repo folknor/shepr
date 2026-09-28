@@ -277,7 +277,7 @@ impl ClientShellState {
         self.endpoints.len() > 1
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
         let endpoint_id = self.active_endpoint_id.clone();
         self.set_endpoint_snapshot(&endpoint_id, snapshot);
@@ -296,7 +296,7 @@ impl ClientShellState {
             .count()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn cache_endpoint_snapshot(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -384,7 +384,7 @@ impl ClientShellState {
         endpoint.snapshot = Some(snapshot);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn set_endpoint_snapshot(
         &mut self,
         endpoint_id: &ClientEndpointId,

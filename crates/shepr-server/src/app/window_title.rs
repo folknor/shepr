@@ -130,6 +130,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
+    use crate::test_support::*;
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
 

@@ -5,9 +5,6 @@ edition = "2024"
 publish = false
 build = "build.rs"
 
-[features]
-test-support = []
-
 [dependencies]
 ratatui = { workspace = true }
 serde = { workspace = true }

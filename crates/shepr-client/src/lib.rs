@@ -41,7 +41,6 @@ use shell_runtime::*;
 use state::{AttachSession, ClientState, SessionMode, ShellSession};
 use transport::*;
 
-#[cfg(any(test, feature = "test-support"))]
 pub use shell::{ClientShellConfig, ClientShellState};
 pub use startup::{run_client, run_terminal_attach};
 

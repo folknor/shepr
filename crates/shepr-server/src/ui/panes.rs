@@ -472,6 +472,7 @@ use shepr_termio::selection_render::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use shepr_config::PaneBordersConfig;
     use shepr_core::layout::PaneId;
     use shepr_mux::pane::PaneRuntime;

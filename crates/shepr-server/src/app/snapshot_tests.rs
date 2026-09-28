@@ -1,3 +1,4 @@
+use crate::test_support::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -511,7 +512,11 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         runtimes.values().next().expect("test precondition").cwd(),
         Some(old.clone())
     );
-    shepr_platform::signal_processes(&[pid], shepr_platform::Signal::Kill);
+    assert!(
+        shepr_platform::ProcessHandle::open(pid)
+            .expect("the pane child is running")
+            .signal(shepr_platform::Signal::Kill)
+    );
     let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while shepr_agent::detect::process_cwd(pid).is_some()
         && std::time::Instant::now() < exit_deadline
@@ -724,7 +729,7 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
         .attached_terminal_id
         .clone();
     let carry = HistoryCarry::default();
-    carry.carry_restored_for_test(
+    carry.carry_restored(
         &terminal_id,
         Some(&PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),

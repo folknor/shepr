@@ -34,8 +34,7 @@ use ssh::*;
 
 pub use crate::machine::SshTarget;
 pub use args::*;
-#[cfg(any(test, feature = "test-support"))]
-pub use bridge::bridge_upload_cancellation_for_test;
+pub use bridge::{BridgeUpload, BridgeUploadEnd};
 pub use host::run_remote_client_bridge;
 pub use launch::{
     check_saved_ssh, interactive_shell_command, prepare_saved_ssh, run_remote, shell_quote,

@@ -134,7 +134,7 @@ mod tests {
     }
 
     fn test_paths() -> super::super::target::CliContext {
-        super::super::target::CliContext::test_local(shepr_config::AppPaths::test_with_context(
+        super::super::target::CliContext::test_local(shepr_config::AppPaths::rooted_at(
             std::path::Path::new("/tmp/shepr-cli-paths"),
             Some(std::path::Path::new("/home/me")),
             Some(std::path::Path::new("/home/me/proj")),

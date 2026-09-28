@@ -22,7 +22,7 @@ pub struct GitStatusRefreshDemand {
 }
 
 impl GitStatusRefreshDemand {
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub const ALL: Self = Self {
         branch: true,
         ahead_behind: true,

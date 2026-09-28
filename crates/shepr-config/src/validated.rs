@@ -575,12 +575,35 @@ pub struct ValidatedConfig {
 }
 
 impl ValidatedConfig {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn new(
         config: Config,
         provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
+        Self::from_resolution(config, provenance, paths, CwdCheck::AtLaunch)
+    }
+
+    /// Validate `config` exactly as a launch does, with `source` as the config
+    /// document the values were read from: it decides which values count as
+    /// explicitly configured, and `None` makes every value a default. The
+    /// document is not checked for unknown keys; a launch load does that
+    /// before it gets here.
+    pub fn from_values(
+        config: Config,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Result<Self, Vec<String>> {
+        let document = source
+            .map(|source| {
+                source
+                    .parse::<toml::Table>()
+                    .map(toml::Value::Table)
+                    .map_err(|error| vec![format!("config parse error: {error}")])
+            })
+            .transpose()?;
+        let provenance = ConfigProvenance::from_config(&config, document.as_ref())
+            .map_err(|error| vec![format!("config provenance error: {error}")])?;
         Self::from_resolution(config, provenance, paths, CwdCheck::AtLaunch)
     }
 
@@ -666,7 +689,7 @@ impl ValidatedConfig {
         self.live_keybinds.clone()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
         Ok(self.live_keybinds())
     }
@@ -679,33 +702,13 @@ impl ValidatedConfig {
                 .eq(other.provenance.keybinding_values())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn test_default() -> Self {
-        let config = Config::default();
-        let provenance = ConfigProvenance::defaults(&config);
-        Self::new(config, provenance, test_app_paths()).expect("the default test config is valid")
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn test_from_config(config: Config, source: Option<&str>) -> Self {
-        Self::test_from_config_with_paths(config, source, test_app_paths())
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn test_from_config_with_paths(
         config: Config,
         source: Option<&str>,
         paths: AppPaths,
     ) -> Self {
-        let document = source.map(|source| {
-            source
-                .parse::<toml::Table>()
-                .map(toml::Value::Table)
-                .expect("test config document is valid")
-        });
-        let provenance = ConfigProvenance::from_config(&config, document.as_ref())
-            .expect("test config values are serializable");
-        Self::new(config, provenance, paths).expect("test config is valid")
+        Self::from_values(config, source, paths).expect("test config is valid")
     }
 }
 
@@ -719,17 +722,6 @@ impl PartialEq for ValidatedConfig {
 }
 
 impl Eq for ValidatedConfig {}
-
-/// Absolute paths, so the config survives the resolved-path check on the
-/// wire, that are identical across calls, so two test configs compare equal.
-/// The root cannot be created by an unprivileged user: a test that writes
-/// through these paths fails instead of leaving files in a shared location.
-/// Tests that need real directories pass a `ScratchDir` to
-/// `test_from_config_with_paths`.
-#[cfg(any(test, feature = "test-support"))]
-fn test_app_paths() -> AppPaths {
-    AppPaths::default()
-}
 
 impl Serialize for ValidatedConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -800,8 +792,7 @@ mod tests {
         }];
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
         let provenance = ConfigProvenance::defaults(&config);
-        let paths =
-            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
         let validated =
             ValidatedConfig::new(config, provenance, paths).expect("test configuration is valid");
@@ -833,7 +824,7 @@ mod tests {
         let mut config = Config::default();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("~/work".to_owned());
         let provenance = ConfigProvenance::defaults(&config);
-        let paths = AppPaths::test_with_context(scratch.path(), Some(&home), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(&home), Some(scratch.path()));
 
         let validated =
             ValidatedConfig::new(config, provenance, paths).expect("test configuration is valid");
@@ -847,8 +838,7 @@ mod tests {
     #[test]
     fn validated_config_rejects_empty_and_missing_new_cwd_paths() {
         let scratch = shepr_test_support::ScratchDir::new("validated-config-invalid-cwd");
-        let paths =
-            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
         for (path, expected) in [("", "must not be empty"), ("missing", "unavailable")] {
             let mut config = Config::default();
@@ -872,7 +862,7 @@ mod tests {
         let validated = ValidatedConfig::test_from_config_with_paths(
             Config::default(),
             None,
-            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), None),
+            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
         );
         let mut wire = serde_json::to_value(validated).expect("serialize test config");
         wire["config"]["server"]["headless_cols"] = serde_json::json!(0);
@@ -886,7 +876,7 @@ mod tests {
         let validated = ValidatedConfig::test_from_config_with_paths(
             Config::default(),
             None,
-            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), None),
+            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
         );
         let mut wire = serde_json::to_value(validated).expect("serialize test config");
         wire["config"]["terminal"]["new_cwd"] = serde_json::json!("Home");
@@ -909,7 +899,7 @@ mod tests {
         std::fs::create_dir_all(&sender_dir).expect("create sender cwd");
         let mut config = Config::default();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("project".to_owned());
-        let paths = AppPaths::test_with_context(
+        let paths = AppPaths::rooted_at(
             scratch.path(),
             Some(scratch.path()),
             Some(&scratch.join("sender")),

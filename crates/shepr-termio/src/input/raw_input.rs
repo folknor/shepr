@@ -4,7 +4,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 ///
 /// This directly extracts events without going through a channel, making it
 /// suitable for synchronous use.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
     let mut framer = RawInputFramer::<NoHostReplies>::default();
     let mut events = framer.push(data);
@@ -312,7 +312,7 @@ pub struct RawInputFramer<P: HostReplyPolicy = NoHostReplies> {
 }
 
 impl<P: HostReplyPolicy> RawInputFramer<P> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn push(&mut self, data: &[u8]) -> Vec<RawInputEvent> {
         self.push_framed(data)
             .into_iter()
@@ -320,7 +320,7 @@ impl<P: HostReplyPolicy> RawInputFramer<P> {
             .collect()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn flush_timeout(&mut self) -> Vec<RawInputEvent> {
         self.flush_timeout_framed()
             .into_iter()

@@ -109,7 +109,7 @@ impl App {
             .1
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn drain_all_internal_events(&mut self) -> bool {
         let mut changed = false;
         loop {
@@ -123,7 +123,7 @@ impl App {
         changed
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     fn drain_internal_events_up_to(&mut self, limit: usize) -> (bool, bool) {
         let mut had_event = false;
         let mut changed = false;
@@ -141,6 +141,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use shepr_mux::workspace::Workspace;
 
     #[test]

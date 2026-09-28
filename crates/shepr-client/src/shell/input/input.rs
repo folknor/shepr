@@ -126,9 +126,7 @@ impl ClientShellState {
 
     #[cfg(test)]
     pub(crate) fn handle_input_bytes(&mut self, data: &[u8]) -> ClientShellInput {
-        self.handle_raw_events(shepr_termio::input::raw_input::parse_raw_input_bytes_sync(
-            data,
-        ))
+        self.handle_raw_events(shepr_test_fixtures::parse_raw_input_bytes_sync(data))
     }
 
     #[cfg(test)]
@@ -186,10 +184,10 @@ impl ClientShellState {
         data: &[u8],
         geometry: shepr_termio::input::mouse::HostPixelExtent,
     ) -> ClientShellInput {
-        let Some((x, y)) = shepr_termio::input::mouse::parse_report(data) else {
+        let Some((x, y)) = shepr_test_fixtures::parse_sgr_mouse_report(data) else {
             return ClientShellInput::default();
         };
-        let mut events = shepr_termio::input::raw_input::parse_raw_input_bytes_sync(data);
+        let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(data);
         if events.len() != 1 {
             return ClientShellInput::default();
         }

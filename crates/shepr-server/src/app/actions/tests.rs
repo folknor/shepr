@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::*;
 use ratatui::layout::{Direction, Rect};
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_mux::workspace::Workspace;

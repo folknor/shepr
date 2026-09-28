@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[features]
-test-support = ["shepr-config/test-support"]
-
 [dependencies]
 base64 = { workspace = true }
 crossterm = { workspace = true }
@@ -32,12 +29,7 @@ shepr-termio = { path = "../shepr-termio" }
 shepr-vt = { path = "../shepr-vt" }
 
 [dev-dependencies]
-# Unit tests use these crates' test constructors; enabling them here lets
-# `cargo test -p shepr-client` build without workspace feature unification.
-shepr-config = { path = "../shepr-config", features = ["test-support"] }
-shepr-protocol = { path = "../shepr-protocol", features = ["test-support"] }
-shepr-remote = { path = "../shepr-remote", features = ["test-support"] }
-shepr-termio = { path = "../shepr-termio", features = ["test-support"] }
+shepr-test-fixtures = { path = "../shepr-test-fixtures" }
 shepr-test-support = { path = "../shepr-test-support" }
 # Inline TOML fixtures are parsed by the attach and sidebar unit tests.
 toml = { workspace = true }

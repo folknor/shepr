@@ -1,4 +1,5 @@
 use super::*;
+use shepr_test_fixtures::*;
 
 fn endpoint() -> ClientEndpointId {
     ClientEndpointId::Ssh(
@@ -40,7 +41,7 @@ fn test_snapshot(boot_id: &str, revision: u64) -> shepr_protocol::ClientShellSna
     shepr_protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
         revision: revision.into(),
-        resolved_config: shepr_protocol::codec::to_vec(
+        resolved_config: shepr_test_fixtures::encode_to_vec(
             &shepr_config::ValidatedConfig::test_default(),
         )
         .expect("test config encodes"),
@@ -391,7 +392,7 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
     let snapshot = shepr_protocol::ClientShellSnapshot {
         boot_id: "remote-boot".into(),
         revision: shepr_protocol::ProjectionRevision::new(2),
-        resolved_config: shepr_protocol::codec::to_vec(
+        resolved_config: shepr_test_fixtures::encode_to_vec(
             &shepr_config::ValidatedConfig::test_default(),
         )
         .expect("test config encodes"),

@@ -193,6 +193,7 @@ pub fn wait_for_server_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::AppPathsFixture as _;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::ffi::OsStr;
     use std::io::{BufRead, BufReader, Write};
@@ -269,7 +270,7 @@ mod tests {
     #[test]
     fn server_daemon_command_passes_current_dir_as_startup_cwd() {
         let expected = Path::new("/home/test");
-        let paths = shepr_config::AppPaths::default();
+        let paths = shepr_config::AppPaths::test_default();
         let command =
             build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"), Some(expected), &paths);
         let envs: Vec<_> = command.get_envs().collect();

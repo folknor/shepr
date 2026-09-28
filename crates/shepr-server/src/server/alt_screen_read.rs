@@ -516,6 +516,7 @@ fn send_wheel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use shepr_api::schema::{ReadFormat, ReadSource};
 
     fn draw(lines: &[&str], enter_alt_screen: bool) -> Vec<u8> {

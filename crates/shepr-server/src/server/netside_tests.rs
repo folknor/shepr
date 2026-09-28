@@ -2,13 +2,20 @@ use std::sync::{Arc, Mutex};
 
 use shepr_api as api;
 use shepr_client::endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport, ProfileId,
-    SavedSshEndpoint,
+    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport,
+    PendingEndpointActivation, ProfileId, SavedSshEndpoint, SurfaceActivationProgress,
 };
 use shepr_protocol::ServerMessage;
-use shepr_server::server::ClientId;
-use shepr_server::server::client_transport::ServerEvent;
-use shepr_server::server::headless::tests as headless_tests;
+
+use crate::server::ClientId;
+use crate::server::client_transport::ServerEvent;
+use crate::server::headless::tests as headless_tests;
+use crate::test_support::ValidatedConfigFixture as _;
+
+/// The registry generation of the source (Local) connection.
+const SOURCE_GENERATION: u64 = 1;
+/// The registry generation of the target (remote) connection.
+const TARGET_GENERATION: u64 = 7;
 
 #[derive(Clone)]
 struct CapturingEndpointTransport(Arc<Mutex<Vec<shepr_protocol::ClientMessage>>>);
@@ -30,9 +37,30 @@ fn lifecycle_resize() -> shepr_protocol::ClientMessage {
     }
 }
 
+fn begin_activation(
+    shell: &shepr_client::ClientShellState,
+    endpoints: &mut EndpointRegistry,
+    target: &ClientEndpointId,
+    serial: u64,
+) -> PendingEndpointActivation {
+    PendingEndpointActivation::prepare(
+        shell,
+        endpoints,
+        target,
+        None,
+        lifecycle_resize(),
+        serial,
+        std::time::Instant::now(),
+    )
+    .and_then(|activation| activation.start(endpoints))
+    .expect("test precondition")
+}
+
 /// A real two-server/client lifecycle harness. Both source-off and target-on traverse the
 /// production HeadlessServer endpoint request path; the client test only routes its emitted wire
-/// messages and never authors an acknowledgement, snapshot, or surface response.
+/// messages and never authors an acknowledgement, snapshot, or surface response. Snapshots are
+/// installed for the registry generation of the connection they arrived on, as the client loop
+/// installs them.
 #[tokio::test]
 async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let mut source_server = headless_tests::test_headless_server();
@@ -85,33 +113,32 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     };
     let target_id = ClientEndpointId::Ssh(profile.id.clone());
     let mut shell = shepr_client::ClientShellState::new(
-        shepr_client::ClientShellConfig::from_config(&shepr_config::Config::default()),
+        shepr_client::ClientShellConfig::from_validated_config(
+            &shepr_config::ValidatedConfig::test_default(),
+        ),
     );
     shell.set_endpoint_catalog(&[profile]);
-    shell.set_snapshot(source_snapshot);
+    shell.set_endpoint_snapshot_for_generation(
+        &ClientEndpointId::Local,
+        SOURCE_GENERATION,
+        source_snapshot,
+    );
     shell.set_endpoint_status(&target_id, ClientEndpointStatus::Online);
-    shell.set_endpoint_snapshot(&target_id, remote_snapshot);
+    shell.set_endpoint_snapshot_for_generation(&target_id, TARGET_GENERATION, remote_snapshot);
 
     let source_sent = Arc::new(Mutex::new(Vec::new()));
     let target_sent = Arc::new(Mutex::new(Vec::new()));
-    let mut endpoints =
-        EndpointRegistry::new(CapturingEndpointTransport(Arc::clone(&source_sent)), 1);
+    let mut endpoints = EndpointRegistry::new(
+        CapturingEndpointTransport(Arc::clone(&source_sent)),
+        SOURCE_GENERATION,
+    );
     endpoints.insert(
         target_id.clone(),
         CapturingEndpointTransport(Arc::clone(&target_sent)),
-        7,
+        TARGET_GENERATION,
         false,
     );
-    let mut activation = shepr_client::endpoint::PendingEndpointActivation::begin(
-        &shell,
-        &mut endpoints,
-        &target_id,
-        None,
-        lifecycle_resize(),
-        41,
-        std::time::Instant::now(),
-    )
-    .expect("test precondition");
+    let mut activation = begin_activation(&shell, &mut endpoints, &target_id, 41);
 
     // Route the source-off-first client messages through a second real HeadlessServer. Its
     // typed response is the only source acknowledgement supplied to the activation state.
@@ -151,14 +178,17 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         }
     }
     let source_release_request_id = source_release_request_id.expect("client source-off request");
-    let source_release_data = loop {
+    let (source_release_boot_id, source_release_data) = loop {
         let message = headless_tests::read_server_message(
             source_control.recv().expect("source typed release ack"),
         );
         match message {
             ServerMessage::ClientShellEndpointResponseChunk {
-                request_id, data, ..
-            } if request_id == source_release_request_id => break data,
+                boot_id,
+                request_id,
+                data,
+                ..
+            } if request_id == source_release_request_id => break (boot_id, data),
             ServerMessage::EndpointSnapshot(_)
             | ServerMessage::MouseCapture { .. }
             | ServerMessage::ClientShellKeyboardReportAll { .. }
@@ -168,14 +198,15 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         }
     };
     assert_eq!(
-        activation.receive_response(
+        activation.receive_response_for_boot(
             &ClientEndpointId::Local,
-            1,
+            SOURCE_GENERATION,
+            &source_release_boot_id,
             &source_release_request_id,
             &source_release_data,
             &mut endpoints,
         ),
-        shepr_client::endpoint::SurfaceActivationProgress::Pending
+        SurfaceActivationProgress::Pending
     );
 
     headless_tests::dispatch_lifecycle_messages(
@@ -192,7 +223,10 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         Some(false)
     );
     let ServerMessage::ClientShellEndpointResponseChunk {
-        request_id, data, ..
+        boot_id,
+        request_id,
+        data,
+        ..
     } = headless_tests::read_server_message(
         target_control.recv().expect("target typed activation ack"),
     )
@@ -200,26 +234,31 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         panic!("expected target activation acknowledgement");
     };
     assert_eq!(
-        activation.receive_response(&target_id, 7, &request_id, &data, &mut endpoints),
-        shepr_client::endpoint::SurfaceActivationProgress::Pending
+        activation.receive_response_for_boot(
+            &target_id,
+            TARGET_GENERATION,
+            &boot_id,
+            &request_id,
+            &data,
+            &mut endpoints
+        ),
+        SurfaceActivationProgress::Pending
     );
 
     headless_tests::render_and_stream(&mut target_server);
     let coherent_snapshot = headless_tests::client_shell_snapshot(&target_control);
-    let snapshot_progress = activation.receive_snapshot(&target_id, 7, &coherent_snapshot);
-    shell.set_endpoint_snapshot(&target_id, coherent_snapshot);
-    assert_eq!(
-        snapshot_progress,
-        shepr_client::endpoint::SurfaceActivationProgress::Pending
-    );
+    let snapshot_progress =
+        activation.receive_snapshot(&target_id, TARGET_GENERATION, &coherent_snapshot);
+    shell.set_endpoint_snapshot_for_generation(&target_id, TARGET_GENERATION, coherent_snapshot);
+    assert_eq!(snapshot_progress, SurfaceActivationProgress::Pending);
     let ServerMessage::PaneSurface(coherent_surface) = headless_tests::read_server_message(
         target_render.recv().expect("target replacement surface"),
     ) else {
         panic!("expected target pane surface");
     };
     assert_eq!(
-        activation.receive_surface(&target_id, 7, coherent_surface),
-        shepr_client::endpoint::SurfaceActivationProgress::Ready
+        activation.receive_surface(&target_id, TARGET_GENERATION, coherent_surface),
+        SurfaceActivationProgress::Ready
     );
 
     assert!(matches!(
@@ -257,21 +296,31 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             request: sync_request.1,
         }
     ));
-    let (sync_request_id, sync_data) = loop {
+    let (sync_boot_id, sync_request_id, sync_data) = loop {
         let message = headless_tests::read_server_message(
             target_control.recv().expect("presentation sync ack"),
         );
         if let ServerMessage::ClientShellEndpointResponseChunk {
-            request_id, data, ..
+            boot_id,
+            request_id,
+            data,
+            ..
         } = message
             && request_id.ends_with(":presentation-sync")
         {
-            break (request_id, data);
+            break (boot_id, request_id, data);
         }
     };
     assert_eq!(
-        activation.receive_response(&target_id, 7, &sync_request_id, &sync_data, &mut endpoints,),
-        shepr_client::endpoint::SurfaceActivationProgress::Pending
+        activation.receive_response_for_boot(
+            &target_id,
+            TARGET_GENERATION,
+            &sync_boot_id,
+            &sync_request_id,
+            &sync_data,
+            &mut endpoints,
+        ),
+        SurfaceActivationProgress::Pending
     );
     headless_tests::render_and_stream(&mut target_server);
     let sync_snapshot = loop {
@@ -282,20 +331,21 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             break *snapshot;
         }
     };
-    let sync_progress = activation.receive_snapshot(&target_id, 7, &sync_snapshot);
-    shell.set_endpoint_snapshot_for_generation(&target_id, 7, Box::new(sync_snapshot));
-    assert_eq!(
-        sync_progress,
-        shepr_client::endpoint::SurfaceActivationProgress::Pending
+    let sync_progress = activation.receive_snapshot(&target_id, TARGET_GENERATION, &sync_snapshot);
+    shell.set_endpoint_snapshot_for_generation(
+        &target_id,
+        TARGET_GENERATION,
+        Box::new(sync_snapshot),
     );
+    assert_eq!(sync_progress, SurfaceActivationProgress::Pending);
     let ServerMessage::PaneSurface(sync_surface) = headless_tests::read_server_message(
         target_render.recv().expect("presentation sync surface"),
     ) else {
         panic!("expected synchronized target surface");
     };
     assert_eq!(
-        activation.receive_surface(&target_id, 7, sync_surface),
-        shepr_client::endpoint::SurfaceActivationProgress::Ready
+        activation.receive_surface(&target_id, TARGET_GENERATION, sync_surface),
+        SurfaceActivationProgress::Ready
     );
     assert_eq!(
         activation.complete(&mut shell, &mut endpoints),
@@ -328,8 +378,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             ServerMessage::PresentationReady(data) => {
                 assert_eq!(data, effects_token);
                 assert_eq!(
-                    activation.receive_presentation_effects_ready(&target_id, 7, &data),
-                    shepr_client::endpoint::SurfaceActivationProgress::Ready
+                    activation.receive_presentation_effects_ready(
+                        &target_id,
+                        TARGET_GENERATION,
+                        &data
+                    ),
+                    SurfaceActivationProgress::Ready
                 );
                 break;
             }
@@ -349,16 +403,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     assert!(shell.endpoint_is_active(&target_id));
 
     target_sent.lock().expect("test precondition").clear();
-    let mut returning = shepr_client::endpoint::PendingEndpointActivation::begin(
-        &shell,
-        &mut endpoints,
-        &ClientEndpointId::Local,
-        None,
-        lifecycle_resize(),
-        42,
-        std::time::Instant::now(),
-    )
-    .expect("test precondition");
+    let mut returning = begin_activation(&shell, &mut endpoints, &ClientEndpointId::Local, 42);
     headless_tests::dispatch_lifecycle_messages(
         &mut target_server,
         target_client_id,
@@ -366,11 +411,21 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     );
     loop {
         if let ServerMessage::ClientShellEndpointResponseChunk {
-            request_id, data, ..
+            boot_id,
+            request_id,
+            data,
+            ..
         } =
             headless_tests::read_server_message(target_control.recv().expect("test precondition"))
         {
-            returning.receive_response(&target_id, 7, &request_id, &data, &mut endpoints);
+            returning.receive_response_for_boot(
+                &target_id,
+                TARGET_GENERATION,
+                &boot_id,
+                &request_id,
+                &data,
+                &mut endpoints,
+            );
             break;
         }
     }

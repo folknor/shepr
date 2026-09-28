@@ -543,6 +543,7 @@ fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -580,11 +581,10 @@ mod tests {
             assert!(!missing.exists());
             for terminal in app.state.terminals.values_mut() {
                 terminal.cwd = missing.clone();
-                terminal.pending_agent_resume_plan =
-                    Some(shepr_agent::agent::resume::test_codex_plan(
-                        &terminal.id.to_string(),
-                        vec!["codex".into()],
-                    ));
+                terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
+                    &terminal.id.to_string(),
+                    vec!["codex".into()],
+                ));
             }
             let now = Instant::now();
             app.sync_pending_agent_resume_deadline(now);
@@ -659,7 +659,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0failing-session",
             Vec::new(),
         ));
@@ -711,7 +711,7 @@ mod tests {
             .terminals
             .get_mut(&pending_terminal)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0probe-session",
             long_running_test_argv(),
         ));
@@ -776,7 +776,7 @@ mod tests {
                     .expect("test precondition"),
             };
             terminal.persisted_agent_session = Some(session.clone());
-            terminal.pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
                 "resume-test",
                 long_running_test_argv(),
             ));
@@ -833,7 +833,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist");
-        terminal.pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+        terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0codex-session",
             marker_resume_test_argv(),
         ));
@@ -914,7 +914,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0codex-session",
             long_running_test_argv(),
         ));
@@ -956,7 +956,7 @@ mod tests {
         terminal
             .restore_managed_agent_for_resume("worker".into(), shepr_agent::detect::Agent::Codex);
         // A resume command that runs, but never becomes the agent.
-        terminal.pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+        terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0never-appears",
             long_running_test_argv(),
         ));
@@ -1030,7 +1030,7 @@ mod tests {
                 .terminals
                 .get_mut(terminal_id)
                 .expect("test terminal should exist")
-                .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+                .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
                 &format!("shepr:codex\0codex\0Id\0{terminal_id}"),
                 long_running_test_argv(),
             ));
@@ -1102,7 +1102,7 @@ mod tests {
             .terminals
             .get_mut(&inactive_terminal)
             .expect("inactive tab terminal should exist")
-            .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0inactive-tab-session",
             long_running_test_argv(),
         ));
@@ -1164,7 +1164,7 @@ mod tests {
             .terminals
             .get_mut(&hidden_terminal)
             .expect("hidden zoom pane terminal should exist")
-            .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0zoom-hidden-session",
             long_running_test_argv(),
         ));
@@ -1223,7 +1223,7 @@ mod tests {
             .terminals
             .get_mut(&previous_terminal)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0codex-session",
             long_running_test_argv(),
         ));
@@ -1285,7 +1285,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0codex-session",
             long_running_test_argv(),
         ));

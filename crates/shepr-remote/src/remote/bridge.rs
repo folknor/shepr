@@ -4,8 +4,6 @@ use super::process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho};
 use interprocess::TryClone as _;
 use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
-#[cfg(any(test, feature = "test-support"))]
-use interprocess::local_socket::traits::Stream as _;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -253,39 +251,90 @@ impl BridgeUploadStop {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bridge_upload_cancellation_for_test(
-    stream: shepr_platform::ipc::LocalStream,
-    mut writer: impl io::Write + Send + 'static,
-) -> impl FnOnce() {
-    stream
-        .set_nonblocking(true)
-        .expect("test stream supports nonblocking mode");
-    let stop =
-        Arc::new(BridgeUploadStop::new().expect("test bridge upload stop creation succeeds"));
-    let worker_stop = Arc::clone(&stop);
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
-    let worker = thread::spawn(move || {
-        let closed = AtomicBool::new(false);
-        let result = copy_local_stream_to_writer(
-            stream,
-            &mut writer,
-            &worker_stop,
-            &AtomicBool::new(false),
-            &closed,
-        );
-        done_tx
-            .send((result, closed.load(Ordering::Acquire)))
-            .expect("test done channel is open");
-    });
-    move || {
-        stop.cancel();
-        let (result, closed) = done_rx
-            .recv_timeout(Duration::from_secs(3))
-            .expect("test worker reports completion within timeout");
-        worker.join().expect("test worker thread does not panic");
-        result.expect("upload copy completes without error");
-        assert!(!closed, "upload cancellation must not report peer EOF");
+/// The upload half of a bridge connection: copies what the local client
+/// writes to its socket into `writer` (the ssh child's stdin) on a thread of
+/// its own, until the upload is cancelled, the bridge stops, or the client
+/// closes its end. Cancelling never closes the socket, so the download half
+/// keeps delivering what the remote end still sends.
+pub struct BridgeUpload {
+    stop: Arc<BridgeUploadStop>,
+    failed: Arc<AtomicBool>,
+    client_closed: Arc<AtomicBool>,
+    worker: JoinHandle<io::Result<u64>>,
+}
+
+/// How an upload ended: the copy's result and whether the local client closed
+/// its end.
+pub struct BridgeUploadEnd {
+    pub result: io::Result<u64>,
+    pub client_closed: bool,
+}
+
+impl BridgeUpload {
+    pub fn spawn(
+        stream: shepr_platform::ipc::LocalStream,
+        mut writer: impl io::Write + Send + 'static,
+        bridge_stop: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
+        let stop = Arc::new(BridgeUploadStop::new()?);
+        let failed = Arc::new(AtomicBool::new(false));
+        let client_closed = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let stop = Arc::clone(&stop);
+            let failed = Arc::clone(&failed);
+            let client_closed = Arc::clone(&client_closed);
+            thread::spawn(move || {
+                let result = copy_local_stream_to_writer(
+                    stream,
+                    &mut writer,
+                    &stop,
+                    &bridge_stop,
+                    &client_closed,
+                );
+                failed.store(result.is_err(), Ordering::Release);
+                result
+            })
+        };
+        Ok(Self {
+            stop,
+            failed,
+            client_closed,
+            worker,
+        })
+    }
+
+    /// Stop copying. Bytes already read are still written.
+    pub fn cancel(&self) {
+        self.stop.cancel();
+    }
+
+    pub(super) fn stop_handle(&self) -> Arc<BridgeUploadStop> {
+        Arc::clone(&self.stop)
+    }
+
+    /// The copy failed; set once it has ended.
+    pub fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+
+    pub fn client_closed(&self) -> bool {
+        self.client_closed.load(Ordering::Acquire)
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.worker.is_finished()
+    }
+
+    /// Wait for the copy to end.
+    pub fn join(self) -> io::Result<BridgeUploadEnd> {
+        let result = self
+            .worker
+            .join()
+            .map_err(|_| io::Error::other("remote bridge upload worker panicked"))?;
+        Ok(BridgeUploadEnd {
+            result,
+            client_closed: self.client_closed.load(Ordering::Acquire),
+        })
     }
 }
 
@@ -297,7 +346,6 @@ pub(super) fn bridge_connection(
     noninteractive: bool,
     bridge_stop: &Arc<AtomicBool>,
 ) -> io::Result<()> {
-    let upload_stop = Arc::new(BridgeUploadStop::new()?);
     let mut command = Command::new("ssh");
     apply_managed_ssh_options(&mut command, ssh_options);
     if noninteractive {
@@ -318,7 +366,7 @@ pub(super) fn bridge_connection(
     let mut child = command
         .spawn()
         .map_err(|err| io::Error::new(err.kind(), format!("failed to start ssh bridge: {err}")))?;
-    let mut child_stdin = match child.stdin.take() {
+    let child_stdin = match child.stdin.take() {
         Some(stdin) => stdin,
         None => return terminate_bridge_child(child, "ssh bridge stdin missing"),
     };
@@ -354,24 +402,16 @@ pub(super) fn bridge_connection(
     let mut child_to_stream = stream;
 
     let connection_stop = Arc::new(AtomicBool::new(false));
-    let upload_failed = Arc::new(AtomicBool::new(false));
     let download_done = Arc::new(AtomicBool::new(false));
-    let client_closed = Arc::new(AtomicBool::new(false));
-    let upload_cancel = Arc::clone(&upload_stop);
-    let upload_bridge_stop = Arc::clone(bridge_stop);
-    let upload_failed_worker = Arc::clone(&upload_failed);
-    let upload_client_closed = Arc::clone(&client_closed);
-    let upload = thread::spawn(move || {
-        let result = copy_local_stream_to_writer(
-            stream_to_child,
-            &mut child_stdin,
-            &upload_cancel,
-            &upload_bridge_stop,
-            &upload_client_closed,
-        );
-        upload_failed_worker.store(result.is_err(), Ordering::Release);
-        result
-    });
+    let upload = match BridgeUpload::spawn(stream_to_child, child_stdin, Arc::clone(bridge_stop)) {
+        Ok(upload) => upload,
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
+    };
+    let upload_stop = upload.stop_handle();
     let download_stop = Arc::clone(&connection_stop);
     let download_bridge_stop = Arc::clone(bridge_stop);
     let download_done_worker = Arc::clone(&download_done);
@@ -413,10 +453,7 @@ pub(super) fn bridge_connection(
             let _ = child.kill();
             break (child.wait(), false);
         }
-        if client_closed.load(Ordering::Acquire)
-            || upload_failed.load(Ordering::Acquire)
-            || download_done.load(Ordering::Acquire)
-        {
+        if upload.client_closed() || upload.failed() || download_done.load(Ordering::Acquire) {
             upload_stop.cancel();
             let stopped_at = stopped_at.get_or_insert_with(Instant::now);
             if stopped_at.elapsed() >= Duration::from_millis(250) {
@@ -431,9 +468,10 @@ pub(super) fn bridge_connection(
     if !child_exited {
         connection_stop.store(true, Ordering::Release);
     }
-    let upload_result = upload
-        .join()
-        .map_err(|_| io::Error::other("remote bridge upload worker panicked"))?;
+    let BridgeUploadEnd {
+        result: upload_result,
+        client_closed,
+    } = upload.join()?;
     let download_result = download
         .join()
         .map_err(|_| io::Error::other("remote bridge download worker panicked"))?;
@@ -446,7 +484,6 @@ pub(super) fn bridge_connection(
     let status = status_result?;
 
     let stopping = bridge_stop.load(Ordering::Acquire);
-    let client_closed = client_closed.load(Ordering::Acquire);
     if child_exited && !status.success() && !stopping && !client_closed {
         return Err(ssh_bridge_exit_error(status, &stderr));
     }

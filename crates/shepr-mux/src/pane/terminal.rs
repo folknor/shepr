@@ -170,7 +170,7 @@ pub struct InputState {
 #[cfg(test)]
 impl InputState {
     pub fn mouse_reporting_enabled(self) -> bool {
-        self.mouse_protocol_mode.reporting_enabled()
+        self.mouse_protocol_mode != shepr_termio::input::MouseProtocolMode::None
     }
 
     pub fn plain_page_keys_use_host_scrollback(self) -> bool {
@@ -210,7 +210,8 @@ pub(crate) struct GhosttyPaneTerminal {
 }
 
 pub(crate) struct GhosttyPaneCore {
-    #[cfg(any(test, feature = "test-api"))]
+    /// Runs inside the next dirty-patch collection; see
+    /// `PaneRuntime::on_next_dirty_collection`.
     pub dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
     pub terminal: shepr_vt::Terminal,
     synchronized_output_epoch: u64,
@@ -234,6 +235,12 @@ pub(crate) struct PaneTerminal {
 impl PaneTerminal {
     pub fn new(ghostty: GhosttyPaneTerminal) -> Self {
         Self { ghostty }
+    }
+
+    pub(crate) fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.ghostty.core) {
+            core.dirty_collection_hook = Some(hook);
+        }
     }
 
     /// Whether a panic while holding the core lock has broken the core. A

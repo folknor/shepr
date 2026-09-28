@@ -402,24 +402,6 @@ fn exit_status_from_waitid(
     Some(std::process::ExitStatus::from_raw(raw))
 }
 
-/// Signal processes by bare pid. Test-only: production code signals through
-/// `ProcessHandle`, which cannot hit a reused pid.
-#[cfg(any(test, feature = "test-support"))]
-pub fn signal_processes(pids: &[u32], signal: Signal) {
-    for &pid in pids {
-        let Ok(pid) = i32::try_from(pid) else {
-            continue;
-        };
-        if pid <= 0 {
-            continue;
-        }
-        // SAFETY: kill(2) touches no memory of this process.
-        unsafe {
-            libc::kill(pid, signal_number(signal));
-        }
-    }
-}
-
 #[cfg(test)]
 pub(super) fn process_exists(pid: u32) -> bool {
     if pid == 0 {

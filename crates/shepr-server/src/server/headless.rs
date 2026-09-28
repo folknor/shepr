@@ -49,7 +49,7 @@ use crate::server::pane_input::{
 use crate::server::socket_paths::{client_socket_path, prepare_socket_path};
 use shepr_api::{self, RenderDemand};
 use shepr_mux::events::AppEvent;
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 use shepr_platform::ipc::bind_local_listener;
 use shepr_platform::ipc::{
     LocalListener, SocketFileIdentity, remove_socket_file_if_owned, socket_file_identity,
@@ -70,11 +70,11 @@ use api_dispatcher::AltScreenReadConflict;
 pub use bootstrap::run_server;
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 use crate::server::client_transport::ClientWriter;
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 use shepr_protocol::MAX_FRAME_SIZE;
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 use shepr_protocol::RenderEncoding;
 #[cfg(test)]
 use std::fs;
@@ -899,7 +899,7 @@ impl HeadlessServer {
     /// available from here. The scan compares borrowed strings; it used to
     /// allocate a `to_string()` per terminal on every attach keystroke, mouse
     /// event and render.
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&shepr_protocol::TerminalId> {
         self.app
             .state
@@ -908,7 +908,7 @@ impl HeadlessServer {
             .find(|id| id.as_str() == terminal_id)
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     fn runtime_for_terminal_id_string(
         &self,
         terminal_id: &str,
@@ -2218,5 +2218,5 @@ fn bind_owner_only_listener(path: &Path) -> io::Result<LocalListener> {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(any(test, feature = "test-api"))]
-pub mod tests;
+#[cfg(test)]
+pub(crate) mod tests;

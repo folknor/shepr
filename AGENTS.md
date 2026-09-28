@@ -59,8 +59,13 @@ not worth it for agent and shell panes. Do not file these as defects.
 
 The root `shepr` package is the binary. Extracted libraries live under
 `crates/`. Dependencies follow the documented bottom-up layering: lower
-crates never depend on higher ones. Shared test isolation lives in
-`shepr-test-support`, used as a dev-dependency or behind a test API feature.
+crates never depend on higher ones. Test code shared across crates lives in
+two dev-only crates, `shepr-test-support` (isolation) and
+`shepr-test-fixtures` (fixtures and doubles built on the other crates'
+public API); `brokkr.toml` forbids any normal or build edge to either. No
+production crate has a test feature: where a double must reach inside a
+production type, the production crate offers a seam (a trait or a public
+constructor) instead.
 
 The libraries, from lower layers to higher layers:
 
@@ -78,6 +83,9 @@ The libraries, from lower layers to higher layers:
 - `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
 - `shepr-server`: application state, UI and serving.
 - `shepr-client`: endpoint management and TUI presentation.
+
+`shepr-test-fixtures` (dev-only) sits above config, protocol, pty and termio,
+so only crates above those can take it.
 
 ## Build and test
 

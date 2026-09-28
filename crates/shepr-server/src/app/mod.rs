@@ -8,7 +8,7 @@ mod agent_resume;
 mod agents;
 pub use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
 pub(crate) mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
@@ -40,7 +40,7 @@ use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
 use tracing::info;
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 use shepr_config::Config;
 use shepr_mux::events::AppEvent;
 
@@ -51,14 +51,14 @@ pub use state::{AppState, Mode, ViewState};
 pub(crate) enum AppPolicy {
     Production,
     Suspended,
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     Test,
 }
 
 impl AppPolicy {
     pub(crate) const PRODUCTION: Self = Self::Production;
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) const TEST: Self = Self::Test;
 
     pub(crate) fn persists_session(self) -> bool {
@@ -108,13 +108,14 @@ pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 
 impl App {
     /// Test constructor: the app's files live in a fresh scratch directory.
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn new(
         config: &Config,
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         event_hub: shepr_api::EventHub,
     ) -> Self {
+        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
         let scratch = crate::test_support::ScratchDir::new("app");
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
@@ -332,7 +333,7 @@ impl App {
     /// registry production uses, keyed by the pane's terminal id. Panics when
     /// the pane is not in any workspace, so a test cannot silently install a
     /// runtime nothing will ever look up.
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn insert_test_runtime(
         &mut self,
         pane_id: shepr_core::layout::PaneId,
@@ -349,7 +350,7 @@ impl App {
     }
 
     /// The live runtime of `pane_id`, looked up the way production does.
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn test_runtime(
         &self,
         pane_id: shepr_core::layout::PaneId,
@@ -396,6 +397,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::test_support::IsolatedEnv;
+    use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
@@ -588,7 +590,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(
             config
-                .resolve_palette()
+                .resolve_palette_with_ui_accent(false)
                 .expect("valid default theme")
                 .accent,
             theme_accent

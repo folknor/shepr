@@ -81,7 +81,7 @@ impl TerminalState {
         self.revision = self.revision.saturating_add(1);
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn set_detected_state(
         &mut self,
         agent: Option<Agent>,
@@ -105,7 +105,7 @@ impl TerminalState {
         )
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn set_detected_state_with_visible_blocker(
         &mut self,
         agent: Option<Agent>,

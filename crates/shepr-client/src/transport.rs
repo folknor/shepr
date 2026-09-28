@@ -191,7 +191,7 @@ pub(super) fn write_to_server(
 mod tests {
     use super::*;
     use crate::endpoint::EndpointTransport as _;
-    use interprocess::local_socket::traits::Listener as _;
+    use interprocess::local_socket::traits::{Listener as _, Stream as _};
     use std::io::{Read as _, Write as _};
     use std::time::Instant;
 
@@ -256,10 +256,33 @@ mod tests {
             }
         }
         let (forwarded_tx, forwarded_rx) = std::sync::mpsc::channel();
-        let cancel = shepr_remote::bridge_upload_cancellation_for_test(
-            bridge.try_clone().expect("test precondition"),
+        let upload_stream = bridge.try_clone().expect("test precondition");
+        upload_stream
+            .set_nonblocking(true)
+            .expect("test stream supports nonblocking mode");
+        let upload = shepr_remote::BridgeUpload::spawn(
+            upload_stream,
             ForwardedInput(forwarded_tx),
-        );
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .expect("test bridge upload starts");
+        let cancel = move || {
+            upload.cancel();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !upload.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "upload worker completes within timeout"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let end = upload.join().expect("upload worker does not panic");
+            end.result.expect("upload copy completes without error");
+            assert!(
+                !end.client_closed,
+                "upload cancellation must not report peer EOF"
+            );
+        };
         let message = ClientMessage::ClientShellFocus { focused: false };
         let mut expected = Vec::new();
         shepr_protocol::write_message(&mut expected, &message).expect("test precondition");

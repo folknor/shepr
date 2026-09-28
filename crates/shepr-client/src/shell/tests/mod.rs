@@ -5,13 +5,14 @@ use shepr_protocol::{
     ClientShellAgent, ClientShellPane, ClientShellTab, PaneSurfacePane, PaneSurfaceSplit,
     PaneSurfaceSplitDirection, SurfaceRect,
 };
+use shepr_test_fixtures::*;
 mod text_editing;
 
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),
         revision: shepr_protocol::ProjectionRevision::new(1),
-        resolved_config: shepr_protocol::codec::to_vec(
+        resolved_config: shepr_test_fixtures::encode_to_vec(
             &shepr_config::ValidatedConfig::test_default(),
         )
         .expect("test config encodes"),

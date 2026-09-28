@@ -467,11 +467,7 @@ impl HistoryCarry {
 
     /// Keeps a restored pane's saved history for later saves until the pane
     /// has a runtime of its own.
-    pub(super) fn carry_restored(
-        &self,
-        terminal: &TerminalId,
-        history: Option<&PaneHistorySnapshot>,
-    ) {
+    pub fn carry_restored(&self, terminal: &TerminalId, history: Option<&PaneHistorySnapshot>) {
         if let Some(history) = history {
             self.lock().insert(
                 terminal.clone(),
@@ -481,15 +477,6 @@ impl HistoryCarry {
                 },
             );
         }
-    }
-
-    #[cfg(any(test, feature = "test-api"))]
-    pub fn carry_restored_for_test(
-        &self,
-        terminal: &TerminalId,
-        history: Option<&PaneHistorySnapshot>,
-    ) {
-        self.carry_restored(terminal, history);
     }
 
     /// The save-thread half of a live pane's history: records a successful
@@ -579,7 +566,7 @@ impl PendingHistory {
 
 /// Both halves of a history capture in one call. Saves split them across the
 /// event loop and the save thread instead.
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],

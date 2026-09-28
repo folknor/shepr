@@ -413,6 +413,7 @@ fn validated_saved_ssh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::AppPathsFixture as _;
 
     #[test]
     fn only_typed_runtime_directory_policy_errors_are_launch_fatal() {
@@ -452,7 +453,7 @@ mod tests {
             manage_ssh_config: false,
         };
         let connector = SavedSshConnector::new(
-            &shepr_config::AppPaths::default(),
+            &shepr_config::AppPaths::test_default(),
             &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
             &SshTarget::parse("build").expect("test precondition"),
             "bad session/name",

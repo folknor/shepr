@@ -21,7 +21,6 @@ mod aggregate;
 mod geometry;
 mod tab;
 
-#[cfg(any(test, feature = "test-api"))]
 pub use self::geometry::apply_pane_chrome;
 pub use self::tab::{NewPane, Tab, TabPane};
 pub use self::{
@@ -224,7 +223,7 @@ impl Workspace {
         &mut self.tabs
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn clear_tabs_for_test(&mut self) {
         self.tabs.clear();
     }
@@ -828,7 +827,7 @@ impl Workspace {
         self.tabs.get(tab_idx).map(|tab| tab.number)
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn public_tab_number_for_pane(&self, pane_id: PaneId) -> Option<usize> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         self.public_tab_number(tab_idx)
@@ -838,7 +837,7 @@ impl Workspace {
         self.custom_name = Some(name);
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn resolved_identity_cwd(&self) -> Option<PathBuf> {
         Some(self.identity_cwd.clone())
     }
@@ -984,13 +983,13 @@ impl Workspace {
         })
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval> {
         let plan = self.prepare_pane_removal(pane_id)?;
         self.remove_pane(&plan)
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     fn register_new_pane(&mut self, pane_id: PaneId) {
         self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
     }
@@ -1040,7 +1039,7 @@ pub struct TakenPane {
     pub workspace_empty: bool,
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl Workspace {
     pub fn test_new(name: &str) -> Self {
         let identity_cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());

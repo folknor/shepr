@@ -62,6 +62,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::*;
     use shepr_api::schema::{EmptyParams, Method, ResponseResult, SuccessResponse};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
@@ -90,7 +91,7 @@ mod tests {
             method: Method::SessionSnapshot(EmptyParams::default()),
         });
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::SessionSnapshot { snapshot } = success.result else {
             panic!("expected session snapshot response");
         };

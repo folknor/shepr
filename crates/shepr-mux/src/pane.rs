@@ -11,8 +11,8 @@ mod teardown;
 mod terminal;
 
 pub use launch::{MANAGED_AGENT_RESUME_TIMEOUT, PaneLaunchEnv, PaneShellConfig};
-pub use runtime::PaneRuntime;
 pub use runtime::WheelRouting;
+pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};
 pub use runtime_registry::PaneRuntimeRegistry;
 pub use state::PaneState;
 pub use teardown::wait_for_pane_session_teardowns;

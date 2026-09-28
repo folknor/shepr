@@ -442,6 +442,7 @@ fn apply_client_pane_input_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
 
     #[tokio::test]
     async fn a_full_input_queue_reports_every_dropped_event_without_aborting_the_batch() {

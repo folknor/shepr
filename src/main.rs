@@ -14,8 +14,6 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
 mod autodetect;
 mod cli;
 #[cfg(test)]
-mod netside_tests;
-#[cfg(test)]
 mod test_support;
 
 /// Whether this launch is inside a shepr pane that forbids nesting. `SHEPR_ENV`
@@ -258,6 +256,7 @@ fn load_validated_config_or_exit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::ValidatedConfigFixture as _;
 
     #[test]
     fn default_config_lists_ui_accent_before_nested_tables() {

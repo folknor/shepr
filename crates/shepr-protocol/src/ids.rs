@@ -179,7 +179,9 @@ impl std::ops::Deref for PublicTabId {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+/// Text that does not parse as a public tab id is kept verbatim, with no
+/// workspace and number 0: an id no server issues, which client tests use as
+/// an opaque label. Deserializing refuses such text.
 impl From<&str> for PublicTabId {
     fn from(value: &str) -> Self {
         value.parse().unwrap_or_else(|_| Self {
@@ -190,7 +192,6 @@ impl From<&str> for PublicTabId {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 impl From<String> for PublicTabId {
     fn from(value: String) -> Self {
         value.as_str().into()
@@ -288,7 +289,9 @@ impl std::ops::Deref for PublicPaneId {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+/// Text that does not parse as a public pane id is kept verbatim, with no
+/// workspace and number 0: an id no server issues, which client tests use as
+/// an opaque label. Deserializing refuses such text.
 impl From<&str> for PublicPaneId {
     fn from(value: &str) -> Self {
         value.parse().unwrap_or_else(|_| Self {
@@ -299,7 +302,6 @@ impl From<&str> for PublicPaneId {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 impl From<String> for PublicPaneId {
     fn from(value: String) -> Self {
         value.as_str().into()

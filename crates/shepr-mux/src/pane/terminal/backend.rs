@@ -12,7 +12,6 @@ impl GhosttyPaneTerminal {
         let initial_default_background = Some(initial_colors.background);
         Self {
             core: Mutex::new(GhosttyPaneCore {
-                #[cfg(any(test, feature = "test-api"))]
                 dirty_collection_hook: None,
                 terminal,
                 synchronized_output_epoch: 0,
@@ -999,7 +998,6 @@ impl GhosttyPaneTerminal {
                 if core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT) {
                     return TerminalDirtyPatchOutcome::Fallback;
                 }
-                #[cfg(any(test, feature = "test-api"))]
                 if let Some(hook) = core.dirty_collection_hook.take() {
                     hook();
                 }

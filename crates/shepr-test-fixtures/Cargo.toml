@@ -1,0 +1,18 @@
+[package]
+name = "shepr-test-fixtures"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bytes = { workspace = true }
+serde = { workspace = true }
+shepr-config = { path = "../shepr-config" }
+shepr-core = { path = "../shepr-core" }
+shepr-protocol = { path = "../shepr-protocol" }
+shepr-pty = { path = "../shepr-pty" }
+shepr-termio = { path = "../shepr-termio" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

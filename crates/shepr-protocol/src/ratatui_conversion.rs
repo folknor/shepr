@@ -173,7 +173,7 @@ impl FrameData {
     /// This converts ratatui's internal cell representation into the
     /// wire-protocol cell format. The conversion is lossless for all
     /// commonly used cell attributes.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn from_ratatui_buffer(
         buffer: &ratatui::buffer::Buffer,
         cursor: Option<CursorState>,

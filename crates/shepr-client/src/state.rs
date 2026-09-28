@@ -67,6 +67,7 @@ pub(super) struct ClientState {
 impl ClientState {
     #[cfg(test)]
     pub(super) fn test_new() -> Self {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
         let config = shepr_config::ValidatedConfig::test_default();
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),

@@ -1,4 +1,6 @@
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
+use crate::test_support::{ValidatedConfigFixture as _, WorkspaceFixture as _};
+#[cfg(test)]
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use shepr_config::NewTerminalCwd;
@@ -234,7 +236,7 @@ impl AppState {
     }
 }
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 pub fn key_matches(
     key: &crossterm::event::KeyEvent,
     expected_code: KeyCode,
@@ -250,7 +252,7 @@ pub fn key_matches(
 // Test helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 impl AppState {
     /// Create an AppState for testing - no channels, no PTYs.
     pub fn test_new() -> Self {
@@ -427,6 +429,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::*;
     use crossterm::event::KeyEvent;
 
     #[test]

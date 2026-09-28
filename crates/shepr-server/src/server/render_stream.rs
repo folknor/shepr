@@ -538,9 +538,10 @@ mod tests {
     fn surface_delta_recompute_preserves_wire_baseline_but_epoch_reset_drops_it() {
         let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
         let mut surface = test_surface("popup");
-        surface.frame = FrameData::from_ratatui_buffer(
+        surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
             &ratatui::buffer::Buffer::empty(Rect::new(0, 0, 120, 40)),
             None,
+            &[],
         );
         let initial = state
             .prepare_pane_surface(surface.clone())
@@ -580,7 +581,7 @@ mod tests {
         let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
         let mut surface = test_surface("popup");
         let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 240, 100));
-        surface.frame = FrameData::from_ratatui_buffer(&buffer, None);
+        surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
         let initial = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");

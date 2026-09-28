@@ -16,7 +16,7 @@ mod writer;
 pub use self::io::{load, load_history};
 pub use self::lock::DataDirLease;
 pub use self::restore::restore;
-#[cfg(any(test, feature = "test-api"))]
+#[cfg(test)]
 pub use self::snapshot::capture_history;
 pub use self::snapshot::{
     DirectionSnapshot, HistoryCarry, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,

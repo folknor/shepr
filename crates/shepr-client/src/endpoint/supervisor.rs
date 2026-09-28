@@ -558,6 +558,7 @@ fn retry_delay(attempt: u32) -> Duration {
 mod tests {
     use super::*;
     use crate::endpoint::ProfileId;
+    use shepr_test_fixtures::*;
 
     fn profile() -> super::super::SavedSshEndpoint {
         super::super::SavedSshEndpoint {
@@ -574,7 +575,7 @@ mod tests {
         now: Instant,
     ) -> EndpointSupervisors {
         EndpointSupervisors::with_ssh_settings(
-            &shepr_config::AppPaths::default(),
+            &shepr_config::AppPaths::test_default(),
             profiles,
             shepr_remote::SavedSshSettings {
                 manage_ssh_config: false,

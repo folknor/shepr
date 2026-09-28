@@ -8,7 +8,7 @@ mod status;
 mod subscriptions;
 mod wait;
 
-pub use event_hub::EventHub;
+pub use event_hub::{EventHistoryError, EventHub};
 pub use server::ServerHandle;
 pub use server::{api_method_name, start_server_with_stop_control};
 pub use status::{RuntimeStatus, read_runtime_status_at};

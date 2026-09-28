@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::*;
 
 use bytes::Bytes;
 
@@ -337,7 +338,7 @@ fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::Pan
         respond_to,
     });
     let response: shepr_api::schema::SuccessResponse = serde_json::from_str(
-        &shepr_api::error::test_json(&response_rx.recv().expect("test precondition")),
+        &crate::test_support::test_json(&response_rx.recv().expect("test precondition")),
     )
     .expect("test precondition");
     let shepr_api::schema::ResponseResult::PaneList { panes } = response.result else {
@@ -481,7 +482,8 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
         .recv_timeout(Duration::from_millis(100))
         .expect("test precondition");
     let response: serde_json::Value =
-        serde_json::from_str(&shepr_api::error::test_json(&response)).expect("test precondition");
+        serde_json::from_str(&crate::test_support::test_json(&response))
+            .expect("test precondition");
 
     assert_eq!(response["result"]["type"], "workspace_list");
     assert!(server.app.event_rx.try_recv().is_err());
@@ -2696,7 +2698,7 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         let response = response_rx.recv().expect("navigation response");
         assert!(
             serde_json::from_str::<shepr_api::schema::SuccessResponse>(
-                &shepr_api::error::test_json(&response)
+                &crate::test_support::test_json(&response)
             )
             .is_ok(),
             "{response:?}"
@@ -3307,7 +3309,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         respond_to,
     });
     let response: shepr_api::schema::SuccessResponse = serde_json::from_str(
-        &shepr_api::error::test_json(&response_rx.recv().expect("agent focus response")),
+        &crate::test_support::test_json(&response_rx.recv().expect("agent focus response")),
     )
     .expect("test precondition");
     let shepr_api::schema::ResponseResult::AgentInfo { agent } = response.result else {
@@ -5585,7 +5587,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+        .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
         vec![crate::app::exiting_test_command().into()],
     ));
@@ -5640,7 +5642,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
+        .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
         vec![crate::app::exiting_test_command().into()],
     ));

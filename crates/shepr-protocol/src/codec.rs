@@ -158,7 +158,7 @@ impl de::Error for CodecError {
 // ---------------------------------------------------------------------------
 
 /// Encodes `value` into a new buffer.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, CodecError> {
     let mut encoder = Encoder { sink: Vec::new() };
     value.serialize(&mut encoder)?;

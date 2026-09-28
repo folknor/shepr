@@ -114,6 +114,7 @@ pub(super) fn store(path: &Path, preferences: &ClientChromePreferences) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_fixtures::*;
 
     #[test]
     fn endpoint_paths_are_stable_and_distinct() {

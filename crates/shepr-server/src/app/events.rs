@@ -11,7 +11,7 @@ impl App {
         self.handle_internal_event_with_updates_and_render(ev).1
     }
 
-    #[cfg(any(test, feature = "test-api"))]
+    #[cfg(test)]
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
         self.handle_internal_event_with_render_demand(ev) != shepr_api::RenderDemand::None
     }

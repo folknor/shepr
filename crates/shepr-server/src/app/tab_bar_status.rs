@@ -196,9 +196,11 @@ impl App {
         entries: &[TabBarRightEntryConfig],
         separator: &str,
     ) {
-        let entries = shepr_config::parse_validated_tab_bar_entries(entries)
-            .expect("test tab bar entries are valid");
-        self.configure_tab_bar_status(&entries, separator);
+        use crate::test_support::ValidatedConfigFixture as _;
+        let mut config = shepr_config::Config::default();
+        config.ui.tab_bar_right = entries.to_vec();
+        let config = shepr_config::ValidatedConfig::test_from_config(config, None);
+        self.configure_tab_bar_status(&config.ui().tab_bar_right, separator);
     }
 
     pub(crate) fn handle_tab_bar_status_tasks(&mut self, now: std::time::Instant) -> bool {

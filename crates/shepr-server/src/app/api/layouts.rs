@@ -630,6 +630,7 @@ fn validate_layout_node(
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
+    use crate::test_support::*;
     use shepr_api::schema::{ErrorResponse, ResponseResult, SuccessResponse};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
@@ -681,7 +682,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::LayoutExport { layout } = success.result else {
             panic!("expected layout export response");
         };
@@ -726,7 +727,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::LayoutSplitRatioSet { layout } = success.result else {
             panic!("expected layout split ratio set response");
         };
@@ -756,7 +757,7 @@ mod tests {
             },
         );
 
-        let error: ErrorResponse = shepr_api::error::test_error(&response);
+        let error: ErrorResponse = crate::test_support::test_error(&response);
         assert_eq!(error.error.code, "split_not_found");
     }
 
@@ -800,7 +801,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::LayoutApply { layout } = success.result else {
             panic!("expected layout apply response");
         };
@@ -884,7 +885,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = shepr_api::error::test_success(&response);
+        let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
         let created = &app.state.workspaces[0].tabs()[1];
         let created_terminal_id = created
@@ -934,7 +935,7 @@ mod tests {
             },
         );
 
-        let error: ErrorResponse = shepr_api::error::test_error(&response);
+        let error: ErrorResponse = crate::test_support::test_error(&response);
         assert_eq!(error.error.code, "invalid_layout");
         assert_eq!(app.state.workspaces[0].tabs().len(), original_tab_count);
     }
