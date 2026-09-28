@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 use shepr_protocol::KittyKeyboardFlags;
+use shepr_vt::ModifyOtherKeysLevel;
 
 /// A key as shepr understands it. A Linux host terminal reports keys as VT
 /// bytes and never a physical key identity, so a key is identified by these
@@ -107,23 +108,6 @@ impl From<KeyEvent> for TerminalKey {
     }
 }
 
-pub(crate) const KITTY_FLAG_REPORT_ALL_KEYS: u16 = KittyKeyboardFlags::REPORT_ALL_KEYS.bits();
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModifyOtherKeysMode {
-    Mode1,
-    Mode2,
-}
-
-impl ModifyOtherKeysMode {
-    pub fn set_sequence(self) -> &'static [u8] {
-        match self {
-            Self::Mode1 => b"\x1b[>4;1m",
-            Self::Mode2 => b"\x1b[>4;2m",
-        }
-    }
-}
-
 /// The modifyOtherKeys mode the host terminal wants, from `TMUX`,
 /// `TERM_PROGRAM` and `WEZTERM_PANE` read under the environment policy.
 ///
@@ -131,7 +115,7 @@ impl ModifyOtherKeysMode {
 ///
 /// A value the policy refuses (padded or non-UTF-8), naming the variable.
 pub fn host_modify_other_keys_mode()
--> Result<Option<ModifyOtherKeysMode>, shepr_core::env::EnvError> {
+-> Result<Option<ModifyOtherKeysLevel>, shepr_core::env::EnvError> {
     use shepr_core::env::{EnvVar, read_present, read_text};
     Ok(host_modify_other_keys_mode_for_env(
         read_present(EnvVar::Tmux)?,
@@ -144,13 +128,13 @@ fn host_modify_other_keys_mode_for_env(
     in_tmux: bool,
     term_program: Option<&str>,
     wezterm_pane: bool,
-) -> Option<ModifyOtherKeysMode> {
+) -> Option<ModifyOtherKeysLevel> {
     if in_tmux {
-        return Some(ModifyOtherKeysMode::Mode2);
+        return Some(ModifyOtherKeysLevel::All);
     }
 
     if wezterm_pane || term_program.is_some_and(|program| program.eq_ignore_ascii_case("wezterm")) {
-        return Some(ModifyOtherKeysMode::Mode1);
+        return Some(ModifyOtherKeysLevel::ExceptWellDefined);
     }
 
     None
@@ -171,12 +155,21 @@ impl KeyboardProtocol {
         }
     }
 
+    // `KittyKeyboardFlags` is a wire newtype, not a bitflags set; use its named bits.
     pub fn reports_event_types(self) -> bool {
-        matches!(self, Self::Kitty { flags } if flags & 0b0000_0010 != 0)
+        matches!(
+            self,
+            Self::Kitty { flags }
+                if flags & KittyKeyboardFlags::REPORT_EVENT_TYPES.bits() != 0
+        )
     }
 
     pub fn reports_all_keys(self) -> bool {
-        matches!(self, Self::Kitty { flags } if flags & KITTY_FLAG_REPORT_ALL_KEYS != 0)
+        matches!(
+            self,
+            Self::Kitty { flags }
+                if flags & KittyKeyboardFlags::REPORT_ALL_KEYS.bits() != 0
+        )
     }
 }
 
@@ -247,7 +240,7 @@ mod tests {
     fn modify_other_keys_mode_is_enabled_for_tmux() {
         assert_eq!(
             host_modify_other_keys_mode_for_env(true, Some("WezTerm"), true),
-            Some(ModifyOtherKeysMode::Mode2)
+            Some(ModifyOtherKeysLevel::All)
         );
     }
 
@@ -255,11 +248,11 @@ mod tests {
     fn modify_other_keys_mode_is_enabled_for_wezterm_hosts() {
         assert_eq!(
             host_modify_other_keys_mode_for_env(false, Some("WezTerm"), false),
-            Some(ModifyOtherKeysMode::Mode1)
+            Some(ModifyOtherKeysLevel::ExceptWellDefined)
         );
         assert_eq!(
             host_modify_other_keys_mode_for_env(false, None, true),
-            Some(ModifyOtherKeysMode::Mode1)
+            Some(ModifyOtherKeysLevel::ExceptWellDefined)
         );
     }
 

@@ -199,14 +199,16 @@ entries = [
         .expect("parse tab bar entries");
 
         assert_eq!(parsed.entries.len(), 5);
-        assert!(matches!(
-            &parsed.entries[4],
-            TabBarRightEntryConfig::Command {
-                interval_seconds: DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS,
-                timeout_seconds: DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
-                ..
-            }
-        ));
+        let TabBarRightEntryConfig::Command {
+            interval_seconds,
+            timeout_seconds,
+            ..
+        } = &parsed.entries[4]
+        else {
+            panic!("the fifth parsed tab bar entry is a command");
+        };
+        assert_eq!(*interval_seconds, DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS);
+        assert_eq!(*timeout_seconds, DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS);
     }
 
     #[test]

@@ -1175,6 +1175,26 @@ for each is the hunter's.
 
 ## HYGP-045 - Branches and checks that cannot run
 
+- `shepr-server` `app/actions/focus.rs::commit_workspace_creation` reads the
+  root pane through `workspace.tabs().first()`, an `Option` over a tab list
+  that can no longer be empty; a non-optional `first_tab()` removes it. A
+  `restore.rs` test and the adversarial-identity helper in `workspace.rs` index
+  `tabs[active_tab_index()]` where `active_tab()` would do.
+
+- `shepr-api`: the API log outcome is a string (`"ok"`, `"timeout"`,
+  `"error"`) rather than an enum; `EncodedApiResponse` carries both a string
+  conversion and `as_str`, and `encode_error_response_with_outcome` re-parses
+  the error code string it was handed.
+- `shepr-client` `loop_config.rs`: `ClientSettings::pixel_geometry_enabled` is
+  true in every launch mode since settings resolve in one step, so the field
+  is dead state.
+- `shepr-agent` integration: Cursor records its hooks file under `UpdatedHooks`
+  on install and `Hooks` on uninstall; the messages are right but the role is
+  spelled two ways for one file.
+- `shepr-remote` `machine/executable.rs`: the comment on `needs_shell_quoting`
+  describes a refactor boundary rather than the code; it goes when HYGP-060's
+  typed rejection reason lands.
+
 - `shepr-client/src/input_wire.rs` and `shepr-server/src/server/input_wire.rs`
   keep one-line forwarding helpers (`WireMouseKind`, `WireMouseButton`,
   `wire_modifiers`, `host_modifiers`) over the protocol wire-type methods the
@@ -1239,16 +1259,6 @@ the first two bullets.
   same hunter notes why it went unnoticed: `SplitBranch` lives in `geometry.rs`
   while `SplitRatio`/`SplitBorder`/`Node` live in `layout.rs`, and
   `shepr-protocol/src/geometry.rs` has a third set of conversions.
-- `shepr-termio` `input`: `model.rs` exports
-  `pub const KITTY_FLAG_REPORT_ALL_KEYS` (not re-exported from `input/mod.rs`)
-  while `encode.rs` declares four private `KITTY_FLAG_*` constants of its own
-  from the same bitflags type, including its own `KITTY_FLAG_DISAMBIGUATE` far
-  from the other three. Five copies of "read a bit out of `KittyKeyboardFlags`"
-  that the bitflags type already provides via `.contains()`, and
-  `KeyboardProtocol::reports_event_types` writes the bit as a raw literal
-  `0b0000_0010` while `reports_all_keys` in the adjacent method uses the named
-  constant. Delete all five and call `contains`; the raw literal then becomes
-  unrepresentable.
 - `shepr-vt`: `Setter::Vte(NamedPrivateMode)` and `ModeSpec::name` carry
   `#[allow(dead_code)]` with the justification "documents the table" and are read
   only by tests.
@@ -1328,27 +1338,6 @@ now carry the distinction to the refresh task as typed errors, so the
   production-visible namespace carrying an issue number nobody can look up in
   this repository.
 
-## HYGP-052 - `shepr-agent`'s `types.rs` and `actions.rs` are thirty-six structs and eighteen match arms serving one shape
-
-From `shepr-agent`, framed by the hunter as the aggregate of several smaller
-findings. `types.rs` holds thirty-six structs of two shapes:
-`<Agent>InstallPaths` (one to four `PathBuf` fields) and
-`<Agent>UninstallResult` (the same paths plus two or three `bool`s). They exist
-so `actions.rs` can format per-agent sentences - 700 lines of near-identical
-formatting across eighteen match arms, with the phrasing drifting between them
-("installed X integration to", "installed X integration hook to", "ensured X
-settings at", "ensured X config at").
-
-Both families collapse into one
-`InstallOutcome { artifacts: Vec<(Role, PathBuf)> }` /
-`UninstallOutcome { removed: Vec<(Role, PathBuf)>, updated: Vec<(Role, PathBuf)> }`,
-which the hunter says deletes `types.rs`, most of `actions.rs` and a third of
-`targets.rs`. The hunter's larger consolidation, which subsumes several
-duplication findings filed in the sibling document, is to make
-`INTEGRATION_SPECS` the only table: config file name, config path depth, hooks
-root, registration check strategy, directory key as an enum, asset, version,
-events and timeout on the row.
-
 ## HYGP-054 - `agent_name_from_known_package_path` hardcodes six npm package layouts
 
 From `shepr-agent`: `@earendil-works/pi-coding-agent`, `@oh-my-pi/...`,
@@ -1418,10 +1407,6 @@ with a bad version and the four checks collapse to zero.
   four `u16`s and a two-variant enum; owning them in `shepr-core` alongside
   `GridSize` would drop `ratatui` from the bottom four crates' dependency closure
   and remove a re-export the wire types currently share with the renderer.
-- `shepr-protocol`'s `serde_json` dev-dependency is used for one validation test
-  and one line in `wire_tests.rs`; running that test through
-  `codec::from_slice_exact` instead would let the dependency go and let
-  `brokkr.toml`'s dependency rules keep it out.
 
 ## HYGP-059 - Two id types of one shape, and two `blit` modules of two shapes
 
@@ -1442,7 +1427,7 @@ with a bad version and the four checks collapse to zero.
   pane-surface composition rather than blitting. Worth a rename
   (`compose_pane_surface`), free pre-1.0. Holdable only by review.
 
-## HYGP-060 - A duplicated startup sequence and a duplicated shell-word predicate in `shepr-remote`
+## HYGP-060 - A duplicated startup sequence and a doubled rejection check in `shepr-remote`
 
 - `host.rs::ensure_remote_server_running` (41 lines) is
   `is_server_listening` -> `spawn_server_daemon` -> `wait_for_server_socket`,
@@ -1453,21 +1438,11 @@ with a bad version and the four checks collapse to zero.
   `local_server::ensure_running(paths, ReadyTimeout, BuildCheck)` owns the
   sequence and both callers pick the policy explicitly. Not a rule, a shared
   function.
-- `launch.rs::shell_quote` and `executable.rs::has_only_shell_safe_characters`
-  contain the identical predicate
-  (`ch.is_ascii_alphanumeric() || matches!(ch, '@'|'%'|'_'|'+'|'='|':'|','|'.'|'/'|'-')`).
-  They agree today and serve different purposes (one decides whether to quote,
-  the other whether to reject), which is why the duplication was easy to
-  introduce and will be easy to let drift: `executable.rs` rejecting a character
-  `shell_quote` would have quoted safely is a silent discovery failure. Fix: one
-  `fn is_shell_plain_word(s: &str) -> bool`. Enforcement named: a test asserting
-  `shell_quote(s) == s` exactly when `has_only_shell_safe_characters(s)`, which
-  is writeable today and would pin the two together without merging them.
-- `RemoteExecutable::needs_shell_quoting` exists only to produce a diagnostic for
-  a path `parse` already rejected, re-running the same predicate from outside, so
-  the rejection reason is computed twice by two functions that must agree. Fix:
-  have `parse` return a typed rejection reason and delete
-  `needs_shell_quoting`.
+- `RemoteExecutable::needs_shell_quoting` exists only so
+  `remote/discovery.rs` can explain a path `parse` already rejected, re-running
+  the shared shell-word predicate from outside, so the rejection reason is
+  computed twice. Fix: have `parse` return a typed rejection reason, use it in
+  `discovery.rs`, and delete `needs_shell_quoting`.
 
 ## HYGP-061 - Vestigial section banners and a stray import in `shepr-server`
 

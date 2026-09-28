@@ -18,8 +18,6 @@ use super::{
     tab_bar::TabBarRightEntryConfig as ConfigTabBarEntry,
 };
 
-const KEY_BINDING_COUNT: usize = 51;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct WireConfig {
     theme: ThemeConfig,
@@ -230,6 +228,14 @@ macro_rules! key_binding_fields {
         }
     };
 }
+
+macro_rules! count_key_binding_fields {
+    ($($field:ident)*) => {
+        [$(stringify!($field)),*].len()
+    };
+}
+
+const KEY_BINDING_COUNT: usize = key_binding_fields!(count_key_binding_fields);
 
 impl WireKeysConfig {
     fn from_config(keys: &KeysConfig) -> Self {

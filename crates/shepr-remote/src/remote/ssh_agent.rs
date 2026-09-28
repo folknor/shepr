@@ -188,7 +188,45 @@ fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read};
-    use std::os::unix::net::UnixListener;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    /// Generous upper bound for the registration worker to reach the fake
+    /// API. The retry delay is capped at `MAX_RETRY_DELAY`, so a working
+    /// worker connects well inside it.
+    const ACCEPT_LIMIT: Duration = Duration::from_secs(30);
+
+    /// Accepts the next connection, failing the test if none arrives within
+    /// `ACCEPT_LIMIT`. `brokkr check` has no per-test timeout, so a bare
+    /// blocking `accept()` would turn a registration regression into a hung
+    /// test run. `poll` returns as soon as a peer connects, so the passing
+    /// case never waits on a fixed sleep or races a clock.
+    fn accept_within_limit(listener: &UnixListener) -> UnixStream {
+        let deadline = Instant::now() + ACCEPT_LIMIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "no connection within {ACCEPT_LIMIT:?}"
+            );
+            let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+            let mut descriptor = libc::pollfd {
+                fd: listener.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one pollfd that lives on this stack frame for the call;
+            // the fd stays open because `listener` is borrowed.
+            let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+            if ready > 0 {
+                return listener.accept().expect("test precondition").0;
+            }
+            if ready < 0 {
+                let error = io::Error::last_os_error();
+                assert_eq!(error.kind(), io::ErrorKind::Interrupted, "poll: {error}");
+            }
+        }
+    }
 
     #[test]
     fn retry_delay_grows_to_a_fixed_ceiling() {
@@ -209,7 +247,7 @@ mod tests {
         let listener = UnixListener::bind(&socket_path).expect("test precondition");
         let server = std::thread::spawn(move || {
             for expected in ["ping", "server.ssh_agent.register"] {
-                let (mut stream, _) = listener.accept().expect("test precondition");
+                let mut stream = accept_within_limit(&listener);
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .expect("test precondition");
@@ -251,7 +289,7 @@ mod tests {
         let socket_path = scratch.join("api.sock");
         let listener = UnixListener::bind(&socket_path).expect("test precondition");
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("test precondition");
+            let mut stream = accept_within_limit(&listener);
             let mut line = String::new();
             BufReader::new(&mut stream)
                 .read_line(&mut line)
@@ -271,7 +309,7 @@ mod tests {
             )
             .expect("test precondition");
 
-            let (mut stream, _) = listener.accept().expect("test precondition");
+            let mut stream = accept_within_limit(&listener);
             let mut line = String::new();
             BufReader::new(&mut stream)
                 .read_line(&mut line)
@@ -298,7 +336,6 @@ mod tests {
         let registration = Registration::start_at("/test/agent.sock".into(), socket_path.clone())
             .expect("missing API must not permanently disable registration");
         let listener = UnixListener::bind(&socket_path).expect("test precondition");
-        listener.set_nonblocking(true).expect("test precondition");
         for (attempt, expected) in [
             "ping",
             "server.ssh_agent.register",
@@ -308,20 +345,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        stream.set_nonblocking(false).expect("test precondition");
-                        break stream;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < deadline, "registration did not retry");
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("{error}"),
-                }
-            };
+            let mut stream = accept_within_limit(&listener);
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("test precondition");

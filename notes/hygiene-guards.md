@@ -227,12 +227,6 @@ Enforcement rules named: a gremlin-style text rule forbidding `temp_dir`
 outside `shepr-test-support` plus a documented exemption; a text rule against
 `/tmp` literals in `shepr-mux` and in `crates/*/src` generally.
 
-## HYGG-015 - `child_sees_resolved_shell_not_a_non_executable_shell_env` compares against the function under test
-
-`shepr-pty/src/command.rs`. The expected value is computed by
-`cmd.resolve_shell(...)`, which is the same function the test exercises, so only
-its `assert_ne` does any work.
-
 ## HYGG-016 - The login-shell tests never check the `-sh` argv0 that makes a shell a login shell
 
 `login_shell_execs_shell_env_without_arguments` in `shepr-pty`, and the
@@ -259,13 +253,6 @@ and `PANE_COLORTERM` directly instead of the hard-coded
 scrub list verbatim, so a key added to production is not tested. Enforcement
 named: export the list and iterate it.
 
-## HYGG-019 - The PTY actor's tests use `UnixStream` socket pairs, so PTY-specific behaviour is never exercised
-
-`shepr-pty`. EIO on slave close, POLLHUP semantics and TIOCSWINSZ are never
-reached. The tests accept `BrokenPipe | ConnectionReset | WriteZero`, but a real
-PTY master reports EIO. The hunter's fix: one end-to-end actor-on-`openpty`
-test would close the gap.
-
 ## HYGG-021 - Four small `shepr-platform` assertions that cannot fail, or that hide a failure
 
 **Decision (partial):** the `Path::exists` seal is adopted from broadarrow
@@ -289,17 +276,6 @@ dangle. Open: the first three bullets.
 
 Enforcement: review only, per the hunter.
 
-## HYGG-022 - `received_geometry_rejects_pixel_mouse_without_cells` runs under a format production never uses
-
-`shepr-protocol/src/geometry.rs`. The test exercises `TerminalGeometry`'s
-`try_from` guard through `serde_json::from_value`, but the type crosses the
-shepr codec in production. The guard is format-independent so the test is not
-wrong, but it proves the rejection for JSON only - and `serde_json` is a
-dev-dependency of `shepr-protocol` used for nothing else except one line in
-`wire_tests.rs`. Enforcement named: run it through `codec::from_slice_exact` and
-drop the dev-dependency, after which `brokkr.toml`'s dependency rules can keep
-it out.
-
 ## HYGG-023 - The only codec exercise of `ValidatedConfig` covers the empty case of every interesting field
 
 `codec::to_vec(&ValidatedConfig::test_default())` in `shepr-client`
@@ -316,33 +292,6 @@ Enforcement named: one test in `shepr-client` (or a maximal fixture in
 `shepr-test-support`) that round-trips a config exercising every `wire.rs`
 variant and asserts equality. The hunter calls this the single highest-value
 missing test in that scope, and the data half of HYGG-067.
-
-## HYGG-024 - `ServerAddress`'s test fixture violates the invariant its own type enforces
-
-`shepr-config/src/address.rs`: the `#[cfg(any(test, feature = "test-support"))]`
-`Default` builds `api_socket: "shepr.sock"`, `client_socket:
-"shepr-client.sock"` - relative paths, which `validate_paths` rejects and which
-`Deserialize` would refuse. Every test using `ServerAddress::default()` is
-therefore asserting against a value production cannot produce. Enforcement
-named: route the fixture through `ServerAddress::resolve_paths` with an absolute
-root, as `AppPaths::test_with_context` already does, or have `Default` call
-`validate_paths().expect(...)` so the fixture cannot drift.
-
-## HYGG-026 - A constant-pattern match that would silently become a catch-all on rename
-
-`shepr-config/src/tab_bar.rs::tab_bar_entries_parse_with_command_defaults`:
-
-```rust
-assert!(matches!(&parsed.entries[4], TabBarRightEntryConfig::Command {
-    interval_seconds: DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS,
-    timeout_seconds: DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS, .. }));
-```
-
-This works today because both names resolve to `const`s, so they are constant
-patterns. Rename either to lower case, or move it out of scope, and each becomes
-a fresh binding that matches anything - the assertion then passes for every
-value and rustc warns about nothing useful. Enforcement named: `assert_eq!` on
-the destructured fields instead, which cannot degrade.
 
 ## HYGG-027 - `every_minimum_agent_version_parses` asserts over a single hard-coded target
 
@@ -601,34 +550,6 @@ report a broken Grok install as Current with nothing noticing.
 Enforcement named: make the spec row carry a `RegistrationCheck` variant
 (`SelfRegistering | Json { file, root, depth } | Custom(fn)`) so the match is
 exhaustive over data rather than over a target list.
-
-## HYGG-065 - Sidebar and theme guards keyed on strings before the strings become enums
-
-`shepr-config/src/sidebar.rs::RawSidebarToken::parts` does
-`matches!(token.token.as_str(), "state_icon" | "git_status")` to reject styling
-rules on non-text tokens, *before* the string is parsed into an enum. Rename a
-token and rules silently become accepted on a token whose value is a glyph. It
-also conflates two namespaces: `git_status` does not exist as an agent token and
-`state_icon` exists in both. Fix named: move the check after parsing and match
-on the enum, so exhaustiveness holds it.
-
-`sidebar.rs::parse_sidebar_token`'s built-in tables (nine agent entries, five
-space entries) are slices, not matches. Add an `AgentSidebarToken` variant and
-`agent_token_name` fails to compile - good - but the parse table does not, so
-the new token silently becomes unparseable and is reported as "unknown sidebar
-token". Fix named: one table used by both directions, or a `const fn all()`-style
-enumeration with an exhaustive match.
-
-`theme_config.rs::CustomThemeColors::parse` - the `color!()` list is tied to
-`ParsedThemeColors` by a struct literal, so a field added to *both* is caught,
-but a field added only to `CustomThemeColors` compiles and is silently ignored.
-Fix named: generate both structs from one field list.
-
-A bare `16` with a named twin, in the same file:
-`RawSidebarToken::parts` has `if token.rules.len() > 16 { return Err("sidebar
-tokens may contain at most 16 rules") }` - the number appears twice on adjacent
-lines, in a file that already has two named `= 16` constants for neighbouring
-limits.
 
 ## HYGG-066 - `ConfigProvenance::from_config` drops provenance keys silently for any `skip_serializing_if` field
 
@@ -1003,13 +924,15 @@ agree today, but a single mismatch would silently mislabel every log line, every
 method, with nothing failing. The test named: serialize each `Method` variant and
 assert `json["method"] == traits().name`.
 
-## HYGG-099 - The one-tab workspace invariant is enforced by opt-in test calls and one `Deref` panic
+## HYGG-099 - Most workspace invariants are enforced only by opt-in test calls
 
-**Decision (partial):** `debug_assert!` is banned (a `disallowed-macros` seal
-adopted from broadarrow; `assert!` where a panic is the containment, typed
-handling otherwise), so the first enforcement option below, calling the checker
-`debug_assert`-style, is out. Open: a real `assert!` at mutation exits or the
-structural non-empty-vec answer the hunter prefers, and the `Deref` half.
+**Partly resolved:** the non-empty tab list and the in-range focused tab are now
+structural - a private `FocusedTabs` in `shepr-mux/src/workspace.rs` owns both,
+and the `Deref` impls and their `expect` are gone. `debug_assert!` is banned, so
+checking after every mutation means a real `assert!` or more structure. Open:
+the rest of what `assert_invariants_for_test` states (unique public tab and pane
+numbers, layout pane set equal to the pane records, focused pane in the layout,
+root pane present) still runs only where a test calls it.
 
 `shepr-mux/src/workspace.rs`. `Workspace::assert_invariants_for_test` (150
 lines, `#[cfg(any(test, feature = "test-api"))]`) is the real statement of the

@@ -5,7 +5,7 @@ use std::io;
 use std::time::Duration;
 
 /// Maximum time to wait for a freshly spawned server's client socket.
-const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Checks the local server, starts it when needed, then runs the client.
 ///
@@ -23,6 +23,7 @@ pub(crate) fn auto_detect_launch<T>(
     endpoint_catalog: shepr_remote::machine::EndpointCatalog,
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
+    server_ready_timeout: Duration,
     run_client: impl FnOnce(
         &shepr_config::ValidatedConfig,
         &shepr_config::AppPaths,
@@ -54,7 +55,7 @@ pub(crate) fn auto_detect_launch<T>(
             shepr_remote::local_server::spawn_server_daemon(paths).and_then(|_| {
                 shepr_remote::local_server::wait_for_server_socket(
                     &socket_path,
-                    SERVER_READY_TIMEOUT,
+                    server_ready_timeout,
                     paths,
                 )
             })

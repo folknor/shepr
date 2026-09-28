@@ -79,13 +79,7 @@ pub(super) fn setup_terminal_with_capabilities(
     };
 
     if let Some(mode) = modify_other_keys_mode {
-        let parameter = if mode.set_sequence().ends_with(b";1m") {
-            1
-        } else {
-            2
-        };
-        let level = shepr_vt::ModifyOtherKeysLevel::from_parameter(parameter);
-        host_modes.set_modify_other_keys(&mut io::stdout(), level)?;
+        host_modes.set_modify_other_keys(&mut io::stdout(), mode)?;
     }
 
     host_modes.disable_line_wrap(&mut io::stdout())?;
@@ -112,11 +106,9 @@ const HOST_KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
 
 fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
-    const QUERY: &[u8] = b"\x1b[?u\x1b[c";
-
     let mut buffered_input = Vec::new();
     if let Err(err) = io::stdout()
-        .write_all(QUERY)
+        .write_all(shepr_termio::host_term::modes::HOST_KEYBOARD_QUERY_SEQUENCE)
         .and_then(|()| io::stdout().flush())
     {
         tracing::debug!(%err, "host keyboard enhancement query unavailable");
@@ -175,9 +167,9 @@ fn host_escape_disambiguation_confirmed(
     responses: &shepr_termio::input::raw_input::HostKeyboardProbeResponses,
 ) -> bool {
     responses.primary_device_attributes
-        && responses
-            .flags
-            .is_some_and(|flags| flags & 0b0000_0001 != 0)
+        && responses.flags.is_some_and(|flags| {
+            flags & shepr_protocol::KittyKeyboardFlags::DISAMBIGUATE.bits() != 0
+        })
 }
 
 pub(super) fn write_host_color_scheme_report_mode(
@@ -195,7 +187,7 @@ pub(super) fn write_host_color_scheme_report_mode(
 
 pub(super) fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()> {
     // Restore a visible cursor and reset DECSCUSR back to the terminal default.
-    writer.write_all(b"\x1b[?25h\x1b[0 q")?;
+    writer.write_all(shepr_termio::host_term::modes::HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE)?;
     writer.flush()
 }
 
@@ -339,10 +331,6 @@ const RESTORE_BRACKETED_PASTE: u8 = 1 << 4;
 const RESTORE_LINE_WRAP: u8 = 1 << 5;
 const RESTORE_MOUSE_CAPTURE: u8 = 1 << 6;
 const RESTORE_KEYBOARD_MASK: u8 = RESTORE_KITTY_KEYBOARD_ENTRY | RESTORE_MODIFY_OTHER_KEYS;
-
-/// XTWINOPS: save and restore the icon and window title together.
-const PUSH_WINDOW_TITLE: &[u8] = b"\x1b[22;0t";
-const POP_WINDOW_TITLE: &[u8] = b"\x1b[23;0t";
 
 struct HostModesState {
     mouse: HostMouseMode,
@@ -611,7 +599,7 @@ impl HostModes {
         // put it back (XTWINOPS 22/23; terminals without a title stack ignore
         // both and keep the "shepr" reset instead).
         if !self.inner.title_stack_pushed.swap(true, Ordering::AcqRel) {
-            writer.write_all(PUSH_WINDOW_TITLE)?;
+            writer.write_all(shepr_termio::host_term::modes::HOST_WINDOW_TITLE_PUSH_SEQUENCE)?;
         }
         // Mark before writing so a partial write still gets a reset attempt.
         self.inner
@@ -636,17 +624,13 @@ impl HostModes {
         // may still be on the panicking thread's stack.
         let restore_state = self.inner.restore_state.swap(0, Ordering::AcqRel);
         let mut result = Ok(());
-        if restore_state & RESTORE_MODIFY_OTHER_KEYS != 0 {
-            let next = writer.write_all(b"\x1b[>4;0m");
-            if result.is_ok() {
-                result = next;
-            }
-        }
-        if restore_state & RESTORE_KITTY_KEYBOARD_ENTRY != 0 {
-            let next = writer.write_all(b"\x1b[<1u");
-            if result.is_ok() {
-                result = next;
-            }
+        let next = shepr_termio::host_term::modes::restore_host_keyboard_protocol(
+            writer,
+            restore_state & RESTORE_MODIFY_OTHER_KEYS != 0,
+            restore_state & RESTORE_KITTY_KEYBOARD_ENTRY != 0,
+        );
+        if result.is_ok() {
+            result = next;
         }
         if restore_state & RESTORE_COLOR_SCHEME_REPORTS != 0 {
             let next = write_host_color_scheme_report_mode(writer, false);
@@ -683,7 +667,8 @@ impl HostModes {
             result = next;
         }
         if self.inner.title_stack_pushed.swap(false, Ordering::AcqRel) {
-            let next = writer.write_all(POP_WINDOW_TITLE);
+            let next =
+                writer.write_all(shepr_termio::host_term::modes::HOST_WINDOW_TITLE_POP_SEQUENCE);
             if result.is_ok() {
                 result = next;
             }
@@ -721,8 +706,7 @@ fn set_mouse_capture_with_writer(
     if enabled {
         execute!(writer, EnableMouseCapture)?;
         if sgr_pixels {
-            writer.write_all(b"\x1b[?1016h")?;
-            writer.flush()?;
+            shepr_termio::host_term::modes::enable_host_sgr_pixel_mouse_reporting(writer)?;
         }
         Ok(())
     } else {
@@ -965,6 +949,86 @@ mod tests {
         output.clear();
         modes.restore(&mut output).expect("write to a Vec");
         assert_eq!(output, b"\x1b[<1u");
+    }
+
+    /// The bytes a shell client writes on setup and on restore (the panic hook
+    /// and `Drop` both restore through `HostModes::restore`).
+    #[test]
+    fn host_modes_setup_and_restore_bytes() {
+        for (level, set) in [
+            (shepr_vt::ModifyOtherKeysLevel::All, b"\x1b[>4;2m"),
+            (
+                shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined,
+                b"\x1b[>4;1m",
+            ),
+        ] {
+            let modes = HostModes::new(false, false, false);
+            let mut output = Vec::new();
+            modes
+                .set_keyboard_enhancement_flags(
+                    &mut output,
+                    shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
+                )
+                .expect("write to a Vec");
+            modes
+                .enable_bracketed_paste(&mut output)
+                .expect("write to a Vec");
+            modes
+                .enable_focus_change(&mut output)
+                .expect("write to a Vec");
+            modes
+                .enable_color_scheme_reports(&mut output)
+                .expect("write to a Vec");
+            modes
+                .set_modify_other_keys(&mut output, level)
+                .expect("write to a Vec");
+            modes
+                .disable_line_wrap(&mut output)
+                .expect("write to a Vec");
+            modes
+                .write_window_title(&mut output, Some("agent"))
+                .expect("write to a Vec");
+            let expected_setup = [
+                b"\x1b[>7u".as_slice(),
+                b"\x1b[?2004h",
+                b"\x1b[?1004h",
+                b"\x1b[?2031h",
+                set,
+                b"\x1b[?7l",
+                b"\x1b[22;0t",
+            ]
+            .concat();
+            assert!(output.starts_with(&expected_setup), "{output:?}");
+
+            // Mouse capture is enabled on stdout; mark it as the setup does.
+            modes.record_restore_flag(RESTORE_MOUSE_CAPTURE);
+            output.clear();
+            modes.restore(&mut output).expect("write to a Vec");
+            let expected_restore = [
+                b"\x1b[>4;0m\x1b[<1u".as_slice(),
+                b"\x1b[?2031l",
+                b"\x1b[?1004l",
+                b"\x1b[?2004l",
+                b"\x1b[?7h",
+                b"\x1b[?1006l\x1b[?1016l\x1b[?1015l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l",
+                b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+                b"\x1b]0;shepr\x07",
+                b"\x1b[23;0t",
+            ]
+            .concat();
+            assert_eq!(output, expected_restore);
+        }
+
+        let mut output = Vec::new();
+        write_terminal_restore_postlude(&mut output).expect("write to a Vec");
+        assert_eq!(output, b"\x1b[?25h\x1b[0 q");
+        output.clear();
+        set_mouse_capture_with_writer(&mut output, true, true).expect("write to a Vec");
+        assert!(output.ends_with(b"\x1b[?1016h"), "{output:?}");
+        assert_eq!(
+            shepr_termio::host_term::modes::HOST_KEYBOARD_QUERY_SEQUENCE,
+            b"\x1b[?u\x1b[c"
+        );
     }
 
     #[test]

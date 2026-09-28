@@ -343,7 +343,7 @@ fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
         crate::error::ApiErrorCode::EndpointBusy,
         format!("API server is at its limit of {MAX_ACTIVE_CONNECTIONS} active connections"),
     );
-    if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response) {
+    if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response.body) {
         debug!(err = %err, "failed to send API connection limit refusal");
     }
 }
@@ -507,12 +507,13 @@ fn handle_connection_with_stop(
                         &error_response_json(
                             &request_id,
                             if error.kind() == io::ErrorKind::InvalidInput {
-                                "invalid_ssh_agent"
+                                crate::error::ApiErrorCode::InvalidSshAgent
                             } else {
-                                "ssh_agent_unavailable"
+                                crate::error::ApiErrorCode::SshAgentUnavailable
                             },
                             error.to_string(),
-                        ),
+                        )
+                        .body,
                     );
                 }
             };
@@ -626,7 +627,7 @@ fn handle_connection_with_stop(
 
 fn finish_wait_response(
     stream: &mut LocalStream,
-    response: Option<String>,
+    response: Option<crate::error::EncodedApiResponse>,
     request_id: &str,
     method: MethodTraits,
 ) -> std::io::Result<()> {
@@ -647,16 +648,16 @@ fn finish_api_response(
     stream: &mut LocalStream,
     request_id: &str,
     method: MethodTraits,
-    response: &str,
+    response: &crate::error::EncodedApiResponse,
 ) -> std::io::Result<()> {
-    let result = write_text_line_allow_disconnect(stream, response);
+    let result = write_text_line_allow_disconnect(stream, &response.body);
     match &result {
         Ok(()) => shepr_platform::logging::api_request_completed(
             request_id,
             method.name,
             method.mutates_ui,
             method.routine,
-            api_response_outcome(response),
+            response.outcome,
         ),
         Err(err) => {
             shepr_platform::logging::api_request_failed(request_id, method.name, &err.to_string());
@@ -670,7 +671,7 @@ fn handle_request(
     api_tx: &ApiRequestSender,
     capabilities: Option<ServerCapabilities>,
     server_stop: Option<&Arc<AtomicBool>>,
-) -> String {
+) -> crate::error::EncodedApiResponse {
     if matches!(&request.method, Method::Ping(_)) {
         let response = SuccessResponse {
             id: request.id.clone(),
@@ -680,7 +681,7 @@ fn handle_request(
                 capabilities,
             },
         };
-        return crate::serialize_response_or_error(&request.id, &response);
+        return crate::serialize_response_or_error_with_outcome(&request.id, &response);
     }
 
     if matches!(&request.method, Method::ClientShellSurfaceSet(_)) {
@@ -698,7 +699,7 @@ fn handle_request(
                 id: request.id.clone(),
                 result: ResponseResult::Ok {},
             };
-            return crate::serialize_response_or_error(&request.id, &response);
+            return crate::serialize_response_or_error_with_outcome(&request.id, &response);
         }
     } else if let Some(response) = shutdown_rejection(&request, server_stop) {
         return response;
@@ -719,7 +720,10 @@ pub(super) fn server_is_stopping(server_stop: Option<&Arc<AtomicBool>>) -> bool 
     server_stop.is_some_and(|stop| stop.load(Ordering::Acquire))
 }
 
-fn shutdown_rejection(request: &Request, server_stop: Option<&Arc<AtomicBool>>) -> Option<String> {
+fn shutdown_rejection(
+    request: &Request,
+    server_stop: Option<&Arc<AtomicBool>>,
+) -> Option<crate::error::EncodedApiResponse> {
     if !server_is_stopping(server_stop)
         || matches!(
             &request.method,
@@ -738,22 +742,6 @@ fn shutdown_rejection(request: &Request, server_stop: Option<&Arc<AtomicBool>>) 
 
 pub fn api_method_name(method: &Method) -> &'static str {
     method.traits().name
-}
-
-fn api_response_outcome(response: &str) -> &'static str {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(response) else {
-        return "error";
-    };
-
-    match value
-        .get("error")
-        .and_then(|error| error.get("code"))
-        .and_then(|code| code.as_str())
-    {
-        Some("timeout") => "timeout",
-        Some(_) => "error",
-        None => "ok",
-    }
 }
 
 fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option<String>> {
@@ -1007,6 +995,7 @@ pub(super) fn dispatch_to_app_with_caller_timeout(
             "timed out waiting for agent status",
         )),
     )
+    .body
 }
 
 pub(super) fn dispatch_to_app_with_caller_timeout_result(
@@ -1030,9 +1019,9 @@ fn dispatch_to_app(
     api_tx: &ApiRequestSender,
     timeout: Option<Duration>,
     timeout_response: Option<(crate::error::ApiErrorCode, &str)>,
-) -> String {
+) -> crate::error::EncodedApiResponse {
     let request_id = request.id.clone();
-    crate::error::encode_result(
+    crate::error::encode_result_with_outcome(
         request_id,
         dispatch_to_app_result(request, api_tx, timeout, timeout_response),
     )
@@ -1183,12 +1172,12 @@ fn caller_timeout_dispatch_uses_timeout_error() {
 
 pub(super) fn error_response_json(
     id: &str,
-    code: impl Into<crate::error::ApiErrorCode>,
+    code: crate::error::ApiErrorCode,
     message: String,
-) -> String {
-    crate::error::encode_result(
+) -> crate::error::EncodedApiResponse {
+    crate::error::encode_result_with_outcome(
         id.to_owned(),
-        Err(crate::error::ApiError::new(code.into(), message)),
+        Err(crate::error::ApiError::new(code, message)),
     )
 }
 
@@ -1545,16 +1534,28 @@ mod tests {
     }
 
     #[test]
-    fn api_response_outcome_uses_top_level_error_shape() {
-        let ok_with_error_text = r#"{"id":"req","result":{"read":{"text":"user said \"error\": \"timeout\"","revision":1}}}"#;
-        assert_eq!(api_response_outcome(ok_with_error_text), "ok");
+    fn api_response_logging_outcome_comes_from_the_typed_result() {
+        let success =
+            crate::error::encode_result_with_outcome("req".into(), Ok(ResponseResult::Ok {}));
+        assert_eq!(success.outcome, "ok");
 
-        let timeout = r#"{"id":"req","error":{"code":"timeout","message":"timed out waiting for output match"}}"#;
-        assert_eq!(api_response_outcome(timeout), "timeout");
+        let timeout = crate::error::encode_result_with_outcome(
+            "req".into(),
+            Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Timeout,
+                "timed out waiting for output match",
+            )),
+        );
+        assert_eq!(timeout.outcome, "timeout");
 
-        let generic_error =
-            r#"{"id":"req","error":{"code":"server_unavailable","message":"boom"}}"#;
-        assert_eq!(api_response_outcome(generic_error), "error");
+        let generic_error = crate::error::encode_result_with_outcome(
+            "req".into(),
+            Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::ServerUnavailable,
+                "boom",
+            )),
+        );
+        assert_eq!(generic_error.outcome, "error");
     }
 
     #[test]

@@ -18,6 +18,53 @@ use shepr_test_support::IsolatedEnv;
 
 use super::test_support::StatPath;
 
+fn install_path(outcome: &InstallOutcome, role: ArtifactRole) -> PathBuf {
+    outcome
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.role == role)
+        .expect("expected install artifact")
+        .path
+        .clone()
+}
+
+fn uninstall_path(outcome: &UninstallOutcome, role: ArtifactRole) -> PathBuf {
+    outcome
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.role == role)
+        .expect("expected uninstall artifact")
+        .path
+        .clone()
+}
+
+fn uninstall_was_removed(outcome: &UninstallOutcome, role: ArtifactRole) -> bool {
+    outcome
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.role == role && artifact.state == UninstallState::Removed)
+}
+
+fn uninstall_was_updated(outcome: &UninstallOutcome, role: ArtifactRole) -> bool {
+    outcome
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.role == role && artifact.state == UninstallState::Updated)
+}
+
+fn uninstall_paths_with_state(
+    outcome: &UninstallOutcome,
+    role: ArtifactRole,
+    state: UninstallState,
+) -> Vec<PathBuf> {
+    outcome
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.role == role && artifact.state == state)
+        .map(|artifact| artifact.path.clone())
+        .collect()
+}
+
 #[test]
 fn extract_version_triple_parses_common_outputs() {
     assert_eq!(extract_version_triple("0.14.0"), Some((0, 14, 0)));
@@ -60,7 +107,7 @@ fn enforce_agent_version_warns_when_binary_missing() {
         args: &["--version"],
         min_version: "0.14.0",
     };
-    let warning = enforce_agent_version(&requirement)
+    let warning = enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)
         .expect("missing binary must not fail the install")
         .expect("missing binary must produce a warning");
     assert!(warning.contains("could not run"));
@@ -75,7 +122,8 @@ fn enforce_agent_version_rejects_old_version() {
         args: &["0.12.1"],
         min_version: "0.14.0",
     };
-    let err = enforce_agent_version(&requirement).expect_err("old version must fail the install");
+    let err = enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)
+        .expect_err("old version must fail the install");
     let message = err.to_string();
     assert!(message.contains("0.12.1"));
     assert!(message.contains("0.14.0"));
@@ -90,8 +138,8 @@ fn enforce_agent_version_accepts_current_version() {
         args: &["0.14.0"],
         min_version: "0.14.0",
     };
-    let result =
-        enforce_agent_version(&requirement).expect("matching version must not fail the install");
+    let result = enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)
+        .expect("matching version must not fail the install");
     assert!(result.is_none(), "matching version must not warn");
 }
 
@@ -152,7 +200,11 @@ fn install_pi_writes_embedded_asset_to_pi_extensions_dir() {
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let path = install_path(
+        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        ArtifactRole::Extension,
+    )
+    .clone();
     let content = fs::read_to_string(&path).expect("test precondition");
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
@@ -168,7 +220,11 @@ fn install_pi_creates_extensions_dir_when_agent_dir_exists() {
     fs::create_dir_all(&agent_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let path = install_path(
+        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        ArtifactRole::Extension,
+    )
+    .clone();
 
     assert_eq!(
         path,
@@ -186,7 +242,11 @@ fn install_pi_uses_pi_coding_agent_dir_env() {
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set(EnvVar::PiCodingAgentDir, &agent_dir);
 
-    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let path = install_path(
+        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        ArtifactRole::Extension,
+    )
+    .clone();
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
@@ -203,7 +263,11 @@ fn install_pi_expands_tilde_in_pi_coding_agent_dir_env() {
     env.set("HOME", &home);
     env.set(EnvVar::PiCodingAgentDir, "~/custom-pi-agent");
 
-    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let path = install_path(
+        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        ArtifactRole::Extension,
+    )
+    .clone();
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
@@ -220,10 +284,11 @@ fn install_omp_writes_embedded_asset_to_omp_extensions_dir() {
     env.set("HOME", &home);
 
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let content = fs::read_to_string(&installed.extension_path).expect("test precondition");
+    let content = fs::read_to_string(install_path(&installed, ArtifactRole::Extension))
+        .expect("test precondition");
 
     assert_eq!(
-        installed.extension_path,
+        install_path(&installed, ArtifactRole::Extension),
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
     assert_eq!(content, OMP_EXTENSION_ASSET);
@@ -242,7 +307,7 @@ fn install_omp_uses_omp_config_dir_env() {
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.extension_path,
+        install_path(&installed, ArtifactRole::Extension),
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
 
@@ -268,11 +333,11 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.extension_path,
+        install_path(&installed, ArtifactRole::Extension),
         omp_dir.join("extensions").join(OMP_EXTENSION_INSTALL_NAME)
     );
     assert!(pi_extension.stat_is_file());
-    assert!(installed.extension_path.stat_is_file());
+    assert!(install_path(&installed, ArtifactRole::Extension).stat_is_file());
 
     clear_integration_path_env(&env);
 }
@@ -290,7 +355,7 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.extension_path,
+        install_path(&installed, ArtifactRole::Extension),
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
     assert!(ext_dir.stat_is_dir());
@@ -313,11 +378,15 @@ fn uninstall_omp_removes_embedded_extension_when_present() {
     let result = uninstall_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        result.extension_path,
+        uninstall_path(&result, ArtifactRole::Extension),
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
-    assert!(result.removed_extension);
-    assert!(!result.extension_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Extension));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Extension)
+            .try_exists()
+            .expect("stat")
+    );
 }
 
 #[test]
@@ -349,11 +418,15 @@ fn uninstall_pi_removes_embedded_extension_when_present() {
     let result = uninstall_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        result.extension_path,
+        uninstall_path(&result, ArtifactRole::Extension),
         ext_dir.join(PI_EXTENSION_INSTALL_NAME)
     );
-    assert!(result.removed_extension);
-    assert!(!result.extension_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Extension));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Extension)
+            .try_exists()
+            .expect("stat")
+    );
 }
 
 #[test]
@@ -420,14 +493,16 @@ fn install_claude_writes_hook_and_updates_settings() {
     env.set("HOME", &home);
 
     let installed = install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
+    let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+        .expect("test precondition");
     let settings: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.settings_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Settings))
+            .expect("test precondition"),
     )
     .expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         claude_dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME)
     );
     assert_eq!(hook_content, CLAUDE_HOOK_ASSET);
@@ -462,9 +537,12 @@ fn install_claude_uses_claude_config_dir_env() {
 
     let installed = install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    assert_eq!(installed.settings_path, claude_dir.join("settings.json"));
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Settings),
+        claude_dir.join("settings.json")
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Hook),
         claude_dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME)
     );
 
@@ -538,9 +616,13 @@ fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    assert!(result.removed_hook_file);
-    assert!(result.updated_settings);
-    assert!(!result.hook_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Hook)
+            .try_exists()
+            .expect("stat")
+    );
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["hooks"]
             .as_array()
@@ -580,16 +662,28 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
     env.set("HOME", &home);
 
     let installed = install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
+    let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+        .expect("test precondition");
     let hooks: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.hooks_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Hooks))
+            .expect("test precondition"),
     )
     .expect("test precondition");
-    let config = fs::read_to_string(&installed.config_path).expect("test precondition");
+    let config = fs::read_to_string(install_path(&installed, ArtifactRole::Config))
+        .expect("test precondition");
 
-    assert_eq!(installed.hook_path, codex_dir.join(CODEX_HOOK_INSTALL_NAME));
-    assert_eq!(installed.hooks_path, codex_dir.join("hooks.json"));
-    assert_eq!(installed.config_path, codex_dir.join("config.toml"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Hook),
+        codex_dir.join(CODEX_HOOK_INSTALL_NAME)
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Hooks),
+        codex_dir.join("hooks.json")
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Config),
+        codex_dir.join("config.toml")
+    );
     assert_eq!(hook_content, CODEX_HOOK_ASSET);
     assert!(
         hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
@@ -618,9 +712,18 @@ fn install_codex_uses_codex_home_env() {
 
     let installed = install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    assert_eq!(installed.hook_path, codex_dir.join(CODEX_HOOK_INSTALL_NAME));
-    assert_eq!(installed.hooks_path, codex_dir.join("hooks.json"));
-    assert_eq!(installed.config_path, codex_dir.join("config.toml"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Hook),
+        codex_dir.join(CODEX_HOOK_INSTALL_NAME)
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Hooks),
+        codex_dir.join("hooks.json")
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Config),
+        codex_dir.join("config.toml")
+    );
 
     clear_integration_path_env(&env);
 }
@@ -730,9 +833,13 @@ fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
     .expect("test precondition");
     let config = fs::read_to_string(codex_dir.join("config.toml")).expect("test precondition");
 
-    assert!(result.removed_hook_file);
-    assert!(result.updated_hooks);
-    assert!(!result.hook_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Hook)
+            .try_exists()
+            .expect("stat")
+    );
     assert_eq!(
         hooks["hooks"]["SessionStart"][0]["hooks"]
             .as_array()
@@ -778,15 +885,20 @@ fn install_kimi_writes_hook_and_updates_config() {
     env.set("HOME", &home);
 
     let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
-    let config = fs::read_to_string(&installed.config_path).expect("test precondition");
+    let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+        .expect("test precondition");
+    let config = fs::read_to_string(install_path(&installed, ArtifactRole::Config))
+        .expect("test precondition");
     let hooks = kimi_config_hooks(&config);
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.config_path, kimi_dir.join("config.toml"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Config),
+        kimi_dir.join("config.toml")
+    );
     assert_eq!(hook_content, KIMI_HOOK_ASSET);
     assert_eq!(hooks.len(), KIMI_HOOK_EVENTS.len() + 1);
     assert!(config.contains("default_model = \"moonshot\""));
@@ -800,7 +912,7 @@ fn install_kimi_writes_hook_and_updates_config() {
             .expect("Kimi hook action should be present");
         assert_kimi_hook(
             &config,
-            &installed.hook_path,
+            &install_path(&installed, ArtifactRole::Hook),
             hook.event,
             hook.matcher,
             action,
@@ -848,10 +960,13 @@ fn install_kimi_uses_kimi_code_home_env() {
     let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.config_path, kimi_dir.join("config.toml"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Config),
+        kimi_dir.join("config.toml")
+    );
 
     clear_integration_path_env(&env);
 }
@@ -887,10 +1002,10 @@ fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
 
     let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
     fs::write(
-            &installed.config_path,
+            install_path(&installed, ArtifactRole::Config),
             format!(
                 "default_model = \"moonshot\"\n\n[[hooks]]\nevent = \"Notification\"\ncommand = \"echo keep\"\n\n{}",
-                fs::read_to_string(&installed.config_path).expect("test precondition")
+                fs::read_to_string(install_path(&installed, ArtifactRole::Config)).expect("test precondition")
             ),
         )
         .expect("test precondition");
@@ -899,9 +1014,13 @@ fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
     let config = fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition");
     let hooks = kimi_config_hooks(&config);
 
-    assert!(result.removed_hook_file);
-    assert!(result.updated_config);
-    assert!(!result.hook_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Config));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Hook)
+            .try_exists()
+            .expect("stat")
+    );
     assert!(config.contains("default_model = \"moonshot\""));
     assert!(config.contains("command = \"echo keep\""));
     assert!(!config.contains(KIMI_CONFIG_BLOCK_BEGIN));
@@ -943,17 +1062,22 @@ fn install_copilot_writes_hook_and_updates_settings() {
     env.set("HOME", &home);
 
     let installed = install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
+    let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+        .expect("test precondition");
     let settings: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.settings_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Settings))
+            .expect("test precondition"),
     )
     .expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         copilot_dir.join("hooks").join(COPILOT_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.settings_path, copilot_dir.join("settings.json"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Settings),
+        copilot_dir.join("settings.json")
+    );
     assert_eq!(hook_content, COPILOT_HOOK_ASSET);
     assert_eq!(settings["theme"], "dark");
     assert_eq!(
@@ -995,7 +1119,7 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
     .expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         copilot_dir.join("hooks").join(COPILOT_HOOK_INSTALL_NAME)
     );
     assert_eq!(
@@ -1044,9 +1168,13 @@ fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    assert!(result.removed_hook_file);
-    assert!(result.updated_settings);
-    assert!(!result.hook_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Hook)
+            .try_exists()
+            .expect("stat")
+    );
     assert_eq!(
         settings["hooks"]["SessionStart"]
             .as_array()
@@ -1088,14 +1216,22 @@ fn install_devin_writes_hook_and_updates_settings() {
     env.set("HOME", base.join("home"));
 
     let installed = install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
+    let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+        .expect("test precondition");
     let settings: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.settings_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Settings))
+            .expect("test precondition"),
     )
     .expect("test precondition");
 
-    assert_eq!(installed.hook_path, devin_dir.join(DEVIN_HOOK_INSTALL_NAME));
-    assert_eq!(installed.settings_path, devin_dir.join("config.json"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Hook),
+        devin_dir.join(DEVIN_HOOK_INSTALL_NAME)
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Settings),
+        devin_dir.join("config.json")
+    );
     assert_eq!(hook_content, DEVIN_HOOK_ASSET);
     assert_eq!(settings["theme_mode"], "dark");
     for hook in DEVIN_HOOK_EVENTS {
@@ -1188,8 +1324,8 @@ fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    assert!(result.removed_hook_file);
-    assert!(result.updated_settings);
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
     assert!(!hook_path.try_exists().expect("stat"));
     assert_eq!(
         settings["hooks"]["UserPromptSubmit"]
@@ -1243,17 +1379,22 @@ fn install_droid_writes_hook_to_settings() {
     env.set("HOME", &home);
 
     let installed = install_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
+    let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+        .expect("test precondition");
     let settings: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.settings_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Hooks))
+            .expect("test precondition"),
     )
     .expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         droid_dir.join("hooks").join(DROID_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.settings_path, droid_dir.join("settings.json"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Hooks),
+        droid_dir.join("settings.json")
+    );
     assert_eq!(hook_content, DROID_HOOK_ASSET);
     assert_eq!(settings["theme"], "factory-dark");
     assert!(
@@ -1339,9 +1480,13 @@ fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    assert!(result.removed_hook_file);
-    assert!(result.updated_settings);
-    assert!(!result.hook_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Hook)
+            .try_exists()
+            .expect("stat")
+    );
     assert!(settings["hooks"].get("SessionStart").is_none());
     assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "Edit");
 }
@@ -1373,32 +1518,36 @@ fn install_opencode_writes_server_and_tui_plugins() {
     let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.plugin_path,
+        install_path(&installed, ArtifactRole::Plugin),
         opencode_dir
             .join("plugins")
             .join(OPENCODE_PLUGIN_INSTALL_NAME)
     );
     assert_eq!(
-        fs::read_to_string(&installed.plugin_path).expect("test precondition"),
+        fs::read_to_string(install_path(&installed, ArtifactRole::Plugin))
+            .expect("test precondition"),
         OPENCODE_PLUGIN_ASSET
     );
     assert_eq!(
-        installed.tui_plugin_path,
+        install_path(&installed, ArtifactRole::TuiPlugin),
         opencode_dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME)
     );
     assert_eq!(
-        fs::read_to_string(&installed.tui_plugin_path).expect("test precondition"),
+        fs::read_to_string(install_path(&installed, ArtifactRole::TuiPlugin))
+            .expect("test precondition"),
         OPENCODE_TUI_PLUGIN_ASSET
     );
-    assert_eq!(installed.tui_config_path, opencode_dir.join("tui.jsonc"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::TuiConfig),
+        opencode_dir.join("tui.jsonc")
+    );
     let tui_config: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.tui_config_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::TuiConfig))
+            .expect("test precondition"),
     )
     .expect("test precondition");
     assert_eq!(tui_config["plugin"], json!([OPENCODE_TUI_PLUGIN_SPEC]));
-    let cli_config_path = installed
-        .cli_config_path
-        .expect("cli.json should be created when OpenCode has nothing to migrate");
+    let cli_config_path = opencode_dir.join("cli.json");
     assert_eq!(cli_config_path, opencode_dir.join("cli.json"));
     let cli_config: Value =
         serde_json::from_str(&fs::read_to_string(&cli_config_path).expect("test precondition"))
@@ -1424,8 +1573,8 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     for _ in 0..2 {
         let installed =
             install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-        assert_eq!(installed.tui_config_path, json_path);
-        assert!(installed.cli_config_path.is_none());
+        assert_eq!(install_path(&installed, ArtifactRole::TuiConfig), json_path);
+
         assert!(!dir.join("tui.jsonc").try_exists().expect("stat"));
         assert_eq!(
             fs::read_to_string(&json_path).expect("test precondition"),
@@ -1434,7 +1583,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
         assert_eq!(
             integration_status_at(
                 crate::agent::IntegrationTarget::Opencode,
-                installed.plugin_path,
+                install_path(&installed, ArtifactRole::Plugin),
                 OPENCODE_INTEGRATION_VERSION,
             )
             .expect("stat plugin")
@@ -1452,14 +1601,15 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     )
     .expect("test precondition");
     assert_eq!(
-        install_opencode(&AgentIntegrationPaths::resolve())
-            .expect("test precondition")
-            .tui_config_path,
+        install_path(
+            &install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+            ArtifactRole::TuiConfig
+        ),
         jsonc_path
     );
     let result = uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
-        result.updated_tui_configs,
+        uninstall_paths_with_state(&result, ArtifactRole::TuiConfig, UninstallState::Updated),
         vec![jsonc_path.clone(), json_path.clone()]
     );
     let json = fs::read_to_string(&json_path).expect("test precondition");
@@ -1473,14 +1623,24 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
         json!({"plugin":["another"]})
     );
     assert!(
-        uninstall_opencode(&AgentIntegrationPaths::resolve())
-            .expect("test precondition")
-            .updated_tui_configs
-            .is_empty()
+        uninstall_paths_with_state(
+            &uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+            ArtifactRole::TuiConfig,
+            UninstallState::Updated
+        )
+        .is_empty()
     );
     assert_eq!(fs::read_link(&dir).expect("test precondition"), dotfiles);
-    assert!(!result.plugin_path.try_exists().expect("stat"));
-    assert!(!result.tui_plugin_path.try_exists().expect("stat"));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Plugin)
+            .try_exists()
+            .expect("stat")
+    );
+    assert!(
+        !uninstall_path(&result, ArtifactRole::TuiPlugin)
+            .try_exists()
+            .expect("stat")
+    );
     fs::remove_dir_all(base).expect("test precondition");
 }
 
@@ -1494,9 +1654,8 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
     fs::write(opencode_dir.join("tui.json"), "{}").expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    assert!(installed.cli_config_path.is_none());
     assert!(!opencode_dir.join("cli.json").try_exists().expect("stat"));
     assert!(
         opencode_dir
@@ -1521,11 +1680,11 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
     )
     .expect("test precondition");
     let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert_eq!(installed.cli_config_path, Some(cli.clone()));
+
     let status = || {
         integration_status_at(
             crate::agent::IntegrationTarget::Opencode,
-            installed.plugin_path.clone(),
+            install_path(&installed, ArtifactRole::Plugin).clone(),
             OPENCODE_INTEGRATION_VERSION,
         )
         .expect("stat plugin")
@@ -1678,7 +1837,7 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
     let status = || {
         integration_status_at(
             crate::agent::IntegrationTarget::Opencode,
-            installed.plugin_path.clone(),
+            install_path(&installed, ArtifactRole::Plugin).clone(),
             OPENCODE_INTEGRATION_VERSION,
         )
         .expect("stat plugin")
@@ -1686,9 +1845,13 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
     };
 
     assert_eq!(status(), IntegrationStatusKind::Current);
-    fs::remove_file(&installed.tui_plugin_path).expect("test precondition");
+    fs::remove_file(install_path(&installed, ArtifactRole::TuiPlugin)).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-    fs::write(&installed.tui_plugin_path, OPENCODE_TUI_PLUGIN_ASSET).expect("test precondition");
+    fs::write(
+        install_path(&installed, ArtifactRole::TuiPlugin),
+        OPENCODE_TUI_PLUGIN_ASSET,
+    )
+    .expect("test precondition");
     super::opencode_config::remove_tui_plugin(&opencode_dir, OPENCODE_TUI_PLUGIN_SPEC)
         .expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
@@ -1706,21 +1869,37 @@ fn uninstall_opencode_removes_plugins_and_managed_tui_config_entry() {
 
     let result = uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    assert!(result.removed_plugin);
-    assert!(result.removed_tui_plugin);
+    assert!(uninstall_was_removed(&result, ArtifactRole::Plugin));
+    assert!(uninstall_was_removed(&result, ArtifactRole::TuiPlugin));
     assert_eq!(
-        result.updated_tui_configs,
-        vec![installed.tui_config_path.clone()]
+        uninstall_paths_with_state(&result, ArtifactRole::TuiConfig, UninstallState::Updated),
+        vec![install_path(&installed, ArtifactRole::TuiConfig).clone()]
     );
-    assert!(!result.plugin_path.try_exists().expect("stat"));
-    assert!(!result.tui_plugin_path.try_exists().expect("stat"));
-    assert!(installed.tui_config_path.try_exists().expect("stat"));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Plugin)
+            .try_exists()
+            .expect("stat")
+    );
+    assert!(
+        !uninstall_path(&result, ArtifactRole::TuiPlugin)
+            .try_exists()
+            .expect("stat")
+    );
+    assert!(
+        install_path(&installed, ArtifactRole::TuiConfig)
+            .try_exists()
+            .expect("stat")
+    );
     let tui_config: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.tui_config_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::TuiConfig))
+            .expect("test precondition"),
     )
     .expect("test precondition");
     assert_eq!(tui_config, json!({}));
-    assert_eq!(installed.plugin_path, result.plugin_path);
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Plugin),
+        uninstall_path(&result, ArtifactRole::Plugin)
+    );
 }
 
 #[test]
@@ -1813,10 +1992,11 @@ fn install_kilo_writes_plugin_to_plugin_dir() {
     env.set("HOME", &home);
 
     let installed = install_kilo(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let plugin_content = fs::read_to_string(&installed.plugin_path).expect("test precondition");
+    let plugin_content = fs::read_to_string(install_path(&installed, ArtifactRole::Plugin))
+        .expect("test precondition");
 
     assert_eq!(
-        installed.plugin_path,
+        install_path(&installed, ArtifactRole::Plugin),
         kilo_dir.join("plugin").join(KILO_PLUGIN_INSTALL_NAME)
     );
     assert_eq!(plugin_content, KILO_PLUGIN_ASSET);
@@ -1838,8 +2018,12 @@ fn uninstall_kilo_removes_plugin_when_present() {
 
     let result = uninstall_kilo(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    assert!(result.removed_plugin);
-    assert!(!result.plugin_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Plugin));
+    assert!(
+        !uninstall_path(&result, ArtifactRole::Plugin)
+            .try_exists()
+            .expect("stat")
+    );
 }
 
 #[test]
@@ -2126,14 +2310,18 @@ fn install_qodercli_writes_hook_and_updates_settings() {
     let installed = install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         qoder_dir.join("hooks").join(QODERCLI_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.settings_path, qoder_dir.join("settings.json"));
-    assert!(installed.hook_path.stat_is_file());
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Settings),
+        qoder_dir.join("settings.json")
+    );
+    assert!(install_path(&installed, ArtifactRole::Hook).stat_is_file());
 
     let settings: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.settings_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Settings))
+            .expect("test precondition"),
     )
     .expect("test precondition");
     let hooks = settings
@@ -2228,8 +2416,8 @@ fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
     .expect("test precondition");
 
     let result = uninstall_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.removed_hook_file);
-    assert!(result.updated_settings);
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(qoder_dir.join("settings.json")).expect("test precondition"),
@@ -2286,14 +2474,18 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
     let installed = install_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         qwen_dir.join("hooks").join(QWEN_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.settings_path, qwen_dir.join("settings.json"));
-    assert!(installed.hook_path.stat_is_file());
+    assert_eq!(
+        install_path(&installed, ArtifactRole::Settings),
+        qwen_dir.join("settings.json")
+    );
+    assert!(install_path(&installed, ArtifactRole::Hook).stat_is_file());
 
     let settings: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.settings_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Settings))
+            .expect("test precondition"),
     )
     .expect("test precondition");
     let entries = settings["hooks"]["SessionStart"]
@@ -2308,14 +2500,16 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
     assert!(command.contains(QWEN_HOOK_INSTALL_NAME));
     assert!(command.ends_with("session"));
     assert!(settings.get("permissions").is_some());
-    let hook_asset = fs::read_to_string(&installed.hook_path).expect("test precondition");
+    let hook_asset = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+        .expect("test precondition");
     assert!(hook_asset.contains("SHEPR_INTEGRATION_ID=qwen"));
     assert!(hook_asset.contains("SHEPR_INTEGRATION_VERSION=1"));
     assert!(hook_asset.contains("shepr:qwen"));
 
     install_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.settings_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::Settings))
+            .expect("test precondition"),
     )
     .expect("test precondition");
     assert_eq!(
@@ -2356,8 +2550,8 @@ fn uninstall_qwen_removes_only_shepr_hook() {
     .expect("test precondition");
 
     let result = uninstall_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.removed_hook_file);
-    assert!(result.updated_settings);
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
 
     let settings: Value =
         serde_json::from_str(&fs::read_to_string(&settings_path).expect("test precondition"))
@@ -2403,7 +2597,7 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
 
     let installed = install_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         letta_dir.join("hooks").join(LETTA_HOOK_INSTALL_NAME)
     );
     let first_install = fs::read_to_string(&settings_path).expect("test precondition");
@@ -2431,9 +2625,16 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
     );
 
     let result = uninstall_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.removed_hook_file);
-    assert!(result.updated_settings);
-    assert!(!installed.hook_path.try_exists().expect("stat"));
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(
+        &result,
+        ArtifactRole::SingleEntrySettings
+    ));
+    assert!(
+        !install_path(&installed, ArtifactRole::Hook)
+            .try_exists()
+            .expect("stat")
+    );
     let settings: Value =
         serde_json::from_str(&fs::read_to_string(&settings_path).expect("test precondition"))
             .expect("test precondition");
@@ -2469,7 +2670,7 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut child = shepr_test_support::command_in_scratch("sh", "letta-session-hook")
-        .arg(&installed.hook_path)
+        .arg(install_path(&installed, ArtifactRole::Hook))
         .arg("session")
         .env("SHEPR_ENV", "1")
         .env("SHEPR_PANE_ID", "w1:p2")
@@ -2820,7 +3021,10 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
     assert!(installed["hooks"]["SessionStart"].is_array());
 
     let result = uninstall_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.updated_settings);
+    assert!(uninstall_was_updated(
+        &result,
+        ArtifactRole::SingleEntrySettings
+    ));
     assert!(
         fs::symlink_metadata(&settings_path)
             .expect("test precondition")
@@ -2863,12 +3067,16 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
     let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         cursor_dir.join(CURSOR_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.hooks_path, cursor_dir.join("hooks.json"));
     assert_eq!(
-        fs::read_to_string(&installed.hook_path).expect("test precondition"),
+        install_path(&installed, ArtifactRole::UpdatedHooks),
+        cursor_dir.join("hooks.json")
+    );
+    assert_eq!(
+        fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+            .expect("test precondition"),
         CURSOR_HOOK_ASSET
     );
 
@@ -2887,7 +3095,13 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
     assert_eq!(session_start.len(), 1);
     assert_eq!(
         session_start[0].get("command").and_then(Value::as_str),
-        Some(hook_command(&installed.hook_path, Some("session")).as_str())
+        Some(
+            hook_command(
+                &install_path(&installed, ArtifactRole::Hook),
+                Some("session")
+            )
+            .as_str()
+        )
     );
     assert!(hooks.get("beforeSubmitPrompt").is_none());
     assert!(hooks.get("beforeShellExecution").is_none());
@@ -2953,8 +3167,8 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     .expect("test precondition");
 
     let result = uninstall_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.removed_hook_file);
-    assert!(result.updated_hooks);
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
     assert!(!cursor_dir.join(CURSOR_HOOK_INSTALL_NAME).stat_is_file());
 
     let hooks_file: Value = serde_json::from_str(
@@ -2982,10 +3196,13 @@ fn install_cursor_uses_cursor_config_dir_env() {
     let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         cursor_dir.join(CURSOR_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.hooks_path, cursor_dir.join("hooks.json"));
+    assert_eq!(
+        install_path(&installed, ArtifactRole::UpdatedHooks),
+        cursor_dir.join("hooks.json")
+    );
 
     clear_integration_path_env(&env);
 }
@@ -3048,14 +3265,18 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
         install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         mastracode_dir
             .join("hooks")
             .join(MASTRACODE_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.hooks_path, mastracode_dir.join("hooks.json"));
     assert_eq!(
-        fs::read_to_string(&installed.hook_path).expect("test precondition"),
+        install_path(&installed, ArtifactRole::Hooks),
+        mastracode_dir.join("hooks.json")
+    );
+    assert_eq!(
+        fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+            .expect("test precondition"),
         MASTRACODE_HOOK_ASSET
     );
 
@@ -3085,7 +3306,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
             .expect("test precondition");
         assert_eq!(
             command,
-            mastracode_hook_command(&installed.hook_path, action)
+            mastracode_hook_command(&install_path(&installed, ArtifactRole::Hook), action)
         );
         assert_eq!(
             entries[0].get("type").and_then(Value::as_str),
@@ -3122,21 +3343,29 @@ fn install_grok_writes_hook_and_config() {
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks_dir = grok_dir.join("hooks");
-    assert_eq!(installed.hook_path, hooks_dir.join(GROK_HOOK_INSTALL_NAME));
     assert_eq!(
-        installed.config_path,
+        install_path(&installed, ArtifactRole::Hook),
+        hooks_dir.join(GROK_HOOK_INSTALL_NAME)
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::HookConfig),
         hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME)
     );
     assert_eq!(
-        fs::read_to_string(&installed.hook_path).expect("test precondition"),
+        fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+            .expect("test precondition"),
         GROK_HOOK_ASSET
     );
 
     let config: Value = serde_json::from_str(
-        &fs::read_to_string(&installed.config_path).expect("test precondition"),
+        &fs::read_to_string(install_path(&installed, ArtifactRole::HookConfig))
+            .expect("test precondition"),
     )
     .expect("test precondition");
-    assert_eq!(config, grok_hook_config(&installed.hook_path));
+    assert_eq!(
+        config,
+        grok_hook_config(&install_path(&installed, ArtifactRole::Hook))
+    );
     let session_start = config["hooks"]["SessionStart"]
         .as_array()
         .expect("test precondition");
@@ -3238,8 +3467,8 @@ fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
 
     let result =
         uninstall_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.removed_hook_file);
-    assert!(result.updated_hooks);
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
     assert!(
         !base
             .join(".mastracode")
@@ -3304,15 +3533,15 @@ fn uninstall_grok_removes_files() {
 
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let result = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.removed_hook_file);
-    assert!(result.removed_config_file);
-    assert!(!result.hook_path.stat_is_file());
-    assert!(!result.config_path.stat_is_file());
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(uninstall_was_removed(&result, ArtifactRole::HookConfig));
+    assert!(!uninstall_path(&result, ArtifactRole::Hook).stat_is_file());
+    assert!(!uninstall_path(&result, ArtifactRole::HookConfig).stat_is_file());
 
     // Uninstalling again is a no-op.
     let again = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(!again.removed_hook_file);
-    assert!(!again.removed_config_file);
+    assert!(!uninstall_was_removed(&again, ArtifactRole::Hook));
+    assert!(!uninstall_was_removed(&again, ArtifactRole::HookConfig));
 
     env.remove(GROK_CONFIG_DIR_TEST_SEAM);
 }
@@ -3328,9 +3557,12 @@ fn install_grok_uses_grok_config_dir_env() {
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks_dir = grok_dir.join("hooks");
-    assert_eq!(installed.hook_path, hooks_dir.join(GROK_HOOK_INSTALL_NAME));
     assert_eq!(
-        installed.config_path,
+        install_path(&installed, ArtifactRole::Hook),
+        hooks_dir.join(GROK_HOOK_INSTALL_NAME)
+    );
+    assert_eq!(
+        install_path(&installed, ArtifactRole::HookConfig),
         hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME)
     );
 
@@ -3392,14 +3624,18 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
         install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         agy_dir
             .join("hooks")
             .join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME)
     );
-    assert_eq!(installed.hooks_path, agy_dir.join("hooks.json"));
     assert_eq!(
-        fs::read_to_string(&installed.hook_path).expect("test precondition"),
+        install_path(&installed, ArtifactRole::Hooks),
+        agy_dir.join("hooks.json")
+    );
+    assert_eq!(
+        fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
+            .expect("test precondition"),
         ANTIGRAVITY_CLI_HOOK_ASSET
     );
 
@@ -3452,7 +3688,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
             .expect("test precondition");
         assert_eq!(
             command,
-            antigravity_cli_hook_command(&installed.hook_path, action)
+            antigravity_cli_hook_command(&install_path(&installed, ArtifactRole::Hook), action)
         );
     }
 
@@ -3679,14 +3915,14 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
     // Install first
     let installed =
         install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(installed.hook_path.stat_is_file());
+    assert!(install_path(&installed, ArtifactRole::Hook).stat_is_file());
 
     // Uninstall
     let result =
         uninstall_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(result.removed_hook_file);
-    assert!(!installed.hook_path.stat_is_file());
-    assert!(result.updated_hooks);
+    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
+    assert!(!install_path(&installed, ArtifactRole::Hook).stat_is_file());
+    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(agy_dir.join("hooks.json")).expect("test precondition"),
@@ -3714,7 +3950,7 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     // integration must install there too.
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         home_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
     );
 
@@ -3724,7 +3960,7 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     env.set(GROK_CONFIG_DIR_TEST_SEAM, &seam_dir);
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
-        installed.hook_path,
+        install_path(&installed, ArtifactRole::Hook),
         seam_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
     );
 
@@ -3825,6 +4061,257 @@ fn codex_features_hooks_follow_the_users_features_shape() {
 
     // Inline tables are refused rather than broken.
     assert!(build_codex_config_with_hooks("features = { web_search = true }\n").is_err());
+}
+
+fn status_of(target: crate::agent::IntegrationTarget) -> IntegrationStatusKind {
+    integration_status_rows(&AgentIntegrationPaths::resolve())
+        .into_iter()
+        .find_map(|row| row.ok().filter(|status| status.target == target))
+        .expect("the target has a status row")
+        .state
+}
+
+/// The operator messages of an install and uninstall round trip, one target
+/// per artifact wording, and the status the round trip leaves behind.
+#[test]
+fn install_and_uninstall_messages_name_every_artifact() {
+    use crate::agent::IntegrationTarget as Target;
+
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let home = base.join("home");
+    for dir in [".claude", ".pi/agent/extensions", ".letta", ".factory"] {
+        fs::create_dir_all(home.join(dir)).expect("test precondition");
+    }
+    let grok_dir = base.join(".grok");
+    fs::create_dir_all(&grok_dir).expect("test precondition");
+    env.set("HOME", &home);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    let paths = AgentIntegrationPaths::resolve();
+    let claude = home.join(".claude");
+    let pi = home
+        .join(".pi/agent/extensions")
+        .join(PI_EXTENSION_INSTALL_NAME);
+    let letta = home.join(".letta");
+    let droid = home.join(".factory");
+    let grok = grok_dir.join("hooks");
+    let shown = |path: PathBuf| path.display().to_string();
+
+    let cases = [
+        (
+            Target::Claude,
+            vec![
+                format!(
+                    "installed claude integration hook to {}",
+                    shown(claude.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "ensured claude settings at {}",
+                    shown(claude.join("settings.json"))
+                ),
+            ],
+            vec![
+                format!(
+                    "removed claude hook at {}",
+                    shown(claude.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "removed shepr claude hook entries from {}",
+                    shown(claude.join("settings.json"))
+                ),
+            ],
+            vec![
+                format!(
+                    "no claude hook found at {}",
+                    shown(claude.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "no shepr claude hook entries found in {}",
+                    shown(claude.join("settings.json"))
+                ),
+            ],
+        ),
+        (
+            Target::Pi,
+            vec![format!("installed pi integration to {}", shown(pi.clone()))],
+            vec![format!(
+                "removed pi integration extension at {}",
+                shown(pi.clone())
+            )],
+            vec![format!(
+                "no pi integration extension found at {}",
+                shown(pi.clone())
+            )],
+        ),
+        (
+            Target::Letta,
+            vec![
+                format!(
+                    "installed letta integration hook to {}",
+                    shown(letta.join("hooks").join(LETTA_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "ensured letta settings at {}",
+                    shown(letta.join("settings.json"))
+                ),
+            ],
+            vec![
+                format!(
+                    "removed letta hook at {}",
+                    shown(letta.join("hooks").join(LETTA_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "removed shepr letta hook entry from {}",
+                    shown(letta.join("settings.json"))
+                ),
+            ],
+            vec![
+                format!(
+                    "no letta hook found at {}",
+                    shown(letta.join("hooks").join(LETTA_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "no shepr letta hook entry found in {}",
+                    shown(letta.join("settings.json"))
+                ),
+            ],
+        ),
+        (
+            Target::Droid,
+            vec![
+                format!(
+                    "installed droid integration hook to {}",
+                    shown(droid.join("hooks").join(DROID_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "ensured droid hooks at {}",
+                    shown(droid.join("settings.json"))
+                ),
+            ],
+            vec![
+                format!(
+                    "removed droid hook at {}",
+                    shown(droid.join("hooks").join(DROID_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "removed shepr droid hook entries from {}",
+                    shown(droid.join("settings.json"))
+                ),
+            ],
+            vec![
+                format!(
+                    "no droid hook found at {}",
+                    shown(droid.join("hooks").join(DROID_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "no shepr droid hook entries found in {}",
+                    shown(droid.join("settings.json"))
+                ),
+            ],
+        ),
+        (
+            Target::Grok,
+            vec![
+                format!(
+                    "installed grok integration hook to {}",
+                    shown(grok.join(GROK_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "registered grok hook config at {}",
+                    shown(grok.join(GROK_HOOK_CONFIG_INSTALL_NAME))
+                ),
+            ],
+            vec![
+                format!(
+                    "removed grok hook at {}",
+                    shown(grok.join(GROK_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "removed grok hook config at {}",
+                    shown(grok.join(GROK_HOOK_CONFIG_INSTALL_NAME))
+                ),
+            ],
+            vec![
+                format!(
+                    "no grok hook found at {}",
+                    shown(grok.join(GROK_HOOK_INSTALL_NAME))
+                ),
+                format!(
+                    "no grok hook config found at {}",
+                    shown(grok.join(GROK_HOOK_CONFIG_INSTALL_NAME))
+                ),
+            ],
+        ),
+    ];
+
+    for (target, installed, removed, absent) in cases {
+        assert_eq!(
+            status_of(target),
+            IntegrationStatusKind::NotInstalled,
+            "{target:?}"
+        );
+        assert_eq!(
+            install_target(&paths, target).expect("install succeeds"),
+            installed,
+            "{target:?}"
+        );
+        assert_eq!(
+            status_of(target),
+            IntegrationStatusKind::Current,
+            "{target:?}"
+        );
+        assert_eq!(
+            uninstall_target(&paths, target).expect("uninstall succeeds"),
+            removed,
+            "{target:?}"
+        );
+        assert_eq!(
+            status_of(target),
+            IntegrationStatusKind::NotInstalled,
+            "{target:?}"
+        );
+        assert_eq!(
+            uninstall_target(&paths, target).expect("a repeat uninstall succeeds"),
+            absent,
+            "{target:?}"
+        );
+    }
+
+    clear_integration_path_env(&env);
+}
+
+/// The notices and the codex config line that only some targets print.
+#[test]
+fn install_and_uninstall_messages_keep_target_specific_lines() {
+    let path = Path::new("/shepr-test/file");
+    let outcome = InstallOutcome::default()
+        .with_artifact(ArtifactRole::Config, path.to_path_buf())
+        .with_notice(format!("requires kimi code {KIMI_MIN_VERSION} or newer"));
+    let messages: Vec<String> = outcome
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.role.install_message("kimi", &artifact.path))
+        .chain(outcome.notices.iter().cloned())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "ensured kimi config at /shepr-test/file".to_string(),
+            format!("requires kimi code {KIMI_MIN_VERSION} or newer"),
+        ]
+    );
+    assert_eq!(
+        ArtifactRole::Config.uninstall_message("codex", path, UninstallState::Preserved),
+        Some("left codex config unchanged at /shepr-test/file".to_string())
+    );
+    assert_eq!(
+        ArtifactRole::TuiConfig.uninstall_message("opencode", path, UninstallState::Updated),
+        Some("removed shepr opencode plugin entry from /shepr-test/file".to_string())
+    );
+    assert_eq!(
+        ArtifactRole::UpdatedHooks.install_message("cursor", path),
+        "updated cursor hooks at /shepr-test/file"
+    );
 }
 
 /// `SHEPR_*` names the shipped assets spell that no shepr process reads or

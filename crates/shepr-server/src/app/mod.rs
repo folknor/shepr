@@ -296,7 +296,7 @@ impl App {
             state
                 .workspaces
                 .get(idx)
-                .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
+                .map(|ws| (idx, ws.focused_pane_id()))
         });
         let mut app = Self {
             state,
@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id);
         assert_eq!(response["result"]["pane"]["focused"], true);
         assert_eq!(app.state.active_index(), Some(0));
-        assert_eq!(app.state.workspaces[0].active_tab, background_tab);
+        assert_eq!(app.state.workspaces[0].active_tab_index(), background_tab);
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
@@ -1403,7 +1403,7 @@ mod tests {
 
         assert_eq!(response["error"]["code"], "agent_pane_unavailable");
         assert_eq!(app.state.workspaces[0].tabs()[0].layout.pane_count(), 1);
-        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
     }
 
     #[tokio::test]

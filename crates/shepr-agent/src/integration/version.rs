@@ -5,7 +5,7 @@ use std::process::{Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_VERSION_PROBE_OUTPUT: usize = 64 * 1024;
 
@@ -54,15 +54,16 @@ pub(crate) fn extract_version_triple(text: &str) -> Option<(u64, u64, u64)> {
 /// proceeds), and `Err` when the installed agent is too old.
 pub(crate) fn enforce_agent_version(
     requirement: &AgentVersionRequirement,
+    timeout: Duration,
 ) -> io::Result<Option<String>> {
     let probe = format!("{} {}", requirement.binary, requirement.args.join(" "));
-    let output = match run_version_probe(requirement, VERSION_PROBE_TIMEOUT) {
+    let output = match run_version_probe(requirement, timeout) {
         Ok(Some(output)) if output.status.success() => output,
         Ok(None) => {
             return Ok(Some(format!(
                 "{} `{probe}` timed out after {} seconds while verifying the installed version; hooks require {} {} or newer",
                 super::INSTALL_WARNING_PREFIX,
-                VERSION_PROBE_TIMEOUT.as_secs(),
+                timeout.as_secs(),
                 requirement.label,
                 requirement.min_version
             )));
@@ -271,17 +272,14 @@ mod tests {
             args: Box::leak(args.into_boxed_slice()),
             min_version: "0.0.0",
         };
-        let started = Instant::now();
-        let output = run_version_probe(&requirement, Duration::from_millis(50))
-            .expect("test probe should run");
+        let warning = enforce_agent_version(&requirement, Duration::from_millis(50))
+            .expect("test probe should run")
+            .expect("timed-out probe should warn");
+        // The outer timeout must reach the process probe, whose direct child
+        // exits while a grandchild still owns stdout. Wait for that fixture
+        // child to finish before the test exits; this sleep is cleanup only.
+        thread::sleep(Duration::from_millis(350));
 
-        let elapsed = started.elapsed();
-        // Let the grandchild finish so it does not outlive the test process.
-        thread::sleep(
-            Duration::from_millis(300).saturating_sub(elapsed) + Duration::from_millis(50),
-        );
-
-        assert!(output.is_none());
-        assert!(elapsed < Duration::from_millis(250));
+        assert!(warning.contains("timed out"));
     }
 }

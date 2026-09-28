@@ -1,10 +1,8 @@
-use std::io::{self, BufRead, BufReader, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::Stream as _;
-
-use shepr_platform::ipc::LocalStream;
+use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError, ConnectionTarget};
 
 // Session management only connects to sockets (the API socket, to stop or
 // probe a server); it never binds one. Binding goes through
@@ -18,7 +16,6 @@ use shepr_core::env::EnvVar;
 
 const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
-const MIN_SOCKET_TIMEOUT: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
@@ -430,32 +427,7 @@ fn stop_socket_with_timeout(
 ) -> Result<(), SessionError> {
     let deadline = Instant::now() + timeout;
     let request = server_stop_request("cli:session:stop");
-    let stream = match shepr_platform::ipc::connect_local_stream(socket_path) {
-        Ok(stream) => stream,
-        Err(error) => {
-            return Err(match shepr_platform::ipc::probe(socket_path) {
-                shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => {
-                    SessionError::NotRunning {
-                        label: label.into(),
-                        path: socket_path.into(),
-                        source: error,
-                    }
-                }
-                shepr_platform::ipc::Liveness::Live
-                | shepr_platform::ipc::Liveness::Unreachable(_) => SessionError::Unreachable {
-                    label: label.into(),
-                    path: socket_path.into(),
-                    source: error,
-                },
-            });
-        }
-    };
-    let stop_response = send_stop_request(stream, &request, deadline)?;
-    if let Some(response) = stop_response
-        && let Some(error) = response.get("error")
-    {
-        return Err(SessionError::Protocol(error.to_string()));
-    }
+    send_stop_request(socket_path, &request, deadline, label)?;
     let stopped = wait_until_stopped_until(stopped_socket_paths, deadline).map_err(|source| {
         SessionError::Io {
             context: format!("could not check whether {label} stopped"),
@@ -542,57 +514,58 @@ fn exact_session_dir_for_delete(
 }
 
 fn send_stop_request(
-    mut stream: LocalStream,
+    socket_path: &Path,
     request: &crate::schema::Request,
     deadline: Instant,
-) -> Result<Option<serde_json::Value>, SessionError> {
-    let Some(write_timeout) = socket_timeout_until(deadline) else {
-        return Ok(None);
-    };
-    if let Err(err) = stream.set_send_timeout(Some(write_timeout))
-        && !stop_timeout_error_allows_wait(&err)
-    {
-        return Err(err.into());
+    label: &str,
+) -> Result<(), SessionError> {
+    if deadline.saturating_duration_since(Instant::now()).is_zero() {
+        return Ok(());
     }
-
-    let request =
-        serde_json::to_vec(request).map_err(|err| SessionError::Protocol(err.to_string()))?;
-    let response = send_stop_request_inner(&mut stream, &request, deadline);
-    match response {
-        Ok(Some(line)) => serde_json::from_str(&line)
-            .map(Some)
-            .map_err(|err| SessionError::Protocol(err.to_string())),
-        Ok(None) => Ok(None),
-        Err(err) if stop_request_error_allows_wait(&err) => Ok(None),
-        Err(err) => Err(err.into()),
+    let client = ApiClient::for_target(ConnectionTarget::SocketPath(socket_path.into()));
+    match client.request_value_until(request, deadline) {
+        Ok(response) if response.get("error").is_some() => {
+            Err(SessionError::Protocol(response["error"].to_string()))
+        }
+        Err(ApiClientDeadlineError::Connect(error)) => {
+            Err(stop_socket_io_error(socket_path, label, error))
+        }
+        Ok(_) | Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => Ok(()),
+        Err(ApiClientDeadlineError::Request(ApiClientError::Io(error)))
+            if stop_request_error_allows_wait(&error) =>
+        {
+            Ok(())
+        }
+        Err(ApiClientDeadlineError::Request(ApiClientError::Io(error))) => Err(error.into()),
+        Err(ApiClientDeadlineError::Request(ApiClientError::Json(error))) => {
+            Err(SessionError::Protocol(error.to_string()))
+        }
+        Err(ApiClientDeadlineError::Request(ApiClientError::ErrorResponse(response))) => {
+            Err(SessionError::Protocol(response.error.message))
+        }
+        Err(ApiClientDeadlineError::Request(ApiClientError::UnexpectedResult(result))) => {
+            Err(SessionError::Protocol(result))
+        }
     }
 }
 
-fn send_stop_request_inner(
-    stream: &mut LocalStream,
-    request: &[u8],
-    deadline: Instant,
-) -> std::io::Result<Option<String>> {
-    stream.write_all(request)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
-
-    let Some(read_timeout) = socket_timeout_until(deadline) else {
-        return Ok(None);
-    };
-    if let Err(err) = stream.set_recv_timeout(Some(read_timeout)) {
-        if stop_timeout_error_allows_wait(&err) {
-            return Ok(None);
+fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> SessionError {
+    match shepr_platform::ipc::probe(socket_path) {
+        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => {
+            SessionError::NotRunning {
+                label: label.into(),
+                path: socket_path.into(),
+                source: error,
+            }
         }
-        return Err(err);
+        shepr_platform::ipc::Liveness::Live | shepr_platform::ipc::Liveness::Unreachable(_) => {
+            SessionError::Unreachable {
+                label: label.into(),
+                path: socket_path.into(),
+                source: error,
+            }
+        }
     }
-
-    let mut line = String::new();
-    let bytes_read = BufReader::new(stream).read_line(&mut line)?;
-    if bytes_read == 0 {
-        return Ok(None);
-    }
-    Ok(Some(line))
 }
 
 fn server_stop_request(id: &str) -> crate::schema::Request {
@@ -600,10 +573,6 @@ fn server_stop_request(id: &str) -> crate::schema::Request {
         id: id.into(),
         method: crate::schema::Method::ServerStop(crate::schema::EmptyParams::default()),
     }
-}
-
-fn stop_timeout_error_allows_wait(err: &std::io::Error) -> bool {
-    err.kind() == std::io::ErrorKind::InvalidInput
 }
 
 fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
@@ -663,17 +632,6 @@ fn time_until(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
-fn socket_timeout_until(deadline: Instant) -> Option<Duration> {
-    socket_timeout_from_remaining(time_until(deadline))
-}
-
-fn socket_timeout_from_remaining(remaining: Duration) -> Option<Duration> {
-    if remaining.is_zero() {
-        return None;
-    }
-    Some(remaining.max(MIN_SOCKET_TIMEOUT))
-}
-
 pub fn validate_name(name: &str) -> Result<(), SessionError> {
     shepr_config::validate_session_name(name)
         .map_err(|SessionNameError(message)| SessionError::InvalidName(message))
@@ -685,18 +643,8 @@ mod tests {
     use interprocess::local_socket::traits::Listener as _;
     use shepr_test_fixtures::AppPathsFixture as _;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
+    use std::io::{BufRead, BufReader, Write};
     use std::sync::atomic::Ordering;
-
-    /// A connected socket pair; the socket file lives in the returned scratch
-    /// directory.
-    fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, ScratchDir) {
-        let scratch = ScratchDir::new(name);
-        let path = scratch.join("s.sock");
-        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
-        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
-        let server = listener.accept().expect("test precondition");
-        (client, server, scratch)
-    }
 
     /// An isolated environment with config and state directories under its
     /// scratch HOME.
@@ -727,29 +675,13 @@ mod tests {
     }
 
     #[test]
-    fn stop_timeout_invalid_input_waits_for_socket_state() {
-        let err = std::io::Error::from(std::io::ErrorKind::InvalidInput);
-
-        assert!(stop_timeout_error_allows_wait(&err));
-    }
-
-    #[test]
-    fn socket_timeouts_are_never_zero_duration() {
-        assert_eq!(socket_timeout_from_remaining(Duration::ZERO), None);
-        assert_eq!(
-            socket_timeout_from_remaining(Duration::from_nanos(1)),
-            Some(MIN_SOCKET_TIMEOUT)
-        );
-        assert_eq!(
-            socket_timeout_from_remaining(Duration::from_millis(10)),
-            Some(Duration::from_millis(10))
-        );
-    }
-
-    #[test]
-    fn stop_request_empty_response_waits_for_socket_state() {
-        let (client, server, _scratch) = local_stream_pair("stop-empty");
+    fn stop_request_empty_response_is_accepted() {
+        let scratch = ScratchDir::new("stop-empty");
+        let socket_path = scratch.join("s.sock");
+        let listener =
+            shepr_platform::ipc::bind_local_listener(&socket_path).expect("bind test stop socket");
         let handle = std::thread::spawn(move || {
+            let server = listener.accept().expect("accept stop request");
             let mut request = String::new();
             BufReader::new(server)
                 .read_line(&mut request)
@@ -758,15 +690,13 @@ mod tests {
         });
         let request = server_stop_request("cli:session:stop");
 
-        assert_eq!(
-            send_stop_request(
-                client,
-                &request,
-                Instant::now() + Duration::from_millis(100)
-            )
-            .expect("test precondition"),
-            None
-        );
+        send_stop_request(
+            &socket_path,
+            &request,
+            Instant::now() + Duration::from_millis(100),
+            "test session",
+        )
+        .expect("test precondition");
         let received = handle.join().expect("test precondition");
         let received: crate::schema::Request =
             serde_json::from_str(&received).expect("stop request is valid API JSON");

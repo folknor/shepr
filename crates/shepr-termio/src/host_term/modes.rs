@@ -2,14 +2,59 @@ use shepr_protocol::KittyKeyboardFlags;
 use shepr_vt::ModifyOtherKeysLevel;
 use std::io::{self, Write};
 
-const DISABLE_HOST_MOUSE_REPORTING_SEQUENCE: &[u8] =
-    b"\x1b[?1006l\x1b[?1016l\x1b[?1015l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l";
+const HOST_MOUSE_REPORTING_DISABLE_SEQUENCES: [&[u8]; 8] = [
+    b"\x1b[?1006l",
+    b"\x1b[?1016l",
+    b"\x1b[?1015l",
+    b"\x1b[?1005l",
+    b"\x1b[?1003l",
+    b"\x1b[?1002l",
+    b"\x1b[?1000l",
+    b"\x1b[?9l",
+];
+
+pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = b"\x1b[?u\x1b[c";
+pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = b"\x1b[16t";
+pub const HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE: &[u8] = b"\x1b[>4;0m";
+pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] = b"\x1b[<1u";
+pub const HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE: &[u8] = b"\x1b[?25h\x1b[0 q";
+pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: &[u8] = b"\x1b[?1016h";
+pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = b"\x1b[22;0t";
+pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = b"\x1b[23;0t";
 
 // 1015 remains in host cleanup for legacy urxvt terminals; the core does not
 // model that host-side mouse encoding.
 pub fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
-    writer.write_all(DISABLE_HOST_MOUSE_REPORTING_SEQUENCE)?;
+    for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES {
+        writer.write_all(sequence)?;
+    }
     writer.flush()
+}
+
+pub fn enable_host_sgr_pixel_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
+    writer.write_all(HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE)?;
+    writer.flush()
+}
+
+pub fn restore_host_keyboard_protocol<W: Write>(
+    writer: &mut W,
+    modify_other_keys_active: bool,
+    kitty_entry_active: bool,
+) -> io::Result<()> {
+    let mut result = Ok(());
+    if modify_other_keys_active {
+        let next = writer.write_all(HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE);
+        if result.is_ok() {
+            result = next;
+        }
+    }
+    if kitty_entry_active {
+        let next = writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE);
+        if result.is_ok() {
+            result = next;
+        }
+    }
+    result
 }
 
 /// Selects the client's keyboard enhancement entry for shell input.
@@ -84,14 +129,18 @@ pub fn set_direct_host_keyboard_protocol<W: Write>(
 
     if active.kitty_flags != next_kitty_flags {
         if active.kitty_flags.is_some() {
-            writer.write_all(b"\x1b[<1u")?;
+            writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE)?;
         }
         if !next_flags.is_empty() {
             write!(writer, "\x1b[>{}u", next_flags.bits())?;
         }
     }
     if active.modify_other_keys_level != next_modify_other_keys_level {
-        write!(writer, "\x1b[>4;{next_modify_other_keys_level}m")?;
+        if next_modify_other_keys_level == ModifyOtherKeysLevel::Off {
+            writer.write_all(HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE)?;
+        } else {
+            write!(writer, "\x1b[>4;{next_modify_other_keys_level}m")?;
+        }
     }
     writer.flush()?;
     *active = DirectHostKeyboardState {
@@ -214,13 +263,10 @@ mod tests {
     fn clears_all_known_host_mouse_modes() {
         let mut output = Vec::new();
         clear_host_mouse_reporting(&mut output).expect("test precondition");
-        let sequence = std::str::from_utf8(&output).expect("test precondition");
-
-        for mode in ["9", "1000", "1002", "1003", "1005", "1006", "1015", "1016"] {
-            assert!(
-                sequence.contains(&format!("\x1b[?{mode}l")),
-                "missing mouse mode {mode}"
-            );
+        let mut expected = Vec::new();
+        for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES {
+            expected.extend_from_slice(sequence);
         }
+        assert_eq!(output, expected);
     }
 }

@@ -37,11 +37,11 @@ pub(crate) enum SessionCliError {
 }
 
 impl SessionCliError {
-    fn code(&self) -> &'static str {
+    fn code(&self) -> shepr_api::error::ApiErrorCode {
         match self {
-            Self::InvalidName(_) => "invalid_session_name",
-            Self::Stop(_) => "session_stop_failed",
-            Self::Delete(_) => "session_delete_failed",
+            Self::InvalidName(_) => shepr_api::error::ApiErrorCode::InvalidSessionName,
+            Self::Stop(_) => shepr_api::error::ApiErrorCode::SessionStopFailed,
+            Self::Delete(_) => shepr_api::error::ApiErrorCode::SessionDeleteFailed,
         }
     }
 }
@@ -67,7 +67,12 @@ impl CliError {
             },
             Self::Session(error) => eprintln!(
                 "{}",
-                serde_json::json!({ "error": { "code": error.code(), "message": error.to_string() } })
+                serde_json::json!({
+                    "error": shepr_api::schema::ErrorBody::new(
+                        &error.code(),
+                        error.to_string(),
+                    )
+                })
             ),
             Self::Usage(message) => {
                 eprintln!("error: {message}");

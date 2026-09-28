@@ -87,6 +87,41 @@ impl ApiClient {
         read_json_line(&mut reader).map_err(normalize_socket_timeout)
     }
 
+    pub(crate) fn request_value_until(
+        &self,
+        request: &Request,
+        deadline: Instant,
+    ) -> Result<serde_json::Value, ApiClientDeadlineError> {
+        let mut stream = self.connect().map_err(ApiClientDeadlineError::Connect)?;
+        let send_timeout = deadline.saturating_duration_since(Instant::now());
+        if send_timeout.is_zero() {
+            return Err(ApiClientDeadlineError::Request(ApiClientError::Io(
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for the shepr server to respond",
+                ),
+            )));
+        }
+        // Some local socket wrappers reject SO_SNDTIMEO; the deadline reader
+        // still bounds response reads in that case.
+        if let Err(error) = stream.set_send_timeout(Some(send_timeout))
+            && error.kind() != io::ErrorKind::InvalidInput
+        {
+            return Err(ApiClientDeadlineError::Request(error.into()));
+        }
+        write_request(&mut stream, request)
+            .map_err(normalize_socket_timeout)
+            .map_err(ApiClientDeadlineError::Request)?;
+
+        let mut reader = BufReader::new(shepr_platform::ipc::DeadlineReader::new(
+            &mut stream,
+            deadline,
+        ));
+        read_json_line(&mut reader)
+            .map_err(normalize_socket_timeout)
+            .map_err(ApiClientDeadlineError::Request)
+    }
+
     pub fn status(&self) -> Result<crate::RuntimeStatus, ApiClientError> {
         self.read_status(None)
     }
@@ -205,6 +240,11 @@ pub enum ApiClientError {
     ErrorResponse(ErrorResponse),
     EmptyResponse,
     UnexpectedResult(String),
+}
+
+pub(crate) enum ApiClientDeadlineError {
+    Connect(io::Error),
+    Request(ApiClientError),
 }
 
 impl fmt::Display for ApiClientError {

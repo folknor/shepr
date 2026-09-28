@@ -13,7 +13,6 @@ shepr-vt = { path = "../shepr-vt" }
 tracing = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 shepr-test-support = { path = "../shepr-test-support" }
 
 [lints]

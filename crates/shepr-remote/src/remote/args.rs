@@ -15,7 +15,20 @@ impl RemoteKeybindings {
         }
     }
 
-    pub(super) fn as_str(self) -> &'static str {
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let var = shepr_core::env::EnvVar::SheprRemoteKeybindings;
+        match shepr_core::env::read_text(var) {
+            Ok(Some(value)) => Self::parse(&value)
+                .map(Some)
+                .map_err(|_| format!("{var} must be 'local' or 'server', got {value:?}")),
+            Ok(None) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// The value both the `--remote-keybindings` flag and the environment
+    /// variable carry.
+    pub fn to_env_value(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Server => "server",
@@ -53,6 +66,23 @@ pub fn remote_launch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_core::env::EnvVar;
+    use shepr_test_support::IsolatedEnv;
+
+    #[test]
+    fn remote_keybindings_environment_round_trips() {
+        let env = IsolatedEnv::new();
+        env.remove(EnvVar::SheprRemoteKeybindings);
+        assert_eq!(RemoteKeybindings::from_env().expect("unset env"), None);
+
+        for keybindings in [RemoteKeybindings::Local, RemoteKeybindings::Server] {
+            env.set(EnvVar::SheprRemoteKeybindings, keybindings.to_env_value());
+            assert_eq!(
+                RemoteKeybindings::from_env().expect("valid env"),
+                Some(keybindings)
+            );
+        }
+    }
 
     #[test]
     fn remote_launch_defaults_to_local_keybindings() {

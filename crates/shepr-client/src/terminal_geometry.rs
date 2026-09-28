@@ -275,8 +275,6 @@ pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io:
     writer.flush()
 }
 
-const HOST_CELL_SIZE_QUERY: &[u8] = b"\x1b[16t";
-
 /// Asks the host terminal for its cell size in pixels. Without a reply the
 /// client falls back to the last or the default cell size, which degrades
 /// pixel mouse and resize reporting to a guess, so a query that never went out
@@ -297,7 +295,7 @@ pub(super) fn host_cell_size_query_required(pixel_geometry_enabled: bool) -> boo
 }
 
 pub(super) fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Result<()> {
-    writer.write_all(HOST_CELL_SIZE_QUERY)?;
+    writer.write_all(shepr_termio::host_term::modes::HOST_CELL_SIZE_QUERY_SEQUENCE)?;
     writer.flush()
 }
 

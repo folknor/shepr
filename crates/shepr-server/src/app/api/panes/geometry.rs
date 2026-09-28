@@ -811,24 +811,6 @@ impl App {
         };
 
         let previous_focus = self.state.current_pane_focus_target();
-        let taken = match self
-            .state
-            .workspaces
-            .get_mut(source_ws_idx)
-            .and_then(|ws| ws.take_pane_for_move(source_pane_id))
-        {
-            Some(taken) => taken,
-            None => {
-                return failure(
-                    id,
-                    shepr_api::error::ApiErrorCode::PaneMoveFailed,
-                    "source pane could not be moved",
-                );
-            }
-        };
-        let source_removed_tab_id = taken.removed_tab_idx.map(|_| previous_tab_id.clone());
-        let source_workspace_empty = taken.workspace_empty;
-        let moved = taken.moved;
         let cross_workspace = match &resolved {
             ResolvedPaneMoveDestination::ExistingTab {
                 cross_workspace, ..
@@ -838,132 +820,192 @@ impl App {
             }
             ResolvedPaneMoveDestination::NewWorkspace { .. } => true,
         };
-        if cross_workspace && let Ok(alias) = previous_pane_id.parse() {
-            self.state
-                .public_pane_id_aliases
-                .insert(alias, source_pane_id);
-        }
+        let source_is_only_pane = self
+            .state
+            .workspaces
+            .get(source_ws_idx)
+            .is_some_and(|ws| ws.pane_count() == 1);
 
         let mut closed_workspace_id = None;
-        if source_workspace_empty && cross_workspace {
-            let active_was_source = self
-                .state
-                .active
-                .as_ref()
-                .is_some_and(|id| id.as_str() == previous_workspace_id);
-            let selected_was_source = self
-                .state
-                .selected
-                .as_ref()
-                .is_some_and(|id| id.as_str() == previous_workspace_id);
-            self.state.workspaces.remove(source_ws_idx);
-            closed_workspace_id = Some(previous_workspace_id.clone());
-            if self.state.workspaces.is_empty() {
-                self.state.set_active_index(None);
-                self.state.set_selected_index(None);
-            } else {
-                let replacement = source_ws_idx.min(self.state.workspaces.len() - 1);
-                if active_was_source {
-                    self.state.set_active_index(Some(replacement));
-                }
-                if selected_was_source {
-                    self.state.set_selected_index(Some(replacement));
-                }
-            }
-        }
-
         let mut created_workspace = false;
         let mut created_tab = false;
+        let source_removed_tab_id;
         let (target_ws_idx, target_tab_idx, moved_pane_id) = match resolved {
-            ResolvedPaneMoveDestination::ExistingTab {
-                tab_id,
-                target_pane_id,
-                split,
-                ratio,
-                cross_workspace: _,
-            } => {
-                let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
-                    self.recover_failed_pane_move(recovery_context, moved);
+            ResolvedPaneMoveDestination::NewTab { label, .. } if !cross_workspace => {
+                // One workspace call takes the pane and builds its new tab, so
+                // a workspace whose only pane moves never holds an empty tab.
+                let Some(new_tab) = self
+                    .state
+                    .workspaces
+                    .get_mut(source_ws_idx)
+                    .and_then(|ws| ws.move_pane_to_new_tab(source_pane_id, label))
+                else {
                     return failure(
                         id,
                         shepr_api::error::ApiErrorCode::PaneMoveFailed,
-                        "target tab disappeared",
+                        "source pane could not be moved",
                     );
                 };
-                let direction = split_direction_to_layout(&split);
-                let inserted = match self.state.workspaces.get_mut(target_ws_idx) {
-                    Some(ws) => ws.insert_moved_pane_into_tab(
-                        target_tab_idx,
+                source_removed_tab_id = new_tab.removed_tab_idx.map(|_| previous_tab_id.clone());
+                created_tab = true;
+                (source_ws_idx, new_tab.tab_idx, source_pane_id)
+            }
+            resolved => {
+                let moved = if source_is_only_pane && cross_workspace {
+                    // The source workspace goes away with its only pane: take
+                    // it out of the list whole instead of emptying it in place.
+                    let active_was_source = self
+                        .state
+                        .active
+                        .as_ref()
+                        .is_some_and(|id| id.as_str() == previous_workspace_id);
+                    let selected_was_source = self
+                        .state
+                        .selected
+                        .as_ref()
+                        .is_some_and(|id| id.as_str() == previous_workspace_id);
+                    let workspace = self.state.workspaces.remove(source_ws_idx);
+                    let moved = match workspace.into_only_pane() {
+                        Ok(moved) => moved,
+                        Err(workspace) => {
+                            self.state.workspaces.insert(source_ws_idx, *workspace);
+                            return failure(
+                                id,
+                                shepr_api::error::ApiErrorCode::PaneMoveFailed,
+                                "source pane could not be moved",
+                            );
+                        }
+                    };
+                    closed_workspace_id = Some(previous_workspace_id.clone());
+                    if self.state.workspaces.is_empty() {
+                        self.state.set_active_index(None);
+                        self.state.set_selected_index(None);
+                    } else {
+                        let replacement = source_ws_idx.min(self.state.workspaces.len() - 1);
+                        if active_was_source {
+                            self.state.set_active_index(Some(replacement));
+                        }
+                        if selected_was_source {
+                            self.state.set_selected_index(Some(replacement));
+                        }
+                    }
+                    source_removed_tab_id = Some(previous_tab_id.clone());
+                    moved
+                } else {
+                    let Some(taken) = self
+                        .state
+                        .workspaces
+                        .get_mut(source_ws_idx)
+                        .and_then(|ws| ws.take_pane_for_move(source_pane_id))
+                    else {
+                        return failure(
+                            id,
+                            shepr_api::error::ApiErrorCode::PaneMoveFailed,
+                            "source pane could not be moved",
+                        );
+                    };
+                    source_removed_tab_id = taken.removed_tab_idx.map(|_| previous_tab_id.clone());
+                    taken.moved
+                };
+                if cross_workspace && let Ok(alias) = previous_pane_id.parse() {
+                    self.state
+                        .public_pane_id_aliases
+                        .insert(alias, source_pane_id);
+                }
+                match resolved {
+                    ResolvedPaneMoveDestination::ExistingTab {
+                        tab_id,
                         target_pane_id,
-                        moved,
-                        direction,
+                        split,
                         ratio,
-                        focus,
-                    ),
-                    None => Err(moved),
-                };
-                let moved_pane_id = match inserted {
-                    Ok(pane_id) => pane_id,
-                    Err(moved) => {
-                        self.recover_failed_pane_move(recovery_context, moved);
-                        return failure(
-                            id,
-                            shepr_api::error::ApiErrorCode::PaneMoveFailed,
-                            "target pane could not be split",
-                        );
+                        cross_workspace: _,
+                    } => {
+                        let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id)
+                        else {
+                            self.recover_failed_pane_move(recovery_context, moved);
+                            return failure(
+                                id,
+                                shepr_api::error::ApiErrorCode::PaneMoveFailed,
+                                "target tab disappeared",
+                            );
+                        };
+                        let direction = split_direction_to_layout(&split);
+                        let inserted = match self.state.workspaces.get_mut(target_ws_idx) {
+                            Some(ws) => ws.insert_moved_pane_into_tab(
+                                target_tab_idx,
+                                target_pane_id,
+                                moved,
+                                direction,
+                                ratio,
+                                focus,
+                            ),
+                            None => Err(moved),
+                        };
+                        let moved_pane_id = match inserted {
+                            Ok(pane_id) => pane_id,
+                            Err(moved) => {
+                                self.recover_failed_pane_move(recovery_context, moved);
+                                return failure(
+                                    id,
+                                    shepr_api::error::ApiErrorCode::PaneMoveFailed,
+                                    "target pane could not be split",
+                                );
+                            }
+                        };
+                        (target_ws_idx, target_tab_idx, moved_pane_id)
                     }
-                };
-                (target_ws_idx, target_tab_idx, moved_pane_id)
-            }
-            ResolvedPaneMoveDestination::NewTab {
-                workspace_id,
-                label,
-            } => {
-                let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                    self.recover_failed_pane_move(recovery_context, moved);
-                    return failure(
-                        id,
-                        shepr_api::error::ApiErrorCode::PaneMoveFailed,
-                        "target workspace disappeared",
-                    );
-                };
-                let moved_pane_id = moved.pane_id;
-                let target_tab_idx = match self.state.workspaces.get_mut(target_ws_idx) {
-                    Some(ws) => ws.create_tab_from_existing_pane(moved, label),
-                    None => {
-                        self.recover_failed_pane_move(recovery_context, moved);
-                        return failure(
-                            id,
-                            shepr_api::error::ApiErrorCode::PaneMoveFailed,
-                            "target workspace disappeared",
-                        );
+                    ResolvedPaneMoveDestination::NewTab {
+                        workspace_id,
+                        label,
+                    } => {
+                        let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
+                            self.recover_failed_pane_move(recovery_context, moved);
+                            return failure(
+                                id,
+                                shepr_api::error::ApiErrorCode::PaneMoveFailed,
+                                "target workspace disappeared",
+                            );
+                        };
+                        let moved_pane_id = moved.pane_id;
+                        let target_tab_idx = match self.state.workspaces.get_mut(target_ws_idx) {
+                            Some(ws) => ws.create_tab_from_existing_pane(moved, label),
+                            None => {
+                                self.recover_failed_pane_move(recovery_context, moved);
+                                return failure(
+                                    id,
+                                    shepr_api::error::ApiErrorCode::PaneMoveFailed,
+                                    "target workspace disappeared",
+                                );
+                            }
+                        };
+                        created_tab = true;
+                        (target_ws_idx, target_tab_idx, moved_pane_id)
                     }
-                };
-                created_tab = true;
-                (target_ws_idx, target_tab_idx, moved_pane_id)
-            }
-            ResolvedPaneMoveDestination::NewWorkspace { label, tab_label } => {
-                let identity_cwd = self.state.terminals.get(&source_terminal_id).map_or_else(
-                    || {
-                        self.paths
-                            .current_dir()
-                            .unwrap_or_else(|| std::path::Path::new("/"))
-                            .to_path_buf()
-                    },
-                    |terminal| terminal.cwd.clone(),
-                );
-                let moved_pane_id = moved.pane_id;
-                let workspace = shepr_mux::workspace::Workspace::from_existing_pane(
-                    label,
-                    tab_label,
-                    &identity_cwd,
-                    moved,
-                );
-                self.state.workspaces.push(workspace);
-                let target_ws_idx = self.state.workspaces.len() - 1;
-                created_workspace = true;
-                created_tab = true;
-                (target_ws_idx, 0, moved_pane_id)
+                    ResolvedPaneMoveDestination::NewWorkspace { label, tab_label } => {
+                        let identity_cwd =
+                            self.state.terminals.get(&source_terminal_id).map_or_else(
+                                || {
+                                    self.paths
+                                        .current_dir()
+                                        .unwrap_or_else(|| std::path::Path::new("/"))
+                                        .to_path_buf()
+                                },
+                                |terminal| terminal.cwd.clone(),
+                            );
+                        let moved_pane_id = moved.pane_id;
+                        let workspace = shepr_mux::workspace::Workspace::from_existing_pane(
+                            label,
+                            tab_label,
+                            &identity_cwd,
+                            moved,
+                        );
+                        self.state.workspaces.push(workspace);
+                        let target_ws_idx = self.state.workspaces.len() - 1;
+                        created_workspace = true;
+                        created_tab = true;
+                        (target_ws_idx, 0, moved_pane_id)
+                    }
+                }
             }
         };
 

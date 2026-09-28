@@ -7,12 +7,6 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
 use shepr_protocol::KittyKeyboardFlags;
 
-use super::model::KITTY_FLAG_REPORT_ALL_KEYS;
-
-const KITTY_FLAG_REPORT_EVENT_TYPES: u16 = KittyKeyboardFlags::REPORT_EVENT_TYPES.bits();
-const KITTY_FLAG_REPORT_ALTERNATE_KEYS: u16 = KittyKeyboardFlags::REPORT_ALTERNATE_KEYS.bits();
-const KITTY_FLAG_REPORT_ASSOCIATED_TEXT: u16 = KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT.bits();
-
 /// Encode a key event for a PTY child using the supported subset of the pane's
 /// negotiated keyboard protocol.
 /// Full Kitty report-all fidelity is deliberately omitted because agent and shell
@@ -231,8 +225,9 @@ fn push_mouse_codepoint(bytes: &mut Vec<u8>, value: u32) -> Option<()> {
 /// Returns None if the key doesn't need CSI u (unmodified basic keys).
 fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
     let mods = key.modifiers;
+    // KittyKeyboardFlags is a wire newtype with named bits, not bitflags' `contains` API.
     let event_suffix = kitty_event_suffix(key, flags);
-    let report_all_keys = flags & KITTY_FLAG_REPORT_ALL_KEYS != 0;
+    let report_all_keys = flags & KittyKeyboardFlags::REPORT_ALL_KEYS.bits() != 0;
 
     if !report_all_keys
         && key.modifiers.is_empty()
@@ -299,7 +294,7 @@ fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
     }
     // Associated text depends on REPORT_ALL_KEYS; the spec says the flag is
     // ignored without it.
-    if report_all_keys && flags & KITTY_FLAG_REPORT_ASSOCIATED_TEXT != 0 {
+    if report_all_keys && flags & KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT.bits() != 0 {
         write_associated_text(&mut sequence, key).ok()?;
     }
     sequence.push('u');
@@ -365,8 +360,6 @@ pub struct KeyEncodeModes {
     pub application_cursor: bool,
 }
 
-const KITTY_FLAG_DISAMBIGUATE: u16 = KittyKeyboardFlags::DISAMBIGUATE.bits();
-
 /// Encode a non-text key (Enter, Tab, arrows, function keys, ...) the way the
 /// child negotiated: kitty flags first, then modifyOtherKeys, then legacy
 /// xterm sequences honouring application cursor mode.
@@ -381,9 +374,9 @@ pub fn encode_terminal_key_with_modes(mut key: TerminalKey, modes: KeyEncodeMode
         if key.code == KeyCode::Esc
             && key.modifiers.is_empty()
             && key.kind != crossterm::event::KeyEventKind::Release
-            && modes.kitty_flags & KITTY_FLAG_DISAMBIGUATE != 0
-            && modes.kitty_flags & KITTY_FLAG_REPORT_EVENT_TYPES == 0
-            && modes.kitty_flags & KITTY_FLAG_REPORT_ALL_KEYS == 0
+            && modes.kitty_flags & KittyKeyboardFlags::DISAMBIGUATE.bits() != 0
+            && modes.kitty_flags & KittyKeyboardFlags::REPORT_EVENT_TYPES.bits() == 0
+            && modes.kitty_flags & KittyKeyboardFlags::REPORT_ALL_KEYS.bits() == 0
         {
             return b"\x1b[27u".to_vec();
         }
@@ -728,7 +721,7 @@ fn canonical_kitty_char(ch: char, mods: KeyModifiers) -> char {
 }
 
 fn alternate_shifted_codepoint(key: &TerminalKey, flags: u16) -> Option<u32> {
-    if flags & KITTY_FLAG_REPORT_ALTERNATE_KEYS == 0 {
+    if flags & KittyKeyboardFlags::REPORT_ALTERNATE_KEYS.bits() == 0 {
         return None;
     }
 
@@ -747,7 +740,7 @@ fn alternate_shifted_codepoint(key: &TerminalKey, flags: u16) -> Option<u32> {
 }
 
 fn kitty_event_suffix(key: &TerminalKey, flags: u16) -> Option<u8> {
-    if flags & KITTY_FLAG_REPORT_EVENT_TYPES == 0 {
+    if flags & KittyKeyboardFlags::REPORT_EVENT_TYPES.bits() == 0 {
         return None;
     }
 

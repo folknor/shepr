@@ -1109,7 +1109,7 @@ fn terminal_client_endpoint_request_error_removes_client() {
 async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("shell-only-label");
-    let pane_id = workspace.focused_pane_id().expect("focused pane");
+    let pane_id = workspace.focused_pane_id();
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
@@ -1277,7 +1277,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
 
 fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> shepr_core::layout::PaneId {
     let workspace = shepr_mux::workspace::Workspace::test_new("shared-view");
-    let pane_id = workspace.focused_pane_id().expect("focused pane");
+    let pane_id = workspace.focused_pane_id();
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
@@ -3843,7 +3843,7 @@ fn retained_test_server_with_control(
 ) {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("test");
-    let pane_id = workspace.focused_pane_id().expect("focused pane");
+    let pane_id = workspace.focused_pane_id();
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(

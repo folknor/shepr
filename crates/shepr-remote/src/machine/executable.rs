@@ -23,7 +23,7 @@ impl RemoteExecutable {
         // The command is nested inside /bin/sh -c and then parsed by the remote
         // login shell. Keep paths as plain shell words because nested quote
         // escaping is not reliable across the non-POSIX login shells we support.
-        if !has_only_shell_safe_characters(&value) {
+        if !Self::is_shell_plain_word(&value) {
             return Err(
                 "remote Shepr executable path must contain only unquoted shell-safe characters"
                     .into(),
@@ -39,21 +39,25 @@ impl RemoteExecutable {
         &self.0
     }
 
+    // Discovery uses this after parse rejects a path to keep its shell-quoting
+    // explanation distinct from other rejection reasons; removing the second
+    // classification requires changing that caller to consume a typed reason.
     /// Whether `value` would be rejected only because a nested remote shell
     /// command could not use it as a plain word.
     pub fn needs_shell_quoting(value: &str) -> bool {
-        !has_only_shell_safe_characters(value)
+        !value.is_empty() && !Self::is_shell_plain_word(value)
     }
-}
 
-fn has_only_shell_safe_characters(value: &str) -> bool {
-    value.chars().all(|ch| {
-        ch.is_ascii_alphanumeric()
-            || matches!(
-                ch,
-                '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-            )
-    })
+    pub(crate) fn is_shell_plain_word(value: &str) -> bool {
+        !value.is_empty()
+            && value.chars().all(|ch| {
+                ch.is_ascii_alphanumeric()
+                    || matches!(
+                        ch,
+                        '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
+                    )
+            })
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +76,25 @@ mod tests {
                 RemoteExecutable::parse(path.to_owned()).is_ok(),
                 valid,
                 "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_quote_uses_the_remote_executable_plain_word_predicate() {
+        for value in [
+            "",
+            "/usr/bin/shepr",
+            "user@host:22",
+            "/home/a b/shepr",
+            "/home/user's/shepr",
+            "/home/$user/shepr",
+            "/opt/shepr-0.1+dev",
+        ] {
+            assert_eq!(
+                crate::shell_quote(value) == value,
+                RemoteExecutable::is_shell_plain_word(value),
+                "{value:?}"
             );
         }
     }

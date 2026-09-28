@@ -38,7 +38,7 @@ fn read_clipboard_text_bounded() -> Option<String> {
 fn read_clipboard_text_bounded_with(
     in_flight: &'static std::sync::atomic::AtomicBool,
     timeout: std::time::Duration,
-    read: fn() -> Option<String>,
+    read: impl FnOnce() -> Option<String> + Send + 'static,
 ) -> Option<String> {
     use std::sync::atomic::Ordering;
 
@@ -1051,28 +1051,41 @@ mod tests {
     #[test]
     fn hung_clipboard_helper_is_abandoned_and_not_waited_on_again() {
         static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        fn hung() -> Option<String> {
-            std::thread::sleep(std::time::Duration::from_millis(400));
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let (finished_sender, finished_receiver) = std::sync::mpsc::channel();
+        let gated_read = move || {
+            started_sender.send(()).expect("test receiver is waiting");
+            release_receiver
+                .recv()
+                .expect("test releases the clipboard reader");
+            finished_sender.send(()).expect("test receiver is waiting");
             Some("late".to_owned())
-        }
+        };
 
-        let started = std::time::Instant::now();
-        let first = read_clipboard_text_bounded_with(
-            &IN_FLIGHT,
-            std::time::Duration::from_millis(20),
-            hung,
-        );
+        let first =
+            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::ZERO, gated_read);
         assert!(first.is_none());
+        started_receiver
+            .recv()
+            .expect("clipboard reader starts before the retry");
         // The abandoned reader is still running: the next paste gives up at once.
         let second =
-            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), hung);
+            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), || {
+                Some("should not run".to_owned())
+            });
         assert!(second.is_none());
-        assert!(started.elapsed() < std::time::Duration::from_millis(300));
 
-        // Once the helper exits, reads work again.
+        release_sender
+            .send(())
+            .expect("clipboard reader is still waiting");
+        finished_receiver
+            .recv()
+            .expect("clipboard reader returns after release");
         while IN_FLIGHT.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::yield_now();
         }
+        // Once the helper exits, reads work again.
         let third =
             read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), || {
                 Some("clip".to_owned())

@@ -191,7 +191,7 @@ impl RemoteExecutable {
 pub(super) fn posix_remote_output_command(command: &str) -> String {
     let command = command.trim_end();
     format!(
-        "echo; echo {REMOTE_OUTPUT_READY_MARKER}; {command}; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status"
+        "echo; echo {REMOTE_OUTPUT_READY_MARKER}; {command}; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status"
     )
 }
 
@@ -236,7 +236,7 @@ pub(super) fn reattach_command(
     let mut command = format!("{program} --remote {target}");
     if keybindings != RemoteKeybindings::Local {
         command.push_str(" --remote-keybindings ");
-        command.push_str(keybindings.as_str());
+        command.push_str(keybindings.to_env_value());
     }
     if session_name != shepr_config::DEFAULT_SESSION_NAME {
         command.push_str(" --session ");
@@ -246,15 +246,7 @@ pub(super) fn reattach_command(
 }
 
 pub fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(
-                    ch,
-                    '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-                )
-        })
-    {
+    if RemoteExecutable::is_shell_plain_word(value) {
         return value.to_string();
     }
 

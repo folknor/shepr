@@ -117,6 +117,34 @@ impl ProtocolCellSize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct WireGridSize {
+        cols: u16,
+        rows: u16,
+    }
+
+    #[derive(Serialize)]
+    struct WireReceivedGeometry {
+        grid: WireGridSize,
+        cell: Option<CellPx>,
+        pixel_mouse: bool,
+    }
+
+    fn decode_received_geometry(
+        cols: u16,
+        rows: u16,
+        cell: Option<CellPx>,
+        pixel_mouse: bool,
+    ) -> Result<TerminalGeometry, crate::codec::CodecError> {
+        let bytes = crate::codec::to_vec(&WireReceivedGeometry {
+            grid: WireGridSize { cols, rows },
+            cell,
+            pixel_mouse,
+        })?;
+        crate::codec::from_slice_exact(&bytes)
+    }
 
     #[test]
     fn clamp_clears_exactness_and_preserves_unknown() {
@@ -132,17 +160,7 @@ mod tests {
 
     #[test]
     fn received_geometry_rejects_pixel_mouse_without_cells() {
-        let invalid = serde_json::json!({
-            "grid": { "cols": 80, "rows": 24 },
-            "cell": null,
-            "pixel_mouse": true,
-        });
-        assert!(serde_json::from_value::<TerminalGeometry>(invalid).is_err());
-        let empty_grid = serde_json::json!({
-            "grid": { "cols": 0, "rows": 24 },
-            "cell": null,
-            "pixel_mouse": false,
-        });
-        assert!(serde_json::from_value::<TerminalGeometry>(empty_grid).is_err());
+        assert!(decode_received_geometry(80, 24, None, true).is_err());
+        assert!(decode_received_geometry(0, 24, None, false).is_err());
     }
 }

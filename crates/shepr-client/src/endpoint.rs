@@ -31,6 +31,13 @@ impl ClientEndpointId {
         matches!(self, Self::Local)
     }
 
+    pub(crate) fn display_label(&self) -> &'static str {
+        match self {
+            Self::Local => "Local",
+            Self::Ssh(_) => "Unknown endpoint",
+        }
+    }
+
     pub(crate) fn storage_key(&self) -> String {
         match self {
             Self::Local => "local".into(),
@@ -58,6 +65,17 @@ mod tests {
         assert_eq!(
             ClientEndpointId::Ssh(profile).storage_key(),
             "ssh:0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn endpoint_display_labels_have_a_single_local_name() {
+        let profile =
+            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
+        assert_eq!(ClientEndpointId::Local.display_label(), "Local");
+        assert_eq!(
+            ClientEndpointId::Ssh(profile).display_label(),
+            "Unknown endpoint"
         );
     }
 }

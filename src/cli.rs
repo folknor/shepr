@@ -823,15 +823,15 @@ fn ensure_server_build_matches(
     }
     let response = shepr_api::schema::ErrorResponse {
         id: request_id.to_owned(),
-        error: shepr_api::schema::ErrorBody {
-            code: "build_mismatch".into(),
-            message: format!(
+        error: shepr_api::schema::ErrorBody::new(
+            &shepr_api::error::ApiErrorCode::BuildMismatch,
+            format!(
                 "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
                 shepr_protocol::BUILD_ID,
                 status.build_id,
                 target::restart_guidance(context)
             ),
-        },
+        ),
     };
 
     Err(CliError::Response(response))

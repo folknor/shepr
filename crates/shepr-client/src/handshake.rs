@@ -33,17 +33,14 @@ pub(super) enum ClientProcessRole {
 /// startup rather than guessing.
 impl ClientProcessRole {
     pub(super) fn from_env() -> Result<Self, String> {
-        let var = shepr_core::env::EnvVar::SheprRemoteKeybindings;
-        match shepr_core::env::read_text(var) {
-            Ok(Some(value)) if value == "server" => Ok(Self::Remote {
+        match shepr_remote::RemoteKeybindings::from_env()? {
+            Some(shepr_remote::RemoteKeybindings::Server) => Ok(Self::Remote {
                 keybindings: shell::ClientShellKeybindingSource::Endpoint,
             }),
-            Ok(Some(value)) if value == "local" => Ok(Self::Remote {
+            Some(shepr_remote::RemoteKeybindings::Local) => Ok(Self::Remote {
                 keybindings: shell::ClientShellKeybindingSource::RemoteLocal,
             }),
-            Ok(None) => Ok(Self::Local),
-            Ok(Some(value)) => Err(format!("{var} must be 'local' or 'server', got {value:?}")),
-            Err(error) => Err(error.to_string()),
+            None => Ok(Self::Local),
         }
     }
 

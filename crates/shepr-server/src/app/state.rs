@@ -170,10 +170,9 @@ impl AppState {
     pub(crate) fn refresh_active_tab_id(&mut self) {
         self.active_tab_id = self.active_index().and_then(|index| {
             let workspace = self.workspaces.get(index)?;
-            let tab = workspace.tabs().get(workspace.active_tab)?;
             Some(shepr_protocol::PublicTabId::new(
                 workspace.id.to_string(),
-                tab.number,
+                workspace.active_tab().number,
             ))
         });
     }
@@ -348,7 +347,7 @@ impl AppState {
             .active_index()
             .expect("non-empty app state must have active workspace");
         let active_workspace = &self.workspaces[active];
-        let active_tab = &active_workspace.tabs()[active_workspace.active_tab];
+        let active_tab = active_workspace.active_tab();
         assert_eq!(
             self.active_tab_id.as_ref(),
             Some(&shepr_protocol::PublicTabId::new(
@@ -501,8 +500,9 @@ mod tests {
         state.assert_invariants_for_test();
 
         let ws = &mut state.workspaces[0];
-        let active_public = ws.tabs()[ws.active_tab].number;
-        assert_ne!(ws.active_tab + 1, active_public);
+        let active_index = ws.active_tab_index();
+        let active_public = ws.tabs()[active_index].number;
+        assert_ne!(active_index + 1, active_public);
         let new_pane = ws.test_split(ratatui::layout::Direction::Horizontal);
         assert!(ws.public_pane_number(new_pane).is_some());
         state.ensure_test_terminals();

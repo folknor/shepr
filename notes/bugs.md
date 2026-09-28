@@ -39,23 +39,6 @@ Fix suggested: promote `UsableCwd` to the crate root, make `TerminalState::cwd`
 private behind `cwd()` / `set_cwd(PaneCwd)`, and deserialize `PaneSnapshot::cwd`
 through it.
 
-## BUG-004 - `impl Deref for Workspace` aborts the server on state the API can reach
-
-`crates/shepr-mux/src/workspace.rs`: `deref` does
-`self.tabs.get(self.active_tab).expect("workspace must have a tab when implicitly
-dereferenced")`. Every `Tab` method is silently available on `Workspace`, and the
-one-tab invariant is enforced by an `expect` in a `Deref` impl. `active_tab` is
-`pub` and `tabs_mut()` hands out `&mut [Tab]` to any crate, so a server-side
-caller can put `active_tab` out of range and the next `ws.panes` - which reads as
-a field access - aborts the server.
-
-Fix suggested: delete the `Deref`/`DerefMut` impls, make `active_tab` private,
-and require the existing `active_tab()` / `active_tab_mut()` which return
-`Option`. Related: the crate's one-tab invariant checker
-`Workspace::assert_invariants_for_test` is called only from individual tests,
-never after a production mutation, so the `Deref` panic plus those opt-in calls
-are the whole enforcement today.
-
 ## BUG-016 - The three bun test files never run
 
 **Decision:** deferred; tracked by the "Resolve typescript question" item in
@@ -138,36 +121,6 @@ Since the config directory name no longer changes under `cfg!(test)`, a test
 that reaches `AppPaths::resolve()` without an `IsolatedEnv` resolves the real
 `~/.config/shepr`, which is what makes this class dangerous rather than merely
 untidy.
-
-## BUG-075 - Tests whose assertions are races against the wall clock
-
-**Decision (partial):** the clock seam is adopted from broadarrow, incrementally
-as part of the hygiene work: time is passed in rather than read inside logic,
-held per subsystem by scoped textlints in the shape of broadarrow's
-`control-loop-reads-the-clock-seam` (HYGP-001). That is the injection point the
-common cause below names. Open: each of the four tests, as its subsystem gets
-the seam.
-
-Called out as flaky (not merely slow) by their hunters:
-
-- `crates/shepr-client/src/shell/input/input.rs`: one clipboard test sleeps
-  400 ms inside a fake reader and asserts `started.elapsed() <
-  Duration::from_millis(300)` - on a loaded machine a coin flip, and the 400 ms
-  is paid on every run.
-- `crates/shepr-agent/src/integration/version.rs::version_probe_deadline_includes_inherited_stdout`
-  asserts `elapsed < 250ms` after a real 300 ms sleep and spawns `/bin/sh`.
-- `crates/shepr-vt/src/tests.rs::synchronized_output_buffers_until_end_or_timeout`
-  sleeps through vte's 150 ms timeout and asserts
-  `!flush_expired_synchronized_output` immediately after a write, which the
-  hunter said will flake under load.
-- `crates/shepr-remote/src/remote/ssh_agent.rs::registration_retries_when_the_api_is_initially_missing`
-  polls at 10 ms against a 5-second wall-clock deadline and depends on thread
-  scheduling.
-
-The common cause named across reports is that these timeouts are `Instant`-based
-constants with no injection point; `SshAgentLease::refresh_at(now)`,
-`EndpointCatalogWatch::poll(now)` and `shepr-mux`'s `terminal/state` are cited as
-the pattern that works.
 
 ## BUG-059 - Two `#[cfg(test)]` shortcuts make every agent-hosting assertion unfalsifiable
 

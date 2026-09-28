@@ -215,6 +215,7 @@ fn launch() -> CliResult<i32> {
         endpoint_catalog,
         &loaded_config,
         paths,
+        autodetect::SERVER_READY_TIMEOUT,
         shepr_client::run_client_with_launch_config,
     )
     .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;

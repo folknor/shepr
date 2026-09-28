@@ -27,7 +27,7 @@ impl App {
         let focused_tab_id = self.state.active_tab_id.as_ref().map(ToString::to_string);
         let focused_pane_id = self.state.active_index().and_then(|ws_idx| {
             let ws = self.state.workspaces.get(ws_idx)?;
-            self.public_pane_id(ws_idx, ws.focused_pane_id()?)
+            self.public_pane_id(ws_idx, ws.focused_pane_id())
         });
 
         let mut workspaces = Vec::new();

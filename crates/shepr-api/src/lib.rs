@@ -39,18 +39,31 @@ pub struct Outcome {
 }
 
 pub fn serialize_response_or_error<T: serde::Serialize>(request_id: &str, response: &T) -> String {
+    serialize_response_or_error_with_outcome(request_id, response).body
+}
+
+pub(crate) fn serialize_response_or_error_with_outcome<T: serde::Serialize>(
+    request_id: &str,
+    response: &T,
+) -> error::EncodedApiResponse {
     match serde_json::to_string(response) {
-        Ok(response) => response,
+        Ok(body) => error::EncodedApiResponse {
+            body,
+            outcome: "ok",
+        },
         Err(error) => {
             tracing::error!(request_id, %error, "failed to serialize API response");
-            serde_json::json!({
-                "id": request_id,
-                "error": {
-                    "code": error::ApiErrorCode::SerializationError.as_str(),
-                    "message": "failed to serialize API response",
-                },
-            })
-            .to_string()
+            error::EncodedApiResponse {
+                body: serde_json::json!({
+                    "id": request_id,
+                    "error": {
+                        "code": error::ApiErrorCode::SerializationError.as_str(),
+                        "message": "failed to serialize API response",
+                    },
+                })
+                .to_string(),
+                outcome: "error",
+            }
         }
     }
 }

@@ -13,6 +13,7 @@ use super::ConfigAgent;
 
 const MAX_SIDEBAR_ROWS: usize = 16;
 const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
+const MAX_SIDEBAR_RULES: usize = 16;
 const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
 
 fn deserialize_sidebar_rows<'de, D, T>(deserializer: D) -> Result<Vec<Vec<T>>, D::Error>
@@ -117,41 +118,88 @@ pub struct SidebarTokenStyle {
     pub dim: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentSidebarToken {
-    StateIcon,
-    StateText,
-    Machine,
-    Workspace,
-    Tab,
-    Pane,
-    Agent,
-    TerminalTitle,
-    TerminalTitleStripped,
-    Custom(String),
-    Styled {
-        token: Box<AgentSidebarToken>,
-        style: SidebarTokenStyle,
-        rules: Vec<SidebarTokenRule>,
-    },
+macro_rules! define_sidebar_token {
+    (
+        $token:ident,
+        $token_name:ident,
+        $parse_builtin:ident,
+        { $($variant:ident => $name:literal),+ $(,)? }
+    ) => {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum $token {
+            $($variant,)+
+            Custom(String),
+            Styled {
+                token: Box<$token>,
+                style: SidebarTokenStyle,
+                rules: Vec<SidebarTokenRule>,
+            },
+        }
+
+        fn $token_name(token: &$token) -> String {
+            match token {
+                $($token::$variant => $name.into(),)+
+                $token::Custom(name) => format!("${name}"),
+                $token::Styled { token, .. } => $token_name(token),
+            }
+        }
+
+        fn $parse_builtin(name: &str) -> Option<$token> {
+            match name {
+                $($name => Some($token::$variant),)+
+                _ => None,
+            }
+        }
+    };
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SpaceSidebarToken {
-    StateIcon,
-    StateText,
-    Workspace,
-    Branch,
-    GitStatus,
-    Custom(String),
-    Styled {
-        token: Box<SpaceSidebarToken>,
-        style: SidebarTokenStyle,
-        rules: Vec<SidebarTokenRule>,
-    },
-}
+define_sidebar_token!(
+    AgentSidebarToken,
+    agent_token_name,
+    parse_agent_sidebar_builtin,
+    {
+        StateIcon => "state_icon",
+        StateText => "state_text",
+        Machine => "machine",
+        Workspace => "workspace",
+        Tab => "tab",
+        Pane => "pane",
+        Agent => "agent",
+        TerminalTitle => "terminal_title",
+        TerminalTitleStripped => "terminal_title_stripped",
+    }
+);
+
+define_sidebar_token!(
+    SpaceSidebarToken,
+    space_token_name,
+    parse_space_sidebar_builtin,
+    {
+        StateIcon => "state_icon",
+        StateText => "state_text",
+        Workspace => "workspace",
+        Branch => "branch",
+        GitStatus => "git_status",
+    }
+);
 
 impl AgentSidebarToken {
+    fn allows_rules(&self) -> bool {
+        match self {
+            Self::StateIcon => false,
+            Self::StateText
+            | Self::Machine
+            | Self::Workspace
+            | Self::Tab
+            | Self::Pane
+            | Self::Agent
+            | Self::TerminalTitle
+            | Self::TerminalTitleStripped
+            | Self::Custom(_) => true,
+            Self::Styled { token, .. } => token.allows_rules(),
+        }
+    }
+
     pub fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
         match self {
             Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
@@ -168,6 +216,14 @@ impl AgentSidebarToken {
 }
 
 impl SpaceSidebarToken {
+    fn allows_rules(&self) -> bool {
+        match self {
+            Self::StateIcon | Self::GitStatus => false,
+            Self::StateText | Self::Workspace | Self::Branch | Self::Custom(_) => true,
+            Self::Styled { token, .. } => token.allows_rules(),
+        }
+    }
+
     pub fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
         match self {
             Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
@@ -250,13 +306,10 @@ impl RawSidebarToken {
         match self {
             Self::Plain(token) => Ok((token, None, Vec::new())),
             Self::Styled(token) => {
-                if token.rules.len() > 16 {
-                    return Err("sidebar tokens may contain at most 16 rules".into());
-                }
-                if !token.rules.is_empty()
-                    && matches!(token.token.as_str(), "state_icon" | "git_status")
-                {
-                    return Err("sidebar rules require a text-valued token".into());
+                if token.rules.len() > MAX_SIDEBAR_RULES {
+                    return Err(format!(
+                        "sidebar tokens may contain at most {MAX_SIDEBAR_RULES} rules"
+                    ));
                 }
                 Ok((
                     token.token,
@@ -272,12 +325,12 @@ impl RawSidebarToken {
     }
 }
 
-fn parse_sidebar_token<T>(value: &str, builtins: &[(&str, T)]) -> Result<T, String>
+fn parse_sidebar_token<T>(value: &str, parse_builtin: fn(&str) -> Option<T>) -> Result<T, String>
 where
-    T: Clone + From<String>,
+    T: From<String>,
 {
-    if let Some((_, token)) = builtins.iter().find(|(name, _)| *name == value) {
-        return Ok(token.clone());
+    if let Some(token) = parse_builtin(value) {
+        return Ok(token);
     }
     let Some(name) = value.strip_prefix('$') else {
         return Err(format!(
@@ -314,34 +367,6 @@ where
     map.end()
 }
 
-fn agent_token_name(token: &AgentSidebarToken) -> String {
-    match token {
-        AgentSidebarToken::StateIcon => "state_icon".into(),
-        AgentSidebarToken::StateText => "state_text".into(),
-        AgentSidebarToken::Machine => "machine".into(),
-        AgentSidebarToken::Workspace => "workspace".into(),
-        AgentSidebarToken::Tab => "tab".into(),
-        AgentSidebarToken::Pane => "pane".into(),
-        AgentSidebarToken::Agent => "agent".into(),
-        AgentSidebarToken::TerminalTitle => "terminal_title".into(),
-        AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
-        AgentSidebarToken::Custom(name) => format!("${name}"),
-        AgentSidebarToken::Styled { token, .. } => agent_token_name(token),
-    }
-}
-
-fn space_token_name(token: &SpaceSidebarToken) -> String {
-    match token {
-        SpaceSidebarToken::StateIcon => "state_icon".into(),
-        SpaceSidebarToken::StateText => "state_text".into(),
-        SpaceSidebarToken::Workspace => "workspace".into(),
-        SpaceSidebarToken::Branch => "branch".into(),
-        SpaceSidebarToken::GitStatus => "git_status".into(),
-        SpaceSidebarToken::Custom(name) => format!("${name}"),
-        SpaceSidebarToken::Styled { token, .. } => space_token_name(token),
-    }
-}
-
 impl Serialize for AgentSidebarToken {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -372,26 +397,21 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
         let (value, style, rules) = RawSidebarToken::deserialize(deserializer)?
             .parts()
             .map_err(serde::de::Error::custom)?;
-        let token = parse_sidebar_token(
-            &value,
-            &[
-                ("state_icon", Self::StateIcon),
-                ("state_text", Self::StateText),
-                ("machine", Self::Machine),
-                ("workspace", Self::Workspace),
-                ("tab", Self::Tab),
-                ("pane", Self::Pane),
-                ("agent", Self::Agent),
-                ("terminal_title", Self::TerminalTitle),
-                ("terminal_title_stripped", Self::TerminalTitleStripped),
-            ],
-        )
-        .map_err(serde::de::Error::custom)?;
-        Ok(style.map_or(token.clone(), |style| Self::Styled {
-            token: Box::new(token),
-            style,
-            rules,
-        }))
+        let token = parse_sidebar_token(&value, parse_agent_sidebar_builtin)
+            .map_err(serde::de::Error::custom)?;
+        if !rules.is_empty() && !token.allows_rules() {
+            return Err(serde::de::Error::custom(
+                "sidebar rules require a text-valued token",
+            ));
+        }
+        Ok(match style {
+            Some(style) => Self::Styled {
+                token: Box::new(token),
+                style,
+                rules,
+            },
+            None => token,
+        })
     }
 }
 
@@ -425,22 +445,21 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
         let (value, style, rules) = RawSidebarToken::deserialize(deserializer)?
             .parts()
             .map_err(serde::de::Error::custom)?;
-        let token = parse_sidebar_token(
-            &value,
-            &[
-                ("state_icon", Self::StateIcon),
-                ("state_text", Self::StateText),
-                ("workspace", Self::Workspace),
-                ("branch", Self::Branch),
-                ("git_status", Self::GitStatus),
-            ],
-        )
-        .map_err(serde::de::Error::custom)?;
-        Ok(style.map_or(token.clone(), |style| Self::Styled {
-            token: Box::new(token),
-            style,
-            rules,
-        }))
+        let token = parse_sidebar_token(&value, parse_space_sidebar_builtin)
+            .map_err(serde::de::Error::custom)?;
+        if !rules.is_empty() && !token.allows_rules() {
+            return Err(serde::de::Error::custom(
+                "sidebar rules require a text-valued token",
+            ));
+        }
+        Ok(match style {
+            Some(style) => Self::Styled {
+                token: Box::new(token),
+                style,
+                rules,
+            },
+            None => token,
+        })
     }
 }
 

@@ -26,10 +26,15 @@ pub(super) fn wait_for_output(
     api_tx: &ApiRequestSender,
     running: &Arc<AtomicBool>,
     server_stop: Option<&Arc<AtomicBool>>,
-) -> std::io::Result<Option<String>> {
+) -> std::io::Result<Option<crate::error::EncodedApiResponse>> {
     let deadline = match checked_timeout_deadline(params.timeout_ms) {
         Ok(deadline) => deadline,
-        Err(error) => return Ok(Some(crate::error::encode_result(request_id, Err(error)))),
+        Err(error) => {
+            return Ok(Some(crate::error::encode_result_with_outcome(
+                request_id,
+                Err(error),
+            )));
+        }
     };
     shepr_platform::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
 
@@ -38,7 +43,10 @@ pub(super) fn wait_for_output(
             match crate::subscriptions::compile_match_regex(value) {
                 Ok(regex) => Some(regex),
                 Err(error) => {
-                    return Ok(Some(crate::error::encode_result(request_id, Err(error))));
+                    return Ok(Some(crate::error::encode_result_with_outcome(
+                        request_id,
+                        Err(error),
+                    )));
                 }
             }
         }
@@ -80,10 +88,13 @@ pub(super) fn wait_for_output(
         let read = match response {
             Ok(ResponseResult::PaneRead { read }) => read,
             Err(error) => {
-                return Ok(Some(crate::error::encode_result(request_id, Err(error))));
+                return Ok(Some(crate::error::encode_result_with_outcome(
+                    request_id,
+                    Err(error),
+                )));
             }
             Ok(_) => {
-                return Ok(Some(crate::error::encode_result(
+                return Ok(Some(crate::error::encode_result_with_outcome(
                     request_id,
                     Err(crate::error::ApiError::new(
                         crate::error::ApiErrorCode::InternalError,
@@ -106,7 +117,7 @@ pub(super) fn wait_for_output(
                     read,
                 },
             };
-            return Ok(Some(crate::serialize_response_or_error(
+            return Ok(Some(crate::serialize_response_or_error_with_outcome(
                 &response.id,
                 &response,
             )));
@@ -122,8 +133,7 @@ pub(super) fn wait_for_output(
                 )
                 .into_body(),
             };
-            return Ok(Some(crate::serialize_response_or_error(
-                &response.id,
+            return Ok(Some(crate::error::encode_error_response_with_outcome(
                 &response,
             )));
         }
@@ -140,13 +150,12 @@ pub(super) fn wait_for_agent(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     server_stop: Option<&Arc<AtomicBool>>,
-) -> std::io::Result<Option<String>> {
+) -> std::io::Result<Option<crate::error::EncodedApiResponse>> {
     let last_event_sequence = event_hub.current_sequence();
     let initial = match agent_get(&request_id, &params.target, api_tx) {
         Ok(agent) => agent,
         Err(response) => {
-            return Ok(Some(crate::serialize_response_or_error(
-                &response.id,
+            return Ok(Some(crate::error::encode_error_response_with_outcome(
                 &response,
             )));
         }
@@ -188,7 +197,7 @@ pub(super) fn prompt_agent(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     server_stop: Option<&Arc<AtomicBool>>,
-) -> std::io::Result<Option<String>> {
+) -> std::io::Result<Option<crate::error::EncodedApiResponse>> {
     let Some(wait) = params.wait.clone() else {
         // Deliberately without a deadline. The app answers a plain prompt only
         // once the PTY actor has written it, on a side thread, not on the main
@@ -205,7 +214,9 @@ pub(super) fn prompt_agent(
             api_tx,
             server_stop,
         );
-        return Ok(Some(crate::error::encode_result(request_id, response)));
+        return Ok(Some(crate::error::encode_result_with_outcome(
+            request_id, response,
+        )));
     };
 
     let wait_started = std::time::Instant::now();
@@ -218,8 +229,7 @@ pub(super) fn prompt_agent(
     ) {
         Ok(agent) => agent,
         Err(response) => {
-            return Ok(Some(crate::serialize_response_or_error(
-                &response.id,
+            return Ok(Some(crate::error::encode_error_response_with_outcome(
                 &response,
             )));
         }
@@ -249,7 +259,7 @@ pub(super) fn prompt_agent(
         None => dispatch_to_app_until_stopped_result(prompt_request, api_tx, server_stop),
     };
     let Ok(prompted) = agent_from_response(&request_id, &prompt_response) else {
-        return Ok(Some(crate::error::encode_result(
+        return Ok(Some(crate::error::encode_result_with_outcome(
             request_id,
             prompt_response,
         )));
@@ -347,8 +357,8 @@ pub(super) fn prompt_agent(
 
 /// The answer for a socket-thread wait cut short by server shutdown: every
 /// wait polls the stop flag, so none outlives the start of shutdown.
-fn shutdown_response(request_id: String) -> String {
-    crate::error::encode_result(request_id, Err(shutdown_wait_error()))
+fn shutdown_response(request_id: String) -> crate::error::EncodedApiResponse {
+    crate::error::encode_result_with_outcome(request_id, Err(shutdown_wait_error()))
 }
 
 fn remaining_timeout_ms(total_ms: Option<u64>, started: std::time::Instant) -> Option<u64> {
@@ -361,12 +371,15 @@ fn remaining_timeout_ms(total_ms: Option<u64>, started: std::time::Instant) -> O
 fn agent_prompt_success(
     request_id: String,
     agent: crate::schema::AgentInfo,
-) -> std::io::Result<String> {
+) -> std::io::Result<crate::error::EncodedApiResponse> {
     let response = SuccessResponse {
         id: request_id,
         result: ResponseResult::AgentPrompted { agent },
     };
-    Ok(crate::serialize_response_or_error(&response.id, &response))
+    Ok(crate::serialize_response_or_error_with_outcome(
+        &response.id,
+        &response,
+    ))
 }
 
 struct ResolvedAgentWait {
@@ -388,7 +401,7 @@ enum AgentWaitTimeoutKind {
 
 enum AgentWaitOutcome {
     Matched(Box<crate::schema::AgentInfo>),
-    Response(String),
+    Response(crate::error::EncodedApiResponse),
 }
 
 fn wait_for_resolved_agent(
@@ -404,7 +417,7 @@ fn wait_for_resolved_agent(
         Ok(deadline) => deadline,
         Err(error) => {
             return Ok(Some(AgentWaitOutcome::Response(
-                crate::error::encode_result(request_id, Err(error)),
+                crate::error::encode_result_with_outcome(request_id, Err(error)),
             )));
         }
     };
@@ -442,7 +455,7 @@ fn wait_for_resolved_agent(
                     error,
                 };
                 return Ok(Some(AgentWaitOutcome::Response(
-                    crate::serialize_response_or_error(&response.id, &response),
+                    crate::error::encode_error_response_with_outcome(&response),
                 )));
             }
         };
@@ -685,19 +698,22 @@ fn agent_from_response(
 fn agent_wait_success(
     request_id: String,
     agent: crate::schema::AgentInfo,
-) -> std::io::Result<String> {
+) -> std::io::Result<crate::error::EncodedApiResponse> {
     let response = SuccessResponse {
         id: request_id,
         result: ResponseResult::AgentInfo { agent },
     };
-    Ok(crate::serialize_response_or_error(&response.id, &response))
+    Ok(crate::serialize_response_or_error_with_outcome(
+        &response.id,
+        &response,
+    ))
 }
 
 fn agent_wait_timeout(
     request_id: String,
     kind: AgentWaitTimeoutKind,
     current: &crate::schema::AgentInfo,
-) -> std::io::Result<String> {
+) -> std::io::Result<crate::error::EncodedApiResponse> {
     let (code, message) = match kind {
         AgentWaitTimeoutKind::Status => (
             crate::error::ApiErrorCode::Timeout,
@@ -713,32 +729,31 @@ fn agent_wait_timeout(
             )
         }
     };
-    let response = ErrorResponse {
-        id: request_id,
-        error: crate::error::ApiError::new(code, message).into_body(),
-    };
-    Ok(crate::serialize_response_or_error(&response.id, &response))
+    Ok(crate::error::encode_result_with_outcome(
+        request_id,
+        Err(crate::error::ApiError::new(code, message)),
+    ))
 }
 
-fn agent_wait_not_running(request_id: String) -> std::io::Result<String> {
-    let response = ErrorResponse {
-        id: request_id,
-        error: crate::error::ApiError::new(
+fn agent_wait_not_running(request_id: String) -> std::io::Result<crate::error::EncodedApiResponse> {
+    Ok(crate::error::encode_result_with_outcome(
+        request_id,
+        Err(crate::error::ApiError::new(
             crate::error::ApiErrorCode::AgentNotRunning,
             "agent is no longer running in the target pane",
-        )
-        .into_body(),
-    };
-    Ok(crate::serialize_response_or_error(&response.id, &response))
+        )),
+    ))
 }
 
-fn agent_wait_probe_error(response: ErrorResponse) -> std::io::Result<String> {
+fn agent_wait_probe_error(
+    response: ErrorResponse,
+) -> std::io::Result<crate::error::EncodedApiResponse> {
     if crate::error::ApiErrorCode::from(response.error.code.as_str())
         == crate::error::ApiErrorCode::AgentNotFound
     {
         return agent_wait_not_running(response.id);
     }
-    Ok(crate::serialize_response_or_error(&response.id, &response))
+    Ok(crate::error::encode_error_response_with_outcome(&response))
 }
 
 pub(super) fn wait_for_event(
@@ -749,10 +764,15 @@ pub(super) fn wait_for_event(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     server_stop: Option<&Arc<AtomicBool>>,
-) -> std::io::Result<Option<String>> {
+) -> std::io::Result<Option<crate::error::EncodedApiResponse>> {
     let deadline = match checked_timeout_deadline(params.timeout_ms) {
         Ok(deadline) => deadline,
-        Err(error) => return Ok(Some(crate::error::encode_result(request_id, Err(error)))),
+        Err(error) => {
+            return Ok(Some(crate::error::encode_result_with_outcome(
+                request_id,
+                Err(error),
+            )));
+        }
     };
 
     let subscription = event_match_subscription(params.match_event);
@@ -766,8 +786,7 @@ pub(super) fn wait_for_event(
     ) {
         Ok(active) => active,
         Err(response) => {
-            return Ok(Some(crate::serialize_response_or_error(
-                &response.id,
+            return Ok(Some(crate::error::encode_error_response_with_outcome(
                 &response,
             )));
         }
@@ -791,8 +810,7 @@ pub(super) fn wait_for_event(
                     id: request_id,
                     error,
                 };
-                return Ok(Some(crate::serialize_response_or_error(
-                    &response.id,
+                return Ok(Some(crate::error::encode_error_response_with_outcome(
                     &response,
                 )));
             }
@@ -807,8 +825,7 @@ pub(super) fn wait_for_event(
                 )
                 .into_body(),
             };
-            return Ok(Some(crate::serialize_response_or_error(
-                &response.id,
+            return Ok(Some(crate::error::encode_error_response_with_outcome(
                 &response,
             )));
         }
@@ -848,7 +865,10 @@ fn event_match_subscription(match_event: EventMatch) -> Subscription {
     }
 }
 
-fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
+fn wait_matched_response(
+    request_id: &str,
+    event: serde_json::Value,
+) -> crate::error::EncodedApiResponse {
     let Ok(event) = serde_json::from_value::<SubscriptionEventEnvelope>(event) else {
         return error_response_json(
             request_id,
@@ -880,7 +900,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
             },
         },
     };
-    crate::serialize_response_or_error(request_id, &response)
+    crate::serialize_response_or_error_with_outcome(request_id, &response)
 }
 
 #[cfg(test)]

@@ -16,13 +16,13 @@ pub(super) fn response(
     let attach_command = paths.server_address().attach_command(paths.session_id());
     ErrorResponse {
         id: request_id.to_string(),
-        error: ErrorBody {
-            code: "server_not_running".into(),
-            message: format!(
+        error: ErrorBody::new(
+            &shepr_api::error::ApiErrorCode::ServerNotRunning,
+            format!(
                 "no shepr server is running at {}; run `{attach_command}` to start or attach it",
                 socket_path.display()
             ),
-        },
+        ),
     }
 }
 
@@ -32,13 +32,15 @@ pub(super) fn cli_error(response: ErrorResponse) -> super::CliError {
 
 #[cfg(test)]
 pub(super) fn was_reported(error: &super::CliError) -> bool {
-    matches!(error, super::CliError::Response(response) if response.error.code == "server_not_running")
+    reported_response(error).is_some()
 }
 
 #[cfg(test)]
 pub(super) fn reported_response(error: &super::CliError) -> Option<&ErrorResponse> {
     match error {
-        super::CliError::Response(response) if response.error.code == "server_not_running" => {
+        super::CliError::Response(response)
+            if response.error.code == shepr_api::error::ApiErrorCode::ServerNotRunning.as_str() =>
+        {
             Some(response)
         }
         _ => None,

@@ -21,77 +21,61 @@ pub struct ThemeConfig {
     pub custom: Option<CustomThemeColors>,
 }
 
-/// Per-token color overrides. All fields optional - only set what you want to change.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-#[serde(default)]
-pub struct CustomThemeColors {
-    pub accent: Option<String>,
-    pub panel_bg: Option<String>,
-    pub sidebar_bg: Option<String>,
-    pub active_row_bg: Option<String>,
-    pub selection_bg: Option<String>,
-    pub surface0: Option<String>,
-    pub surface1: Option<String>,
-    pub surface_dim: Option<String>,
-    pub overlay0: Option<String>,
-    pub overlay1: Option<String>,
-    pub text: Option<String>,
-    pub subtext0: Option<String>,
-    pub mauve: Option<String>,
-    pub green: Option<String>,
-    pub yellow: Option<String>,
-    pub red: Option<String>,
-    pub blue: Option<String>,
-    pub teal: Option<String>,
-    pub peach: Option<String>,
-}
+macro_rules! define_custom_theme_colors {
+    ($($field:ident),+ $(,)?) => {
+        /// Per-token color overrides. All fields optional - only set what you want to change.
+        #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+        #[serde(default)]
+        pub struct CustomThemeColors {
+            $(pub $field: Option<String>,)+
+        }
 
-impl CustomThemeColors {
-    pub(crate) fn parse(&self) -> Result<ParsedThemeColors, Vec<String>> {
-        let mut diagnostics = Vec::new();
-        macro_rules! color {
-            ($field:ident) => {
-                match parse_configured_color(
-                    concat!("theme.custom.", stringify!($field)),
-                    self.$field.as_deref(),
-                ) {
-                    Ok(color) => color,
-                    Err(errors) => {
-                        diagnostics.extend(errors);
-                        None
-                    }
+        impl CustomThemeColors {
+            pub(crate) fn parse(&self) -> Result<ParsedThemeColors, Vec<String>> {
+                let mut diagnostics = Vec::new();
+                let parsed = ParsedThemeColors {
+                    $($field: match parse_configured_color(
+                        concat!("theme.custom.", stringify!($field)),
+                        self.$field.as_deref(),
+                    ) {
+                        Ok(color) => color,
+                        Err(errors) => {
+                            diagnostics.extend(errors);
+                            None
+                        }
+                    },)+
+                };
+                if diagnostics.is_empty() {
+                    Ok(parsed)
+                } else {
+                    Err(diagnostics)
                 }
-            };
+            }
         }
-
-        let parsed = ParsedThemeColors {
-            accent: color!(accent),
-            panel_bg: color!(panel_bg),
-            sidebar_bg: color!(sidebar_bg),
-            active_row_bg: color!(active_row_bg),
-            selection_bg: color!(selection_bg),
-            surface0: color!(surface0),
-            surface1: color!(surface1),
-            surface_dim: color!(surface_dim),
-            overlay0: color!(overlay0),
-            overlay1: color!(overlay1),
-            text: color!(text),
-            subtext0: color!(subtext0),
-            mauve: color!(mauve),
-            green: color!(green),
-            yellow: color!(yellow),
-            red: color!(red),
-            blue: color!(blue),
-            teal: color!(teal),
-            peach: color!(peach),
-        };
-        if diagnostics.is_empty() {
-            Ok(parsed)
-        } else {
-            Err(diagnostics)
-        }
-    }
+    };
 }
+
+define_custom_theme_colors!(
+    accent,
+    panel_bg,
+    sidebar_bg,
+    active_row_bg,
+    selection_bg,
+    surface0,
+    surface1,
+    surface_dim,
+    overlay0,
+    overlay1,
+    text,
+    subtext0,
+    mauve,
+    green,
+    yellow,
+    red,
+    blue,
+    teal,
+    peach,
+);
 
 fn parse_configured_color(
     field: &str,

@@ -490,7 +490,7 @@ impl App {
             Some(pane_id) => self.parse_pane_id(pane_id),
             None => {
                 let ws_idx = self.state.active_index()?;
-                let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id()?;
+                let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id();
                 Some((ws_idx, pane_id))
             }
         }

@@ -288,7 +288,9 @@ impl ClientShellState {
         self.endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .map_or("Unknown endpoint", |endpoint| endpoint.label.as_str())
+            .map_or(endpoint_id.display_label(), |endpoint| {
+                endpoint.label.as_str()
+            })
     }
 
     pub(crate) fn active_endpoint_label(&self) -> &str {
@@ -590,7 +592,7 @@ pub(super) fn endpoint_status_presentation(
 pub(super) fn local_endpoint() -> ClientShellEndpoint {
     ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
-        label: "Local".into(),
+        label: ClientEndpointId::Local.display_label().into(),
         status: ClientEndpointStatus::Online,
         snapshot: None,
         resolved_config: None,

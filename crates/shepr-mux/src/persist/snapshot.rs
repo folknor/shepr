@@ -309,7 +309,7 @@ fn capture_workspace(
         public_tab_numbers: ws.tabs().iter().map(|tab| tab.number).collect(),
         next_public_tab_number: ws.next_public_tab_number,
         tabs,
-        active_tab: ws.active_tab,
+        active_tab: ws.active_tab_index(),
     }
 }
 

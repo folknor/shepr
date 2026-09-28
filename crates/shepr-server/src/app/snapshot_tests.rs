@@ -35,7 +35,7 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
     state.view.pane_infos = state
         .active_index()
         .and_then(|ws_idx| state.workspaces.get(ws_idx))
-        .and_then(|workspace| workspace.tabs().get(workspace.active_tab))
+        .map(Workspace::active_tab)
         .map_or_default(|tab| {
             state
                 .pane_geometry_in(area)
@@ -366,7 +366,7 @@ fn capture_contract_tracks_resize_ratio_changes() {
     let mut state = state_with_workspaces(&["one"]);
     let root = state.workspaces[0].tabs()[0].root_pane;
     state.workspaces[0].test_split(Direction::Horizontal);
-    state.workspaces[0].layout.focus_pane(root);
+    state.workspaces[0].tabs_mut()[0].layout.focus_pane(root);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
     let before = capture_from_state(&state);
 
@@ -401,9 +401,7 @@ fn capture_contract_tracks_pane_closure() {
     let mut state = state_with_workspaces(&["one"]);
     state.workspaces[0].test_split(Direction::Horizontal);
 
-    let focused = state.workspaces[0]
-        .focused_pane_id()
-        .expect("test precondition");
+    let focused = state.workspaces[0].focused_pane_id();
     assert!(matches!(
         state.remove_pane(0, focused),
         crate::app::actions::PaneRemovalCommit::Removed(_)

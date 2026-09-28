@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
+use std::ops::Index;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,6 +104,145 @@ pub fn public_tab_id_for_number(workspace_id: &str, tab_number: usize) -> String
     PublicTabId::new(workspace_id, tab_number).to_string()
 }
 
+/// A non-empty ordered tab collection with one focused position.
+///
+/// Keeping both pieces here means workspace callers can reorder tabs, but
+/// cannot make the focused position point outside the collection or remove
+/// its last tab.
+struct FocusedTabs {
+    items: Vec<Tab>,
+    focused: usize,
+}
+
+impl FocusedTabs {
+    fn new(items: Vec<Tab>, focused: usize) -> Option<Self> {
+        if items.is_empty() || focused >= items.len() {
+            return None;
+        }
+        Some(Self { items, focused })
+    }
+
+    fn one(tab: Tab) -> Self {
+        Self {
+            items: vec![tab],
+            focused: 0,
+        }
+    }
+
+    fn as_slice(&self) -> &[Tab] {
+        &self.items
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [Tab] {
+        &mut self.items
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, Tab> {
+        self.items.iter()
+    }
+
+    fn iter_mut(&mut self) -> std::slice::IterMut<'_, Tab> {
+        self.items.iter_mut()
+    }
+
+    fn get(&self, index: usize) -> Option<&Tab> {
+        self.items.get(index)
+    }
+
+    fn get_mut(&mut self, index: usize) -> Option<&mut Tab> {
+        self.items.get_mut(index)
+    }
+
+    fn first(&self) -> Option<&Tab> {
+        self.items.first()
+    }
+
+    fn focused_index(&self) -> usize {
+        self.focused
+    }
+
+    // Indexing cannot panic: every constructor and mutator keeps `items`
+    // non-empty and `focused < items.len()`.
+    fn focused(&self) -> &Tab {
+        &self.items[self.focused]
+    }
+
+    fn focused_mut(&mut self) -> &mut Tab {
+        &mut self.items[self.focused]
+    }
+
+    fn focus(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        self.focused = index;
+        true
+    }
+
+    fn push(&mut self, tab: Tab) -> usize {
+        let index = self.items.len();
+        self.items.push(tab);
+        index
+    }
+
+    fn replace(&mut self, index: usize, tab: Tab) -> Option<Tab> {
+        let slot = self.items.get_mut(index)?;
+        Some(std::mem::replace(slot, tab))
+    }
+
+    fn remove(&mut self, index: usize) -> Option<Tab> {
+        if self.items.len() <= 1 || index >= self.items.len() {
+            return None;
+        }
+        let removed = self.items.remove(index);
+        if index <= self.focused && self.focused > 0 {
+            self.focused -= 1;
+        }
+        if self.focused >= self.items.len() {
+            self.focused = self.items.len() - 1;
+        }
+        Some(removed)
+    }
+
+    fn move_tab(&mut self, source_index: usize, insert_index: usize) -> bool {
+        if source_index >= self.items.len() || insert_index > self.items.len() {
+            return false;
+        }
+        let target_index = if source_index < insert_index {
+            insert_index - 1
+        } else {
+            insert_index
+        }
+        .min(self.items.len() - 1);
+        if source_index == target_index {
+            return false;
+        }
+
+        let tab = self.items.remove(source_index);
+        self.items.insert(target_index, tab);
+        if self.focused == source_index {
+            self.focused = target_index;
+        } else if source_index < self.focused && self.focused <= target_index {
+            self.focused -= 1;
+        } else if target_index <= self.focused && self.focused < source_index {
+            self.focused += 1;
+        }
+        true
+    }
+}
+
+impl Index<usize> for FocusedTabs {
+    type Output = Tab;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.items[index]
+    }
+}
+
 pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
     let Some(next) = workspaces
         .iter()
@@ -152,35 +291,7 @@ pub struct Workspace {
     pub metadata_token_sequences: crate::terminal::metadata_tokens::SequenceMarks,
     pub next_public_pane_number: usize,
     pub next_public_tab_number: usize,
-    tabs: Vec<Tab>,
-    pub active_tab: usize,
-}
-
-// These impls rely on the runtime tab-removal paths. Constructors, including restore, create a
-// workspace only with a surviving tab. `close_tab` and `remove_pane` remove
-// tabs only when another remains, and `move_tab` reinserts before returning.
-// `take_pane_for_move` can temporarily empty a workspace: its production
-// caller removes that workspace for cross-workspace moves, or creates a
-// replacement tab for same-workspace new-tab moves, before using implicit
-// active-tab access again. Keep this path documented at both expects below.
-impl Deref for Workspace {
-    type Target = Tab;
-
-    fn deref(&self) -> &Self::Target {
-        self.active_tab()
-            // See the removal-path invariant above; all runtime empty states
-            // are consumed before this implicit access can occur.
-            .expect("workspace must have a tab when implicitly dereferenced")
-    }
-}
-
-impl DerefMut for Workspace {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.active_tab_mut()
-            // See the removal-path invariant above; all runtime empty states
-            // are consumed before this implicit access can occur.
-            .expect("workspace must have a tab when implicitly dereferenced")
-    }
+    tabs: FocusedTabs,
 }
 
 impl Workspace {
@@ -193,9 +304,7 @@ impl Workspace {
         next_public_pane_number: usize,
         next_public_tab_number: usize,
     ) -> Option<Self> {
-        if tabs.is_empty() || active_tab >= tabs.len() {
-            return None;
-        }
+        let tabs = FocusedTabs::new(tabs, active_tab)?;
         let mut workspace = Self {
             id: id.into(),
             custom_name,
@@ -210,7 +319,6 @@ impl Workspace {
             metadata_token_sequences: HashMap::new(),
             next_public_pane_number,
             next_public_tab_number,
-            active_tab,
             tabs,
         };
         workspace.mark_identity_undiscovered();
@@ -218,26 +326,11 @@ impl Workspace {
     }
 
     pub fn tabs(&self) -> &[Tab] {
-        &self.tabs
+        self.tabs.as_slice()
     }
 
     pub fn tabs_mut(&mut self) -> &mut [Tab] {
-        &mut self.tabs
-    }
-
-    #[cfg(test)]
-    pub fn clear_tabs_for_test(&mut self) {
-        self.tabs.clear();
-    }
-
-    fn adjust_active_tab_after_removal(&mut self, removed_idx: usize) {
-        if self.tabs.is_empty() {
-            self.active_tab = 0;
-        } else if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if removed_idx <= self.active_tab && self.active_tab > 0 {
-            self.active_tab -= 1;
-        }
+        self.tabs.as_mut_slice()
     }
 
     pub fn from_existing_pane(
@@ -280,8 +373,7 @@ impl Workspace {
             metadata_token_sequences: HashMap::new(),
             next_public_pane_number: 2,
             next_public_tab_number: 2,
-            tabs: vec![tab],
-            active_tab: 0,
+            tabs: FocusedTabs::one(tab),
         };
         workspace.mark_identity_undiscovered();
         workspace
@@ -376,16 +468,18 @@ impl Workspace {
         ))
     }
 
-    pub fn active_tab(&self) -> Option<&Tab> {
-        self.tabs.get(self.active_tab)
+    /// The focused tab. A workspace always holds at least one tab and its
+    /// focused index is always in range, so there is no empty case.
+    pub fn active_tab(&self) -> &Tab {
+        self.tabs.focused()
     }
 
     pub fn active_tab_index(&self) -> usize {
-        self.active_tab
+        self.tabs.focused_index()
     }
 
-    pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
-        self.tabs.get_mut(self.active_tab)
+    pub fn active_tab_mut(&mut self) -> &mut Tab {
+        self.tabs.focused_mut()
     }
 
     pub fn tab_display_name(&self, tab_idx: usize) -> Option<String> {
@@ -401,9 +495,7 @@ impl Workspace {
 
     /// Makes `idx` the active tab.
     pub fn switch_tab(&mut self, idx: usize) {
-        if idx < self.tabs.len() {
-            self.active_tab = idx;
-        }
+        self.tabs.focus(idx);
     }
 
     pub fn create_tab(
@@ -547,34 +639,12 @@ impl Workspace {
                 .map(|pane| pane.attached_terminal_id.clone())
                 .collect(),
         };
-        self.tabs.remove(idx);
-        self.adjust_active_tab_after_removal(idx);
+        let _removed_tab = self.tabs.remove(idx)?;
         Some(removal)
     }
 
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
-        if source_idx >= self.tabs.len() || insert_idx > self.tabs.len() {
-            return false;
-        }
-
-        let target_idx = if source_idx < insert_idx {
-            insert_idx.saturating_sub(1)
-        } else {
-            insert_idx
-        }
-        .min(self.tabs.len().saturating_sub(1));
-
-        if source_idx == target_idx {
-            return false;
-        }
-
-        let active_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
-        let tab = self.tabs.remove(source_idx);
-        self.tabs.insert(target_idx, tab);
-        self.active_tab = active_root_pane
-            .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
-            .unwrap_or(target_idx);
-        true
+        self.tabs.move_tab(source_idx, insert_idx)
     }
 
     // Workspace split routing carries pane identity, geometry, host context, and focus policy.
@@ -736,26 +806,84 @@ impl Workspace {
         Some(())
     }
 
+    /// Takes `pane_id` out of its tab, closing the tab when it was the tab's
+    /// only pane. Refuses the workspace's only pane, since taking it would
+    /// leave the workspace without a live tab: move that pane with
+    /// `into_only_pane` (the workspace goes away) or `move_pane_to_new_tab`.
     pub fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
+        if self.pane_count() <= 1 {
+            return None;
+        }
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        let pane_count = self.tabs[tab_idx].panes.len();
-        // Take the pane before removing its tab, so a failed take leaves the
-        // tab in place instead of dropping it.
-        let moved = self.tabs[tab_idx].take_pane_for_move(pane_id)?;
-        if pane_count <= 1 {
-            self.tabs.remove(tab_idx);
-            self.adjust_active_tab_after_removal(tab_idx);
+        if self.tabs[tab_idx].panes.len() <= 1 {
+            // Another tab holds the remaining panes, so this one can close
+            // before its pane leaves it.
+            let mut tab = self.tabs.remove(tab_idx)?;
+            let moved = tab.take_pane_for_move(pane_id)?;
             return Some(TakenPane {
                 moved,
                 removed_tab_idx: Some(tab_idx),
-                workspace_empty: self.tabs.is_empty(),
             });
         }
 
+        let moved = self.tabs.get_mut(tab_idx)?.take_pane_for_move(pane_id)?;
         Some(TakenPane {
             moved,
             removed_tab_idx: None,
-            workspace_empty: false,
+        })
+    }
+
+    /// Consumes a workspace holding a single pane and returns that pane, for a
+    /// move that takes the workspace's last pane elsewhere. A workspace with
+    /// more panes comes back unchanged.
+    pub fn into_only_pane(mut self) -> Result<MovedPane, Box<Self>> {
+        if self.pane_count() != 1 || self.tabs.len() != 1 {
+            return Err(Box::new(self));
+        }
+        let Some(pane_id) = self
+            .tabs
+            .first()
+            .and_then(|tab| tab.panes.keys().next().copied())
+        else {
+            return Err(Box::new(self));
+        };
+        match self
+            .tabs
+            .get_mut(0)
+            .and_then(|tab| tab.take_pane_for_move(pane_id))
+        {
+            Some(moved) => Ok(moved),
+            None => Err(Box::new(self)),
+        }
+    }
+
+    /// Moves `pane_id` into a new tab of this workspace. The workspace's only
+    /// pane gets a new tab in place of its old one, so the workspace is never
+    /// seen without a live tab.
+    pub fn move_pane_to_new_tab(
+        &mut self,
+        pane_id: PaneId,
+        label: Option<String>,
+    ) -> Option<NewTabMove> {
+        if self.pane_count() > 1 {
+            let taken = self.take_pane_for_move(pane_id)?;
+            let tab_idx = self.create_tab_from_existing_pane(taken.moved, label);
+            return Some(NewTabMove {
+                removed_tab_idx: taken.removed_tab_idx,
+                tab_idx,
+            });
+        }
+        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        let moved = self.tabs.get_mut(tab_idx)?.take_pane_for_move(pane_id)?;
+        let number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        let _old_tab = self
+            .tabs
+            .replace(tab_idx, Tab::from_existing_pane(number, label, moved))?;
+        self.ensure_inserted_pane_number(pane_id);
+        Some(NewTabMove {
+            removed_tab_idx: Some(tab_idx),
+            tab_idx,
         })
     }
 
@@ -787,10 +915,11 @@ impl Workspace {
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
         let pane_id = moved.pane_id;
-        let tab = Tab::from_existing_pane(number, label, moved);
-        self.tabs.push(tab);
+        let tab_index = self
+            .tabs
+            .push(Tab::from_existing_pane(number, label, moved));
         self.ensure_inserted_pane_number(pane_id);
-        self.tabs.len() - 1
+        tab_index
     }
 
     pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
@@ -901,8 +1030,8 @@ impl Workspace {
         self.tabs.iter().find_map(|tab| tab.terminal_id(pane_id))
     }
 
-    pub fn focused_pane_id(&self) -> Option<PaneId> {
-        self.active_tab().map(|tab| tab.layout.focused())
+    pub fn focused_pane_id(&self) -> PaneId {
+        self.active_tab().layout.focused()
     }
 
     pub fn prepare_pane_removal(&self, pane_id: PaneId) -> Option<PaneRemovalPlan> {
@@ -973,8 +1102,7 @@ impl Workspace {
                     .close_pane(plan.pane_id)?;
             }
             PaneRemovalScope::Tab => {
-                self.tabs.remove(plan.tab_index);
-                self.adjust_active_tab_after_removal(plan.tab_index);
+                let _removed_tab = self.tabs.remove(plan.tab_index)?;
             }
             PaneRemovalScope::Workspace => {}
         }
@@ -1042,7 +1170,13 @@ impl Workspace {
 pub struct TakenPane {
     pub moved: MovedPane,
     pub removed_tab_idx: Option<usize>,
-    pub workspace_empty: bool,
+}
+
+/// Where `Workspace::move_pane_to_new_tab` put a pane.
+pub struct NewTabMove {
+    /// The index the pane's old tab had, when the move closed it.
+    pub removed_tab_idx: Option<usize>,
+    pub tab_idx: usize,
 }
 
 #[cfg(test)]
@@ -1079,15 +1213,14 @@ impl Workspace {
             metadata_token_sequences: HashMap::new(),
             next_public_pane_number: 2,
             next_public_tab_number: 2,
-            tabs: vec![tab],
-            active_tab: 0,
+            tabs: FocusedTabs::one(tab),
         };
         workspace.mark_identity_undiscovered();
         workspace
     }
 
     pub fn test_split(&mut self, direction: Direction) -> PaneId {
-        let tab = self.active_tab_mut().expect("workspace must have tab");
+        let tab = self.active_tab_mut();
         let new_id = tab.layout.split_focused(direction);
         tab.panes
             .insert(new_id, TabPane::new(PaneState::new(TerminalId::alloc())));
@@ -1137,8 +1270,8 @@ impl Workspace {
         );
 
         assert_ne!(
-            ws.active_tab + 1,
-            ws.tabs[ws.active_tab].number,
+            ws.active_tab_index() + 1,
+            ws.tabs[ws.active_tab_index()].number,
             "adversarial active tab must distinguish position from public tab number"
         );
         assert_ne!(
@@ -1152,19 +1285,6 @@ impl Workspace {
     }
 
     pub fn assert_invariants_for_test(&self) {
-        assert!(
-            !self.tabs.is_empty(),
-            "workspace {} must contain at least one tab",
-            self.id
-        );
-        assert!(
-            self.active_tab < self.tabs.len(),
-            "workspace {} active_tab {} out of bounds for {} tabs",
-            self.id,
-            self.active_tab,
-            self.tabs.len()
-        );
-
         let mut tab_numbers = std::collections::HashSet::new();
         let mut max_tab_number = 0usize;
         let mut live_panes = std::collections::HashSet::new();
@@ -1402,8 +1522,9 @@ mod tests {
         let mut ws = Workspace::test_adversarial_identity_state();
         ws.assert_invariants_for_test();
 
-        let active_public = ws.tabs[ws.active_tab].number;
-        assert_ne!(ws.active_tab + 1, active_public);
+        let active_index = ws.active_tab_index();
+        let active_public = ws.tabs[active_index].number;
+        assert_ne!(active_index + 1, active_public);
         let divergent_pane = ws
             .tabs
             .iter()
@@ -1420,29 +1541,22 @@ mod tests {
 
         let new_pane = ws.test_split(Direction::Vertical);
         assert!(ws.public_pane_number(new_pane).is_some());
-        assert!(ws.move_tab(ws.active_tab, ws.tabs.len()));
+        assert!(ws.move_tab(ws.active_tab_index(), ws.tabs.len()));
         ws.assert_invariants_for_test();
     }
 
     #[test]
     fn failed_moved_pane_insert_returns_pane_for_recovery() {
-        let mut source = Workspace::test_new("source");
+        let source = Workspace::test_new("source");
         let source_pane = source.tabs[0].root_pane;
-        let taken = source
-            .take_pane_for_move(source_pane)
-            .expect("source pane should be movable");
+        let Ok(moved) = source.into_only_pane() else {
+            panic!("source pane should be movable");
+        };
         let mut target = Workspace::test_new("target");
         let missing_target = PaneId::alloc();
 
         let recovered = target
-            .insert_moved_pane_into_tab(
-                0,
-                missing_target,
-                taken.moved,
-                Direction::Horizontal,
-                0.5,
-                true,
-            )
+            .insert_moved_pane_into_tab(0, missing_target, moved, Direction::Horizontal, 0.5, true)
             .expect_err("invalid target should return the moved pane");
 
         assert_eq!(recovered.pane_id, source_pane);
@@ -1484,7 +1598,6 @@ mod tests {
         let mut ws = Workspace::test_new("ignored");
         ws.custom_name = None;
         ws.identity_cwd = cwd.clone();
-        ws.tabs.clear();
         ws.cached_identity_cwd = cwd;
         ws.cached_auto_label = "cached-repo".into();
 
@@ -1561,13 +1674,15 @@ mod tests {
 
     #[test]
     fn workspace_built_from_a_moved_pane_does_not_discover_git_identity() {
-        let mut source = Workspace::test_new("source");
+        let source = Workspace::test_new("source");
         let pane = source.tabs[0].root_pane;
-        let taken = source.take_pane_for_move(pane).expect("test precondition");
+        let Ok(moved) = source.into_only_pane() else {
+            panic!("test precondition");
+        };
         // A path that cannot exist: discovery would have to stat it.
         let cwd = PathBuf::from("/shepr-test-nonexistent/repo/sub");
 
-        let ws = Workspace::from_existing_pane(None, None, &cwd, taken.moved);
+        let ws = Workspace::from_existing_pane(None, None, &cwd, moved);
 
         assert_eq!(ws.display_name(), "sub");
         assert!(ws.cached_identity_cwd.as_os_str().is_empty());
@@ -1598,7 +1713,153 @@ mod tests {
         assert_eq!(ws.tabs[1].number, 3);
         assert_eq!(ws.tabs[2].number, 1);
         assert_eq!(ws.tabs[2].root_pane, moved_root);
-        assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
+        assert_eq!(ws.tabs[ws.active_tab_index()].root_pane, active_root);
+        ws.assert_invariants_for_test();
+    }
+
+    fn workspace_with_tabs(count: usize) -> Workspace {
+        let mut ws = Workspace::test_new("tabs");
+        for _ in 1..count {
+            ws.test_add_tab(None);
+        }
+        ws
+    }
+
+    #[test]
+    fn focused_tabs_reject_an_empty_list_or_an_out_of_range_focus() {
+        let ws = Workspace::test_new("one");
+        let tabs = ws.tabs.items;
+        assert!(FocusedTabs::new(Vec::new(), 0).is_none());
+        assert!(FocusedTabs::new(tabs, 1).is_none());
+    }
+
+    #[test]
+    fn focused_tabs_never_drop_their_last_tab() {
+        let mut ws = workspace_with_tabs(3);
+        ws.switch_tab(2);
+
+        assert!(ws.tabs.remove(3).is_none());
+        assert!(ws.tabs.remove(2).is_some());
+        assert_eq!(ws.active_tab_index(), 1);
+        assert!(ws.tabs.remove(0).is_some());
+        assert_eq!(ws.active_tab_index(), 0);
+        assert!(ws.tabs.remove(0).is_none());
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.active_tab().number, ws.tabs[0].number);
+
+        ws.switch_tab(1);
+        assert_eq!(ws.active_tab_index(), 0);
+    }
+
+    #[test]
+    fn focused_tabs_move_keeps_focus_on_the_same_tab() {
+        for focused in 0..4 {
+            for source in 0..4 {
+                for insert in 0..=4 {
+                    let mut ws = workspace_with_tabs(4);
+                    ws.switch_tab(focused);
+                    let focused_number = ws.tabs[focused].number;
+                    let moved_number = ws.tabs[source].number;
+
+                    let moved = ws.move_tab(source, insert);
+
+                    let target = if source < insert { insert - 1 } else { insert };
+                    assert_eq!(moved, target != source, "{focused} {source} {insert}");
+                    assert_eq!(ws.tabs[target].number, moved_number);
+                    assert_eq!(
+                        ws.active_tab().number,
+                        focused_number,
+                        "focused {focused} source {source} insert {insert}"
+                    );
+                }
+            }
+        }
+        let mut ws = workspace_with_tabs(2);
+        assert!(!ws.move_tab(2, 0));
+        assert!(!ws.move_tab(0, 3));
+    }
+
+    #[test]
+    fn a_workspace_only_pane_is_never_taken_in_place() {
+        let mut ws = Workspace::test_new("only");
+        let pane = ws.tabs[0].root_pane;
+
+        assert!(ws.take_pane_for_move(pane).is_none());
+        assert_eq!(ws.tabs[0].panes.len(), 1);
+        ws.assert_invariants_for_test();
+
+        let Ok(moved) = ws.into_only_pane() else {
+            panic!("a single-pane workspace yields its pane");
+        };
+        assert_eq!(moved.pane_id, pane);
+
+        let mut split = Workspace::test_new("split");
+        split.test_split(Direction::Vertical);
+        let Err(split) = split.into_only_pane() else {
+            panic!("a workspace with two panes is not consumed");
+        };
+        assert_eq!(split.pane_count(), 2);
+    }
+
+    #[test]
+    fn a_tab_only_pane_closes_its_tab_when_another_tab_remains() {
+        let mut ws = workspace_with_tabs(2);
+        ws.switch_tab(1);
+        let pane = ws.tabs[0].root_pane;
+        let survivor = ws.tabs[1].number;
+
+        let taken = ws.take_pane_for_move(pane).expect("pane is movable");
+
+        assert_eq!(taken.moved.pane_id, pane);
+        assert_eq!(taken.removed_tab_idx, Some(0));
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.active_tab().number, survivor);
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn moving_the_only_pane_to_a_new_tab_replaces_its_tab() {
+        let mut ws = Workspace::test_new("only");
+        let pane = ws.tabs[0].root_pane;
+        let old_number = ws.tabs[0].number;
+
+        let placed = ws
+            .move_pane_to_new_tab(pane, Some("moved".into()))
+            .expect("pane is movable");
+
+        assert_eq!(placed.removed_tab_idx, Some(0));
+        assert_eq!(placed.tab_idx, 0);
+        assert_eq!(ws.tabs.len(), 1);
+        assert_ne!(ws.tabs[0].number, old_number);
+        assert_eq!(ws.tabs[0].custom_name.as_deref(), Some("moved"));
+        assert_eq!(ws.tabs[0].root_pane, pane);
+        assert!(ws.tabs[0].panes.contains_key(&pane));
+        assert_eq!(ws.active_tab_index(), 0);
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn moving_a_pane_to_a_new_tab_appends_the_tab() {
+        let mut ws = workspace_with_tabs(2);
+        let pane = ws.tabs[0].root_pane;
+        let kept = ws.tabs[1].number;
+
+        let placed = ws
+            .move_pane_to_new_tab(pane, None)
+            .expect("pane is movable");
+
+        assert_eq!(placed.removed_tab_idx, Some(0));
+        assert_eq!(placed.tab_idx, 1);
+        assert_eq!(ws.tabs.len(), 2);
+        assert_eq!(ws.tabs[0].number, kept);
+        assert_eq!(ws.tabs[1].root_pane, pane);
+
+        let split_pane = ws.test_split(Direction::Vertical);
+        let placed = ws
+            .move_pane_to_new_tab(split_pane, None)
+            .expect("pane is movable");
+        assert_eq!(placed.removed_tab_idx, None);
+        assert_eq!(placed.tab_idx, 2);
         ws.assert_invariants_for_test();
     }
 }

@@ -1331,7 +1331,7 @@ mod tests {
     use super::*;
     use std::{
         io::{Read, Write},
-        os::fd::{FromRawFd, IntoRawFd},
+        os::fd::{AsRawFd, FromRawFd, IntoRawFd},
         os::unix::net::UnixStream,
         sync::atomic::{AtomicBool, Ordering},
     };
@@ -1946,6 +1946,37 @@ mod tests {
         (handle, peer, exit_rx)
     }
 
+    fn wait_readable(fd: RawFd) -> std::io::Result<()> {
+        let mut poll_fd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: `poll_fd` is one live pollfd and poll does not retain it.
+            let result = unsafe { libc::poll(&mut poll_fd, 1, 1000) };
+            if result > 0 {
+                return if poll_fd.revents & libc::POLLIN != 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(
+                        "slave PTY became ready without readable input",
+                    ))
+                };
+            }
+            if result == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "slave PTY did not receive the actor response",
+                ));
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+    }
+
     #[test]
     fn a_core_broken_elsewhere_ends_an_idle_pane() {
         let broken = Arc::new(AtomicBool::new(false));
@@ -2019,6 +2050,78 @@ mod tests {
                 .expect("reader exit is reported after peer closure"),
             ReaderExit::Closed
         );
+    }
+
+    #[test]
+    fn actor_open_pty_handles_io_resize_and_slave_close() {
+        let crate::backend::OpenedPty { master, slave } =
+            crate::backend::open_pty(24, 80).expect("open PTY pair");
+        let control_master = master.try_clone().expect("clone PTY master for ioctl");
+        let mut slave = std::fs::File::from(slave);
+        let (read_tx, read_rx) = std_mpsc::channel::<Bytes>();
+        let (exit_tx, exit_rx) = std_mpsc::channel();
+        let handle = PtyIoActor::spawn(PtyIoActorConfig {
+            pane_id: PaneId::from_raw(1),
+            master_fd: master,
+            on_read: Box::new(move |bytes| {
+                read_tx
+                    .send(Bytes::copy_from_slice(bytes))
+                    .expect("read receiver stays alive through actor exit");
+                PtyReadResult::empty()
+            }),
+            on_reader_exit: Some(Box::new(move |reason| {
+                exit_tx.send(reason).expect("exit receiver stays alive");
+            })),
+            core_broken: None,
+        })
+        .expect("start actor on PTY master");
+
+        slave.write_all(b"pty-output").expect("write slave output");
+        let mut output = Vec::new();
+        while output.len() < b"pty-output".len() {
+            let chunk = read_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("actor reads slave output");
+            output.extend_from_slice(&chunk);
+        }
+        assert_eq!(output, b"pty-output");
+
+        handle.resize(
+            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            || vec![Bytes::from_static(b"resize-ok\n")],
+        );
+        wait_readable(slave.as_raw_fd()).expect("actor applies resize and writes its reply");
+        let mut reply = [0; b"resize-ok\n".len()];
+        slave
+            .read_exact(&mut reply)
+            .expect("read actor resize reply");
+        assert_eq!(&reply, b"resize-ok\n");
+
+        // SAFETY: zero is a valid initial byte representation for winsize, and
+        // TIOCGWINSZ writes one winsize to this live local value.
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: the cloned master fd is live, and ioctl writes only `size`.
+        let result =
+            unsafe { libc::ioctl(control_master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+        assert_eq!(result, 0, "TIOCGWINSZ succeeds");
+        assert_eq!(
+            (size.ws_row, size.ws_col, size.ws_xpixel, size.ws_ypixel),
+            (40, 100, 900, 720)
+        );
+
+        drop(slave);
+        assert_eq!(
+            exit_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("slave closure wakes actor through PTY hangup"),
+            ReaderExit::Closed
+        );
+
+        let mut master_probe = std::fs::File::from(control_master);
+        let err = master_probe
+            .read(&mut [0; 1])
+            .expect_err("master read after final slave close reports EIO");
+        assert_eq!(err.raw_os_error(), Some(libc::EIO));
     }
 
     #[test]

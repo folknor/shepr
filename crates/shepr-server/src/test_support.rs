@@ -183,8 +183,6 @@ pub(crate) trait WorkspaceFixture: Sized {
     /// public pane numbers all differ, so code that confuses them is caught.
     fn test_adversarial_identity_state() -> Self;
     fn assert_invariants_for_test(&self);
-    /// Remove every tab, leaving the workspace empty.
-    fn clear_tabs_for_test(&mut self);
     fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval>;
     fn resolved_identity_cwd(&self) -> Option<PathBuf>;
 }
@@ -201,11 +199,7 @@ impl WorkspaceFixture for Workspace {
 
     fn test_split(&mut self, direction: Direction) -> PaneId {
         let tab_index = self.active_tab_index();
-        let mut layout = self
-            .active_tab()
-            .expect("workspace must have tab")
-            .layout
-            .clone();
+        let mut layout = self.active_tab().layout.clone();
         let new_id = layout.split_focused(direction);
         self.commit_new_pane(tab_index, new_id, layout, TerminalId::alloc(), false)
             .expect("test split commits");
@@ -251,8 +245,8 @@ impl WorkspaceFixture for Workspace {
         );
 
         assert_ne!(
-            ws.active_tab + 1,
-            ws.tabs()[ws.active_tab].number,
+            ws.active_tab_index() + 1,
+            ws.active_tab().number,
             "adversarial active tab must distinguish position from public tab number"
         );
         assert_ne!(
@@ -267,19 +261,6 @@ impl WorkspaceFixture for Workspace {
 
     fn assert_invariants_for_test(&self) {
         let tabs = self.tabs();
-        assert!(
-            !tabs.is_empty(),
-            "workspace {} must contain at least one tab",
-            self.id
-        );
-        assert!(
-            self.active_tab < tabs.len(),
-            "workspace {} active_tab {} out of bounds for {} tabs",
-            self.id,
-            self.active_tab,
-            tabs.len()
-        );
-
         let mut tab_numbers = std::collections::HashSet::new();
         let mut max_tab_number = 0usize;
         let mut live_panes = std::collections::HashSet::new();
@@ -387,13 +368,6 @@ impl WorkspaceFixture for Workspace {
             self.next_public_pane_number,
             max_pane_number
         );
-    }
-
-    fn clear_tabs_for_test(&mut self) {
-        while let Some(root) = self.tabs().first().map(|tab| tab.root_pane) {
-            self.take_pane_for_move(root)
-                .expect("a tab's root pane can be taken");
-        }
     }
 
     fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval> {

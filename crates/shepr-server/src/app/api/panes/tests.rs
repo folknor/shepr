@@ -895,7 +895,7 @@ fn api_pane_current_prefers_caller_pane_id() {
     };
     assert_eq!(pane.pane_id, right_public);
     assert!(!pane.focused);
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
     assert_ne!(pane.pane_id, root_public);
 }
 
@@ -1004,7 +1004,7 @@ fn api_pane_swap_explicit_source_and_target_preserves_focus_and_returns_layout()
     assert_eq!(swap.focused_pane_id, swap.source_pane_id);
     assert_eq!(swap.layout.focused_pane_id, swap.source_pane_id);
     assert_eq!(swap.layout.panes.len(), 2);
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(source));
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), source);
 }
 
 #[test]
@@ -1381,11 +1381,12 @@ async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
     );
     let runtime = std::ptr::from_ref(app.test_runtime(source));
     let source_public = app.public_pane_id(0, source).expect("test precondition");
+    let source_tab_public = app.public_tab_id(0, 0).expect("test precondition");
 
     let response = app.handle_pane_move(
         "req".into(),
         PaneMoveParams {
-            pane_id: source_public,
+            pane_id: source_public.clone(),
             destination: PaneMoveDestination::NewTab {
                 workspace_id: None,
                 label: Some("moved".into()),
@@ -1400,6 +1401,19 @@ async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
     };
     assert!(move_result.changed);
     assert_eq!(std::ptr::from_ref(app.test_runtime(source)), runtime);
+    // The workspace keeps one live tab: the old tab closes and its
+    // replacement, under a new public number, holds the pane.
+    assert_eq!(move_result.closed_tab_id, Some(source_tab_public.clone()));
+    assert_eq!(move_result.closed_workspace_id, None);
+    assert_eq!(move_result.source_layout, None);
+    assert_eq!(move_result.pane.pane_id, source_public);
+    let created_tab = move_result.created_tab.expect("a tab is created");
+    assert_eq!(created_tab.label, "moved");
+    assert_ne!(created_tab.tab_id, source_tab_public);
+    assert_eq!(app.state.workspaces.len(), 1);
+    assert_eq!(app.state.workspaces[0].tabs().len(), 1);
+    assert_eq!(app.state.workspaces[0].tabs()[0].root_pane, source);
+    app.state.workspaces[0].assert_invariants_for_test();
 }
 
 #[test]
@@ -1566,7 +1580,7 @@ fn api_pane_move_existing_tab_no_focus_preserves_previous_target_focus() {
     let source = app.state.workspaces[0].tabs()[0].root_pane;
     let target_tab = app.state.workspaces[0].test_add_tab(Some("target"));
     let previously_focused = app.state.workspaces[0].tabs()[target_tab].root_pane;
-    app.state.workspaces[0].active_tab = target_tab;
+    app.state.workspaces[0].switch_tab(target_tab);
     let explicit_target =
         app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
     app.state.workspaces[0].tabs_mut()[target_tab]
@@ -1624,14 +1638,13 @@ fn api_pane_move_recovery_restores_removed_source_workspace() {
         previous_tab_label: app.state.workspaces[0].tabs()[0].custom_name.clone(),
         identity_cwd: app.state.workspaces[0].identity_cwd.clone(),
     };
-    let taken = app.state.workspaces[0]
-        .take_pane_for_move(source)
-        .expect("source pane should be movable");
-    app.state.workspaces.remove(0);
+    let Ok(moved) = app.state.workspaces.remove(0).into_only_pane() else {
+        panic!("source pane should be movable");
+    };
     app.state.set_active_index(None);
     app.state.set_selected_index(Some(0));
 
-    app.recover_failed_pane_move(context, taken.moved);
+    app.recover_failed_pane_move(context, moved);
 
     assert_eq!(app.state.workspaces.len(), 1);
     assert_eq!(app.state.workspaces[0].id, previous_workspace_id);
@@ -1874,7 +1887,7 @@ fn api_pane_zoom_idempotent_mode_reports_focus_change() {
     assert!(zoom.focus_changed);
     assert_eq!(zoom.reason, Some(PaneZoomReason::AlreadyZoomed));
     assert!(zoom.zoomed);
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(right));
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
     assert!(matches!(
         &app.event_hub.events_after(0).last().expect("layout event").1.data,
         EventData::LayoutUpdated { layout }
@@ -2052,7 +2065,7 @@ fn api_pane_resize_changes_target_ratio_without_changing_focus() {
     assert_eq!(resize.focused_pane_id, right_public);
     assert_eq!(resize.layout.focused_pane_id, right_public);
     assert!((resize.layout.splits[0].ratio - 0.6).abs() < f32::EPSILON);
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(right));
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
     assert!(matches!(
         &app.event_hub.events_after(0).last().expect("layout event").1.data,
         EventData::LayoutUpdated { layout }
@@ -2090,7 +2103,7 @@ fn api_pane_focus_direction_focuses_neighbor() {
     assert_eq!(focus.source_pane_id, root_public);
     assert_eq!(focus.focused_pane_id, Some(right_public.clone()));
     assert_eq!(focus.layout.focused_pane_id, right_public);
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(right));
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
 }
 
 #[test]
@@ -2120,8 +2133,8 @@ fn api_pane_focus_focuses_direct_target_across_tabs_and_workspaces() {
     };
     assert_eq!(pane.pane_id, target_public);
     assert_eq!(app.state.active_index(), Some(1));
-    assert_eq!(app.state.workspaces[1].active_tab, target_tab_idx);
-    assert_eq!(app.state.workspaces[1].focused_pane_id(), Some(target_pane));
+    assert_eq!(app.state.workspaces[1].active_tab_index(), target_tab_idx);
+    assert_eq!(app.state.workspaces[1].focused_pane_id(), target_pane);
     assert_eq!(app.state.mode, Mode::Terminal);
 }
 
@@ -2200,7 +2213,7 @@ fn api_pane_focus_direction_no_neighbor_is_noop() {
     assert_eq!(focus.reason, Some(PaneFocusDirectionReason::NoNeighbor));
     assert_eq!(focus.source_pane_id, root_public.clone());
     assert_eq!(focus.focused_pane_id, Some(root_public));
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
 }
 
 #[test]

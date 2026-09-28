@@ -515,16 +515,26 @@ pub(super) fn bridge_connection(
 pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = super::server_lifecycle::printable_remote_text(stderr.trim());
-    let (failure, exit_status) = if status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
-        (
+    let (failure, exit_status) = match status.code() {
+        Some(SSH_OWN_FAILURE_EXIT_CODE) => (
             "remote SSH connection failed",
             format!("exit status {SSH_OWN_FAILURE_EXIT_CODE}"),
-        )
-    } else {
-        let exit_status = status
-            .code()
-            .map_or_else(|| status.to_string(), |code| format!("exit status {code}"));
-        ("remote command failed", exit_status)
+        ),
+        Some(REMAPPED_REMOTE_255_EXIT_CODE) => {
+            // SSH exposes one exit byte, so remapping remote 255 to 254 aliases
+            // a native remote 254. Name the mapping without guessing which ran.
+            (
+                "remote command failed",
+                format!(
+                    "reported exit status {REMAPPED_REMOTE_255_EXIT_CODE} (remote status {SSH_OWN_FAILURE_EXIT_CODE} is remapped to {REMAPPED_REMOTE_255_EXIT_CODE}; a native {REMAPPED_REMOTE_255_EXIT_CODE} is indistinguishable)"
+                ),
+            )
+        }
+        code => {
+            let exit_status =
+                code.map_or_else(|| status.to_string(), |code| format!("exit status {code}"));
+            ("remote command failed", exit_status)
+        }
     };
     let message = if stderr.is_empty() {
         format!("{failure} ({exit_status})")
@@ -549,6 +559,7 @@ pub(crate) fn attempt_deadline_passed() -> io::Error {
 /// OpenSSH exits with 255 when ssh itself fails (resolve, connect, host key,
 /// authentication, a dropped link); any other code came from the remote command.
 pub(crate) const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
+pub(crate) const REMAPPED_REMOTE_255_EXIT_CODE: i32 = 254;
 
 /// Whether `error` says the SSH link, not the remote side, failed: the remote end
 /// was never reached or was lost, so nothing is known about the remote install.
@@ -702,7 +713,7 @@ pub(super) fn run_client_process(
         )
         .env(
             shepr_core::env::EnvVar::SheprRemoteKeybindings,
-            keybindings.as_str(),
+            keybindings.to_env_value(),
         )
         .env_remove(shepr_core::env::EnvVar::SheprSocketPath)
         .stdin(Stdio::inherit())

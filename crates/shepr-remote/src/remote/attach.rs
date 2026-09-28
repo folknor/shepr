@@ -303,13 +303,10 @@ mod tests {
             contents.contains("Host *"),
             "config should add a Host * fallback block: {contents}"
         );
+        let keepalive_config = ssh_options::KEEPALIVE.config_lines();
         assert!(
-            contents.contains("ServerAliveInterval 15"),
-            "config should set the keepalive interval: {contents}"
-        );
-        assert!(
-            contents.contains("ServerAliveCountMax 4"),
-            "config should set the keepalive count: {contents}"
+            contents.contains(&keepalive_config),
+            "config should set the keepalive values: {contents}"
         );
         assert!(!contents.contains("ControlMaster"));
         assert!(!contents.contains("ControlPersist"));
@@ -459,10 +456,11 @@ mod tests {
             .map(|arg| arg.to_string_lossy())
             .collect::<Vec<_>>();
         for required in [
-            "ControlMaster=auto",
-            "ControlPersist=600",
-            "BatchMode=no",
-            "StrictHostKeyChecking=yes",
+            ssh_options::CONTROL_MASTER,
+            ssh_options::CONTROL_PERSIST,
+            ssh_options::BATCH_MODE_NO,
+            ssh_options::STRICT_HOST_KEY_CHECKING,
+            ssh_options::AUTHENTICATION_PASSWORD_PROMPTS,
         ] {
             assert!(args.iter().any(|arg| arg == required), "missing {required}");
         }
@@ -533,9 +531,9 @@ mod tests {
                 "-S".to_string(),
                 control_path.to_string_lossy().into_owned(),
                 "-o".to_string(),
-                "ControlMaster=auto".to_string(),
+                ssh_options::CONTROL_MASTER.to_string(),
                 "-o".to_string(),
-                "ControlPersist=600".to_string(),
+                ssh_options::CONTROL_PERSIST.to_string(),
                 "-T".to_string(),
                 "example".to_string(),
             ]
@@ -549,13 +547,30 @@ mod tests {
 
     #[test]
     fn only_ssh_own_exit_code_counts_as_a_link_failure() {
-        let link = ssh_bridge_exit_error(exit_status(255), b"Connection refused");
+        let link = ssh_bridge_exit_error(
+            exit_status(SSH_OWN_FAILURE_EXIT_CODE),
+            b"Connection refused",
+        );
         assert!(is_ssh_link_failure(&link));
         assert_eq!(link.kind(), io::ErrorKind::ConnectionAborted);
         assert_eq!(
             link.to_string(),
-            "remote SSH connection failed (exit status 255): Connection refused"
+            format!(
+                "remote SSH connection failed (exit status {SSH_OWN_FAILURE_EXIT_CODE}): Connection refused"
+            )
         );
+        let remapped = ssh_bridge_exit_error(
+            exit_status(REMAPPED_REMOTE_255_EXIT_CODE),
+            b"remote bridge failed",
+        );
+        assert!(!is_ssh_link_failure(&remapped));
+        let remapped_message = remapped.to_string();
+        assert!(remapped_message.contains(&format!(
+            "remote status {SSH_OWN_FAILURE_EXIT_CODE} is remapped to {REMAPPED_REMOTE_255_EXIT_CODE}"
+        )));
+        assert!(remapped_message.contains(&format!(
+            "a native {REMAPPED_REMOTE_255_EXIT_CODE} is indistinguishable"
+        )));
         let missing =
             ssh_bridge_exit_error(exit_status(127), b"sh: 1: exec: /old/shepr: not found");
         assert!(!is_ssh_link_failure(&missing));
@@ -578,7 +593,10 @@ mod tests {
 
     #[test]
     fn bridge_remote_stderr_is_filtered_before_error_output() {
-        let error = ssh_bridge_exit_error(exit_status(255), b"Connection refused\x1b[2J");
+        let error = ssh_bridge_exit_error(
+            exit_status(SSH_OWN_FAILURE_EXIT_CODE),
+            b"Connection refused\x1b[2J",
+        );
         assert!(!error.to_string().contains('\x1b'));
         assert!(error.to_string().contains("Connection refused?[2J"));
     }
@@ -656,15 +674,16 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+        let keepalive_options = ssh_options::KEEPALIVE.command_options();
         for required in [
             "-C",
-            "BatchMode=yes",
-            "NumberOfPasswordPrompts=0",
-            "StrictHostKeyChecking=yes",
-            "ConnectTimeout=10",
-            "ConnectionAttempts=1",
-            "ServerAliveInterval=15",
-            "ServerAliveCountMax=4",
+            ssh_options::BATCH_MODE_YES,
+            ssh_options::NONINTERACTIVE_PASSWORD_PROMPTS,
+            ssh_options::STRICT_HOST_KEY_CHECKING,
+            ssh_options::CONNECT_TIMEOUT,
+            ssh_options::CONNECTION_ATTEMPTS,
+            keepalive_options[0].as_str(),
+            keepalive_options[1].as_str(),
         ] {
             assert!(args.iter().any(|arg| arg == required), "missing {required}");
         }
@@ -853,7 +872,9 @@ mod tests {
         let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         assert_eq!(
             remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME),
-            "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
+            format!(
+                "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
+            )
         );
         assert_eq!(
             remote_shepr.saved_bridge_command("agents"),
@@ -868,7 +889,9 @@ mod tests {
 
         assert_eq!(
             remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME),
-            "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
+            format!(
+                "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
+            )
         );
     }
 
@@ -945,7 +968,11 @@ mod tests {
             Some(0)
         );
         assert_eq!(run("exit 3\n").status.code(), Some(3));
-        assert_eq!(run("(exit 255)\n").status.code(), Some(254));
+        let remote_ssh_status = format!("(exit {SSH_OWN_FAILURE_EXIT_CODE})\n");
+        assert_eq!(
+            run(&remote_ssh_status).status.code(),
+            Some(REMAPPED_REMOTE_255_EXIT_CODE)
+        );
     }
 
     /// The cached API-bridge command reaches the login shell as `/bin/sh -c`

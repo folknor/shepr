@@ -398,7 +398,7 @@ impl App {
             self.state
                 .workspaces
                 .get(idx)
-                .and_then(|workspace| workspace.focused_pane_id().map(|pane_id| (idx, pane_id)))
+                .map(|workspace| (idx, workspace.focused_pane_id()))
         });
     }
 
@@ -407,7 +407,7 @@ impl App {
             self.state
                 .workspaces
                 .get(idx)
-                .and_then(|workspace| workspace.focused_pane_id().map(|pane_id| (idx, pane_id)))
+                .map(|workspace| (idx, workspace.focused_pane_id()))
         });
         if current_focus == self.last_focus {
             return;
@@ -435,7 +435,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| self.public_tab_id(ws_idx, ws.active_tab))
+            .and_then(|ws| self.public_tab_id(ws_idx, ws.active_tab_index()))
         {
             self.emit_event(shepr_api::schema::EventEnvelope {
                 data: shepr_api::schema::EventData::TabFocused {
@@ -459,7 +459,7 @@ impl App {
             self.state
                 .workspaces
                 .get(idx)
-                .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
+                .map(|ws| (idx, ws.focused_pane_id()))
         });
         if current_focus == self.last_focus {
             if let (Some((ws_idx, pane_id)), Some(event)) = (current_focus, outer_event) {

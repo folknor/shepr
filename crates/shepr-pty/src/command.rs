@@ -429,20 +429,24 @@ mod tests {
     #[test]
     fn child_sees_resolved_shell_not_a_non_executable_shell_env() {
         let mut cmd = PtyCommand::new(fixture::path());
+        cmd.args(fixture::args(&[fixture::Step::PrintEnv("SHELL".into())]));
         cmd.env("SHELL", "/__shepr_missing_shell__");
-        let std_cmd = cmd.to_std_command().expect("build std command");
-        let shell = std_cmd
-            .get_envs()
-            .find(|(key, _)| *key == OsStr::new("SHELL"))
-            .and_then(|(_, value)| value.map(OsStr::to_owned));
+        let mut std_cmd = cmd.to_std_command().expect("build std command");
+        std_cmd.stdout(std::process::Stdio::piped());
+        let output = std_cmd.output().expect("run fixture child");
+
+        assert!(output.status.success());
+        let shell = output
+            .stdout
+            .strip_suffix(b"\n")
+            .expect("fixture prints SHELL with a newline");
+        let shell = OsStr::from_bytes(shell);
+        assert_ne!(shell, OsStr::new("/__shepr_missing_shell__"));
+        assert!(Path::new(shell).is_absolute());
         assert_eq!(
-            shell,
-            Some(
-                cmd.resolve_shell(&cmd.home_dir())
-                    .expect("test precondition")
-            )
+            classify_candidate(Path::new(shell)),
+            CandidateStatus::Executable
         );
-        assert_ne!(shell, Some(OsString::from("/__shepr_missing_shell__")));
     }
 
     #[test]

@@ -6,6 +6,8 @@ use crate::agent::IntegrationTarget as Target;
 
 use super::command::hook_command;
 use super::config_edit::{direct_command_field, is_matching_command_hook};
+use super::env::AgentIntegrationPaths;
+use super::types::{InstallOutcome, UninstallOutcome};
 
 pub fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'static str {
     target.label()
@@ -19,11 +21,17 @@ struct IntegrationSpec {
     path: &'static [&'static str],
     version: u32,
     events: &'static [crate::agent::IntegrationHookEvent],
+    action_label: &'static str,
+    install: fn(&AgentIntegrationPaths) -> io::Result<InstallOutcome>,
+    uninstall: fn(&AgentIntegrationPaths) -> io::Result<UninstallOutcome>,
 }
 
 const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     IntegrationSpec {
         target: Target::Pi,
+        action_label: "pi",
+        install: super::targets::install_pi,
+        uninstall: super::targets::uninstall_pi,
         asset: super::PI_EXTENSION_ASSET,
         directory: "pi_extension",
         path: &[super::PI_EXTENSION_INSTALL_NAME],
@@ -32,6 +40,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Omp,
+        action_label: "omp",
+        install: super::targets::install_omp,
+        uninstall: super::targets::uninstall_omp,
         asset: super::OMP_EXTENSION_ASSET,
         directory: "omp_extension",
         path: &[super::OMP_EXTENSION_INSTALL_NAME],
@@ -40,6 +51,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Claude,
+        action_label: "claude",
+        install: super::targets::install_claude,
+        uninstall: super::targets::uninstall_claude,
         asset: super::CLAUDE_HOOK_ASSET,
         directory: "claude",
         path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
@@ -48,6 +62,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Codex,
+        action_label: "codex",
+        install: super::targets::install_codex,
+        uninstall: super::targets::uninstall_codex,
         asset: super::CODEX_HOOK_ASSET,
         directory: "codex",
         path: &[super::CODEX_HOOK_INSTALL_NAME],
@@ -56,6 +73,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Copilot,
+        action_label: "copilot",
+        install: super::targets::install_copilot,
+        uninstall: super::targets::uninstall_copilot,
         asset: super::COPILOT_HOOK_ASSET,
         directory: "copilot",
         path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
@@ -64,6 +84,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Devin,
+        action_label: "devin",
+        install: super::targets::install_devin,
+        uninstall: super::targets::uninstall_devin,
         asset: super::DEVIN_HOOK_ASSET,
         directory: "devin",
         path: &[super::DEVIN_HOOK_INSTALL_NAME],
@@ -72,6 +95,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Droid,
+        action_label: "droid",
+        install: super::targets::install_droid,
+        uninstall: super::targets::uninstall_droid,
         asset: super::DROID_HOOK_ASSET,
         directory: "droid",
         path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
@@ -80,6 +106,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Kimi,
+        action_label: "kimi",
+        install: super::targets::install_kimi,
+        uninstall: super::targets::uninstall_kimi,
         asset: super::KIMI_HOOK_ASSET,
         directory: "kimi",
         path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
@@ -88,6 +117,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Opencode,
+        action_label: "opencode",
+        install: super::targets::install_opencode,
+        uninstall: super::targets::uninstall_opencode,
         asset: super::OPENCODE_PLUGIN_ASSET,
         directory: "opencode",
         path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
@@ -96,6 +128,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Kilo,
+        action_label: "kilo",
+        install: super::targets::install_kilo,
+        uninstall: super::targets::uninstall_kilo,
         asset: super::KILO_PLUGIN_ASSET,
         directory: "kilo",
         path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
@@ -104,6 +139,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Qodercli,
+        action_label: "qodercli",
+        install: super::targets::install_qodercli,
+        uninstall: super::targets::uninstall_qodercli,
         asset: super::QODERCLI_HOOK_ASSET,
         directory: "qodercli",
         path: &["hooks", super::QODERCLI_HOOK_INSTALL_NAME],
@@ -112,6 +150,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Qwen,
+        action_label: "qwen",
+        install: super::targets::install_qwen,
+        uninstall: super::targets::uninstall_qwen,
         asset: super::QWEN_HOOK_ASSET,
         directory: "qwen",
         path: &["hooks", super::QWEN_HOOK_INSTALL_NAME],
@@ -120,6 +161,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Cursor,
+        action_label: "cursor",
+        install: super::targets::install_cursor,
+        uninstall: super::targets::uninstall_cursor,
         asset: super::CURSOR_HOOK_ASSET,
         directory: "cursor",
         path: &[super::CURSOR_HOOK_INSTALL_NAME],
@@ -128,6 +172,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Mastracode,
+        action_label: "mastracode",
+        install: super::targets::install_mastracode,
+        uninstall: super::targets::uninstall_mastracode,
         asset: super::MASTRACODE_HOOK_ASSET,
         directory: "mastracode",
         path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
@@ -136,6 +183,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::AntigravityCli,
+        action_label: "antigravity-cli",
+        install: super::targets::install_antigravity_cli,
+        uninstall: super::targets::uninstall_antigravity_cli,
         asset: super::ANTIGRAVITY_CLI_HOOK_ASSET,
         directory: "antigravity_cli",
         path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
@@ -144,6 +194,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Grok,
+        action_label: "grok",
+        install: super::targets::install_grok,
+        uninstall: super::targets::uninstall_grok,
         asset: super::GROK_HOOK_ASSET,
         directory: "grok",
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
@@ -152,6 +205,9 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
     IntegrationSpec {
         target: Target::Letta,
+        action_label: "letta",
+        install: super::targets::install_letta,
+        uninstall: super::targets::uninstall_letta,
         asset: super::LETTA_HOOK_ASSET,
         directory: "letta",
         path: &["hooks", super::LETTA_HOOK_INSTALL_NAME],
@@ -159,6 +215,37 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         events: Target::Letta.hook_events(),
     },
 ];
+
+pub(crate) fn action_label(target: Target) -> &'static str {
+    INTEGRATION_SPECS
+        .iter()
+        .find(|spec| spec.target == target)
+        .map_or(target.label(), |spec| spec.action_label)
+}
+
+pub(crate) fn install_operation(
+    paths: &AgentIntegrationPaths,
+    target: Target,
+) -> io::Result<InstallOutcome> {
+    let Some(spec) = INTEGRATION_SPECS.iter().find(|spec| spec.target == target) else {
+        return Err(io::Error::other(format!(
+            "missing integration spec for {target:?}"
+        )));
+    };
+    (spec.install)(paths)
+}
+
+pub(crate) fn uninstall_operation(
+    paths: &AgentIntegrationPaths,
+    target: Target,
+) -> io::Result<UninstallOutcome> {
+    let Some(spec) = INTEGRATION_SPECS.iter().find(|spec| spec.target == target) else {
+        return Err(io::Error::other(format!(
+            "missing integration spec for {target:?}"
+        )));
+    };
+    (spec.uninstall)(paths)
+}
 
 pub(crate) fn integration_asset(target: crate::agent::IntegrationTarget) -> Option<&'static str> {
     INTEGRATION_SPECS
@@ -490,6 +577,11 @@ fn hook_event_commands(
 ///
 /// Pi, OMP and Kilo load every file in their plugin directory, so the file is
 /// its own registration. Grok and opencode are checked by their own helpers.
+/// Keep these predicates beside the validators: the supported formats include
+/// nested, direct, flat and document-root JSON hooks, Codex's TOML feature
+/// switch, Kimi's TOML block, and dedicated Grok/OpenCode registration files.
+/// Putting those parser-specific checks into each inventory row would add a
+/// second strategy vocabulary while leaving the validators themselves here.
 fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_path: &Path) -> bool {
     use crate::agent::IntegrationTarget as Target;
 

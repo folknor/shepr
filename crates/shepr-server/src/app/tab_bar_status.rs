@@ -55,23 +55,24 @@ impl App {
                 if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
                     env.push((ChildEnv::SheprActiveTabId.name().to_string(), tab_id));
                 }
-                if let Some(pane_id) = workspace.focused_pane_id() {
-                    if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                        env.push((
-                            ChildEnv::SheprActivePaneId.name().to_string(),
-                            public_pane_id,
-                        ));
-                    }
-                    if let Some(pane_cwd) = workspace.active_tab().and_then(|tab| {
-                        tab.cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                    }) {
-                        env.push((
-                            ChildEnv::SheprActivePaneCwd.name().to_string(),
-                            pane_cwd.display().to_string(),
-                        ));
-                        if is_directory(&pane_cwd) {
-                            cwd = Some(pane_cwd);
-                        }
+                let pane_id = workspace.focused_pane_id();
+                if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
+                    env.push((
+                        ChildEnv::SheprActivePaneId.name().to_string(),
+                        public_pane_id,
+                    ));
+                }
+                if let Some(pane_cwd) = workspace.active_tab().cwd_for_pane(
+                    pane_id,
+                    &self.state.terminals,
+                    &self.terminal_runtimes,
+                ) {
+                    env.push((
+                        ChildEnv::SheprActivePaneCwd.name().to_string(),
+                        pane_cwd.display().to_string(),
+                    ));
+                    if is_directory(&pane_cwd) {
+                        cwd = Some(pane_cwd);
                     }
                 }
             }

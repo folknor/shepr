@@ -10,7 +10,11 @@ impl AppState {
         let Some(ws_idx) = self.active_index() else {
             return;
         };
-        let Some(tab) = self.workspaces.get(ws_idx).and_then(|ws| ws.active_tab()) else {
+        let Some(tab) = self
+            .workspaces
+            .get(ws_idx)
+            .map(shepr_mux::workspace::Workspace::active_tab)
+        else {
             return;
         };
         let panes = if tab.zoomed {
@@ -36,7 +40,11 @@ impl AppState {
         let Some(ws_idx) = self.active_index() else {
             return false;
         };
-        let Some(tab) = self.workspaces.get(ws_idx).and_then(|ws| ws.active_tab()) else {
+        let Some(tab) = self
+            .workspaces
+            .get(ws_idx)
+            .map(shepr_mux::workspace::Workspace::active_tab)
+        else {
             return false;
         };
         let panes = if tab.zoomed {
@@ -60,7 +68,7 @@ impl AppState {
         let Some(tab) = self
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.active_tab_mut())
+            .map(shepr_mux::workspace::Workspace::active_tab_mut)
         else {
             return false;
         };
@@ -83,7 +91,7 @@ impl AppState {
             if let Some(tab) = self
                 .active_index()
                 .and_then(|i| self.workspaces.get_mut(i))
-                .and_then(|ws| ws.active_tab_mut())
+                .map(shepr_mux::workspace::Workspace::active_tab_mut)
             {
                 tab.layout.resize_focused(direction, 0.05, area);
                 self.mark_session_dirty();

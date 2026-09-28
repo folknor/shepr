@@ -14,6 +14,64 @@ use std::time::{Duration, Instant};
 pub(super) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = SSH_STDERR_CAPTURE_LIMIT;
 
+pub(super) mod ssh_options {
+    use std::process::Command;
+
+    pub(crate) const BATCH_MODE_NO: &str = "BatchMode=no";
+    pub(crate) const BATCH_MODE_YES: &str = "BatchMode=yes";
+    pub(crate) const CONNECT_TIMEOUT: &str = "ConnectTimeout=10";
+    pub(crate) const CONNECTION_ATTEMPTS: &str = "ConnectionAttempts=1";
+    pub(crate) const CONTROL_MASTER: &str = "ControlMaster=auto";
+    pub(crate) const CONTROL_PERSIST: &str = "ControlPersist=600";
+    pub(crate) const NONINTERACTIVE_PASSWORD_PROMPTS: &str = "NumberOfPasswordPrompts=0";
+    pub(crate) const AUTHENTICATION_PASSWORD_PROMPTS: &str = "NumberOfPasswordPrompts=3";
+    pub(crate) const STRICT_HOST_KEY_CHECKING: &str = "StrictHostKeyChecking=yes";
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct Keepalive {
+        pub(crate) interval_secs: u32,
+        pub(crate) count_max: u32,
+    }
+
+    pub(crate) const KEEPALIVE: Keepalive = Keepalive {
+        interval_secs: 15,
+        count_max: 4,
+    };
+
+    /// Appends OpenSSH options using the same `-o` argument shape at each call site.
+    pub(crate) fn append(command: &mut Command, options: &[&str]) {
+        for option in options {
+            command.arg("-o").arg(*option);
+        }
+    }
+
+    impl Keepalive {
+        pub(crate) fn command_options(&self) -> [String; 2] {
+            let interval_secs = self.interval_secs;
+            let count_max = self.count_max;
+            [
+                format!("ServerAliveInterval={interval_secs}"),
+                format!("ServerAliveCountMax={count_max}"),
+            ]
+        }
+
+        pub(crate) fn append_command_options(&self, command: &mut Command) {
+            let options = self.command_options();
+            append(command, &[options[0].as_str(), options[1].as_str()]);
+        }
+
+        pub(crate) fn append_config(&self, contents: &mut String) {
+            contents.push_str(&self.config_lines());
+        }
+
+        pub(crate) fn config_lines(&self) -> String {
+            let interval_secs = self.interval_secs;
+            let count_max = self.count_max;
+            format!("  ServerAliveInterval {interval_secs}\n  ServerAliveCountMax {count_max}\n")
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ManagedSshOptions {
     pub(super) config_path: PathBuf,
@@ -208,16 +266,16 @@ pub(super) fn authentication_command_with_config(
     apply_managed_ssh_options(&mut command, Some(&config.options));
     command
         .env(shepr_core::env::ChildEnv::SshAskpassRequire, "never")
-        .env_remove(shepr_core::env::ChildEnv::SshAskpass)
-        .arg("-o")
-        .arg("BatchMode=no")
-        .arg("-o")
-        .arg("StrictHostKeyChecking=yes")
-        .arg("-o")
-        .arg("NumberOfPasswordPrompts=3")
-        .arg("-T")
-        .arg(target.as_str())
-        .arg("exit");
+        .env_remove(shepr_core::env::ChildEnv::SshAskpass);
+    ssh_options::append(
+        &mut command,
+        &[
+            ssh_options::BATCH_MODE_NO,
+            ssh_options::STRICT_HOST_KEY_CHECKING,
+            ssh_options::AUTHENTICATION_PASSWORD_PROMPTS,
+        ],
+    );
+    command.arg("-T").arg(target.as_str()).arg("exit");
     SshAuthenticationCommand {
         command,
         _config: config,
@@ -534,21 +592,17 @@ pub(super) fn normalize_remote_stdout(
 }
 
 pub(super) fn apply_noninteractive_ssh_options(command: &mut Command) {
-    command
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
-        .arg("NumberOfPasswordPrompts=0")
-        .arg("-o")
-        .arg("StrictHostKeyChecking=yes")
-        .arg("-o")
-        .arg("ConnectTimeout=10")
-        .arg("-o")
-        .arg("ConnectionAttempts=1")
-        .arg("-o")
-        .arg("ServerAliveInterval=15")
-        .arg("-o")
-        .arg("ServerAliveCountMax=4");
+    ssh_options::append(
+        command,
+        &[
+            ssh_options::BATCH_MODE_YES,
+            ssh_options::NONINTERACTIVE_PASSWORD_PROMPTS,
+            ssh_options::STRICT_HOST_KEY_CHECKING,
+            ssh_options::CONNECT_TIMEOUT,
+            ssh_options::CONNECTION_ATTEMPTS,
+        ],
+    );
+    ssh_options::KEEPALIVE.append_command_options(command);
 }
 
 pub(super) fn apply_managed_ssh_options(
@@ -566,13 +620,11 @@ pub(super) fn apply_managed_ssh_options(
         // User ControlPaths may be shared across isolated Shepr configs (or
         // explicitly disabled). Managed auth must use our scoped transport;
         // never stop or unlink a master belonging to the user's SSH setup.
-        command
-            .arg("-S")
-            .arg(control_path)
-            .arg("-o")
-            .arg("ControlMaster=auto")
-            .arg("-o")
-            .arg("ControlPersist=600");
+        command.arg("-S").arg(control_path);
+        ssh_options::append(
+            command,
+            &[ssh_options::CONTROL_MASTER, ssh_options::CONTROL_PERSIST],
+        );
     }
 }
 
@@ -665,8 +717,7 @@ pub(super) fn write_managed_ssh_config(
         contents.push_str(&format!("Include {include}\n"));
     }
     contents.push_str("Host *\n");
-    contents.push_str("  ServerAliveInterval 15\n");
-    contents.push_str("  ServerAliveCountMax 4\n");
+    ssh_options::KEEPALIVE.append_config(&mut contents);
 
     let write_result = (|| {
         let mut file = shepr_platform::create_private_file(&path)?;

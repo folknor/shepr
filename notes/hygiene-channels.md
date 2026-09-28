@@ -81,14 +81,9 @@ dependency allowlists.
 
 ## HYGC-005 - Operator-facing sentences assembled at the call site, with the phrasing drifting between sites
 
-Reported from five scopes.
+Reported from five scopes. (The agent install phrasing is resolved: installs
+return one outcome shape formatted in one place.)
 
-- `shepr-agent/src/integration/actions.rs` assembles operator text ad hoc in
-  eighteen match arms: "installed claude integration hook to {}", "ensured
-  claude settings at {}", "requires kimi code {KIMI_MIN_VERSION} or newer" -
-  about 700 lines of near-identical formatting, with the phrasing drifting
-  between arms ("installed X integration to", "installed X integration hook
-  to", "ensured X settings at", "ensured X config at").
 - `shepr-api::session::restart_after_update_guidance` / `..._for` own the local
   "stop the server to use this build" text; `src/cli/target.rs::restart_guidance`
   re-authors the whole paragraph for the `--machine` case in a single `format!`;
@@ -139,7 +134,10 @@ the CLI then prints verbatim. The project has `tracing` and a CLI output path; a
 prefix constant is a severity encoded in text.
 
 Enforcement named: return a typed `InstallWarning` and let the printer decide
-the prefix.
+the prefix. The agent side is ready (install outcomes are one shape now), but
+`install_target` still returns `Vec<String>`, so the change spans
+`crates/shepr-agent/src/integration/mod.rs` and the CLI printer in
+`src/cli/integration.rs`; a comment at the agent site records this.
 
 ## HYGC-009 - The domain event catalogue, and one API level policy, live in the bottom platform crate
 
@@ -414,37 +412,6 @@ claims sibling document).
 
 Enforcement named: make the `fallback!` macro record the reason; a counter or
 rate-limited log for the inbox drops.
-
-## HYGC-019 - `api_response_outcome` reparses every API response to pick one of three log strings
-
-`shepr-api/src/server.rs`. Every API response is serialized, then parsed back
-into a `serde_json::Value` purely to classify the log outcome, then discarded.
-Two problems in one: a third spelling of the `"timeout"` error code, and a full
-JSON parse per response on the request path. The classification is already known
-upstream (the `ApiResult` that `encode_result` consumed).
-
-Enforcement named: thread the `ApiResult`'s outcome to `finish_api_response`
-instead of the encoded string; the literal and the reparse both disappear. The
-api/cli hunter noted this is the one finding in that hunt where the structural
-fix also removes measurable work from a hot path.
-
-## HYGC-021 - A second, hand-rolled API client transport
-
-`shepr-api/src/session.rs`'s `send_stop_request` / `send_stop_request_inner`
-connect the socket, `serde_json::to_vec` the request, write `\n`,
-`BufReader::read_line`, and deserialize - duplicating `ApiClient::connect`,
-`write_request` and `read_json_line` from `shepr-api/src/client.rs`, with its own
-send/recv timeout policy (`socket_timeout_until`, `MIN_SOCKET_TIMEOUT`) and its
-own error tolerance (`stop_request_error_allows_wait`). The documented reason - a
-build-mismatched server must still be stoppable - justifies skipping the build
-check in `src/cli.rs::ensure_server_build_matches`; it does not justify a second
-transport, since `send_request_unchecked` already exists for exactly this, and
-`src/cli/server.rs::server_stop` uses it for the `--machine` path while the local
-path goes through `session.rs`. The same command has two implementations
-depending on the target.
-
-Enforcement named: make `session.rs` use `ApiClient` with an explicit timeout and
-drop `send_stop_request*`; the "one channel" claim then holds by construction.
 
 ## HYGC-022 - Errors that reach an operator naming no subject
 

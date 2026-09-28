@@ -152,6 +152,7 @@ fn run_client_with_launch_state(
     log_message: &'static str,
     initial_catalog: Option<endpoint::EndpointCatalog>,
 ) -> Result<ClientExit, ClientRunError> {
+    let settings = ClientSettings::resolve(config, &mode);
     let (attach_request, attach_escape) = match mode {
         ClientLaunchMode::Shell => (None, None),
         ClientLaunchMode::Attach {
@@ -173,12 +174,9 @@ fn run_client_with_launch_state(
             .with_keybinding_source(keybinding_source)
             .with_local_endpoint(paths.state_dir(), &socket_path)
     });
-    let mut settings = ClientSettings::from_config(config);
-    let mouse_capture = settings.mouse_capture_active;
-    let pixel_geometry_fallback = client_rendered_shell;
-    let pixel_geometry_enabled = pixel_geometry_fallback || attach_escape.is_some();
-    settings.pixel_geometry_enabled = pixel_geometry_enabled;
-    settings.pixel_geometry_fallback = pixel_geometry_fallback;
+    let mouse_capture = settings.mouse_capture_active();
+    let pixel_geometry_fallback = settings.pixel_geometry_fallback();
+    let pixel_geometry_enabled = settings.pixel_geometry_enabled();
     let mut loop_config = ClientLoopConfig {
         role,
         settings,
@@ -235,7 +233,7 @@ fn run_client_with_launch_state(
                 role,
                 geometry,
                 shell_surface_size,
-                loop_config.settings.mouse_capture_active,
+                loop_config.settings.mouse_capture_active(),
                 true,
                 None,
             )
@@ -366,7 +364,7 @@ async fn run_client_loop(
         initial_geometry.exact,
     );
     let draw_host_cursor =
-        attach_escape.is_none() && should_draw_host_cursor(config.settings.host_cursor);
+        attach_escape.is_none() && should_draw_host_cursor(config.settings.host_cursor());
     let local_unavailable = initial.is_none();
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
         terminal_geometry::bounded_cell_geometry(
@@ -377,9 +375,9 @@ async fn run_client_loop(
 
     let host_modes = terminal_guard.host_modes();
     host_modes.configure_mouse_mode(HostMouseMode::new(
-        attach_escape.is_some() && config.settings.mouse_capture_active,
-        config.settings.mouse_capture_active,
-        config.settings.mouse_capture_active,
+        attach_escape.is_some() && config.settings.mouse_capture_active(),
+        config.settings.mouse_capture_active(),
+        config.settings.mouse_capture_active(),
     ));
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
@@ -440,7 +438,7 @@ async fn run_client_loop(
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
     let will_query_host_cell_size = !state.mode.is_escape_attach()
-        && host_cell_size_query_required(state.settings.pixel_geometry_enabled);
+        && host_cell_size_query_required(state.settings.pixel_geometry_enabled());
     let stdin_quit = Arc::clone(&should_quit);
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
@@ -472,8 +470,8 @@ async fn run_client_loop(
     let resize_quit = Arc::clone(&should_quit);
     let resize_tx = event_tx.clone();
     let resize_cell_size = Arc::clone(&reported_cell_size);
-    let pixel_geometry_enabled = state.settings.pixel_geometry_enabled;
-    let pixel_geometry_fallback = config.settings.pixel_geometry_fallback;
+    let pixel_geometry_enabled = state.settings.pixel_geometry_enabled();
+    let pixel_geometry_fallback = state.settings.pixel_geometry_fallback();
     std::thread::spawn(move || {
         resize_poll_loop(
             &resize_tx,
@@ -524,7 +522,7 @@ async fn run_client_loop(
         &config.paths,
         &endpoint_catalog.ssh,
         shepr_remote::SavedSshSettings {
-            manage_ssh_config: config.settings.manage_ssh_config,
+            manage_ssh_config: config.settings.manage_ssh_config(),
         },
         std::time::Instant::now(),
     )
@@ -875,7 +873,7 @@ impl ClientLoop<'_> {
                             height_px: geometry.height_px,
                         }),
                         modifiers: shepr_protocol::WireModifiers::from_bits_retain(modifiers),
-                        lines: state.settings.mouse_scroll_lines,
+                        lines: state.settings.mouse_scroll_lines(),
                     };
                     write_stream.send(&message);
                 }
@@ -885,7 +883,7 @@ impl ClientLoop<'_> {
                 input.raw,
                 &input.event,
                 state.reported_geometry.rows(),
-                state.settings.mouse_scroll_lines,
+                state.settings.mouse_scroll_lines(),
             );
             match action {
                 AttachInputAction::Forward(data) => {
@@ -939,7 +937,7 @@ impl ClientLoop<'_> {
         }
         if shepr_termio::input::raw_input::events_require_host_surface_redraw(
             inputs.iter().map(|input| &input.event),
-            state.settings.redraw_on_focus_gained,
+            state.settings.redraw_on_focus_gained(),
         ) {
             state.request_repaint();
         }

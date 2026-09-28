@@ -496,6 +496,10 @@ impl Terminal {
     /// path, before rendering or before parsing later child output. Returns
     /// whether anything was flushed.
     ///
+    /// vte owns the frame deadline; supplying `now` here keeps expiry checks
+    /// runtime-driven and lets tests exercise either side of that deadline
+    /// without sleeping or replacing vte's timeout handler.
+    ///
     /// The frame's effects (replies, clipboard writes, title and colour
     /// changes) stay queued like any other write's, for whoever collects
     /// them next; nothing here discards them.

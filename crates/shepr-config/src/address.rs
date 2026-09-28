@@ -51,6 +51,8 @@ impl ServerAddress {
         Ok(())
     }
 
+    // Address construction needs a resolved runtime directory, session, and socket overrides.
+    // A context-free default cannot describe the selected server target or guarantee valid paths.
     pub(crate) fn resolve_paths(
         runtime_dir: &Path,
         session: &super::SessionId,

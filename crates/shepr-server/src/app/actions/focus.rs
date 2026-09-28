@@ -16,7 +16,7 @@ impl AppState {
         } else if let Some(workspace_index) = workspace_target {
             (
                 workspace_index,
-                self.workspaces.get(workspace_index)?.focused_pane_id()?,
+                self.workspaces.get(workspace_index)?.focused_pane_id(),
             )
         } else {
             let workspace_index = match fallback {
@@ -33,7 +33,7 @@ impl AppState {
             };
             (
                 workspace_index,
-                self.workspaces.get(workspace_index)?.focused_pane_id()?,
+                self.workspaces.get(workspace_index)?.focused_pane_id(),
             )
         };
         let tab_index = self
@@ -50,7 +50,7 @@ impl AppState {
     pub(crate) fn current_pane_focus_target(&self) -> Option<PaneFocusTarget> {
         let ws_idx = self.active_index()?;
         let ws = self.workspaces.get(ws_idx)?;
-        let pane_id = ws.focused_pane_id()?;
+        let pane_id = ws.focused_pane_id();
         Some(PaneFocusTarget {
             workspace_id: shepr_protocol::WorkspaceId::new(ws.id.to_string()),
             pane_id,

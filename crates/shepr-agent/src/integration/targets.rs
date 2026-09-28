@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
@@ -27,24 +27,14 @@ use super::opencode_config::{
     PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, remove_cli_plugin, remove_tui_plugin,
     validate_tui_plugin_config,
 };
-use super::types::{
-    AntigravityCliInstallPaths, AntigravityCliUninstallResult, ClaudeInstallPaths,
-    ClaudeUninstallResult, CodexInstallPaths, CodexUninstallResult, CopilotInstallPaths,
-    CopilotUninstallResult, CursorInstallPaths, CursorUninstallResult, DevinInstallPaths,
-    DevinUninstallResult, DroidInstallPaths, DroidUninstallResult, GrokInstallPaths,
-    GrokUninstallResult, KiloInstallPaths, KiloUninstallResult, KimiInstallPaths,
-    KimiUninstallResult, LettaInstallPaths, LettaUninstallResult, MastracodeInstallPaths,
-    MastracodeUninstallResult, OmpInstallPaths, OmpUninstallResult, OpenCodeInstallPaths,
-    OpenCodeUninstallResult, PiUninstallResult, QodercliInstallPaths, QodercliUninstallResult,
-    QwenInstallPaths, QwenUninstallResult,
-};
+use super::types::{ArtifactRole, InstallOutcome, UninstallOutcome, UninstallState};
 use super::{
     ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
     ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC, CLAUDE_HOOK_INSTALL_NAME,
     CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME,
     CURSOR_HOOK_INSTALL_NAME, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_EVENTS,
     DROID_HOOK_INSTALL_NAME, GROK_HOOK_CONFIG_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
-    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME, LETTA_HOOK_INSTALL_NAME,
+    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION, LETTA_HOOK_INSTALL_NAME,
     LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_EVENTS, MASTRACODE_HOOK_INSTALL_NAME,
     MASTRACODE_HOOK_TIMEOUT_MS, OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME,
     OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
@@ -94,16 +84,16 @@ fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
     )))
 }
 
-pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<PathBuf> {
+pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("pi_extension")?;
     ensure_extension_dir(&dir, "pi")?;
 
     let path = dir.join(PI_EXTENSION_INSTALL_NAME);
     write_target_asset(Target::Pi, &path, false)?;
-    Ok(path)
+    Ok(InstallOutcome::default().with_artifact(ArtifactRole::Extension, path))
 }
 
-pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<OmpInstallPaths> {
+pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("omp_extension")?;
     let pi_dir = paths.directory("pi_extension")?;
     if dir == pi_dir {
@@ -116,10 +106,12 @@ pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<OmpInstal
 
     let extension_path = dir.join(OMP_EXTENSION_INSTALL_NAME);
     write_target_asset(Target::Omp, &extension_path, false)?;
-    Ok(OmpInstallPaths { extension_path })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Extension, extension_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<ClaudeInstallPaths> {
+pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("claude")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !is_dir(&dir)? {
@@ -150,13 +142,13 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Claude
         write_config(&settings_path, updated_settings)?;
     }
 
-    Ok(ClaudeInstallPaths {
-        hook_path,
-        settings_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Settings, settings_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexInstallPaths> {
+pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("codex")?;
     check_config_targets(&dir, &["hooks.json", "config.toml"])?;
     if !is_dir(&dir)? {
@@ -203,14 +195,14 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexIn
         write_config(&config_path, new_config)?;
     }
 
-    Ok(CodexInstallPaths {
-        hook_path,
-        hooks_path,
-        config_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Hooks, hooks_path);
+    outcome = outcome.with_artifact(ArtifactRole::Config, config_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInstallPaths> {
+pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("kimi")?;
     check_config_targets(&dir, &["config.toml"])?;
     if !is_dir(&dir)? {
@@ -240,13 +232,14 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInst
         write_config(&config_path, new_config)?;
     }
 
-    Ok(KimiInstallPaths {
-        hook_path,
-        config_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Config, config_path);
+    outcome = outcome.with_notice(format!("requires kimi code {KIMI_MIN_VERSION} or newer"));
+    Ok(outcome)
 }
 
-pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<CopilotInstallPaths> {
+pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("copilot")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !is_dir(&dir)? {
@@ -289,13 +282,13 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Copil
     write_hook_script(Target::Copilot, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
-    Ok(CopilotInstallPaths {
-        hook_path,
-        settings_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Settings, settings_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinInstallPaths> {
+pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("devin")?;
     check_config_targets(&dir, &["config.json"])?;
     if !is_dir(&dir)? {
@@ -336,13 +329,13 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinIn
     write_hook_script(Target::Devin, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
-    Ok(DevinInstallPaths {
-        hook_path,
-        settings_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Settings, settings_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidInstallPaths> {
+pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("droid")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !is_dir(&dir)? {
@@ -385,13 +378,14 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidIn
     write_hook_script(Target::Droid, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
-    Ok(DroidInstallPaths {
-        hook_path,
-        settings_path,
-    })
+    // Droid keeps its hooks in settings.json; the operator is told about hooks.
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Hooks, settings_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<OpenCodeInstallPaths> {
+pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("opencode")?;
     check_config_targets(&dir, &["tui.jsonc", "tui.json", "cli.json"])?;
     if !is_dir(&dir)? {
@@ -432,15 +426,20 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Open
     let tui_config_path = tui_config_edit.write()?;
     let cli_config_path = cli_config_edit.map(PluginConfigEdit::write).transpose()?;
 
-    Ok(OpenCodeInstallPaths {
-        plugin_path,
-        tui_plugin_path,
-        tui_config_path,
-        cli_config_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Plugin, plugin_path);
+    outcome = outcome.with_artifact(ArtifactRole::TuiPlugin, tui_plugin_path);
+    outcome = outcome.with_artifact(ArtifactRole::TuiConfig, tui_config_path);
+    if cli_config_path.is_none() {
+        outcome = outcome.with_notice(
+            "to enable OpenCode V2, start opencode2 once, then reinstall this integration"
+                .to_string(),
+        );
+    }
+    Ok(outcome)
 }
 
-pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloInstallPaths> {
+pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("kilo")?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
@@ -455,34 +454,34 @@ pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloInst
     let plugin_path = plugins_dir.join(KILO_PLUGIN_INSTALL_NAME);
     write_target_asset(Target::Kilo, &plugin_path, false)?;
 
-    Ok(KiloInstallPaths { plugin_path })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Plugin, plugin_path);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_pi(paths: &AgentIntegrationPaths) -> io::Result<PiUninstallResult> {
+pub(crate) fn uninstall_pi(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let extension_path = paths
         .directory("pi_extension")?
         .join(PI_EXTENSION_INSTALL_NAME);
     let removed_extension = remove_file_if_exists(&extension_path)?;
 
-    Ok(PiUninstallResult {
-        extension_path,
-        removed_extension,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Extension, extension_path, removed_extension);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_omp(paths: &AgentIntegrationPaths) -> io::Result<OmpUninstallResult> {
+pub(crate) fn uninstall_omp(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let extension_path = paths
         .directory("omp_extension")?
         .join(OMP_EXTENSION_INSTALL_NAME);
     let removed_extension = remove_file_if_exists(&extension_path)?;
 
-    Ok(OmpUninstallResult {
-        extension_path,
-        removed_extension,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Extension, extension_path, removed_extension);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<ClaudeUninstallResult> {
+pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let dir = paths.directory("claude")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
@@ -502,15 +501,13 @@ pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<Clau
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(ClaudeUninstallResult {
-        hook_path,
-        settings_path,
-        removed_hook_file,
-        updated_settings,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexUninstallResult> {
+pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let codex_dir = paths.directory("codex")?;
     check_config_targets(&codex_dir, &["hooks.json"])?;
     let hook_path = codex_dir.join(CODEX_HOOK_INSTALL_NAME);
@@ -542,16 +539,14 @@ pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<Codex
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(CodexUninstallResult {
-        hook_path,
-        hooks_path,
-        config_path,
-        removed_hook_file,
-        updated_hooks,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
+    outcome.record(ArtifactRole::Config, config_path, UninstallState::Preserved);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiUninstallResult> {
+pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let kimi_dir = paths.directory("kimi")?;
     check_config_targets(&kimi_dir, &["config.toml"])?;
     let hook_path = kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
@@ -570,17 +565,13 @@ pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiUn
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(KimiUninstallResult {
-        hook_path,
-        config_path,
-        removed_hook_file,
-        updated_config,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Config, config_path, updated_config);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_copilot(
-    paths: &AgentIntegrationPaths,
-) -> io::Result<CopilotUninstallResult> {
+pub(crate) fn uninstall_copilot(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let copilot_dir = paths.directory("copilot")?;
     check_config_targets(&copilot_dir, &["settings.json"])?;
     let hook_path = copilot_dir.join("hooks").join(COPILOT_HOOK_INSTALL_NAME);
@@ -620,15 +611,13 @@ pub(crate) fn uninstall_copilot(
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(CopilotUninstallResult {
-        hook_path,
-        settings_path,
-        removed_hook_file,
-        updated_settings,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinUninstallResult> {
+pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let devin_dir = paths.directory("devin")?;
     check_config_targets(&devin_dir, &["config.json"])?;
     let hook_path = devin_dir.join(DEVIN_HOOK_INSTALL_NAME);
@@ -668,15 +657,13 @@ pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<Devin
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(DevinUninstallResult {
-        hook_path,
-        settings_path,
-        removed_hook_file,
-        updated_settings,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidUninstallResult> {
+pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let droid_dir = paths.directory("droid")?;
     check_config_targets(&droid_dir, &["settings.json"])?;
     let hook_path = droid_dir.join("hooks").join(DROID_HOOK_INSTALL_NAME);
@@ -715,17 +702,13 @@ pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<Droid
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(DroidUninstallResult {
-        hook_path,
-        settings_path,
-        removed_hook_file,
-        updated_settings,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_opencode(
-    paths: &AgentIntegrationPaths,
-) -> io::Result<OpenCodeUninstallResult> {
+pub(crate) fn uninstall_opencode(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let dir = paths.directory("opencode")?;
     check_config_targets(&dir, &["tui.jsonc", "tui.json", "cli.json"])?;
     let plugin_path = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
@@ -760,29 +743,28 @@ pub(crate) fn uninstall_opencode(
         return Err(io::Error::other(errors.join("; ")));
     }
 
-    Ok(OpenCodeUninstallResult {
-        plugin_path,
-        tui_plugin_path,
-        removed_plugin,
-        removed_tui_plugin,
-        updated_tui_configs,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Plugin, plugin_path, removed_plugin);
+    outcome.record_removal(ArtifactRole::TuiPlugin, tui_plugin_path, removed_tui_plugin);
+    for path in updated_tui_configs {
+        outcome.record(ArtifactRole::TuiConfig, path, UninstallState::Updated);
+    }
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloUninstallResult> {
+pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let plugin_path = paths
         .directory("kilo")?
         .join("plugin")
         .join(KILO_PLUGIN_INSTALL_NAME);
     let removed_plugin = remove_file_if_exists(&plugin_path)?;
 
-    Ok(KiloUninstallResult {
-        plugin_path,
-        removed_plugin,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Plugin, plugin_path, removed_plugin);
+    Ok(outcome)
 }
 
-pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<QodercliInstallPaths> {
+pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("qodercli")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !is_dir(&dir)? {
@@ -830,13 +812,13 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Qode
     write_hook_script(Target::Qodercli, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
-    Ok(QodercliInstallPaths {
-        hook_path,
-        settings_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Settings, settings_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInstallPaths> {
+pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("qwen")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !is_dir(&dir)? {
@@ -876,10 +858,10 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInst
     write_hook_script(Target::Qwen, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
-    Ok(QwenInstallPaths {
-        hook_path,
-        settings_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Settings, settings_path);
+    Ok(outcome)
 }
 
 /// Put a managed hook script back the way it was before a failed install:
@@ -909,7 +891,7 @@ fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> i
     Ok(())
 }
 
-pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaInstallPaths> {
+pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("letta")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !is_dir(&dir)? {
@@ -973,13 +955,13 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaIn
         );
     }
 
-    Ok(LettaInstallPaths {
-        hook_path,
-        settings_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::SingleEntrySettings, settings_path);
+    Ok(outcome)
 }
 
-pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<CursorInstallPaths> {
+pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("cursor")?;
     check_config_targets(&dir, &["hooks.json"])?;
     if !is_dir(&dir)? {
@@ -1024,15 +1006,13 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Cursor
     write_hook_script(Target::Cursor, &hook_path)?;
     write_config(&hooks_path, hooks_contents)?;
 
-    Ok(CursorInstallPaths {
-        hook_path,
-        hooks_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::UpdatedHooks, hooks_path);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_qodercli(
-    paths: &AgentIntegrationPaths,
-) -> io::Result<QodercliUninstallResult> {
+pub(crate) fn uninstall_qodercli(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let dir = paths.directory("qodercli")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(QODERCLI_HOOK_INSTALL_NAME);
@@ -1072,15 +1052,13 @@ pub(crate) fn uninstall_qodercli(
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(QodercliUninstallResult {
-        hook_path,
-        settings_path,
-        removed_hook_file,
-        updated_settings,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenUninstallResult> {
+pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let dir = paths.directory("qwen")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(QWEN_HOOK_INSTALL_NAME);
@@ -1120,15 +1098,13 @@ pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenUn
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(QwenUninstallResult {
-        hook_path,
-        settings_path,
-        removed_hook_file,
-        updated_settings,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaUninstallResult> {
+pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let dir = paths.directory("letta")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(LETTA_HOOK_INSTALL_NAME);
@@ -1162,15 +1138,17 @@ pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<Letta
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(LettaUninstallResult {
-        hook_path,
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(
+        ArtifactRole::SingleEntrySettings,
         settings_path,
-        removed_hook_file,
         updated_settings,
-    })
+    );
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<CursorUninstallResult> {
+pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let cursor_home = paths.directory("cursor")?;
     check_config_targets(&cursor_home, &["hooks.json"])?;
     let hook_path = cursor_home.join(CURSOR_HOOK_INSTALL_NAME);
@@ -1201,21 +1179,17 @@ pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<Curs
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(CursorUninstallResult {
-        hook_path,
-        hooks_path,
-        removed_hook_file,
-        updated_hooks,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
+    Ok(outcome)
 }
 
 pub(crate) fn mastracode_hook_command(hook_path: &Path, action: &str) -> String {
     hook_command(hook_path, Some(action))
 }
 
-pub(crate) fn install_mastracode(
-    paths: &AgentIntegrationPaths,
-) -> io::Result<MastracodeInstallPaths> {
+pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let mastracode_home = paths.directory("mastracode")?;
     check_config_targets(&mastracode_home, &["hooks.json"])?;
     if !is_dir(&mastracode_home)? {
@@ -1258,15 +1232,13 @@ pub(crate) fn install_mastracode(
     write_hook_script(Target::Mastracode, &hook_path)?;
     write_config(&hooks_path, hooks_contents)?;
 
-    Ok(MastracodeInstallPaths {
-        hook_path,
-        hooks_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Hooks, hooks_path);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_mastracode(
-    paths: &AgentIntegrationPaths,
-) -> io::Result<MastracodeUninstallResult> {
+pub(crate) fn uninstall_mastracode(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let mastracode_home = paths.directory("mastracode")?;
     check_config_targets(&mastracode_home, &["hooks.json"])?;
     let hook_path = mastracode_home
@@ -1306,17 +1278,13 @@ pub(crate) fn uninstall_mastracode(
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(MastracodeUninstallResult {
-        hook_path,
-        hooks_path,
-        removed_hook_file,
-        updated_hooks,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
+    Ok(outcome)
 }
 
-pub(crate) fn install_antigravity_cli(
-    paths: &AgentIntegrationPaths,
-) -> io::Result<AntigravityCliInstallPaths> {
+pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("antigravity_cli")?;
     check_config_targets(&dir, &["hooks.json"])?;
     if !is_dir(&dir)? {
@@ -1352,10 +1320,10 @@ pub(crate) fn install_antigravity_cli(
     write_hook_script(Target::AntigravityCli, &hook_path)?;
     write_config(&hooks_path, hooks_contents)?;
 
-    Ok(AntigravityCliInstallPaths {
-        hook_path,
-        hooks_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::Hooks, hooks_path);
+    Ok(outcome)
 }
 
 pub(crate) fn antigravity_cli_hook_command(hook_path: &Path, action: &str) -> String {
@@ -1384,7 +1352,7 @@ pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
 
 pub(crate) fn uninstall_antigravity_cli(
     paths: &AgentIntegrationPaths,
-) -> io::Result<AntigravityCliUninstallResult> {
+) -> io::Result<UninstallOutcome> {
     let dir = paths.directory("antigravity_cli")?;
     check_config_targets(&dir, &["hooks.json"])?;
     let hook_path = dir.join("hooks").join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
@@ -1414,12 +1382,10 @@ pub(crate) fn uninstall_antigravity_cli(
 
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(AntigravityCliUninstallResult {
-        hook_path,
-        hooks_path,
-        removed_hook_file,
-        updated_hooks,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
+    Ok(outcome)
 }
 
 /// Grok's bundled hook uses `/bin/sh`, so its configured command uses `sh` too.
@@ -1453,7 +1419,7 @@ pub(crate) fn grok_hook_config(hook_path: &Path) -> Value {
     })
 }
 
-pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokInstallPaths> {
+pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let dir = paths.directory("grok")?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
@@ -1478,13 +1444,13 @@ pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokInst
         false,
     )?;
 
-    Ok(GrokInstallPaths {
-        hook_path,
-        config_path,
-    })
+    let mut outcome = InstallOutcome::default();
+    outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
+    outcome = outcome.with_artifact(ArtifactRole::HookConfig, config_path);
+    Ok(outcome)
 }
 
-pub(crate) fn uninstall_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokUninstallResult> {
+pub(crate) fn uninstall_grok(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let hooks_dir = paths.directory("grok")?.join("hooks");
     let hook_path = hooks_dir.join(GROK_HOOK_INSTALL_NAME);
     let config_path = hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME);
@@ -1493,12 +1459,10 @@ pub(crate) fn uninstall_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokUn
     let removed_config_file = remove_file_if_exists(&config_path)?;
     let removed_hook_file = remove_file_if_exists(&hook_path)?;
 
-    Ok(GrokUninstallResult {
-        hook_path,
-        config_path,
-        removed_hook_file,
-        removed_config_file,
-    })
+    let mut outcome = UninstallOutcome::default();
+    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
+    outcome.record_removal(ArtifactRole::HookConfig, config_path, removed_config_file);
+    Ok(outcome)
 }
 
 #[cfg(test)]

@@ -15,6 +15,26 @@ const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
 
+struct AgentStartTiming {
+    poll_interval: Duration,
+    shell_readiness_retry_timeout: Duration,
+    default_timeout_ms: u64,
+    retryable_timeout_min: Duration,
+    retryable_timeout_max: Duration,
+}
+
+impl AgentStartTiming {
+    fn production() -> Self {
+        Self {
+            poll_interval: AGENT_START_POLL_INTERVAL,
+            shell_readiness_retry_timeout: PANE_SHELL_READINESS_RETRY_TIMEOUT,
+            default_timeout_ms: DEFAULT_AGENT_START_TIMEOUT_MS,
+            retryable_timeout_min: shepr_server::app::AGENT_START_SETTLE_DELAY,
+            retryable_timeout_max: shepr_server::app::MAX_AGENT_START_TIMEOUT,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum Command {
     List,
@@ -159,10 +179,10 @@ fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super:
             Err(err) => {
                 return Err(super::CliError::Response(ErrorResponse {
                     id: "cli:agent:explain".into(),
-                    error: ErrorBody {
-                        code: "agent_explain_file_read_failed".into(),
-                        message: format!("failed to read agent explain file {path}: {err}"),
-                    },
+                    error: ErrorBody::new(
+                        &shepr_api::error::ApiErrorCode::AgentExplainFileReadFailed,
+                        format!("failed to read agent explain file {path}: {err}"),
+                    ),
                 }));
             }
         };
@@ -302,6 +322,15 @@ fn matched_rule_region_preview<'a>(
 }
 
 fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> super::CliResult<i32> {
+    let timing = AgentStartTiming::production();
+    agent_start_with_timing(paths, args, &timing)
+}
+
+fn agent_start_with_timing(
+    paths: &super::target::CliContext,
+    args: AgentStartArgs,
+    timing: &AgentStartTiming,
+) -> super::CliResult<i32> {
     let AgentStartArgs {
         name,
         kind,
@@ -317,64 +346,31 @@ fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> super
         )));
     };
     let expected_kind = shepr_agent::detect::agent_label(expected_kind).to_string();
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_AGENT_START_TIMEOUT_MS));
-    let retryable_timeout = timeout > shepr_server::app::AGENT_START_SETTLE_DELAY
-        && timeout <= shepr_server::app::MAX_AGENT_START_TIMEOUT;
-    let pinned_terminal_id = pane_terminal_id(paths, &pane_id)?;
-    let mut retry_deadline = None;
-    let mut previous_busy_response = None;
-    let mut response = loop {
-        if let Some(previous_busy_response) = previous_busy_response.as_ref() {
-            let retry_expired = retry_deadline.is_some_and(|deadline| Instant::now() >= deadline);
-            if retry_expired
-                || pane_terminal_id(paths, &pane_id)? != pinned_terminal_id
-                || !pane_shell_is_initializing(paths, &pane_id)?
-            {
-                return super::print_response(previous_busy_response);
-            }
-        }
-
-        let response = super::send_request(
-            paths,
-            &Request {
-                id: "cli:agent:start".into(),
-                method: Method::AgentStart(AgentStartParams {
-                    name: name.clone(),
-                    kind: kind.clone(),
-                    pane_id: pane_id.clone(),
-                    args: agent_args.clone(),
-                    timeout_ms,
-                }),
-            },
-        )?;
-        if response.get("error").is_none() {
-            break response;
-        }
-        if response["error"]["code"].as_str() != Some("agent_pane_busy")
-            || !retryable_timeout
-            || pinned_terminal_id.is_none()
-            || pane_terminal_id(paths, &pane_id)? != pinned_terminal_id
-            || !pane_shell_is_initializing(paths, &pane_id)?
-        {
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(timing.default_timeout_ms));
+    // `send_request` checks local and --machine server builds, so these
+    // server-owned launch bounds match this CLI build.
+    let params = AgentStartParams {
+        name: name.clone(),
+        kind,
+        pane_id: pane_id.clone(),
+        args: agent_args,
+        timeout_ms,
+    };
+    let (mut response, pinned_terminal_id) = send_agent_start_with_retry(
+        &params,
+        timeout,
+        timing,
+        |pane| pane_terminal_id(paths, pane),
+        |pane| pane_shell_is_initializing(paths, pane),
+        |request| super::send_request(paths, request),
+    )?;
+    let Some(expected_terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
+        if response.get("error").is_some() {
             return super::print_response(&response);
         }
-
-        let deadline = *retry_deadline
-            .get_or_insert_with(|| Instant::now() + PANE_SHELL_READINESS_RETRY_TIMEOUT);
-        previous_busy_response = Some(response);
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero()
-            && let Some(previous_busy_response) = previous_busy_response.as_ref()
-        {
-            return super::print_response(previous_busy_response);
-        }
-        std::thread::sleep(AGENT_START_POLL_INTERVAL.min(remaining));
-    };
-
-    let Some(expected_terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
         return super::print_response(&cli_agent_error(
             "cli:agent:start",
-            "agent_start_failed",
+            &shepr_api::error::ApiErrorCode::AgentStartFailed,
             "agent start response did not include terminal_id",
         ));
     };
@@ -391,6 +387,7 @@ fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> super
         timeout,
         &expected_kind,
         expected_terminal_id,
+        timing,
     );
     match waited {
         Ok(Ok(agent)) => {
@@ -398,10 +395,71 @@ fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> super
             super::print_response(&response)
         }
         Ok(Err(error)) => super::print_response(&error),
-        Err(err) => {
-            print_agent_transport_error(&err, "cli:agent:start", "agent_start_transport_failed")
-        }
+        Err(err) => print_agent_transport_error(
+            &err,
+            "cli:agent:start",
+            &shepr_api::error::ApiErrorCode::AgentStartTransportFailed,
+        ),
     }
+}
+
+/// Sends `agent.start`, retrying an `agent_pane_busy` refusal while the pane's
+/// shell is still initializing in the same terminal. Returns the final
+/// response and the terminal the pane held before the first attempt.
+fn send_agent_start_with_retry(
+    params: &AgentStartParams,
+    timeout: Duration,
+    timing: &AgentStartTiming,
+    mut read_terminal_id: impl FnMut(&str) -> super::CliResult<Option<String>>,
+    mut shell_is_initializing: impl FnMut(&str) -> super::CliResult<bool>,
+    mut send_start: impl FnMut(&Request) -> super::CliResult<serde_json::Value>,
+) -> super::CliResult<(serde_json::Value, Option<String>)> {
+    let pane_id = params.pane_id.as_str();
+    let retryable_timeout =
+        timeout > timing.retryable_timeout_min && timeout <= timing.retryable_timeout_max;
+    let pinned_terminal_id = read_terminal_id(pane_id)?;
+    let mut retry_deadline: Option<Instant> = None;
+    let mut previous_busy_response: Option<serde_json::Value> = None;
+    let response = loop {
+        if let Some(previous_busy_response) = previous_busy_response.as_ref() {
+            let retry_expired = retry_deadline.is_some_and(|deadline| Instant::now() >= deadline);
+            if retry_expired
+                || read_terminal_id(pane_id)? != pinned_terminal_id
+                || !shell_is_initializing(pane_id)?
+            {
+                return Ok((previous_busy_response.clone(), pinned_terminal_id));
+            }
+        }
+
+        let response = send_start(&Request {
+            id: "cli:agent:start".into(),
+            method: Method::AgentStart(params.clone()),
+        })?;
+        if response.get("error").is_none() {
+            break response;
+        }
+        if response["error"]["code"].as_str()
+            != Some(shepr_api::error::ApiErrorCode::AgentPaneBusy.as_str())
+            || !retryable_timeout
+            || pinned_terminal_id.is_none()
+            || read_terminal_id(pane_id)? != pinned_terminal_id
+            || !shell_is_initializing(pane_id)?
+        {
+            break response;
+        }
+
+        let deadline = *retry_deadline
+            .get_or_insert_with(|| Instant::now() + timing.shell_readiness_retry_timeout);
+        previous_busy_response = Some(response);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero()
+            && let Some(previous_busy_response) = previous_busy_response.as_ref()
+        {
+            return Ok((previous_busy_response.clone(), pinned_terminal_id));
+        }
+        std::thread::sleep(timing.poll_interval.min(remaining));
+    };
+    Ok((response, pinned_terminal_id))
 }
 
 fn agent_list(paths: &super::target::CliContext) -> super::CliResult<i32> {
@@ -484,6 +542,7 @@ fn wait_for_named_agent(
     timeout: Duration,
     expected_kind: &str,
     expected_terminal_id: &str,
+    timing: &AgentStartTiming,
 ) -> super::CliResult<Result<serde_json::Value, serde_json::Value>> {
     let deadline = Instant::now().checked_add(timeout);
     let mut first_poll = true;
@@ -511,49 +570,59 @@ fn wait_for_named_agent(
         if response.get("error").is_some() {
             response = resolve_agent_target_unchecked(paths, fallback_pane_id, poll_id)?;
             if response.get("error").is_some() {
-                std::thread::sleep(AGENT_START_POLL_INTERVAL);
+                std::thread::sleep(timing.poll_interval);
                 continue;
             }
         }
         let agent = &response["result"]["agent"];
-        let outcome = if agent["terminal_id"].as_str() != Some(expected_terminal_id) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else if let Some(actual) = agent["agent"]
-            .as_str()
-            .filter(|actual| *actual != expected_kind)
-        {
-            Some(Err(cli_agent_error(
-                "cli:agent:start",
-                "agent_kind_mismatch",
-                format!("expected {expected_kind}, detected {actual}"),
-            )))
-        } else if agent["name"].as_str() != Some(name) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else {
-            match agent["agent_status"].as_str() {
-                Some("blocked") => Some(Err(cli_agent_error(
-                    "cli:agent:start",
-                    "agent_not_ready",
-                    format!("agent {name} is blocked during startup and is not ready for prompts"),
-                ))),
-                Some("idle") if agent["interactive_ready"].as_bool() == Some(true) => {
-                    Some(Ok(agent.clone()))
-                }
-                Some("idle") if !agent["launch_pending"].as_bool().unwrap_or(false) => {
-                    Some(Err(cli_agent_error(
-                        "cli:agent:start",
-                        "agent_start_failed",
-                        "agent process exited before becoming interactive",
-                    )))
-                }
-                // Working, or idle with its launch still pending: keep polling.
-                _ => None,
-            }
-        };
+        let outcome = named_agent_start_outcome(agent, name, expected_kind, expected_terminal_id);
         if let Some(outcome) = outcome {
             return Ok(outcome);
         }
-        std::thread::sleep(AGENT_START_POLL_INTERVAL);
+        std::thread::sleep(timing.poll_interval);
+    }
+}
+
+fn named_agent_start_outcome(
+    agent: &serde_json::Value,
+    name: &str,
+    expected_kind: &str,
+    expected_terminal_id: &str,
+) -> Option<Result<serde_json::Value, serde_json::Value>> {
+    if agent["terminal_id"].as_str() != Some(expected_terminal_id) {
+        return Some(Err(agent_name_lost_error("cli:agent:start", name)));
+    }
+    if let Some(actual) = agent["agent"]
+        .as_str()
+        .filter(|actual| *actual != expected_kind)
+    {
+        return Some(Err(cli_agent_error(
+            "cli:agent:start",
+            &shepr_api::error::ApiErrorCode::AgentKindMismatch,
+            format!("expected {expected_kind}, detected {actual}"),
+        )));
+    }
+    if agent["name"].as_str() != Some(name) {
+        return Some(Err(agent_name_lost_error("cli:agent:start", name)));
+    }
+    match agent["agent_status"].as_str() {
+        Some("blocked") => Some(Err(cli_agent_error(
+            "cli:agent:start",
+            &shepr_api::error::ApiErrorCode::AgentNotReady,
+            format!("agent {name} is blocked during startup and is not ready for prompts"),
+        ))),
+        Some("idle") if agent["interactive_ready"].as_bool() == Some(true) => {
+            Some(Ok(agent.clone()))
+        }
+        Some("idle") if !agent["launch_pending"].as_bool().unwrap_or(false) => {
+            Some(Err(cli_agent_error(
+                "cli:agent:start",
+                &shepr_api::error::ApiErrorCode::AgentStartFailed,
+                "agent process exited before becoming interactive",
+            )))
+        }
+        // Working, or idle with its launch still pending: keep polling.
+        _ => None,
     }
 }
 
@@ -620,7 +689,7 @@ fn process_info_shows_shell_initialization(process_info: &serde_json::Value) -> 
 fn agent_name_lost_error(request_id: &str, expected_name: &str) -> serde_json::Value {
     cli_agent_error(
         request_id,
-        "agent_name_not_found",
+        &shepr_api::error::ApiErrorCode::AgentNameNotFound,
         format!("named agent {expected_name} no longer owns the target terminal"),
     )
 }
@@ -628,7 +697,7 @@ fn agent_name_lost_error(request_id: &str, expected_name: &str) -> serde_json::V
 fn print_agent_transport_error(
     err: &super::CliError,
     request_id: &str,
-    code: &str,
+    code: &shepr_api::error::ApiErrorCode,
 ) -> super::CliResult<i32> {
     if matches!(err, super::CliError::Response(_)) {
         err.print();
@@ -640,15 +709,19 @@ fn print_agent_transport_error(
 fn agent_wait_timeout() -> serde_json::Value {
     cli_agent_error(
         "cli:agent:start",
-        "timeout",
+        &shepr_api::error::ApiErrorCode::Timeout,
         "timed out waiting for agent startup",
     )
 }
 
-fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_json::Value {
+fn cli_agent_error(
+    id: &str,
+    code: &shepr_api::error::ApiErrorCode,
+    message: impl Into<String>,
+) -> serde_json::Value {
     serde_json::json!({
         "id": id,
-        "error": { "code": code, "message": message.into() }
+        "error": ErrorBody::new(code, message),
     })
 }
 
@@ -844,5 +917,145 @@ mod parse_tests {
         assert_eq!(start.name, "repro");
         assert_eq!(start.pane_id, "p1");
         assert_eq!(start.agent_args, vec!["--resume", "--session", "x"]);
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn test_timing() -> AgentStartTiming {
+        AgentStartTiming {
+            poll_interval: Duration::ZERO,
+            shell_readiness_retry_timeout: Duration::from_secs(1),
+            default_timeout_ms: 100,
+            retryable_timeout_min: Duration::ZERO,
+            retryable_timeout_max: Duration::from_secs(1),
+        }
+    }
+
+    fn start_params() -> AgentStartParams {
+        AgentStartParams {
+            name: "reviewer".into(),
+            kind: "claude".into(),
+            pane_id: "pane-1".into(),
+            args: Vec::new(),
+            timeout_ms: Some(100),
+        }
+    }
+
+    #[test]
+    fn busy_retry_uses_injected_timing_and_callbacks() {
+        let mut responses = VecDeque::from([
+            serde_json::json!({ "error": { "code": "agent_pane_busy" } }),
+            serde_json::json!({ "result": { "agent": { "terminal_id": "terminal" } } }),
+        ]);
+        let mut sends = 0;
+        let (response, pinned_terminal_id) = send_agent_start_with_retry(
+            &start_params(),
+            Duration::from_millis(100),
+            &test_timing(),
+            |_| Ok(Some("terminal".into())),
+            |_| Ok(true),
+            |_| {
+                sends += 1;
+                Ok(responses.pop_front().expect("test response is queued"))
+            },
+        )
+        .expect("fake API callbacks succeed");
+
+        assert_eq!(sends, 2);
+        assert_eq!(pinned_terminal_id.as_deref(), Some("terminal"));
+        assert_eq!(response["result"]["agent"]["terminal_id"], "terminal");
+    }
+
+    #[test]
+    fn busy_retry_returns_the_first_refusal_when_terminal_changes() {
+        let busy = serde_json::json!({ "error": { "code": "agent_pane_busy" } });
+        let mut terminal_reads = VecDeque::from([
+            Some("terminal".to_owned()),
+            Some("terminal".to_owned()),
+            Some("replacement".to_owned()),
+        ]);
+        let mut sends = 0;
+        let (response, pinned_terminal_id) = send_agent_start_with_retry(
+            &start_params(),
+            Duration::from_millis(100),
+            &test_timing(),
+            |_| Ok(terminal_reads.pop_front().expect("terminal read is queued")),
+            |_| Ok(true),
+            |_| {
+                sends += 1;
+                Ok(busy.clone())
+            },
+        )
+        .expect("fake API callbacks succeed");
+
+        assert_eq!(sends, 1);
+        assert_eq!(pinned_terminal_id.as_deref(), Some("terminal"));
+        assert_eq!(response, busy);
+    }
+
+    #[test]
+    fn readiness_requires_the_expected_identity_and_interactive_idle_state() {
+        let base_agent = serde_json::json!({
+            "name": "reviewer",
+            "agent": "claude",
+            "terminal_id": "terminal",
+            "agent_status": "idle",
+            "interactive_ready": true,
+            "launch_pending": false,
+        });
+
+        assert!(
+            named_agent_start_outcome(&base_agent, "reviewer", "claude", "terminal",)
+                .is_some_and(|result| result.is_ok())
+        );
+
+        let working = serde_json::json!({
+            "name": "reviewer",
+            "agent": "claude",
+            "terminal_id": "terminal",
+            "agent_status": "working",
+            "interactive_ready": false,
+            "launch_pending": true,
+        });
+        assert!(named_agent_start_outcome(&working, "reviewer", "claude", "terminal").is_none());
+
+        let blocked = serde_json::json!({
+            "name": "reviewer",
+            "agent": "claude",
+            "terminal_id": "terminal",
+            "agent_status": "blocked",
+        });
+        let blocked_error = named_agent_start_outcome(&blocked, "reviewer", "claude", "terminal")
+            .and_then(Result::err)
+            .expect("blocked startup is a final error");
+        assert_eq!(blocked_error["error"]["code"], "agent_not_ready");
+
+        let exited = serde_json::json!({
+            "name": "reviewer",
+            "agent": "claude",
+            "terminal_id": "terminal",
+            "agent_status": "idle",
+            "interactive_ready": false,
+            "launch_pending": false,
+        });
+        let exited_error = named_agent_start_outcome(&exited, "reviewer", "claude", "terminal")
+            .and_then(Result::err)
+            .expect("an exited startup is a final error");
+        assert_eq!(exited_error["error"]["code"], "agent_start_failed");
+
+        let wrong_kind = serde_json::json!({
+            "name": "reviewer",
+            "agent": "codex",
+            "terminal_id": "terminal",
+            "agent_status": "idle",
+        });
+        let kind_error = named_agent_start_outcome(&wrong_kind, "reviewer", "claude", "terminal")
+            .and_then(Result::err)
+            .expect("a different agent kind is a final error");
+        assert_eq!(kind_error["error"]["code"], "agent_kind_mismatch");
     }
 }

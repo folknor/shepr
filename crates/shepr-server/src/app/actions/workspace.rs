@@ -131,7 +131,7 @@ impl AppState {
             shepr_platform::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
             if let Some(ws) = self.workspaces.get_mut(idx) {
-                let active_tab = ws.active_tab;
+                let active_tab = ws.active_tab_index();
                 ws.switch_tab(active_tab);
                 let tab_id =
                     public_tab_id_for_index(ws, active_tab).unwrap_or_else(|| workspace_id.clone());
@@ -487,7 +487,11 @@ impl AppState {
         let Some(workspace_index) = self.active_index() else {
             return TabRemovalCommit::Stale;
         };
-        let Some(tab_index) = self.workspaces.get(workspace_index).map(|ws| ws.active_tab) else {
+        let Some(tab_index) = self
+            .workspaces
+            .get(workspace_index)
+            .map(shepr_mux::workspace::Workspace::active_tab_index)
+        else {
             return TabRemovalCommit::Stale;
         };
         let Some(plan) = self.prepare_tab_removal(workspace_index, tab_index) else {

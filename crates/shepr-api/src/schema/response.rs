@@ -31,6 +31,15 @@ pub struct ErrorBody {
     pub message: String,
 }
 
+impl ErrorBody {
+    pub fn new(code: &crate::error::ApiErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code: code.as_str().to_owned(),
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseResult {

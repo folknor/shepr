@@ -1383,7 +1383,7 @@ mod tests {
             .map(|tab| tab.custom_name.as_deref())
             .collect();
         assert_eq!(tab_names, vec![Some("healthy")]);
-        assert_eq!(workspace.active_tab, 0);
+        assert_eq!(workspace.active_tab_index(), 0);
         assert_eq!(restored.active, Some(0));
         assert_eq!(restored.terminals.len(), 1);
     }
@@ -1435,7 +1435,9 @@ mod tests {
         let active = &restored.workspaces[1];
         assert_eq!(active.tabs().len(), 2);
         assert_eq!(
-            active.tabs()[active.active_tab].custom_name.as_deref(),
+            active.tabs()[active.active_tab_index()]
+                .custom_name
+                .as_deref(),
             Some("wanted")
         );
     }
@@ -2270,7 +2272,7 @@ mod tests {
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
-        assert_eq!(workspace.active_tab, 3);
+        assert_eq!(workspace.active_tab_index(), 3);
         assert_eq!(workspace.tabs()[3].number, 5);
         let agent_pane = workspace.tabs()[3].root_pane;
         let terminal_id = &workspace.tabs()[3].panes[&agent_pane].attached_terminal_id;

@@ -387,60 +387,6 @@ read in the crate is at `resolve()`. The agent hunter adds that this also remove
 `GROK_CONFIG_DIR`, a production environment variable whose own comment says it
 exists primarily as a test seam.
 
-## HYGV-018 - The remote exit codes `255` and `254` are literals in a shell string with no decoder
-
-Reported by the remote hunter, as fact.
-
-`SSH_OWN_FAILURE_EXIT_CODE: i32 = 255` exists in
-`crates/shepr-remote/src/remote/bridge.rs`, but
-`posix_remote_output_command` writes `255` and `254` as literal text inside the
-remote shell script rather than interpolating the constant. Nothing anywhere maps
-`254` back: a remote `shepr` that exits 255 reaches the operator as "remote
-command failed (exit status 254)", a number documented in no user-facing text.
-The encode side has no decode partner.
-
-Fix: interpolate `SSH_OWN_FAILURE_EXIT_CODE`, add
-`REMAPPED_REMOTE_255_EXIT_CODE`, and have `ssh_bridge_exit_error` say "remote
-command failed with 255 (reported as 254)". Enforcement: a test asserting the
-generated script contains the constants and that the error text names 255; the
-existing test only checks the shell behaviour, not the decode.
-
-## HYGV-019 - Nine API error codes are minted as string literals outside `ApiErrorCode`, and two in-enum codes are re-spelled
-
-Reported by the api/cli hunter.
-
-`crates/shepr-api/src/error.rs`'s `ApiErrorCode` is a macro-generated single
-owner of variant and wire spelling. The CLI bypasses it by hand-building
-`serde_json::json!` error bodies: `agent_explain_file_read_failed`,
-`agent_start_failed`, `agent_start_transport_failed`, `agent_kind_mismatch`,
-`agent_name_not_found` (`src/cli/agent.rs`), `build_mismatch` (`src/cli.rs`),
-`server_not_running` (`src/cli/server_not_running.rs`), and
-`invalid_session_name` / `session_stop_failed` / `session_delete_failed`
-(`src/cli/error.rs`). A consumer of `shepr <cmd>` JSON therefore sees codes that
-do not exist in the schema, and `ApiError::from_body` classifies every one as
-`External(..)`.
-
-Already diverged: `src/cli/agent.rs` emits the literal `"timeout"` and
-`agent_not_ready`, duplicating `ApiErrorCode::Timeout` and
-`ApiErrorCode::AgentNotReady` with a second spelling site each.
-
-Inside `shepr-api` itself, `server.rs` passes `"invalid_ssh_agent"` and
-`"ssh_agent_unavailable"` to `error_response_json`, whose signature is
-`code: impl Into<ApiErrorCode>`, so a typo silently becomes
-`External("invald_ssh_agent")` with no compile error and no log, even though
-`ApiErrorCode::InvalidSshAgent` and `SshAgentUnavailable` exist. A third spelling
-of the timeout code appears in `api_response_outcome`, which re-parses the JSON it
-just serialized in order to match `"timeout"` literally.
-
-Enforcement: give the CLI-minted codes their own variants (or a `CliErrorCode`
-enum) and make `ErrorBody` construction take the enum rather than `&str`;
-restrict `error_response_json` to `ApiErrorCode` (the `From<&str>` impl is needed
-for wire parsing but need not be reachable from an emit site); thread the
-`ApiResult`'s outcome to `finish_api_response` instead of the encoded string,
-which removes both the third literal and a full JSON parse per response. A weaker
-fallback: a text rule forbidding a string literal assigned to an `ErrorBody.code`
-field outside `error.rs`.
-
 ## HYGV-020 - "pane not found" is spelled about thirty times in three wordings, and one condition gets two error codes
 
 Reported by the server hunter.
@@ -853,62 +799,6 @@ reason to differ (removal makes divergence unrepresentable); export
 `ATTEMPT_BUDGET < MAX_RETRY_DELAY` - the second half already exists in
 `supervisor.rs`, so the pattern is known there and only half applied.
 
-## HYGV-039 - SSH option values are inline literals, and the keepalive settings are spelled twice in two syntaxes
-
-Reported by the remote hunter, as fact (agreeing today).
-
-`crates/shepr-remote/src/remote/ssh.rs::apply_noninteractive_ssh_options` emits
-`-o ServerAliveInterval=15 -o ServerAliveCountMax=4`;
-`::write_managed_ssh_config` writes `ServerAliveInterval 15` /
-`ServerAliveCountMax 4` into the config text. Same tunable, two syntaxes, both
-literal, and a third copy of the values sits in the `attach.rs` test assertions.
-
-In the same file and also unnamed: `ConnectTimeout=10`, `ConnectionAttempts=1`,
-`NumberOfPasswordPrompts=0` and `=3`, `StrictHostKeyChecking=yes`,
-`ControlPersist=600`, `ControlMaster=auto`. `StrictHostKeyChecking=yes` appears
-in both `apply_noninteractive_ssh_options` and
-`authentication_command_with_config`: a security-relevant value with two sites.
-`ControlPersist=600` is additionally cited in prose in
-`crates/shepr-client/src/endpoint/supervisor.rs` (see HYGV-038).
-
-Fix: a `struct SshKeepalive { interval_secs, count_max }` that renders itself as
-`-o` args or as config lines, and one `ssh_options` module with named constants
-and one builder. Not enforceable while the values are inline string literals.
-
-## HYGV-040 - The API and CLI timing values have no injection point, so the CLI's most intricate loop is untested
-
-Reported by the api/cli hunter.
-
-`stop_session_with_timeout` is the model to copy: the timeout is a parameter and
-the public `stop_session` supplies `STOP_WAIT_TIMEOUT`, so its tests run in
-75 ms. Nothing else in scope does this.
-
-- `SERVER_READY_TIMEOUT` (15 s) is baked into `auto_detect_launch`, which
-  otherwise takes an injected `run_client` closure - the function was designed
-  for testability and then hardcoded the one value a test would need.
-- `AGENT_START_POLL_INTERVAL`, `PANE_SHELL_READINESS_RETRY_TIMEOUT` and
-  `DEFAULT_AGENT_START_TIMEOUT_MS` are module-private constants in
-  `src/cli/agent.rs`, which is why `agent_start`'s retry loop - the most
-  intricate control flow in the CLI, with a pinned-terminal check, a busy-retry
-  deadline and a five-branch readiness decision - has no unit tests at all. Only
-  its argument parsing is tested.
-
-Fix by signature: take the timing as a parameter (a small `AgentStartTiming`
-struct) and the loop becomes testable without a server. The hunter calls this the
-single highest-value structural change in the CLI half of that scope.
-
-Related, and recorded by the same hunter as a coupling that deserves the comment
-it does not have: `src/cli/agent.rs` reads
-`shepr_server::app::AGENT_START_SETTLE_DELAY` and
-`shepr_server::app::MAX_AGENT_START_TIMEOUT` at CLI-argument-validation time, so
-the binary couples its retry policy to the server's internals and a `--machine`
-invocation compares the local build's constants against a remote server's
-behaviour. It is defensible because client and server are always the same build,
-which is what the `build_mismatch` check polices. Enforcement available: the root
-`shepr` package has no `dependency_rule` in `brokkr.toml` while every library
-crate does, so nothing constrains what the binary reaches into; adding a rule for
-the root package would make this coupling a deliberate allowlist entry.
-
 ## HYGV-041 - Unnamed durations and capacities in the server, beside named siblings
 
 **Decision:** per-crate `limits` modules are adopted incrementally as part of
@@ -1167,98 +1057,21 @@ Reported by the vt/pty hunter.
 `shepr-vt`'s `scan.rs` advertises `Tc` and `RGB` independently of it. The
 terminal-identity claims should sit together in `shepr-vt`.
 
-## HYGV-059 - The modifyOtherKeys level has two enums and the client recovers the number by sniffing a byte string
-
-Reported by the termio/client hunter.
-
-`shepr_termio::input::model::ModifyOtherKeysMode` (`Mode1` / `Mode2`) emits
-`b"\x1b[>4;1m"` / `b"\x1b[>4;2m"` from `set_sequence()`.
-`shepr_vt::ModifyOtherKeysLevel` is a second enum over the same concept, and
-`host_term::modes::set_direct_host_keyboard_protocol` writes
-`\x1b[>4;{level}m` from it. `terminal_setup::setup_terminal_with_capabilities`
-bridges them with
-`let parameter = if mode.set_sequence().ends_with(b";1m") { 1 } else { 2 };`.
-
-So the mode-to-parameter mapping is owned three times (the termio enum's byte
-literal, the vt enum's rendering, and this string sniff), and `set_sequence()`'s
-only remaining consumer is the sniff - the bytes it builds are never written. A
-`Mode3`, or a spelling change in `set_sequence`, silently yields `2`.
-
-Fix by type: have the detector return `shepr_vt::ModifyOtherKeysLevel` directly,
-delete `ModifyOtherKeysMode`, and the `;1m` / `;2m` literals disappear. The
-hunter notes this copy is not forced: `shepr-vt` sits below `shepr-termio` in the
-documented layering and `shepr-termio` already depends on it.
-
-## HYGV-060 - Host-terminal control sequences are owned partly by `shepr-termio` and partly by the client
-
-Reported by the termio/client hunter.
-
-`crates/shepr-termio/src/host_term/modes.rs` is the stated owner, but
-`crates/shepr-client/src/terminal_setup.rs` writes its own raw copies:
-`\x1b[>4;0m` and `\x1b[<1u` in `HostModes::restore` (both also spelled in
-`modes.rs`), `\x1b[?1016h` in `set_mouse_capture_with_writer` (whose disable
-counterpart is `modes.rs`'s `DISABLE_HOST_MOUSE_REPORTING_SEQUENCE`),
-`\x1b[?25h\x1b[0 q` in the restore postlude, and `PUSH_WINDOW_TITLE` /
-`POP_WINDOW_TITLE` (`\x1b[22;0t` / `\x1b[23;0t`) while OSC 0 itself lives in
-`host_term::title`. `HOST_CELL_SIZE_QUERY = b"\x1b[16t"` is defined in
-`terminal_geometry.rs` while the module doc for `host_term::cell_size` names the
-same sequence in prose and `shepr-vt`'s `scan.rs` parses the reply. Enable and
-disable of one mode therefore sit in different crates.
-
-The hunter records explicitly that nothing forces this: both halves could live in
-`shepr-termio::host_term::modes`. Enforcement: a brokkr-style text rule ("no
-`\x1b[` byte literal outside `shepr-termio/src/host_term/` and `shepr-vt`"),
-comparable to the existing gremlin scan, with test assertions excluded the way
-the gremlin rule already does.
-
-Related, from the same hunter: `DISABLE_HOST_MOUSE_REPORTING_SEQUENCE` lists
-eight modes and its test `clears_all_known_host_mouse_modes` loops over the same
-eight spelled again as strings, so adding a ninth to the constant and not the
-test passes. Deriving both from a single `const MODES: [&str; N]` makes the pair
-structural - and the `\x1b[?1016h` enable in the other crate is the copy the test
-cannot see at all.
-
-## HYGV-061 - The kitty keyboard flag bits have five spellings, two of them raw
-
-Reported by the termio/client hunter.
-
-`crates/shepr-termio/src/input/model.rs` exports
-`pub const KITTY_FLAG_REPORT_ALL_KEYS` (not re-exported from `input/mod.rs`),
-while `encode.rs` declares four private `KITTY_FLAG_*` constants over the same
-bitflags type, including its own `KITTY_FLAG_DISAMBIGUATE` far from the other
-three. `KeyboardProtocol::reports_event_types` writes the bit as a raw literal
-`0b0000_0010` while `reports_all_keys` uses the named constant: two spellings in
-adjacent methods of one impl.
-
-Fix: delete all five constants and call `KittyKeyboardFlags::contains`, which
-makes the raw literal unrepresentable.
-
-## HYGV-062 - The synchronized-output clock has no injection point
-
-**Decision (partial):** the clock seam is adopted incrementally as part of the
-hygiene work (HYGP-001 in `notes/hygiene-policy.md`), and the fix below is this
-subsystem's instance of it. Open: the shepr-owned `Timeout` impl.
-
-Reported by the vt/pty hunter.
-
-`shepr-vt` uses vte's default `StdSyncHandler` rather than its generic
-`Processor<T: Timeout>`, and `flush_expired_synchronized_output` reads
-`Instant::now()` itself. Consequently
-`crates/shepr-vt/src/tests.rs::synchronized_output_buffers_until_end_or_timeout`
-sleeps through vte's 150 ms timeout, and the same test asserts
-`!flush_expired...` immediately after a write, which will flake under load.
-
-Fix by type: a shepr-owned `Timeout` impl driven by an injected clock. The hunter
-names this as one of two structural suggestions for that scope, because it also
-gives the render and timer paths one `now`.
-
 ## HYGV-063 - The keybinding action list is spelled at eight sites; three of the eight are compiler-checked
 
 **Decision:** either keys are rebindable or they are not, and they are. The six
 hard-coded help entries (`esc`, `tab / shift+tab`, `enter`, `1..9`) become
 ordinary configurable bindings with defaults. Do this together with the single
 declarative keybinding table so the new keys are not added to eight sites by
-hand.
+hand. (`KEY_BINDING_COUNT` is now derived from the wire field list.)
+
+Scope for the fixer, established by a stopped attempt: the help builder is
+`crates/shepr-termio/src/input/keybind_help.rs` (there is no
+`shepr-client/src/keybind_help.rs`), and the navigate-mode keys (esc, tab,
+enter, 1..9) are dispatched in `crates/shepr-client/src/shell/input/input.rs`,
+alongside `shepr-config`'s `keybinds.rs`, `model.rs`, `wire.rs` and
+`default.toml` and `shepr-termio/src/input/keybindings.rs`. It needs all of
+those in one fixer's hands.
 
 Reported by the protocol/config hunter, who calls it the largest single finding
 in that scope.
@@ -1295,19 +1108,6 @@ navigate), its default binding and its help text, generating `KeysConfig`, its
 every omission is a compile error. Cheaper intermediate step named by the
 termio/client hunter: destructure `Keybinds` exhaustively with no `..` at the top
 of `keybind_help_groups`, so adding a field fails to compile until it is placed.
-
-## HYGV-064 - `KEY_BINDING_COUNT = 51` is a hand-maintained count of a compile-time-known list
-
-Reported by the protocol/config hunter.
-
-In `crates/shepr-config/src/wire.rs`. Correct today (verified: 51
-`BindingConfig` fields). The macro list it guards is already tied to
-`KeysConfig` by the compiler, so the constant's only job is a runtime
-`Err("resolved config has N keybindings; expected 51")` that cannot trigger.
-
-Enforcement: derive it from the macro (`[$(stringify!($field)),*].len()`), or
-delete it and the runtime check with it. The hunter adds that `into_config`'s
-`Result<Config, String>` error type exists for this case that cannot occur.
 
 ## HYGV-065 - Every default appears twice, once in a `Default` impl and once as a `default.toml` comment, and only the keybindings are checked
 
@@ -1396,16 +1196,6 @@ is a sentinel whose only live requirement is that it parses as a colour, and
 Not mechanically enforceable. The fix is a type: `Option<NonEmpty<String>>` or a
 small `ConfigOverride<T>` that spells "unset" once, at which point the rule is in
 one place and the sentinel becomes unrepresentable.
-
-## HYGV-069 - A bare `16` beside two named twins, twice on adjacent lines
-
-Reported by the protocol/config hunter.
-
-`crates/shepr-config/src/sidebar.rs::RawSidebarToken::parts` has
-`if token.rules.len() > 16 { return Err("sidebar tokens may contain at most 16
-rules") }` - the number appears twice on adjacent lines, in a file that already
-has two named `= 16` constants for neighbouring limits. Fix: a named const plus
-`{MAX}` interpolation in the message, after which drift is impossible.
 
 ## HYGV-070 - Server-local aliases for protocol constants read as independent knobs
 
@@ -1606,24 +1396,6 @@ which is exactly the right kind of enforcement. Worth knowing that
 the join - and the existing test catches that. The recommendation is: keep the
 test, it is the enforcement.
 
-## HYGV-085 - Version-probe timing has no injection point at the outer entry
-
-**Decision (partial):** the clock seam (HYGP-001 in `notes/hygiene-policy.md`)
-and per-crate `limits` modules (HYGV-036) are both adopted incrementally as part
-of the hygiene work; `run_version_probe`'s `Instant::now()` and the probe budgets
-fall under them when `shepr-agent`'s turn comes. Open: the outer entry taking
-the timeout.
-
-Reported by the agent hunter.
-
-`enforce_agent_version` hard-codes `VERSION_PROBE_TIMEOUT` (5 s) at the call,
-while `run_version_probe` takes a timeout parameter, so a test can only exercise
-the inner function. `version_probe_deadline_includes_inherited_stdout`
-consequently sleeps 300 ms plus 50 ms of real wall clock to let a grandchild die.
-
-Fix: have `enforce_agent_version` take the timeout (or a small `ProbeBudget`),
-and the test stops needing the wall clock.
-
 ## HYGV-087 - Identifier allocation reaches process-global counters and clocks directly, with no injection point and no owner of the format
 
 Reported by the core/platform, protocol/config, remote and server hunters.
@@ -1818,87 +1590,6 @@ Reported by the server hunter.
 `shepr-config::parse_key_combo`, so a fourth alias will be added here rather than
 there and the two will drift. Fix: move the aliases into `shepr-config` next to
 the parser.
-
-## HYGV-098 - The `local` / `server` keybinding-role round trip is spelled twice, in two crates
-
-**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
-broadarrow's `core::env`) takes the absent and non-UTF-8 handling out of
-`ClientProcessRole::from_env`: the variable becomes a registry entry and the
-reader answers those cases once. Open: the `"local"`/`"server"` value mapping,
-which stays with the owning site as broadarrow's text kinds do.
-
-Reported by the remote hunter, as fact.
-
-`crates/shepr-remote/src/remote/args.rs::RemoteKeybindings::parse` / `as_str`
-owns the mapping and the env var name, but `parse` is `pub(super)` and therefore
-not exported, so
-`crates/shepr-client/src/handshake.rs::ClientProcessRole::from_env`
-re-implements it: its own `"server"` / `"local"` literals, its own error text
-(`"{var} must be 'local' or 'server', got {value:?}"` versus
-`"--remote-keybindings must be 'local' or 'server'"`), and its own handling of
-the absent and non-UTF-8 cases.
-
-Fix: `RemoteKeybindings` owns `to_env_value` / `from_env` and is exported;
-`shepr-client` already depends on `shepr-remote`. Enforcement: a round-trip test
-`from_env(to_env_value(x)) == x`, impossible to write today because the two
-halves live in crates that do not share the type.
-
-The termio/client hunter recorded the adjacent case as the answer to "what keeps
-forced copies in step", and as the pattern the rest of that crate should follow:
-`REMOTE_KEYBINDINGS_ENV_VAR` and `REATTACH_COMMAND_ENV_VAR` are `pub const` in
-`shepr-remote` and the client reads them rather than spelling the strings, and the
-build-identity preamble means a drifted pair fails loudly at connect.
-
-## HYGV-099 - The shell-safe character set is duplicated verbatim in two modules
-
-Reported by the remote hunter, as fact.
-
-`crates/shepr-remote/src/remote/launch.rs::shell_quote` and
-`machine/executable.rs::has_only_shell_safe_characters` contain the identical
-predicate
-`ch.is_ascii_alphanumeric() || matches!(ch, '@'|'%'|'_'|'+'|'='|':'|','|'.'|'/'|'-')`.
-They agree today and serve different purposes (one decides whether to quote, the
-other whether to reject), which is why the duplication was easy to introduce:
-`executable.rs` rejecting a character `shell_quote` would have quoted safely is a
-silent discovery failure.
-
-Fix: one `fn is_shell_plain_word(s: &str) -> bool` called by both. Enforcement: a
-test asserting `shell_quote(s) == s` exactly when
-`has_only_shell_safe_characters(s)`, writeable today, which pins the two together
-without merging them.
-
-## HYGV-102 - The local endpoint's name exists in three spellings
-
-Reported by the termio/client hunter.
-
-- `crates/shepr-client/src/endpoint.rs::ClientEndpointId::storage_key()` yields
-  `"local"` (the persistence key).
-- `shell/endpoints.rs` constructs `label: "Local".into()` inline (the display
-  label).
-- `shell/sidebar/endpoint_sidebar.rs` falls back with
-  `.map_or("Local", |e| e.label.as_str())`.
-
-The sidebar fallback restates the display label that `shell/endpoints.rs` builds,
-so a rename there leaves the fallback showing the old name for exactly the case
-where the entry is missing, which is the case nobody tests. Fix: one
-`ClientEndpointId::display_label()` next to `storage_key()`, read by the
-fallback.
-
-## HYGV-103 - `pixel_geometry_*` has two owners: a constructor that returns placeholders and a caller that patches them
-
-Reported by the termio/client hunter.
-
-`ClientSettings::from_config` sets `pixel_geometry_enabled: false` and
-`pixel_geometry_fallback: false` unconditionally, then `run_client_with_mode`
-computes the real values from `client_rendered_shell` / `attach_escape` and
-assigns them into the struct. Between the two, `ClientSettings` holds values that
-are not the resolved configuration, and a later reader of `from_config` cannot
-tell that its answer for those two fields is a placeholder. `lib.rs` then reads
-one of the pair from `state.settings` and the other from `config.settings` in the
-same expression.
-
-Fix by signature: `ClientSettings::resolve(config, launch_mode)` returning a
-fully initialised value, with the fields private and no setters.
 
 ## HYGV-104 - Sidebar chrome preferences are validated at the moment of use rather than at startup
 

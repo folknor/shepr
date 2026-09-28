@@ -32,7 +32,10 @@ macro_rules! api_error_codes {
 
 api_error_codes! {
     AgentBlocked => "agent_blocked",
+    AgentExplainFileReadFailed => "agent_explain_file_read_failed",
     AgentExplainUnavailable => "agent_explain_unavailable",
+    AgentKindMismatch => "agent_kind_mismatch",
+    AgentNameNotFound => "agent_name_not_found",
     AgentNotFound => "agent_not_found",
     AgentNotRunning => "agent_not_running",
     AgentNotReady => "agent_not_ready",
@@ -108,6 +111,13 @@ api_error_codes! {
     StaleBoot => "stale_boot",
     SurfaceInactive => "surface_inactive",
     AgentPromptStalled => "agent_prompt_stalled",
+    AgentStartFailed => "agent_start_failed",
+    AgentStartTransportFailed => "agent_start_transport_failed",
+    BuildMismatch => "build_mismatch",
+    InvalidSessionName => "invalid_session_name",
+    ServerNotRunning => "server_not_running",
+    SessionDeleteFailed => "session_delete_failed",
+    SessionStopFailed => "session_stop_failed",
 }
 
 impl From<&String> for ApiErrorCode {
@@ -180,28 +190,78 @@ impl ApiError {
     }
 
     pub fn into_body(self) -> ErrorBody {
-        ErrorBody {
-            code: self.code.as_str().to_owned(),
-            message: self.payload.into_message(),
-        }
+        ErrorBody::new(&self.code, self.payload.into_message())
     }
 }
 
 pub type ApiResult = Result<ResponseResult, ApiError>;
 
 pub fn encode_result(id: String, result: ApiResult) -> String {
-    match result {
+    encode_result_with_outcome(id, result).body
+}
+
+#[derive(Debug)]
+pub(crate) struct EncodedApiResponse {
+    pub(crate) body: String,
+    pub(crate) outcome: &'static str,
+}
+
+impl EncodedApiResponse {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.body
+    }
+}
+
+impl std::ops::Deref for EncodedApiResponse {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+pub(crate) fn encode_result_with_outcome(id: String, result: ApiResult) -> EncodedApiResponse {
+    let outcome = match &result {
+        Ok(_) => "ok",
+        Err(error) if error.code == ApiErrorCode::Timeout => "timeout",
+        Err(_) => "error",
+    };
+    let response = match result {
         Ok(result) => {
             let response = SuccessResponse { id, result };
-            super::serialize_response_or_error(&response.id, &response)
+            super::serialize_response_or_error_with_outcome(&response.id, &response)
         }
         Err(error) => {
             let response = ErrorResponse {
                 id,
                 error: error.into_body(),
             };
-            super::serialize_response_or_error(&response.id, &response)
+            super::serialize_response_or_error_with_outcome(&response.id, &response)
         }
+    };
+    EncodedApiResponse {
+        body: response.body,
+        outcome: if response.outcome == "error" {
+            "error"
+        } else {
+            outcome
+        },
+    }
+}
+
+pub(crate) fn encode_error_response_with_outcome(response: &ErrorResponse) -> EncodedApiResponse {
+    let outcome = match ApiErrorCode::from(response.error.code.as_str()) {
+        ApiErrorCode::Timeout => "timeout",
+        _ => "error",
+    };
+    let encoded = super::serialize_response_or_error_with_outcome(&response.id, &response);
+    EncodedApiResponse {
+        body: encoded.body,
+        outcome: if encoded.outcome == "error" {
+            "error"
+        } else {
+            outcome
+        },
     }
 }
 
@@ -221,10 +281,7 @@ mod tests {
         );
         assert_eq!(
             error.into_body(),
-            ErrorBody {
-                code: "pane_not_found".into(),
-                message: "pane pane_7 not found".into(),
-            }
+            ErrorBody::new(&ApiErrorCode::PaneNotFound, "pane pane_7 not found")
         );
     }
 

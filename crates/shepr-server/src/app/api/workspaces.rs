@@ -409,7 +409,7 @@ mod tests {
         let focused_cwd = focused_scratch.to_path_buf();
         let ws = &app.state.workspaces[0];
         let root_cwd = ws.identity_cwd.clone();
-        let focused_pane = ws.focused_pane_id().expect("test precondition");
+        let focused_pane = ws.focused_pane_id();
         assert_ne!(focused_pane, ws.tabs()[0].root_pane);
         let terminal_id = ws
             .terminal_id(focused_pane)
@@ -471,9 +471,7 @@ mod tests {
         // This test leaves its unique ScratchDir in place; it performs no recursive delete.
         let source_scratch = crate::test_support::ScratchDir::new("ws-source");
         let source_cwd = source_scratch.to_path_buf();
-        let pane_id = app.state.workspaces[1]
-            .focused_pane_id()
-            .expect("test precondition");
+        let pane_id = app.state.workspaces[1].focused_pane_id();
         let terminal_id = app.state.workspaces[1]
             .terminal_id(pane_id)
             .cloned()

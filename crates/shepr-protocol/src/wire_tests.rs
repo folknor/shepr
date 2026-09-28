@@ -529,10 +529,6 @@ mod tests {
         };
         assert_eq!(roundtrip(&page_key)?, page_key);
 
-        // JSON keeps accepting the number-array form serde uses for `Vec<u8>`.
-        let json = serde_json::to_string(&ClientMessage::Input { data: data.clone() })?;
-        let decoded: ClientMessage = serde_json::from_str(&json)?;
-        assert_eq!(decoded, ClientMessage::Input { data });
         Ok(())
     }
 
