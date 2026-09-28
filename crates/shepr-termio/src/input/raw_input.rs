@@ -534,7 +534,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     }
 
     /// Hold a lone trailing ESC for one idle flush so an OSC 10/11 reply split
-    /// at its ESC introducer stitches back together instead of leaking (#549).
+    /// at its ESC introducer stitches back together instead of leaking.
     pub fn host_color_query_sent(&mut self) {
         self.host_replies.color_query_sent();
         self.held_pending_host_reply_esc = false;
@@ -2521,8 +2521,8 @@ mod tests {
     fn captured_sgr_mouse_tail_after_second_idle_flush_is_discarded() {
         let mut framer = RawInputByteFramer::for_host_input();
 
-        // Issue #3911, 2026-09-13 07:02:14 UTC: this prefix timed out,
-        // then its tail arrived 33 ms later. The Unix reader flushes again
+        // A captured host sequence: this prefix timed out, then its tail
+        // arrived 33 ms later. The Unix reader flushes again
         // after 10 ms of continued idle following the first discard.
         assert!(framer.push(b"\x1b[<3").is_empty());
         assert!(framer.flush_timeout().is_empty());

@@ -600,6 +600,9 @@ mod tests {
 
     #[test]
     fn explicit_git_refresh_invalidates_cached_non_git_results() {
+        // The ceiling keeps the scratch directory from being discovered as
+        // part of the checkout the scratch base sits in.
+        let _env = crate::test_support::IsolatedEnv::new();
         let mut app = test_app(&shepr_config::Config::default());
         let scratch = crate::test_support::ScratchDir::new("git-miss");
         let cwd = scratch.to_path_buf();

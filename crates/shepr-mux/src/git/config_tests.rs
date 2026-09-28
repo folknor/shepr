@@ -26,7 +26,6 @@ fn config_symlink_retarget_invalidates_context() {
     symlink(&second, &alias).expect("test precondition");
 
     assert!(!deps_current(&context.2));
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -39,7 +38,6 @@ fn config_read_error_retries_next_refresh() {
         "main",
     );
     assert!(!deps_current(&context.2));
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -63,8 +61,6 @@ fn git_status_fingerprint_honors_remote_fetch_refspec() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.full_ref, "refs/remotes/upstream/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -94,8 +90,6 @@ fn git_status_fingerprint_reads_included_config() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
     assert_eq!(upstream.full_ref, "refs/remotes/included/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -120,8 +114,6 @@ fn git_status_branch_config_reads_user_config_before_repo_config() {
         upstream_full_ref(&config).as_deref(),
         Some("refs/remotes/global/main")
     );
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -145,8 +137,6 @@ fn git_status_branch_config_repo_config_overrides_user_config() {
         upstream_full_ref(&config).as_deref(),
         Some("refs/remotes/origin/main")
     );
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -176,8 +166,6 @@ fn git_status_fingerprint_applies_repeated_includes_in_order() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
     assert_eq!(upstream.full_ref, "refs/remotes/included/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -210,8 +198,6 @@ fn git_status_fingerprint_reads_matching_include_if_config() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
     assert_eq!(upstream.full_ref, "refs/remotes/included/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -246,8 +232,6 @@ fn git_status_fingerprint_matches_gitdir_include_if_directory_pattern() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
     assert_eq!(upstream.full_ref, "refs/remotes/included/main");
-
-    std::fs::remove_dir_all(base).expect("test precondition");
 }
 
 #[test]
@@ -265,8 +249,6 @@ fn git_status_fingerprint_reads_case_insensitive_config_keys() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "origin");
     assert_eq!(upstream.full_ref, "refs/remotes/origin/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -296,8 +278,6 @@ fn git_status_fingerprint_keeps_refspecs_for_later_remote_override() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "fork");
     assert_eq!(upstream.full_ref, "refs/remotes/fork/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -326,8 +306,6 @@ fn git_status_fingerprint_ignores_worktree_config_when_extension_disabled() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "origin");
     assert_eq!(upstream.full_ref, "refs/remotes/origin/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -356,8 +334,6 @@ fn git_status_fingerprint_accepts_git_boolean_worktree_config() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "fork");
     assert_eq!(upstream.full_ref, "refs/remotes/fork/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -386,8 +362,6 @@ fn git_status_fingerprint_uses_last_worktree_config_boolean() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "fork");
     assert_eq!(upstream.full_ref, "refs/remotes/fork/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -421,8 +395,6 @@ fn git_status_fingerprint_ignores_included_worktree_config_extension() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "origin");
     assert_eq!(upstream.full_ref, "refs/remotes/origin/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -452,8 +424,6 @@ fn git_status_fingerprint_reads_onbranch_include_if_config() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
     assert_eq!(upstream.full_ref, "refs/remotes/included/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -483,8 +453,6 @@ fn git_status_fingerprint_reads_hasconfig_include_if_config() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
     assert_eq!(upstream.full_ref, "refs/remotes/included/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -522,8 +490,6 @@ fn git_status_fingerprint_matches_user_hasconfig_against_repo_remote_url() {
 
     assert_eq!(config.remote, "included");
     assert_eq!(config.merge_ref, "refs/heads/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -560,8 +526,6 @@ fn git_status_fingerprint_skips_hasconfig_include_that_defines_remote_url() {
 
     assert_eq!(config.remote, "origin");
     assert_eq!(config.merge_ref, "refs/heads/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -603,8 +567,6 @@ fn git_status_fingerprint_skips_hasconfig_include_chain_that_defines_remote_url(
 
     assert_eq!(config.remote, "origin");
     assert_eq!(config.merge_ref, "refs/heads/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -632,8 +594,6 @@ fn git_status_fingerprint_ignores_worktree_urls_for_hasconfig() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "origin");
     assert_eq!(upstream.full_ref, "refs/remotes/origin/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -662,8 +622,6 @@ fn git_status_fingerprint_stops_recursive_include_cycles() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
     assert_eq!(upstream.full_ref, "refs/remotes/included/main");
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -709,8 +667,6 @@ fn git_status_fingerprint_reads_linked_worktree_config() {
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "fork");
     assert_eq!(upstream.full_ref, "refs/remotes/fork/main");
-
-    std::fs::remove_dir_all(base).expect("test precondition");
 }
 
 #[test]
@@ -738,8 +694,6 @@ fn git_status_fingerprint_ignores_inline_fetch_refspec_comment() {
         upstream.oid.as_deref(),
         Some("2222222222222222222222222222222222222222")
     );
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -755,8 +709,6 @@ fn git_status_fingerprint_clears_upstream_for_unmapped_refspec() {
     let fingerprint = git_status_fingerprint(&root).expect("test precondition");
 
     assert_eq!(fingerprint.upstream, None);
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }
 
 #[test]
@@ -777,6 +729,4 @@ fn git_status_fingerprint_honors_negative_fetch_refspec() {
         upstream.oid.as_deref(),
         Some("2222222222222222222222222222222222222222")
     );
-
-    std::fs::remove_dir_all(root).expect("test precondition");
 }

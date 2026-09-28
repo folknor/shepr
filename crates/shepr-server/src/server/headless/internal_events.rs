@@ -4,10 +4,11 @@ impl HeadlessServer {
     /// Handles a single internal event with forwarding logic for clipboard
     /// writes to connected clients.
     ///
-    /// ALL internal events MUST be routed through this method to ensure
-    /// clipboard forwarding is never bypassed. Do not call
-    /// `self.app.handle_internal_event()` directly for any internal event
-    /// in the headless server - use this method instead.
+    /// Every internal event the headless server handles is routed through
+    /// this method, so clipboard forwarding is never bypassed; the
+    /// `headless-internal-events-go-through-forwarding` textlint refuses a
+    /// direct call to the app's internal-event handlers anywhere else under
+    /// `crates/shepr-server/src/server/`.
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {

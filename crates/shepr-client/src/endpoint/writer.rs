@@ -252,22 +252,19 @@ fn write_frame(
 mod tests {
     use super::*;
 
-    fn streams() -> (LocalStream, LocalStream, std::path::PathBuf) {
+    fn streams() -> (LocalStream, LocalStream) {
         use interprocess::local_socket::traits::Listener as _;
-        // Kept until the test process exits; callers remove the socket.
-        let path = shepr_test_support::ScratchDir::new("writer")
-            .keep_until_exit()
-            .join("s.sock");
+        let path = shepr_test_support::ScratchDir::new("writer").join("s.sock");
         let listener =
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let accepting = std::thread::spawn(move || listener.accept().expect("test precondition"));
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
-        (client, accepting.join().expect("test precondition"), path)
+        (client, accepting.join().expect("test precondition"))
     }
 
     #[test]
     fn native_endpoint_writer_delivers_ordered_protocol_frames() {
-        let (stream, mut peer, path) = streams();
+        let (stream, mut peer) = streams();
         let mut transport =
             NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
         let (done, received) = mpsc::channel();
@@ -298,12 +295,11 @@ mod tests {
         );
         reader.join().expect("test precondition");
         drop(transport);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn registry_exit_flushes_queued_input_and_a_complete_detach() {
-        let (stream, mut peer, path) = streams();
+        let (stream, mut peer) = streams();
         let transport =
             NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
         let (done, received) = mpsc::channel();
@@ -333,7 +329,6 @@ mod tests {
         assert_eq!(first, input);
         assert_eq!(second, ClientMessage::Detach);
         reader.join().expect("test precondition");
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -353,7 +348,7 @@ mod tests {
                 }
             }
         }
-        let (stream, peer, path) = streams();
+        let (stream, peer) = streams();
         peer.set_nonblocking(true).expect("test precondition");
         let mut peer = PollingPeer(peer);
         let mut transport =
@@ -388,7 +383,6 @@ mod tests {
         assert_eq!(first, input);
         assert_eq!(second, ClientMessage::Detach);
         reader.join().expect("test precondition");
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -399,7 +393,7 @@ mod tests {
                 let _ = self.0.send(());
             }
         }
-        let (stream, peer, path) = streams();
+        let (stream, peer) = streams();
         let (done, dropped) = mpsc::channel();
         let mut transport = NativeEndpointTransport::with_lifetime(stream, Lifetime(done))
             .expect("test precondition");
@@ -414,7 +408,6 @@ mod tests {
             .recv_timeout(Duration::from_secs(3))
             .expect("worker lifetime is released without peer reads");
         drop(peer);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]

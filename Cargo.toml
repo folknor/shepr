@@ -15,7 +15,8 @@ resolver = "3"
 [workspace.dependencies]
 
 # Terminal emulation core. Pinned exactly: crates/shepr-vt/src/ is written against this
-# version's API (reference checkout in research/alacritty).
+# version's API (read its source in the cargo registry, at
+# ~/.cargo/registry/src/*/alacritty_terminal-<version>/).
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 base64 = "0.23.1"
 bytes = "1"

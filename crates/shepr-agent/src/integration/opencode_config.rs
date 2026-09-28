@@ -308,7 +308,7 @@ mod tests {
     use serde_json::json;
 
     fn unique_dir() -> PathBuf {
-        shepr_test_support::ScratchDir::new("opencode").keep_until_exit()
+        shepr_test_support::ScratchDir::new("opencode").to_path_buf()
     }
 
     fn parse_config(path: &Path) -> Value {

@@ -16,7 +16,9 @@ pub(super) fn parse_reported_cwd(value: &[u8]) -> Option<PathBuf> {
 }
 
 /// Collects complete OSC bodies from a raw byte stream for the opt-in OSC
-/// debug log. Its framing mirrors vte's (`research/vte/src/lib.rs`), so it
+/// debug log. Its framing mirrors the pinned `vte` crate's parser (its source
+/// is in the cargo registry at `~/.cargo/registry/src/*/vte-<version>/`,
+/// version per `Cargo.lock`), so it
 /// sees the same sequences the terminal does: an OSC ends at BEL, CAN, SUB
 /// or any ESC (the ESC of an `ESC \` terminator, or one that starts a new
 /// sequence); other C0 controls inside it are dropped; SOS/PM/APC and DCS

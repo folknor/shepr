@@ -243,7 +243,7 @@ test("OMP ignores nested sessions launched inside another OMP shell", async () =
   const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
   install(pi);
 
-  // OMP sets OMPCODE on every shell it spawns. A nested `omp` inherits it and
+  // OMP sets `OMPCODE` on every shell it spawns. A nested `omp` inherits it and
   // must not claim the pane's session for its short-lived conversation.
   expect(handlers.size).toBe(0);
   await handlers.get("session_start")?.(
@@ -580,7 +580,7 @@ test("Oh My Pi keeps working when a turn ends with a scheduled continuation", as
   expect(requestStates(requests)).toEqual(["idle", "working"]);
 
   // OMP already scheduled an automatic continuation, so this loop end is not a
-  // user-visible settle and must not publish idle. See issue #2851.
+  // user-visible settle and must not publish idle.
   handlers.get("agent_end")?.({ messages: [], willContinue: true }, context);
   await Bun.sleep(50);
   expect(requestStates(requests)).toEqual(["idle", "working"]);

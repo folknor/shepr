@@ -49,6 +49,11 @@ comes back.
 
 ## BUG-003 - The one type that encodes the pane cwd rule is unreachable from every writer
 
+**Decision (partial):** the `Path::exists` seal is extended to `Path::is_file`
+and `Path::is_dir`, so `UsableCwd::new`'s `path.is_dir()` becomes a metadata
+match that tells a missing directory apart from one that cannot be stat'ed.
+Open: the defect, promoting `UsableCwd` and routing every writer through it.
+
 `crates/shepr-mux/src/pane/cwd.rs` defines `UsableCwd` (absolute and `is_dir`),
 and `pane/runtime.rs::usable_reported_cwd` throws the type away one line later
 (`UsableCwd::new(cwd).map(UsableCwd::into_path_buf)`), so the guarantee never
@@ -327,6 +332,51 @@ below predates `brokkr.toml`'s `[test] debug = true`: `brokkr test` builds dev
 unless `--release` is passed, so "builds release by default" no longer holds.
 Open: the `cfg!(test)` guard and its false comment.
 
+**Decision:** with the switch gone, a dev run is kept apart from the installed
+server by an explicit session (`--session <name>`), not by a directory, and a
+build mismatch must always be refused, with a message. Release builds also get
+`overflow-checks = true` in the root `Cargo.toml` profile. Together with the
+`debug_assert!` ban, that removes the dev/release behaviour difference without
+building release in the gate (the gate still does not build it). A read-only
+check of the mismatch paths found that every local path reaching a server of
+another build refuses before any codec frame: the build-identity preamble on
+the client socket, `validate_running_server_compatibility` in
+`auto_detect_launch`, and `ensure_server_build_matches` on each API command.
+With saved machines, though, the session-aware guidance is lost (BUG-025).
+Open here, all created or exposed by the removal:
+
+- `build.rs` fingerprints source files only (root `Cargo.toml`, `Cargo.lock`,
+  `build.rs`, `src/`, `crates/`), never the profile. A dev and a release build
+  of the same tree therefore share one `BUILD_ID`, and `brokkr run` straight
+  after `brokkr install` attaches to the installed server without a word.
+  Broadarrow's build cohort (`build-stamp`) also hashes the profile,
+  `OPT_LEVEL`, `DEBUG`, the rustflags, the compiler version and `CARGO_CFG_*`.
+  Once the three decisions above land, the two builds behave alike, so nothing
+  breaks on the wire. But which server answers a dev run depends on whether
+  the tree has moved since the install. Hashing `PROFILE` (or the cohort's
+  profile inputs) as well makes the refusal unconditional.
+- The refusal text (`shepr_api::session::restart_after_update_guidance`) offers
+  only the destructive fix: stop the running server, which "exits pane
+  processes". For a dev run in the default session, that server is the
+  installed one with every live agent in it. The text should also offer running
+  the build in its own session (`--session <name>`).
+- `server stop` and `session stop` skip the build check on purpose
+  (`src/cli/server.rs::server_stop`), so a dev build's `server stop` run
+  without `--session` now stops the installed server, with no refusal.
+- Without `--session`, a dev build shares the default session's saved layout
+  and history with the installed one. If the installed server is down, a dev
+  server restores from them and saves over them. Config and the saved-machine
+  catalog (`state_dir/client/endpoints.json`) are shared whatever the session.
+- `AGENTS.md`'s recipe for testing a dev build inside a running shepr
+  (`env -u SHEPR_SOCKET_PATH -u SHEPR_CLIENT_SOCKET_PATH brokkr run --
+  <command>`) now lands on the installed server's default-session socket and
+  is refused. It needs `--session <name>`. The `env -u` must stay while
+  BUG-077 stands. `resolve_paths_from_env` reads the socket overrides before
+  the session picks the address, so an empty `SHEPR_SOCKET_PATH` is refused
+  even alongside an explicit `--session`. An inherited `SHEPR_SESSION` does
+  not work as the switch: `ServerAddress::resolve_paths` lets only an explicit
+  `--session` outrank a non-empty socket override.
+
 `crates/shepr-config/src/io.rs`:
 `if cfg!(test) { "shepr-test" } else if cfg!(debug_assertions) { "shepr-dev" } else { "shepr" }`,
 with a comment claiming unit tests get a directory of their own in every profile.
@@ -388,6 +438,29 @@ Fix suggested: a test asserting every non-blank, non-`[section]` line in
 `DEFAULT_CONFIG` starts with `#`.
 
 ## BUG-025 - `auto_detect_launch` swallows a local-server startup failure into a log line no subscriber receives
+
+**Decision (partial):** the `app_dir_name` debug/release directory switch is
+removed (BUG-021), so a dev build and the installed server share the
+default-session sockets, and a build mismatch must always be refused with a
+message. Checked against that rule, a local server of another build does take
+this path. With saved machines configured:
+
+- `validate_running_server_compatibility`'s error, the one that names the
+  session's stop and attach commands, goes to this unsubscribed warn.
+- `run_client` then attaches anyway. Its first handshake fails on the
+  build-identity preamble, which is logged only to the client log file.
+- The Local endpoint supervisor retries, lands in `Attention` and retries every
+  30 s. Local is the endpoint active at startup, so the screen shows "Local:
+  build mismatch: ... Install the same shepr build on both sides and restart
+  the server".
+
+So the mismatch is still refused and visible, not silent. But the message that
+reaches the screen is the generic preamble text. It names neither the stop
+command nor the session, and the one that does is discarded. Open: get
+`validate_running_server_compatibility`'s guidance to the operator (print it
+before the TUI takes the terminal, or use it as the Local endpoint's
+diagnostic), plus the subscriber fix below. Without saved machines the launch
+already fails with the full guidance on stderr.
 
 Two findings that compound, from the same hunter:
 
@@ -556,6 +629,10 @@ Fix suggested: one
 SocketStartupLock, SocketFileIdentity)` so the wrong order is unrepresentable.
 
 ## BUG-036 - A test's headline assertion has never executed
+
+**Decision (partial):** the `Path::exists` seal is extended to `Path::is_file`
+and `Path::is_dir`, and it reaches test code, so the `user_config.is_file()`
+guard cannot stay. The suggested fix below removes it anyway. Open: the fix.
 
 `crates/shepr-remote/src/remote/attach.rs::managed_ssh_config_includes_user_config_then_fallback`
 guards its ordering assertion with `if let Some(home) = paths.home_dir() { let
@@ -869,8 +946,10 @@ removes `shepr-server`'s `test-api` feature (test-only code moves to dev-only
 crates held by `never-ships` dependency rules), and the crate-wide allow goes
 with it. `#[allow]` is also denied workspace-wide in favour of
 `#[expect(.., reason)]` (adopted from broadarrow), so the attribute could not
-return in this form. Open: the three deletion candidates, which the compiler can
-confirm once `dead_code` reports again.
+return in this form. The "`#[allow]` needs a comment" textlint is dropped in
+favour of that migration: the justification lives in each `#[expect]`'s
+`reason`, and `AGENTS.md`'s wording changes later. Open: the three deletion
+candidates, which the compiler can confirm once `dead_code` reports again.
 
 `crates/shepr-server/src/lib.rs`:
 `#![cfg_attr(feature = "test-api", allow(dead_code))]`. The root package depends
@@ -894,7 +973,11 @@ broadarrow's `test-support-never-ships` and `test-scratch-never-ships`), plus a
 gate check of the shipped feature set. `PaneRuntimeIo::TestChannel` needs a seam
 before it can leave `shepr-mux` (HYGP-031). The gate check compiles the shipped
 feature set, not the release profile: building release in `brokkr check` is
-decided against (the owner's choice).
+decided against (the owner's choice). Release builds get
+`overflow-checks = true` in the root `Cargo.toml` profile. With the
+`debug_assert!` ban and the `app_dir_name` switch removed (BUG-021), the
+profile the gate leaves unbuilt then differs in optimisation and debug info,
+not in behaviour.
 
 Reported independently from four scopes, all resting on cargo feature
 unification and none verified by a build:
@@ -943,6 +1026,11 @@ transitions suggested below) otherwise. Building the release profile in
 `brokkr check` is decided against, so the answer is to remove the profile
 dependence, not to test the other profile. The text below predates
 `[test] debug = true`: `brokkr test` builds dev unless `--release` is passed.
+The same answer covers integer overflow: release builds get
+`overflow-checks = true` in the root `Cargo.toml` profile, so overflow panics
+in the shipped build as it does in dev and in tests. That closes the
+dev/release overflow difference without building release in the gate, which
+still does not build it.
 
 - `crates/shepr-mux/src/workspace.rs::unregister_moved_pane` has a body of
   exactly `debug_assert!(self.pane_state(_pane_id).is_none());` and is called
@@ -1321,7 +1409,8 @@ broadarrow answers this the other way from the fix suggested below: broadarrow
 rejected a `Drop`-owned scratch tree (`scratch_root("x").join("y")` deletes the
 tree before the caller uses it) in favour of trees cleared on claim and reused in
 place per slot, so a failing test's leftovers are removed by the next run and
-`keep_until_exit` goes. Open: dropping the hand cleanup calls once that lands.
+`keep_until_exit` goes. Landed: `keep_until_exit` is gone and its callers hold a
+plain `ScratchDir` with the hand cleanup dropped; this entry can be removed.
 
 - `crates/shepr-mux/src/git/test_support.rs::temp_test_dir` returns
   `ScratchDir::new(name).keep_until_exit()` and its doc says callers that clean

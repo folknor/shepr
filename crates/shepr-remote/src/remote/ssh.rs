@@ -173,7 +173,7 @@ pub fn ssh_authentication_command(
             "interactive SSH recovery requires remote.manage_ssh_config=true",
         ));
     }
-    let config = write_managed_ssh_config(target.as_str(), paths)?;
+    let config = write_managed_ssh_config(target.as_str(), paths, SshControlDir::runtime(paths)?)?;
     Ok(authentication_command_with_config(target, config))
 }
 
@@ -219,10 +219,29 @@ impl RemoteSsh {
         session_name: String,
         paths: &shepr_config::AppPaths,
     ) -> io::Result<Self> {
-        let managed_config = if manage_ssh_config {
-            Some(write_managed_ssh_config(target.as_str(), paths)?)
+        let control_dir = if manage_ssh_config {
+            Some(SshControlDir::runtime(paths)?)
         } else {
             None
+        };
+        Self::with_control_dir(target, control_dir, session_name, paths)
+    }
+
+    /// As [`RemoteSsh::new`], with the managed config's control directory
+    /// given: `None` leaves the user's SSH config unmanaged.
+    pub(super) fn with_control_dir(
+        target: SshTarget,
+        control_dir: Option<SshControlDir<'_>>,
+        session_name: String,
+        paths: &shepr_config::AppPaths,
+    ) -> io::Result<Self> {
+        let managed_config = match control_dir {
+            Some(control_dir) => Some(write_managed_ssh_config(
+                target.as_str(),
+                paths,
+                control_dir,
+            )?),
+            None => None,
         };
 
         Ok(Self {
@@ -493,18 +512,48 @@ pub(super) fn ssh_config_include(path: Option<&Path>) -> Option<String> {
         .map(|path| ssh_config_quote(&path.to_string_lossy()))
 }
 
+/// The directory a managed config names the shared OpenSSH control socket
+/// under.
+///
+/// Production uses the XDG runtime directory, checked private before any
+/// socket is named under it, so an isolated environment never reaches a
+/// user's live master. Tests that only render config text name a short
+/// directory nothing binds in: OpenSSH's staging name leaves room only for a
+/// directory as short as a real `/run/user/<uid>`, which no test scratch
+/// directory is.
+#[derive(Clone, Copy)]
+pub(super) struct SshControlDir<'a> {
+    path: &'a Path,
+}
+
+impl<'a> SshControlDir<'a> {
+    /// The XDG runtime directory, refused unless it is private to this user.
+    pub(super) fn runtime(app_paths: &'a shepr_config::AppPaths) -> io::Result<Self> {
+        let path = app_paths.xdg_runtime_dir();
+        shepr_platform::validate_ssh_runtime_dir(path)?;
+        Ok(Self { path })
+    }
+
+    /// A directory taken as given, for tests that never bind the socket.
+    #[cfg(test)]
+    pub(super) fn unchecked(path: &'a Path) -> Self {
+        Self { path }
+    }
+}
+
 /// Builds a temporary ssh config that includes the user's settings first, so
 /// OpenSSH's first-value-wins behavior preserves explicit user keepalives.
 pub(super) fn write_managed_ssh_config(
     target: &str,
     app_paths: &shepr_config::AppPaths,
+    control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.config_file();
     let runtime_dir = app_paths.xdg_runtime_dir();
     let paths: shepr_platform::RemoteSshConfigPaths =
         shepr_platform::remote_ssh_config_paths(app_paths.home_dir());
-    let control_path = Some(shepr_platform::shared_ssh_control_path(
-        runtime_dir,
+    let control_path = Some(shepr_platform::ssh_control_path_under(
+        control_dir.path,
         config_file,
         target,
     )?);

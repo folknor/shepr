@@ -1616,7 +1616,7 @@ impl PaneRuntime {
         let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
         let leader_cwd = foreground_pgid.and_then(absolute_process_cwd);
 
-        // The group leader's cwd is authoritative (issue #3270): a helper
+        // The group leader's cwd is authoritative: a helper
         // process that chdirs elsewhere inside the same foreground group
         // must not override it. Scan other members only when the leader's
         // cwd cannot be read at all.
@@ -1979,7 +1979,7 @@ mod tests {
 
     #[tokio::test]
     async fn cwd_returns_accepted_report_without_rechecking_filesystem() {
-        let cwd = crate::test_support::ScratchDir::new("reported-cwd").keep_until_exit();
+        let cwd = crate::test_support::ScratchDir::new("reported-cwd").to_path_buf();
 
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let (events, _event_rx) = mpsc::channel(1);
@@ -2122,7 +2122,7 @@ mod tests {
     fn process_cwd_does_not_require_traversing_the_directory_path() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = crate::test_support::ScratchDir::new("process-cwd").keep_until_exit();
+        let base = crate::test_support::ScratchDir::new("process-cwd");
         let private = base.join("private");
         let cwd = private.join("cwd");
         std::fs::create_dir_all(&cwd).expect("create process cwd");
@@ -2146,7 +2146,6 @@ mod tests {
             .expect("restore cwd path permissions");
         let _ = child.kill();
         let _ = child.wait();
-        std::fs::remove_dir_all(&base).expect("remove process cwd");
 
         if path_is_traversable {
             eprintln!("skipping untraversable cwd assertion for privileged test process");

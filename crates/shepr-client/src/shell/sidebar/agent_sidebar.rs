@@ -567,7 +567,7 @@ mod tests {
     fn put_text_attaches_combining_marks_to_the_previous_cell() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 1));
 
-        // "e" + COMBINING ACUTE ACCENT, then "x"; a leading mark has no cell
+        // "e" + U+0301 (combining acute accent), then "x"; a leading mark has no cell
         // to join and is dropped, as is a control character.
         put_text(
             &mut buffer,

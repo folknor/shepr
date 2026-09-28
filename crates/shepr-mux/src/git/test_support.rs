@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 
-/// A fresh directory kept until the test process exits; callers that clean up
-/// remove it themselves.
+/// A fresh scratch directory, cleared by the next run rather than by the test.
 pub(super) fn temp_test_dir(name: &str) -> PathBuf {
-    shepr_test_support::ScratchDir::new(name).keep_until_exit()
+    shepr_test_support::ScratchDir::new(name).to_path_buf()
 }
 
 fn init_repo_with_commit(repo: &Path) {

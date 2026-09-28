@@ -576,20 +576,13 @@ impl RotatingFileState {
     }
 
     fn open_current_file(&mut self) -> io::Result<()> {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
 
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .mode(LOG_FILE_MODE)
             .open(&self.path)?;
-        // `mode` only applies to a file this call creates; tighten one left
-        // behind by an older build that created logs world-readable.
-        if let Ok(meta) = file.metadata()
-            && meta.permissions().mode() & 0o077 != 0
-        {
-            let _ = file.set_permissions(fs::Permissions::from_mode(LOG_FILE_MODE));
-        }
         self.file = Some(file);
         Ok(())
     }
@@ -682,12 +675,9 @@ fn rotated_log_path(path: &Path, index: usize) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// A log path in a scratch directory kept until the test process exits;
-    /// each test removes the directory itself.
+    /// A log path in a fresh scratch directory.
     fn temp_log_path(name: &str) -> PathBuf {
-        shepr_test_support::ScratchDir::new(name)
-            .keep_until_exit()
-            .join("shepr.log")
+        shepr_test_support::ScratchDir::new(name).join("shepr.log")
     }
 
     #[test]
@@ -719,7 +709,6 @@ mod tests {
     #[test]
     fn rotate_files_shifts_existing_generations() {
         let path = temp_log_path("rotate");
-        fs::create_dir_all(path.parent().expect("test precondition")).expect("test precondition");
         fs::write(&path, "current").expect("test precondition");
         fs::write(rotated_log_path(&path, 1), "older").expect("test precondition");
 
@@ -741,8 +730,6 @@ mod tests {
             "older"
         );
         assert!(!path.exists());
-
-        let _ = fs::remove_dir_all(path.parent().expect("test precondition"));
     }
 
     #[test]
@@ -762,8 +749,6 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&path).expect("test precondition"), "abc");
         assert!(!rotated_log_path(&path, 1).exists());
-
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -792,7 +777,6 @@ mod tests {
 
         let current = fs::read_to_string(&path).expect("current log");
         let rotated = fs::read_to_string(rotated_log_path(&path, 1)).expect("rotated log");
-        let _ = fs::remove_dir_all(&dir);
 
         assert_eq!(rotated, "aaaaaaaaaa");
         assert_eq!(current, "bbbbbbbbbbcc");
@@ -810,7 +794,6 @@ mod tests {
         writer.make_writer().write_all(b"after").expect("write");
 
         let contents = fs::read_to_string(&path);
-        let _ = fs::remove_dir_all(&dir);
 
         assert_eq!(contents.expect("log recreated"), "after");
     }
@@ -829,7 +812,6 @@ mod tests {
         writer.make_writer().write_all(b"after").expect("write");
 
         let contents = fs::read_to_string(&path);
-        let _ = fs::remove_dir_all(&dir);
 
         let contents = contents.expect("log recreated");
         assert!(
@@ -850,16 +832,6 @@ mod tests {
         let _created = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
         let created_mode = fs::metadata(&path).expect("log").permissions().mode() & 0o777;
 
-        // A log left world-readable by an older build is tightened on open.
-        let legacy = dir.join("legacy.log");
-        fs::write(&legacy, "old").expect("legacy log");
-        fs::set_permissions(&legacy, fs::Permissions::from_mode(0o644)).expect("legacy mode");
-        let _reopened = RotatingFileMakeWriter::new(&dir, "legacy.log", 0, 0).expect("writer");
-        let legacy_mode = fs::metadata(&legacy).expect("log").permissions().mode() & 0o777;
-
-        let _ = fs::remove_dir_all(&dir);
-
         assert_eq!(created_mode, 0o600);
-        assert_eq!(legacy_mode, 0o600);
     }
 }

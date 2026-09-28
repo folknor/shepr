@@ -35,7 +35,7 @@ pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Most requests are answered in the same loop turn. The slowest legitimate
 /// case is a `pane.read`/`agent.read` of alternate-screen history, which the
 /// server serves by scrolling the agent and can take up to 20 s (15 s harvest
-/// plus 5 s restore in `src/server/alt_screen_read.rs`), and a second read of
+/// plus 5 s restore in `crates/shepr-server/src/server/alt_screen_read.rs`), and a second read of
 /// the same pane is parked until the first finishes. A minute covers that
 /// with margin. Requests that carry their own timeout (`events.wait`,
 /// `agent.wait`, `pane.wait_for_output`, `agent.prompt` with `wait`) are
@@ -1073,10 +1073,9 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use tokio::sync::mpsc;
 
-    /// A fresh path in a scratch directory that is kept until the test
-    /// process exits; every caller here removes what it creates itself.
+    /// A fresh path in its own scratch directory.
     fn unique_test_path(name: &str) -> PathBuf {
-        ScratchDir::new(name).keep_until_exit().join("s")
+        ScratchDir::new(name).join("s")
     }
 
     fn read_line(stream: &mut LocalStream) -> String {
@@ -1086,17 +1085,17 @@ mod tests {
         line
     }
 
-    fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, PathBuf) {
+    fn local_stream_pair(name: &str) -> (LocalStream, LocalStream) {
         let path = unique_test_path(name);
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
-        (client, server, path)
+        (client, server)
     }
 
     #[test]
     fn request_line_arriving_after_connect_is_read_without_a_poll_delay() {
-        let (mut client, mut server, path) = local_stream_pair("request-line-latency");
+        let (mut client, mut server) = local_stream_pair("request-line-latency");
         let writer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
             client
@@ -1126,19 +1125,17 @@ mod tests {
             elapsed < CONNECTION_POLL_INTERVAL,
             "request line took {elapsed:?}"
         );
-        fs::remove_file(path).expect("test precondition");
     }
 
     #[test]
     fn request_line_read_honours_its_deadline_and_size_limit() {
-        let (_client, mut server, path) = local_stream_pair("request-line-deadline");
+        let (_client, mut server) = local_stream_pair("request-line-deadline");
         let error =
             read_request_line_until(&mut server, Instant::now() + Duration::from_millis(30))
                 .expect_err("silent client must time out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        fs::remove_file(path).expect("test precondition");
 
-        let (mut client, mut server, path) = local_stream_pair("request-line-oversize");
+        let (mut client, mut server) = local_stream_pair("request-line-oversize");
         let writer = std::thread::spawn(move || {
             // The server stops reading at the limit, so the tail of this write
             // may fail once it closes; only the server's verdict matters.
@@ -1149,16 +1146,14 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         drop(server);
         writer.join().expect("test precondition");
-        fs::remove_file(path).expect("test precondition");
 
-        let (client, mut server, path) = local_stream_pair("request-line-eof");
+        let (client, mut server) = local_stream_pair("request-line-eof");
         drop(client);
         assert!(
             read_request_line_until(&mut server, Instant::now() + Duration::from_secs(5))
                 .expect("test precondition")
                 .is_none()
         );
-        fs::remove_file(path).expect("test precondition");
     }
 
     #[test]
@@ -1203,14 +1198,13 @@ mod tests {
 
     #[test]
     fn ssh_agent_registration_lasts_only_for_the_api_connection() {
-        let directory = unique_test_path("agent-lease");
-        fs::create_dir(&directory).expect("test precondition");
+        let directory = ScratchDir::new("agent-lease");
         let agent = directory.join("upstream");
         let _agent = UnixListener::bind(&agent).expect("test precondition");
         let stable = directory.join("stable");
         let registry = shepr_platform::ssh_agent::SshAgentRegistry::new(stable.clone(), None)
             .expect("test precondition");
-        let (mut client, server, api_path) = local_stream_pair("agent-api");
+        let (mut client, server) = local_stream_pair("agent-api");
         let (tx, _rx) = mpsc::unbounded_channel();
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
@@ -1245,8 +1239,6 @@ mod tests {
         worker.join().expect("test precondition");
         assert!(!stable.exists());
         drop(registry);
-        fs::remove_file(api_path).expect("test precondition");
-        fs::remove_dir_all(directory).expect("test precondition");
     }
 
     fn pane_info(
@@ -1366,7 +1358,7 @@ mod tests {
 
     #[test]
     fn unknown_method_returns_invalid_request_response() {
-        let (mut client, server, _path) = local_stream_pair("unknown-api-request");
+        let (mut client, server) = local_stream_pair("unknown-api-request");
         let (api_tx, mut api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
         client
             .write_all(b"{\"id\":\"unknown\",\"method\":\"nope\",\"params\":{}}\n")
@@ -1392,7 +1384,7 @@ mod tests {
 
     #[test]
     fn ordinary_api_request_still_uses_normal_connection_path() {
-        let (mut client, server, _path) = local_stream_pair("ordinary-api-request");
+        let (mut client, server) = local_stream_pair("ordinary-api-request");
         let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
         client
             .write_all(b"{\"id\":\"ordinary\",\"method\":\"ping\",\"params\":{}}\n")
@@ -1498,7 +1490,7 @@ mod tests {
     fn events_wait_agent_status_returns_initial_match() {
         let (api_tx, responder) = spawn_pane_get_responder(crate::schema::AgentStatus::Blocked);
 
-        let (mut client, server, _path) = local_stream_pair("api-events-wait-initial");
+        let (mut client, server) = local_stream_pair("api-events-wait-initial");
         client
             .write_all(br#"{"id":"wait_1","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"blocked"},"timeout_ms":1000}}"#)
             .expect("test precondition");
@@ -1525,7 +1517,7 @@ mod tests {
     fn events_wait_agent_status_times_out_server_side() {
         let (api_tx, responder) = spawn_pane_get_responder(crate::schema::AgentStatus::Idle);
 
-        let (mut client, server, _path) = local_stream_pair("api-events-wait-timeout");
+        let (mut client, server) = local_stream_pair("api-events-wait-timeout");
         client
             .write_all(br#"{"id":"wait_2","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"blocked"},"timeout_ms":30}}"#)
             .expect("test precondition");
@@ -1582,7 +1574,7 @@ mod tests {
             }
         });
 
-        let (mut client, server, _path) = local_stream_pair("wait-close");
+        let (mut client, server) = local_stream_pair("wait-close");
         client
             .write_all(br#"{"id":"wait_close","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"blocked"},"timeout_ms":500}}"#)
             .expect("test precondition");
@@ -1630,7 +1622,7 @@ mod tests {
             }
         });
 
-        let (mut client, server, _path) = local_stream_pair("api-wait-disconnect");
+        let (mut client, server) = local_stream_pair("api-wait-disconnect");
         client
             .write_all(br#"{"id":"req_wait","method":"pane.wait_for_output","params":{"pane_id":"pane_1","source":"recent","match":{"type":"substring","value":"never"}}}"#)
             .expect("test precondition");
@@ -1680,7 +1672,7 @@ mod tests {
         ];
         for (request, expected_id) in cases {
             let (api_tx, mut api_rx) = mpsc::unbounded_channel();
-            let (mut client, server, path) = local_stream_pair("invalid-request-id");
+            let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
             let running = Arc::new(AtomicBool::new(true));
             handle_connection(server, &api_tx, &EventHub::default(), &running, None)
@@ -1699,7 +1691,6 @@ mod tests {
                 api_rx.try_recv().is_err(),
                 "invalid requests must not dispatch"
             );
-            fs::remove_file(path).expect("test precondition");
         }
     }
 
@@ -1731,7 +1722,7 @@ mod tests {
                 "rejection must not start polling"
             );
         });
-        let (mut client, server, path) = local_stream_pair("subscription-error-id");
+        let (mut client, server) = local_stream_pair("subscription-error-id");
         let request = r#"{"id":"panefold:events","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.created"},{"type":"pane.closed"},{"type":"pane.agent_status_changed","pane_id":"w999:p9"}]}}"#;
         writeln!(client, "{request}").expect("test precondition");
         let running = Arc::new(AtomicBool::new(true));
@@ -1747,13 +1738,12 @@ mod tests {
         assert_eq!(response.id, "panefold:events");
         assert_eq!(response.error.code, "pane_not_found");
         assert_eq!(response.error.message, "pane w999:p9 not found");
-        fs::remove_file(path).expect("test precondition");
     }
 
     #[test]
     fn subscriptions_stop_when_client_disconnects() {
         let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let (mut client, server, _path) = local_stream_pair("api-sub-disconnect");
+        let (mut client, server) = local_stream_pair("api-sub-disconnect");
         client
             .write_all(
                 br#"{"id":"sub_1","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.created"}]}}"#,
@@ -1788,7 +1778,7 @@ mod tests {
     #[test]
     fn subscriptions_stop_when_server_shuts_down() {
         let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let (mut client, server, _path) = local_stream_pair("api-sub-shutdown");
+        let (mut client, server) = local_stream_pair("api-sub-shutdown");
         client
             .write_all(
                 br#"{"id":"sub_2","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.created"}]}}"#,

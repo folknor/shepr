@@ -657,7 +657,7 @@ mod registration_tests {
     }
 
     fn base(name: &str) -> PathBuf {
-        shepr_test_support::ScratchDir::new(name).keep_until_exit()
+        shepr_test_support::ScratchDir::new(name).to_path_buf()
     }
 
     fn write_current_hook(path: &Path) {

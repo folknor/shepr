@@ -22,4 +22,10 @@ disallowed-methods = [
   # the prior values on drop.
   { path = "std::env::set_var", reason = "write only through the IsolatedEnv test guard" },
   { path = "std::env::remove_var", reason = "remove only through shepr_core::env::remove or the IsolatedEnv test guard" },
+  # Test data and scratch state live under the project's build tree
+  # (`shepr_test_support::ScratchDir`), never the host's shared temp
+  # directory, and no site escapes this. This catches a renamed import the
+  # `no-host-temp-dir` textlint cannot see; that textlint is what refuses an
+  # escape, since no site has one.
+  { path = "std::env::temp_dir", reason = "use shepr_test_support::ScratchDir; no site escapes this" },
 ]

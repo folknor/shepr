@@ -917,9 +917,15 @@ leaves `shepr-mux` - it needs a seam (trait or generic) before a dev-only crate
 can hold it. Separately, `#[allow]` gives way to `#[expect(.., reason)]`
 workspace-wide (B9 in `notes/broadarrow-ports.md`), so the narrow per-item
 allows the `shepr-server` bullet calls the house style become `#[expect]`s,
-with a `cfg_attr` on the `dead_code` ones that tests use. Building the release
-profile in the gate is decided against; the shipped-feature-set check is about
-features, not the profile.
+with a `cfg_attr` on the `dead_code` ones that tests use. The "`#[allow]`
+needs a comment" textlint is dropped in favour of that migration: the
+justifying comments become each `#[expect]`'s `reason`, and `AGENTS.md`'s
+wording changes later. Building the release profile in the gate is decided
+against; the shipped-feature-set check is about features, not the profile.
+Release builds get `overflow-checks = true` in the root `Cargo.toml` profile.
+With the `debug_assert!` ban and the `app_dir_name` switch removed (BUG-021),
+the unbuilt profile then differs in optimisation and debug info, not in
+behaviour.
 
 Reported from six scopes; several hunters marked the unification mechanics as an
 inference they had not verified by building. Gathered here as one entry.
@@ -1494,8 +1500,10 @@ for each is the hunter's.
 **Decision (partial):** `#[allow]` gives way to `#[expect(.., reason)]`
 workspace-wide (B9 in `notes/broadarrow-ports.md`); the third bullet's two
 `#[allow(dead_code)]`s become `#[cfg_attr(not(test), expect(dead_code, reason =
-..))]`, since tests read the items. Whether "documents the table" is reason
-enough to keep them is open, as are the first two bullets.
+..))]`, since tests read the items. The "`#[allow]` needs a comment" textlint
+is dropped in favour of that migration; `AGENTS.md`'s wording changes later.
+Whether "documents the table" is reason enough to keep them is open, as are
+the first two bullets.
 
 - `shepr-core` `geometry.rs`: `impl From<bool> for SplitBranch` has no callers.
   Evidence: the hunter grepped the workspace for `SplitBranch::from`, `.into()`

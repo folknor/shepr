@@ -691,9 +691,7 @@ pub(super) fn local_forward_socket_path(
 }
 
 #[cfg(test)]
-pub(super) fn fits_unix_socket_path(path: &Path) -> bool {
-    shepr_platform::fits_unix_socket_path(path)
-}
+pub(super) use shepr_core::socket_path::fits_unix_socket_path;
 
 pub(super) fn short_socket_hash(target: &str, session: &str) -> String {
     use std::collections::hash_map::DefaultHasher;

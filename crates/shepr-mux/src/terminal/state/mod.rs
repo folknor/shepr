@@ -184,9 +184,8 @@ struct RecentAgentProcessExit {
 
 /// Pure state for a server-owned terminal.
 ///
-/// During the migration this is still one-to-one with a pane-backed PTY, but
-/// pane/view state no longer owns terminal identity, cwd, labels, or agent
-/// metadata.
+/// One-to-one with a pane-backed PTY. Terminal identity, cwd, labels and
+/// agent metadata live here, not in pane or view state.
 pub struct TerminalState {
     pub id: TerminalId,
     pub cwd: PathBuf,

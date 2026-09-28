@@ -120,7 +120,7 @@ region = "whole_recent"
 visible_blocker = true
 # MCP elicitation dialogs (elicitation/create) show Accept/Decline controls
 # with an "Esc to cancel" footer but no Enter hint, so live_blocked_form
-# cannot see them (issue #3283). Gate on the invariant header line, the
+# cannot see them. Gate on the invariant header line, the
 # Accept/Decline control line, and the cancel footer.
 contains = ["esc to cancel"]
 line_regex = ['(?i)^\s*MCP server ["\x{201C}].+["\x{201D}] requests your input\s*$']
@@ -174,7 +174,7 @@ any = [
 ]
 # Claude marks the selected option with "❯", so every option branch has to allow
 # that prefix. Numbered branches that omit it only match options the cursor has
-# moved away from, which left the resting layout below unmatched here (#2650):
+# moved away from, which would leave the resting layout below unmatched:
 #   ❯ 1. Yes / 2. Yes, and don't ask again for: <cmd> / 3. No
 # Cover both the two-option and "don't ask again" three-option shapes so this
 # rule, not the narrower generic_permission_prompt, claims Bash approvals.

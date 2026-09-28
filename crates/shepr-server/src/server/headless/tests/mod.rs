@@ -72,9 +72,7 @@ mod surface_interest_tests;
 
 #[tokio::test]
 async fn client_listener_readiness_wakes_for_new_connection() {
-    let socket_path = crate::test_support::ScratchDir::new("listener-ready")
-        .keep_until_exit()
-        .join("client.sock");
+    let socket_path = crate::test_support::ScratchDir::new("listener-ready").join("client.sock");
     let listener = bind_local_listener(&socket_path).expect("bind test listener");
     listener
         .set_nonblocking(ListenerNonblockingMode::Accept)
@@ -115,11 +113,8 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::TEST, api_rx, event_hub);
 
     app.state.settings.default_shell = crate::app::exiting_test_command().into();
-    // The server removes its socket when dropped; the directory goes with the
-    // scratch root at exit.
-    let socket_path = crate::test_support::ScratchDir::new("hh")
-        .keep_until_exit()
-        .join("client.sock");
+    // The server removes its socket when dropped.
+    let socket_path = crate::test_support::ScratchDir::new("headless").join("client.sock");
     let listener = bind_local_listener(&socket_path).expect("bind test listener");
     let client_socket_identity =
         socket_file_identity(&socket_path).expect("test listener socket identity");
@@ -6478,59 +6473,5 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
     assert!(
         !server.clients.contains_key(&1),
         "failed targeted send should remove the broken foreground client"
-    );
-}
-
-/// Verify that calls to the app's internal-event methods only occur inside
-/// `handle_internal_event_with_forwarding`. This ensures the forwarding
-/// bypass cannot be reintroduced.
-#[test]
-fn no_handle_internal_event_bypass_in_module() {
-    let source = include_str!("../../headless.rs");
-
-    // Find all lines containing handle_internal_event
-    let mut bypass_lines: Vec<String> = Vec::new();
-    let mut inside_forwarding_method = false;
-    let mut forwarding_method_brace_depth = 0u32;
-
-    for (i, line) in source.lines().enumerate() {
-        let line_num = i + 1;
-
-        // Track when we're inside handle_internal_event_with_forwarding
-        if line.contains("fn handle_internal_event_with_forwarding") {
-            inside_forwarding_method = true;
-            forwarding_method_brace_depth = 0;
-        }
-
-        if inside_forwarding_method {
-            // Count braces to track when we exit the method
-            for ch in line.chars() {
-                match ch {
-                    '{' => forwarding_method_brace_depth += 1,
-                    '}' => {
-                        forwarding_method_brace_depth =
-                            forwarding_method_brace_depth.saturating_sub(1);
-                        if forwarding_method_brace_depth == 0 {
-                            inside_forwarding_method = false;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        } else if (line.contains("self.app.handle_internal_event(")
-            || line.contains("self.app.handle_internal_event_with_render_impact("))
-            && !line.trim().starts_with("///")
-            && !line.contains("contains(")
-        {
-            // Internal-event call outside the forwarding method.
-            bypass_lines.push(format!("line {}: {}", line_num, line.trim()));
-        }
-    }
-
-    assert!(
-        bypass_lines.is_empty(),
-        "Found direct calls to self.app.handle_internal_event outside \
-             handle_internal_event_with_forwarding (bypass risk):\n  {}",
-        bypass_lines.join("\n  ")
     );
 }

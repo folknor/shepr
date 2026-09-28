@@ -408,8 +408,6 @@ mod tests {
             git_status_cache_key(&root),
             Some(std::fs::canonicalize(&root).expect("test precondition"))
         );
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 
     // HEAD edge cases, read through the status refresh the sidebar uses.
@@ -422,7 +420,6 @@ mod tests {
             .expect("test precondition");
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
-        std::fs::remove_dir_all(root).expect("test precondition");
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
     }
@@ -442,7 +439,6 @@ mod tests {
             .expect("test precondition");
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
-        std::fs::remove_dir_all(root).expect("test precondition");
 
         let branch_len = snapshot.branch.as_ref().map(String::len);
         assert!(
@@ -462,7 +458,6 @@ mod tests {
             .expect("test precondition");
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
-        std::fs::remove_dir_all(root).expect("test precondition");
 
         assert_eq!(snapshot.branch.as_deref(), Some("feature"));
     }
@@ -474,7 +469,6 @@ mod tests {
         std::fs::write(root.join(".git/HEAD"), "3e1b9a8d\n").expect("test precondition");
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, None);
-        std::fs::remove_dir_all(root).expect("test precondition");
 
         assert_eq!(snapshot.branch, None);
         assert!(snapshot.space.is_some(), "a detached HEAD is still a repo");
@@ -497,30 +491,28 @@ mod tests {
             .output()
             .expect("test precondition");
         if !output.status.success() {
-            std::fs::remove_dir_all(root).expect("test precondition");
             return;
         }
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
-        std::fs::remove_dir_all(root).expect("test precondition");
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
     }
 
     #[test]
     fn git_status_cache_key_ignores_invalid_git_marker() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("invalid-git-root");
         let cwd = base.join("workspace");
         std::fs::create_dir_all(base.join(".git")).expect("test precondition");
         std::fs::create_dir_all(&cwd).expect("test precondition");
 
         assert_eq!(git_status_cache_key(&cwd), None);
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 
     #[test]
     fn non_git_refresh_reuses_cached_miss_without_rechecking_filesystem() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("cached-miss");
         let cwd = root.join("deep/nested");
         std::fs::create_dir_all(&cwd).expect("test precondition");
@@ -537,6 +529,7 @@ mod tests {
 
     #[test]
     fn expired_non_git_cache_detects_repository_created_in_place() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("expired-miss");
         let (_, cache_entry) = git_status_snapshot_for_cwd(&root, None);
         let mut cache_entry = cache_entry.expect("non-Git result should be cached");
@@ -547,11 +540,11 @@ mod tests {
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
         assert!(update.is_some_and(|entry| entry.fingerprint.is_some()));
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
     fn cached_repo_identity_clears_when_head_disappears() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("missing-head");
         write_fake_tracked_repo(&root);
         let (_, cached) = git_status_snapshot_for_cwd(&root, None);
@@ -560,7 +553,6 @@ mod tests {
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, cached.as_ref());
 
         assert_eq!(snapshot.space, None);
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -580,8 +572,6 @@ mod tests {
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
         assert_eq!(snapshot.ahead_behind, None);
         assert!(update.is_some_and(|entry| entry.fingerprint.is_some()));
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -620,8 +610,6 @@ mod tests {
                 behind: 1
             })
         );
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -659,8 +647,6 @@ mod tests {
 
         assert_eq!(snapshot.branch.as_deref(), Some("feature"));
         assert_eq!(snapshot.ahead_behind, None);
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -687,8 +673,6 @@ mod tests {
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
         assert_eq!(snapshot.ahead_behind, None);
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -716,7 +700,6 @@ mod tests {
             .upstream
             .expect("test precondition");
         assert_eq!(upstream.remote, "fork");
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -741,13 +724,11 @@ mod tests {
                 .as_deref(),
             Some("2222222222222222222222222222222222222222")
         );
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
     fn linked_worktree_refresh_keeps_checkout_name_as_auto_label() {
-        let (base, _, checkout) =
+        let (_, _, checkout) =
             crate::git::test_support::create_repo_with_linked_worktree("linked-refresh-label");
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
@@ -760,8 +741,6 @@ mod tests {
                 .to_str()
                 .expect("test precondition")
         );
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 
     #[test]
@@ -795,8 +774,6 @@ mod tests {
             git_status_cache_key(&worktree_one),
             git_status_cache_key(&worktree_two)
         );
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 
     #[test]
@@ -808,7 +785,6 @@ mod tests {
             .output()
             .expect("test precondition");
         if !output.status.success() {
-            std::fs::remove_dir_all(root).expect("test precondition");
             return;
         }
         run_git(&root, &["config", "user.email", "shepr@example.invalid"]);
@@ -825,8 +801,6 @@ mod tests {
                 oid: git_rev_parse_verify(&root, "HEAD"),
             }
         );
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -865,7 +839,5 @@ mod tests {
                 behind: 0
             })
         );
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 }

@@ -1,20 +1,11 @@
 use super::*;
+use shepr_core::socket_path::{UNIX_SOCKET_PATH_MAX, fits_unix_socket_path};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct RemoteSshConfigPaths {
     pub user_config: Option<PathBuf>,
     pub system_config: Option<PathBuf>,
-}
-
-/// The longest socket path Linux accepts: `sun_path` is 108 bytes, one of
-/// them the terminating NUL.
-const UNIX_SOCKET_PATH_MAX: usize = 107;
-
-pub fn fits_unix_socket_path(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-
-    path.as_os_str().as_bytes().len() <= UNIX_SOCKET_PATH_MAX
 }
 
 pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths {
@@ -30,7 +21,7 @@ pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths 
 pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
 
-    validate_private_runtime_dir(runtime_dir)?;
+    validate_ssh_runtime_dir(runtime_dir)?;
     for _ in 0..16 {
         let dir = runtime_dir.join(format!(
             "shepr-ssh-{}-{:016x}",
@@ -58,7 +49,7 @@ pub fn remote_bridge_endpoint_path(
     readable_name: &str,
     short_name: &str,
 ) -> std::io::Result<PathBuf> {
-    validate_private_runtime_dir(runtime_dir)?;
+    validate_ssh_runtime_dir(runtime_dir)?;
     let token = unpredictable_token();
     let readable_name = with_name_token(readable_name, token);
     let short_name = with_name_token(short_name, token);
@@ -111,11 +102,26 @@ pub fn shared_ssh_control_path(
     namespace: &Path,
     target: &str,
 ) -> std::io::Result<PathBuf> {
+    validate_ssh_runtime_dir(runtime_dir)?;
+    ssh_control_path_under(runtime_dir, namespace, target)
+}
+
+/// [`shared_ssh_control_path`] without the runtime directory check: the name,
+/// and the refusal when OpenSSH's staging path would not fit a socket address.
+/// The caller vouches for `runtime_dir`, having passed it through
+/// [`validate_ssh_runtime_dir`] or, in a test that only renders the name,
+/// chosen a directory nothing binds in. Split out so the naming and length
+/// arithmetic can be exercised against a directory as short as a real
+/// `/run/user/<uid>`, which no test scratch directory is.
+pub fn ssh_control_path_under(
+    runtime_dir: &Path,
+    namespace: &Path,
+    target: &str,
+) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;
     use std::os::unix::ffi::OsStrExt;
 
-    validate_private_runtime_dir(runtime_dir)?;
     if !namespace.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -129,10 +135,9 @@ pub fn shared_ssh_control_path(
     hash.update(target.as_bytes());
     // %C additionally scopes the socket to OpenSSH's resolved destination,
     // port and jump host, rather than merely the spelling of an alias.
-    // Keep 64 bits of namespace/target hash plus OpenSSH's 160-bit %C. The
-    // separating slash, this name and OpenSSH's staging suffix take 75
-    // bytes, which leaves 32 bytes for the runtime directory itself
-    // (`/run/user/<uid>` needs at most 20).
+    // Keep 64 bits of namespace/target hash plus OpenSSH's 160-bit %C. What
+    // is left of the socket address for the runtime directory is small, but a
+    // real `/run/user/<uid>` fits with room to spare.
     let digest = hash.finalize();
     let mut hash = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -163,7 +168,9 @@ pub fn shared_ssh_control_path(
     Ok(path)
 }
 
-fn validate_private_runtime_dir(runtime_dir: &Path) -> std::io::Result<()> {
+/// Refuses a runtime directory that may not hold shared SSH sockets: a
+/// relative path, a symlink, or a directory another uid owns or can reach.
+pub fn validate_ssh_runtime_dir(runtime_dir: &Path) -> std::io::Result<()> {
     if !runtime_dir.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

@@ -198,8 +198,7 @@ pub struct PaneAgentSessionSnapshot {
     pub session_ref: shepr_agent::agent::resume::AgentSessionRef,
 }
 
-/// Saved screen history of one pane. Files written by older builds also carry
-/// a `lines` count; nothing read it, and serde skips it on load.
+/// Saved screen history of one pane.
 #[derive(Serialize, Deserialize)]
 pub struct PaneHistorySnapshot {
     pub ansi: String,

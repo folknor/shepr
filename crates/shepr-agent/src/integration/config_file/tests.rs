@@ -6,7 +6,7 @@ struct Directory(PathBuf);
 
 impl Directory {
     fn new() -> Self {
-        Self(shepr_test_support::ScratchDir::new("config-write").keep_until_exit())
+        Self(shepr_test_support::ScratchDir::new("config-write").to_path_buf())
     }
 }
 

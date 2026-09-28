@@ -1584,7 +1584,7 @@ mod tests {
         blit_frame_to(&mut output, &curr, Some(&prev));
 
         let output_str = String::from_utf8(output).expect("test precondition");
-        // Diff should NOT clear the screen.
+        // A diff against the previous frame leaves the screen uncleared.
         assert!(
             !output_str.contains("\x1b[2J"),
             "diff should not clear screen"

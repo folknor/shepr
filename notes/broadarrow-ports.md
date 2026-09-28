@@ -13,23 +13,31 @@ carries a **Decision:** line with one of four outcomes:
 - **Rejected:** decided against; do not re-propose.
 - **Tracked elsewhere:** owned by another work item, named in place.
 
+An item that has landed is marked **Done** after its decision line.
+
 At a glance:
 
-| Item | Decision |
-|---|---|
-| `_brokkr_config.py` port, A1-A10 | Adopted now |
-| B1 print macros (library-crate textlint) | Adopted now |
-| B2 `process::exit` only in `src/main.rs` | Adopted now |
-| B3 `debug_assert!` ban, `debug_assertions` switch removed | Adopted now |
-| B4 `Path::exists` seal | Adopted now |
-| B5 `catch_unwind` seal | Adopted now |
-| B6 child working-directory seal (clippy form) | Adopted now |
-| B7 clock seam | Adopted incrementally |
-| B8 per-crate `limits` modules | Adopted incrementally |
-| B9 `#[expect(.., reason)]` instead of `#[allow]` | Adopted now |
-| B11 release-profile sweep in `brokkr check` | Rejected |
-| B12 install shape | Tracked elsewhere (piece 4 of the test-isolation work) |
-| B10, B13-B17 | No decision recorded yet; see each item |
+| Item | Decision | Status |
+|---|---|---|
+| `_brokkr_config.py` port, A1-A7, A9, A10 | Adopted now | Done |
+| A8 `#[allow]` carries a comment | Dropped (superseded by B9) | - |
+| B1 print macros (library-crate textlint) | Adopted now | |
+| B2 `process::exit` only in `src/main.rs` | Adopted now | |
+| B3 `debug_assert!` ban, `debug_assertions` switch removed | Adopted now | |
+| B4 `Path::exists`, `Path::is_file`, `Path::is_dir` seal | Adopted now | |
+| B5 `catch_unwind` seal | Adopted now | |
+| B6 child working-directory seal (clippy form) | Adopted now | |
+| B7 clock seam | Adopted incrementally | |
+| B8 per-crate `limits` modules | Adopted incrementally | |
+| B9 `#[expect(.., reason)]` instead of `#[allow]` | Adopted now | |
+| B10 extra compiler lints and the rustdoc phase | Adopted, later round | |
+| B11 release-profile sweep in `brokkr check` | Rejected; release gets `overflow-checks = true` instead | |
+| B12 install shape | Tracked elsewhere (piece 4 of the test-isolation work) | |
+| B13 tree debris | Adopted, later round | |
+| B14 scripts roster | Adopted, later round | |
+| B15 workspace dependency pins | Adopted, later round | |
+| B16 tests do not read compiled content | Adopted, later round | |
+| B17 seal witness | Adopted, later round | |
 
 Two related decisions from the same round: the `research/alacritty` and
 `research/vte` citations are reworded to point at the pinned sources in the
@@ -66,6 +74,10 @@ daemon/worker protocol, `BaVenueId`, limits specific to the bridge) are out.
 ## Shared prerequisite for the script checks
 
 **Decision:** adopted now, ahead of the first script check (A7, A9).
+
+**Done.** `scripts/_brokkr_config.py` expands glob members, returns the root
+package's manifest, adds `.local` and `__pycache__` to `PRUNED_DIRS`, and drops
+`install_packages()`.
 
 Every ported script imports `scripts/_brokkr_config.py`. Port it with one change:
 `workspace_member_manifests()` raises on a glob member, and shepr's workspace is
@@ -105,6 +117,10 @@ per-file headers.
 ## A1. No shouting
 
 **Decision:** adopted now.
+
+**Done**, as drafted, including the two violations handed to the
+scratch-directory work (`crates/shepr-platform/src/tests.rs` and
+`crates/shepr-remote/src/remote/attach.rs`).
 
 **Catches** all-caps emphasis words in comments and docs. `CLAUDE.md` states
 "Shouting is illegal. No all-caps words for emphasis." Nothing enforces it today,
@@ -234,7 +250,7 @@ preset.
 
 ## A2. Code does not cite the agent instruction files
 
-**Decision:** adopted now.
+**Decision:** adopted now. **Done**, as drafted.
 
 **Catches** `AGENTS.md` / `CLAUDE.md` citations from code and config. Shepr's
 documentation rule says a code comment must carry its full context; the agent
@@ -261,6 +277,17 @@ AGENTS.md multiplicative performance paths"). State the hot-path argument inline
 code it sits on, not by rewording the comment; HYGP-040 (the log tightening) and
 HYGP-036 (the finished-migration prose) in `notes/hygiene-policy.md` carry two of
 them.
+
+**Done**, as drafted. The log-permission tightening in `logging.rs` and its
+test half are deleted; the `lines` comment in `snapshot.rs` is gone (no code
+sat under it: serde ignores unknown fields by default). Three flagged comments
+sat on current behaviour and were reworded instead: `persist/io.rs` (atomic
+publish replaces any broader-mode file, whoever made it), the OpenCode
+two-file test (OpenCode reads both files, so a hand-added registration can sit
+beside shepr's) and `terminal/state/mod.rs`. The test
+`legacy_preferences_ignore_unknown_fields` in `preferences.rs` is deleted too.
+`migration_tests.rs` is left alone: it is a terminal-core
+behaviour harness, not on-disk compatibility.
 
 **Catches** comments reasoning about older shepr builds, installs or on-disk
 shapes. `AGENTS.md`: "shepr has never been run ... nothing to stay compatible
@@ -308,6 +335,8 @@ migration gates ... old/candidate captures"), a migration harness named as one.
 **Decision:** adopted now, both rules. `raw_input.rs`'s `Issue #3911` comment is
 also HYGG-052 in `notes/hygiene-guards.md`.
 
+**Done**, both rules as drafted; the eight issue citations are removed.
+
 **Catches** work-item labels from `notes/` in code, and upstream tracker numbers.
 `AGENTS.md`: nothing durable may cite `notes/`, and a code comment must carry its
 full context because it outlives the note. A label like `HYGG-042` or `BUG-049`
@@ -348,7 +377,7 @@ test data and does not match either alternative.
 
 ## A5. No relative dot-directory paths
 
-**Decision:** adopted now.
+**Decision:** adopted now. **Done**, as drafted.
 
 **Catches** `Path::new(".foo")` / `PathBuf::from(".foo")`: resolved against the
 working directory, which under `cargo test` is the crate directory, so a test
@@ -370,7 +399,7 @@ plugin specs and path-token test inputs, not dot-directories.
 
 ## A6. Durable text does not cite `notes/`
 
-**Decision:** adopted now.
+**Decision:** adopted now. **Done**, as drafted.
 
 **Catches** a code comment, manifest comment or root convention document that
 sends a reader into `notes/`. Stated verbatim in `AGENTS.md`'s document-folder
@@ -398,6 +427,11 @@ avoids spelling the folder with a slash for the same reason, should anyone widen
 `research/alacritty` and `research/vte` citations are reworded to point at the
 pinned `alacritty_terminal` and `vte` sources in the cargo registry, the way
 `AGENTS.md` already does.
+
+**Done**, as `scripts/check_cited_paths.py`, with two widenings: sources also
+include `.ts`, `.js` and `.yaml`, and a `*` block-comment continuation line
+counts as a comment. The two dangling citations and both `research/` citations
+are fixed.
 
 **Catches** a backticked repository path in a comment or root document that no
 longer names a file. This is the checkable half of the stale-citation problem: a
@@ -523,9 +557,8 @@ HYGG-113 in `notes/hygiene-guards.md`).
 
 ## A8. `#[allow]` carries a comment saying why
 
-**Decision:** adopted, but B9 is adopted too, and B9 denies `#[allow]` outright
-with the reason written into the `#[expect]`. Once B9 lands this rule can never
-fire, so land B9 and skip A8, or land A8 only as a stopgap if B9 slips.
+**Decision:** dropped. B9 denies `#[allow]` outright with the reason written
+into the `#[expect]`, which supersedes this rule.
 
 **Catches** an `#[allow(...)]` with no comment. `AGENTS.md`: "`#[allow]` only with
 a comment saying why." This is the textlint form of the stated rule; B9 is the
@@ -552,6 +585,12 @@ function's `///` doc, pass without a reason. B9 closes that.
 
 **Decision:** adopted now. B1 and B7 both use `skip_after`, so
 `check_skip_after_scopes.py` is wired with B1 at the latest.
+
+**Done**: both scripts are wired now. Two changes from broadarrow's copies:
+both resolve `[textlint_preset]` before reading a rule (a preset can carry
+`region` or `skip_after`), and the skip-after witness's globs follow globset's
+defaults, where `*` crosses `/`, as brokkr's own matcher does. The witness
+reports "nothing to witness" until B1 adds the first `skip_after`.
 
 Both keep the textlints above honest. Pure hygiene with no code impact.
 
@@ -597,6 +636,8 @@ stage = "pre-clippy"
 **Decision:** adopted now; the inert unit test is deleted in the same commit. No
 hygiene or bug entry records the inert test, so there is nothing to close
 elsewhere.
+
+**Done**: the textlint is in and the inert unit test is deleted.
 
 Not a broadarrow rule, but the broadarrow "has one owner" shape, and it replaces
 an existing guard that is inert.
@@ -779,9 +820,9 @@ by profile). See the surprises section for the stale comment above it.
 
 **Decision:** adopted now: the clippy seal, with `try_exists` or a match on
 `NotFound` at each site. Clippy runs over test targets too, so the roughly 40
-test-file sites convert as well. The seal names `Path::exists` only;
-`is_file()` / `is_dir()` swallow stat errors the same way (HYGG-078's
-`ssh_config_include` is one) and are not covered.
+test-file sites convert as well. The seal is extended to `Path::is_file` and
+`Path::is_dir`, which swallow stat errors the same way (HYGG-078's
+`ssh_config_include` is one).
 
 **Catches** presence probes that swallow the stat error (`EACCES`, `ELOOP`) as
 "absent". Relevant to shepr's config and state paths, where a permission problem
@@ -945,7 +986,7 @@ If adopted, A8 becomes redundant.
 
 ## B10. Extra compiler lints and the rustdoc phase
 
-**Decision:** none recorded yet; the decision round did not cover this item.
+**Decision:** adopted; applied in a later round.
 
 Broadarrow denies lints shepr does not: `[workspace.lints.rust]`
 (`unreachable_pub`, `rust_2018_idioms`, `single_use_lifetimes`, `trivial_casts`,
@@ -975,6 +1016,8 @@ are `toml` and `text`).
 
 **Decision:** rejected. `brokkr check` does not build the release profile, in any
 form; the owner's choice. The draft stays below only so it is not re-proposed.
+Instead, the root `Cargo.toml` release profile sets `overflow-checks = true`, so
+integer overflow panics in the installed build as it does in the gated one.
 With `debug_assert!` and `cfg!(debug_assertions)` gone (B3), integer overflow
 (panics in dev, wraps in release) is the main behaviour left that differs
 between the gated and the installed build.
@@ -1036,7 +1079,7 @@ Violations: unknown until run.
 
 ## B13. Tree debris (script)
 
-**Decision:** none recorded yet; the decision round did not cover this item.
+**Decision:** adopted; applied in a later round.
 
 `check_tree_debris.py` refuses anything in a crate root outside
 `Cargo.toml`, `README.md`, `build.rs`, `src`, `tests`, `benches`, `examples`, an
@@ -1051,7 +1094,9 @@ it.
 
 ## B14. Scripts roster (script)
 
-**Decision:** none recorded yet; the decision round did not cover this item.
+**Decision:** adopted; applied in a later round. The roster now also has
+`_brokkr_config.py`, the three gate scripts wired by A7 and A9, and the
+`textlint_sweep.py` diagnostic to classify.
 
 `check_scripts_roster.py` requires a `scripts/README.md` table stating each
 script's standing (gate, tool, diagnostic) and that every `gate` is wired in
@@ -1063,7 +1108,7 @@ whether the one-shot migration scripts should stay.
 
 ## B15. Workspace dependency pins (script)
 
-**Decision:** none recorded yet; the decision round did not cover this item.
+**Decision:** adopted; applied in a later round.
 
 `check_workspace_dependencies.py`: every name in the root
 `[workspace.dependencies]` is taken with `workspace = true` and no restated
@@ -1073,8 +1118,8 @@ every member already inherits. A cheap tripwire if the owner wants it.
 
 ## B16. Tests do not read compiled content
 
-**Decision:** none recorded yet; the decision round did not cover this item.
-The first violation below disappears with A10 either way.
+**Decision:** adopted; applied in a later round. The first violation below
+disappears with A10's test deletion.
 
 Broadarrow's `no-test-reads-compiled-content` refuses `include_str!` in tests (read
 from disk through `CARGO_MANIFEST_DIR` instead). Shepr bundles manifests, the
@@ -1107,7 +1152,9 @@ message = "a test reads its fixture from disk through CARGO_MANIFEST_DIR; includ
 
 ## B17. Seal witness and a single clippy.toml
 
-**Decision:** none recorded yet; the decision round did not cover this item.
+**Decision:** adopted (a witness that `clippy.toml`'s ban paths still resolve);
+applied in a later round. The draft below argued against it; the owner
+decided otherwise.
 
 Broadarrow's `check_origin_seal.py` proves each `disallowed-methods` path still
 binds, by linting a fixture crate. Mostly Nautilus-specific and heavy (it runs

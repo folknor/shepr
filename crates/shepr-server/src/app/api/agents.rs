@@ -466,8 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_false_process_exit_makes_a_named_live_agent_unreachable_by_name() {
-        // Reproduces the registration loss reported on #3225 by rszrszrsz:
-        // a live agent pane with an assigned name stops resolving by that name
+        // Reproduces a registration loss: a live agent pane with an assigned name stops resolving by that name
         // while its process keeps running, and renaming is the only recovery.
         let mut app = app_with_agent();
         let pane_id = app.state.workspaces[0].tabs()[0].root_pane;

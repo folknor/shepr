@@ -1529,7 +1529,7 @@ mod tests {
             );
 
             // Legacy and Kitty disambiguate-only (no REPORT_EVENT_TYPES) must not
-            // emit a byte on release, otherwise Enter/Backspace double (issue #769).
+            // emit a byte on release, otherwise Enter/Backspace double.
             assert_eq!(encode_key(release, KeyboardProtocol::Legacy), b"");
             assert_eq!(
                 encode_key(release, KeyboardProtocol::Kitty { flags: 1 }),

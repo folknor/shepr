@@ -176,7 +176,7 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TerminalConfig {
-    /// Executable used for new interactive panes. Empty means SHELL, then /bin/sh.
+    /// Executable used for new interactive panes. Empty means `$SHELL`, then /bin/sh.
     pub default_shell: String,
     /// Start new interactive pane shells as login shells. Default: false.
     pub login_shell: bool,

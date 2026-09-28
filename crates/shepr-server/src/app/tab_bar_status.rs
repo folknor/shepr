@@ -603,13 +603,11 @@ mod tests {
     const MULTILINE_COMMAND: &str = "printf 'old\\nfinal\\n'";
     const OVER_CAP_COMMAND: &str = "head -c 5000 /dev/zero | tr '\\0' x; printf '\\nREADY\\n'";
 
-    /// A marker path a status command writes to, in a scratch directory kept
-    /// until the test process exits (a descendant may still write after the
-    /// test body ends).
+    /// A marker path a status command writes to, in a fresh scratch directory
+    /// that outlives the test body (a descendant may still write after it
+    /// ends).
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
-        crate::test_support::ScratchDir::new("tab-status")
-            .keep_until_exit()
-            .join(name)
+        crate::test_support::ScratchDir::new("tab-status").join(name)
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
 use super::*;
+use shepr_core::socket_path::fits_unix_socket_path;
 use std::{
     io::Read,
     os::fd::AsRawFd,
@@ -195,12 +196,6 @@ fn launch_executable_follows_a_replaced_binary_to_its_new_install() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn unix_socket_paths_may_use_the_whole_linux_limit() {
-    assert!(fits_unix_socket_path(Path::new(&"x".repeat(107))));
-    assert!(!fits_unix_socket_path(Path::new(&"x".repeat(108))));
-}
-
-#[test]
 fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -217,30 +212,32 @@ fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
             & 0o7777,
         0o700
     );
-    std::fs::remove_dir_all(first).expect("test precondition");
-    std::fs::remove_dir_all(second).expect("test precondition");
 }
 
 #[test]
 fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
-    // A short label: the control socket name leaves little of sun_path for
-    // the runtime directory.
-    let runtime_dir = shepr_test_support::ScratchDir::new("sc");
-    let path = shared_ssh_control_path(runtime_dir.path(), Path::new("/config/one"), "user@host")
+    // The control socket's name and OpenSSH's staging suffix leave room only
+    // for a runtime directory as short as a real one, which no scratch
+    // directory under the build tree is; the naming and length arithmetic are
+    // exercised over the real directory's spelling, and the directory checks
+    // that `shared_ssh_control_path` adds are covered below.
+    let runtime_dir = Path::new("/run/user/4294967294");
+    let path = ssh_control_path_under(runtime_dir, Path::new("/config/one"), "user@host")
         .expect("test precondition");
+    assert_eq!(path.parent(), Some(runtime_dir));
     assert_eq!(
         path,
-        shared_ssh_control_path(runtime_dir.path(), Path::new("/config/one"), "user@host")
+        ssh_control_path_under(runtime_dir, Path::new("/config/one"), "user@host")
             .expect("test precondition")
     );
     assert_ne!(
         path,
-        shared_ssh_control_path(runtime_dir.path(), Path::new("/config/two"), "user@host")
+        ssh_control_path_under(runtime_dir, Path::new("/config/two"), "user@host")
             .expect("test precondition")
     );
     assert_ne!(
         path,
-        shared_ssh_control_path(runtime_dir.path(), Path::new("/config/one"), "other@host")
+        ssh_control_path_under(runtime_dir, Path::new("/config/one"), "other@host")
             .expect("test precondition")
     );
     let expanded = path.to_string_lossy().replace("%C", &"f".repeat(40));
@@ -249,7 +246,33 @@ fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
     assert!(fits_unix_socket_path(&PathBuf::from(format!(
         "{expanded}.QuuYe7ZFE2HYeAE4"
     ))));
-    validate_shared_ssh_dir(path.parent().expect("test precondition")).expect("test precondition");
+}
+
+#[test]
+fn shared_ssh_control_path_validates_the_runtime_directory_first() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = shepr_test_support::ScratchDir::new("ssh-control-unsafe-runtime");
+    let runtime_dir = scratch.join("runtime");
+    std::fs::create_dir(&runtime_dir).expect("test precondition");
+    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755))
+        .expect("test precondition");
+    let error = shared_ssh_control_path(&runtime_dir, Path::new("/config/one"), "user@host")
+        .expect_err("a runtime directory others can reach is refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(
+        error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<UnsafeSshRuntimeDirectory>())
+            .is_some()
+    );
+    let relative = shared_ssh_control_path(
+        Path::new("relative/runtime"),
+        Path::new("/config/one"),
+        "user@host",
+    )
+    .expect_err("a relative runtime directory is refused");
+    assert_eq!(relative.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -294,7 +317,6 @@ fn shared_ssh_directory_rejects_symlinks_and_public_modes() {
             .kind(),
         std::io::ErrorKind::PermissionDenied
     );
-    std::fs::remove_dir_all(dir).expect("test precondition");
 }
 
 // ---------------------------------------------------------------------------
@@ -347,10 +369,9 @@ fn attribute(file: &std::fs::File, name: &std::ffi::CStr) -> Option<Vec<u8>> {
 fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access() {
     use std::os::unix::fs::MetadataExt;
 
-    // Keep this ACL-specific probe on the repository filesystem so it can
-    // exercise POSIX ACL xattrs independently of the system temp mount.
-    let target = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dir = shepr_test_support::ScratchDir::new_in(target, "config-acl");
+    // Scratch lives on the build tree's filesystem, so this probe exercises
+    // POSIX ACL xattrs there rather than on whatever the host temp mount is.
+    let dir = shepr_test_support::ScratchDir::new("config-acl");
     // Linux UAPI posix_acl_xattr_header/entry, version 2, little-endian fields.
     // The test runner maps only its current uid, so use that id for the named
     // entry instead of an unmapped uid that the kernel rejects with EINVAL.
@@ -543,7 +564,7 @@ fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
 // None of these clipboard tests touch the process environment: the command
 // lists take the session as an argument and fake clipboard programs are run
 // by absolute path with their output paths baked into the script. Test
-// threads run concurrently, and a PATH or DISPLAY mutated here would leak
+// threads run concurrently, and a `PATH` or `DISPLAY` mutated here would leak
 // into every other test that spawns a program.
 
 fn clipboard_deadline() -> Instant {
@@ -624,15 +645,13 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
         }
     }
 
-    // Declared before `cleanup`, so it is dropped (and the directory removed)
-    // after the fake owner has been signalled.
-    let temp_dir = fake_clipboard_dir("wl-copy");
+    let helper_dir = fake_clipboard_dir("wl-copy");
     let mut cleanup = Cleanup { owner_pid: None };
-    let marker = temp_dir.join("owner-pid");
-    let payload = temp_dir.join("payload");
-    let args = temp_dir.join("args");
+    let marker = helper_dir.join("owner-pid");
+    let payload = helper_dir.join("payload");
+    let args = helper_dir.join("args");
     let fake_wl_copy = fake_clipboard_program(
-        &temp_dir,
+        &helper_dir,
         "wl-copy",
         &format!(
             "#!/bin/sh\ncat > {payload}\nprintf '%s\\n' \"$@\" > {args}\nprintf '%s' \"$$\" > {marker}\nexec sleep 30\n",

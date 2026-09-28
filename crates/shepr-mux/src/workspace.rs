@@ -1446,7 +1446,7 @@ mod tests {
 
     #[test]
     fn linked_worktree_auto_label_uses_checkout_name_not_repo_name() {
-        let (base, repo, checkout) =
+        let (_, repo, checkout) =
             crate::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
 
         let (snapshot, _) = crate::git::git_status_snapshot_for_cwd(&checkout, None);
@@ -1468,13 +1468,11 @@ mod tests {
                 .to_str()
                 .expect("test precondition")
         );
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 
     #[test]
     fn display_name_reads_cached_identity_without_rechecking_filesystem() {
-        let root = crate::test_support::ScratchDir::new("label-cache").keep_until_exit();
+        let root = crate::test_support::ScratchDir::new("label-cache");
         let cwd = root.join("deep/nested");
         std::fs::create_dir_all(&cwd).expect("create nested cwd");
 

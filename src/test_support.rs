@@ -21,10 +21,8 @@ mod tests {
         assert!(paths.state_dir().starts_with(env.path()));
         assert!(paths.runtime_dir().starts_with(env.path()));
         env.set(PROBE, "set");
-        let scratch = env.path().to_path_buf();
         drop(env);
 
-        assert!(!scratch.exists());
         // No test sets this variable other than through a guard, so it is
         // gone once the guard has restored the snapshot.
         assert!(std::env::var_os(PROBE).is_none());

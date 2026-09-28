@@ -115,7 +115,7 @@ impl App {
         api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         event_hub: shepr_api::EventHub,
     ) -> Self {
-        let scratch = crate::test_support::ScratchDir::new("app").keep_until_exit();
+        let scratch = crate::test_support::ScratchDir::new("app");
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
             config.clone(),

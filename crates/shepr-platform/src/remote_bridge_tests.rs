@@ -32,10 +32,7 @@ struct Bridge {
 
 impl Bridge {
     fn start() -> Self {
-        // Kept until the test process exits; `Drop` removes the socket.
-        let path = shepr_test_support::ScratchDir::new("bridge")
-            .keep_until_exit()
-            .join("s.sock");
+        let path = shepr_test_support::ScratchDir::new("bridge").join("s.sock");
         let listener = UnixListener::bind(&path).expect("test precondition");
         listener.set_nonblocking(true).expect("test precondition");
         let mut command = Command::new(std::env::current_exe().expect("test precondition"));

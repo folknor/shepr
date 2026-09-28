@@ -1079,6 +1079,12 @@ note when a rejected candidate looked like a shim.
 
 ## HYGG-078 - `ssh_config_include` fails open on `is_file()`
 
+**Decision (partial):** the `Path::exists` seal (`clippy.toml`) is extended to
+`Path::is_file` and `Path::is_dir`. The `is_file()` filter therefore becomes an
+explicit metadata match: `NotFound` skips the include, and any other error is
+reported instead of silently dropping it. Open: the `debug` log of emitted and
+skipped includes.
+
 `shepr-remote/src/remote/ssh.rs`: `path.filter(|path| path.is_file())`. A
 symlink to a file passes (fine), an absent file is silently dropped (fine), and
 if OpenSSH on this host reads its system config from somewhere else entirely

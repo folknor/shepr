@@ -276,7 +276,65 @@ fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
     (!stdout.is_empty()).then(|| stdout.to_string())
 }
 
+/// The directories repository discovery does not ascend into, from
+/// `GIT_CEILING_DIRECTORIES`, read with Git's semantics: a colon-separated
+/// list in which relative entries are ignored, and entries after an empty one
+/// are taken as spelled rather than resolved through symlinks (Git's escape
+/// for slow network mounts). The starting directory is always examined, even
+/// when it is a ceiling itself; only the walk upwards stops.
+#[derive(Debug, Default)]
+struct GitCeilings {
+    /// Each entry as spelled and, where resolved, as its canonical path, so a
+    /// walk from either spelling of a directory meets it.
+    dirs: Vec<PathBuf>,
+}
+
+impl GitCeilings {
+    /// This process's ceilings. A refused value (padded or not UTF-8) is
+    /// logged and read as no ceiling, as Git ignores an entry it cannot use.
+    fn from_env() -> Self {
+        match shepr_core::env::read_text(shepr_core::env::EnvVar::GitCeilingDirectories) {
+            Ok(value) => Self::parse(value.as_deref().unwrap_or_default()),
+            Err(error) => {
+                tracing::warn!(%error, "ignoring a refused environment value");
+                Self::default()
+            }
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        let mut resolve = true;
+        let mut dirs = Vec::new();
+        for entry in value.split(':') {
+            if entry.is_empty() {
+                resolve = false;
+                continue;
+            }
+            let path = Path::new(entry);
+            if !path.is_absolute() {
+                continue;
+            }
+            if resolve && let Ok(real) = std::fs::canonicalize(path) {
+                dirs.push(real);
+            }
+            dirs.push(path.to_path_buf());
+        }
+        Self { dirs }
+    }
+
+    fn contains(&self, dir: &Path) -> bool {
+        self.dirs.iter().any(|ceiling| ceiling == dir)
+    }
+}
+
 pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
+    git_repo_root_below(start, &GitCeilings::from_env())
+}
+
+/// [`git_repo_root`] with the ceilings handed in: the walk examines `start`
+/// (or its parent, for a file) and each ancestor up to, not including, the
+/// nearest ceiling.
+fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> {
     let mut current = if start.is_dir() {
         start.to_path_buf()
     } else {
@@ -290,7 +348,7 @@ pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
         {
             return Some(current);
         }
-        if !current.pop() {
+        if !current.pop() || ceilings.contains(&current) {
             return None;
         }
     }
@@ -360,7 +418,6 @@ mod tests {
             .expect("test precondition");
 
         let oid = read_ref_oid(&root, "refs/heads/main");
-        std::fs::remove_dir_all(root).expect("test precondition");
         assert_eq!(
             oid, None,
             "an oversized loose ref must make the ref unavailable, not fall back to the stale packed OID"
@@ -387,8 +444,6 @@ mod tests {
                 "an empty or whitespace-only loose ref must not fall back to the stale packed OID"
             );
         }
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -406,7 +461,6 @@ mod tests {
         symlink("missing-target", refs_dir.join("main")).expect("test precondition");
 
         let oid = read_ref_oid(&root, "refs/heads/main");
-        std::fs::remove_dir_all(root).expect("test precondition");
         assert_eq!(
             oid, None,
             "a dangling loose ref must not fall back to the stale packed OID"
@@ -430,7 +484,6 @@ mod tests {
         symlink("target-parent/nested", refs_dir.join("main")).expect("test precondition");
 
         let oid = read_ref_oid(&root, "refs/heads/main");
-        std::fs::remove_dir_all(root).expect("test precondition");
         assert_eq!(
             oid, None,
             "a dangling loose ref whose target traverses a file must not fall back to the stale packed OID"
@@ -455,7 +508,6 @@ mod tests {
         symlink("main", &loose_ref).expect("test precondition");
         let open_error = std::fs::File::open(&loose_ref).expect_err("test precondition");
         let oid = read_ref_oid(&root, "refs/heads/main");
-        std::fs::remove_dir_all(root).expect("test precondition");
         assert_eq!(open_error.raw_os_error(), Some(libc::ELOOP));
         assert_eq!(
             oid, None,
@@ -482,7 +534,6 @@ mod tests {
         .expect("test precondition");
 
         let oid = read_ref_oid(&root, "refs/heads/main/nested");
-        std::fs::remove_dir_all(root).expect("test precondition");
         assert_eq!(
             oid.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -500,7 +551,6 @@ mod tests {
         .expect("test precondition");
 
         let oid = read_ref_oid(&root, "refs/heads/main");
-        std::fs::remove_dir_all(root).expect("test precondition");
         assert_eq!(
             oid.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -509,18 +559,138 @@ mod tests {
 
     #[test]
     fn git_repo_root_ignores_invalid_git_marker() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("invalid-git-root");
         let cwd = base.join("workspace");
         std::fs::create_dir_all(base.join(".git")).expect("test precondition");
         std::fs::create_dir_all(&cwd).expect("test precondition");
 
         assert_eq!(git_repo_root(&cwd), None);
+    }
 
-        std::fs::remove_dir_all(base).expect("test precondition");
+    /// A directory discovery recognises as a checkout root.
+    fn mark_checkout(root: &Path) {
+        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
+            .expect("test precondition");
+    }
+
+    fn ceilings(value: &str) -> GitCeilings {
+        GitCeilings::parse(value)
+    }
+
+    /// `outer` is a checkout; `outer/ceiling/work` sits below a ceiling.
+    fn checkout_with_ceiling_below(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let outer = temp_test_dir(name);
+        mark_checkout(&outer);
+        let ceiling = outer.join("ceiling");
+        let work = ceiling.join("work");
+        std::fs::create_dir_all(&work).expect("test precondition");
+        (outer, ceiling, work)
+    }
+
+    #[test]
+    fn discovery_does_not_ascend_into_or_above_a_ceiling() {
+        let (outer, ceiling, work) = checkout_with_ceiling_below("ceiling-stops-walk");
+        let spelled = ceiling.to_str().expect("test precondition");
+
+        assert_eq!(
+            git_repo_root_below(&work, &GitCeilings::default()),
+            Some(outer.clone())
+        );
+        assert_eq!(git_repo_root_below(&work, &ceilings(spelled)), None);
+        // A file's directory is where the walk starts.
+        let file = work.join("file");
+        std::fs::write(&file, "").expect("test precondition");
+        assert_eq!(git_repo_root_below(&file, &ceilings(spelled)), None);
+        // One ceiling in a list is enough, wherever it sits in it.
+        assert_eq!(
+            git_repo_root_below(&work, &ceilings(&format!("/nonexistent/a:{spelled}:/b"))),
+            None
+        );
+        // A ceiling that is not an ancestor does not stop the walk.
+        assert_eq!(
+            git_repo_root_below(&work, &ceilings("/nonexistent/elsewhere")),
+            Some(outer)
+        );
+    }
+
+    #[test]
+    fn a_checkout_below_a_ceiling_and_a_ceiling_start_are_still_found() {
+        let (_, ceiling, work) = checkout_with_ceiling_below("ceiling-below");
+        let spelled = ceiling.to_str().expect("test precondition");
+        let inner = work.join("inner");
+        mark_checkout(&work);
+        std::fs::create_dir_all(&inner).expect("test precondition");
+
+        assert_eq!(
+            git_repo_root_below(&inner, &ceilings(spelled)),
+            Some(work.clone())
+        );
+        // Git never excludes the starting directory, even a ceiling itself.
+        let work_spelled = work.to_str().expect("test precondition");
+        assert_eq!(
+            git_repo_root_below(&work, &ceilings(work_spelled)),
+            Some(work)
+        );
+    }
+
+    #[test]
+    fn relative_ceiling_entries_are_ignored() {
+        let (outer, _, work) = checkout_with_ceiling_below("ceiling-relative");
+
+        assert_eq!(
+            git_repo_root_below(&work, &ceilings("ceiling:./ceiling::")),
+            Some(outer)
+        );
+    }
+
+    /// Entries are resolved through symlinks, so a ceiling spelled through a
+    /// link stops a walk along the real path; after an empty entry they are
+    /// taken as spelled, as Git takes them.
+    #[test]
+    fn ceilings_resolve_symlinks_until_an_empty_entry() {
+        let (outer, ceiling, work) = checkout_with_ceiling_below("ceiling-symlink");
+        let link = outer.join("link");
+        std::os::unix::fs::symlink(&ceiling, &link).expect("test precondition");
+        let spelled = link.to_str().expect("test precondition");
+
+        assert_eq!(git_repo_root_below(&work, &ceilings(spelled)), None);
+        assert_eq!(
+            git_repo_root_below(&work, &ceilings(&format!(":{spelled}"))),
+            Some(outer)
+        );
+    }
+
+    #[test]
+    fn git_repo_root_reads_the_ceiling_from_the_environment() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let (outer, ceiling, work) = checkout_with_ceiling_below("ceiling-env");
+
+        env.set(
+            shepr_core::env::EnvVar::GitCeilingDirectories,
+            format!("/nonexistent/a:{}", ceiling.display()),
+        );
+        assert_eq!(git_repo_root(&work), None);
+
+        env.remove(shepr_core::env::EnvVar::GitCeilingDirectories);
+        assert_eq!(git_repo_root(&work), Some(outer));
+    }
+
+    /// The isolation guard's ceiling keeps a scratch directory that is not a
+    /// checkout from being discovered as part of the checkout the scratch
+    /// base sits in.
+    #[test]
+    fn a_scratch_directory_is_not_inside_the_enclosing_checkout() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let plain = temp_test_dir("ceiling-scratch");
+
+        assert_eq!(git_repo_root(&plain), None);
     }
 
     #[test]
     fn git_repo_root_ignores_standalone_non_bare_git_dir_layout() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("standalone-non-bare-git-dir");
         std::fs::write(root.join("HEAD"), "ref: refs/heads/main\n").expect("test precondition");
         std::fs::create_dir_all(root.join("objects")).expect("test precondition");
@@ -528,8 +698,6 @@ mod tests {
         std::fs::write(root.join("config"), "[core]\n\tbare = false\n").expect("test precondition");
 
         assert_eq!(git_repo_root(&root.join("refs")), None);
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -549,13 +717,11 @@ mod tests {
             canonicalize_best_effort_path(&bare)
         );
         assert!(!metadata.is_linked_worktree);
-
-        std::fs::remove_dir_all(bare).expect("test precondition");
     }
 
     #[test]
     fn bare_source_and_linked_checkout_share_repo_name_but_not_auto_label() {
-        let (base, bare, checkout) =
+        let (_, bare, checkout) =
             crate::git::test_support::create_bare_repo_with_linked_worktree("bare-linked-labels");
 
         let bare_space = live_git_space(&bare).expect("test precondition");
@@ -581,8 +747,6 @@ mod tests {
                 .to_str()
                 .expect("test precondition")
         );
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 
     #[test]
@@ -630,8 +794,6 @@ mod tests {
 
         assert_eq!(source.repo_name, "reported-repo");
         assert_eq!(linked.repo_name, source.repo_name);
-
-        std::fs::remove_dir_all(base).expect("test precondition");
     }
 
     #[test]
@@ -652,8 +814,6 @@ mod tests {
             canonicalize_best_effort_path(&metadata.repo_root),
             canonicalize_best_effort_path(&root)
         );
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -671,12 +831,11 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .expect("test precondition")
         );
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
     fn derive_label_uses_path_name_outside_git() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("label-plain");
         let label = root
             .file_name()
@@ -684,8 +843,6 @@ mod tests {
             .expect("test precondition");
 
         assert_eq!(derive_label_from_cwd(Path::new(&root)), label);
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -697,7 +854,6 @@ mod tests {
             .output()
             .expect("test precondition");
         if !output.status.success() {
-            std::fs::remove_dir_all(root).expect("test precondition");
             return;
         }
 
@@ -711,7 +867,5 @@ mod tests {
             git_rev_parse_verify(&root, "refs/heads/main").as_deref(),
             Some(head_oid.as_str())
         );
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 }

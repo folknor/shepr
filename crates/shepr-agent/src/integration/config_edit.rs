@@ -426,8 +426,8 @@ pub(crate) fn kimi_hook_table(
     )
 }
 
-/// Remove shepr's marked block from a Kimi `config.toml`. A BEGIN marker
-/// without a matching END marker is an error: guessing where the damaged
+/// Remove shepr's marked block from a Kimi `config.toml`. A begin marker
+/// without a matching end marker is an error: guessing where the damaged
 /// block ends could delete the user's config that follows it.
 pub(crate) fn remove_kimi_config_block(content: &str) -> io::Result<String> {
     let trailing_newline = content.ends_with('\n');

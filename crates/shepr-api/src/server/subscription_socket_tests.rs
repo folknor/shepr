@@ -32,9 +32,7 @@ impl SocketTest {
     }
 
     fn connect(&mut self) -> Client {
-        let path = shepr_test_support::ScratchDir::new("sub")
-            .keep_until_exit()
-            .join("s.sock");
+        let path = shepr_test_support::ScratchDir::new("sub").join("s.sock");
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         self.paths.push(path.clone());
         let mut stream =

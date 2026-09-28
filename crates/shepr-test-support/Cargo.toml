@@ -5,7 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-libc = { workspace = true }
 shepr-core = { path = "../shepr-core" }
 
 [lints]

@@ -100,18 +100,15 @@ pub(crate) fn write_managed_asset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_support::ScratchDir;
     use std::os::unix::fs::PermissionsExt;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        shepr_test_support::ScratchDir::new(name).keep_until_exit()
-    }
 
     #[test]
     fn managed_asset_replaces_the_inode_instead_of_rewriting_in_place() {
         use std::io::Read;
         use std::os::unix::fs::MetadataExt;
 
-        let dir = temp_dir("inode");
+        let dir = ScratchDir::new("inode");
         let path = dir.join("hook.sh");
         write_managed_asset(&path, b"old contents\n", true).expect("first write");
         let old_inode = fs::metadata(&path).expect("metadata").ino();
@@ -140,12 +137,11 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(leftovers, 0);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn managed_asset_write_failure_leaves_no_temporary_file() {
-        let dir = temp_dir("failure");
+        let dir = ScratchDir::new("failure");
         // Renaming a file over a non-empty directory fails.
         let path = dir.join("occupied");
         fs::create_dir_all(path.join("child")).expect("test precondition");
@@ -155,6 +151,5 @@ mod tests {
             .filter_map(Result::ok)
             .count();
         assert_eq!(entries, 1);
-        let _ = fs::remove_dir_all(&dir);
     }
 }

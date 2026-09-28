@@ -472,7 +472,7 @@ mod tests {
     use super::*;
 
     fn writer(protect_unloaded: bool) -> SessionWriter {
-        let directory = crate::test_support::ScratchDir::new("session-recovery").keep_until_exit();
+        let directory = crate::test_support::ScratchDir::new("session-recovery");
         SessionWriter::new(
             super::super::lock::DataDirLease::acquire(&directory).expect("lease"),
             protect_unloaded,

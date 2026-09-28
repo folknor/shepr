@@ -286,7 +286,6 @@ mod tests {
     /// exercise creating it.
     fn temp_session_path(name: &str) -> PathBuf {
         crate::test_support::ScratchDir::new(name)
-            .keep_until_exit()
             .join("data")
             .join("session.json")
     }
@@ -418,8 +417,8 @@ mod tests {
         let (session_path, history_path) = temp_session_paths("private-mode");
         std::fs::create_dir_all(session_path.parent().expect("test precondition"))
             .expect("test precondition");
-        // A file left by an older build with default permissions is replaced,
-        // not reused, so it does not keep its broader mode.
+        // Publishing renames a fresh private file over the target, so an
+        // existing file with a broader mode is replaced, not reused.
         std::fs::write(&history_path, b"old").expect("test precondition");
         std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o644))
             .expect("test precondition");

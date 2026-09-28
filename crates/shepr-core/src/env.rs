@@ -186,6 +186,10 @@ env_vocabulary! {
         AntigravityCliConfigDir => "ANTIGRAVITY_CLI_CONFIG_DIR",
         /// `GROK_HOME`: the grok CLI's config home override.
         GrokHome => "GROK_HOME",
+        /// `GIT_CEILING_DIRECTORIES`: Git's colon-separated list of absolute
+        /// directories repository discovery does not ascend into. shepr's own
+        /// discovery honours it as Git does; Git children read it themselves.
+        GitCeilingDirectories => "GIT_CEILING_DIRECTORIES",
     }
 }
 
@@ -303,7 +307,8 @@ impl EnvVar {
             | Self::SheprReattachCommand
             | Self::SheprRemoteKeybindings
             | Self::SheprLog
-            | Self::TermProgram => EnvKind::Text,
+            | Self::TermProgram
+            | Self::GitCeilingDirectories => EnvKind::Text,
             Self::SheprSession => EnvKind::Selector,
             Self::SheprConfigPath
             | Self::SshAuthSock
@@ -712,6 +717,11 @@ mod tests {
                 Path,
             ),
             (EnvVar::GrokHome, "GROK_HOME", Path),
+            (
+                EnvVar::GitCeilingDirectories,
+                "GIT_CEILING_DIRECTORIES",
+                Text,
+            ),
         ];
         assert_eq!(
             table.iter().map(|(var, _, _)| *var).collect::<Vec<_>>(),

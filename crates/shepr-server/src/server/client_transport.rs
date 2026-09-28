@@ -1220,18 +1220,8 @@ mod tests {
         }
     }
 
-    /// A socket path in a scratch directory kept until the test process
-    /// exits; `TestSocketPath` removes the socket itself. The callers' names
-    /// are long, so they stay out of the path to keep it within `sun_path`.
-    fn unique_test_path(_name: &str) -> std::path::PathBuf {
-        crate::test_support::ScratchDir::new("ct")
-            .keep_until_exit()
-            .join("s.sock")
-    }
-
     fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, TestSocketPath) {
-        let path = unique_test_path(name);
-        let _ = std::fs::remove_file(&path);
+        let path = crate::test_support::ScratchDir::new(name).join("s.sock");
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");

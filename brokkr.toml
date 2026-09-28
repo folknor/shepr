@@ -32,6 +32,195 @@ exclude = [
 ]
 message = "a new clippy seal escape; read or write through shepr_core::env, or add this file to the exclude list as the reviewed exception"
 
+# No shouting: all-caps emphasis in comments and prose. The excepts are the
+# all-caps words that are names, not emphasis: environment variables, terminal
+# control sequences, ioctls and poll flags, errno and signal names, quoted
+# all-caps literals (screen text in detection manifests) and the detection
+# gate vocabulary. The short-word list in each pattern is the words already
+# swept, not every short shout; widen it one word at a time, sweeping first.
+[textlint_preset.no-shouting]
+allow_marker = "shout-ok"
+allow_marker_above = 2
+except = [
+    '[$%]\{?[A-Z][A-Z0-9_]*',
+    '\b[A-Z][A-Z0-9_]{3,}\s*[:=]',
+    '\b(?:env!|env::var(?:_os)?|getenv|environ|EnvVar::)',
+    'https?://',
+    '^\s*(?://[/!]?|\*|#+)?\s*(?:SAFETY|PANICS|ERRORS|INVARIANT|WARNING)\b',  # shout-ok: pattern text
+    '"\[?[A-Z][A-Z0-9_]{4,}\]?"',
+    '\b(?:ASCII|UTF|POSIX|JSONL|README|LICENSE|MSRV|TOCTOU|COLORTERM)\b',
+    '\bSIG[A-Z0-9]+\b',
+    '\b(?:ESRCH|EPIPE|ECONNRESET|ECONNREFUSED|ECONNABORTED|EAGAIN|EWOULDBLOCK|ELOOP|ETXTBSY|EACCES|EADDRINUSE|EBUSY|ENOSPC|ENOENT|EINVAL|EPERM|EINTR|EBADF|ECHILD|ENOTDIR|EISDIR|EMFILE|ENFILE|ETIMEDOUT|ENOTCONN|ENOPROTOOPT|EOVERFLOW|EFBIG|EFAULT|ENOTTY)\b',
+    '\b(?:DECRQM|DECSCUSR|DECSC|DECRC|DECSED|DECCOLM|DECCKM|DECSET|DECRST|XTGETTCAP|XTMODKEYS|XTWINOPS|XTVERSION)\b',
+    '\b(?:TIOCSCTTY|TIOCSWINSZ|TIOCGWINSZ|POLLHUP|POLLERR|WEXITED|O_NONBLOCK)\b',
+    '\bAND/OR(?:/NOT)?\b',
+    '\b(?:AGENTS|CLAUDE)\.md',
+]
+
+[[textlint]]
+name = "no-shouting-rust"
+preset = "no-shouting"
+pattern = '^[^`]*(?:`[^`]*`[^`]*)*\b(?:[A-Z]{5,}|ALL|BOTH|MUST|NEVER|NOT|ONE|ONLY|SAME)\b'
+paths = ["crates/**/*.rs", "src/**/*.rs", "build.rs"]
+region = "comment"
+message = "write the emphasis into the sentence; don't shout in all caps (shout-ok to allow)"
+
+[[textlint]]
+name = "no-shouting-hash-comments"
+preset = "no-shouting"
+pattern = '#[^`]*(?:`[^`]*`[^`]*)*\b(?:[A-Z]{5,}|ALL|BOTH|MUST|NEVER|NOT|ONE|ONLY|SAME)\b'
+paths = [
+    "Cargo.toml",
+    "brokkr.toml",
+    "clippy.toml",
+    ".review.toml",
+    "crates/**/*.toml",
+    "crates/**/*.sh",
+    "crates/**/*.py",
+    "crates/**/*.yaml",
+    "scripts/**/*.py",
+]
+message = "write the emphasis into the sentence; don't shout in all caps (shout-ok to allow)"
+
+[[textlint]]
+name = "no-shouting-script-comments"
+preset = "no-shouting"
+pattern = '//[^`]*(?:`[^`]*`[^`]*)*\b(?:[A-Z]{5,}|ALL|BOTH|MUST|NEVER|NOT|ONE|ONLY|SAME)\b'
+paths = ["crates/**/*.ts", "crates/**/*.js"]
+message = "write the emphasis into the sentence; don't shout in all caps (shout-ok to allow)"
+
+[[textlint]]
+name = "no-short-shouting-markdown"
+preset = "no-shouting"
+pattern = '^[^`]*(?:`[^`]*`[^`]*)*\b(?:ALL|BOTH|MUST|NEVER|NOT|ONE|ONLY|SAME)\b'
+paths = ["**/*.md"]
+exclude = ["research/**", "notes/**", "AGENTS.md", "CLAUDE.md"]
+except = [
+    '^ {4,}\S',
+    '^\t',
+    '^\s*"?[a-z_][a-z0-9_.-]*"?\s*[:=]\s*\S',
+    '^\s*\{"',
+    '^\s*(?:\$|#\s)?\s*(?:shepr|brokkr|cargo|git|ssh|export)\b',
+    '^\s*Usage:\s',
+]
+message = "write the emphasis into the sentence; don't shout in all caps (shout-ok to allow)"
+
+[[textlint]]
+name = "no-shouting-markdown"
+preset = "no-shouting"
+pattern = '^[^`]*(?:`[^`]*`[^`]*)*\b[A-Z]{5,}(?:-[^0-9]|[^\w-]|$)'
+paths = ["**/*.md"]
+exclude = ["research/**", "AGENTS.md", "CLAUDE.md"]
+except = [
+    '^ {4,}\S',
+    '^\t',
+    '^\s*"?[a-z_][a-z0-9_.-]*"?\s*[:=]\s*\S',
+    '^\s*\{"',
+    '^\s*(?:\$|#\s)?\s*(?:shepr|brokkr|cargo|git|ssh|export)\b',
+    '^\s*Usage:\s',
+]
+message = "write the emphasis into the sentence; don't shout in all caps (shout-ok to allow)"
+
+# The agent instruction files are instructions to agents, reworded at will; a
+# code comment carries its reason in place. brokkr.toml is left out of `paths`
+# because this rule's own pattern would match.
+[[textlint]]
+name = "code-does-not-cite-agent-instructions"
+pattern = '\b(?:AGENTS|CLAUDE)\.md\b'
+paths = ["crates/**", "src/**", "build.rs", "Cargo.toml", "clippy.toml"]
+message = "code does not cite the agent instruction files; state the reason in place"
+
+# shepr has never been run, so no older build, install or on-disk shape exists.
+# Deliberately not matched: "old server" (an in-place upgrade on a remote host
+# leaves the previous server running) and "legacy format" (kitty's name for the
+# legacy key encoding).
+[[textlint]]
+name = "no-predeployment-older-peer-compatibility"
+pattern = '(?i)\b(?:older|old|previous|earlier|legacy|pre-fork)\s+(?:builds?|binar(?:y|ies)|installs?|installations?|peers?|schemas?|shepr|herdr)\b|\bduring the migration\b|\blegacy (?:preferences|fields?|files?|sessions?)\b'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+region = "comment"
+message = "shepr has never been run: no older build, install or on-disk shape exists to stay compatible with; describe the current invariant or remove the code"
+
+# A work-item label is a citation of the notes folder in disguise, and an issue
+# number names herdr's tracker, which a hard fork does not have.
+[[textlint]]
+name = "durable-text-has-no-plan-labels"
+pattern = '\b(?:BUG|HYG[GVPC]|CMD)-\d+\b|\b(?:[Rr]ound|[Pp]hase|[Ww]ave|[Mm]ilestone)\s+\d+[a-z]?\b|\b[Ss]pec\s+[A-Z0-9]\b|\bfinding-\d+\b'
+paths = ["crates/**", "src/**", "build.rs", "Cargo.toml", "clippy.toml"]
+message = "a work-item label means nothing once its note is gone; state the invariant in place"
+
+[[textlint]]
+name = "no-upstream-issue-citations"
+pattern = '(?i)\bissue\s+#\d+|\(#\d+\)|\bon #\d+\b'
+paths = ["crates/**", "src/**", "build.rs"]
+message = "an issue number names herdr's tracker, which shepr does not have; state the behaviour the issue described"
+
+# No `region`: the pattern needs the string literal's opening quote, which a
+# code region masks.
+[[textlint]]
+name = "no-relative-dot-directory-path"
+pattern = '\b(?:PathBuf::from|Path::new)\(\s*"\.[A-Za-z_]'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+message = "a relative dot-directory path resolves against the working directory, which under cargo test is the crate directory; in a test use shepr_test_support::ScratchDir, and for a path only compared or rendered spell it /nonexistent/..."
+
+# Test data and scratch state live under the project's build tree, never the
+# host's shared temp directory. `clippy.toml` bans `std::env::temp_dir` by path;
+# this catches the spelling, including a site that would expect its way past
+# the clippy ban, since no site has an escape.
+[[textlint]]
+name = "no-host-temp-dir"
+pattern = '\btemp_dir\s*\('
+paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs", "build.rs"]
+region = "code"
+message = "scratch state lives under the build tree, not the host temp directory; use shepr_test_support::ScratchDir"
+
+# Nothing durable sends its reader into the notes folder. brokkr.toml is left
+# out of `paths` for the same self-match reason as the agent-instructions rule,
+# and the message avoids spelling the folder with a slash.
+[[textlint]]
+name = "durable-text-does-not-cite-notes"
+pattern = '(?:^|[^\w/.-])notes/'
+paths = ["crates/**", "src/**", "build.rs", "Cargo.toml", "clippy.toml", "LLM.md", "docs/**", "reference/**"]
+allow_marker = "doc-conventions-ok"
+message = "a durable file may not send its reader into the notes folder, which carries no truth guarantee; carry the context here"
+
+# Every internal event the headless server handles goes through the one method
+# that also forwards clipboard writes to the foreground client.
+[[textlint]]
+name = "headless-internal-events-go-through-forwarding"
+pattern = '\.handle_internal_event(?:_with_[a-z_]+)?\s*\('
+paths = ["crates/shepr-server/src/server/**/*.rs"]
+exclude = [
+    "crates/shepr-server/src/server/headless/internal_events.rs",
+    "crates/shepr-server/src/server/headless/tests/**",
+    "**/tests.rs",
+    "**/*_tests.rs",
+]
+except = ['\bhandle_internal_event_with_forwarding\s*\(']
+region = "code"
+message = "route an internal event through HeadlessServer::handle_internal_event_with_forwarding, which forwards clipboard writes to the foreground client"
+
+[[script_check]]
+name = "cited-paths"
+command = "python3 scripts/check_cited_paths.py"
+expect = "cited paths ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
+name = "textlint-regions"
+command = "python3 scripts/check_textlint_regions.py"
+expect = "textlint regions ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
+name = "skip-after-scopes"
+command = "python3 scripts/check_skip_after_scopes.py"
+expect = "skip_after scopes ok"
+match = "last-line"
+stage = "pre-clippy"
+
 # Name every package because an empty selection checks only a root package.
 [[check]]
 name = "workspace"
@@ -86,7 +275,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-test-support-layer"
 from = "shepr-test-support"
-allow = ["libc", "shepr-core"]
+allow = ["shepr-core"]
 kinds = ["normal"]
 
 [[dependency_rule]]

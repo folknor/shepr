@@ -487,11 +487,10 @@ fn selection_path(paths: &shepr_config::AppPaths) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// A catalog path whose directory does not exist yet, in a scratch
-    /// directory kept until the test process exits.
+    /// A catalog path whose directory does not exist yet, in a fresh scratch
+    /// directory.
     fn path(name: &str) -> PathBuf {
         shepr_test_support::ScratchDir::new(name)
-            .keep_until_exit()
             .join("client")
             .join("endpoints.json")
     }

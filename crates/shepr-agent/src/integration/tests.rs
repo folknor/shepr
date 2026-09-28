@@ -1514,7 +1514,8 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
         );
     }
 
-    // Older installs may have registered the same plugin in both files.
+    // OpenCode reads both files, so the plugin can be registered in each (a
+    // hand-added entry beside shepr's); uninstall removes it from both.
     let jsonc_path = dir.join("tui.jsonc");
     fs::write(
         &jsonc_path,

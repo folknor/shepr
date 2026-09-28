@@ -225,20 +225,17 @@ mod tests {
     use interprocess::local_socket::traits::Listener as _;
     use std::io;
 
-    fn socket_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
-        // Kept until the test process exits; callers remove the socket.
-        let path = shepr_test_support::ScratchDir::new(name)
-            .keep_until_exit()
-            .join("s.sock");
+    fn socket_pair(name: &str) -> (LocalStream, LocalStream) {
+        let path = shepr_test_support::ScratchDir::new(name).join("s.sock");
         let listener =
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
-        (client, server, path)
+        (client, server)
     }
 
     fn handshake_against_shutdown(endpoint_shell: bool) -> ClientError {
-        let (mut client, mut server, path) = socket_pair(if endpoint_shell {
+        let (mut client, mut server) = socket_pair(if endpoint_shell {
             "shutdown-endpoint"
         } else {
             "shutdown-terminal"
@@ -269,7 +266,6 @@ mod tests {
         )
         .expect_err("a shutdown notice is not a welcome");
         peer.join().expect("test precondition");
-        let _ = std::fs::remove_file(path);
         error
     }
 
@@ -292,7 +288,7 @@ mod tests {
     /// bytes and then hangs up.
     fn handshake_against_opening(name: &str, server_opening: Vec<u8>) -> ClientError {
         use std::io::Write as _;
-        let (mut client, mut server, path) = socket_pair(name);
+        let (mut client, mut server) = socket_pair(name);
         let peer = std::thread::spawn(move || {
             let _ = server.write_all(&server_opening);
             // Hold the connection until the client has read the opening.
@@ -311,13 +307,12 @@ mod tests {
         )
         .expect_err("the opening is not this build");
         peer.join().expect("test precondition");
-        let _ = std::fs::remove_file(path);
         error
     }
 
     #[test]
     fn an_attempt_deadline_caps_a_silent_peer_below_the_read_timeout() {
-        let (mut client, server, path) = socket_pair("deadline-silent-peer");
+        let (mut client, server) = socket_pair("deadline-silent-peer");
         // A saved-machine handshake (endpoint shell, surface off) would otherwise wait the
         // full remote read timeout for a peer that never answers.
         let started = std::time::Instant::now();
@@ -333,7 +328,6 @@ mod tests {
         .expect_err("a silent peer never welcomes");
         let elapsed = started.elapsed();
         drop(server);
-        let _ = std::fs::remove_file(path);
         assert!(
             elapsed < REMOTE_HANDSHAKE_READ_TIMEOUT / 4,
             "deadline ignored: {elapsed:?}"

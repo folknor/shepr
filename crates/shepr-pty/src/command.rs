@@ -155,7 +155,7 @@ impl PtyCommand {
         cmd.current_dir(dir);
         cmd.env_clear();
         cmd.envs(&self.envs);
-        // The child sees the same resolved SHELL that was selected above.
+        // The child sees the same resolved `$SHELL` that was selected above.
         cmd.env(ChildEnv::Shell, shell);
         Ok(cmd)
     }

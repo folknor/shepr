@@ -608,12 +608,9 @@ mod tests {
         }
     }
 
-    /// A path that does not exist yet, in a scratch directory kept until the
-    /// test process exits.
+    /// A path that does not exist yet, in a fresh scratch directory.
     fn temp_detection_path(name: &str) -> std::path::PathBuf {
-        shepr_test_support::ScratchDir::new(name)
-            .keep_until_exit()
-            .join("path")
+        shepr_test_support::ScratchDir::new(name).join("path")
     }
 
     // ---- Agent identification ----

@@ -1241,7 +1241,7 @@ fn ghostty_enter_backspace_release_in_legacy_pane_emits_nothing() {
 
 #[test]
 fn ghostty_report_event_pane_keeps_basic_compatibility_keys_legacy() {
-    // Push kitty flags including REPORT_EVENT_TYPES (0b10) + DISAMBIGUATE (0b1).
+    // Push kitty flags including `REPORT_EVENT_TYPES` (0b10) + `DISAMBIGUATE` (0b1).
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>3u");
     let pane = GhosttyPaneTerminal::new(terminal);
@@ -3492,7 +3492,7 @@ fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
     let cell = &buffer[(0, 0)];
     assert_eq!(cell.symbol(), "h");
     // After inverse: fg should be the resolved bg, bg should be the original fg.
-    // fg must NOT be Color::Reset (which would be the same hue as bg).
+    // fg is never Color::Reset here, which would be the same hue as bg.
     assert_eq!(cell.style().fg, Some(Color::Rgb(0x11, 0x22, 0x33)));
     assert_eq!(cell.style().bg, Some(Color::Rgb(0xaa, 0xbb, 0xcc)));
 }

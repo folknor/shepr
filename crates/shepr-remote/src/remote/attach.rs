@@ -16,11 +16,18 @@ use std::time::{Duration, Instant};
 mod tests {
     use super::*;
 
+    /// Paths whose root doubles as the XDG runtime directory the managed
+    /// config directories are created in.
     fn test_app_paths() -> shepr_config::AppPaths {
-        // The root doubles as the XDG runtime directory that holds SSH
-        // control sockets, so keep its label short enough for sun_path.
-        let root = shepr_test_support::ScratchDir::new("rs").keep_until_exit();
+        let root = shepr_test_support::ScratchDir::new("remote-ssh");
         shepr_config::AppPaths::test_with_context(&root, Some(&root), None)
+    }
+
+    /// The control socket's directory. These tests render config text and
+    /// never bind the socket, so it names a directory as short as a real
+    /// `/run/user/<uid>`, which no scratch directory under the build tree is.
+    fn test_control_dir() -> SshControlDir<'static> {
+        SshControlDir::unchecked(Path::new("/nonexistent/ssh"))
     }
 
     fn upload_test_streams(
@@ -268,8 +275,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let paths = test_app_paths();
-        let managed_config =
-            write_managed_ssh_config("example", &paths).expect("write managed config");
+        let managed_config = write_managed_ssh_config("example", &paths, test_control_dir())
+            .expect("write managed config");
         let path = managed_config.options.config_path.clone();
         let control_path = managed_config
             .options
@@ -294,7 +301,7 @@ mod tests {
         assert!(!contents.contains("ControlMaster"));
         assert!(!contents.contains("ControlPersist"));
         assert!(!contents.contains("ControlPath"));
-        // ...and any user config is Included (quoted) BEFORE it so
+        // ...and any user config is Included (quoted) before it so
         // first-value-wins keeps the user's own settings.
         if let Some(home) = paths.home_dir() {
             let user_config = home.join(".ssh").join("config");
@@ -340,19 +347,27 @@ mod tests {
     #[test]
     fn shared_ssh_transport_survives_helper_config_drop() {
         let paths = test_app_paths();
-        let first = write_managed_ssh_config("example", &paths).expect("test precondition");
-        let second = write_managed_ssh_config("example", &paths).expect("test precondition");
+        let control_dir = test_control_dir();
+        let first =
+            write_managed_ssh_config("example", &paths, control_dir).expect("test precondition");
+        let second =
+            write_managed_ssh_config("example", &paths, control_dir).expect("test precondition");
         let socket = first
             .options
             .control_path
             .clone()
             .expect("test precondition");
         assert_eq!(Some(&socket), second.options.control_path.as_ref());
+        assert_eq!(socket.parent(), Some(Path::new("/nonexistent/ssh")));
         assert_ne!(socket.parent(), first.options.config_path.parent());
         let config_path = first.options.config_path.clone();
         drop(first);
         assert!(!config_path.exists());
-        assert!(socket.parent().expect("test precondition").is_dir());
+        // Dropping one helper's config removes only its own directory: the
+        // runtime directory the configs live in, and the other helper's
+        // config, stay.
+        assert!(paths.xdg_runtime_dir().is_dir());
+        assert!(second.options.config_path.is_file());
     }
 
     #[test]
@@ -387,7 +402,8 @@ mod tests {
     #[test]
     fn bridge_options_keep_temporary_config_alive_after_helper_drop() {
         let paths = test_app_paths();
-        let config = write_managed_ssh_config("example", &paths).expect("test precondition");
+        let config = write_managed_ssh_config("example", &paths, test_control_dir())
+            .expect("test precondition");
         let path = config.options.config_path.clone();
         let worker_options = config.options.clone();
         drop(config);
@@ -399,10 +415,12 @@ mod tests {
     #[test]
     fn authentication_command_uses_shared_transport_without_askpass_or_host_key_relaxation() {
         let paths = test_app_paths();
-        let config = write_managed_ssh_config("example", &paths).expect("test precondition");
-        let setup = RemoteSsh::new(
+        let control_dir = test_control_dir();
+        let config =
+            write_managed_ssh_config("example", &paths, control_dir).expect("test precondition");
+        let setup = RemoteSsh::with_control_dir(
             super::super::SshTarget::parse("example").expect("test precondition"),
-            true,
+            Some(control_dir),
             "other-session".into(),
             &paths,
         )
@@ -466,8 +484,8 @@ mod tests {
     #[test]
     fn remote_ssh_command_uses_managed_config_when_present() {
         let paths = test_app_paths();
-        let managed_config =
-            write_managed_ssh_config("example", &paths).expect("write managed config");
+        let managed_config = write_managed_ssh_config("example", &paths, test_control_dir())
+            .expect("write managed config");
         let config_path = managed_config.options.config_path.clone();
         let control_path = managed_config
             .options

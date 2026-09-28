@@ -158,7 +158,7 @@ fn deadline_after(timeout: Duration) -> io::Result<Instant> {
 /// [`WAIT_RESPONSE_GRACE`], or unbounded when sent without one. A plain
 /// `agent.prompt` is unbounded because the server answers only once the
 /// prompt is written to the agent, which a busy agent may delay for minutes
-/// (see `prompt_agent` in `src/api/wait.rs`). Everything else, including the
+/// (see `prompt_agent` in `crates/shepr-api/src/wait.rs`). Everything else, including the
 /// acknowledgement of `events.subscribe`, is ordinary.
 pub(crate) fn response_timeout(request: &Request) -> Option<Duration> {
     let wait_bound = |timeout_ms: Option<u64>| {

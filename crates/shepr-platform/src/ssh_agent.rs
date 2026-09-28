@@ -220,10 +220,9 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
-    /// A fresh directory kept until the test process exits; each test removes
-    /// it itself.
+    /// A fresh scratch directory.
     fn scratch(label: &str) -> PathBuf {
-        shepr_test_support::ScratchDir::new(label).keep_until_exit()
+        shepr_test_support::ScratchDir::new(label).to_path_buf()
     }
 
     #[test]
@@ -239,7 +238,6 @@ mod tests {
             );
             drop(registry);
         }
-        fs::remove_dir_all(directory).expect("test precondition");
     }
 
     #[test]
@@ -274,7 +272,6 @@ mod tests {
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
         drop(lease_b);
         drop(registry);
-        fs::remove_dir_all(directory).expect("test precondition");
     }
 
     #[test]
@@ -296,7 +293,6 @@ mod tests {
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
         drop(lease_b);
         drop(registry);
-        fs::remove_dir_all(directory).expect("test precondition");
     }
 
     #[test]
@@ -313,7 +309,6 @@ mod tests {
         assert_eq!(fs::read_link(&stable).expect("test precondition"), supplied);
         drop(lease);
         drop(registry);
-        fs::remove_dir_all(directory).expect("test precondition");
     }
 
     #[test]
@@ -334,7 +329,6 @@ mod tests {
         drop(registry_a);
         assert_eq!(fs::read_link(&stable_b).expect("test precondition"), b);
         drop(registry_b);
-        fs::remove_dir_all(directory).expect("test precondition");
     }
 
     #[test]
@@ -373,6 +367,5 @@ mod tests {
         assert!(registry.register(stable).is_err());
         drop(_lease_b);
         drop(registry);
-        fs::remove_dir_all(directory).expect("test precondition");
     }
 }

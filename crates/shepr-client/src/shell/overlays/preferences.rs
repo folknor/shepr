@@ -126,15 +126,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_preferences_ignore_unknown_fields() {
-        let preferences: ClientChromePreferences =
-            serde_json::from_str(r#"{"collapsed_groups":["/repo"],"sidebar_width":24}"#)
-                .expect("legacy client chrome preferences");
-
-        assert_eq!(preferences.sidebar_width, Some(24));
-    }
-
-    #[test]
     fn configured_chrome_drops_only_the_values_config_owns() {
         let remembered = || ClientChromePreferences {
             sidebar_width: Some(31),

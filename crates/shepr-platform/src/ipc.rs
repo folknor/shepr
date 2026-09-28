@@ -117,7 +117,8 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
 /// Acquire the lifetime lock associated with `socket_path`.
 ///
 /// The lock file has `.lock` appended to the socket path, so it shares the
-/// socket's parent directory without using any of `sun_path`'s 107 bytes.
+/// socket's parent directory without counting against the socket path limit
+/// (`shepr_core::socket_path`).
 pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
     let lock_path = socket_startup_lock_path(socket_path);
     let lock = acquire_flock_lock(&lock_path, false).map_err(|error| {
@@ -316,7 +317,7 @@ fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindErro
     let mut last_error = None;
     for _ in 0..STAGING_ATTEMPTS {
         // A compact random name keeps staging usable for socket paths near
-        // Linux's 107-byte sun_path limit.
+        // the socket path limit.
         let staging_name = format!(".s{:016x}", super::ssh_paths::unpredictable_token());
         let staging_dir = parent.join(staging_name);
         // A name somebody else already created is never used: the directory
@@ -550,11 +551,9 @@ mod tests {
         assert!(matches!(probe(&live_path), Liveness::Live));
     }
 
-    /// A socket path in a scratch directory kept until the test process exits.
+    /// A socket path in a fresh scratch directory.
     fn test_socket_path(name: &str) -> std::path::PathBuf {
-        shepr_test_support::ScratchDir::new(name)
-            .keep_until_exit()
-            .join("s.sock")
+        shepr_test_support::ScratchDir::new(name).join("s.sock")
     }
 
     #[test]

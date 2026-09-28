@@ -37,7 +37,7 @@ struct TestManifests {
 
 impl TestManifests {
     fn new(name: &str) -> Self {
-        let dir = shepr_test_support::ScratchDir::new(name).keep_until_exit();
+        let dir = shepr_test_support::ScratchDir::new(name).to_path_buf();
         let override_dir = manifest_override_dir(&dir);
         std::fs::create_dir_all(&override_dir).expect("create manifest override directory");
         let registry = ManifestRegistry::new(Some(&override_dir));
