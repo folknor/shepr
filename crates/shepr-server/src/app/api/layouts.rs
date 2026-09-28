@@ -195,6 +195,9 @@ impl App {
             .commit_layout_tab_creation(ws_idx, tab, terminals, false)
         else {
             drop(runtimes);
+            // `ws_idx` was resolved from current state above. This synchronous
+            // handler holds `&mut self` through commit, so no code here can
+            // remove that workspace before this defensive check.
             return failure(id, ApiErrorCode::LayoutApplyFailed, "workspace not found");
         };
         for (terminal_id, runtime) in runtimes {

@@ -22,6 +22,10 @@ pub(super) enum ClientLoopEvent {
         error: std::io::Error,
     },
     EndpointSupervisor(endpoint::EndpointSupervisorEvent),
+    WorkspaceLabelLookupFinished {
+        id: u64,
+        label: String,
+    },
     ActivateEndpoint {
         endpoint_id: endpoint::ClientEndpointId,
         target: Option<shell::ClientEndpointFocusTarget>,

@@ -119,7 +119,7 @@ impl CliCommand {
         }
     }
 
-    pub(crate) fn subcommand_name(&self) -> &'static str {
+    pub(crate) fn subcommand_name(&self) -> Option<&'static str> {
         match self {
             Self::Status(command) => command.name(),
             Self::Config(command) => command.name(),
@@ -135,16 +135,19 @@ impl CliCommand {
         }
     }
 
-    pub(crate) fn is_api_command(&self) -> bool {
+    pub(crate) fn can_run_on_machine(&self) -> bool {
         match self {
-            Self::Status(command) => command.is_api_command(),
-            Self::Config(_) | Self::Machine(_) | Self::Session(_) | Self::Integration(_) => false,
-            Self::Server(command) => command.is_api_command(),
-            Self::Workspace(command) => command.is_api_command(),
-            Self::Tab(command) => command.is_api_command(),
-            Self::Pane(command) => command.is_api_command(),
-            Self::Agent(command) => command.is_api_command(),
-            Self::Terminal(command) => command.is_api_command(),
+            Self::Status(command) => command.can_run_on_machine(),
+            Self::Config(command) => command.can_run_on_machine(),
+            Self::Machine(command) => command.can_run_on_machine(),
+            Self::Server(command) => command.can_run_on_machine(),
+            Self::Workspace(command) => command.can_run_on_machine(),
+            Self::Tab(command) => command.can_run_on_machine(),
+            Self::Pane(command) => command.can_run_on_machine(),
+            Self::Agent(command) => command.can_run_on_machine(),
+            Self::Terminal(command) => command.can_run_on_machine(),
+            Self::Session(command) => command.can_run_on_machine(),
+            Self::Integration(command) => command.can_run_on_machine(),
         }
     }
 }
@@ -163,10 +166,16 @@ impl ConfigCommand {
         }
     }
 
-    fn name(self) -> &'static str {
+    fn name(self) -> Option<&'static str> {
         match self {
-            Self::Check => "check",
-            Self::Invalid => "",
+            Self::Check => Some("check"),
+            Self::Invalid => None,
+        }
+    }
+
+    fn can_run_on_machine(self) -> bool {
+        match self {
+            Self::Check | Self::Invalid => false,
         }
     }
 }
@@ -197,15 +206,15 @@ impl TerminalCommand {
         }
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> Option<&'static str> {
         match self {
-            Self::Attach { .. } => "attach",
-            Self::TitleSet { .. } | Self::TitleClear => "title",
-            Self::Invalid => "",
+            Self::Attach { .. } => Some("attach"),
+            Self::TitleSet { .. } | Self::TitleClear => Some("title"),
+            Self::Invalid => None,
         }
     }
 
-    fn is_api_command(&self) -> bool {
+    fn can_run_on_machine(&self) -> bool {
         matches!(self, Self::TitleSet { .. } | Self::TitleClear)
     }
 }
@@ -247,12 +256,18 @@ impl SessionCommand {
         }
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> Option<&'static str> {
         match self {
-            Self::List { .. } => "list",
-            Self::Stop { .. } => "stop",
-            Self::Delete { .. } => "delete",
-            Self::Invalid => "",
+            Self::List { .. } => Some("list"),
+            Self::Stop { .. } => Some("stop"),
+            Self::Delete { .. } => Some("delete"),
+            Self::Invalid => None,
+        }
+    }
+
+    fn can_run_on_machine(&self) -> bool {
+        match self {
+            Self::List { .. } | Self::Stop { .. } | Self::Delete { .. } | Self::Invalid => false,
         }
     }
 }

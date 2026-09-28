@@ -488,7 +488,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-remote-layer"
 from = "shepr-remote"
-allow = ["interprocess", "libc", "serde", "serde_json", "sha2", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "tracing"]
+allow = ["interprocess", "serde", "serde_json", "sha2", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]

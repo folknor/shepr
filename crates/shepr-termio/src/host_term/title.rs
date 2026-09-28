@@ -35,14 +35,30 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// OSC 52 cannot be observed). `Err` means the copy did not happen; the caller
 /// logs it with its own context.
 pub fn write_clipboard_bytes(bytes: &[u8]) -> io::Result<()> {
-    if !shepr_platform::prefers_osc52_clipboard() && shepr_platform::write_clipboard(bytes) {
+    if native_clipboard_write_succeeded(bytes) {
         return Ok(());
     }
-
-    let sequence = osc52_sequence(bytes);
     let mut stdout = std::io::stdout().lock();
-    stdout.write_all(sequence.as_bytes())?;
-    stdout.flush()
+    write_osc52(bytes, &mut stdout)
+}
+
+/// Writes clipboard bytes using the same native-tool or OSC 52 policy as
+/// `write_clipboard_bytes`, sending any OSC 52 fallback to the supplied sink.
+pub fn write_clipboard_bytes_with_writer<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {
+    if native_clipboard_write_succeeded(bytes) {
+        return Ok(());
+    }
+    write_osc52(bytes, writer)
+}
+
+fn native_clipboard_write_succeeded(bytes: &[u8]) -> bool {
+    !shepr_platform::prefers_osc52_clipboard() && shepr_platform::write_clipboard(bytes)
+}
+
+fn write_osc52<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {
+    let sequence = osc52_sequence(bytes);
+    writer.write_all(sequence.as_bytes())?;
+    writer.flush()
 }
 
 #[cfg(test)]

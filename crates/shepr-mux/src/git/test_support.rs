@@ -115,12 +115,7 @@ pub(super) fn live_git_space(cwd: &Path) -> Option<crate::git::GitSpaceMetadata>
 /// spawns Git use it; every other repository fixture is plain files.
 pub(super) fn git_written_fixture(cwd: &Path, args: &[&str]) {
     // host-program-ok: the fixture feeds production code that spawns Git itself
-    let output = shepr_test_support::command_in_scratch("git", "git-written-fixture")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
-        .expect("test precondition");
+    let output = super::discovery::run_git_output(cwd, args).expect("test precondition");
     assert!(
         output.status.success(),
         "git {:?} failed: {}",

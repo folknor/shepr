@@ -599,6 +599,26 @@ enum ClientLoopAction {
     Exit,
 }
 
+fn spawn_workspace_label_lookup(
+    (id, cwd): (u64, String),
+    event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+) {
+    tokio::spawn(async move {
+        let label = tokio::task::spawn_blocking(move || {
+            crate::workspace_label::derive_label_from_cwd(std::path::Path::new(&cwd))
+        })
+        .await;
+        let Ok(label) = label else {
+            tracing::debug!("workspace label lookup stopped; keeping the path-based suggestion");
+            return;
+        };
+        event_tx
+            .send(ClientLoopEvent::WorkspaceLabelLookupFinished { id, label })
+            .await
+            .ok();
+    });
+}
+
 struct ClientLoop<'a> {
     state: ClientState,
     endpoint_catalog: endpoint::EndpointCatalog,
@@ -727,6 +747,9 @@ impl ClientLoop<'_> {
             ClientLoopEvent::EndpointSupervisor(event) => {
                 self.handle_endpoint_supervisor(event, now)
             }
+            ClientLoopEvent::WorkspaceLabelLookupFinished { id, label } => {
+                self.handle_workspace_label_lookup_finished(id, label)
+            }
             ClientLoopEvent::ActivateEndpoint {
                 endpoint_id,
                 target,
@@ -746,6 +769,26 @@ impl ClientLoop<'_> {
         }
     }
 
+    fn handle_workspace_label_lookup_finished(
+        &mut self,
+        id: u64,
+        label: String,
+    ) -> Result<ClientLoopAction, ClientError> {
+        let cols = self.state.reported_geometry.cols();
+        let rows = self.state.reported_geometry.rows();
+        let frame = self.state.mode.shell_mut().and_then(|shell| {
+            shell
+                .apply_workspace_label_lookup(id, label)
+                .then(|| shell.compose(cols, rows))
+                .flatten()
+        });
+        if let Some(frame) = frame {
+            self.state
+                .present_chrome(frame, self.pending_activation.is_some());
+        }
+        Ok(ClientLoopAction::NextEvent)
+    }
+
     fn handle_stdin_input(
         &mut self,
         inputs: Vec<ParsedHostInput>,
@@ -756,6 +799,7 @@ impl ClientLoop<'_> {
             pending_activation,
             endpoint_commands,
             scheduled_activation,
+            event_tx,
             direct_notices,
             reported_cell_size,
             will_query_host_cell_size,
@@ -783,6 +827,7 @@ impl ClientLoop<'_> {
                 return Ok(ClientLoopAction::NextEvent);
             };
             let outcome = shell.handle_host_input(inputs, host_reports_all_keys);
+            let label_lookup = shell.take_workspace_label_lookup();
             let frame = outcome
                 .repaint
                 .then(|| {
@@ -802,6 +847,9 @@ impl ClientLoop<'_> {
                 scheduled_activation,
             )? {
                 return Ok(ClientLoopAction::Exit);
+            }
+            if let Some(request) = label_lookup {
+                spawn_workspace_label_lookup(request, event_tx.clone());
             }
             return Ok(ClientLoopAction::NextEvent);
         }
@@ -1050,7 +1098,9 @@ impl ClientLoop<'_> {
                 generation,
                 status,
                 message,
+                connector,
             } => {
+                supervisors.return_connector(&endpoint_id, generation, connector);
                 if !supervisors.record_status(&endpoint_id, generation, status, now) {
                     return Ok(ClientLoopAction::NextEvent);
                 }
@@ -1082,7 +1132,9 @@ impl ClientLoop<'_> {
                 generation,
                 reader,
                 writer,
+                connector,
             } => {
+                supervisors.return_connector(&endpoint_id, generation, connector);
                 if !supervisors.record_status(
                     &endpoint_id,
                     generation,

@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct RemoteSshConfigPaths {
     pub user_config: Option<PathBuf>,
-    pub system_config: Option<PathBuf>,
+    pub system_config: PathBuf,
 }
 
 pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths {
     RemoteSshConfigPaths {
         user_config: home_dir.map(|home| home.join(".ssh").join("config")),
-        system_config: Some(PathBuf::from("/etc/ssh/ssh_config")),
+        system_config: PathBuf::from("/etc/ssh/ssh_config"),
     }
 }
 

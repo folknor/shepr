@@ -152,6 +152,7 @@ impl ClientShellState {
     }
 
     pub(super) fn open_new_workspace_overlay(&mut self) {
+        self.pending_workspace_label_lookup = None;
         let source_workspace_id = self.workspace_action_id();
         let cwd = self.snapshot.as_deref().and_then(|snapshot| {
             let workspace_id = source_workspace_id.as_deref()?;
@@ -161,12 +162,18 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == workspace_id)
                 .map(|workspace| workspace.new_workspace_cwd.clone())
         });
+        let mut label_lookup_id = None;
         let suggested_name = match cwd.as_deref() {
             Some(cwd) if self.active_endpoint_id.is_local() => {
-                // The cwd is on this host, so a local `git` can name the repository. It
-                // still runs on the client loop: moving it to the background would need
-                // a completion event to update the open overlay.
-                crate::workspace_label::derive_label_from_cwd(std::path::Path::new(cwd))
+                let id = self.next_workspace_label_lookup_id;
+                self.next_workspace_label_lookup_id = id.wrapping_add(1).max(1);
+                label_lookup_id = Some(id);
+                self.pending_workspace_label_lookup = Some((id, cwd.to_owned()));
+                shepr_core::workspace_label::workspace_label_from_cwd(
+                    std::path::Path::new(cwd),
+                    None,
+                    None,
+                )
             }
             Some(cwd) => shepr_core::workspace_label::workspace_label_from_cwd(
                 std::path::Path::new(cwd),
@@ -182,8 +189,36 @@ impl ClientShellState {
                 source_workspace_id,
                 cwd,
                 suggested_name,
+                label_lookup_id,
             },
         }));
+    }
+
+    pub(crate) fn take_workspace_label_lookup(&mut self) -> Option<(u64, String)> {
+        self.pending_workspace_label_lookup.take()
+    }
+
+    pub(crate) fn apply_workspace_label_lookup(&mut self, id: u64, label: String) -> bool {
+        let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() else {
+            return false;
+        };
+        let ClientRenameTarget::NewWorkspace {
+            suggested_name,
+            label_lookup_id,
+            ..
+        } = &mut rename.target
+        else {
+            return false;
+        };
+        if *label_lookup_id != Some(id) {
+            return false;
+        }
+        *label_lookup_id = None;
+        if rename.input.as_str() == suggested_name.as_str() {
+            rename.input = TextEditor::new(&label, true);
+        }
+        *suggested_name = label;
+        true
     }
 
     pub(super) fn open_rename_workspace_overlay(&mut self) {
@@ -673,6 +708,7 @@ impl ClientShellState {
                 source_workspace_id,
                 cwd,
                 suggested_name,
+                ..
             } => Some(shepr_api::schema::Method::WorkspaceCreate(
                 shepr_api::schema::WorkspaceCreateParams {
                     source_workspace_id,

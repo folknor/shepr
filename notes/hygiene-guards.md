@@ -470,18 +470,6 @@ Enforcement named: a brokkr rule that a `#[path]`-included module file matching
 `*_tests.rs` is allowed and anything else must be non-test, or simply that
 `mod X` where `X.rs` contains only `mod tests` is an error.
 
-## HYGG-042 - `libc` is a normal dependency of `shepr-remote` used only by tests
-
-`crates/shepr-remote/Cargo.toml` lists `libc` under `[dependencies]`; the only
-uses are `fcntl` in `attach.rs` and `geteuid` in `local_server.rs`, both inside
-`#[cfg(test)]` modules. `brokkr.toml`'s `shepr-remote-layer` rule allows `libc`
-for `kinds = ["normal"]`, so the allowlist currently blesses a dependency
-production code does not use. Fix named: move it to `[dev-dependencies]` and
-drop `libc` from the allowlist, at which point the dependency rule that already
-exists enforces it - a one-line tightening of a check somebody already paid for.
-The hunter flags this as one of the two findings it would most want confirmed by
-actually building.
-
 ## HYGG-045 - `advertised_client_shell_methods_all_exist` cannot fail for most breakages
 
 `shepr-server/src/server/client_commands.rs`:
@@ -582,7 +570,7 @@ report: if every environment variable name lives in one `shepr-core::env`
 module, `IsolatedEnv` can iterate that module's full list instead of restating a
 subset, and a `brokkr.toml` text rule forbidding env-name literals elsewhere
 keeps the list complete by construction. Related: HYGG-011 (the same shape
-inside `shepr-agent`'s own test helper) and BUG-021.
+inside `shepr-agent`'s own test helper).
 
 ## HYGG-057 - `is_posix_acl_xattr` is keyed on the `system.posix_acl_` prefix
 
@@ -842,7 +830,7 @@ parser proves the producer - the only current check is byte-for-byte golden
 strings in `attach.rs`, which pin the producer to itself and say nothing about
 the parser.
 
-## HYGG-081 - Four `shepr-remote` comment claims nothing checks, one of them false today
+## HYGG-081 - Two `shepr-remote` comment claims nothing checks
 
 - `RemoteSsh` doc: "no noninteractive command runs past it [the attempt
   deadline]" - `sh_output` and `framed_user_shell_output` honour it;
@@ -852,17 +840,6 @@ the parser.
   SSH stdio process. The streams are served serially" - true by construction (a
   single accept loop) but nothing asserts it; a future `thread::spawn` per stream
   would break the claim silently.
-- `saved.rs::connect`: "Attempts for one endpoint never overlap (the supervisor
-  keeps one in flight...) so holding the lock for the whole attempt contends with
-  nothing" - a claim about a *different crate's* scheduling, asserted in a
-  comment the supervisor does not reference back. If the supervisor ever runs two
-  attempts, this becomes a lock held across a 25-second blocking SSH operation.
-  Checkable only by a test in `shepr-client`. The hunter adds: if it is truly
-  serialised the mutex is unnecessary; if it is not, this is a 25-second stall -
-  either way one of the two is wrong, and `&mut self` would make concurrent
-  attempts a compile error. Tracked as BUG-037.
-- `ipc.rs`: "Acquire this before `prepare_socket_path`" - **false at one of three
-  call sites**, see BUG-035.
 
 ## HYGG-085 - `shepr-platform`'s `lib.rs` says domain rules live in modules that do not exist there
 

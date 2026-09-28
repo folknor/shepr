@@ -27,6 +27,12 @@ pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 /// source's sequence.
 pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
 
+/// Maximum source strings retained for hook report ordering on one pane.
+const MAX_HOOK_REPORT_SOURCES: usize = 64;
+
+/// Bound stale-session history per official source; older identities are dropped first.
+const MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE: usize = 64;
+
 /// Whether a report carrying `seq` is older than the source's last accepted
 /// `last_seq` (accepted at `last_accepted_at`). The one ordering rule for
 /// every per-source report sequence (hook state and session reports, pane
@@ -208,7 +214,11 @@ pub struct TerminalState {
     /// When each source's entry in `hook_report_sequences` was last
     /// accepted; see [`HOOK_SEQUENCE_REANCHOR_AFTER`].
     hook_report_accepted_at: HashMap<String, Instant>,
+    /// Only canonical official source/label pairs with full-lifecycle
+    /// authority can enter this map.
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
+    /// The source keys have the same restriction; each session history is
+    /// capped below.
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
     metadata_report_sequences: HashMap<String, MetadataReportSeq>,
     metadata_report_agents: HashMap<String, Agent>,

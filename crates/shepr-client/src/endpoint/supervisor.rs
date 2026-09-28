@@ -65,16 +65,54 @@ pub(crate) enum EndpointSupervisorEvent {
         generation: u64,
         status: ClientEndpointStatus,
         message: shepr_remote::SshFailureDiagnostic,
+        connector: Option<OwnedConnector>,
     },
     Connected {
         endpoint_id: ClientEndpointId,
         generation: u64,
         reader: shepr_platform::ipc::LocalStream,
         writer: NativeEndpointTransport,
+        connector: Option<OwnedConnector>,
     },
 }
 
-#[derive(Clone)]
+impl EndpointSupervisorEvent {
+    fn with_connector(self, connector: Option<OwnedConnector>) -> Self {
+        match self {
+            Self::Status {
+                endpoint_id,
+                generation,
+                status,
+                message,
+                ..
+            } => Self::Status {
+                endpoint_id,
+                generation,
+                status,
+                message,
+                connector,
+            },
+            Self::Connected {
+                endpoint_id,
+                generation,
+                reader,
+                writer,
+                ..
+            } => Self::Connected {
+                endpoint_id,
+                generation,
+                reader,
+                writer,
+                connector,
+            },
+        }
+    }
+}
+
+/// A saved machine's connector, boxed so the events and targets that carry
+/// it between the loop and an attempt stay small.
+type OwnedConnector = Box<shepr_remote::SavedSshConnector>;
+
 enum ConnectTarget {
     /// The Local server's client socket, and the guidance a build mismatch on
     /// it names: the session-aware stop and attach commands, and running this
@@ -87,9 +125,30 @@ enum ConnectTarget {
     },
     /// One connector per saved machine with the same target and session: it carries the
     /// launch-time ssh settings, the temporary ssh config and the remembered remote
-    /// executable from one attempt to the next. A catalog change that retires the machine
-    /// drops it; adding it again builds a new one.
-    Ssh(Arc<shepr_remote::SavedSshConnector>),
+    /// executable from one attempt to the next. An attempt takes ownership and returns it
+    /// in its event. A catalog change that retires the machine drops it when that event
+    /// arrives; adding it again builds a new one.
+    Ssh {
+        connector: Option<OwnedConnector>,
+        profile: super::SavedSshEndpoint,
+    },
+}
+
+enum AttemptTarget {
+    Local {
+        path: PathBuf,
+        mismatch_guidance: Arc<str>,
+    },
+    Ssh(OwnedConnector),
+}
+
+impl AttemptTarget {
+    fn into_saved_connector(self) -> Option<OwnedConnector> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Ssh(connector) => Some(connector),
+        }
+    }
 }
 
 struct ReconnectState {
@@ -147,7 +206,7 @@ impl EndpointSupervisors {
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         for profile in profiles {
-            let connector = Arc::new(shepr_remote::SavedSshConnector::new(
+            let connector = Box::new(shepr_remote::SavedSshConnector::new(
                 paths,
                 &profile.id,
                 &profile.target,
@@ -166,7 +225,7 @@ impl EndpointSupervisors {
     /// the same profile id. The first attempt is due immediately, unless a retired attempt
     /// for the same id is still running; then it is due as soon as that one reports.
     pub(crate) fn start_ssh(&mut self, profile: &super::SavedSshEndpoint, now: Instant) {
-        let connector = Arc::new(shepr_remote::SavedSshConnector::new(
+        let connector = Box::new(shepr_remote::SavedSshConnector::new(
             &self.paths,
             &profile.id,
             &profile.target,
@@ -179,12 +238,18 @@ impl EndpointSupervisors {
     fn start_ssh_with_connector(
         &mut self,
         profile: &super::SavedSshEndpoint,
-        connector: Arc<shepr_remote::SavedSshConnector>,
+        connector: OwnedConnector,
         now: Instant,
     ) {
         let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
         self.retire(&endpoint_id);
-        let mut state = ReconnectState::new(ConnectTarget::Ssh(connector), now);
+        let mut state = ReconnectState::new(
+            ConnectTarget::Ssh {
+                connector: Some(connector),
+                profile: profile.clone(),
+            },
+            now,
+        );
         if self.retired_attempts.contains_key(&endpoint_id) {
             state.next_attempt = None;
         }
@@ -235,6 +300,21 @@ impl EndpointSupervisors {
             if state.in_flight || state.next_attempt.is_none_or(|deadline| deadline > now) {
                 continue;
             }
+            let target = match &mut state.target {
+                ConnectTarget::Local {
+                    path,
+                    mismatch_guidance,
+                } => AttemptTarget::Local {
+                    path: path.clone(),
+                    mismatch_guidance: Arc::clone(mismatch_guidance),
+                },
+                ConnectTarget::Ssh { connector, .. } => {
+                    let Some(connector) = connector.take() else {
+                        continue;
+                    };
+                    AttemptTarget::Ssh(connector)
+                }
+            };
             state.in_flight = true;
             state.attempt_started = Some(now);
             state.next_attempt = None;
@@ -242,7 +322,6 @@ impl EndpointSupervisors {
             state.generation = Some(generation.into());
             self.next_generation = self.next_generation.next();
             let endpoint_id = endpoint_id.clone();
-            let target = state.target.clone();
             let event_tx = event_tx.clone();
             let shutdown = Arc::clone(&self.shutdown);
             let deadline = now + ATTEMPT_BUDGET;
@@ -251,13 +330,20 @@ impl EndpointSupervisors {
                     return;
                 }
                 let task_endpoint_id = endpoint_id.clone();
+                // The attempt owns the saved connector and hands it back with
+                // its event. A panic loses it with the task; the join error
+                // below then reports no connector, and `return_connector`
+                // rebuilds one from the profile so the endpoint still retries.
                 let result = tokio::task::spawn_blocking(move || {
-                    connect_once(&target, options, endpoint_id, generation, deadline)
+                    let mut target = target;
+                    let result =
+                        connect_once(&mut target, options, endpoint_id, generation, deadline);
+                    (target.into_saved_connector(), result)
                 })
                 .await;
                 let event = match result {
-                    Ok(Ok(event)) => event,
-                    Ok(Err(error)) => {
+                    Ok((connector, Ok(event))) => event.with_connector(connector),
+                    Ok((connector, Err(error))) => {
                         let failure = shepr_remote::SshFailureDiagnostic::from_error(&error);
                         EndpointSupervisorEvent::Status {
                             endpoint_id: task_endpoint_id,
@@ -268,6 +354,7 @@ impl EndpointSupervisors {
                                 ClientEndpointStatus::Reconnecting
                             },
                             message: failure,
+                            connector,
                         }
                     }
                     Err(error) => EndpointSupervisorEvent::Status {
@@ -277,6 +364,7 @@ impl EndpointSupervisors {
                         message: shepr_remote::SshFailureDiagnostic::from_message(format!(
                             "endpoint connection task stopped unexpectedly: {error}"
                         )),
+                        connector: None,
                     },
                 };
                 if !shutdown.load(Ordering::Acquire) {
@@ -287,6 +375,47 @@ impl EndpointSupervisors {
                 }
             });
         }
+    }
+
+    /// Hands a finished attempt's connector back to its endpoint. An attempt
+    /// that lost it (its blocking task died outside the panic guard) gets a
+    /// fresh one built from the profile, so the endpoint never stalls without
+    /// a connector. An attempt of a retired or replaced endpoint drops it.
+    pub(crate) fn return_connector(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        connector: Option<OwnedConnector>,
+    ) {
+        let Some(state) = self.endpoints.get_mut(endpoint_id) else {
+            return;
+        };
+        if state.generation != Some(generation.into()) {
+            return;
+        }
+        let ConnectTarget::Ssh {
+            connector: owned,
+            profile,
+        } = &mut state.target
+        else {
+            return;
+        };
+        if owned.is_some() {
+            return;
+        }
+        *owned = Some(connector.unwrap_or_else(|| {
+            tracing::warn!(
+                endpoint = %endpoint_id.storage_key(),
+                "a connection attempt lost its SSH connector; rebuilding it"
+            );
+            Box::new(shepr_remote::SavedSshConnector::new(
+                &self.paths,
+                &profile.id,
+                &profile.target,
+                &profile.session,
+                self.ssh_settings,
+            ))
+        }));
     }
 
     pub(crate) fn record_status(
@@ -377,14 +506,14 @@ impl Drop for EndpointSupervisors {
 }
 
 fn connect_once(
-    target: &ConnectTarget,
+    target: &mut AttemptTarget,
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
     generation: u64,
     deadline: Instant,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
     match target {
-        ConnectTarget::Local {
+        AttemptTarget::Local {
             path,
             mismatch_guidance,
         } => {
@@ -401,14 +530,16 @@ fn connect_once(
             })?;
             establish(
                 stream,
-                EndpointLink::Local { mismatch_guidance },
+                EndpointLink::Local {
+                    mismatch_guidance: mismatch_guidance.as_ref(),
+                },
                 options,
                 endpoint_id,
                 generation,
                 deadline,
             )
         }
-        ConnectTarget::Ssh(connector) => connector.connect(deadline, |connected| {
+        AttemptTarget::Ssh(connector) => connector.connect(deadline, |connected| {
             establish(
                 connected.stream,
                 EndpointLink::Ssh(connected.bridge),
@@ -478,6 +609,7 @@ fn establish(
         generation,
         reader,
         writer,
+        connector: None,
     })
 }
 
@@ -590,20 +722,49 @@ mod tests {
     }
 
     #[test]
-    fn every_attempt_for_an_endpoint_reuses_one_connector() {
+    fn saved_connector_moves_out_and_back_under_exclusive_ownership() {
         let now = Instant::now();
         let profile = profile();
         let id = ClientEndpointId::Ssh(profile.id.clone());
-        let supervisors = supervisors_for(&[profile], now);
-        let ConnectTarget::Ssh(connector) = &supervisors.endpoints[&id].target else {
+        let mut supervisors = supervisors_for(&[profile], now);
+        let state = supervisors
+            .endpoints
+            .get_mut(&id)
+            .expect("test precondition");
+        state.generation = Some(shepr_protocol::ConnectionGeneration::new(2));
+        let ConnectTarget::Ssh { connector, .. } = &mut state.target else {
             panic!("saved machine must have an SSH target");
         };
-        // `spawn_due` clones the target per attempt; the connector (and so the settings,
-        // the ssh config and the remembered executable) is shared, never rebuilt.
-        let ConnectTarget::Ssh(attempt) = supervisors.endpoints[&id].target.clone() else {
-            panic!("saved machine must have an SSH target");
-        };
-        assert!(Arc::ptr_eq(connector, &attempt));
+        let connector = connector.take().expect("test connector is present");
+        assert!(matches!(
+            &supervisors.endpoints[&id].target,
+            ConnectTarget::Ssh {
+                connector: None,
+                ..
+            }
+        ));
+
+        // A stale generation's connector is dropped, not installed.
+        supervisors.return_connector(&id, 3, Some(connector));
+        assert!(matches!(
+            &supervisors.endpoints[&id].target,
+            ConnectTarget::Ssh {
+                connector: None,
+                ..
+            }
+        ));
+
+        // An attempt whose task died returns nothing; the endpoint gets a
+        // rebuilt connector rather than stalling without one.
+        supervisors.return_connector(&id, 2, None);
+
+        assert!(matches!(
+            &supervisors.endpoints[&id].target,
+            ConnectTarget::Ssh {
+                connector: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]

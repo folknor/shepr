@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 pub(super) const BRIDGE_ACCEPT_POLL: Duration = Duration::from_millis(50);
 pub(super) const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
-pub(super) const BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600;
 pub(super) const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
 const BRIDGE_FAILURE_REPORT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -64,25 +63,18 @@ impl SshStdioBridge {
         ssh_options: Option<&ManagedSshOptions>,
         noninteractive: bool,
     ) -> io::Result<Self> {
-        let socket_startup_lock = shepr_platform::ipc::acquire_socket_startup_lock(&local_socket)?;
-        shepr_platform::ipc::prepare_socket_path(&local_socket, |path| {
-            format!("remote bridge is already listening at {}", path.display())
-        })?;
-        let listener = shepr_platform::ipc::bind_private_local_listener(&local_socket)?;
-        let socket_identity = shepr_platform::ipc::socket_file_identity(&local_socket)?;
+        let (listener, socket_startup_lock, socket_identity) =
+            shepr_platform::ipc::bind_private_socket(&local_socket, |path| {
+                format!("remote bridge is already listening at {}", path.display())
+            })?;
         let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
             path: local_socket.clone(),
             identity: socket_identity.clone(),
         });
-        if let Err(err) = shepr_platform::ipc::restrict_socket_permissions(
-            &local_socket,
-            BRIDGE_SOCKET_PERMISSION_MODE,
-        ) {
-            remove_bridge_socket(&local_socket, &socket_identity);
-            return Err(err);
-        }
         if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
             remove_bridge_socket(&local_socket, &socket_identity);
+            drop(listener);
+            drop(socket_startup_lock);
             return Err(err);
         }
 

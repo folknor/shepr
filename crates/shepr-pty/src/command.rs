@@ -8,17 +8,18 @@
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::io;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use shepr_core::env::{ChildEnv, EnvVar};
+use shepr_core::shell::ExecutableStatus as CandidateStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Program {
-    /// An interactive pane shell. The configured name, environment fallback,
-    /// executable and child `SHELL` are resolved together at spawn time.
-    Shell { login: bool },
+    /// An interactive pane shell. A nonempty selection is strict; an empty
+    /// selection uses inherited `SHELL` with `/bin/sh` fallback.
+    Shell { login: bool, configured: bool },
     /// Explicit argv; `argv[0]` is resolved against the command's `PATH`.
     Argv(Vec<OsString>),
 }
@@ -26,6 +27,7 @@ enum Program {
 #[derive(Clone, Copy)]
 enum ShellResolutionPolicy {
     PaneProgram,
+    PaneProgramFallback,
     ChildEnvironment,
 }
 
@@ -44,9 +46,11 @@ impl PtyCommand {
 
     /// Run the configured shell, or the environment/default shell, in pane mode.
     pub fn interactive_shell(default_shell: &str, login: bool) -> Self {
-        let mut command = Self::with_program(Program::Shell { login });
-        if !default_shell.trim().is_empty() {
-            command.env(ChildEnv::Shell, default_shell.trim());
+        let default_shell = default_shell.trim();
+        let configured = !default_shell.is_empty();
+        let mut command = Self::with_program(Program::Shell { login, configured });
+        if configured {
+            command.env(ChildEnv::Shell, default_shell);
         }
         command
     }
@@ -126,8 +130,13 @@ impl PtyCommand {
             }
         };
         let (mut cmd, shell) = match &self.program {
-            Program::Shell { login } => {
-                let shell = self.resolve_shell(&dir, ShellResolutionPolicy::PaneProgram)?;
+            Program::Shell { login, configured } => {
+                let policy = if *configured {
+                    ShellResolutionPolicy::PaneProgram
+                } else {
+                    ShellResolutionPolicy::PaneProgramFallback
+                };
+                let shell = self.resolve_shell(&dir, policy)?;
                 let mut cmd = command_in(&shell, &dir);
                 if *login {
                     let basename = Path::new(&shell).file_name().unwrap_or(shell.as_os_str());
@@ -159,18 +168,39 @@ impl PtyCommand {
         Ok(cmd)
     }
 
-    /// Resolve `$SHELL` once for this launch. Pane shells use `/bin/sh` when
-    /// the environment value is empty and reject an invalid selected shell;
-    /// other child commands fall back to passwd, then `/bin/sh`.
+    /// Resolve `$SHELL` once for this launch. An unconfigured pane shell falls
+    /// back to `/bin/sh` when inherited `SHELL` is empty or unusable; configured
+    /// pane paths are rejected when unusable. Other child commands fall back
+    /// to passwd, then `/bin/sh`.
     fn resolve_shell(&self, cwd: &OsStr, policy: ShellResolutionPolicy) -> io::Result<OsString> {
         let inherited = self.get_env(ChildEnv::Shell).and_then(trimmed_shell);
         let candidate = inherited.clone().unwrap_or_else(|| match policy {
-            ShellResolutionPolicy::PaneProgram => OsString::from("/bin/sh"),
+            ShellResolutionPolicy::PaneProgram | ShellResolutionPolicy::PaneProgramFallback => {
+                OsString::from("/bin/sh")
+            }
             ShellResolutionPolicy::ChildEnvironment => passwd_shell(),
         });
         match self.search_path(&candidate, cwd) {
             Ok(resolved) => Ok(resolved),
-            Err(err) if matches!(policy, ShellResolutionPolicy::PaneProgram) => Err(err),
+            Err(err)
+                if matches!(policy, ShellResolutionPolicy::PaneProgramFallback)
+                    && inherited.is_some() =>
+            {
+                tracing::warn!(
+                    shell = %candidate.to_string_lossy(),
+                    err = %err,
+                    "SHELL is not executable; falling back to /bin/sh"
+                );
+                self.search_path(OsStr::new("/bin/sh"), cwd)
+            }
+            Err(err)
+                if matches!(
+                    policy,
+                    ShellResolutionPolicy::PaneProgram | ShellResolutionPolicy::PaneProgramFallback
+                ) =>
+            {
+                Err(err)
+            }
             Err(_) if inherited.is_none() => Ok(OsString::from("/bin/sh")),
             Err(err) => {
                 if let Some(shell) = inherited {
@@ -201,48 +231,13 @@ impl PtyCommand {
     }
 
     fn search_path(&self, exe: &OsStr, cwd: &OsStr) -> io::Result<OsString> {
-        let exe_path = Path::new(exe);
-        if exe_path.is_relative() {
-            let cwd = Path::new(cwd);
-
-            // An executable explicitly relative to cwd is only looked up there.
-            if is_cwd_relative_path(exe_path) {
-                let abs_path = cwd.join(exe_path);
-                match classify_candidate(&abs_path) {
-                    CandidateStatus::Executable => return Ok(abs_path.into_os_string()),
-                    status => return Err(candidate_error(&abs_path, status)),
-                }
-            }
-
-            let mut errors = Vec::new();
-            if let Some(path) = self.get_env(ChildEnv::Path) {
-                for dir in std::env::split_paths(path) {
-                    let candidate = cwd.join(dir).join(exe_path);
-                    let status = classify_candidate(&candidate);
-                    match status {
-                        CandidateStatus::Executable => return Ok(candidate.into_os_string()),
-                        CandidateStatus::Directory
-                        | CandidateStatus::NotExecutable
-                        | CandidateStatus::Uninspectable(_) => {
-                            errors.push(candidate_problem(&candidate, status));
-                        }
-                        CandidateStatus::Missing => {}
-                    }
-                }
-                errors.push(format!("no viable candidates found in PATH {path:?}"));
-            } else {
-                errors.push("PATH is not set".to_string());
-            }
-            return Err(spawn_error(
-                io::ErrorKind::NotFound,
-                format!("{}: {}", exe_path.display(), errors.join("; ")),
-            ));
-        }
-
-        match classify_candidate(exe_path) {
-            CandidateStatus::Executable => Ok(exe.to_owned()),
-            status => Err(candidate_error(exe_path, status)),
-        }
+        let path = if is_cwd_relative_path(Path::new(exe)) {
+            None
+        } else {
+            self.get_env(ChildEnv::Path)
+        };
+        shepr_core::shell::resolve_executable(exe, path, Path::new(cwd), classify_candidate)
+            .map(PathBuf::into_os_string)
     }
 }
 
@@ -289,17 +284,6 @@ fn usable_directory(path: &Path, what: &str) -> bool {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CandidateStatus {
-    Executable,
-    Directory,
-    NotExecutable,
-    Missing,
-    /// The candidate could not be inspected for a reason other than absence
-    /// (a `PATH` directory that cannot be searched, a symlink loop, ...).
-    Uninspectable(io::ErrorKind),
-}
-
 fn classify_candidate(path: &Path) -> CandidateStatus {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => CandidateStatus::Directory,
@@ -317,68 +301,10 @@ fn classify_candidate(path: &Path) -> CandidateStatus {
     }
 }
 
-fn candidate_problem(path: &Path, status: CandidateStatus) -> String {
-    match status {
-        CandidateStatus::Directory => format!("{} exists but is a directory", path.display()),
-        CandidateStatus::NotExecutable => {
-            format!("{} exists but is not executable", path.display())
-        }
-        CandidateStatus::Uninspectable(kind) => {
-            format!("{} cannot be inspected: {kind}", path.display())
-        }
-        CandidateStatus::Executable | CandidateStatus::Missing => String::new(),
-    }
-}
-
-fn candidate_error(path: &Path, status: CandidateStatus) -> io::Error {
-    let (kind, detail) = match status {
-        CandidateStatus::Directory => (
-            io::ErrorKind::InvalidInput,
-            format!("{} is a directory", path.display()),
-        ),
-        CandidateStatus::NotExecutable => (
-            io::ErrorKind::PermissionDenied,
-            format!("{} is not executable", path.display()),
-        ),
-        CandidateStatus::Missing => (
-            io::ErrorKind::NotFound,
-            format!("{} does not exist", path.display()),
-        ),
-        CandidateStatus::Uninspectable(kind) => (
-            kind,
-            format!("{} cannot be inspected: {kind}", path.display()),
-        ),
-        CandidateStatus::Executable => (
-            io::ErrorKind::InvalidInput,
-            format!("{} unexpectedly classified as executable", path.display()),
-        ),
-    };
-    spawn_error(kind, detail)
-}
-
-fn spawn_error(kind: io::ErrorKind, mut detail: String) -> io::Error {
-    detail.insert_str(0, "unable to spawn ");
-    io::Error::new(kind, detail)
-}
-
 /// Trim whitespace from `$SHELL` without discarding valid non-UTF-8 path
 /// bytes. Non-UTF-8 values only recognize ASCII whitespace at the edges.
 fn trimmed_shell(shell: &OsStr) -> Option<OsString> {
-    if let Some(shell) = shell.to_str() {
-        let shell = shell.trim();
-        return (!shell.is_empty()).then(|| OsString::from(shell));
-    }
-
-    let bytes = shell.as_bytes();
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(start, |index| index + 1);
-    (start < end).then(|| OsString::from_vec(bytes[start..end].to_vec()))
+    shepr_core::shell::trim_shell_value(shell)
 }
 
 /// The server's environment. Shell selection and validation happen at spawn,

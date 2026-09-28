@@ -248,21 +248,31 @@ impl PublicationSnapshot {
             .path
             .with_extension(format!("{}.new", std::process::id()));
         symlink(target, &temporary)?;
-        if let Err(error) = fs::rename(&temporary, &self.path) {
-            // The rename error is what the caller acts on; a temporary link
-            // left behind next to the agent address still needs reporting.
-            if let Err(remove_error) = fs::remove_file(&temporary) {
-                tracing::warn!(
-                    path = %temporary.display(),
-                    err = %remove_error,
-                    "failed to remove temporary SSH agent link"
-                );
+        let metadata = match fs::symlink_metadata(&temporary) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                remove_temporary_link(&temporary);
+                return Err(error);
             }
+        };
+        let identity = (metadata.dev(), metadata.ino());
+        if let Err(error) = fs::rename(&temporary, &self.path) {
+            remove_temporary_link(&temporary);
             return Err(error);
         }
-        let metadata = fs::symlink_metadata(&self.path)?;
-        self.identity = Some((metadata.dev(), metadata.ino()));
+        self.identity = Some(identity);
         Ok(())
+    }
+}
+
+fn remove_temporary_link(path: &Path) {
+    // Cleanup is best-effort so the publication error remains the one callers see.
+    if let Err(error) = fs::remove_file(path) {
+        tracing::warn!(
+            path = %path.display(),
+            err = %error,
+            "failed to remove temporary SSH agent link"
+        );
     }
 }
 
@@ -350,6 +360,31 @@ mod tests {
     /// A fresh scratch directory.
     fn scratch(label: &str) -> PathBuf {
         shepr_test_support::ScratchDir::new(label).to_path_buf()
+    }
+
+    /// The identity recorded for a published link is the one the rename put
+    /// in place, captured before the rename so no later stat can fail between
+    /// publishing the link and owning it; the temporary name is gone.
+    #[test]
+    fn publication_records_the_identity_of_the_link_it_put_in_place() {
+        let directory = scratch("publish-identity");
+        let stable = directory.join("agent");
+        let mut snapshot = PublicationSnapshot {
+            path: stable.clone(),
+            fallback: None,
+            agents: Vec::new(),
+            identity: None,
+        };
+        snapshot.publish().expect("publish the unavailable link");
+
+        let metadata = fs::symlink_metadata(&stable).expect("the link is published");
+        assert_eq!(snapshot.identity, Some((metadata.dev(), metadata.ino())));
+        assert_eq!(
+            fs::read_link(&stable).expect("the published path is a link"),
+            stable.with_extension("unavailable")
+        );
+        let temporary = stable.with_extension(format!("{}.new", std::process::id()));
+        assert!(fs::symlink_metadata(&temporary).is_err());
     }
 
     #[test]

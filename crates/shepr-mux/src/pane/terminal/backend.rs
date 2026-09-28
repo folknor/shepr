@@ -135,8 +135,20 @@ impl GhosttyPaneTerminal {
     pub(crate) fn process_pty_bytes(
         &self,
         pane_id: PaneId,
+        shell_pid: u32,
+        bytes: &[u8],
+    ) -> ProcessBytesResult {
+        self.process_pty_bytes_at(pane_id, shell_pid, bytes, Instant::now())
+    }
+
+    /// [`Self::process_pty_bytes`] at a stated instant, which decides whether
+    /// a synchronized update has expired.
+    pub(super) fn process_pty_bytes_at(
+        &self,
+        pane_id: PaneId,
         _shell_pid: u32,
         bytes: &[u8],
+        now: Instant,
     ) -> ProcessBytesResult {
         let mut core = match shepr_vt::lock_terminal_core(&self.core) {
             Ok(core) => core,
@@ -161,11 +173,14 @@ impl GhosttyPaneTerminal {
             );
         }
 
+        // The runtime tick for a read: a synchronized update whose timeout
+        // passed ends before these bytes are parsed, under the same lock, so
+        // its effects are collected with theirs and its replies queue first.
+        if core.terminal.tick(now) {
+            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
+        }
         let synchronized_output_before = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
         core.terminal.write(bytes);
-        // Everything the core queued is collected here, including the effects
-        // of a timed-out synchronized update that a render flushed since the
-        // last read: those are late, but dropping them would be worse.
         let effects = collect_core_effects(&mut core);
         let default_color_generation = core.default_color_generation;
 
@@ -181,8 +196,7 @@ impl GhosttyPaneTerminal {
             core.terminal
                 .synchronized_output_deadline()
                 .map(|deadline| {
-                    deadline.saturating_duration_since(Instant::now())
-                        + SYNCHRONIZED_OUTPUT_FLUSH_MARGIN
+                    deadline.saturating_duration_since(now) + SYNCHRONIZED_OUTPUT_FLUSH_MARGIN
                 })
         } else {
             None
@@ -205,9 +219,10 @@ impl GhosttyPaneTerminal {
     /// detection tick can drop the override once that program is gone.
     ///
     /// Finding the program means scanning `/proc`. The caller releases the
-    /// terminal and content locks before this scan, then this method takes
-    /// the terminal lock briefly to store the answer. The generation check
-    /// drops an answer if another OSC colour write arrived during the scan.
+    /// terminal, content and reply-order locks before this scan, then this
+    /// method takes the terminal lock briefly to store the answer. The
+    /// generation check drops an answer if another OSC colour write arrived
+    /// during the scan.
     pub(super) fn resolve_default_color_owner(
         &self,
         pane_id: PaneId,
@@ -233,18 +248,13 @@ impl GhosttyPaneTerminal {
         }
     }
 
-    /// Force-ends a synchronized update whose timeout has passed and returns
-    /// everything the core has queued for delivery: replies for the child,
-    /// OSC 52 writes, a working-directory report, a title change. Meant for
-    /// the timer the reader arms from [`ProcessBytesResult::render_delay`]:
-    /// a child that sent a query inside a frame it never ended waits for the
-    /// reply, and nothing else would deliver it before its next output.
-    /// `request_render` is set when a frame was flushed.
-    pub(crate) fn flush_expired_synchronized_output(
-        &self,
-        _pane_id: PaneId,
-        _shell_pid: u32,
-    ) -> ProcessBytesResult {
+    /// Flushes a synchronized update whose timeout has passed and returns
+    /// everything the core queued for delivery. The runtime's timeout task
+    /// calls this for a child that went quiet inside an update;
+    /// [`Self::process_pty_bytes`] does the same before parsing new output.
+    /// Readers and render paths only inspect the terminal. `request_render`
+    /// is set when a frame was flushed.
+    pub(crate) fn tick(&self, now: Instant) -> ProcessBytesResult {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             // A poisoned core is noticed by the PTY actor (its per-loop
             // `core_poisoned` check, or its next read), which ends the pane;
@@ -254,7 +264,7 @@ impl GhosttyPaneTerminal {
                 ..ProcessBytesResult::default()
             };
         };
-        let flushed = core.terminal.flush_expired_synchronized_output();
+        let flushed = core.terminal.tick(now);
         if flushed {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
@@ -307,9 +317,9 @@ impl GhosttyPaneTerminal {
                 .saturating_mul(8)
                 .max(DEFAULT_DETECTION_ROWS);
 
-            // Replies already queued (a render may have flushed a timed-out
-            // synchronized update) stay queued for the next read: the
-            // resize's own replies go to a slot the next resize overwrites.
+            // Replies already queued by an earlier core operation stay at the
+            // front for the next read; the resize's own replies go to a slot
+            // the next resize overwrites.
             let pending_responses = core.terminal.take_pty_responses();
             // No history is replayed into the core after the resize. That was
             // a workaround for the libghostty core losing rows on resize;
@@ -601,15 +611,11 @@ impl GhosttyPaneTerminal {
     pub(crate) fn synchronized_output_active(&self) -> bool {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .is_some_and(|mut core| {
-                flush_expired_synchronized_output(&mut core);
-                core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT)
-            })
+            .is_some_and(|core| core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT))
     }
 
     pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
-        shepr_vt::lock_terminal_core(&self.core).map_or((true, 0), |mut core| {
-            flush_expired_synchronized_output(&mut core);
+        shepr_vt::lock_terminal_core(&self.core).map_or((true, 0), |core| {
             (
                 core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT),
                 core.synchronized_output_epoch,
@@ -896,7 +902,6 @@ impl GhosttyPaneTerminal {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return;
         };
-        flush_expired_synchronized_output(&mut core);
         if core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT) {
             return;
         }
@@ -908,6 +913,7 @@ impl GhosttyPaneTerminal {
             render_state,
             ..
         } = &mut *core;
+        let terminal: &shepr_vt::Terminal = terminal;
         render_state.update(terminal);
         let cursor_shape_overridden = terminal.cursor_shape_overridden();
         let colors = render_state.colors();
@@ -994,7 +1000,6 @@ impl GhosttyPaneTerminal {
         shepr_vt::lock_terminal_core(&self.core).map_or(
             TerminalDirtyPatchOutcome::Fallback,
             |mut core| {
-                flush_expired_synchronized_output(&mut core);
                 if core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT) {
                     return TerminalDirtyPatchOutcome::Fallback;
                 }

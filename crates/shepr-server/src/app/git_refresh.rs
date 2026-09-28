@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
 use super::{App, GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
 use shepr_mux::events::AppEvent;
-use shepr_mux::git::{GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus};
+use shepr_mux::git::{
+    GitReadError, GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus,
+};
 
 pub(crate) struct GitRefreshScheduler {
     pub(crate) last_git_remote_status_refresh: Instant,
@@ -13,6 +15,7 @@ pub(crate) struct GitRefreshScheduler {
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
     pub(crate) git_status_cache: HashMap<PathBuf, GitStatusCacheEntry>,
+    reported_git_read_errors: HashSet<GitReadError>,
 }
 
 impl GitRefreshScheduler {
@@ -24,6 +27,7 @@ impl GitRefreshScheduler {
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
             git_status_cache: HashMap::new(),
+            reported_git_read_errors: HashSet::new(),
         }
     }
 
@@ -52,6 +56,11 @@ impl GitRefreshScheduler {
     ) {
         self.git_refresh_in_flight = false;
         for (key, entry) in cache_updates {
+            for error in &entry.read_errors {
+                if self.reported_git_read_errors.insert(error.clone()) {
+                    tracing::warn!(%error, "git status read failed");
+                }
+            }
             self.git_status_cache.insert(key, entry);
         }
         if self.git_refresh_due_after_in_flight {
@@ -350,6 +359,33 @@ mod tests {
     }
 
     #[test]
+    fn git_read_failures_are_reported_once_per_distinct_cause() {
+        let now = Instant::now();
+        let path = PathBuf::from("/repo");
+        let error = GitReadError::Spawn {
+            cwd: path.clone(),
+            message: "git is unavailable".into(),
+        };
+        let cache_entry = || GitStatusCacheEntry {
+            fingerprint: None,
+            retry_after: None,
+            snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
+                auto_label: "repo".into(),
+                branch: None,
+                ahead_behind: None,
+                space: None,
+            },
+            read_errors: vec![error.clone()],
+        };
+        let mut scheduler = GitRefreshScheduler::new(now);
+
+        scheduler.finish(now, vec![(path.clone(), cache_entry())]);
+        scheduler.finish(now, vec![(path, cache_entry())]);
+
+        assert_eq!(scheduler.reported_git_read_errors.len(), 1);
+    }
+
+    #[test]
     fn shared_root_repo_refresh_keeps_workspace_specific_fallback_labels() {
         let cache_key = PathBuf::from("/");
         let cached = GitStatusCacheEntry {
@@ -367,6 +403,7 @@ mod tests {
                     is_linked_worktree: false,
                 }),
             },
+            read_errors: Vec::new(),
         };
         let items = ["alpha", "beta"]
             .into_iter()
@@ -451,6 +488,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
             },
+            read_errors: Vec::new(),
         };
         let jobs = deduplicate_git_refresh_items(items, &HashMap::from([(cache_key, cached)]));
         assert_eq!(jobs.len(), 1);

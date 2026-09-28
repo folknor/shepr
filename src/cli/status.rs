@@ -12,16 +12,16 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(super) fn name(self) -> &'static str {
+    pub(super) fn name(self) -> Option<&'static str> {
         match self {
-            Self::Overview { .. } | Self::Invalid => "",
-            Self::Server { .. } => "server",
-            Self::Client { .. } => "client",
+            Self::Overview { .. } | Self::Invalid => None,
+            Self::Server { .. } => Some("server"),
+            Self::Client { .. } => Some("client"),
         }
     }
 
-    pub(super) fn is_api_command(self) -> bool {
-        matches!(self, Self::Server { .. })
+    pub(super) fn can_run_on_machine(self) -> bool {
+        matches!(self, Self::Overview { .. } | Self::Server { .. })
     }
 }
 

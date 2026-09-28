@@ -40,8 +40,8 @@ pub struct SocketFileIdentity {
 
 /// An exclusive, nonblocking lock for a server socket's startup and lifetime.
 ///
-/// Acquire this before [`prepare_socket_path`] and keep it until the listener
-/// has stopped. The regular sidecar file stays beside the socket after the
+/// [`bind_private_socket`] takes it before preparing the path; keep it until
+/// the listener has stopped. The regular sidecar file stays beside the socket after the
 /// guard drops so later processes always lock the same inode.
 pub struct SocketStartupLock {
     _lock: FlockLock,
@@ -134,6 +134,29 @@ pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStart
     Ok(SocketStartupLock { _lock: lock })
 }
 
+/// Acquires the startup lock, prepares `path`, and binds a private listener.
+///
+/// The lock stays alive in the returned tuple and must be held until the
+/// listener has stopped and its socket file has been removed. Keeping these
+/// steps together prevents a caller from reclaiming a stale socket before it
+/// owns the lock, which could unlink a socket another server is about to use.
+pub fn bind_private_socket(
+    path: &Path,
+    busy_message: impl Fn(&Path) -> String,
+) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
+    let startup_lock = acquire_socket_startup_lock(path)?;
+    prepare_socket_path(path, &busy_message)?;
+    let listener = bind_private_local_listener(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AddrInUse {
+            io::Error::new(io::ErrorKind::AddrInUse, busy_message(path))
+        } else {
+            error
+        }
+    })?;
+    let identity = socket_file_identity(path)?;
+    Ok((listener, startup_lock, identity))
+}
+
 fn socket_startup_lock_path(socket_path: &Path) -> PathBuf {
     let mut name = socket_path.as_os_str().to_os_string();
     name.push(".lock");
@@ -181,10 +204,11 @@ pub fn probe(path: &Path) -> Liveness {
     }
 }
 
-pub fn prepare_socket_path(
-    path: &Path,
-    busy_message: impl FnOnce(&Path) -> String,
-) -> io::Result<()> {
+/// Readies `path` for binding: creates its parent, removes a stale socket
+/// where nothing listens, and refuses a live one. Only [`bind_private_socket`]
+/// calls it, under the startup lock, so a stale socket is never reclaimed by a
+/// caller that does not own the path.
+fn prepare_socket_path(path: &Path, busy_message: impl FnOnce(&Path) -> String) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -575,6 +599,35 @@ mod tests {
         let _listener =
             std::os::unix::net::UnixListener::bind(&live_path).expect("bind live socket");
         assert!(matches!(probe(&live_path), Liveness::Live));
+    }
+
+    /// Binding takes the startup lock before touching the path: a stale socket
+    /// is reclaimed, a live one it does not own is refused with the caller's
+    /// message, and a second binder is refused while the first holds the lock.
+    #[test]
+    fn bind_private_socket_reclaims_stale_refuses_live_and_holds_its_lock() {
+        let busy = |path: &Path| format!("busy at {}", path.display());
+        let dir = shepr_test_support::ScratchDir::new("bind-private-socket");
+
+        let stale = dir.join("stale.sock");
+        {
+            let _listener = std::os::unix::net::UnixListener::bind(&stale).expect("bind stale");
+        }
+        let (listener, lock, _identity) = bind_private_socket(&stale, busy).expect("reclaim");
+        let second = bind_private_socket(&stale, busy)
+            .err()
+            .expect("the first binder holds the startup lock");
+        assert_eq!(second.kind(), io::ErrorKind::AddrInUse);
+        drop(listener);
+        drop(lock);
+
+        let live = dir.join("live.sock");
+        let _foreign = std::os::unix::net::UnixListener::bind(&live).expect("bind live");
+        let refused = bind_private_socket(&live, busy)
+            .err()
+            .expect("a live socket is never replaced");
+        assert_eq!(refused.kind(), io::ErrorKind::AddrInUse);
+        assert_eq!(refused.to_string(), busy(&live));
     }
 
     /// A socket path in a fresh scratch directory.

@@ -263,7 +263,7 @@ impl TerminalState {
                 self.remember_stale_full_lifecycle_hook_session(source, agent_label, session_ref);
             }
             for source in reset_sources {
-                self.hook_report_sequences.remove(&source);
+                self.clear_hook_report_sequence(&source);
             }
 
             let official_session = self
@@ -299,7 +299,7 @@ impl TerminalState {
                     })
                 });
             if let Some((source, agent_label, session_ref)) = official_session {
-                self.hook_report_sequences.remove(&source);
+                self.clear_hook_report_sequence(&source);
                 self.suppress_full_lifecycle_hook_report_with_session_ref(
                     source,
                     agent_label,
@@ -314,7 +314,7 @@ impl TerminalState {
                     .then(|| authority.source.clone())
             });
             if let Some(source) = cleared_hook_source {
-                self.hook_report_sequences.remove(&source);
+                self.clear_hook_report_sequence(&source);
                 self.hook_authority = None;
             }
             if !newer_custom_authority

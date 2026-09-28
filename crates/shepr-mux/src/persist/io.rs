@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
@@ -12,6 +13,30 @@ pub(super) fn session_path(data_dir: &Path) -> PathBuf {
 
 fn session_history_path(data_dir: &Path) -> PathBuf {
     data_dir.join("session-history.json")
+}
+
+// Bound restore input and files this build writes. Saves trim the oldest
+// scrollback to stay under it (`serialize_history`), so a file over it was not
+// written by this build and restore refuses it.
+const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;
+
+fn ensure_history_size(size: usize) -> std::io::Result<()> {
+    if size > MAX_SESSION_HISTORY_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session history file exceeds {MAX_SESSION_HISTORY_FILE_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+fn read_history_file(path: &Path) -> std::io::Result<String> {
+    let file = std::fs::File::open(path)?;
+    let mut content = String::new();
+    file.take((MAX_SESSION_HISTORY_FILE_BYTES as u64).saturating_add(1))
+        .read_to_string(&mut content)?;
+    ensure_history_size(content.len())?;
+    Ok(content)
 }
 
 // Follow symlinks manually so a write through a (possibly dangling) symlink
@@ -97,9 +122,9 @@ pub(super) enum Published {
 /// as `Published::NotDurable`.
 ///
 /// Both the live session files and the recovery copies go through here, so
-/// they share one durability and permission policy. Session history holds
-/// full pane scrollback, which can include tokens, so nothing here may be
-/// group- or world-readable.
+/// they share one durability and permission policy. Session history can hold
+/// full pane scrollback up to its file-size limit and can include tokens, so
+/// nothing here may be group- or world-readable.
 pub(super) fn publish_private_file(
     source: &mut impl std::io::Read,
     pending: &Path,
@@ -209,18 +234,191 @@ pub(super) fn save_history_to_path(
     history: Option<&SessionHistorySnapshot>,
 ) -> std::io::Result<()> {
     match history {
-        Some(history) => save_history_json_to_path(path, &serialize_history(history)?),
+        Some(history) => save_history_json_to_path(path, &serialize_history(history)?.json),
         None => clear_path(path),
     }
 }
 
-pub(super) fn serialize_history(history: &SessionHistorySnapshot) -> std::io::Result<String> {
-    Ok(serde_json::to_string_pretty(history)?)
+/// A history serialized to fit the file cap, and what was cut to make it fit.
+pub(super) struct SerializedHistory {
+    pub(super) json: String,
+    pub(super) trimmed: Option<HistoryTrim>,
+}
+
+/// The oldest scrollback `serialize_history` left out of an oversized history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HistoryTrim {
+    /// Panes that lost lines, including any that kept none.
+    pub(super) panes: usize,
+    /// Serialized bytes of pane history left out.
+    pub(super) dropped_bytes: usize,
+}
+
+/// Serializes the history, trimming the oldest scrollback lines when the
+/// whole file would exceed `MAX_SESSION_HISTORY_FILE_BYTES`.
+///
+/// The cap is on the file, but what fills it is per-pane scrollback, and
+/// neither bound can be derived from the other: `advanced.scrollback_limit_bytes`
+/// sizes each pane's in-memory cell grid (converted to a line count, at
+/// least 1000 lines), not the formatted ANSI, whose size depends on styling
+/// and JSON escaping, and the pane count is unbounded at runtime. So an
+/// oversized history is not an error to retry. Refusing it instead would
+/// turn every later save into a failed one: the save loop backs off and
+/// retries, reformatting all scrollback each time, and the stale history
+/// left on disk would still be restored whenever the layout had not
+/// changed. Scrollback already drops its oldest lines at its limit, so
+/// this does the same across panes: every pane may keep an equal share of
+/// the room, a pane under its share keeps everything and leaves the rest to
+/// the others, and a pane over it keeps its most recent whole lines. The
+/// formatter closes all SGR and OSC 8 state at each line break, so a cut
+/// there replays cleanly.
+pub(super) fn serialize_history(
+    history: &SessionHistorySnapshot,
+) -> std::io::Result<SerializedHistory> {
+    serialize_history_within(history, MAX_SESSION_HISTORY_FILE_BYTES)
+}
+
+fn serialize_history_within(
+    history: &SessionHistorySnapshot,
+    cap: usize,
+) -> std::io::Result<SerializedHistory> {
+    let json = serde_json::to_string_pretty(history)?;
+    if json.len() <= cap {
+        return Ok(SerializedHistory {
+            json,
+            trimmed: None,
+        });
+    }
+
+    let mut sizes = Vec::new();
+    for workspace in &history.workspaces {
+        for tab in &workspace.tabs {
+            for pane in tab.panes.values() {
+                sizes.push(escaped_len(&pane.ansi)?);
+            }
+        }
+    }
+    let content: usize = sizes.iter().sum();
+    let room = json
+        .len()
+        .checked_sub(content)
+        .and_then(|structure| cap.checked_sub(structure))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "session history structure alone exceeds the file cap",
+            )
+        })?;
+    let share = fair_share(sizes, room);
+
+    let mut trim = HistoryTrim {
+        panes: 0,
+        dropped_bytes: 0,
+    };
+    let mut workspaces = Vec::with_capacity(history.workspaces.len());
+    for workspace in &history.workspaces {
+        let mut tabs = Vec::with_capacity(workspace.tabs.len());
+        for tab in &workspace.tabs {
+            let mut panes = std::collections::HashMap::with_capacity(tab.panes.len());
+            for (id, pane) in &tab.panes {
+                let kept = recent_lines(&pane.ansi, share)?;
+                if kept.len() < pane.ansi.len() {
+                    trim.panes += 1;
+                    trim.dropped_bytes += escaped_len(&pane.ansi)? - escaped_len(kept)?;
+                }
+                if !kept.is_empty() {
+                    panes.insert(
+                        *id,
+                        super::snapshot::PaneHistorySnapshot {
+                            ansi: kept.to_owned(),
+                        },
+                    );
+                }
+            }
+            tabs.push(super::snapshot::TabHistorySnapshot { panes });
+        }
+        workspaces.push(super::snapshot::WorkspaceHistorySnapshot { tabs });
+    }
+    let json = serde_json::to_string_pretty(&SessionHistorySnapshot {
+        version: history.version,
+        layout_fingerprint: history.layout_fingerprint.clone(),
+        workspaces,
+    })?;
+    if json.len() > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("trimmed session history still exceeds {cap} bytes"),
+        ));
+    }
+    Ok(SerializedHistory {
+        json,
+        trimmed: Some(trim),
+    })
+}
+
+/// The largest per-pane size such that every pane capped at it fits `room`
+/// in total. Panes smaller than an equal split keep everything, and what they
+/// leave unused is shared among the rest.
+fn fair_share(mut sizes: Vec<usize>, room: usize) -> usize {
+    sizes.sort_unstable();
+    let count = sizes.len();
+    let mut remaining = room;
+    for (index, size) in sizes.into_iter().enumerate() {
+        let share = remaining / (count - index);
+        if size > share {
+            return share;
+        }
+        remaining -= size;
+    }
+    usize::MAX
+}
+
+/// The longest suffix of `ansi` made of whole lines whose JSON-escaped size
+/// is at most `limit`.
+fn recent_lines(ansi: &str, limit: usize) -> std::io::Result<&str> {
+    let bytes = ansi.as_bytes();
+    let mut start = bytes.len();
+    let mut kept = 0usize;
+    while start > 0 {
+        // The line ending at `start` begins after the newline before its own
+        // terminator. `\n` never occurs inside a multi-byte character, so
+        // every cut lands on a character boundary.
+        let line_start = bytes[..start - 1]
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |newline| newline + 1);
+        let line = ansi.get(line_start..start).unwrap_or_default();
+        kept += escaped_len(line)?;
+        if kept > limit {
+            break;
+        }
+        start = line_start;
+    }
+    Ok(ansi.get(start..).unwrap_or_default())
+}
+
+/// Bytes `text` occupies inside a JSON string literal, quotes excluded.
+/// Escaping is per character, so the sizes of adjacent pieces add up.
+fn escaped_len(text: &str) -> std::io::Result<usize> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, text)?;
+    Ok(count.0.saturating_sub(2))
 }
 
 /// Writes history that `serialize_history` already produced, so a caller that
 /// needs the bytes too (to tell whether anything changed) serializes once.
 pub(super) fn save_history_json_to_path(path: &Path, json: &str) -> std::io::Result<()> {
+    ensure_history_size(json.len())?;
     match save_serialized_to_path(path, json)? {
         Published::Durable => Ok(()),
         Published::NotDurable(err) => Err(err),
@@ -277,7 +475,7 @@ pub fn load(data_dir: &Path) -> Option<SessionSnapshot> {
 
 pub fn load_history(data_dir: &Path) -> Option<SessionHistorySnapshot> {
     let path = session_history_path(data_dir);
-    let content = match std::fs::read_to_string(&path) {
+    let content = match read_history_file(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
@@ -325,6 +523,17 @@ mod tests {
         }
     }
 
+    /// The history limit is inclusive, and a refusal is an `InvalidData`
+    /// error. Saves trim to stay under it, so only restore meets a file over
+    /// it.
+    #[test]
+    fn history_size_limit_admits_the_limit_and_refuses_one_byte_more() {
+        ensure_history_size(MAX_SESSION_HISTORY_FILE_BYTES).expect("the limit itself is allowed");
+        let error = ensure_history_size(MAX_SESSION_HISTORY_FILE_BYTES + 1)
+            .expect_err("one byte over is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
     fn history_snapshot(secret: &str) -> SessionHistorySnapshot {
         SessionHistorySnapshot {
             version: SNAPSHOT_VERSION,
@@ -340,6 +549,106 @@ mod tests {
                 }],
             }],
         }
+    }
+
+    fn history_with_panes(panes: &[(u32, &str)]) -> SessionHistorySnapshot {
+        SessionHistorySnapshot {
+            version: SNAPSHOT_VERSION,
+            layout_fingerprint: Some("layout".into()),
+            workspaces: vec![WorkspaceHistorySnapshot {
+                tabs: vec![TabHistorySnapshot {
+                    panes: panes
+                        .iter()
+                        .map(|(id, ansi)| {
+                            (
+                                *id,
+                                PaneHistorySnapshot {
+                                    ansi: (*ansi).to_owned(),
+                                },
+                            )
+                        })
+                        .collect(),
+                }],
+            }],
+        }
+    }
+
+    fn numbered_lines(prefix: &str, count: usize) -> String {
+        (0..count)
+            .map(|line| format!("\x1b[0;1m{prefix}-{line:04}\x1b[0m\r\n"))
+            .collect()
+    }
+
+    #[test]
+    fn history_under_the_cap_is_saved_whole() {
+        let history = history_with_panes(&[(1, "one\r\n"), (2, "two\r\n")]);
+        let serialized = serialize_history(&history).expect("serialize");
+        assert_eq!(serialized.trimmed, None);
+        assert_eq!(
+            serialized.json,
+            serde_json::to_string_pretty(&history).expect("serialize")
+        );
+    }
+
+    /// An oversized history is trimmed to fit, not refused: every pane keeps
+    /// its most recent whole lines, a small pane keeps everything, and the
+    /// result still parses and pairs with the same layout.
+    #[test]
+    fn history_over_the_cap_keeps_the_most_recent_lines_of_each_pane() {
+        let small = "small pane\r\n";
+        let big_a = numbered_lines("a", 400);
+        let big_b = numbered_lines("b", 400);
+        let history = history_with_panes(&[(1, small), (2, &big_a), (3, &big_b)]);
+        let full = serde_json::to_string_pretty(&history).expect("serialize");
+        let cap = full.len() / 2;
+
+        let serialized = serialize_history_within(&history, cap).expect("trimmed to fit");
+        assert!(
+            serialized.json.len() <= cap,
+            "{} > {cap}",
+            serialized.json.len()
+        );
+        let trim = serialized.trimmed.expect("trimming is reported");
+        assert_eq!(trim.panes, 2);
+        assert!(trim.dropped_bytes >= full.len() - cap, "{trim:?}");
+
+        let restored = parse_history_snapshot(&serialized.json).expect("trimmed history parses");
+        assert_eq!(restored.layout_fingerprint.as_deref(), Some("layout"));
+        let panes = &restored.workspaces[0].tabs[0].panes;
+        assert_eq!(panes[&1].ansi, small);
+        for (id, prefix, full) in [(2, "a", &big_a), (3, "b", &big_b)] {
+            let kept = &panes[&id].ansi;
+            assert!(full.ends_with(kept.as_str()), "pane {id} kept a suffix");
+            assert!(kept.len() < full.len(), "pane {id} was trimmed");
+            assert!(
+                kept.starts_with("\x1b[0;1m"),
+                "pane {id} was cut at a line start"
+            );
+            assert!(kept.ends_with(&format!("{prefix}-0399\x1b[0m\r\n")));
+        }
+    }
+
+    #[test]
+    fn recent_lines_counts_json_escaping_and_cuts_only_at_line_starts() {
+        // ESC escapes to six bytes, CR and LF to two each, and multi-byte
+        // characters are written as they are.
+        let ansi = "old\r\n\x1b[1mnew\u{e9}\r\nprompt \u{e9}";
+        assert_eq!(escaped_len("\x1b[1mnew\u{e9}\r\n").expect("len"), 18);
+        let prompt = escaped_len("prompt \u{e9}").expect("len");
+        assert_eq!(recent_lines(ansi, prompt - 1).expect("cut"), "");
+        assert_eq!(recent_lines(ansi, prompt).expect("cut"), "prompt \u{e9}");
+        assert_eq!(
+            recent_lines(ansi, prompt + 18).expect("cut"),
+            "\x1b[1mnew\u{e9}\r\nprompt \u{e9}"
+        );
+        assert_eq!(recent_lines(ansi, usize::MAX).expect("cut"), ansi);
+    }
+
+    #[test]
+    fn fair_share_leaves_what_small_panes_do_not_use_to_the_rest() {
+        assert_eq!(fair_share(vec![10, 100, 100], 110), 50);
+        assert_eq!(fair_share(vec![10, 20], 30), usize::MAX);
+        assert_eq!(fair_share(vec![40, 40], 30), 15);
     }
 
     #[test]

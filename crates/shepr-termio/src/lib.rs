@@ -18,7 +18,12 @@ mod test_config {
     /// `source` as a config document, validated as a launch would validate
     /// it, on paths that cannot be written to.
     pub(crate) fn validated(source: &str) -> ValidatedConfig {
-        let config: Config = toml::from_str(source).expect("test config parses");
+        let mut config: Config = toml::from_str(source).expect("test config parses");
+        // Keep validation off the inherited `SHELL` and `PATH`: this helper
+        // holds no `IsolatedEnv`.
+        if config.terminal.default_shell.trim().is_empty() {
+            config.terminal.default_shell = "/bin/sh".to_owned();
+        }
         let root = Path::new("/nonexistent/shepr-test-config");
         ValidatedConfig::from_values(
             config,

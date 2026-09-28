@@ -3,6 +3,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::GitReadError;
 use super::discovery::{GitWorktreeInfo, canonicalize_best_effort_path};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,14 +89,34 @@ impl ConfigReader {
     }
 }
 
+#[cfg(test)]
 pub(super) fn read_config(info: &GitWorktreeInfo, branch: &str) -> ConfigCtx {
     read_config_with_user_paths(info, branch, git_user_config_paths())
 }
 
+pub(super) fn read_config_for_status(
+    info: &GitWorktreeInfo,
+    branch: &str,
+    errors: &mut Vec<GitReadError>,
+) -> ConfigCtx {
+    read_config_with_user_paths_and_errors(info, branch, git_user_config_paths(), errors)
+}
+
+#[cfg(test)]
 pub(super) fn read_config_with_user_paths(
     info: &GitWorktreeInfo,
     branch: &str,
     user_config_paths: Vec<PathBuf>,
+) -> ConfigCtx {
+    let mut errors = Vec::new();
+    read_config_with_user_paths_and_errors(info, branch, user_config_paths, &mut errors)
+}
+
+fn read_config_with_user_paths_and_errors(
+    info: &GitWorktreeInfo,
+    branch: &str,
+    user_config_paths: Vec<PathBuf>,
+    errors: &mut Vec<GitReadError>,
 ) -> ConfigCtx {
     let mut reader = ConfigReader::default();
     let worktree_config_enabled =
@@ -151,6 +172,12 @@ pub(super) fn read_config_with_user_paths(
             &mut reader,
         );
     }
+    if let Some((path, kind, message)) = &reader.failure {
+        errors.push(GitReadError::FileRead {
+            path: path.clone(),
+            message: format!("{kind:?}: {message}"),
+        });
+    }
     (
         branch.to_string(),
         (!config.remote.is_empty() && !config.merge_ref.is_empty()).then_some(config),
@@ -159,6 +186,11 @@ pub(super) fn read_config_with_user_paths(
 }
 
 pub(super) fn git_user_config_paths() -> Vec<PathBuf> {
+    // Git also reads /etc/gitconfig and honors GIT_CONFIG_GLOBAL,
+    // GIT_CONFIG_SYSTEM and GIT_CONFIG_NOSYSTEM. Those override names must
+    // enter shepr_core::env before this reader can honor them; reading them
+    // directly here would bypass its closed environment API. This function
+    // therefore reads the default XDG and HOME global files only.
     let mut paths = Vec::new();
     let home = shepr_core::pathutil::home_dir().ok();
     // This reads Git's user config, not a Shepr location. A refused

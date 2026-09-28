@@ -669,10 +669,10 @@ pub fn reload_manifests(config_dir: &Path) -> Vec<AgentManifestSummary> {
         .summaries()
 }
 
-// A first lazy read may load bundled manifests, but a later reload replaces
-// that cache. Headless bootstrap reloads overrides before restoring panes, so
-// server detection starts with the configured manifests. Removing this cache
-// requires passing a registry through detection, mux readiness and server explain.
+// One shepr process owns one headless server. Bootstrap reloads its resolved
+// config before constructing the app (which restores panes) or opening the API
+// socket; later reloads use that app's config. CLI file explain builds a
+// private registry, so no production consumer reads this cache before reload.
 fn registry() -> &'static ManifestRegistry {
     if let Some(registry) = MANIFESTS.get() {
         return registry;

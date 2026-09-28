@@ -203,7 +203,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, BRIDGE_SOCKET_PERMISSION_MODE);
+        assert_eq!(mode, 0o600);
 
         drop(bridge);
         // Dropping the bridge removes the socket it owns.
@@ -338,10 +338,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(
-            mode, BRIDGE_SOCKET_PERMISSION_MODE,
-            "keepalive config must be user-only"
-        );
+        assert_eq!(mode, 0o600, "keepalive config must be user-only");
         // The config lives in a private 0700 dir, not a predictable temp path.
         let dir = path.parent().expect("config has a parent dir");
         let dir_mode = std::fs::metadata(dir)

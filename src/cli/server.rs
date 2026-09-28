@@ -9,16 +9,16 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(super) fn name(self) -> &'static str {
+    pub(super) fn name(self) -> Option<&'static str> {
         match self {
-            Self::Stop { .. } => "stop",
-            Self::AgentManifests { .. } => "agent-manifests",
-            Self::ReloadAgentManifests => "reload-agent-manifests",
-            Self::Invalid => "",
+            Self::Stop { .. } => Some("stop"),
+            Self::AgentManifests { .. } => Some("agent-manifests"),
+            Self::ReloadAgentManifests => Some("reload-agent-manifests"),
+            Self::Invalid => None,
         }
     }
 
-    pub(super) fn is_api_command(self) -> bool {
+    pub(super) fn can_run_on_machine(self) -> bool {
         matches!(
             self,
             Self::Stop { .. } | Self::AgentManifests { .. } | Self::ReloadAgentManifests

@@ -119,8 +119,8 @@ impl<'a> PaneShellConfig<'a> {
     }
 }
 
-/// `PtyCommand` selects and resolves the shell at spawn, and uses that resolved
-/// path for both exec and the child-visible `SHELL`.
+/// Config has selected the shell at launch; the PTY verifies the resolved path
+/// again when it builds the child command and uses it for exec and `SHELL`.
 pub(super) fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
     PtyCommand::interactive_shell(shell_config.default_shell, shell_config.login_shell)
 }

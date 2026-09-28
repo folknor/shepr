@@ -657,7 +657,7 @@ pub(super) fn write_managed_ssh_config(
     let mut contents = String::new();
     for include in [
         ssh_config_include(paths.user_config.as_deref())?,
-        ssh_config_include(paths.system_config.as_deref())?,
+        ssh_config_include(Some(paths.system_config.as_path()))?,
     ]
     .into_iter()
     .flatten()

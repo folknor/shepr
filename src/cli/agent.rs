@@ -50,24 +50,24 @@ pub(crate) struct ExplainArgs {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> &'static str {
+    pub(super) fn name(&self) -> Option<&'static str> {
         match self {
-            Self::List => "list",
-            Self::Get { .. } => "get",
-            Self::Read(_) => "read",
-            Self::SendKeys(_) => "send-keys",
-            Self::Prompt(_) => "prompt",
-            Self::Rename(_) => "rename",
-            Self::Focus { .. } => "focus",
-            Self::Wait(_) => "wait",
-            Self::Attach { .. } => "attach",
-            Self::Start(_) => "start",
-            Self::Explain(_) => "explain",
-            Self::Invalid => "",
+            Self::List => Some("list"),
+            Self::Get { .. } => Some("get"),
+            Self::Read(_) => Some("read"),
+            Self::SendKeys(_) => Some("send-keys"),
+            Self::Prompt(_) => Some("prompt"),
+            Self::Rename(_) => Some("rename"),
+            Self::Focus { .. } => Some("focus"),
+            Self::Wait(_) => Some("wait"),
+            Self::Attach { .. } => Some("attach"),
+            Self::Start(_) => Some("start"),
+            Self::Explain(_) => Some("explain"),
+            Self::Invalid => None,
         }
     }
 
-    pub(super) fn is_api_command(&self) -> bool {
+    pub(super) fn can_run_on_machine(&self) -> bool {
         match self {
             Self::List
             | Self::Get { .. }

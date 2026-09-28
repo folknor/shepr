@@ -12,6 +12,11 @@ use shepr_config::{AppPaths, Config, ValidatedConfig};
 /// need real directories root their paths in a `shepr_test_support::ScratchDir`.
 const UNWRITABLE_ROOT: &str = "/nonexistent/shepr-test-config";
 
+/// The pane shell fixture configs name when a test leaves it unset. Launch
+/// validation only inspects it (it must exist and be executable); no fixture
+/// config runs it.
+const FIXTURE_SHELL: &str = "/bin/sh";
+
 pub trait AppPathsFixture: Sized {
     /// Paths under [`UNWRITABLE_ROOT`], which is also the home directory.
     fn test_default() -> Self;
@@ -54,7 +59,17 @@ impl ValidatedConfigFixture for ValidatedConfig {
         Self::test_from_config_with_paths(config, source, AppPaths::test_default())
     }
 
-    fn test_from_config_with_paths(config: Config, source: Option<&str>, paths: AppPaths) -> Self {
+    fn test_from_config_with_paths(
+        mut config: Config,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Self {
+        // An empty shell setting is resolved from the process's inherited
+        // `SHELL` and `PATH`, which a test holding no `IsolatedEnv` must not
+        // depend on; a fixed absolute shell keeps the fixture deterministic.
+        if config.terminal.default_shell.trim().is_empty() {
+            config.terminal.default_shell = FIXTURE_SHELL.to_owned();
+        }
         Self::from_values(config, source, paths).expect("test config is valid")
     }
 }

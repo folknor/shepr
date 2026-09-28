@@ -163,7 +163,18 @@ fn git_config_value_distinguishes_missing_key_from_read_failure() {
     assert!(
         read_config_value(&info, "main", std::slice::from_ref(&config), "core", "bare").is_err()
     );
-    assert!(git_worktree_info(&root).is_none());
+    // Discovery does not read the config. The status read does, and reports
+    // the unreadable file instead of treating the repository as absent.
+    let info = git_worktree_info(&root).expect("discovery does not depend on the config");
+    let mut errors = Vec::new();
+    let _branch_config = read_config_for_status(&info, "main", &mut errors);
+    assert!(
+        errors.iter().any(|error| matches!(
+            error,
+            crate::git::GitReadError::FileRead { path, .. } if path == &config
+        )),
+        "{errors:?}"
+    );
 }
 
 #[test]

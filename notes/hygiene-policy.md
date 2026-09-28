@@ -631,10 +631,19 @@ inherit.
 Enforcement named: one list in `shepr-config`, plus a test that every
 `*_ENV_VAR` constant is either scrubbed or explicitly allowed. Related: the
 `shepr-mux` hunter notes `pane/launch.rs` goes to real trouble to scrub
-inherited host and agent variables for pane children while the crate's own
-subprocesses get none of that care (BUG-066).
+inherited host and agent variables for pane children; the crate's own `git`
+subprocesses now go through one runner that scrubs repository and askpass
+overrides, so the split denylist is what remains.
 
 ## HYGP-020 - "Flush the synchronized-output buffer if it has expired" is re-implemented at six call sites
+
+**Partly resolved:** synchronized-output expiry now goes through one `tick(now)`
+the runtime calls, render and dirty-patch paths read the terminal through a
+shared reference, timer replies are queued as one batch under the order lock,
+and read-callback effects run after the reply lock is released, with the lock
+order documented in `shepr-pty/src/actor.rs`. Open: the hand-copied seqlock
+protocol, the `PaneTerminal` / `GhosttyPaneTerminal` merge (HYGP-035), and the
+`with_handler` / `collect_damage` rule below.
 
 From `shepr-vt` / `shepr-mux`: `Terminal::write`, `render`,
 `collect_dirty_patch`, `synchronized_output_active`, `synchronized_output_state`
@@ -799,9 +808,7 @@ recorded here so the absence is not re-hunted.
   capturing that text for manifest authoring. Recorded so the decision is
   visible; what is missing is a line in the docs saying the flag puts pane
   content in the log, since the flag is documented nowhere (HYGP-002).
-- `shepr-server`: `app/tab_bar_status.rs` logs the full status command line at
-  `warn` every interval, so a bearer token in a command reaches the log (see
-  BUG-060). `render.rs` puts a terminal id into a
+- `shepr-server`: `render.rs` puts a terminal id into a
   `ServerShutdown` message text sent to the client (benign, but operator text
   assembled at the site). `app/api/workspaces.rs` does
   `let _ = std::fs::remove_dir_all(&source_cwd)` - a recursive delete whose
@@ -1176,10 +1183,6 @@ for each is the hunter's.
   `shell/input/events.rs` is a rename of a field. It reads as a policy point
   ("where does input go?") and holds no policy. Fix: replace with
   `PublicPaneId`. If it is anticipating a second target, nothing says so.
-- `shepr-platform` `ssh_paths.rs`: `system_config: Some(PathBuf::from(
-  "/etc/ssh/ssh_config"))` - the `Option` shape claims a case the code cannot
-  produce, and the sole consumer (`shepr-remote/src/remote/ssh.rs`) must handle
-  it anyway. Make the field a `PathBuf` and the type system does the rest.
 - `shepr-agent`: `session_ref_policy: Option<SessionRefPolicy>` encodes two facts
   as three states - `None` means "no resume", and every agent with
   `resume_args: None` also has `session_ref_policy: None`; the two fields are
@@ -1219,6 +1222,10 @@ for each is the hunter's.
   lint is silenced only by the leading underscore.
 
 ## HYGP-045 - Branches and checks that cannot run
+
+- `shepr-pty` `command.rs`: `PtyCommand`'s `PaneProgramFallback` shell policy
+  is unreachable in production now that config always hands the pane builder a
+  resolved absolute shell.
 
 - `shepr-agent` `integration/`: every hook installer strips entries carrying
   shepr's command from the event before writing the canonical one, so the
@@ -1323,9 +1330,9 @@ the first two bullets.
 **Decision (partial):** for the `RefFileRead` bullet: the `Path::exists` seal is
 adopted from broadarrow (`clippy.toml`; use `try_exists` or match `NotFound`, B4
 in `notes/broadarrow-ports.md`), so the stat-error-preserving distinction
-`RefFileRead` draws is now the house rule, not dead reasoning. Its collapse to
-`None` in `read_git_ref_file` is BUG-065's defect and stays open there. Open: the
-other three bullets.
+`RefFileRead` draws is now the house rule, not dead reasoning, and Git reads
+now carry the distinction to the refresh task as typed errors, so the
+`RefFileRead` bullet is resolved. Open: the other three bullets.
 
 - `shepr-config` `ConfigDiagnostic`'s six variants (`Read`, `Parse`,
   `Provenance`, `Unknown`, `Validation`, `Path`) are never distinguished: every
@@ -1462,14 +1469,6 @@ are all genuinely tighter. Enforcement named: a text rule banning
   type exists to match the test double's `mpsc::Sender`. Fix: a shepr-owned error
   type, then remove `tokio` from the `shepr-pty-layer` allowlist in
   `brokkr.toml`.
-- `shepr-remote` lists `libc` under `[dependencies]`; the only uses are `fcntl`
-  in `attach.rs` and `geteuid` in `local_server.rs`, both inside `#[cfg(test)]`
-  modules, and `brokkr.toml`'s `shepr-remote-layer` rule allows `libc` for
-  `kinds = ["normal"]`, so the allowlist currently blesses a dependency
-  production does not use. Fix: move to `[dev-dependencies]` and drop `libc` from
-  the allowlist - a one-line tightening of a check somebody already paid for. The
-  hunter lists this as one of the two findings in their scope they would most
-  want confirmed by an actual build.
 - `shepr-remote`'s `sha2` is used only by `ProfileId::generate`; replacing that
   with `unpredictable_token` (HYGV-087) lets `sha2` be dropped from the crate and
   from its allowlist, which then enforces the change thereafter.

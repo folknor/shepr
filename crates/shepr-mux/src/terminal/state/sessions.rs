@@ -123,6 +123,9 @@ impl TerminalState {
             if self.hook_seq_superseded(&source, seq, now) {
                 return None;
             }
+            if !self.hook_report_sequence_has_room(&source) {
+                return None;
+            }
 
             let previous_agent_label = self.effective_agent_label().map(str::to_string);
             let previous_known_agent = self.effective_known_agent();
@@ -152,7 +155,9 @@ impl TerminalState {
                 }
                 suppressed.replacement_session_ref = Some(session_ref);
             }
-            self.record_hook_seq(source.clone(), seq, now);
+            if !self.record_hook_seq(source.clone(), seq, now) {
+                return None;
+            }
 
             if process_present {
                 self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, known_agent);
@@ -347,8 +352,7 @@ impl TerminalState {
         if self.hook_seq_superseded(source, seq, now) {
             return false;
         }
-        self.record_hook_seq(source.to_string(), seq, now);
-        true
+        self.record_hook_seq(source.to_string(), seq, now)
     }
 
     /// Whether `seq` from `source` is older than what was already accepted.
@@ -366,8 +370,49 @@ impl TerminalState {
         )
     }
 
-    pub(super) fn record_hook_seq(&mut self, source: String, seq: u64, now: Instant) {
+    pub(super) fn record_hook_seq(&mut self, source: String, seq: u64, now: Instant) -> bool {
+        if !self.hook_report_sequence_has_room(&source) {
+            tracing::debug!(
+                source = %source,
+                limit = MAX_HOOK_REPORT_SOURCES,
+                "ignoring hook report from a new source: too many sources"
+            );
+            return false;
+        }
         self.hook_report_accepted_at.insert(source.clone(), now);
         self.hook_report_sequences.insert(source, seq);
+        true
+    }
+
+    /// Drop ordering marks that no longer protect a current hook, session,
+    /// suppression, or stale-session record before refusing a new source.
+    pub(super) fn hook_report_sequence_has_room(&mut self, source: &str) -> bool {
+        if self.hook_report_sequences.contains_key(source)
+            || self.hook_report_sequences.len() < MAX_HOOK_REPORT_SOURCES
+        {
+            return true;
+        }
+
+        let mut protected_sources = std::collections::HashSet::new();
+        if let Some(authority) = &self.hook_authority {
+            protected_sources.insert(authority.source.clone());
+        }
+        if let Some(session) = &self.persisted_agent_session {
+            protected_sources.insert(session.source.as_str().to_owned());
+        }
+        protected_sources.extend(self.suppressed_full_lifecycle_hook_reports.keys().cloned());
+        protected_sources.extend(self.stale_full_lifecycle_hook_sessions.keys().cloned());
+
+        self.hook_report_sequences
+            .retain(|known_source, _| protected_sources.contains(known_source));
+        let sequences = &self.hook_report_sequences;
+        self.hook_report_accepted_at
+            .retain(|known_source, _| sequences.contains_key(known_source));
+        self.hook_report_sequences.len() < MAX_HOOK_REPORT_SOURCES
+    }
+
+    pub(super) fn clear_hook_report_sequence(&mut self, source: &str) {
+        self.hook_report_sequences.remove(source);
+        self.hook_report_accepted_at.remove(source);
     }
 }

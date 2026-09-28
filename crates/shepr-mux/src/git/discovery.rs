@@ -1,7 +1,10 @@
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::process::Output;
 
-const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
+use super::GitReadError;
+
+pub(super) const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSpaceMetadata {
@@ -17,7 +20,6 @@ pub(crate) struct GitWorktreeInfo {
     pub repo_root: PathBuf,
     pub git_dir: PathBuf,
     pub git_common_dir: PathBuf,
-    pub is_bare: bool,
     pub is_linked_worktree: bool,
 }
 
@@ -39,17 +41,35 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
 }
 
 pub(crate) fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
-    let repo_root = git_repo_root(cwd)?;
-    let git_dir = git_dir_for_repo_root(&repo_root)?;
-    let mut info = git_config_info(&repo_root, &git_dir).ok()?;
-    info.is_bare = match git_dir_is_bare(&info) {
-        Ok(is_bare) => is_bare,
+    git_worktree_info_with_errors(cwd, &mut Vec::new())
+}
+
+pub(super) fn git_worktree_info_with_errors(
+    cwd: &Path,
+    errors: &mut Vec<GitReadError>,
+) -> Option<GitWorktreeInfo> {
+    let repo_root = git_repo_root_with_errors(cwd, errors)?;
+    let git_dir = match locate_git_dir(&repo_root) {
+        Ok(Some(git_dir)) => git_dir,
+        Ok(None) => return None,
         Err(error) => {
-            tracing::debug!(path = %info.git_dir.join("config").display(), %error, "git config unreadable");
+            errors.push(GitReadError::FileRead {
+                path: repo_root.join(".git"),
+                message: error.to_string(),
+            });
             return None;
         }
     };
-    Some(info)
+    match git_config_info(&repo_root, &git_dir) {
+        Ok(info) => Some(info),
+        Err(error) => {
+            errors.push(GitReadError::FileRead {
+                path: git_dir.join("commondir"),
+                message: error.to_string(),
+            });
+            None
+        }
+    }
 }
 
 /// Inside a Git checkout the label is the checkout root's name; the home
@@ -135,7 +155,6 @@ fn git_config_info(repo_root: &Path, git_dir: &Path) -> io::Result<GitWorktreeIn
         is_linked_worktree: git_dir != git_common_dir,
         git_dir,
         git_common_dir,
-        is_bare: false,
     })
 }
 
@@ -149,7 +168,7 @@ fn git_config_info(repo_root: &Path, git_dir: &Path) -> io::Result<GitWorktreeIn
 pub(super) enum RefFileRead {
     Content(String),
     Absent,
-    Unavailable,
+    Unavailable(String),
 }
 
 pub(super) fn read_git_ref_file_state(path: &Path) -> RefFileRead {
@@ -162,29 +181,40 @@ pub(super) fn read_git_ref_file_state(path: &Path) -> RefFileRead {
                 // traverses a non-directory: Git treats the loose ref as broken
                 // and does not fall back to an older packed ref. Any other stat
                 // error leaves the ref's identity unknown.
-                Ok(_) | Err(_) => RefFileRead::Unavailable,
+                Ok(_) => RefFileRead::Unavailable(error.to_string()),
+                Err(metadata_error) => RefFileRead::Unavailable(metadata_error.to_string()),
             };
         }
         // Permission or I/O errors: the ref may exist, so its identity is
         // unavailable rather than absent.
-        Err(_) => return RefFileRead::Unavailable,
+        Err(error) => return RefFileRead::Unavailable(error.to_string()),
     };
     let mut contents = String::new();
-    if file
+    if let Err(error) = file
         .take((MAX_GIT_REF_FILE_BYTES + 1) as u64)
         .read_to_string(&mut contents)
-        .is_err()
-        || contents.len() > MAX_GIT_REF_FILE_BYTES
     {
-        return RefFileRead::Unavailable;
+        return RefFileRead::Unavailable(error.to_string());
+    }
+    if contents.len() > MAX_GIT_REF_FILE_BYTES {
+        return RefFileRead::Unavailable(format!(
+            "file exceeds the {MAX_GIT_REF_FILE_BYTES}-byte read limit"
+        ));
     }
     RefFileRead::Content(contents)
 }
 
-pub(super) fn read_git_ref_file(path: &Path) -> Option<String> {
+pub(super) fn read_git_ref_file(path: &Path, errors: &mut Vec<GitReadError>) -> Option<String> {
     match read_git_ref_file_state(path) {
         RefFileRead::Content(contents) => Some(contents),
-        RefFileRead::Absent | RefFileRead::Unavailable => None,
+        RefFileRead::Absent => None,
+        RefFileRead::Unavailable(message) => {
+            errors.push(GitReadError::FileRead {
+                path: path.to_path_buf(),
+                message,
+            });
+            None
+        }
     }
 }
 
@@ -274,12 +304,24 @@ fn path_is_git_dir_layout(path: &Path) -> std::io::Result<bool> {
         && is_dir_entry(&path.join("refs"))?)
 }
 
-pub(super) fn git_symbolic_head_full(repo_root: &Path) -> Option<String> {
-    git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "HEAD"])
+pub(super) fn git_symbolic_head_full(
+    repo_root: &Path,
+    errors: &mut Vec<GitReadError>,
+) -> Option<String> {
+    git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "HEAD"], errors)
 }
 
+#[cfg(test)]
 pub(super) fn git_rev_parse_verify(repo_root: &Path, revision: &str) -> Option<String> {
-    git_trimmed_stdout(repo_root, &["rev-parse", "--verify", revision])
+    git_rev_parse_verify_with_errors(repo_root, revision, &mut Vec::new())
+}
+
+pub(super) fn git_rev_parse_verify_with_errors(
+    repo_root: &Path,
+    revision: &str,
+    errors: &mut Vec<GitReadError>,
+) -> Option<String> {
+    git_trimmed_stdout(repo_root, &["rev-parse", "--verify", revision], errors)
 }
 
 /// Whether the repository keeps its refs in a reftable store. Git takes
@@ -292,13 +334,7 @@ pub(super) fn git_ref_storage_is_reftable(
     let config_path = info.git_common_dir.join("config");
     let result =
         super::config::read_repository_format_value(&config_path, "extensions", "refstorage");
-    let (value, deps) = match result {
-        Ok(result) => result,
-        Err(error) => {
-            tracing::debug!(path = %config_path.display(), %error, "git config unreadable");
-            return Err(error);
-        }
-    };
+    let (value, deps) = result?;
     Ok((
         value.is_some_and(|value| value.eq_ignore_ascii_case("reftable")),
         deps,
@@ -337,21 +373,79 @@ fn git_head_branch(git_dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
-    // host-program-ok: production asks Git what a reftable store holds
-    let output = shepr_platform::child_command("git", repo_root)
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
-        .output()
-        .ok()?;
+pub(super) fn git_trimmed_stdout(
+    repo_root: &Path,
+    args: &[&str],
+    errors: &mut Vec<GitReadError>,
+) -> Option<String> {
+    let output = match run_git_output(repo_root, args) {
+        Ok(output) => output,
+        Err(error) => {
+            errors.push(error);
+            return None;
+        }
+    };
     if !output.status.success() {
+        let expected_no_result = (args.first() == Some(&"symbolic-ref")
+            && output.status.code() == Some(1))
+            || (args.first() == Some(&"rev-parse")
+                && String::from_utf8_lossy(&output.stderr).contains("Needed a single revision"));
+        if !expected_no_result {
+            errors.push(command_failed(repo_root, args, &output));
+        }
         return None;
     }
 
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(stdout) => stdout,
+        Err(_) => {
+            errors.push(GitReadError::InvalidUtf8 {
+                cwd: repo_root.to_path_buf(),
+                arguments: args.join(" "),
+            });
+            return None;
+        }
+    };
     let stdout = stdout.trim();
-    (!stdout.is_empty()).then(|| stdout.to_string())
+    if stdout.is_empty() {
+        errors.push(GitReadError::InvalidOutput {
+            cwd: repo_root.to_path_buf(),
+            arguments: args.join(" "),
+            output: String::new(),
+        });
+        None
+    } else {
+        Some(stdout.to_string())
+    }
+}
+
+/// Runs one Git probe through the shared platform runner, typing its failure
+/// for the status refresh.
+pub(super) fn run_git_output(cwd: &Path, args: &[&str]) -> Result<Output, GitReadError> {
+    use shepr_platform::git::GitCommandError;
+    shepr_platform::git::run_git(cwd, args).map_err(|error| match error {
+        GitCommandError::Spawn(error) => GitReadError::Spawn {
+            cwd: cwd.to_path_buf(),
+            message: error.to_string(),
+        },
+        GitCommandError::TimedOut => GitReadError::TimedOut {
+            cwd: cwd.to_path_buf(),
+            arguments: args.join(" "),
+        },
+        GitCommandError::Process(error) => GitReadError::Process {
+            cwd: cwd.to_path_buf(),
+            message: error.to_string(),
+        },
+    })
+}
+
+fn command_failed(cwd: &Path, args: &[&str], output: &Output) -> GitReadError {
+    GitReadError::CommandFailed {
+        cwd: cwd.to_path_buf(),
+        arguments: args.join(" "),
+        status: output.status.code(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
 }
 
 /// The directories repository discovery does not ascend into, from
@@ -405,42 +499,66 @@ impl GitCeilings {
     }
 }
 
+#[cfg(test)]
 pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
     git_repo_root_below(start, &GitCeilings::from_env())
 }
 
-/// [`git_repo_root`] with the ceilings handed in: the walk examines `start`
-/// (or its parent, for a file) and each ancestor up to, not including, the
-/// nearest ceiling. A directory whose Git state cannot be read (a stat or
-/// read error other than absence) ends the walk with `None` rather than being
-/// passed over: ascending past it could attribute `start` to an enclosing
-/// checkout it is not part of.
+fn git_repo_root_with_errors(start: &Path, errors: &mut Vec<GitReadError>) -> Option<PathBuf> {
+    git_repo_root_below_with_errors(start, &GitCeilings::from_env(), errors)
+}
+
+#[cfg(test)]
 fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> {
+    git_repo_root_below_with_errors(start, ceilings, &mut Vec::new())
+}
+
+/// The checkout root for `start`, with the ceilings handed in: the walk
+/// examines `start` (or its parent, for a file) and each ancestor up to, not
+/// including, the nearest ceiling. A directory whose Git state cannot be read
+/// (a stat or read error other than absence) ends the walk with `None` and an
+/// entry in `errors` rather than being passed over: ascending past it could
+/// attribute `start` to an enclosing checkout it is not part of.
+fn git_repo_root_below_with_errors(
+    start: &Path,
+    ceilings: &GitCeilings,
+    errors: &mut Vec<GitReadError>,
+) -> Option<PathBuf> {
     let mut current = match is_dir_entry(start) {
         Ok(true) => start.to_path_buf(),
         Ok(false) => start.parent()?.to_path_buf(),
         Err(error) => {
-            tracing::debug!(path = %start.display(), %error, "git discovery start unreadable");
+            errors.push(GitReadError::FileRead {
+                path: start.to_path_buf(),
+                message: error.to_string(),
+            });
             return None;
         }
     };
 
     loop {
-        let found = locate_git_dir(&current).and_then(|git_dir| match git_dir {
-            Some(git_dir) => is_file_entry(&git_dir.join("HEAD")),
-            None => Ok(false),
-        });
-        match found {
-            Ok(true) => return Some(current),
-            Ok(false) => {}
+        let found = match locate_git_dir(&current) {
+            Ok(Some(git_dir)) => match is_file_entry(&git_dir.join("HEAD")) {
+                Ok(found) => found,
+                Err(error) => {
+                    errors.push(GitReadError::FileRead {
+                        path: git_dir.join("HEAD"),
+                        message: error.to_string(),
+                    });
+                    return None;
+                }
+            },
+            Ok(None) => false,
             Err(error) => {
-                tracing::debug!(
-                    path = %current.display(),
-                    %error,
-                    "git discovery stopped at an unreadable directory"
-                );
+                errors.push(GitReadError::FileRead {
+                    path: current.clone(),
+                    message: error.to_string(),
+                });
                 return None;
             }
+        };
+        if found {
+            return Some(current);
         }
         if !current.pop() || ceilings.contains(&current) {
             return None;
@@ -448,14 +566,25 @@ fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> 
     }
 }
 
+#[cfg(test)]
 pub(super) fn read_ref_oid(common_dir: &Path, full_ref: &str) -> Option<String> {
+    read_ref_oid_with_errors(common_dir, full_ref, &mut Vec::new())
+}
+
+pub(super) fn read_ref_oid_with_errors(
+    common_dir: &Path,
+    full_ref: &str,
+    errors: &mut Vec<GitReadError>,
+) -> Option<String> {
     let loose_ref = common_dir.join(full_ref);
     match read_git_ref_file_state(&loose_ref) {
         RefFileRead::Content(contents) => {
             let oid = contents.trim();
             if oid.is_empty() {
-                // An empty loose ref is present but broken. Git does not fall
-                // back to an older same-name packed ref in this case.
+                errors.push(GitReadError::FileRead {
+                    path: loose_ref.clone(),
+                    message: "loose ref is empty".into(),
+                });
                 return None;
             }
             return Some(oid.to_string());
@@ -464,11 +593,28 @@ pub(super) fn read_ref_oid(common_dir: &Path, full_ref: &str) -> Option<String> 
         // because of a metadata or I/O error - must not fall back to
         // packed-refs: that could resurrect a stale same-name OID into the
         // status fingerprint. Report the ref as unavailable instead.
-        RefFileRead::Unavailable => return None,
+        RefFileRead::Unavailable(message) => {
+            errors.push(GitReadError::FileRead {
+                path: loose_ref.clone(),
+                message,
+            });
+            return None;
+        }
         RefFileRead::Absent => {}
     }
 
-    let packed_refs = std::fs::read_to_string(common_dir.join("packed-refs")).ok()?;
+    let packed_refs_path = common_dir.join("packed-refs");
+    let packed_refs = match std::fs::read_to_string(&packed_refs_path) {
+        Ok(contents) => contents,
+        Err(error) if is_absence(&error) => return None,
+        Err(error) => {
+            errors.push(GitReadError::FileRead {
+                path: packed_refs_path,
+                message: error.to_string(),
+            });
+            return None;
+        }
+    };
     for line in packed_refs.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with('^') {
@@ -495,6 +641,7 @@ mod tests {
 
     #[test]
     fn oversized_loose_ref_is_unavailable_not_absent() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("oversized-loose-ref");
         let refs_dir = root.join("refs/heads");
         std::fs::create_dir_all(&refs_dir).expect("test precondition");
@@ -522,6 +669,7 @@ mod tests {
 
     #[test]
     fn empty_or_whitespace_loose_ref_is_unavailable_not_absent() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("empty-loose-ref");
         let refs_dir = root.join("refs/heads");
         std::fs::create_dir_all(&refs_dir).expect("test precondition");
@@ -546,6 +694,7 @@ mod tests {
     fn dangling_symlink_loose_ref_is_unavailable_not_absent() {
         use std::os::unix::fs::symlink;
 
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("dangling-symlink-loose-ref");
         let refs_dir = root.join("refs/heads");
         std::fs::create_dir_all(&refs_dir).expect("test precondition");
@@ -567,6 +716,7 @@ mod tests {
     fn dangling_symlink_through_file_is_unavailable_not_absent() {
         use std::os::unix::fs::symlink;
 
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("dangling-symlink-through-file");
         let refs_dir = root.join("refs/heads");
         std::fs::create_dir_all(&refs_dir).expect("test precondition");
@@ -590,6 +740,7 @@ mod tests {
     fn symlink_loop_loose_ref_is_unavailable_not_absent() {
         use std::os::unix::fs::symlink;
 
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("symlink-loop-loose-ref");
         let refs_dir = root.join("refs/heads");
         std::fs::create_dir_all(&refs_dir).expect("test precondition");
@@ -613,6 +764,7 @@ mod tests {
 
     #[test]
     fn ref_path_through_a_file_still_reads_packed_refs() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("ref-path-through-file");
         let refs_dir = root.join("refs/heads");
         std::fs::create_dir_all(&refs_dir).expect("test precondition");
@@ -638,6 +790,7 @@ mod tests {
 
     #[test]
     fn absent_loose_ref_still_reads_packed_refs() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("packed-only-ref");
         std::fs::create_dir_all(root.join("refs/heads")).expect("test precondition");
         std::fs::write(
@@ -808,7 +961,7 @@ mod tests {
         let nested = bare.join("refs");
 
         let info = git_worktree_info(&nested).expect("bare repo should be discovered");
-        assert!(info.is_bare);
+        assert_eq!(git_repo_root(&nested), Some(bare.clone()));
         assert!(!info.is_linked_worktree);
         assert_eq!(info.git_dir, canonicalize_best_effort_path(&bare));
 
@@ -876,7 +1029,7 @@ mod tests {
         write_git_dir(&root.join(".git"), "main", true);
 
         let info = git_worktree_info(&root).expect("bare .git repo should be discovered");
-        assert!(info.is_bare);
+        assert_eq!(git_repo_root(&root), Some(root.clone()));
         assert!(!info.is_linked_worktree);
         assert_eq!(
             info.git_dir,
@@ -926,11 +1079,8 @@ mod tests {
     fn git_rev_parse_verify_reads_reftable_refs() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("reftable-ref-oid");
-        let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
-        let output = shepr_test_support::command_in_scratch("git", "reftable-ref-oid-init")
-            .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
-            .output()
+        let output = run_git_output(&root, &["init", "--ref-format=reftable", "-b", "main"])
             .expect("test precondition");
         if !output.status.success() {
             return;

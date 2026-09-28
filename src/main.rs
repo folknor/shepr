@@ -150,6 +150,7 @@ fn launch() -> CliResult<i32> {
     match &invocation.launch {
         cli::Launch::ApiBridge { check } => {
             let paths = resolve_bridge_paths(requested_session.clone())?;
+            init_bridge_logging(&paths)?;
             return finish_bridge(shepr_remote::run_remote_api_bridge(*check, &paths)?);
         }
         cli::Launch::ClientBridge => {
@@ -246,12 +247,10 @@ fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32>
     }
 }
 
-/// A client bridge runs on the remote host, spawned by the local client's
-/// ssh, and is its own process: nothing else has installed a logger in it.
-/// It writes that host's client log (never stdout, which carries the relayed
-/// stream), so an idle-watchdog expiry leaves a line saying why it fired. A
-/// log file that cannot be opened is reported on stderr, which ssh hands back
-/// to the local client as diagnostics.
+/// A bridge runs in its own process, so it installs the client file logger
+/// before its idle watchdog can log. It writes to the host's client log, never
+/// stdout, which carries the relayed stream. A log file that cannot be opened
+/// is reported on stderr, which ssh hands back to the local client.
 fn init_bridge_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
     shepr_platform::logging::init_file_logging_with_config(

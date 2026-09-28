@@ -388,17 +388,19 @@ pub(super) fn resolve_machine<'a>(
     Ok(profile)
 }
 
-/// Only commands that are pure API requests may run against a saved machine:
-/// no local side effects (config, sessions, integrations, machine catalog), no
-/// TUI or terminal attach, and no local file evaluation (`agent explain --file`).
+/// Only commands that can run safely against a saved machine are accepted:
+/// noninteractive server API requests, without local management, TUI or
+/// terminal attachment, or local file evaluation (`agent explain --file`).
 fn validate_machine_command(command: &super::CliCommand) -> Result<(), String> {
-    if command.is_api_command() {
+    if command.can_run_on_machine() {
         Ok(())
     } else {
+        let command_path = match command.subcommand_name() {
+            Some(subcommand) => format!("{} {subcommand}", command.name()),
+            None => command.name().to_owned(),
+        };
         Err(format!(
-            "`{} {}` is not an API-backed machine command; --machine does not run local management commands or attach a TUI",
-            command.name(),
-            command.subcommand_name(),
+            "`{command_path}` cannot run against a machine; --machine only supports noninteractive server API commands and does not run local management commands or attach a TUI",
         ))
     }
 }
@@ -578,7 +580,6 @@ mod tests {
             &["integration", "status"],
             &["config", "check"],
             &["status", "client"],
-            &["status"],
         ] {
             assert!(!machine_command_allowed(command), "{command:?}");
         }
@@ -589,11 +590,26 @@ mod tests {
             &["pane", "split", "w4:p1", "--direction", "right"],
             &["workspace", "list"],
             &["tab", "list"],
+            &["status"],
             &["status", "server"],
             &["server", "stop"],
         ] {
             assert!(machine_command_allowed(command), "{command:?}");
         }
+    }
+
+    #[test]
+    fn machine_refusal_formats_commands_without_a_subcommand_cleanly() {
+        let command = machine_cli_command(&["status", "client"]);
+        let error = validate_machine_command(&command).expect_err("client status is local");
+        assert_eq!(
+            error,
+            "`status client` cannot run against a machine; --machine only supports noninteractive server API commands and does not run local management commands or attach a TUI"
+        );
+
+        let overview = machine_cli_command(&["status"]);
+        assert_eq!(overview.subcommand_name(), None);
+        assert!(overview.can_run_on_machine());
     }
 
     #[test]

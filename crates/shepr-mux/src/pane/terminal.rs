@@ -268,16 +268,11 @@ impl PaneTerminal {
             .resolve_default_color_owner(pane_id, shell_pid, generation);
     }
 
-    /// See [`GhosttyPaneTerminal::flush_expired_synchronized_output`]. The
-    /// reader's `render_delay` timer should call this and deliver the result
-    /// like a PTY read's (replies to the child, clipboard writes, cwd, title).
-    pub(crate) fn flush_expired_synchronized_output(
-        &self,
-        pane_id: PaneId,
-        shell_pid: u32,
-    ) -> ProcessBytesResult {
-        self.ghostty
-            .flush_expired_synchronized_output(pane_id, shell_pid)
+    /// Flush an expired synchronized update. The runtime calls this before
+    /// parsing later child output and from its timeout task; render and read
+    /// paths do not flush implicitly.
+    pub(crate) fn tick(&self, now: Instant) -> ProcessBytesResult {
+        self.ghostty.tick(now)
     }
 
     pub(crate) fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {

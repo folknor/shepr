@@ -3,9 +3,11 @@
 //! Every environment variable a shepr process interprets is an [`EnvVar`]
 //! variant with a declared [`EnvKind`], and every read goes through [`read`]
 //! and its typed wrappers (or [`resolve`], the pure half over a value handed
-//! in). Variables shepr only sets, removes or inspects on a child's
-//! environment, and never reads from its own, are the separate [`ChildEnv`]
-//! vocabulary. The root `clippy.toml` denies `std::env::var`, `var_os`,
+//! in). Variables shepr only sets or removes on a child's environment are the
+//! separate [`ChildEnv`] vocabulary. `PATH` and `SHELL` appear in both tables:
+//! the process reads them to resolve its pane shell, then writes resolved
+//! values into the pane environment. The root `clippy.toml` denies
+//! `std::env::var`, `var_os`,
 //! `vars`, `vars_os`, `set_var` and `remove_var` everywhere else; the allowed
 //! sites outside this module (building a pane child's environment from the
 //! server's, the test isolation guard, test harness probes) each carry a
@@ -27,11 +29,10 @@
 //!   case; anything else is refused.
 //! - an absolute-path kind refuses a relative path, naming the variable.
 //!
-//! [`EnvKind::Handoff`] is the one exception to the text rules: a value one
-//! shepr process writes for a shepr child it spawns, carried byte for byte. The
-//! writer is shepr and the value is a directory the user happened to be in, so
-//! non-UTF-8 bytes or a trailing space are legitimate; only empty reads as
-//! unset.
+//! [`EnvKind::Handoff`] and [`EnvKind::Raw`] preserve OS strings byte for byte.
+//! A handoff is written by one shepr process for a child. Raw values are
+//! inherited `PATH` and `SHELL` inputs, where non-UTF-8 bytes and whitespace
+//! can be meaningful; only empty reads as unset.
 //!
 //! What a value means beyond its kind (a session name's grammar, a log filter's
 //! syntax, which directory a relative path is joined to) stays with the site
@@ -140,6 +141,13 @@ env_vocabulary! {
         XdgStateHome => "XDG_STATE_HOME",
         /// `XDG_RUNTIME_DIR`: the runtime tree's parent; it has no default.
         XdgRuntimeDir => "XDG_RUNTIME_DIR",
+        /// `SHELL`: the inherited shell used when `terminal.default_shell` is
+        /// empty. An unusable or unrecognized value fails the launch; unset
+        /// or blank means `/bin/sh`.
+        Shell => "SHELL",
+        /// `PATH`: the inherited executable search path used to resolve the
+        /// configured pane shell at launch.
+        Path => "PATH",
         /// `SSH_AUTH_SOCK`: the SSH agent socket panes are given access to.
         SshAuthSock => "SSH_AUTH_SOCK",
         /// `SSH_CONNECTION`: set by sshd; its presence means the clipboard is
@@ -194,8 +202,9 @@ env_vocabulary! {
 }
 
 env_vocabulary! {
-    /// Variables shepr sets, removes or inspects on a child's environment but
-    /// never reads from its own.
+    /// Variables shepr sets or removes in a child's environment. `PATH` and
+    /// `SHELL` are also in [`EnvVar`] because the process reads them when
+    /// resolving its pane shell.
     ///
     /// The closed vocabulary keeps every name shepr writes into a child in one
     /// place beside the names it reads, so the pane contract and the shipped
@@ -208,11 +217,9 @@ env_vocabulary! {
         Colorterm => "COLORTERM",
         /// `TERM_PROGRAM_VERSION`: shepr's version, beside `TERM_PROGRAM`.
         TermProgramVersion => "TERM_PROGRAM_VERSION",
-        /// `SHELL`: the resolved shell a pane child sees; the PTY layer reads
-        /// the child's copy to pick the shell.
+        /// `SHELL`: the resolved shell a pane child sees.
         Shell => "SHELL",
-        /// `PATH`: the child's executable search path, which the PTY layer
-        /// inspects to resolve the program before spawning it.
+        /// `PATH`: the child's executable search path.
         Path => "PATH",
         /// `SHEPR_BIN_PATH`: the shepr executable, for hook assets and tab-bar
         /// status commands to call back.
@@ -294,6 +301,9 @@ pub enum EnvKind {
     /// A path one shepr process hands a shepr child byte for byte: only empty
     /// reads as unset, and nothing is refused.
     Handoff,
+    /// An inherited OS string such as `PATH` or `SHELL`: only empty reads as
+    /// unset, and nothing is refused.
+    Raw,
 }
 
 impl EnvVar {
@@ -335,6 +345,7 @@ impl EnvVar {
             | Self::WaylandDisplay
             | Self::Display => EnvKind::Presence,
             Self::SheprStartupCwd => EnvKind::Handoff,
+            Self::Shell | Self::Path => EnvKind::Raw,
         }
     }
 }
@@ -413,7 +424,7 @@ pub enum EnvValue {
     Present,
     /// Any other UTF-8 kind's text, never empty and never padded.
     Text(String),
-    /// A [`EnvKind::Handoff`] value, never empty.
+    /// A [`EnvKind::Handoff`] or [`EnvKind::Raw`] value, never empty.
     Raw(OsString),
 }
 
@@ -429,7 +440,7 @@ pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, Env
     let refuse = |refusal| EnvError { var, refusal };
     let Some(raw) = raw else { return Ok(None) };
     let kind = var.kind();
-    if kind == EnvKind::Handoff {
+    if matches!(kind, EnvKind::Handoff | EnvKind::Raw) {
         return Ok((!raw.is_empty()).then(|| EnvValue::Raw(raw.to_owned())));
     }
     let text = raw.to_str().ok_or_else(|| refuse(EnvRefusal::NotUtf8))?;
@@ -441,7 +452,8 @@ pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, Env
             | EnvKind::Path
             | EnvKind::AbsolutePath
             | EnvKind::Presence
-            | EnvKind::Handoff => Ok(None),
+            | EnvKind::Handoff
+            | EnvKind::Raw => Ok(None),
         };
     }
     if text.trim() != text {
@@ -464,7 +476,7 @@ pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, Env
         EnvKind::Text | EnvKind::Selector | EnvKind::Path => {
             Ok(Some(EnvValue::Text(text.to_owned())))
         }
-        EnvKind::Handoff => Ok(Some(EnvValue::Raw(raw.to_owned()))),
+        EnvKind::Handoff | EnvKind::Raw => Ok(Some(EnvValue::Raw(raw.to_owned()))),
     }
 }
 
@@ -655,6 +667,33 @@ pub fn read_path(var: EnvVar) -> Result<Option<PathBuf>, EnvError> {
     resolve_path(var, raw(var).as_deref())
 }
 
+/// Resolves one byte-preserving value such as `PATH` or `SHELL`.
+///
+/// # Panics
+///
+/// When `var` is not a [`EnvKind::Raw`] or [`EnvKind::Handoff`] value.
+pub fn resolve_os(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<OsString>, EnvError> {
+    assert!(
+        matches!(var.kind(), EnvKind::Raw | EnvKind::Handoff),
+        "{var} is not an OS-string variable"
+    );
+    Ok(resolve(var, raw)?.map(|value| match value {
+        EnvValue::Raw(raw) => raw,
+        EnvValue::Flag(_) | EnvValue::Present | EnvValue::Text(_) => {
+            unreachable!("an OS-string variable resolves to a raw value")
+        }
+    }))
+}
+
+/// Reads one byte-preserving environment value such as `PATH` or `SHELL`.
+///
+/// # Panics
+///
+/// As [`resolve_os`].
+pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
+    resolve_os(var, raw(var).as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::ffi::OsStrExt as _;
@@ -664,7 +703,9 @@ mod tests {
     /// The table: every interpreted variable's name and kind, spelled out.
     #[test]
     fn every_variable_has_its_documented_name_and_kind() {
-        use EnvKind::{AbsolutePath, Flag, Handoff, Path, Presence, Selector, SelectorPath, Text};
+        use EnvKind::{
+            AbsolutePath, Flag, Handoff, Path, Presence, Raw, Selector, SelectorPath, Text,
+        };
         let table: &[(EnvVar, &str, EnvKind)] = &[
             (EnvVar::SheprConfigPath, "SHEPR_CONFIG_PATH", Path),
             (EnvVar::SheprSession, "SHEPR_SESSION", Selector),
@@ -693,6 +734,8 @@ mod tests {
             (EnvVar::XdgConfigHome, "XDG_CONFIG_HOME", AbsolutePath),
             (EnvVar::XdgStateHome, "XDG_STATE_HOME", AbsolutePath),
             (EnvVar::XdgRuntimeDir, "XDG_RUNTIME_DIR", AbsolutePath),
+            (EnvVar::Shell, "SHELL", Raw),
+            (EnvVar::Path, "PATH", Raw),
             (EnvVar::SshAuthSock, "SSH_AUTH_SOCK", Path),
             (EnvVar::SshConnection, "SSH_CONNECTION", Presence),
             (EnvVar::SshTty, "SSH_TTY", Presence),
@@ -737,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn the_child_vocabulary_is_closed_and_disjoint_from_the_interpreted_one() {
+    fn the_child_vocabulary_only_overlaps_on_inherited_shell_inputs() {
         let names: Vec<&str> = ChildEnv::ALL.iter().copied().map(ChildEnv::name).collect();
         assert_eq!(
             names,
@@ -772,6 +815,13 @@ mod tests {
                 "OMPCODE",
             ]
         );
+        let interpreted: Vec<&str> = EnvVar::ALL.iter().copied().map(EnvVar::name).collect();
+        let shared: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| interpreted.contains(name))
+            .collect();
+        assert_eq!(shared, ["SHELL", "PATH"]);
         let mut all: Vec<&str> = EnvVar::ALL
             .iter()
             .copied()
@@ -781,11 +831,7 @@ mod tests {
         let total = all.len();
         all.sort_unstable();
         all.dedup();
-        assert_eq!(
-            all.len(),
-            total,
-            "a name appears twice across the vocabularies"
-        );
+        assert_eq!(all.len(), total - shared.len(), "only shell inputs overlap");
     }
 
     /// The shared policy, over every variable: unset is unset and so is empty
@@ -799,14 +845,15 @@ mod tests {
             if !matches!(kind, EnvKind::Selector | EnvKind::SelectorPath) {
                 assert_eq!(resolve(var, Some(OsStr::new(""))), Ok(None), "{var} empty");
             }
-            if kind == EnvKind::Handoff {
-                // Carried byte for byte: nothing but empty is special.
+            if matches!(kind, EnvKind::Handoff | EnvKind::Raw) {
+                // Preserved byte for byte: nothing but empty is special.
                 for raw in [non_utf8, OsStr::new(" /a b ")] {
-                    assert_eq!(
-                        resolve_path(var, Some(raw)),
-                        Ok(Some(PathBuf::from(raw))),
-                        "{var}"
-                    );
+                    let resolved = if kind == EnvKind::Handoff {
+                        resolve_path(var, Some(raw)).map(|path| path.map(PathBuf::into_os_string))
+                    } else {
+                        resolve_os(var, Some(raw))
+                    };
+                    assert_eq!(resolved, Ok(Some(raw.to_os_string())), "{var}");
                 }
                 continue;
             }
@@ -829,7 +876,8 @@ mod tests {
                 | EnvKind::Selector
                 | EnvKind::Path
                 | EnvKind::Presence
-                | EnvKind::Handoff => "value",
+                | EnvKind::Handoff
+                | EnvKind::Raw => "value",
             };
             assert!(
                 resolve(var, Some(OsStr::new(good)))

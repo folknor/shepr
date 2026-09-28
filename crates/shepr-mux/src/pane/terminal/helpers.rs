@@ -7,7 +7,7 @@ pub(super) struct CoreEffects {
     pub(super) reported_cwd: Option<std::path::PathBuf>,
     pub(super) terminal_responses: Vec<Bytes>,
     /// The child set a default colour: the program that did it is to be
-    /// looked up once the terminal lock is released
+    /// looked up once the terminal, content and reply-order locks are released
     /// ([`GhosttyPaneTerminal::resolve_default_color_owner`]).
     pub(super) default_color_owner_pending: bool,
 }
@@ -60,8 +60,9 @@ pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool 
 /// override is left (the child reset it with OSC 110/111, or RIS), and
 /// reports whether the child just set an override whose owner still has to
 /// be looked up. The lookup scans `/proc`, so the caller does it after
-/// releasing the terminal lock ([`GhosttyPaneTerminal::resolve_default_color_owner`]);
-/// `shell_pid` 0 (no child yet) is handled there.
+/// releasing the terminal, content and reply-order locks
+/// ([`GhosttyPaneTerminal::resolve_default_color_owner`]); `shell_pid` 0 (no
+/// child yet) is handled there.
 pub(super) fn note_default_color_change(core: &mut GhosttyPaneCore) -> bool {
     let set = core.terminal.take_default_color_set();
     if set {
@@ -109,18 +110,13 @@ pub(super) fn color_query_response(query: &shepr_vt::ColorQuery) -> Option<Bytes
     Some(osc_rgb_response(&command, color.r, color.g, color.b))
 }
 
-pub(super) fn flush_expired_synchronized_output(core: &mut GhosttyPaneCore) {
-    if core.terminal.flush_expired_synchronized_output() {
-        core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
-    }
-}
-
 pub(super) fn current_cursor_state(core: &mut GhosttyPaneCore) -> Option<TerminalCursorState> {
     let GhosttyPaneCore {
         terminal,
         render_state,
         ..
     } = core;
+    let terminal: &shepr_vt::Terminal = terminal;
     render_state.update(terminal);
     cursor_state_from_render_state(render_state, terminal.cursor_shape_overridden())
 }
@@ -170,6 +166,7 @@ pub(super) fn ghostty_collect_dirty_patch(
         render_state,
         ..
     } = core;
+    let terminal: &shepr_vt::Terminal = terminal;
     render_state.update(terminal);
     match render_state.dirty() {
         shepr_vt::Dirty::Clean => finish!(TerminalDirtyPatchOutcome::Clean),
@@ -262,6 +259,7 @@ pub(super) fn ghostty_visible_hyperlinks(
         render_state,
         ..
     } = core;
+    let terminal: &shepr_vt::Terminal = terminal;
     render_state.update(terminal);
     let mut links = Vec::new();
     for row in render_state.iter_rows().take(usize::from(area.height)) {

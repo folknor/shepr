@@ -18,7 +18,7 @@ use crate::server::ClientId;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, RawFd};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -46,14 +46,15 @@ use crate::server::pane_input::{
     apply_client_pane_input_events, apply_terminal_attach_input, apply_terminal_attach_scroll,
     terminal_attach_mouse_position,
 };
-use crate::server::socket_paths::{client_socket_path, prepare_socket_path};
+use crate::server::socket_paths::client_socket_path;
 use shepr_api::{self, RenderDemand};
 use shepr_mux::events::AppEvent;
-#[cfg(test)]
-use shepr_platform::ipc::bind_local_listener;
 use shepr_platform::ipc::{
-    LocalListener, SocketFileIdentity, remove_socket_file_if_owned, socket_file_identity,
+    LocalListener, SocketFileIdentity, SocketStartupLock, bind_private_socket,
+    remove_socket_file_if_owned,
 };
+#[cfg(test)]
+use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
 use shepr_protocol::{AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
 
 mod api_dispatcher;
@@ -176,6 +177,9 @@ pub struct HeadlessServer {
     /// over the configured `ui.window_title` until the API clears it again.
     api_window_title: Option<String>,
     /// Pending API work lives with the server state it routes and mutates.
+    /// Each retained item belongs to an API request awaiting its response.
+    /// The API listener admits at most 64 connections, with one request per
+    /// connection, so these queues are collectively bounded at 64 items.
     /// Alternate-screen reads that are being captured without an attached client.
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
     deferred_alt_screen_reads: Vec<shepr_api::ApiRequestMessage>,
@@ -224,14 +228,16 @@ pub struct HeadlessServer {
     shutdown_flushes: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// Pane exits held until their pre-removal session checkpoint reaches disk.
     pending_checkpointed_pane_exits: VecDeque<shepr_mux::events::AppEvent>,
+    // Kept after the listener so it is released only after socket cleanup and listener drop.
+    _client_socket_startup_lock: SocketStartupLock,
 }
 
 impl HeadlessServer {
     /// Creates and starts the headless server.
     ///
     /// This:
-    /// 1. Prepares the client socket path (cleans up stale sockets)
-    /// 2. Binds the client socket listener
+    /// 1. Locks and prepares the client socket path (cleaning up stale sockets)
+    /// 2. Binds the private client socket listener
     /// 3. Returns the server ready to run
     pub fn new(
         app: app::App,
@@ -240,14 +246,31 @@ impl HeadlessServer {
         stop_requested: Arc<AtomicBool>,
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
-        prepare_socket_path(&client_path)?;
-
-        let listener = bind_owner_only_listener(&client_path)?;
-        let client_socket_identity = socket_file_identity(&client_path)?;
+        let (listener, client_socket_startup_lock, client_socket_identity) =
+            bind_private_socket(&client_path, |path| {
+                format!(
+                    "shepr server is already running (socket busy at {})",
+                    path.display()
+                )
+            })?;
         info!(path = %client_path.display(), "client protocol socket listening");
 
         // Accept all queued connections when the listener becomes readable.
-        listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
+        if let Err(error) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
+            if let Err(cleanup_error) =
+                remove_socket_file_if_owned(&client_path, &client_socket_identity)
+                && cleanup_error.kind() != io::ErrorKind::NotFound
+            {
+                warn!(
+                    path = %client_path.display(),
+                    err = %cleanup_error,
+                    "failed to remove client socket after listener setup failed"
+                );
+            }
+            drop(listener);
+            drop(client_socket_startup_lock);
+            return Err(error);
+        }
 
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
@@ -292,6 +315,7 @@ impl HeadlessServer {
             server_event_tx,
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
+            _client_socket_startup_lock: client_socket_startup_lock,
         })
     }
 
@@ -2217,25 +2241,6 @@ async fn sleep_until_or_pending(deadline: Option<Instant>) {
         Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
         None => std::future::pending().await,
     }
-}
-
-/// Binds the client socket owner-only from the moment it is reachable (see
-/// `ipc::bind_private_local_listener`), naming the server in the error when
-/// another one won the race to the path.
-fn bind_owner_only_listener(path: &Path) -> io::Result<LocalListener> {
-    shepr_platform::ipc::bind_private_local_listener(path).map_err(|err| {
-        if err.kind() == io::ErrorKind::AddrInUse {
-            io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!(
-                    "shepr server is already running (socket busy at {})",
-                    path.display()
-                ),
-            )
-        } else {
-            err
-        }
-    })
 }
 
 // ---------------------------------------------------------------------------

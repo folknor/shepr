@@ -427,7 +427,6 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
-        self.flush_expired_synchronized_output();
         let events = self.scanner.scan(bytes);
         let mut written = 0usize;
         for scanned in events {
@@ -493,17 +492,19 @@ impl Terminal {
     }
 
     /// Ends a synchronized update (mode 2026) whose timeout has passed so its
-    /// buffered output becomes visible. Returns whether anything was flushed.
+    /// buffered output becomes visible. The runtime calls this from its tick
+    /// path, before rendering or before parsing later child output. Returns
+    /// whether anything was flushed.
     ///
     /// The frame's effects (replies, clipboard writes, title and colour
     /// changes) stay queued like any other write's, for whoever collects
     /// them next; nothing here discards them.
-    pub fn flush_expired_synchronized_output(&mut self) -> bool {
+    pub fn tick(&mut self, now: Instant) -> bool {
         let expired = self
             .parser
             .sync_timeout()
             .sync_timeout()
-            .is_some_and(|deadline| Instant::now() >= deadline);
+            .is_some_and(|deadline| now >= deadline);
         if expired {
             self.with_handler(|handler, parser| parser.stop_sync(handler));
             self.collect_damage();

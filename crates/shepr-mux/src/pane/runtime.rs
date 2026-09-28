@@ -366,41 +366,155 @@ fn publish_reported_cwd(
     }
 }
 
-// Callers handle `core_poisoned` before applying state and event effects.
-fn apply_process_result(
+/// What a pane's PTY read callback and its synchronized-output timer share,
+/// behind one `Arc`: a read that defers work clones one pointer, not a dozen.
+struct PaneReadEffects {
     pane_id: PaneId,
+    terminal: Arc<PaneTerminal>,
+    render_notify: Arc<Notify>,
+    render_dirty: Arc<RenderSignal>,
+    reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
+    events: mpsc::Sender<AppEvent>,
+    content_write_lock: Arc<Mutex<()>>,
+    content_seq: Arc<AtomicU64>,
+    detection_content_seq: Arc<AtomicU64>,
+    child_liveness: Arc<ChildLiveness>,
+    sync_timeout_render: SyncTimeoutRender,
+    /// The PTY actor's handle, set once the actor exists; the timer queues
+    /// the replies of a flushed frame through it.
+    timer_writer: std::sync::OnceLock<PtyIoActorHandle>,
+    rt: tokio::runtime::Handle,
+}
+
+/// The effects of a terminal write that may block: the `/proc` scan for the
+/// default-colour owner and the readlink behind an OSC 7 report. They run
+/// with no terminal, content or reply-order lock held.
+struct DeferredEffects {
     shell_pid: u32,
-    result: ProcessBytesResult,
-    terminal: &PaneTerminal,
-    render_notify: &Notify,
-    render_dirty: &RenderSignal,
-    reported_cwd: &Arc<Mutex<Option<ReportedCwd>>>,
-    events: &mpsc::Sender<AppEvent>,
-) -> Vec<Bytes> {
-    if result.default_color_owner_pending {
-        terminal.resolve_default_color_owner(pane_id, shell_pid, result.default_color_generation);
+    default_color_generation: Option<u64>,
+    reported_cwd: Option<std::path::PathBuf>,
+}
+
+impl PaneReadEffects {
+    /// Applies the effects that never block (render and title requests,
+    /// clipboard writes) and returns the ones that may, if any. A read with
+    /// nothing to defer, the common case, allocates nothing for them.
+    fn apply_immediate(
+        &self,
+        shell_pid: u32,
+        result: ProcessBytesResult,
+    ) -> Option<DeferredEffects> {
+        let pane_id = self.pane_id;
+        let title_requested =
+            result.terminal_title_changed && self.render_dirty.request_terminal_title(pane_id);
+        let render_requested = result.request_render && self.render_dirty.request_pty(pane_id);
+        if title_requested || render_requested {
+            self.render_notify.notify_one();
+        }
+        for content in result.clipboard_writes {
+            if let Err(err) = self.events.try_send(AppEvent::ClipboardWrite { content }) {
+                warn!(
+                    pane = pane_id.raw(),
+                    err = %err,
+                    "failed to send OSC 52 clipboard write"
+                );
+            }
+        }
+        (result.default_color_owner_pending || result.reported_cwd.is_some()).then(|| {
+            DeferredEffects {
+                shell_pid,
+                default_color_generation: result
+                    .default_color_owner_pending
+                    .then_some(result.default_color_generation),
+                reported_cwd: result.reported_cwd,
+            }
+        })
     }
 
-    let title_requested =
-        result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
-    let render_requested = result.request_render && render_dirty.request_pty(pane_id);
-    if title_requested || render_requested {
-        render_notify.notify_one();
-    }
-
-    if let Some(cwd) = result.reported_cwd {
-        publish_reported_cwd(pane_id, shell_pid, cwd, reported_cwd, events);
-    }
-    for content in result.clipboard_writes {
-        if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
-            warn!(
-                pane = pane_id.raw(),
-                err = %err,
-                "failed to send OSC 52 clipboard write"
+    fn apply_deferred(&self, deferred: DeferredEffects) {
+        if let Some(generation) = deferred.default_color_generation {
+            self.terminal
+                .resolve_default_color_owner(self.pane_id, deferred.shell_pid, generation);
+        }
+        if let Some(cwd) = deferred.reported_cwd {
+            publish_reported_cwd(
+                self.pane_id,
+                deferred.shell_pid,
+                cwd,
+                &self.reported_cwd,
+                &self.events,
             );
         }
     }
-    result.terminal_responses
+
+    /// Makes sure a task will flush the synchronized update this read began
+    /// or continued once `delay` passes, so a child that goes quiet inside an
+    /// update it never ends still gets its frame shown and its queries
+    /// answered. One task per pane serves every read's request.
+    fn arm_sync_timeout(self: &Arc<Self>, delay: std::time::Duration) {
+        let Some(first_wake) = self
+            .sync_timeout_render
+            .arm(std::time::Instant::now() + delay)
+        else {
+            return;
+        };
+        let effects = Arc::clone(self);
+        self.rt.spawn(async move {
+            let mut wake_at = first_wake;
+            loop {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at)).await;
+                match effects.sync_timeout_render.next_wake(wake_at) {
+                    Some(later) => wake_at = later,
+                    None => break,
+                }
+            }
+            // The terminal and content locks are synchronous. Keep their wait
+            // off a Tokio worker when a timer fires.
+            tokio::task::spawn_blocking(move || effects.flush_expired_synchronized_output());
+        });
+    }
+
+    /// The timer's half of the runtime tick: flush an expired update, queue
+    /// its replies at one point in the reply order (taken before the content
+    /// and core locks, as the reader does), then apply its effects with no
+    /// lock held.
+    fn flush_expired_synchronized_output(&self) {
+        let mut tick_result = None;
+        let mut tick = || {
+            let content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
+            self.content_seq.fetch_add(1, Ordering::AcqRel);
+            let mut result = self.terminal.tick(std::time::Instant::now());
+            self.content_seq.fetch_add(1, Ordering::Release);
+            drop(content_write_guard);
+            let replies = std::mem::take(&mut result.terminal_responses);
+            tick_result = Some(result);
+            replies
+        };
+        match self.timer_writer.get() {
+            Some(writer) => writer.write_terminal_responses(tick),
+            // The actor is set right after it spawns, so this is only a timer
+            // that beat that store. Flush anyway: the frame must not stay
+            // hidden until the child's next output. Its replies have no route.
+            None => drop(tick()),
+        }
+        let Some(result) = tick_result else {
+            return;
+        };
+        if result.core_poisoned {
+            // The PTY actor checks the poisoned core on every loop, including
+            // idle polls, and reports that exit through its broken-core path.
+            return;
+        }
+        if result.request_render {
+            // A timer has no PTY input bytes to count; only a flushed frame
+            // advances detection's screen-content revision here.
+            self.detection_content_seq.fetch_add(1, Ordering::AcqRel);
+        }
+        let shell_pid = self.child_liveness.pid();
+        if let Some(deferred) = self.apply_immediate(shell_pid, result) {
+            self.apply_deferred(deferred);
+        }
+    }
 }
 
 impl PaneRuntime {
@@ -602,21 +716,24 @@ impl PaneRuntime {
             // The shadowed clone below moves into the read callback; the
             // startup-failure path needs its own handle on the same liveness.
             let startup_child_liveness = Arc::clone(&child_liveness);
-            let timer_writer = Arc::new(std::sync::OnceLock::<PtyIoActorHandle>::new());
             let health_terminal = Arc::clone(&terminal);
-            let terminal = Arc::clone(&terminal);
-            let render_notify = Arc::clone(render_notify);
-            let render_dirty = Arc::clone(render_dirty);
-            let content_seq = Arc::clone(&content_seq);
-            let content_write_lock = Arc::clone(&content_write_lock);
-            let detection_content_seq = Arc::clone(&detection_content_seq);
-            let child_liveness = Arc::clone(&child_liveness);
-            let events = events.clone();
             let reader_exit_events = events.clone();
-            let reported_cwd = Arc::clone(&reported_cwd);
-            let rt = tokio::runtime::Handle::current();
-            let sync_timeout_render = Arc::new(SyncTimeoutRender::default());
-            let timer_writer_for_read = Arc::clone(&timer_writer);
+            let effects = Arc::new(PaneReadEffects {
+                pane_id,
+                terminal: Arc::clone(&terminal),
+                render_notify: Arc::clone(render_notify),
+                render_dirty: Arc::clone(render_dirty),
+                reported_cwd: Arc::clone(&reported_cwd),
+                events: events.clone(),
+                content_write_lock: Arc::clone(&content_write_lock),
+                content_seq: Arc::clone(&content_seq),
+                detection_content_seq: Arc::clone(&detection_content_seq),
+                child_liveness: Arc::clone(&child_liveness),
+                sync_timeout_render: SyncTimeoutRender::default(),
+                timer_writer: std::sync::OnceLock::new(),
+                rt: tokio::runtime::Handle::current(),
+            });
+            let read_effects = Arc::clone(&effects);
             let output = PaneOutputWriter {
                 pane_id,
                 terminal: Arc::clone(&terminal),
@@ -625,93 +742,34 @@ impl PaneRuntime {
             };
             let on_read = Box::new(move |bytes: &[u8]| {
                 let write = output.begin();
-                let shell_pid = child_liveness.pid();
-                let result = write.process(shell_pid, bytes);
+                let shell_pid = read_effects.child_liveness.pid();
+                // Ticks an expired synchronized update first, then parses; the
+                // content write lock is released when this returns.
+                let mut result = write.process(shell_pid, bytes);
                 if result.core_poisoned {
                     // The actor ends the loop and reports the pane dead.
                     return PtyReadResult {
                         terminal_responses: Vec::new(),
+                        after_response_order: None,
                         core_broken: true,
                     };
                 }
-                observe_detection_content_change(bytes, &detection_content_seq);
-                let render_delay = result.render_delay;
-                let terminal_responses = apply_process_result(
-                    pane_id,
-                    shell_pid,
-                    result,
-                    &terminal,
-                    &render_notify,
-                    &render_dirty,
-                    &reported_cwd,
-                    &events,
-                );
-                if let Some(delay) = render_delay
-                    && let Some(first_wake) =
-                        sync_timeout_render.arm(std::time::Instant::now() + delay)
-                {
-                    // These captures are per synchronized-output deadline,
-                    // not per PTY read; the shared result effects run below.
-                    let sync_timeout_render = Arc::clone(&sync_timeout_render);
-                    let render_notify = Arc::clone(&render_notify);
-                    let render_dirty = Arc::clone(&render_dirty);
-                    let terminal = Arc::clone(&terminal);
-                    let content_write_lock = Arc::clone(&content_write_lock);
-                    let content_seq = Arc::clone(&content_seq);
-                    let detection_content_seq = Arc::clone(&detection_content_seq);
-                    let child_liveness = Arc::clone(&child_liveness);
-                    let reported_cwd = Arc::clone(&reported_cwd);
-                    let events = events.clone();
-                    let timer_writer = Arc::clone(&timer_writer_for_read);
-                    rt.spawn(async move {
-                        let mut wake_at = first_wake;
-                        loop {
-                            tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at)).await;
-                            match sync_timeout_render.next_wake(wake_at) {
-                                Some(later) => wake_at = later,
-                                None => break,
-                            }
-                        }
-                        // The terminal and content locks are synchronous. Keep
-                        // their wait off a Tokio worker when a timer fires.
-                        tokio::task::spawn_blocking(move || {
-                            let _content_write_guard =
-                                shepr_vt::lock_auxiliary(&content_write_lock);
-                            content_seq.fetch_add(1, Ordering::AcqRel);
-                            let result = terminal
-                                .flush_expired_synchronized_output(pane_id, child_liveness.pid());
-                            content_seq.fetch_add(1, Ordering::Release);
-                            drop(_content_write_guard);
-                            if result.core_poisoned {
-                                // The PTY actor checks the poisoned core on every loop, including
-                                // idle polls, and reports that exit through its broken-core path.
-                                return;
-                            }
-                            if result.request_render {
-                                // A timer has no PTY input bytes to count; only a flushed frame
-                                // advances detection's screen-content revision here.
-                                detection_content_seq.fetch_add(1, Ordering::AcqRel);
-                            }
-                            let terminal_responses = apply_process_result(
-                                pane_id,
-                                child_liveness.pid(),
-                                result,
-                                &terminal,
-                                &render_notify,
-                                &render_dirty,
-                                &reported_cwd,
-                                &events,
-                            );
-                            if let Some(writer) = timer_writer.get() {
-                                for response in terminal_responses {
-                                    writer.write_terminal_response(|| Some(response));
-                                }
-                            }
-                        });
-                    });
+                observe_detection_content_change(bytes, &read_effects.detection_content_seq);
+                let terminal_responses = std::mem::take(&mut result.terminal_responses);
+                if let Some(delay) = result.render_delay {
+                    read_effects.arm_sync_timeout(delay);
                 }
+                let after_response_order: Option<Box<dyn FnOnce() + Send>> = read_effects
+                    .apply_immediate(shell_pid, result)
+                    .map(|deferred| {
+                        let effects = Arc::clone(&read_effects);
+                        let run: Box<dyn FnOnce() + Send> =
+                            Box::new(move || effects.apply_deferred(deferred));
+                        run
+                    });
                 PtyReadResult {
                     terminal_responses,
+                    after_response_order,
                     core_broken: false,
                 }
             });
@@ -787,7 +845,7 @@ impl PaneRuntime {
             };
             // `timer_writer` was created empty above and this is its only
             // `set`, so it cannot already hold a handle.
-            timer_writer.set(actor.clone()).ok();
+            effects.timer_writer.set(actor.clone()).ok();
             Box::new(actor)
         };
 
@@ -2255,6 +2313,47 @@ mod tests {
         assert_eq!(timer.next_wake(deadline), Some(later));
         assert_eq!(timer.next_wake(later), None, "the task disarms and renders");
         assert_eq!(timer.arm(later), Some(later), "a disarmed timer re-arms");
+    }
+
+    /// A child that opens a synchronized update and then goes quiet still gets
+    /// its frame shown: the read arms the timeout task, which ticks the
+    /// terminal and requests the render with no further PTY bytes.
+    #[tokio::test]
+    async fn an_update_left_open_by_a_quiet_child_is_flushed_by_the_timeout_task() {
+        let pane_id = PaneId::from_raw(7);
+        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(
+            shepr_vt::Terminal::new(20, 5, 0),
+        )));
+        let (events, _events_rx) = mpsc::channel(8);
+        let effects = Arc::new(PaneReadEffects {
+            pane_id,
+            terminal: Arc::clone(&terminal),
+            render_notify: Arc::new(Notify::new()),
+            render_dirty: Arc::new(RenderSignal::new()),
+            reported_cwd: Arc::new(Mutex::new(None)),
+            events,
+            content_write_lock: Arc::new(Mutex::new(())),
+            content_seq: Arc::new(AtomicU64::new(0)),
+            detection_content_seq: Arc::new(AtomicU64::new(0)),
+            child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            sync_timeout_render: SyncTimeoutRender::default(),
+            timer_writer: std::sync::OnceLock::new(),
+            rt: tokio::runtime::Handle::current(),
+        });
+
+        let begin = terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026hframe");
+        let delay = begin.render_delay.expect("the update is open");
+        assert!(terminal.synchronized_output_active());
+        let notified = effects.render_notify.notified();
+        effects.arm_sync_timeout(delay);
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), notified)
+            .await
+            .expect("the timeout task requests a render");
+        assert!(!terminal.synchronized_output_active());
+        assert_eq!(effects.content_seq.load(Ordering::Acquire), 2);
+        assert_eq!(effects.detection_content_seq.load(Ordering::Acquire), 1);
+        assert!(effects.render_dirty.is_pending());
     }
 
     #[test]

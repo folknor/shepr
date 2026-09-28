@@ -107,7 +107,7 @@ impl TerminalState {
             return None;
         }
         if reanchor_sequence {
-            self.hook_report_sequences.remove(&source);
+            self.clear_hook_report_sequence(&source);
         }
         if !self.accept_hook_report(&source, seq) {
             return None;
@@ -579,6 +579,9 @@ impl TerminalState {
                 .any(|(validated_source, _, _, _)| validated_source == source)
                 || !shepr_agent::detect::full_lifecycle_hook_authority(source, detected_label)
         });
+        let sequences = &self.hook_report_sequences;
+        self.hook_report_accepted_at
+            .retain(|source, _| sequences.contains_key(source));
         for (source, agent_label, session_ref, pending) in validated_replacement_sessions {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
             self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
@@ -592,8 +595,9 @@ impl TerminalState {
                 continue;
             };
             self.persisted_agent_session = Some(persisted_session);
-            if let Some(pending) = pending {
-                self.record_hook_seq(source, pending.seq, Instant::now());
+            if let Some(pending) = pending
+                && self.record_hook_seq(source, pending.seq, Instant::now())
+            {
                 self.hook_authority = Some(pending.authority);
             }
         }
@@ -617,6 +621,14 @@ impl TerminalState {
             .iter()
             .any(|existing| existing == &stale_session)
         {
+            if source_stale_sessions.len() >= MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE {
+                let stale_to_forget = source_stale_sessions.len()
+                    - MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE
+                    + 1;
+                source_stale_sessions
+                    .drain(..stale_to_forget)
+                    .for_each(drop);
+            }
             source_stale_sessions.push(stale_session);
         }
     }

@@ -1,15 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::{AheadBehind, WorkspaceGitStatusSnapshot};
+use super::{AheadBehind, GitReadError, WorkspaceGitStatusSnapshot};
 
 use super::{
-    config::{ConfigCtx, FileDep, deps_current, read_config, stamp, upstream_full_ref},
+    config::{ConfigCtx, FileDep, deps_current, read_config_for_status, stamp, upstream_full_ref},
     discovery::{
         GitWorktreeInfo, automatic_workspace_label, canonicalize_best_effort_path,
-        fallback_label_from_cwd, git_ref_storage_is_reftable, git_rev_parse_verify,
-        git_space_metadata_from_info, git_symbolic_head_full, git_worktree_info, read_git_ref_file,
-        read_ref_oid,
+        fallback_label_from_cwd, git_ref_storage_is_reftable, git_rev_parse_verify_with_errors,
+        git_space_metadata_from_info, git_symbolic_head_full, git_trimmed_stdout,
+        git_worktree_info, git_worktree_info_with_errors, read_git_ref_file,
+        read_ref_oid_with_errors,
     },
 };
 
@@ -38,6 +39,7 @@ pub struct GitStatusCacheEntry {
     pub fingerprint: Option<GitStatusFingerprint>,
     pub retry_after: Option<Instant>,
     pub snapshot: WorkspaceGitStatusSnapshot,
+    pub read_errors: Vec<GitReadError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,18 +51,37 @@ pub struct GitStatusFingerprint {
 
 type RepoContext = (GitWorktreeInfo, bool, Vec<FileDep>, Option<ConfigCtx>);
 
-fn repo_context(cwd: &Path) -> Option<RepoContext> {
-    let info = git_worktree_info(cwd)?;
-    let (reftable, config_deps) = git_ref_storage_is_reftable(&info).ok()?;
+fn repo_context(cwd: &Path, read_errors: &mut Vec<GitReadError>) -> Option<RepoContext> {
+    let info = git_worktree_info_with_errors(cwd, read_errors)?;
+    let (reftable, config_deps) = match git_ref_storage_is_reftable(&info) {
+        Ok(result) => result,
+        Err(error) => {
+            read_errors.push(GitReadError::FileRead {
+                path: info.git_common_dir.join("config"),
+                message: error.to_string(),
+            });
+            return None;
+        }
+    };
     let mut paths = vec![info.repo_root.join(".git"), info.git_dir.join("commondir")];
     paths.push(info.git_dir.join("HEAD"));
     paths.push(info.git_common_dir.join("config"));
     paths.extend((info.git_dir != info.git_common_dir).then(|| info.git_dir.join("config")));
     let mut deps: Vec<_> = paths.into_iter().map(|path| stamp(path, None)).collect();
     deps.extend(config_deps);
-    deps[0].2 &= git_worktree_info(cwd).as_ref() == Some(&info)
-        && git_ref_storage_is_reftable(&info)
-            .is_ok_and(|(current_reftable, _)| current_reftable == reftable)
+    let current_info = git_worktree_info_with_errors(cwd, read_errors);
+    let current_reftable = match git_ref_storage_is_reftable(&info) {
+        Ok((current_reftable, _)) => Some(current_reftable),
+        Err(error) => {
+            read_errors.push(GitReadError::FileRead {
+                path: info.git_common_dir.join("config"),
+                message: error.to_string(),
+            });
+            None
+        }
+    };
+    deps[0].2 &= current_info.as_ref() == Some(&info)
+        && current_reftable == Some(reftable)
         && deps_current(&deps);
     Some((info, reftable, deps, None))
 }
@@ -103,6 +124,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     demand: GitStatusRefreshDemand,
 ) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
     let now = Instant::now();
+    let mut read_errors = Vec::new();
     if let Some(cached) = cached.filter(|entry| {
         entry.fingerprint.is_none()
             && entry
@@ -116,7 +138,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
         .and_then(|entry| entry.fingerprint.as_ref())
         .map(|fingerprint| fingerprint.repository_context.clone())
         .filter(|context| deps_current(&context.2))
-        .or_else(|| repo_context(cwd));
+        .or_else(|| repo_context(cwd, &mut read_errors));
     let Some(repository_context) = repository_context else {
         let snapshot = WorkspaceGitStatusSnapshot {
             auto_label: fallback_label_from_cwd(cwd),
@@ -130,6 +152,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 fingerprint: None,
                 retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
                 snapshot,
+                read_errors,
             }),
         );
     };
@@ -137,7 +160,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     let space = git_space_metadata_from_info(&repository_context.0);
 
     if !demand.ahead_behind {
-        let fingerprint = fingerprint(repository_context, false);
+        let fingerprint = fingerprint(repository_context, false, &mut read_errors);
         let branch = demand
             .branch
             .then(|| fingerprint.as_ref()?.branch_name())
@@ -174,18 +197,20 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                     ahead_behind,
                     ..snapshot.clone()
                 },
+                read_errors,
             }
         } else {
             GitStatusCacheEntry {
                 fingerprint: None,
                 retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
                 snapshot: snapshot.clone(),
+                read_errors,
             }
         };
         return (snapshot, Some(cache_entry));
     }
 
-    let Some(fingerprint) = fingerprint(repository_context, true) else {
+    let Some(fingerprint) = fingerprint(repository_context, true, &mut read_errors) else {
         let snapshot = WorkspaceGitStatusSnapshot {
             auto_label,
             branch: None,
@@ -198,6 +223,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 fingerprint: None,
                 retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
                 snapshot,
+                read_errors,
             }),
         );
     };
@@ -221,6 +247,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 fingerprint: Some(fingerprint),
                 retry_after: cached.retry_after,
                 snapshot,
+                read_errors: cached.read_errors.clone(),
             }),
         );
     }
@@ -228,10 +255,11 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     let revision_pair = fingerprint.head_oid().zip(fingerprint.upstream_oid());
     let (ahead_behind, retry_after) = match revision_pair {
         Some((head_oid, upstream_oid)) => {
-            let ahead_behind = git_ahead_behind_between(cwd, head_oid, upstream_oid);
+            let ahead_behind =
+                git_ahead_behind_between(cwd, head_oid, upstream_oid, &mut read_errors);
             let retry_after = ahead_behind
                 .is_none()
-                .then(|| Instant::now() + GIT_STATUS_RETRY_DELAY);
+                .then_some(now + GIT_STATUS_RETRY_DELAY);
             (ahead_behind, retry_after)
         }
         None => (None, None),
@@ -248,20 +276,26 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             fingerprint: Some(fingerprint),
             retry_after,
             snapshot,
+            read_errors,
         }),
     )
 }
 
 #[cfg(test)]
 pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint> {
-    fingerprint(repo_context(cwd)?, true)
+    let mut read_errors = Vec::new();
+    fingerprint(repo_context(cwd, &mut read_errors)?, true, &mut read_errors)
 }
 
-fn fingerprint(mut repo: RepoContext, include_upstream: bool) -> Option<GitStatusFingerprint> {
-    let head = read_head_identity(&repo.0, repo.1)?;
+fn fingerprint(
+    mut repo: RepoContext,
+    include_upstream: bool,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<GitStatusFingerprint> {
+    let head = read_head_identity(&repo.0, repo.1, read_errors)?;
     let upstream = match &head {
         GitHeadIdentity::Branch { short_name, .. } if include_upstream => {
-            read_upstream(&mut repo, short_name)
+            read_upstream(&mut repo, short_name, read_errors)
         }
         _ => None,
     };
@@ -302,18 +336,25 @@ impl GitStatusFingerprint {
     }
 }
 
-fn read_head_identity(info: &GitWorktreeInfo, reftable: bool) -> Option<GitHeadIdentity> {
+fn read_head_identity(
+    info: &GitWorktreeInfo,
+    reftable: bool,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<GitHeadIdentity> {
     if reftable {
-        return read_head_identity_from_git(info);
+        return read_head_identity_from_git(info, read_errors);
     }
 
-    read_head_identity_from_files(info)
+    read_head_identity_from_files(info, read_errors)
 }
 
-fn read_head_identity_from_git(info: &GitWorktreeInfo) -> Option<GitHeadIdentity> {
-    if let Some(full_ref) = git_symbolic_head_full(&info.repo_root) {
+fn read_head_identity_from_git(
+    info: &GitWorktreeInfo,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<GitHeadIdentity> {
+    if let Some(full_ref) = git_symbolic_head_full(&info.repo_root, read_errors) {
         let short_name = full_ref.strip_prefix("refs/heads/")?.to_string();
-        let oid = git_rev_parse_verify(&info.repo_root, &full_ref);
+        let oid = git_rev_parse_verify_with_errors(&info.repo_root, &full_ref, read_errors);
         return Some(GitHeadIdentity::Branch {
             full_ref,
             short_name,
@@ -321,15 +362,19 @@ fn read_head_identity_from_git(info: &GitWorktreeInfo) -> Option<GitHeadIdentity
         });
     }
 
-    git_rev_parse_verify(&info.repo_root, "HEAD").map(|oid| GitHeadIdentity::Detached { oid })
+    git_rev_parse_verify_with_errors(&info.repo_root, "HEAD", read_errors)
+        .map(|oid| GitHeadIdentity::Detached { oid })
 }
 
-fn read_head_identity_from_files(info: &GitWorktreeInfo) -> Option<GitHeadIdentity> {
-    let head = read_git_ref_file(&info.git_dir.join("HEAD"))?;
+fn read_head_identity_from_files(
+    info: &GitWorktreeInfo,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<GitHeadIdentity> {
+    let head = read_git_ref_file(&info.git_dir.join("HEAD"), read_errors)?;
     let head = head.trim();
     if let Some(full_ref) = head.strip_prefix("ref: ") {
         let short_name = full_ref.strip_prefix("refs/heads/")?.to_string();
-        let oid = read_ref_oid(&info.git_common_dir, full_ref);
+        let oid = read_ref_oid_with_errors(&info.git_common_dir, full_ref, read_errors);
         return Some(GitHeadIdentity::Branch {
             full_ref: full_ref.to_string(),
             short_name,
@@ -342,20 +387,24 @@ fn read_head_identity_from_files(info: &GitWorktreeInfo) -> Option<GitHeadIdenti
     })
 }
 
-fn read_upstream(repo: &mut RepoContext, branch: &str) -> Option<GitUpstreamIdentity> {
+fn read_upstream(
+    repo: &mut RepoContext,
+    branch: &str,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<GitUpstreamIdentity> {
     if repo
         .3
         .as_ref()
         .is_none_or(|context| context.0 != branch || !deps_current(&context.2))
     {
-        repo.3 = Some(read_config(&repo.0, branch));
+        repo.3 = Some(read_config_for_status(&repo.0, branch, read_errors));
     }
     let config = repo.3.as_ref()?.1.clone()?;
     let full_ref = upstream_full_ref(&config)?;
     let oid = if repo.1 {
-        git_rev_parse_verify(&repo.0.repo_root, &full_ref)
+        git_rev_parse_verify_with_errors(&repo.0.repo_root, &full_ref, read_errors)
     } else {
-        read_ref_oid(&repo.0.git_common_dir, &full_ref)
+        read_ref_oid_with_errors(&repo.0.git_common_dir, &full_ref, read_errors)
     };
     Some(GitUpstreamIdentity {
         remote: config.remote,
@@ -365,22 +414,29 @@ fn read_upstream(repo: &mut RepoContext, branch: &str) -> Option<GitUpstreamIden
     })
 }
 
-fn git_ahead_behind_between(cwd: &Path, head_oid: &str, upstream_oid: &str) -> Option<AheadBehind> {
+fn git_ahead_behind_between(
+    cwd: &Path,
+    head_oid: &str,
+    upstream_oid: &str,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<AheadBehind> {
     let range = format!("{head_oid}...{upstream_oid}");
-    // host-program-ok: production counts ahead and behind with Git's commit walk
-    let output = shepr_platform::child_command("git", cwd)
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-list", "--left-right", "--count", &range])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    let stdout = git_trimmed_stdout(
+        cwd,
+        &["rev-list", "--left-right", "--count", &range],
+        read_errors,
+    )?;
+    match parse_git_ahead_behind_output(&stdout) {
+        Some(ahead_behind) => Some(ahead_behind),
+        None => {
+            read_errors.push(GitReadError::InvalidOutput {
+                cwd: cwd.to_path_buf(),
+                arguments: "rev-list --left-right --count".into(),
+                output: stdout,
+            });
+            None
+        }
     }
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    parse_git_ahead_behind_output(&stdout)
 }
 
 fn parse_git_ahead_behind_output(stdout: &str) -> Option<AheadBehind> {
@@ -427,6 +483,35 @@ mod tests {
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn unavailable_loose_ref_is_carried_as_a_status_read_error() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = temp_test_dir("unavailable-status-ref");
+        write_fake_tracked_repo(&root);
+        let ref_path = root.join(".git/refs/heads/main");
+        std::fs::write(
+            &ref_path,
+            "a".repeat(super::super::discovery::MAX_GIT_REF_FILE_BYTES + 1),
+        )
+        .expect("test precondition");
+
+        let (snapshot, entry) = git_status_snapshot_for_cwd_with_demand(
+            &root,
+            None,
+            GitStatusRefreshDemand {
+                branch: true,
+                ahead_behind: false,
+            },
+        );
+
+        assert_eq!(snapshot.branch.as_deref(), Some("main"));
+        assert!(entry.is_some_and(|entry| {
+            entry.read_errors.iter().any(
+                |error| matches!(error, GitReadError::FileRead { path, .. } if path == &ref_path),
+            )
+        }));
     }
 
     #[test]
@@ -496,12 +581,12 @@ mod tests {
     fn branch_reads_unborn_symbolic_head_from_reftable_repo() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("reftable-branch");
-        let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
-        let output = shepr_test_support::command_in_scratch("git", "reftable-branch-init")
-            .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
-            .output()
-            .expect("test precondition");
+        let output = super::super::discovery::run_git_output(
+            &root,
+            &["init", "--ref-format=reftable", "-b", "main"],
+        )
+        .expect("test precondition");
         if !output.status.success() {
             return;
         }
@@ -605,6 +690,7 @@ mod tests {
                 }),
                 space: live_git_space(&root),
             },
+            read_errors: Vec::new(),
         };
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, Some(&cached));
@@ -644,6 +730,7 @@ mod tests {
                 }),
                 space: live_git_space(&root),
             },
+            read_errors: Vec::new(),
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n")
             .expect("test precondition");
@@ -682,6 +769,7 @@ mod tests {
                 }),
                 space: live_git_space(&root),
             },
+            read_errors: Vec::new(),
         };
         std::fs::write(root.join(".git/config"), "").expect("test precondition");
 
@@ -802,12 +890,12 @@ mod tests {
     fn git_status_fingerprint_reads_reftable_branch_identity() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("reftable-fingerprint");
-        let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
-        let output = shepr_test_support::command_in_scratch("git", "reftable-fingerprint-init")
-            .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
-            .output()
-            .expect("test precondition");
+        let output = super::super::discovery::run_git_output(
+            &root,
+            &["init", "--ref-format=reftable", "-b", "main"],
+        )
+        .expect("test precondition");
         if !output.status.success() {
             return;
         }
@@ -822,7 +910,7 @@ mod tests {
             GitHeadIdentity::Branch {
                 full_ref: "refs/heads/main".into(),
                 short_name: "main".into(),
-                oid: git_rev_parse_verify(&root, "HEAD"),
+                oid: super::super::discovery::git_rev_parse_verify(&root, "HEAD"),
             }
         );
     }

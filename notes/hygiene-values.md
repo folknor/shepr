@@ -489,17 +489,6 @@ Enforcement: one mapping function in `shepr-agent` used by both
 `attention_rank` and `pane_agent_status`, with the `aggregate.rs` doc comment
 deleted rather than restated.
 
-## HYGV-024 - `/etc/ssh/ssh_config` is hardcoded, in an `Option` that is never `None`
-
-Reported by the core/platform hunter, as fact.
-
-`crates/shepr-platform/src/ssh_paths.rs` sets
-`system_config: Some(PathBuf::from("/etc/ssh/ssh_config"))`. The `Option` shape
-claims a case the code cannot produce, and the sole consumer
-(`crates/shepr-remote/src/remote/ssh.rs`) must handle it anyway.
-
-Fix: make the field a `PathBuf`; the type system does the rest.
-
 ## HYGV-025 - The Unix socket path limit is restated in prose, in a test literal, and in another crate's doc comment
 
 **Decision (partial):** piece 2 (scratch directories under the project's
@@ -1725,6 +1714,11 @@ Reported by the core/platform, protocol/config, remote and server hunters.
   than for the socket name in the shared XDG runtime directory that the id later
   became. Fix: generate from `unpredictable_token`; enforcement afterwards is
   dropping `sha2` from the `shepr-remote-layer` allowlist in `brokkr.toml`.
+  Checked since: both bridge socket paths built from the id also pass through
+  `remote_bridge_endpoint_path`, which adds its own unpredictable token, so the
+  id carries no secrecy duty; the generator's comment now says so. What blocks
+  the swap is that `unpredictable_token` lives in `shepr-platform`'s private
+  `ssh_paths` module and needs exporting through `shepr-platform/src/lib.rs`.
 - `crates/shepr-server/src/server/headless.rs` builds the client-shell boot id
   with `format!("{}-{}", std::process::id(), SystemTime::now()...as_nanos())`
   inside a struct literal. `shepr_protocol::BootId` is a newtype over `String`

@@ -37,20 +37,20 @@ pub(crate) struct ReportMetadataArgs {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> &'static str {
+    pub(super) fn name(&self) -> Option<&'static str> {
         match self {
-            Self::List => "list",
-            Self::Create(_) => "create",
-            Self::Get { .. } => "get",
-            Self::Focus { .. } => "focus",
-            Self::Rename { .. } => "rename",
-            Self::ReportMetadata(_) => "report-metadata",
-            Self::Close { .. } => "close",
-            Self::Invalid => "",
+            Self::List => Some("list"),
+            Self::Create(_) => Some("create"),
+            Self::Get { .. } => Some("get"),
+            Self::Focus { .. } => Some("focus"),
+            Self::Rename { .. } => Some("rename"),
+            Self::ReportMetadata(_) => Some("report-metadata"),
+            Self::Close { .. } => Some("close"),
+            Self::Invalid => None,
         }
     }
 
-    pub(super) fn is_api_command(&self) -> bool {
+    pub(super) fn can_run_on_machine(&self) -> bool {
         !matches!(self, Self::Invalid)
     }
 }

@@ -310,8 +310,10 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b[?2026hhidden");
     assert!(terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT));
-    assert!(terminal.synchronized_output_deadline().is_some());
-    assert!(!terminal.flush_expired_synchronized_output());
+    let initial_deadline = terminal
+        .synchronized_output_deadline()
+        .expect("test precondition");
+    assert!(!terminal.tick(initial_deadline - std::time::Duration::from_millis(1)));
     assert_eq!(
         terminal
             .read_text_viewport(vp(0, 0), vp(19, 0), false)
@@ -332,10 +334,7 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     let deadline = terminal
         .synchronized_output_deadline()
         .expect("test precondition");
-    while Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(terminal.flush_expired_synchronized_output());
+    assert!(terminal.tick(deadline + std::time::Duration::from_millis(1)));
     assert!(!terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT));
     assert!(
         terminal

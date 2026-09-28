@@ -1,5 +1,4 @@
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[cfg(test)]
 use shepr_config::derive_client_socket_from_api_socket;
@@ -9,29 +8,11 @@ pub fn client_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.server_address().client_socket().to_path_buf()
 }
 
-/// Prepares a socket path for binding: creates parent directories,
-/// removes stale socket files where no server is listening, and rejects live
-/// sockets that are already in use.
-///
-/// This only keeps two servers off one socket. Session files follow the
-/// session name, not the socket, so a server on an overridden socket can share
-/// another server's data directory; the server claims that directory with a
-/// persistence lease before it opens either socket.
-pub(crate) fn prepare_socket_path(path: &Path) -> io::Result<()> {
-    shepr_platform::ipc::prepare_socket_path(path, |path| {
-        format!(
-            "shepr server is already running (socket busy at {})",
-            path.display()
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::IsolatedEnv;
-    use std::os::unix::net::UnixListener;
-    use std::time::Duration;
+    use std::path::Path;
 
     #[test]
     fn client_socket_path_derived_from_api_socket_override() {
@@ -134,42 +115,5 @@ mod tests {
     fn derive_client_socket_from_api_socket_without_sock_extension() {
         let derived = derive_client_socket_from_api_socket(Path::new("/tmp/custom-api"));
         assert_eq!(derived, PathBuf::from("/tmp/custom-api-client.sock"));
-    }
-
-    #[test]
-    fn prepare_socket_path_removes_stale_socket() {
-        let dir = crate::test_support::ScratchDir::new("stale");
-        let socket_path = dir.join("stale.sock");
-
-        {
-            let _listener = UnixListener::bind(&socket_path).expect("bind stale socket");
-        }
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while std::time::Instant::now() < deadline {
-            if std::os::unix::net::UnixStream::connect(&socket_path).is_err() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        let result = prepare_socket_path(&socket_path);
-        assert!(result.is_ok(), "should remove stale socket: {result:?}");
-        assert!(!socket_path.try_exists().expect("stat socket path"));
-    }
-
-    #[test]
-    fn prepare_socket_path_rejects_live_socket() {
-        let dir = crate::test_support::ScratchDir::new("live");
-        let socket_path = dir.join("live.sock");
-
-        let _listener = UnixListener::bind(&socket_path).expect("bind");
-
-        let result = prepare_socket_path(&socket_path);
-        assert!(result.is_err());
-        assert_eq!(
-            result.expect_err("test precondition").kind(),
-            io::ErrorKind::AddrInUse
-        );
     }
 }

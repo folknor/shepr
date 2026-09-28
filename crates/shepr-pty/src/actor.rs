@@ -38,6 +38,10 @@ const MAX_WRITE_STEPS_PER_PUMP: usize = 64;
 
 pub struct PtyReadResult {
     pub terminal_responses: Vec<Bytes>,
+    /// Effects that may block or call into other subsystems. The actor queues
+    /// `terminal_responses` under the reply-order lock, then runs these only
+    /// after releasing it.
+    pub after_response_order: Option<Box<dyn FnOnce() + Send + 'static>>,
     /// The callback could not consume the bytes and never will again: the
     /// terminal core's lock was poisoned by a panic on some other thread
     /// (render, detection, an API read). The loop ends exactly as for a
@@ -51,6 +55,7 @@ impl PtyReadResult {
     fn empty() -> Self {
         Self {
             terminal_responses: Vec::new(),
+            after_response_order: None,
             core_broken: false,
         }
     }
@@ -105,11 +110,12 @@ fn submission_withdrawn_error() -> std::io::Error {
 pub struct PtyIoActorHandle {
     wake: fd::WakeWriter,
     inbox: Arc<Mutex<PtyIoInbox>>,
-    /// Held across producing a terminal reply and queuing it, by
-    /// `write_terminal_response` and by the actor around parsing a read, so
-    /// replies enter the inbox in the order the terminal produced them. It is
-    /// separate from the inbox lock so that user input is never queued behind
-    /// a parse or a wait for the terminal core.
+    /// Lock order for terminal mutations that can produce replies is
+    /// `response_order` > content-write lock > terminal core. The actor holds
+    /// this across parsing a read and queuing its replies; reply producers
+    /// hold it across their closure and queuing. Read-side effects run only
+    /// after it is released. It is separate from the inbox lock so user input
+    /// is never queued behind a parse or a wait for the terminal core.
     response_order: Arc<Mutex<()>>,
 }
 
@@ -433,14 +439,25 @@ impl PtyIoActorHandle {
     /// under the reply-order lock (it may take the terminal core lock), never
     /// under the inbox lock.
     pub fn write_terminal_response(&self, response: impl FnOnce() -> Option<Bytes>) {
-        let _order = crate::locks::lock_auxiliary(&self.response_order);
-        let Some(bytes) = response() else {
+        self.write_terminal_responses(|| response().into_iter().collect());
+    }
+
+    /// Produce and queue every reply from one terminal operation at one point
+    /// in the response order. The closure may take the terminal core lock,
+    /// but runs without the inbox lock.
+    pub fn write_terminal_responses(&self, responses: impl FnOnce() -> Vec<Bytes>) {
+        let order = crate::locks::lock_auxiliary(&self.response_order);
+        let responses = responses();
+        let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+        if inbox.shutdown {
             return;
-        };
-        let queued = {
-            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-            !inbox.shutdown && inbox.push_terminal_response(bytes)
-        };
+        }
+        let mut queued = false;
+        for response in responses {
+            queued = inbox.push_terminal_response(response) || queued;
+        }
+        drop(inbox);
+        drop(order);
         if queued {
             self.wake_actor();
         }
@@ -936,10 +953,31 @@ impl PtyIoActorRunner {
                     self.read_callback_panicked = true;
                     return ReadOutcome::Closed;
                 }
+                let after_response_order = result.after_response_order;
                 let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
                 if !inbox.shutdown {
                     for response in result.terminal_responses {
                         let _ = inbox.push_terminal_response(response);
+                    }
+                }
+                drop(inbox);
+                drop(_order);
+                if let Some(after_response_order) = after_response_order {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "post-read effects must not unwind out of the actor thread; a panic is reported like a broken read callback"
+                    )]
+                    let effects_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                        after_response_order,
+                    ));
+                    if let Err(payload) = effects_result {
+                        error!(
+                            pane = self.pane_id.raw(),
+                            panic = panic_payload_message(&*payload),
+                            "PTY post-read effects panicked; closing the pane"
+                        );
+                        self.read_callback_panicked = true;
+                        return ReadOutcome::Closed;
                     }
                 }
                 ReadOutcome::Data
@@ -1951,6 +1989,7 @@ mod tests {
     fn broken_core_ends_the_loop_like_a_panic() {
         let (_handle, mut peer, exit_rx) = actor_reporting_exit(Box::new(|_| PtyReadResult {
             terminal_responses: Vec::new(),
+            after_response_order: None,
             core_broken: true,
         }));
 
@@ -2152,6 +2191,7 @@ mod tests {
             } else {
                 Bytes::from_static(b"query-dark")
             }],
+            after_response_order: None,
             core_broken: false,
         }));
         let (changed_tx, changed_rx) = std_mpsc::channel();
@@ -2412,6 +2452,7 @@ mod tests {
                 read_tx.send(bytes.len()).ok();
                 PtyReadResult {
                     terminal_responses: vec![Bytes::from(vec![b'r'; REPLY_LEN])],
+                    after_response_order: None,
                     core_broken: false,
                 }
             }),

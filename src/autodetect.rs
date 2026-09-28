@@ -43,6 +43,8 @@ pub(crate) fn auto_detect_launch<T>(
         )
     })?;
     let socket_path = paths.server_address().client_socket().to_path_buf();
+    // The client callback installs the global file subscriber after this
+    // startup probe; initializing it here would make its later try_init fail.
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
     // The running server is checked whether or not saved machines are

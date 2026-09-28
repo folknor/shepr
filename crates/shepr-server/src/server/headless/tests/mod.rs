@@ -117,6 +117,8 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
     app.state.settings.default_shell = crate::app::exiting_test_command().into();
     // The server removes its socket when dropped.
     let socket_path = crate::test_support::ScratchDir::new("headless").join("client.sock");
+    let client_socket_startup_lock = shepr_platform::ipc::acquire_socket_startup_lock(&socket_path)
+        .expect("test socket startup lock");
     let listener = bind_local_listener(&socket_path).expect("bind test listener");
     let client_socket_identity =
         socket_file_identity(&socket_path).expect("test listener socket identity");
@@ -164,6 +166,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         server_event_tx,
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
+        _client_socket_startup_lock: client_socket_startup_lock,
     }
 }
 
@@ -4640,28 +4643,46 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
     let dir = crate::test_support::ScratchDir::new("hb");
     let path = dir.join("client.sock");
 
-    let listener = bind_owner_only_listener(&path).expect("bind");
+    let (listener, startup_lock, _) = shepr_platform::ipc::bind_private_socket(&path, |path| {
+        format!(
+            "shepr server is already running (socket busy at {})",
+            path.display()
+        )
+    })
+    .expect("bind");
     let mode = fs::metadata(&path)
         .expect("socket exists")
         .permissions()
         .mode()
         & 0o777;
     assert_eq!(mode, 0o600);
-    // The staging directory is gone; only the socket is left.
+    // The staging directory is gone; only the socket and persistent lock remain.
     let entries = fs::read_dir(&dir)
         .expect("test precondition")
         .filter_map(Result::ok)
         .map(|entry| entry.file_name())
-        .collect::<Vec<_>>();
-    assert_eq!(entries, vec![std::ffi::OsString::from("client.sock")]);
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_entries = ["client.sock", "client.sock.lock"]
+        .map(std::ffi::OsString::from)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(entries, expected_entries);
     // The linked name reaches the listener.
     assert!(shepr_platform::ipc::connect_local_stream(&path).is_ok());
     assert!(listener.accept().is_ok());
     // A second server never replaces a socket that is already there.
-    let err = bind_owner_only_listener(&path).expect_err("path is taken");
+    let err = shepr_platform::ipc::bind_private_socket(&path, |path| {
+        format!(
+            "shepr server is already running (socket busy at {})",
+            path.display()
+        )
+    })
+    .err()
+    .expect("startup lock is held");
     assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
 
     drop(listener);
+    drop(startup_lock);
 }
 
 #[tokio::test]

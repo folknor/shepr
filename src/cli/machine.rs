@@ -17,14 +17,25 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> &'static str {
+    pub(super) fn name(&self) -> Option<&'static str> {
         match self {
-            Self::List { .. } => "list",
-            Self::Status { .. } => "status",
-            Self::Reconnect { .. } => "reconnect",
-            Self::Add(_) => "add",
-            Self::Remove { .. } => "remove",
-            Self::Invalid => "",
+            Self::List { .. } => Some("list"),
+            Self::Status { .. } => Some("status"),
+            Self::Reconnect { .. } => Some("reconnect"),
+            Self::Add(_) => Some("add"),
+            Self::Remove { .. } => Some("remove"),
+            Self::Invalid => None,
+        }
+    }
+
+    pub(super) fn can_run_on_machine(&self) -> bool {
+        match self {
+            Self::List { .. }
+            | Self::Status { .. }
+            | Self::Reconnect { .. }
+            | Self::Add(_)
+            | Self::Remove { .. }
+            | Self::Invalid => false,
         }
     }
 }

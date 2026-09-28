@@ -11,12 +11,20 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> &'static str {
+    pub(super) fn name(&self) -> Option<&'static str> {
         match self {
-            Self::Install { .. } => "install",
-            Self::Uninstall { .. } => "uninstall",
-            Self::Status { .. } => "status",
-            Self::Invalid => "",
+            Self::Install { .. } => Some("install"),
+            Self::Uninstall { .. } => Some("uninstall"),
+            Self::Status { .. } => Some("status"),
+            Self::Invalid => None,
+        }
+    }
+
+    pub(super) fn can_run_on_machine(&self) -> bool {
+        match self {
+            Self::Install { .. } | Self::Uninstall { .. } | Self::Status { .. } | Self::Invalid => {
+                false
+            }
         }
     }
 }

@@ -8,7 +8,7 @@ use super::{
     Config, ConfigDiagnostic, ConfigProvenance, ConfigSource, NewTerminalCwdConfig,
     ValidatedConfig, ValidatedTerminalConfig,
     model::{ConfigDocumentState, LoadedConfig},
-    validated::CwdCheck,
+    validated::{CwdCheck, ShellCheck},
 };
 
 /// The directory name shepr uses under every XDG base directory.
@@ -19,12 +19,7 @@ use super::{
 /// (`--session <name>`), and a server of another build is refused by the
 /// build-identity checks, which cover the build profile as well as the source.
 pub(crate) fn app_dir_name() -> &'static str {
-    // `cfg!(test)` holds only while this crate's own unit tests are compiled;
-    // a test in any other crate that reaches this compiles it as a normal
-    // dependency and gets `shepr`. What keeps every test out of the real
-    // directories is `shepr_test_support::IsolatedEnv`, which points `HOME`
-    // and the XDG variables at scratch, not this name.
-    if cfg!(test) { "shepr-test" } else { "shepr" }
+    "shepr"
 }
 
 /// Paths and the local target resolved once at the process boundary and
@@ -639,6 +634,7 @@ impl Config {
                     &provenance,
                     paths,
                     CwdCheck::AtLaunch,
+                    ShellCheck::AtLaunch,
                 );
                 let diagnostics = resolution
                     .diagnostics
@@ -695,6 +691,7 @@ impl Config {
                             &provenance,
                             paths,
                             CwdCheck::AtLaunch,
+                            ShellCheck::AtLaunch,
                         );
                         let (unknown_sections, unknown_diagnostics) =
                             unknown_top_level_sections(&document, &ignored_keys);
@@ -783,8 +780,13 @@ pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDia
 fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>, paths: &AppPaths) -> LoadedConfig {
     let config = Config::default();
     let provenance = ConfigProvenance::defaults(&config);
-    let resolution =
-        super::validated::ConfigResolution::parse(&config, &provenance, paths, CwdCheck::AtLaunch);
+    let resolution = super::validated::ConfigResolution::parse(
+        &config,
+        &provenance,
+        paths,
+        CwdCheck::AtLaunch,
+        ShellCheck::AtLaunch,
+    );
     LoadedConfig {
         config,
         provenance,
@@ -925,6 +927,7 @@ mod tests {
 
     #[test]
     fn load_diagnostics_keep_their_kind() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let parse = Config::load_from_str("[keys\nprefix = 'ctrl+a'");
         assert!(matches!(
             parse.diagnostics.as_slice(),
@@ -948,6 +951,7 @@ mod tests {
 
     #[test]
     fn config_load_reports_unreadable_path() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         // A directory where the config file should be cannot be read.
         let scratch = shepr_test_support::ScratchDir::new("config");
         let startup = Config::load_from_path(scratch.path());
@@ -961,6 +965,7 @@ mod tests {
 
     #[test]
     fn validated_config_rejects_parse_and_semantic_errors() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         for (content, message) in [
             ("[keys]\nprefix = \"ctrl+\"\n", "keys.prefix"),
             ("[keys]\nzoom = \"prefix+nonsense\"\n", "keys.zoom"),
@@ -1003,6 +1008,7 @@ mod tests {
 
     #[test]
     fn config_check_collects_all_semantic_diagnostics() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-diagnostics");
         let paths = AppPaths::test_at(scratch.path());
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
@@ -1059,6 +1065,7 @@ tab_bar_right = [
 
     #[test]
     fn config_check_reports_home_path_when_another_field_fails_to_parse() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-parse-diagnostics");
         let paths = AppPaths::test_at(scratch.path());
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
@@ -1146,6 +1153,7 @@ tab_bar_right = [
 
     #[test]
     fn config_check_reports_cwd_path_when_another_value_fails_to_parse() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-check-cwd-path");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
@@ -1364,6 +1372,7 @@ tab_bar_right = [
 
     #[test]
     fn config_load_reports_unknown_keys_and_parses_known_siblings() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let loaded = Config::load_from_str(
             r##"
 plugin = []
@@ -1405,6 +1414,7 @@ mouse_captur = true
 
     #[test]
     fn config_load_records_provenance_for_ui_values() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let loaded = Config::load_from_str(
             r#"
 [ui]
@@ -1439,6 +1449,7 @@ agent_panel_sort = "priority"
 
     #[test]
     fn config_provenance_queries_array_fields_by_their_parent_key() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let configured =
             Config::load_from_str("[keys]\nfocus_agent = [\"prefix+1\", \"prefix+2\"]\n");
         assert!(configured.provenance.key_is_configured("keys.focus_agent"));
@@ -1449,6 +1460,7 @@ agent_panel_sort = "priority"
 
     #[test]
     fn config_load_reports_unknown_top_level_sections() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let loaded = Config::load_from_str(
             r#"
 [[plugin]]

@@ -1,7 +1,7 @@
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
@@ -18,9 +18,9 @@ use crate::subscriptions::{ActiveSubscription, SubscriptionStream};
 use crate::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
 use crate::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
 use shepr_platform::ipc::{
-    LocalStream, SocketFileIdentity, SocketStartupLock, acquire_socket_startup_lock,
-    bind_private_local_listener, is_connection_closed_error, local_stream_peer_closed,
-    peer_is_same_user, remove_socket_file_if_owned, set_local_stream_polling, socket_file_identity,
+    LocalStream, SocketFileIdentity, SocketStartupLock, bind_private_socket,
+    is_connection_closed_error, local_stream_peer_closed, peer_is_same_user,
+    remove_socket_file_if_owned, set_local_stream_polling, socket_file_identity,
 };
 
 #[cfg(test)]
@@ -46,6 +46,31 @@ const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
 pub(super) const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
+/// Bounds API worker threads and request-owned stream state such as subscriptions.
+const MAX_ACTIVE_CONNECTIONS: usize = 64;
+
+struct ConnectionAdmission {
+    active: Arc<AtomicUsize>,
+}
+
+impl ConnectionAdmission {
+    fn try_acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
+        active
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_ACTIVE_CONNECTIONS).then_some(count + 1)
+            })
+            .ok()?;
+        Some(Self {
+            active: Arc::clone(active),
+        })
+    }
+}
+
+impl Drop for ConnectionAdmission {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::Release);
+    }
+}
 
 pub struct ServerHandle {
     thread: Option<std::thread::JoinHandle<()>>,
@@ -145,16 +170,12 @@ fn start_server_inner(
     // behind. Unset or empty means no inherited agent.
     let inherited_agent = shepr_core::env::read_path(shepr_core::env::EnvVar::SshAuthSock)?;
     let path = socket_path(paths);
-    // Held for the server lifetime. A second server on the same path fails
-    // here with `AddrInUse` instead of racing `prepare_socket_path`, which
-    // could otherwise unlink a socket whose owner has not started listening.
-    let startup_lock = acquire_socket_startup_lock(&path)?;
-    prepare_socket_path(&path)?;
-
-    // Owner-only from the moment the path is reachable (see
-    // `bind_private_local_listener`); peers are also checked by uid on accept.
-    let listener = bind_private_local_listener(&path)?;
-    let identity = socket_file_identity(&path)?;
+    let (listener, startup_lock, identity) = bind_private_socket(&path, |path| {
+        format!(
+            "shepr is already running (socket busy at {})",
+            path.display()
+        )
+    })?;
     info!(path = %path.display(), "api server listening");
 
     let ssh_agents = match shepr_platform::ssh_agent::SshAgentRegistry::new(
@@ -174,6 +195,8 @@ fn start_server_inner(
 
     let running = Arc::new(AtomicBool::new(true));
     let listener_running = Arc::clone(&running);
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let connection_admission = Arc::clone(&active_connections);
     // The listener thread must outlive any single accept or spawn failure.
     // Nothing restarts it, and while the client socket stays up the server
     // looks alive to autodetection, so a dead API listener leaves a server
@@ -196,6 +219,10 @@ fn start_server_inner(
                 return Ok(());
             }
         }
+        let Some(admission) = ConnectionAdmission::try_acquire(&connection_admission) else {
+            reject_busy_connection(stream);
+            return Ok(());
+        };
         let api_tx = api_tx.clone();
         let event_hub = event_hub.clone();
         let capabilities = capabilities.clone();
@@ -209,6 +236,7 @@ fn start_server_inner(
         std::thread::Builder::new()
             .name("shepr-api-conn".into())
             .spawn(move || {
+                let _admission = admission;
                 if let Err(err) = handle_connection_with_stop(
                     stream,
                     &api_tx,
@@ -231,6 +259,17 @@ fn start_server_inner(
         running,
         _startup_lock: startup_lock,
     })
+}
+
+fn reject_busy_connection(mut stream: LocalStream) {
+    let response = error_response_json(
+        "",
+        crate::error::ApiErrorCode::EndpointBusy,
+        format!("API server is at its limit of {MAX_ACTIVE_CONNECTIONS} active connections"),
+    );
+    if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response) {
+        debug!(err = %err, "failed to send API connection limit refusal");
+    }
 }
 
 /// Runs the accept loop on its own thread, handing each accepted connection
@@ -303,15 +342,6 @@ impl AcceptBackoff {
         self.delay = None;
         self.failures = 0;
     }
-}
-
-fn prepare_socket_path(path: &Path) -> std::io::Result<()> {
-    shepr_platform::ipc::prepare_socket_path(path, |path| {
-        format!(
-            "shepr is already running (socket busy at {})",
-            path.display()
-        )
-    })
 }
 
 #[cfg(test)]
@@ -1126,6 +1156,36 @@ mod tests {
     }
 
     #[test]
+    fn connection_admission_caps_workers_and_releases_slots() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut admissions = (0..MAX_ACTIVE_CONNECTIONS)
+            .map(|_| ConnectionAdmission::try_acquire(&active).expect("available slot"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(active.load(Ordering::Acquire), MAX_ACTIVE_CONNECTIONS);
+        assert!(ConnectionAdmission::try_acquire(&active).is_none());
+
+        drop(admissions.pop());
+        let replacement = ConnectionAdmission::try_acquire(&active).expect("released slot");
+        assert_eq!(active.load(Ordering::Acquire), MAX_ACTIVE_CONNECTIONS);
+        drop(replacement);
+        drop(admissions);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_full_connection_limit_sends_endpoint_busy() {
+        let (mut client, server) = local_stream_pair("connection-limit-refusal");
+        reject_busy_connection(server);
+
+        let response: ErrorResponse =
+            serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
+        assert_eq!(response.id, "");
+        assert_eq!(response.error.code, "endpoint_busy");
+        assert!(response.error.message.contains("64 active connections"));
+    }
+
+    #[test]
     fn request_line_arriving_after_connect_is_read_without_a_poll_delay() {
         let (mut client, mut server) = local_stream_pair("request-line-latency");
         let writer = std::thread::spawn(move || {
@@ -1191,7 +1251,8 @@ mod tests {
     #[test]
     fn dropping_the_handle_stops_the_listener_thread() {
         let path = unique_test_path("listener-drop");
-        let startup_lock = acquire_socket_startup_lock(&path).expect("test precondition");
+        let startup_lock =
+            shepr_platform::ipc::acquire_socket_startup_lock(&path).expect("test precondition");
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let identity = socket_file_identity(&path).expect("test precondition");
         let running = Arc::new(AtomicBool::new(true));
@@ -1210,7 +1271,7 @@ mod tests {
             _startup_lock: startup_lock,
         };
         assert_eq!(
-            acquire_socket_startup_lock(&path)
+            shepr_platform::ipc::acquire_socket_startup_lock(&path)
                 .err()
                 .map(|error| error.kind()),
             Some(io::ErrorKind::AddrInUse),
@@ -1218,7 +1279,8 @@ mod tests {
         );
 
         drop(handle);
-        acquire_socket_startup_lock(&path).expect("the lock is released with the handle");
+        shepr_platform::ipc::acquire_socket_startup_lock(&path)
+            .expect("the lock is released with the handle");
 
         assert_eq!(
             Arc::strong_count(&alive),
@@ -1362,7 +1424,8 @@ mod tests {
     fn api_socket_is_bound_owner_only() {
         let dir = ScratchDir::new("socket-perms");
         let path = dir.join("api.sock");
-        let listener = bind_private_local_listener(&path).expect("test precondition");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
 
         let mode = fs::metadata(&path)
             .expect("test precondition")

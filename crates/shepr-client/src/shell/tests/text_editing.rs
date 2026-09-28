@@ -78,6 +78,23 @@ fn all_eight_fields_route_shared_text_editing() {
 }
 
 #[test]
+fn local_new_workspace_label_lookup_is_deferred_and_stale_results_are_ignored() {
+    let mut state = shell(0);
+    let (stale_id, stale_cwd) = state
+        .take_workspace_label_lookup()
+        .expect("local workspace label lookup is queued");
+    assert_eq!(stale_cwd, "/repo");
+
+    state.open_new_workspace_overlay();
+    let (current_id, _) = state
+        .take_workspace_label_lookup()
+        .expect("reopened overlay queues its own lookup");
+    assert!(!state.apply_workspace_label_lookup(stale_id, "stale-label".into()));
+    assert!(state.apply_workspace_label_lookup(current_id, "checkout-label".into()));
+    assert_eq!(editor(&mut state).as_str(), "checkout-label");
+}
+
+#[test]
 fn text_delivery_paths_insert_at_the_cursor() {
     for delivery in 0..3 {
         let mut state = shell(0);

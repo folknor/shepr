@@ -823,11 +823,10 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
     assert_eq!(pane.visible_text(), "red\n");
 }
 
-/// A render that force-ends a timed-out synchronized update must not
-/// lose the frame's effects: the flush entry point hands them over, and
-/// a clipboard write is no longer thrown away by the next read.
+/// Rendering and synchronized-output reads leave an expired frame alone;
+/// the runtime tick flushes it and returns every queued effect.
 #[test]
-fn timed_out_synchronized_update_effects_survive_a_render_flush() {
+fn expired_synchronized_update_is_flushed_only_by_tick() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
@@ -844,23 +843,22 @@ fn timed_out_synchronized_update_effects_survive_a_render_flush() {
         .terminal
         .synchronized_output_deadline()
         .expect("test precondition");
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    // A render flushes the frame; nothing reads its effects yet.
-    assert!(matches!(
+    assert!(pane.synchronized_output_active());
+    assert_eq!(pane.synchronized_output_state(), (true, 1));
+    let backend = ratatui::backend::TestBackend::new(20, 5);
+    let mut host = ratatui::Terminal::new(backend).expect("test precondition");
+    host.draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
+        .expect("test precondition");
+    assert_eq!(
         pane.collect_dirty_patch(20, 5),
-        TerminalDirtyPatchOutcome::Patch(_) | TerminalDirtyPatchOutcome::Clean
-    ));
-    // A resize in between must not take the queued reply with it.
-    assert!(
-        pane.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 0, 0))
-            .is_empty()
+        TerminalDirtyPatchOutcome::Fallback
     );
+    assert!(pane.synchronized_output_active());
 
-    let flushed = pane.flush_expired_synchronized_output(pane_id, 0);
-    assert!(!flushed.request_render, "the render already flushed it");
+    let not_yet_flushed = pane.tick(deadline - Duration::from_millis(1));
+    assert!(!not_yet_flushed.request_render);
+    let flushed = pane.tick(deadline + Duration::from_millis(1));
+    assert!(flushed.request_render);
     assert_eq!(
         flushed.terminal_responses,
         vec![Bytes::from_static(b"\x1b[1;1R")]
@@ -868,6 +866,12 @@ fn timed_out_synchronized_update_effects_survive_a_render_flush() {
     assert_eq!(flushed.clipboard_writes, vec![b"hi".to_vec()]);
     assert!(flushed.terminal_title_changed);
     assert_eq!(pane.terminal_title().as_deref(), Some("framed"));
+    assert_eq!(pane.synchronized_output_state(), (false, 2));
+
+    assert!(
+        pane.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 0, 0))
+            .is_empty()
+    );
 
     let next = pane.process_pty_bytes(pane_id, 0, b"x");
     assert!(next.terminal_responses.is_empty());
@@ -875,34 +879,64 @@ fn timed_out_synchronized_update_effects_survive_a_render_flush() {
 }
 
 #[test]
-fn flush_entry_point_ends_an_expired_update_itself() {
+fn tick_ends_an_expired_synchronized_update() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
     let begin = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2026h\x1b[5n");
     assert!(begin.render_delay.is_some());
-    assert!(
-        !pane
-            .flush_expired_synchronized_output(pane_id, 0)
-            .request_render
-    );
     let deadline = shepr_vt::lock_terminal_core(&pane.core)
         .expect("test precondition")
         .terminal
         .synchronized_output_deadline()
         .expect("test precondition");
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    let flushed = pane.flush_expired_synchronized_output(pane_id, 0);
+    let not_yet_flushed = pane.tick(deadline - Duration::from_millis(1));
+    assert!(!not_yet_flushed.request_render);
+    let flushed = pane.tick(deadline + Duration::from_millis(1));
     assert!(flushed.request_render);
     assert_eq!(
         flushed.terminal_responses,
         vec![Bytes::from_static(b"\x1b[0n")]
     );
     assert!(!pane.synchronized_output_state().0);
+}
+
+/// Output that arrives after an update expired first ends that update, under
+/// the same lock: the expired frame's reply reaches the child before the
+/// reply to the new bytes, and nothing needs a separate flush call.
+#[test]
+fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let pane = GhosttyPaneTerminal::new(terminal);
+    let pane_id = PaneId::from_raw(1);
+
+    let begin = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2026h\x1b[5n");
+    assert!(begin.terminal_responses.is_empty());
+    let deadline = shepr_vt::lock_terminal_core(&pane.core)
+        .expect("test precondition")
+        .terminal
+        .synchronized_output_deadline()
+        .expect("test precondition");
+
+    // Before the deadline the new bytes join the open update.
+    let inside = pane.process_pty_bytes_at(pane_id, 0, b"a", deadline - Duration::from_millis(1));
+    assert!(inside.terminal_responses.is_empty());
+    assert!(!inside.request_render);
+    assert!(inside.render_delay.is_some());
+
+    let late =
+        pane.process_pty_bytes_at(pane_id, 0, b"\x1b[6n", deadline + Duration::from_millis(1));
+    assert_eq!(
+        late.terminal_responses,
+        vec![
+            Bytes::from_static(b"\x1b[0n"),
+            Bytes::from_static(b"\x1b[1;2R"),
+        ]
+    );
+    assert!(late.request_render);
+    assert!(late.render_delay.is_none());
+    assert_eq!(pane.synchronized_output_state(), (false, 2));
 }
 
 #[test]

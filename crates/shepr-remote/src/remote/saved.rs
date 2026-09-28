@@ -60,7 +60,7 @@ pub struct SavedSshConnector {
     target: SshTarget,
     session: String,
     settings: SavedSshSettings,
-    state: std::sync::Mutex<ConnectorState>,
+    state: ConnectorState,
 }
 
 #[derive(Default)]
@@ -101,13 +101,13 @@ impl SavedSshConnector {
         session: &str,
         settings: SavedSshSettings,
     ) -> Self {
-        let connector = Self {
+        let mut connector = Self {
             paths: paths.clone(),
             profile_id: profile_id.clone(),
             target: target.clone(),
             session: session.to_owned(),
             settings,
-            state: std::sync::Mutex::new(ConnectorState::default()),
+            state: ConnectorState::default(),
         };
         connector.prepare_for_launch();
         connector
@@ -118,21 +118,15 @@ impl SavedSshConnector {
     /// failures remain in the connector and are tried again by `connect`.
     pub fn launch_fatal_setup_error(&self) -> Option<io::Error> {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .launch_fatal_setup_error
             .as_ref()
             .map(StoredSetupError::to_io_error)
     }
 
-    fn prepare_for_launch(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn prepare_for_launch(&mut self) {
         if let Err(error) = self.validate_local_setup() {
             if is_launch_fatal_setup_error(&error) {
-                state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
+                self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
             } else {
                 tracing::debug!(%error, "saved SSH path setup failed transiently; it will be retried");
             }
@@ -143,9 +137,9 @@ impl SavedSshConnector {
             self.settings.manage_ssh_config,
             &self.paths,
         ) {
-            Ok(ssh) => state.ssh = Some(ssh),
+            Ok(ssh) => self.state.ssh = Some(ssh),
             Err(error) if is_launch_fatal_setup_error(&error) => {
-                state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
+                self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
             }
             Err(error) => {
                 tracing::debug!(%error, "saved SSH setup failed transiently; it will be retried");
@@ -172,14 +166,15 @@ impl SavedSshConnector {
 
     /// Starts a bridge and hands its stream to `establish`, which runs the endpoint
     /// handshake. The handshake is part of the attempt so that a failure there can
-    /// still send the attempt back through discovery.
+    /// still send the attempt back through discovery. Exclusive access keeps all mutable
+    /// connection state owned by the one supervisor attempt using this connector.
     ///
     /// Nothing SSH runs past `deadline`: discovery commands are cut short by it and no
     /// step starts once it has passed (the caller holds `establish` to it too). Without
     /// it, discovery and a remembered-executable retry could add up to minutes against
     /// a host that hangs, and the next attempt waits for this one.
     pub fn connect<T>(
-        &self,
+        &mut self,
         deadline: std::time::Instant,
         mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
@@ -192,16 +187,7 @@ impl SavedSshConnector {
             target.as_str(),
             &self.session,
         );
-        // The client stores this connector in a cloneable ConnectTarget::Ssh(Arc<...>) and
-        // clones that target into its blocking task, so connect updates state through shared
-        // access. Its supervisor starts only one attempt per endpoint and defers replacements
-        // until retired attempts report, so calls in that path do not contend. Removing this
-        // lock would require moving connector ownership into the task and returning it with
-        // the attempt result.
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = &mut self.state;
         if let Some(error) = &state.launch_fatal_setup_error {
             return Err(error.to_io_error());
         }
@@ -234,7 +220,16 @@ impl SavedSshConnector {
         let ssh = &*ssh;
 
         if let Some(known) = remote_shepr.clone() {
-            match self.attempt(ssh, target, &known, deadline, &mut establish) {
+            match Self::attempt(
+                &self.paths,
+                &self.profile_id,
+                &self.session,
+                ssh,
+                target,
+                &known,
+                deadline,
+                &mut establish,
+            ) {
                 Ok(connected) => return Ok(connected),
                 Err(error) if super::is_ssh_link_failure(&error) => return Err(error),
                 Err(error) => {
@@ -262,7 +257,16 @@ impl SavedSshConnector {
         // discovering again. Any other failure forgets it, so the next attempt discovers
         // from scratch.
         *remote_shepr = Some(discovered.clone());
-        match self.attempt(ssh, target, &discovered, deadline, &mut establish) {
+        match Self::attempt(
+            &self.paths,
+            &self.profile_id,
+            &self.session,
+            ssh,
+            target,
+            &discovered,
+            deadline,
+            &mut establish,
+        ) {
             Ok(connected) => {
                 // The connection is up and this connector keeps the hint in memory;
                 // only later processes and reconnects after a restart lose it.
@@ -287,7 +291,9 @@ impl SavedSshConnector {
     }
 
     fn attempt<T>(
-        &self,
+        paths: &shepr_config::AppPaths,
+        profile_id: &ProfileId,
+        session: &str,
         ssh: &RemoteSsh,
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
@@ -297,12 +303,12 @@ impl SavedSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }
-        let path = saved_bridge_path(self.paths.xdg_runtime_dir(), &self.profile_id)?;
+        let path = saved_bridge_path(paths.xdg_runtime_dir(), profile_id)?;
         let bridge = SshStdioBridge::start(
             target.clone(),
             remote_shepr,
             path.clone(),
-            &self.session,
+            session,
             ssh.options(),
             true,
         )?;
@@ -489,7 +495,7 @@ mod tests {
         let settings = SavedSshSettings {
             manage_ssh_config: false,
         };
-        let connector = SavedSshConnector::new(
+        let mut connector = SavedSshConnector::new(
             &shepr_config::AppPaths::test_default(),
             &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
             &SshTarget::parse("build").expect("test precondition"),

@@ -4066,3 +4066,87 @@ fn same_sequence_from_different_sources_is_independent() {
         "custom:pi"
     );
 }
+
+/// A pane's hook ordering marks stay bounded: once the source cap is reached,
+/// marks that protect nothing current are dropped for a new source, the two
+/// maps stay in step, and a source that is still protected keeps its mark.
+#[test]
+fn hook_report_sources_are_capped_and_the_sequence_maps_stay_in_step() {
+    let mut terminal = test_terminal();
+    let now = Instant::now();
+    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+    terminal.set_hook_authority(
+        "custom:kept".into(),
+        "pi".into(),
+        AgentState::Idle,
+        None,
+        Some(1),
+    );
+    assert_eq!(
+        terminal
+            .hook_authority
+            .as_ref()
+            .map(|authority| authority.source.as_str()),
+        Some("custom:kept"),
+        "test precondition"
+    );
+    assert!(terminal.hook_report_sequences.contains_key("custom:kept"));
+    for index in 1..MAX_HOOK_REPORT_SOURCES {
+        assert!(terminal.accept_hook_report_at(&format!("custom:{index}"), Some(1), now));
+    }
+    assert_eq!(
+        terminal.hook_report_sequences.len(),
+        MAX_HOOK_REPORT_SOURCES
+    );
+
+    assert!(terminal.accept_hook_report_at("custom:new", Some(1), now));
+    assert!(terminal.hook_report_sequences.len() <= MAX_HOOK_REPORT_SOURCES);
+    assert!(terminal.hook_report_sequences.contains_key("custom:kept"));
+    assert!(terminal.hook_report_sequences.contains_key("custom:new"));
+    let mut sequence_sources: Vec<_> = terminal.hook_report_sequences.keys().collect();
+    let mut accepted_sources: Vec<_> = terminal.hook_report_accepted_at.keys().collect();
+    sequence_sources.sort();
+    accepted_sources.sort();
+    assert_eq!(sequence_sources, accepted_sources);
+
+    terminal.clear_hook_report_sequence("custom:new");
+    assert!(!terminal.hook_report_sequences.contains_key("custom:new"));
+    assert!(!terminal.hook_report_accepted_at.contains_key("custom:new"));
+}
+
+/// Stale session identities per official source keep only the newest ones.
+#[test]
+fn stale_full_lifecycle_sessions_are_capped_per_source() {
+    let mut terminal = test_terminal();
+    let total = MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE + 3;
+    for index in 0..total {
+        terminal.remember_stale_full_lifecycle_hook_session(
+            "shepr:codex".into(),
+            "codex".into(),
+            shepr_agent::agent::resume::AgentSessionRef::id(format!("session-{index}"))
+                .expect("test precondition"),
+        );
+    }
+    let sessions = &terminal.stale_full_lifecycle_hook_sessions["shepr:codex"];
+    assert_eq!(
+        sessions.len(),
+        MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE
+    );
+    let newest = shepr_agent::agent::resume::AgentSessionRef::id(format!("session-{}", total - 1))
+        .expect("test precondition");
+    let oldest_kept = shepr_agent::agent::resume::AgentSessionRef::id(format!(
+        "session-{}",
+        total - MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE
+    ))
+    .expect("test precondition");
+    assert!(
+        sessions
+            .last()
+            .is_some_and(|last| last.session_ref == newest)
+    );
+    assert!(
+        sessions
+            .first()
+            .is_some_and(|first| first.session_ref == oldest_kept)
+    );
+}

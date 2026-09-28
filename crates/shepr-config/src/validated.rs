@@ -1,5 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use std::ffi::OsStr;
 use std::fmt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -288,6 +290,7 @@ pub enum NewTerminalCwd {
 
 #[derive(Debug, Clone)]
 pub struct ValidatedTerminalConfig {
+    /// Absolute, recognized shell selected and resolved at process launch.
     pub default_shell: String,
     pub login_shell: bool,
     pub new_cwd: NewTerminalCwd,
@@ -304,15 +307,29 @@ pub(crate) enum CwdCheck {
     Received,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShellCheck {
+    /// Resolve the process's configured and inherited shell inputs.
+    AtLaunch,
+    /// Preserve the resolved path received from another process or host.
+    Received,
+}
+
 impl ValidatedTerminalConfig {
-    fn parse(config: &TerminalConfig, paths: &AppPaths, check: CwdCheck) -> Result<Self, String> {
-        // The workspace dependency rule excludes a normal config-to-PTY edge;
-        // the PTY layer owns PATH and access(2) resolution. Duplicating those
-        // checks here could make validation disagree with pane spawning.
+    fn parse(
+        config: &TerminalConfig,
+        paths: &AppPaths,
+        cwd_check: CwdCheck,
+        shell_check: ShellCheck,
+    ) -> Result<Self, String> {
+        let default_shell = match shell_check {
+            ShellCheck::AtLaunch => resolve_default_shell(&config.default_shell, paths)?,
+            ShellCheck::Received => config.default_shell.clone(),
+        };
         Ok(Self {
-            default_shell: config.default_shell.clone(),
+            default_shell,
             login_shell: config.login_shell,
-            new_cwd: Self::parse_new_cwd(&config.new_cwd, paths, check)?,
+            new_cwd: Self::parse_new_cwd(&config.new_cwd, paths, cwd_check)?,
         })
     }
 
@@ -369,6 +386,118 @@ impl ValidatedTerminalConfig {
             }
         }
     }
+}
+
+/// The pane shell for this launch. An empty setting means `$SHELL`, and
+/// `/bin/sh` only when `SHELL` is unset or blank.
+///
+/// An inherited `SHELL` is held to the same standard as a configured shell:
+/// one that is unusable or not a shell shepr recognises fails the launch
+/// rather than falling back to `/bin/sh`. With `terminal.default_shell` empty
+/// (the default, and the only state with no config file), `SHELL` is the
+/// setting, so a bad value is a config problem like any other. A fallback
+/// would only have surfaced as a line in the server log, which the TUI never
+/// shows, while every pane silently opened a different shell than the
+/// operator's own; the fix is one line in either place, so the error names
+/// both.
+fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<String, String> {
+    let path = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
+        .map_err(|error| error.to_string())?;
+    let inherited = shepr_core::env::read_os(shepr_core::env::EnvVar::Shell)
+        .map_err(|error| error.to_string())?
+        .and_then(|shell| shepr_core::shell::trim_shell_value(&shell));
+    let cwd = paths
+        .current_dir()
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("/"));
+
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return resolve_recognized_shell(
+            OsStr::new(configured),
+            "terminal.default_shell",
+            path.as_deref(),
+            &cwd,
+        )
+        .and_then(|shell| shell_path_string(shell, "terminal.default_shell"));
+    }
+
+    if let Some(inherited) = inherited {
+        return resolve_recognized_shell(&inherited, "SHELL", path.as_deref(), &cwd)
+            .and_then(|shell| shell_path_string(shell, "SHELL"))
+            .map_err(|error| {
+                format!(
+                    "{error}; terminal.default_shell is empty, so panes run SHELL={}. \
+                     Set terminal.default_shell to a shell shepr recognizes, or fix SHELL",
+                    inherited.to_string_lossy()
+                )
+            });
+    }
+
+    resolve_recognized_shell(
+        OsStr::new("/bin/sh"),
+        "the default shell",
+        path.as_deref(),
+        &cwd,
+    )
+    .and_then(|shell| shell_path_string(shell, "the default shell"))
+}
+
+/// `source` names where `candidate` came from, so the error points at the
+/// setting or variable to fix.
+fn resolve_recognized_shell(
+    candidate: &OsStr,
+    source: &str,
+    path: Option<&OsStr>,
+    cwd: &Path,
+) -> Result<PathBuf, String> {
+    // Config has no platform-process dependency; the PTY applies access(2)
+    // again before exec in case ACL or mount policy differs from mode bits.
+    let resolved =
+        shepr_core::shell::resolve_executable(
+            candidate,
+            path,
+            cwd,
+            |path| match std::fs::metadata(path) {
+                Ok(metadata) if metadata.is_dir() => shepr_core::shell::ExecutableStatus::Directory,
+                Ok(metadata) if metadata.permissions().mode() & 0o111 != 0 => {
+                    shepr_core::shell::ExecutableStatus::Executable
+                }
+                Ok(_) => shepr_core::shell::ExecutableStatus::NotExecutable,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    shepr_core::shell::ExecutableStatus::Missing
+                }
+                Err(error) => shepr_core::shell::ExecutableStatus::Uninspectable(error.kind()),
+            },
+        )
+        .map_err(|error| format!("{source} {error}"))?;
+
+    if !resolved
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(shepr_agent::detect::is_pane_shell_process_name)
+    {
+        return Err(format!(
+            "{source} resolves to a shell name shepr does not recognize: {}",
+            resolved.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+fn shell_path_string(path: PathBuf, source: &str) -> Result<String, String> {
+    path.into_os_string().into_string().map_err(|path| {
+        format!(
+            "{source} resolves to a non-UTF-8 path: {}",
+            path.to_string_lossy()
+        )
+    })
 }
 
 fn checked_new_cwd_directory(path: &Path) -> Result<PathBuf, String> {
@@ -462,7 +591,8 @@ impl ConfigResolution {
         config: &Config,
         provenance: &ConfigProvenance,
         paths: &AppPaths,
-        check: CwdCheck,
+        cwd_check: CwdCheck,
+        shell_check: ShellCheck,
     ) -> Self {
         let keybind_validation = config.compute_keybind_validation(|field| {
             provenance.key_is_configured(&format!("keys.{field}"))
@@ -479,7 +609,8 @@ impl ConfigResolution {
         );
         let tab_bar_right = super::tab_bar::parse_tab_bar_right_entries(&config.ui.tab_bar_right);
         let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
-        let terminal = ValidatedTerminalConfig::parse(&config.terminal, paths, check);
+        let terminal =
+            ValidatedTerminalConfig::parse(&config.terminal, paths, cwd_check, shell_check);
         let mouse_scroll_lines = u16::try_from(config.ui.mouse_scroll_lines())
             .ok()
             .and_then(std::num::NonZeroU16::new);
@@ -586,7 +717,13 @@ impl ValidatedConfig {
         provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
-        Self::from_resolution(config, provenance, paths, CwdCheck::AtLaunch)
+        Self::from_resolution(
+            config,
+            provenance,
+            paths,
+            CwdCheck::AtLaunch,
+            ShellCheck::AtLaunch,
+        )
     }
 
     /// Validate `config` exactly as a launch does, with `source` as the config
@@ -609,7 +746,13 @@ impl ValidatedConfig {
             .transpose()?;
         let provenance = ConfigProvenance::from_config(&config, document.as_ref())
             .map_err(|error| vec![format!("config provenance error: {error}")])?;
-        Self::from_resolution(config, provenance, paths, CwdCheck::AtLaunch)
+        Self::from_resolution(
+            config,
+            provenance,
+            paths,
+            CwdCheck::AtLaunch,
+            ShellCheck::AtLaunch,
+        )
     }
 
     /// Build from a load whose diagnostics, including checked terminal paths,
@@ -620,6 +763,11 @@ impl ValidatedConfig {
         values: ValidatedValues,
         paths: AppPaths,
     ) -> Self {
+        let mut config = config;
+        // The wire config carries the selected path so a receiver does not
+        // resolve the sender's shell against its own search path or inherited
+        // shell variable.
+        config.terminal.default_shell = values.terminal.default_shell.clone();
         Self {
             config,
             provenance,
@@ -636,9 +784,11 @@ impl ValidatedConfig {
         config: Config,
         provenance: ConfigProvenance,
         paths: AppPaths,
-        check: CwdCheck,
+        cwd_check: CwdCheck,
+        shell_check: ShellCheck,
     ) -> Result<Self, Vec<String>> {
-        let resolution = ConfigResolution::parse(&config, &provenance, &paths, check);
+        let resolution =
+            ConfigResolution::parse(&config, &provenance, &paths, cwd_check, shell_check);
         let mut diagnostics = resolution.diagnostics;
         diagnostics.extend(resolution.path_diagnostics);
         if !diagnostics.is_empty() {
@@ -767,12 +917,17 @@ impl<'de> Deserialize<'de> for ValidatedConfig {
             paths,
         } = Wire::deserialize(deserializer)?;
         let config = config.into_config().map_err(de::Error::custom)?;
-        // Rebuild runtime values from the raw config so the receiver applies
-        // the same validation boundary as the server. The paths are the
-        // sender's, possibly on another host, so the new_cwd directory is not
-        // looked up on this filesystem.
-        Self::from_resolution(config, provenance, paths, CwdCheck::Received)
-            .map_err(|diagnostics| de::Error::custom(diagnostics.join("\n")))
+        // Rebuild runtime values from the serialized config. The shell path was
+        // resolved by the sender and is preserved; paths are also the sender's,
+        // possibly on another host, so new_cwd is not looked up here.
+        Self::from_resolution(
+            config,
+            provenance,
+            paths,
+            CwdCheck::Received,
+            ShellCheck::Received,
+        )
+        .map_err(|diagnostics| de::Error::custom(diagnostics.join("\n")))
     }
 }
 
@@ -823,6 +978,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
 
     #[test]
     fn validated_config_resolves_runtime_values_once() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-cwd");
         let configured_cwd = scratch.join("relative/worktree");
         std::fs::create_dir_all(&configured_cwd).expect("create configured cwd");
@@ -863,6 +1019,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
 
     #[test]
     fn validated_config_expands_home_in_new_cwd_path_once() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-home-cwd");
         let home = scratch.join("home");
         let configured_cwd = home.join("work");
@@ -883,6 +1040,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
 
     #[test]
     fn validated_config_rejects_empty_and_missing_new_cwd_paths() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-invalid-cwd");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
@@ -903,7 +1061,81 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
     }
 
     #[test]
+    fn launch_rejects_a_configured_shell_that_is_missing_or_unrecognised() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-shell");
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let not_a_shell = shepr_test_support::fixture::stand_in(scratch.path(), "not-a-shell", &[]);
+
+        for (shell, expected) in [
+            (scratch.join("missing/zsh"), "terminal.default_shell"),
+            (not_a_shell, "does not recognize"),
+        ] {
+            let mut config = Config::default();
+            config.terminal.default_shell = shell.to_string_lossy().into_owned();
+            let error = ValidatedConfig::new(
+                config.clone(),
+                ConfigProvenance::defaults(&config),
+                paths.clone(),
+            )
+            .expect_err("an unusable configured shell fails the launch");
+            assert!(
+                error.iter().any(|message| message.contains(expected)),
+                "expected {expected:?} in {error:?}"
+            );
+        }
+    }
+
+    /// With `terminal.default_shell` empty, `SHELL` is the setting: a usable
+    /// one is taken, an unusable or unrecognized one fails the launch naming
+    /// `SHELL` and the fix, and only an unset one means `/bin/sh`.
+    #[test]
+    fn an_empty_shell_setting_takes_the_inherited_shell_and_rejects_an_unusable_one() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-inherited-shell");
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let config = Config::default();
+        let validate = || {
+            ValidatedConfig::new(
+                config.clone(),
+                ConfigProvenance::defaults(&config),
+                paths.clone(),
+            )
+        };
+
+        let zsh = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
+        env.set("SHELL", &zsh);
+        let validated = validate().expect("a usable inherited shell is taken");
+        assert_eq!(
+            Some(validated.terminal().default_shell.as_str()),
+            zsh.to_str()
+        );
+
+        let not_a_shell = shepr_test_support::fixture::stand_in(scratch.path(), "not-a-shell", &[]);
+        for (shell, expected) in [
+            (scratch.join("missing/zsh"), "does not exist"),
+            (not_a_shell, "does not recognize"),
+        ] {
+            env.set("SHELL", &shell);
+            let errors = validate().expect_err("an unusable SHELL fails the launch");
+            let shell = shell.to_string_lossy();
+            assert!(
+                errors.iter().any(|message| message.starts_with("SHELL ")
+                    && message.contains(expected)
+                    && message.contains(&format!("SHELL={shell}"))
+                    && message.contains("Set terminal.default_shell")),
+                "expected a SHELL diagnostic with {expected:?} in {errors:?}"
+            );
+        }
+
+        env.remove("SHELL");
+        let validated = validate().expect("an unset SHELL means /bin/sh");
+        assert_eq!(validated.terminal().default_shell, "/bin/sh");
+    }
+
+    #[test]
     fn wire_deserialization_revalidates_raw_config() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-wire");
         let validated = ValidatedConfig::test_from_config_with_paths(
             Config::default(),
@@ -918,6 +1150,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
 
     #[test]
     fn wire_deserialization_rejects_missing_captured_home_directory() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-home-wire");
         let validated = ValidatedConfig::test_from_config_with_paths(
             Config::default(),
@@ -938,6 +1171,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
 
     #[test]
     fn wire_deserialization_does_not_look_up_the_senders_cwd_directory() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         // A remote server's new_cwd names a directory on the remote host; the
         // receiving client must not require it on its own filesystem.
         let scratch = shepr_test_support::ScratchDir::new("validated-config-cwd-wire");

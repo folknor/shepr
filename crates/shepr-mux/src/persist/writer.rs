@@ -64,6 +64,10 @@ pub struct SessionWriter {
     /// rewritten and fsynced on every save otherwise, even when no pane printed
     /// anything.
     written_history: Option<WrittenHistory>,
+    /// Whether the last history save had to trim scrollback to fit the file
+    /// cap, so the log records when trimming starts and stops rather than
+    /// repeating on every save while it lasts.
+    trimming_history: bool,
 }
 
 impl SessionWriter {
@@ -74,6 +78,7 @@ impl SessionWriter {
             protect_unloaded,
             lease: Some(lease),
             written_history: None,
+            trimming_history: false,
         }
     }
 
@@ -235,7 +240,8 @@ impl SessionWriter {
             self.written_history = None;
             return super::io::save_history_to_path(history_path, None);
         };
-        let json = super::io::serialize_history(history)?;
+        let super::io::SerializedHistory { json, trimmed } = super::io::serialize_history(history)?;
+        self.note_history_trim(history_path, trimmed);
         let digest = Sha256::digest(json.as_bytes()).to_vec();
         if let Some(written) = self
             .written_history
@@ -255,6 +261,24 @@ impl SessionWriter {
             .flatten()
             .map(|file| WrittenHistory { digest, file });
         Ok(())
+    }
+
+    fn note_history_trim(&mut self, history_path: &Path, trimmed: Option<super::io::HistoryTrim>) {
+        match (trimmed, self.trimming_history) {
+            (Some(trim), false) => tracing::warn!(
+                event = "persist.save", subsystem = "persist", outcome = "history_trimmed",
+                path = %history_path.display(), panes = trim.panes,
+                dropped_bytes = trim.dropped_bytes,
+                "session history exceeds its file cap; saving only the most recent scrollback"
+            ),
+            (None, true) => tracing::info!(
+                event = "persist.save", subsystem = "persist", outcome = "history_fits",
+                path = %history_path.display(),
+                "session history fits its file cap again; saving all scrollback"
+            ),
+            (Some(_), true) | (None, false) => {}
+        }
+        self.trimming_history = trimmed.is_some();
     }
 
     /// Clears the layout and history, reporting either file's clear failure.

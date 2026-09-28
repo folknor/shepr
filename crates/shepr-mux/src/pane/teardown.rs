@@ -64,7 +64,10 @@ impl ChildLiveness {
 }
 
 /// Pane session teardowns still running on their background threads, so a
-/// process that is about to exit can let them finish first.
+/// process that is about to exit can let them finish first. This wait is
+/// process-wide because neither teardown starts nor waits carry a
+/// server-owned tracker; server-scoped waiting requires that owner to be
+/// threaded through both APIs.
 static PANE_TEARDOWNS_IN_FLIGHT: Mutex<usize> = Mutex::new(0);
 static PANE_TEARDOWNS_DONE: std::sync::Condvar = std::sync::Condvar::new();
 
@@ -81,6 +84,8 @@ pub fn wait_for_pane_session_teardowns(timeout: std::time::Duration) -> bool {
     }
 }
 
+/// The queued work owns this guard through completion or unwind, so a
+/// panicking teardown does not leak its in-flight count.
 struct PaneTeardownInFlight;
 
 impl PaneTeardownInFlight {
@@ -93,7 +98,11 @@ impl PaneTeardownInFlight {
 impl Drop for PaneTeardownInFlight {
     fn drop(&mut self) {
         let mut in_flight = shepr_vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT);
-        *in_flight = in_flight.saturating_sub(1);
+        if *in_flight == 0 {
+            warn!("pane teardown completion had no matching start");
+            return;
+        }
+        *in_flight -= 1;
         if *in_flight == 0 {
             PANE_TEARDOWNS_DONE.notify_all();
         }

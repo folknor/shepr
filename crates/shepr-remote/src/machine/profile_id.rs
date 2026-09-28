@@ -26,7 +26,9 @@ impl ProfileId {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-        // Profile IDs are local row identities, not secrets; practical uniqueness is enough.
+        // Profile IDs identify catalog rows and may label bridge socket paths, but those paths
+        // get a separate unpredictable token in the private runtime directory; the IDs need
+        // practical uniqueness rather than secrecy.
         let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

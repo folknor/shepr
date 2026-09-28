@@ -107,38 +107,38 @@ pub(crate) struct SwapArgs {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> &'static str {
+    pub(super) fn name(&self) -> Option<&'static str> {
         match self {
-            Self::List { .. } => "list",
-            Self::Current { .. } => "current",
-            Self::Get { .. } => "get",
-            Self::Layout { .. } => "layout",
-            Self::ProcessInfo { .. } => "process-info",
-            Self::Neighbor { .. } => "neighbor",
-            Self::Edges { .. } => "edges",
-            Self::Focus { .. } => "focus",
-            Self::Resize { .. } => "resize",
-            Self::Zoom { .. } => "zoom",
-            Self::Read(_) => "read",
-            Self::Rename(_) => "rename",
-            Self::Input { .. } => "input",
-            Self::Split(_) => "split",
-            Self::Swap(_) => "swap",
-            Self::Move(_) => "move",
-            Self::Close { .. } => "close",
-            Self::SendText(_) => "send-text",
-            Self::SendKeys(_) => "send-keys",
-            Self::WaitOutput(_) => "wait-output",
-            Self::ReportAgent(_) => "report-agent",
-            Self::ReportAgentSession(_) => "report-agent-session",
-            Self::ReleaseAgent(_) => "release-agent",
-            Self::ReportMetadata(_) => "report-metadata",
-            Self::Run { .. } => "run",
-            Self::Invalid => "",
+            Self::List { .. } => Some("list"),
+            Self::Current { .. } => Some("current"),
+            Self::Get { .. } => Some("get"),
+            Self::Layout { .. } => Some("layout"),
+            Self::ProcessInfo { .. } => Some("process-info"),
+            Self::Neighbor { .. } => Some("neighbor"),
+            Self::Edges { .. } => Some("edges"),
+            Self::Focus { .. } => Some("focus"),
+            Self::Resize { .. } => Some("resize"),
+            Self::Zoom { .. } => Some("zoom"),
+            Self::Read(_) => Some("read"),
+            Self::Rename(_) => Some("rename"),
+            Self::Input { .. } => Some("input"),
+            Self::Split(_) => Some("split"),
+            Self::Swap(_) => Some("swap"),
+            Self::Move(_) => Some("move"),
+            Self::Close { .. } => Some("close"),
+            Self::SendText(_) => Some("send-text"),
+            Self::SendKeys(_) => Some("send-keys"),
+            Self::WaitOutput(_) => Some("wait-output"),
+            Self::ReportAgent(_) => Some("report-agent"),
+            Self::ReportAgentSession(_) => Some("report-agent-session"),
+            Self::ReleaseAgent(_) => Some("release-agent"),
+            Self::ReportMetadata(_) => Some("report-metadata"),
+            Self::Run { .. } => Some("run"),
+            Self::Invalid => None,
         }
     }
 
-    pub(super) fn is_api_command(&self) -> bool {
+    pub(super) fn can_run_on_machine(&self) -> bool {
         !matches!(self, Self::Invalid)
     }
 }

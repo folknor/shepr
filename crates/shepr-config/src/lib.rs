@@ -80,6 +80,9 @@ impl Config {
             &provenance,
             &AppPaths::default(),
             validated::CwdCheck::AtLaunch,
+            // Diagnostics here cover the document alone; the launch-time
+            // shell lookup reads the process environment.
+            validated::ShellCheck::Received,
         );
         resolution
             .diagnostics

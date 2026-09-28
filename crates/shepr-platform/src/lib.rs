@@ -7,6 +7,7 @@ mod child_io;
 mod client_stream;
 mod clipboard;
 mod config_file;
+pub mod git;
 mod host;
 pub mod ipc;
 pub mod logging;
