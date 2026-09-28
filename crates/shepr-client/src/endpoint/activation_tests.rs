@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::test_pane_id;
 use shepr_test_fixtures::*;
 
 fn endpoint() -> ClientEndpointId {
@@ -179,7 +180,7 @@ fn surface(boot_id: &str, revision: u64, pane: &str) -> shepr_protocol::PaneSurf
             hyperlinks: Vec::new(),
         },
         panes: vec![shepr_protocol::PaneSurfacePane {
-            pane_id: pane.into(),
+            pane_id: test_pane_id(pane),
             content_revision: revision,
             rect: shepr_protocol::SurfaceRect {
                 x: 0,
@@ -411,11 +412,11 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
         SurfaceActivationProgress::Pending
     );
     assert_eq!(
-        activation.receive_surface(&target, 7, surface("remote-boot", 1, "pane")),
+        activation.receive_surface(&target, 7, surface("remote-boot", 1, "ws_1:p1")),
         SurfaceActivationProgress::Pending
     );
     assert_eq!(
-        activation.receive_surface(&target, 7, surface("remote-boot", 2, "pane")),
+        activation.receive_surface(&target, 7, surface("remote-boot", 2, "ws_1:p1")),
         SurfaceActivationProgress::Ready
     );
 }
@@ -456,7 +457,7 @@ fn typed_target_ack_sets_a_floor_for_same_boot_activation_evidence() {
         SurfaceActivationProgress::Pending
     );
     assert_eq!(
-        activation.receive_surface(&target, 7, surface("remote-boot", 3, "pane")),
+        activation.receive_surface(&target, 7, surface("remote-boot", 3, "ws_1:p1")),
         SurfaceActivationProgress::Pending,
         "a delayed same-boot surface below the acknowledgement floor is not evidence"
     );
@@ -465,7 +466,7 @@ fn typed_target_ack_sets_a_floor_for_same_boot_activation_evidence() {
         SurfaceActivationProgress::Pending
     );
     assert_eq!(
-        activation.receive_surface(&target, 7, surface("remote-boot", 4, "pane")),
+        activation.receive_surface(&target, 7, surface("remote-boot", 4, "ws_1:p1")),
         SurfaceActivationProgress::Ready
     );
 }
@@ -474,11 +475,11 @@ fn typed_target_ack_sets_a_floor_for_same_boot_activation_evidence() {
 fn stale_generation_and_boot_are_not_activation_evidence() {
     let mut activation = machine();
     assert_eq!(
-        activation.receive_surface(&endpoint(), 6, surface("remote-boot", 1, "pane")),
+        activation.receive_surface(&endpoint(), 6, surface("remote-boot", 1, "ws_1:p1")),
         SurfaceActivationProgress::Stale
     );
     assert_eq!(
-        activation.receive_surface(&endpoint(), 7, surface("old-boot", 1, "pane")),
+        activation.receive_surface(&endpoint(), 7, surface("old-boot", 1, "ws_1:p1")),
         SurfaceActivationProgress::Stale
     );
 }
@@ -738,7 +739,7 @@ fn resize_invalidates_already_recorded_surface_evidence() {
         SurfaceActivationProgress::Pending
     );
     assert_eq!(
-        activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "pane")),
+        activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "ws_1:p1")),
         SurfaceActivationProgress::Ready
     );
     let resize = shepr_protocol::ClientMessage::ClientShellResize {
@@ -781,7 +782,7 @@ fn resize_during_activation_reaches_the_pending_target() {
         Some(&resized)
     );
     assert_eq!(
-        activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "pane")),
+        activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "ws_1:p1")),
         SurfaceActivationProgress::Pending,
         "a surface for the prior geometry cannot commit"
     );
@@ -812,9 +813,9 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
     assert_eq!(
         activation.supersede(
             ClientEndpointId::Local,
-            Some(crate::shell::ClientEndpointFocusTarget::Pane(
-                "local-pane".into(),
-            )),
+            Some(crate::shell::ClientEndpointFocusTarget::Pane(test_pane_id(
+                "ws_1:p1"
+            ),)),
             &mut endpoints,
         ),
         ActivationRollback::Pending
@@ -830,7 +831,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
         "B is released before A can be restored"
     );
     assert_eq!(
-        activation.receive_surface(&endpoint(), 7, surface("remote-boot", 2, "pane")),
+        activation.receive_surface(&endpoint(), 7, surface("remote-boot", 2, "ws_1:p1")),
         SurfaceActivationProgress::Stale,
         "delayed B activation evidence cannot satisfy A restoration"
     );
@@ -868,7 +869,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
         activation.receive_surface(
             &ClientEndpointId::Local,
             1,
-            surface("local-boot", 2, "pane")
+            surface("local-boot", 2, "ws_1:p1")
         ),
         SurfaceActivationProgress::Ready
     );
@@ -897,7 +898,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
         activation.receive_surface(
             &ClientEndpointId::Local,
             1,
-            surface("local-boot", 3, "pane")
+            surface("local-boot", 3, "ws_1:p1")
         ),
         SurfaceActivationProgress::Ready
     );
@@ -931,9 +932,9 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
         &shell,
         &mut endpoints,
         &ClientEndpointId::Local,
-        Some(crate::shell::ClientEndpointFocusTarget::Pane(
-            "local-pane".into(),
-        )),
+        Some(crate::shell::ClientEndpointFocusTarget::Pane(test_pane_id(
+            "ws_1:p1",
+        ))),
         resize(),
         21,
         Instant::now(),
@@ -1013,7 +1014,7 @@ fn local_escape(source_state: &str) {
         SurfaceActivationProgress::Stale
     );
     assert_eq!(
-        activation.receive_surface(&disconnected, 7, surface("remote-boot", 2, "stale")),
+        activation.receive_surface(&disconnected, 7, surface("remote-boot", 2, "ws_1:p2")),
         SurfaceActivationProgress::Stale
     );
 
@@ -1041,7 +1042,7 @@ fn local_escape(source_state: &str) {
         activation.receive_surface(
             &ClientEndpointId::Local,
             1,
-            surface("local-boot", 2, "pane")
+            surface("local-boot", 2, "ws_1:p1")
         ),
         SurfaceActivationProgress::Ready
     );
@@ -1070,7 +1071,7 @@ fn local_escape(source_state: &str) {
         activation.receive_surface(
             &ClientEndpointId::Local,
             1,
-            surface("local-boot", 3, "pane")
+            surface("local-boot", 3, "ws_1:p1")
         ),
         SurfaceActivationProgress::Ready
     );
@@ -1180,7 +1181,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
             "client-shell-surface:30:off"
         ));
         assert_eq!(
-            local.receive_surface(&endpoint(), 7, surface("remote-boot", 2, "stale")),
+            local.receive_surface(&endpoint(), 7, surface("remote-boot", 2, "ws_1:p2")),
             SurfaceActivationProgress::Stale
         );
     }
@@ -1377,9 +1378,9 @@ fn rollback_keeps_the_latest_intent_even_when_it_returns_to_the_target() {
     assert_eq!(
         activation.supersede(
             ClientEndpointId::Local,
-            Some(crate::shell::ClientEndpointFocusTarget::Pane(
-                "local-pane".into()
-            )),
+            Some(crate::shell::ClientEndpointFocusTarget::Pane(test_pane_id(
+                "ws_1:p1"
+            ))),
             &mut endpoints,
         ),
         ActivationRollback::Pending
@@ -1388,9 +1389,9 @@ fn rollback_keeps_the_latest_intent_even_when_it_returns_to_the_target() {
     assert_eq!(
         activation.supersede(
             target.clone(),
-            Some(crate::shell::ClientEndpointFocusTarget::Pane(
-                "remote-pane".into()
-            )),
+            Some(crate::shell::ClientEndpointFocusTarget::Pane(test_pane_id(
+                "ws_1:p2"
+            ))),
             &mut endpoints,
         ),
         ActivationRollback::Pending
@@ -1399,9 +1400,9 @@ fn rollback_keeps_the_latest_intent_even_when_it_returns_to_the_target() {
         activation.successor,
         Some(EndpointActivationIntent {
             endpoint_id: target,
-            target: Some(crate::shell::ClientEndpointFocusTarget::Pane(
-                "remote-pane".into()
-            )),
+            target: Some(crate::shell::ClientEndpointFocusTarget::Pane(test_pane_id(
+                "ws_1:p2"
+            ))),
         })
     );
 }

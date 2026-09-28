@@ -909,9 +909,7 @@ impl AgentSource {
     }
 
     pub fn parse(value: &str) -> Self {
-        Agent::parse_source(value)
-            .map(Self::Official)
-            .unwrap_or_else(|| Self::Custom(value.to_owned()))
+        Agent::parse_source(value).map_or_else(|| Self::Custom(value.to_owned()), Self::Official)
     }
 
     pub fn from_pair(source: &str, agent_label: &str) -> Option<Self> {

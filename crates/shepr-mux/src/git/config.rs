@@ -273,20 +273,7 @@ fn collect_remote_urls(
             ConfigSection::Remote(remote) if key.eq_ignore_ascii_case("url") => {
                 remote_urls.push((remote.clone(), value));
             }
-            ConfigSection::Include if key.eq_ignore_ascii_case("path") => {
-                let Some(include_path) = resolve_include_path(&path, &value) else {
-                    continue;
-                };
-                collect_remote_urls(
-                    &include_path,
-                    info,
-                    branch,
-                    remote_urls,
-                    include_stack,
-                    reader,
-                );
-            }
-            ConfigSection::IncludeIf(IncludeIfMode::Enabled)
+            ConfigSection::Include | ConfigSection::IncludeIf(IncludeIfMode::Enabled)
                 if key.eq_ignore_ascii_case("path") =>
             {
                 let Some(include_path) = resolve_include_path(&path, &value) else {
@@ -349,21 +336,7 @@ fn merge_git_config(
             {
                 config.remote_urls.push((remote.clone(), value));
             }
-            ConfigSection::Include if key.eq_ignore_ascii_case("path") => {
-                let Some(include_path) = resolve_include_path(&path, &value) else {
-                    continue;
-                };
-                merge_git_config(
-                    config,
-                    &include_path,
-                    branch,
-                    info,
-                    collect_hasconfig_urls,
-                    include_stack,
-                    reader,
-                );
-            }
-            ConfigSection::IncludeIf(IncludeIfMode::Enabled)
+            ConfigSection::Include | ConfigSection::IncludeIf(IncludeIfMode::Enabled)
                 if key.eq_ignore_ascii_case("path") =>
             {
                 let Some(include_path) = resolve_include_path(&path, &value) else {
@@ -569,24 +542,8 @@ fn included_config_defines_remote_url(
         }
         let value = normalize_config_value(value);
         match &section {
-            ConfigSection::Include if key.eq_ignore_ascii_case("path") => {
-                let Some(include_path) = resolve_include_path(&path, &value) else {
-                    continue;
-                };
-                if !included_config_defines_remote_url(
-                    &include_path,
-                    branch,
-                    info,
-                    config,
-                    include_stack,
-                    reader,
-                ) {
-                    continue;
-                }
-                defines_remote_url = true;
-                break;
-            }
-            ConfigSection::IncludeIf(IncludeIfMode::Enabled | IncludeIfMode::HasConfig)
+            ConfigSection::Include
+            | ConfigSection::IncludeIf(IncludeIfMode::Enabled | IncludeIfMode::HasConfig)
                 if key.eq_ignore_ascii_case("path") =>
             {
                 let Some(include_path) = resolve_include_path(&path, &value) else {

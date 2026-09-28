@@ -112,22 +112,26 @@ fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
         };
     }
 
-    color_to_rgb(bg)
-        .map(|bg| {
+    color_to_rgb(bg).map_or_else(
+        || panel_contrast_fg(p),
+        |bg| {
             if relative_luminance(bg) < 0.5 {
                 Color::White
             } else {
                 Color::Black
             }
-        })
-        .unwrap_or_else(|| panel_contrast_fg(p))
+        },
+    )
 }
 
 fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     fn channel(base: u8, target: u8, amount: f32) -> u8 {
-        // amount is a mix fraction in [0, 1] and base/target are u8 channel
-        // values, so the interpolated result stays within u8 range.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "amount is a mix fraction in [0, 1] and base/target are u8 channel \
+                      values, so the interpolated result stays within u8 range"
+        )]
         let mixed =
             (f32::from(base) + (f32::from(target) - f32::from(base)) * amount).round() as u8;
         mixed
@@ -153,7 +157,7 @@ pub fn relative_luminance(color: Rgb) -> f32 {
 
 fn color_to_rgb(color: Color) -> Option<Rgb> {
     match color {
-        Color::Reset => None,
+        Color::Reset | Color::Indexed(_) => None,
         Color::Black => Some((0, 0, 0)),
         Color::Red => Some((128, 0, 0)),
         Color::Green => Some((0, 128, 0)),
@@ -171,6 +175,5 @@ fn color_to_rgb(color: Color) -> Option<Rgb> {
         Color::LightCyan => Some((0, 255, 255)),
         Color::White => Some((255, 255, 255)),
         Color::Rgb(r, g, b) => Some((r, g, b)),
-        Color::Indexed(_) => None,
     }
 }

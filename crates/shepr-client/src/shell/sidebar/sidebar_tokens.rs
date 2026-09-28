@@ -88,9 +88,11 @@ fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16
         );
     }
 
-    // split_ratio is clamped to [0.1, 0.9], so the scaled height stays
-    // within the source u16 range; truncation/sign-loss cannot occur.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "split_ratio is clamped to 0.1..=0.9, so the scaled height is non-negative and stays within the source u16 range"
+    )]
     let workspace_height = ((total_height as f32) * split_ratio.get()).round() as u16;
     let workspace_height = workspace_height.clamp(3, total_height.saturating_sub(3));
     (

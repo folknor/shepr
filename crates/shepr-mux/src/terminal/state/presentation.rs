@@ -28,8 +28,7 @@ impl TerminalState {
             self.hook_authority
                 .as_ref()
                 .filter(|authority| self.hook_authority_is_effective(authority))
-                .map(|authority| authority.state)
-                .unwrap_or(self.fallback_state)
+                .map_or(self.fallback_state, |authority| authority.state)
         };
         let agent_label = self.effective_agent_label().map(str::to_string);
         let known_agent = self.effective_known_agent();

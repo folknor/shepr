@@ -542,6 +542,26 @@ impl AsRef<Path> for ScratchDir {
     }
 }
 
+/// A child process command whose working directory is a fresh [`ScratchDir`]
+/// labelled `label`, so a test's child never runs in, writes into, or resolves
+/// relative paths against the directory the test run started in. A test that
+/// needs the child somewhere specific overrides it with `current_dir`.
+///
+/// # Panics
+///
+/// As [`ScratchDir::new`].
+#[must_use]
+pub fn command_in_scratch(program: impl AsRef<OsStr>, label: &str) -> std::process::Command {
+    let scratch = ScratchDir::new(label);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the tests' shared constructor; it states the scratch working directory on the next line"
+    )]
+    let mut command = std::process::Command::new(program);
+    command.current_dir(scratch.path());
+    command
+}
+
 /// Exclusive, restorable access to the process environment for one test.
 ///
 /// Holding it serializes the test against other tests in its process that hold
@@ -813,6 +833,10 @@ mod tests {
     /// A claim clears the tree, so claiming one directory twice would delete
     /// the first fixture's tree under it; both shapes refuse, naming the names.
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the refusal under test is a panic; catching it is how the test reads its message"
+    )]
     fn a_directory_cannot_be_claimed_twice() {
         let path = scratch_base().join("claim-registry-probe");
         claim_scratch_path(&path, "first");
@@ -894,7 +918,9 @@ mod tests {
             "the leaf is a real directory"
         );
         assert!(
-            elsewhere.join("witness").is_file(),
+            std::fs::symlink_metadata(elsewhere.join("witness"))
+                .expect("the link target is untouched")
+                .is_file(),
             "the link target is untouched"
         );
     }

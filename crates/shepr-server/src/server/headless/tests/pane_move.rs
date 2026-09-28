@@ -110,7 +110,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(9),
-        pane_id: moved.pane.pane_id.into(),
+        pane_id: moved.pane.pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit("x".into())],
     });
     assert_eq!(

@@ -30,18 +30,18 @@ impl From<&str> for TextEditor {
 }
 
 impl TextEditor {
-    pub fn new(text: &str, replace_on_type: bool) -> Self {
+    pub(crate) fn new(text: &str, replace_on_type: bool) -> Self {
         let mut editor = Self::default();
         editor.insert(text);
         editor.replace_on_type = replace_on_type;
         editor
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.text
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
         self.replace_on_type = false;
@@ -58,7 +58,7 @@ impl TextEditor {
             .unwrap_or(self.text.len());
     }
 
-    pub fn insert(&mut self, text: &str) -> bool {
+    pub(crate) fn insert(&mut self, text: &str) -> bool {
         let mut normalized = String::new();
         let mut chars = text.chars().peekable();
         while let Some(ch) = chars.next() {
@@ -91,8 +91,7 @@ impl TextEditor {
         self.text[..self.cursor]
             .grapheme_indices(true)
             .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0)
+            .map_or(0, |(index, _)| index)
     }
 
     fn next(&self) -> usize {
@@ -100,8 +99,7 @@ impl TextEditor {
             + self.text[self.cursor..]
                 .graphemes(true)
                 .next()
-                .map(str::len)
-                .unwrap_or(0)
+                .map_or(0, str::len)
     }
 
     fn word_boundary(&self, backward: bool) -> usize {
@@ -152,7 +150,7 @@ impl TextEditor {
         self.repair_cursor();
     }
 
-    pub fn handle_key(&mut self, key: &shepr_termio::input::TerminalKey) -> Option<bool> {
+    pub(crate) fn handle_key(&mut self, key: &shepr_termio::input::TerminalKey) -> Option<bool> {
         if key.kind == KeyEventKind::Release {
             return None;
         }
@@ -229,7 +227,7 @@ impl TextEditor {
         Some(content_changed || self.text.len() != previous_len)
     }
 
-    pub fn viewport(&self, width: u16) -> (&str, u16) {
+    pub(crate) fn viewport(&self, width: u16) -> (&str, u16) {
         if width == 0 {
             return ("", 0);
         }

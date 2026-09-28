@@ -3,6 +3,20 @@ use shepr_core::env::EnvVar;
 use shepr_test_fixtures::*;
 use shepr_test_support::IsolatedEnv;
 
+/// A public pane id from its canonical spelling (`<workspace>:p<number>`).
+/// Test ids go through the parser a server's ids go through, so a test cannot
+/// build an id no server would issue.
+pub(crate) fn test_pane_id(id: &str) -> shepr_protocol::PublicPaneId {
+    id.parse()
+        .unwrap_or_else(|_| panic!("{id:?} is not a canonical public pane id"))
+}
+
+/// A public tab id from its canonical spelling (`<workspace>:t<number>`).
+pub(crate) fn test_tab_id(id: &str) -> shepr_protocol::PublicTabId {
+    id.parse()
+        .unwrap_or_else(|_| panic!("{id:?} is not a canonical public tab id"))
+}
+
 #[test]
 fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
     let size = AtomicCellSize::new();

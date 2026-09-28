@@ -12,6 +12,28 @@ pub(super) enum ShutdownPhase {
     Stopping,
 }
 
+/// A lifecycle step was asked for from a phase it does not start from. The
+/// step is refused and the phase left as it was, so an illegal transition
+/// never lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct UnexpectedPhase {
+    pub(super) step: &'static str,
+    pub(super) expected: ShutdownPhase,
+    pub(super) actual: ShutdownPhase,
+}
+
+impl std::fmt::Display for UnexpectedPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} needs the {:?} lifecycle phase, but the server is in {:?}",
+            self.step, self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for UnexpectedPhase {}
+
 /// Session-save freeze held from a host shutdown warning until shutdown
 /// completes or is cancelled.
 pub(super) struct HostShutdownFreeze {
@@ -85,10 +107,36 @@ impl ShutdownLifecycle {
         true
     }
 
-    pub(super) fn finish_host_shutdown_freeze(&mut self, freeze: HostShutdownFreeze) {
-        debug_assert_eq!(self.phase, ShutdownPhase::HostShutdownWarning);
+    /// Refuses `step` unless the server is in `expected`.
+    pub(super) fn require_phase(
+        &self,
+        step: &'static str,
+        expected: ShutdownPhase,
+    ) -> Result<(), UnexpectedPhase> {
+        if self.phase == expected {
+            Ok(())
+        } else {
+            Err(UnexpectedPhase {
+                step,
+                expected,
+                actual: self.phase,
+            })
+        }
+    }
+
+    /// Moves a checkpointed warning to `Frozen`. Only a warning can freeze;
+    /// from any other phase the freeze is refused and nothing changes.
+    pub(super) fn finish_host_shutdown_freeze(
+        &mut self,
+        freeze: HostShutdownFreeze,
+    ) -> Result<(), UnexpectedPhase> {
+        self.require_phase(
+            "freezing for host shutdown",
+            ShutdownPhase::HostShutdownWarning,
+        )?;
         self.freeze = Some(freeze);
         self.phase = ShutdownPhase::Frozen;
+        Ok(())
     }
 
     /// Cancels either a warning not yet checkpointed or a completed freeze.
@@ -231,6 +279,15 @@ impl HeadlessServer {
     }
 
     fn freeze_for_host_shutdown(&mut self) {
+        // Checked before any side effect: a refused freeze must leave the save
+        // policy and logind's delay lock as they were.
+        if let Err(error) = self.lifecycle.require_phase(
+            "freezing for host shutdown",
+            ShutdownPhase::HostShutdownWarning,
+        ) {
+            tracing::error!(%error, "refusing the host shutdown freeze");
+            return;
+        }
         info!("host shutdown announced; checkpointing the session and freezing saves");
         let generation = self
             .host_shutdown_monitor
@@ -252,11 +309,15 @@ impl HeadlessServer {
         {
             monitor.release_delay_lock(generation);
         }
-        self.lifecycle
+        if let Err(error) = self
+            .lifecycle
             .finish_host_shutdown_freeze(HostShutdownFreeze {
                 persist_session,
                 generation,
-            });
+            })
+        {
+            tracing::error!(%error, "host shutdown freeze did not land");
+        }
     }
 
     fn thaw_after_host_shutdown(&mut self, freeze: &HostShutdownFreeze) {
@@ -297,7 +358,11 @@ impl HeadlessServer {
     /// the previous save, or exit on the still-bound API socket and leave the
     /// user waiting out the startup timeout.
     pub(super) async fn complete_shutdown(&mut self) -> io::Result<()> {
-        debug_assert_eq!(self.lifecycle.phase(), ShutdownPhase::Stopping);
+        // Completing is only legal once `initiate_shutdown` has told every
+        // client; before that, closing connections would drop them silently.
+        self.lifecycle
+            .require_phase("completing shutdown", ShutdownPhase::Stopping)
+            .map_err(io::Error::other)?;
         info!("completing server shutdown");
         self.reject_late_client_connections().await;
 
@@ -370,5 +435,54 @@ impl HeadlessServer {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+
+    fn freeze() -> HostShutdownFreeze {
+        HostShutdownFreeze {
+            persist_session: true,
+            generation: None,
+        }
+    }
+
+    #[test]
+    fn freeze_is_refused_outside_a_warning_and_leaves_the_phase() {
+        let mut lifecycle = ShutdownLifecycle::new(Arc::new(AtomicBool::new(false)));
+        let refused = lifecycle
+            .finish_host_shutdown_freeze(freeze())
+            .expect_err("a running server cannot freeze");
+        assert_eq!(refused.actual, ShutdownPhase::Running);
+        assert_eq!(lifecycle.phase(), ShutdownPhase::Running);
+        assert_eq!(lifecycle.frozen_session_policy(), None);
+
+        assert!(lifecycle.begin_stopping());
+        assert!(lifecycle.finish_host_shutdown_freeze(freeze()).is_err());
+        assert_eq!(lifecycle.phase(), ShutdownPhase::Stopping);
+    }
+
+    #[test]
+    fn freeze_lands_from_a_warning() {
+        let mut lifecycle = ShutdownLifecycle::new(Arc::new(AtomicBool::new(false)));
+        assert!(lifecycle.begin_host_shutdown_warning());
+        lifecycle
+            .finish_host_shutdown_freeze(freeze())
+            .expect("a warning freezes");
+        assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
+        assert_eq!(lifecycle.frozen_session_policy(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn completing_shutdown_before_it_began_is_refused() {
+        let mut server = super::super::tests::test_headless_server();
+        let error = server
+            .complete_shutdown()
+            .await
+            .expect_err("a running server cannot complete shutdown");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
     }
 }

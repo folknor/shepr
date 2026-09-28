@@ -173,30 +173,31 @@ fn integration_hook_events(
     INTEGRATION_SPECS
         .iter()
         .find(|spec| spec.target == target)
-        .map(|spec| spec.events)
-        .unwrap_or(&[])
+        .map_or(&[], |spec| spec.events)
 }
 
 /// One row per supported target, in spec order, for `integration status`.
 /// Includes `NotInstalled` rows because the command reports the full
-/// supported-target inventory. A target whose directory could not be resolved
-/// is an error row, so the CLI can print it instead of silently omitting it.
+/// supported-target inventory. A target whose directory could not be resolved,
+/// or whose installed file could not be stat'ed, is an error row, so the CLI
+/// can print it instead of silently omitting it.
 pub fn integration_status_rows(
     paths: &super::env::AgentIntegrationPaths,
 ) -> Vec<Result<super::IntegrationStatus, super::IntegrationStatusError>> {
     integration_specs(paths)
-        .map(|(target, path, expected_version)| match path {
-            Ok(path) => Ok(integration_status_at(target, path, expected_version)),
-            Err(error) => Err(super::IntegrationStatusError {
-                target,
-                message: error.to_string(),
-            }),
+        .map(|(target, path, expected_version)| {
+            path.and_then(|path| integration_status_at(target, path, expected_version))
+                .map_err(|error| super::IntegrationStatusError {
+                    target,
+                    message: error.to_string(),
+                })
         })
         .collect()
 }
 
-/// The resolvable rows of [`integration_status_rows`]. Unresolvable targets
-/// are logged and skipped: callers here only act on installed integrations.
+/// The resolvable rows of [`integration_status_rows`]. Targets that could not
+/// be checked are logged and skipped: callers here only act on installed
+/// integrations.
 pub(crate) fn installed_integration_statuses(
     paths: &super::env::AgentIntegrationPaths,
 ) -> Vec<super::IntegrationStatus> {
@@ -208,7 +209,7 @@ pub(crate) fn installed_integration_statuses(
                 tracing::warn!(
                     integration = error.target.label(),
                     error = %error.message,
-                    "could not resolve integration directory while checking status"
+                    "could not check integration status"
                 );
                 None
             }
@@ -259,21 +260,22 @@ pub(crate) fn integration_update_instructions(
     }
 }
 
-pub fn print_outdated_update_notice(paths: &super::env::AgentIntegrationPaths) -> bool {
+/// The operator notice for outdated installed integrations, or `None` when
+/// every installed integration is current. The caller decides where it goes.
+pub fn outdated_update_notice(paths: &super::env::AgentIntegrationPaths) -> Option<String> {
     let outdated = outdated_installed_integrations(paths);
     if outdated.is_empty() {
-        return false;
+        return None;
     }
 
     let targets = outdated
         .iter()
         .map(|integration| integration.target)
         .collect::<Vec<_>>();
-    eprintln!(
+    Some(format!(
         "installed shepr integrations need updating; {}.",
         integration_update_instructions(&targets).replace('`', "")
-    );
-    true
+    ))
 }
 
 /// Whether the Shepr-owned Grok hook config exactly matches the installed
@@ -289,21 +291,31 @@ fn grok_hook_config_is_valid(hook_path: &Path) -> bool {
         .is_some_and(|config| config == super::targets::grok_hook_config(hook_path))
 }
 
-fn opencode_tui_integration_is_valid(plugin_path: &Path, expected_version: u32) -> bool {
+fn opencode_tui_integration_is_valid(
+    plugin_path: &Path,
+    expected_version: u32,
+) -> io::Result<bool> {
     let Some(config_dir) = plugin_path.parent().and_then(Path::parent) else {
-        return false;
+        return Ok(false);
     };
     let tui_plugin_path = config_dir.join(super::OPENCODE_TUI_PLUGIN_INSTALL_NAME);
     let tui_plugin_current = fs::read_to_string(tui_plugin_path)
         .ok()
         .and_then(|content| parse_integration_version(&content))
         .is_some_and(|version| version >= expected_version);
-    tui_plugin_current
+    let cli_config_path = config_dir.join("cli.json");
+    let cli_config_exists = cli_config_path.try_exists().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot stat {}: {error}", cli_config_path.display()),
+        )
+    })?;
+    Ok(tui_plugin_current
         && super::opencode_config::tui_plugin_is_configured(
             config_dir,
             super::OPENCODE_TUI_PLUGIN_SPEC,
         )
-        && (!config_dir.join("cli.json").exists()
+        && (!cli_config_exists
             || (super::opencode_config::cli_plugin_is_configured(
                 config_dir,
                 super::OPENCODE_V2_TUI_PLUGIN_SPEC,
@@ -314,7 +326,7 @@ fn opencode_tui_integration_is_valid(plugin_path: &Path, expected_version: u32) 
             )
             .ok()
             .and_then(|content| parse_integration_version(&content))
-            .is_some_and(|version| version >= expected_version)))
+            .is_some_and(|version| version >= expected_version))))
 }
 
 /// `levels` directories up from `path` (1 is the parent).
@@ -553,9 +565,15 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
 fn integration_state_for_path(
     path: &Path,
     expected_version: u32,
-) -> (super::IntegrationStatusKind, Option<u32>) {
-    if !path.is_file() {
-        return (super::IntegrationStatusKind::NotInstalled, None);
+) -> io::Result<(super::IntegrationStatusKind, Option<u32>)> {
+    let installed = super::file_ops::is_file(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot stat {}: {error}", path.display()),
+        )
+    })?;
+    if !installed {
+        return Ok((super::IntegrationStatusKind::NotInstalled, None));
     }
 
     let installed_version = fs::read_to_string(path)
@@ -567,15 +585,18 @@ fn integration_state_for_path(
         super::IntegrationStatusKind::Outdated
     };
 
-    (state, installed_version)
+    Ok((state, installed_version))
 }
 
+/// The status of the integration installed at `path`. A stat error on the
+/// installed file (or on a file its validity depends on) is returned, not
+/// reported as `NotInstalled`.
 pub(crate) fn integration_status_at(
     target: crate::agent::IntegrationTarget,
     path: PathBuf,
     expected_version: u32,
-) -> super::IntegrationStatus {
-    let (mut state, installed_version) = integration_state_for_path(&path, expected_version);
+) -> io::Result<super::IntegrationStatus> {
+    let (mut state, installed_version) = integration_state_for_path(&path, expected_version)?;
 
     // Grok only invokes the hook when the shepr-owned `hooks/shepr.json`
     // registers it, so a current hook script with a missing or broken config
@@ -589,7 +610,7 @@ pub(crate) fn integration_status_at(
     }
     if target == crate::agent::IntegrationTarget::Opencode
         && state == super::IntegrationStatusKind::Current
-        && !opencode_tui_integration_is_valid(&path, expected_version)
+        && !opencode_tui_integration_is_valid(&path, expected_version)?
     {
         state = super::IntegrationStatusKind::Outdated;
     }
@@ -602,13 +623,13 @@ pub(crate) fn integration_status_at(
         state = super::IntegrationStatusKind::Outdated;
     }
 
-    super::IntegrationStatus {
+    Ok(super::IntegrationStatus {
         target,
         path,
         state,
         installed_version,
         expected_version,
-    }
+    })
 }
 
 pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
@@ -670,7 +691,9 @@ mod registration_tests {
     }
 
     fn state(target: IntegrationTarget, hook: &Path) -> IntegrationStatusKind {
-        integration_status_at(target, hook.to_path_buf(), 1).state
+        integration_status_at(target, hook.to_path_buf(), 1)
+            .expect("stat hook")
+            .state
     }
 
     #[test]
@@ -816,7 +839,8 @@ mod registration_tests {
             !claude
                 .join("hooks")
                 .join(super::super::CLAUDE_HOOK_INSTALL_NAME)
-                .exists()
+                .try_exists()
+                .expect("stat hook")
         );
         let _ = fs::remove_dir_all(claude);
 
@@ -827,7 +851,12 @@ mod registration_tests {
             &super::super::env::AgentIntegrationPaths::resolve(),
         );
         assert!(result.is_err());
-        assert!(!codex.join(super::super::CODEX_HOOK_INSTALL_NAME).exists());
+        assert!(
+            !codex
+                .join(super::super::CODEX_HOOK_INSTALL_NAME)
+                .try_exists()
+                .expect("stat hook")
+        );
         let _ = fs::remove_dir_all(codex);
 
         let copilot = base("copilot-malformed");
@@ -837,7 +866,7 @@ mod registration_tests {
             &super::super::env::AgentIntegrationPaths::resolve(),
         );
         assert!(result.is_err());
-        assert!(!copilot.join("hooks").exists());
+        assert!(!copilot.join("hooks").try_exists().expect("stat hooks dir"));
         let _ = fs::remove_dir_all(copilot);
     }
 

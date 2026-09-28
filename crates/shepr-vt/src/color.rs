@@ -194,9 +194,7 @@ impl Terminal {
 
     fn effective_palette_color(&self, index: u8) -> RgbColor {
         let index = usize::from(index);
-        self.term.colors()[index]
-            .map(RgbColor::from)
-            .unwrap_or(self.default_palette[index])
+        self.term.colors()[index].map_or(self.default_palette[index], RgbColor::from)
     }
 
     pub(super) fn render_colors(&self) -> RenderColors {

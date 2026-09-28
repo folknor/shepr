@@ -28,8 +28,7 @@ pub(super) fn values<T: Clone + Send + Sync + 'static>(matches: &ArgMatches, id:
         .try_get_many::<T>(id)
         .ok()
         .flatten()
-        .map(|values| values.cloned().collect())
-        .unwrap_or_default()
+        .map_or_default(|values| values.cloned().collect())
 }
 
 /// Trailing words (`text_words` in the spec) joined back into one string.
@@ -43,10 +42,7 @@ pub(super) fn positioned<T: Clone + Send + Sync + 'static>(
     matches: &ArgMatches,
     id: &str,
 ) -> Vec<(usize, T)> {
-    let indices: Vec<usize> = matches
-        .indices_of(id)
-        .map(Iterator::collect)
-        .unwrap_or_default();
+    let indices: Vec<usize> = matches.indices_of(id).map_or_default(Iterator::collect);
     indices.into_iter().zip(values::<T>(matches, id)).collect()
 }
 

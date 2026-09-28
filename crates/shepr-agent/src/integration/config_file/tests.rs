@@ -34,7 +34,7 @@ fn config_publication_keeps_old_content_until_commit() {
                 b"old preferences"
             );
         } else {
-            assert!(!path.exists());
+            assert!(!path.try_exists().expect("stat config"));
         }
         assert_eq!(
             fs::read(&staged.temporary).expect("test precondition"),
@@ -70,14 +70,14 @@ fn abandoned_and_failed_publication_leave_config_unchanged() {
         if existing {
             assert_eq!(fs::read(&path).expect("test precondition"), b"original");
         } else {
-            assert!(!path.exists());
+            assert!(!path.try_exists().expect("stat config"));
         }
         assert_eq!(
             fs::read_dir(&dir.0).expect("test precondition").count(),
             usize::from(existing)
         );
         assert!(write_config(&dir.0, b"not a file").is_err());
-        assert!(dir.0.is_dir());
+        assert!(fs::metadata(&dir.0).expect("stat directory").is_dir());
     }
 }
 
@@ -340,7 +340,10 @@ fn writable_directory_does_not_bypass_read_only_config() {
     fs::write(&path, b"original").expect("test precondition");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).expect("test precondition");
     fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o777)).expect("test precondition");
-    let mut child = std::process::Command::new(std::env::current_exe().expect("test precondition"));
+    let mut child = shepr_test_support::command_in_scratch(
+        std::env::current_exe().expect("test precondition"),
+        "config-read-only-child",
+    );
     child
         .args([
             "--exact",
@@ -348,9 +351,27 @@ fn writable_directory_does_not_bypass_read_only_config() {
             "--nocapture",
         ])
         .env(CHILD, &path);
-    // Root bypasses Unix mode checks. Test the real user path in a child instead.
+    // Root bypasses Unix mode checks through two capabilities. A root child
+    // drops them from its bounding set before exec, so the exec's re-grant of
+    // root's capabilities leaves them out and the mode bits apply. It keeps
+    // root's identity, so this test's private (0700) scratch stays reachable,
+    // which a switch to an unprivileged uid would lose.
+    // SAFETY: geteuid takes no arguments, cannot fail and touches no memory.
     if unsafe { libc::geteuid() } == 0 {
-        child.gid(65534).uid(65534);
+        const CAP_DAC_OVERRIDE: libc::c_ulong = 1;
+        const CAP_DAC_READ_SEARCH: libc::c_ulong = 2;
+        // SAFETY: the hook runs in the forked child before exec and makes only
+        // prctl system calls, which are async-signal-safe and allocate nothing.
+        unsafe {
+            child.pre_exec(|| {
+                for capability in [CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH] {
+                    if libc::prctl(libc::PR_CAPBSET_DROP, capability, 0, 0, 0) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
     }
     let output = child.output().expect("test precondition");
     assert!(output.status.success(), "child failed: {output:?}");
@@ -410,7 +431,7 @@ fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
         fs::read(dir.0.join("existing")).expect("test precondition"),
         b"original"
     );
-    assert!(!dir.0.join("new").exists());
+    assert!(!dir.0.join("new").try_exists().expect("stat new"));
     assert_eq!(
         fs::read_dir(&dir.0).expect("test precondition").count(),
         2,

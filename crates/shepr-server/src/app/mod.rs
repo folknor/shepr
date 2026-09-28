@@ -166,8 +166,7 @@ impl App {
             .flatten();
         let restored_host_theme = snapshot
             .as_ref()
-            .map(|snapshot| snapshot.host_theme.to_theme())
-            .unwrap_or_default();
+            .map_or_default(|snapshot| snapshot.host_theme.to_theme());
         let session_writer = Arc::new(std::sync::Mutex::new(
             shepr_mux::persist::SessionWriter::new(
                 lease,
@@ -1591,7 +1590,8 @@ mod tests {
         assert!(
             shepr_api::session::data_dir(&app.paths)
                 .join("session.json")
-                .exists()
+                .try_exists()
+                .expect("stat session file")
         );
     }
 

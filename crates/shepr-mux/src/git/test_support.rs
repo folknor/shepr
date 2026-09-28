@@ -115,7 +115,7 @@ pub(super) fn live_git_space(cwd: &Path) -> Option<crate::git::GitSpaceMetadata>
 /// spawns Git use it; every other repository fixture is plain files.
 pub(super) fn git_written_fixture(cwd: &Path, args: &[&str]) {
     // host-program-ok: the fixture feeds production code that spawns Git itself
-    let output = std::process::Command::new("git")
+    let output = shepr_test_support::command_in_scratch("git", "git-written-fixture")
         .arg("-C")
         .arg(cwd)
         .args(args)

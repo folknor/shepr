@@ -5,8 +5,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use crate::input::TerminalKey;
 use shepr_config::{ActionKeybinds, IndexedKeybind, Keybinds};
 
-pub type KeybindHelpEntry = (String, Cow<'static, str>);
-pub type KeybindHelpGroup = (&'static str, Vec<KeybindHelpEntry>);
+pub(crate) type KeybindHelpEntry = (String, Cow<'static, str>);
+pub(crate) type KeybindHelpGroup = (&'static str, Vec<KeybindHelpEntry>);
 
 pub fn keybind_help_text_char(key: &TerminalKey) -> Option<char> {
     if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {

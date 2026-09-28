@@ -348,11 +348,10 @@ impl HeadlessServer {
                 ClientConnectionMode::ClientShell(shell) if shell.surface_active => {
                     has_app_target = true;
                 }
-                ClientConnectionMode::ClientShell(_) => {}
                 ClientConnectionMode::TerminalAttach { terminal_id, .. } => {
                     direct_terminal_targets.insert(terminal_id.as_str());
                 }
-                ClientConnectionMode::TerminalPending => {}
+                ClientConnectionMode::ClientShell(_) | ClientConnectionMode::TerminalPending => {}
             }
         }
         (has_app_target, direct_terminal_targets)

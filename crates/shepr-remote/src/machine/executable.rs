@@ -1,6 +1,6 @@
 const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
-pub const REMOTE_EXECUTABLE_ROOT: &str = "/";
-pub const REMOTE_MISE_SHIM_SUFFIX: &str = "/mise/shims/shepr";
+pub(crate) const REMOTE_EXECUTABLE_ROOT: &str = "/";
+pub(crate) const REMOTE_MISE_SHIM_SUFFIX: &str = "/mise/shims/shepr";
 
 /// A checked absolute path to the Shepr executable on a remote machine.
 #[derive(Debug, Clone, PartialEq, Eq)]

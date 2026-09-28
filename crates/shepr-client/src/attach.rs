@@ -159,9 +159,8 @@ fn legacy_control_byte(combo: KeyCombo) -> Option<u8> {
         return None;
     }
     match ch {
-        'a'..='z' => Some(ch as u8 & 0x1f),
+        'a'..='z' | '\\' | ']' | '^' | '_' => Some(ch as u8 & 0x1f),
         ' ' | '@' => Some(0x00),
-        '\\' | ']' | '^' | '_' => Some(ch as u8 & 0x1f),
         _ => None,
     }
 }

@@ -49,6 +49,31 @@ unicode-width = "0.2"
 # logind's delay inhibitor lets the server save before host shutdown kills panes.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
+[workspace.lints.rust]
+future_incompatible = "deny"
+non_ascii_idents = "deny"
+rust_2018_idioms = "deny"
+single_use_lifetimes = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unreachable_pub = "deny"
+unused = "deny"
+variant_size_differences = "deny"
+
+# Doc links and doc markup. Clippy and the test phases never run rustdoc, so
+# these are evaluated by brokkr's `[rustdoc]` phase (`brokkr.toml`), which
+# documents private items too.
+[workspace.lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+invalid_html_tags = "deny"
+invalid_rust_codeblocks = "deny"
+unescaped_backticks = "deny"
+# The phase documents private items, so a public item's link to a private one
+# resolves in the docs it produces.
+private_intra_doc_links = "allow"
+
 [workspace.lints.clippy]
 # Style: modern idiomatic Rust
 uninlined_format_args = "deny"
@@ -68,6 +93,10 @@ redundant_locals = "deny"
 regex_creation_in_loops = "deny"
 unnecessary_unwrap = "deny"
 wrong_self_convention = "deny"
+map_unwrap_or = "deny"
+match_same_arms = "deny"
+redundant_else = "deny"
+unnested_or_patterns = "deny"
 
 # Safety: strict error handling
 unwrap_in_result = "deny"
@@ -90,9 +119,17 @@ cast_possible_wrap = "deny"
 dbg_macro = "deny"
 todo = "deny"
 
-# The environment seal: `clippy.toml` bans raw `std::env` reads and writes
-# outside `shepr_core::env`, and escapes carry a scoped `#[expect]`.
+# The seals: `clippy.toml` bans raw `std::env` reads and writes outside
+# `shepr_core::env`, exits outside main, bool presence probes, ad hoc panic
+# containment, children without a stated working directory and debug
+# assertions. Escapes carry a scoped `#[expect]`.
 disallowed_methods = "deny"
+disallowed_macros = "deny"
+
+# A suppression is an `#[expect(.., reason = ..)]`, which fires once it is no
+# longer needed and carries its reason in the attribute.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
 
 [profile.release]
 # The gate never builds release, so a release binary should still panic on

@@ -40,7 +40,14 @@ pub(super) struct Activity {
 }
 
 impl Activity {
-    pub(super) fn start(timeout: Duration) -> io::Result<Self> {
+    /// Starts the watchdog thread. `expired` runs once, on the watchdog thread,
+    /// when no positive IO was seen for `timeout` (or the clock cannot be
+    /// read). The watchdog never waits on the relay copies: they may be blocked
+    /// in a read or write that nothing can interrupt, so it only reports.
+    pub(super) fn start(
+        timeout: Duration,
+        expired: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
         let last = Arc::new(AtomicU64::new(now()?));
         let watched = Arc::clone(&last);
         let (stop, stopped) = mpsc::channel();
@@ -52,11 +59,9 @@ impl Activity {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    let expired = now().map_or(true, |now| idle_expired(&watched, now, timeout));
-                    if expired {
-                        // Only the dedicated bridge process owns this watchdog. Returning from a
-                        // blocked copy cannot guarantee shutdown, and joining it could hang forever.
-                        std::process::exit(1);
+                    if now().map_or(true, |now| idle_expired(&watched, now, timeout)) {
+                        expired();
+                        return;
                     }
                 }
             })?;

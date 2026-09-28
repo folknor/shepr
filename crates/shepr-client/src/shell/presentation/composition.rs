@@ -763,14 +763,14 @@ mod tests {
                 viewport_rows: 4,
                 history_origin: shepr_vt::AbsRow(0),
             }),
-            pane_id: "pane".into(),
+            pane_id: crate::tests::test_pane_id("ws_1:p1"),
             mouse_reporting: false,
             sgr_pixel_mouse: false,
             pixel_width: 0,
             pixel_height: 0,
         };
         let copy_mode = ClientCopyModeState {
-            pane_id: "pane".into(),
+            pane_id: crate::tests::test_pane_id("ws_1:p1"),
             content_revision: 0,
             geometry: (6, 4),
             alternate_screen_active: false,

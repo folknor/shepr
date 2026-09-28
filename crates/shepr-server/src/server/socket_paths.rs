@@ -155,7 +155,7 @@ mod tests {
 
         let result = prepare_socket_path(&socket_path);
         assert!(result.is_ok(), "should remove stale socket: {result:?}");
-        assert!(!socket_path.exists());
+        assert!(!socket_path.try_exists().expect("stat socket path"));
     }
 
     #[test]

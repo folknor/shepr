@@ -807,7 +807,7 @@ fn api_pane_close_of_last_pane_closes_workspace() {
     let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
     app.state
         .public_pane_id_aliases
-        .insert("wOLD:p1".into(), pane_id);
+        .insert(shepr_protocol::PublicPaneId::new("wOLD", 1), pane_id);
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
 
     let response = app.handle_pane_close(
@@ -822,7 +822,7 @@ fn api_pane_close_of_last_pane_closes_workspace() {
     assert!(
         !app.state
             .public_pane_id_aliases
-            .contains_key(&"wOLD:p1".into())
+            .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 1))
     );
     assert_eq!(
         app.event_hub
@@ -1376,7 +1376,7 @@ async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
         source,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"moved"),
     );
-    let runtime = app.test_runtime(source) as *const shepr_mux::pane::PaneRuntime;
+    let runtime = std::ptr::from_ref(app.test_runtime(source));
     let source_public = app.public_pane_id(0, source).expect("test precondition");
 
     let response = app.handle_pane_move(
@@ -1396,7 +1396,7 @@ async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
         panic!("expected pane move response");
     };
     assert!(move_result.changed);
-    assert_eq!(app.test_runtime(source) as *const _, runtime);
+    assert_eq!(std::ptr::from_ref(app.test_runtime(source)), runtime);
 }
 
 #[test]

@@ -416,9 +416,8 @@ pub(crate) fn kimi_hook_table(
     action: &str,
 ) -> String {
     let command = hook_command(hook_path, Some(action));
-    let matcher = matcher
-        .map(|matcher| format!("matcher = {}\n", toml_basic_string(matcher)))
-        .unwrap_or_default();
+    let matcher =
+        matcher.map_or_default(|matcher| format!("matcher = {}\n", toml_basic_string(matcher)));
     format!(
         "[[hooks]]\nevent = {}\n{matcher}command = {}\ntimeout = 10\n\n",
         toml_basic_string(event),

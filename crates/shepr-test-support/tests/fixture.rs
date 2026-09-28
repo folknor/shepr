@@ -5,8 +5,8 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use shepr_test_support::ScratchDir;
 use shepr_test_support::fixture::{self, Held, Signal, Step};
+use shepr_test_support::{ScratchDir, command_in_scratch};
 
 fn stdout_of(mut command: std::process::Command) -> (std::process::ExitStatus, String) {
     let output = command.output().expect("the fixture runs");
@@ -42,7 +42,7 @@ fn a_direct_script_runs_in_order_and_sets_the_exit_code() {
 
 #[test]
 fn a_malformed_script_fails_with_the_fixture_code() {
-    let mut command = std::process::Command::new(fixture::path());
+    let mut command = command_in_scratch(fixture::path(), "fixture-malformed");
     command.arg("no-such-step").stderr(Stdio::piped());
     let output = command.output().expect("the fixture runs");
     assert_eq!(output.status.code(), Some(fixture::FIXTURE_FAILURE_EXIT));
@@ -67,11 +67,11 @@ fn a_stand_in_runs_its_script_on_whatever_argv_it_is_given() {
         ],
     );
 
-    let mut by_path = std::process::Command::new(&program);
+    let mut by_path = command_in_scratch(&program, "fixture-by-path");
     by_path.args(["status", "--json"]);
     assert_eq!(stdout_of(by_path), (success(), "{}".to_owned()));
 
-    let mut by_name = std::process::Command::new("remote-shepr");
+    let mut by_name = command_in_scratch("remote-shepr", "fixture-by-name");
     by_name.arg("other").env("PATH", dir.path());
     let (status, stdout) = stdout_of(by_name);
     assert_eq!(status.code(), Some(64));
@@ -88,7 +88,7 @@ fn success() -> std::process::ExitStatus {
 fn a_stand_in_process_carries_its_own_name() {
     let dir = ScratchDir::new("fixture-name");
     let program = fixture::stand_in(&dir, "droid", &[Step::Sleep(Duration::from_secs(30))]);
-    let mut child = std::process::Command::new(&program)
+    let mut child = command_in_scratch(&program, "fixture-name-child")
         .arg("999")
         .spawn()
         .expect("the stand-in starts");

@@ -99,8 +99,7 @@ impl App {
                     .is_some_and(|ws| ws.active_tab_index() == target_tab)
         });
         let replace_close_events = replace_target
-            .map(|(target_ws, target_tab)| self.tab_close_events(target_ws, target_tab))
-            .unwrap_or_default();
+            .map_or_default(|(target_ws, target_tab)| self.tab_close_events(target_ws, target_tab));
         let root_leaf = first_layout_leaf(&params.root);
         let first_cwd = self.layout_root_cwd(ws_idx, replace_target, root_leaf);
         let (rows, cols) = self.state.pane_geometry().sole_pane_size();

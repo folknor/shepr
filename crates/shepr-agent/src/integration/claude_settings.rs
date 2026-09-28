@@ -406,11 +406,9 @@ fn append_object_property(
             "failed to encode Claude settings property name: {err}"
         ))
     })?;
-    let key_value_separator = object
-        .properties
-        .first()
-        .map(|property| &content[property.name.range().end..property.value.range().start])
-        .unwrap_or(":");
+    let key_value_separator = object.properties.first().map_or(":", |property| {
+        &content[property.name.range().end..property.value.range().start]
+    });
     let insertion = format!("{key}{key_value_separator}{value}");
     let delimiter = object_delimiter(content, object);
     Ok(append_to_container(
@@ -452,8 +450,7 @@ fn array_delimiter<'a>(content: &'a str, array: &AstArray<'_>) -> &'a str {
 fn delimiter_suffix(delimiter: &str) -> &str {
     delimiter
         .split_once(',')
-        .map(|(_, suffix)| suffix)
-        .unwrap_or(delimiter)
+        .map_or(delimiter, |(_, suffix)| suffix)
 }
 
 fn append_to_container(

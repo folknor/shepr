@@ -63,7 +63,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id,
-            pane_id: pane_id.clone().into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![shepr_protocol::ClientPaneInputEvent::Paste(
                 "blocked".into()
             )],
@@ -97,7 +97,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         client_id,
         &ServerMessage::ClientShellError {
             kind: shepr_protocol::NoticeKind::PaneInputDropped {
-                pane_id: pane_id.clone().into(),
+                pane_id: pane_id.parse().expect("test precondition"),
                 events: 1
             },
         }
@@ -253,7 +253,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         Some(ClientId::test_new(7))
     );
 
-    let (writer, background_control, _) = test_client_writer();
+    let (writer, background_control, _background_render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             client_id: ClientId::test_new(8),

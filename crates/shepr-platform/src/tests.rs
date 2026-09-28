@@ -166,29 +166,36 @@ fn bridge_socket_names_carry_a_random_token_before_the_extension() {
 
 #[test]
 fn launch_executable_follows_a_replaced_binary_to_its_new_install() {
-    let installed = |path: &Path| path == Path::new("/usr/bin/shepr");
+    let installed = |path: &Path| Ok(path == Path::new("/usr/bin/shepr"));
     // A running binary that an install replaced.
     assert_eq!(
-        resolve_launch_executable(PathBuf::from("/usr/bin/shepr (deleted)"), installed),
+        resolve_launch_executable(PathBuf::from("/usr/bin/shepr (deleted)"), installed)
+            .expect("test precondition"),
         PathBuf::from("/usr/bin/shepr")
     );
     // The normal case: the path is there, nothing is rewritten.
     assert_eq!(
-        resolve_launch_executable(PathBuf::from("/usr/bin/shepr"), installed),
+        resolve_launch_executable(PathBuf::from("/usr/bin/shepr"), installed)
+            .expect("test precondition"),
         PathBuf::from("/usr/bin/shepr")
     );
     // Removed with no replacement: keep the reported path, there is nothing
     // better to offer.
     assert_eq!(
-        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), installed),
+        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), installed)
+            .expect("test precondition"),
         PathBuf::from("/opt/shepr (deleted)")
     );
     // A binary whose real name ends in the suffix is left alone.
-    let literal = |path: &Path| path == Path::new("/opt/shepr (deleted)");
+    let literal = |path: &Path| Ok(path == Path::new("/opt/shepr (deleted)"));
     assert_eq!(
-        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), literal),
+        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), literal)
+            .expect("test precondition"),
         PathBuf::from("/opt/shepr (deleted)")
     );
+    // A stat failure other than absence is reported, not read as absence.
+    let denied = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(resolve_launch_executable(PathBuf::from("/usr/bin/shepr"), denied).is_err());
 }
 
 // ---------------------------------------------------------------------------

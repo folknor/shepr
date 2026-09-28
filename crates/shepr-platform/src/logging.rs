@@ -613,10 +613,13 @@ impl RotatingFileState {
                 rotated_log_path(&self.path, index - 1)
             };
             let target = rotated_log_path(&self.path, index);
-            if !source.exists() {
-                continue;
+            // A missing source is a gap in the rotation, not an error; any
+            // other failure is reported rather than read as absence.
+            match fs::rename(source, target) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
             }
-            fs::rename(source, target)?;
         }
 
         Ok(())
@@ -660,14 +663,14 @@ impl Drop for FileLock<'_> {
 
 fn rotated_log_path(path: &Path, index: usize) -> PathBuf {
     let suffix = format!(".{index}");
-    let file_name = path
-        .file_name()
-        .map(|name| {
+    let file_name = path.file_name().map_or_else(
+        || suffix.clone().into(),
+        |name| {
             let mut name = name.to_os_string();
             name.push(&suffix);
             name
-        })
-        .unwrap_or_else(|| suffix.clone().into());
+        },
+    );
     path.with_file_name(file_name)
 }
 
@@ -729,7 +732,7 @@ mod tests {
             fs::read_to_string(rotated_log_path(&path, 2)).expect("test precondition"),
             "older"
         );
-        assert!(!path.exists());
+        assert!(!path.try_exists().expect("test precondition"));
     }
 
     #[test]
@@ -748,7 +751,11 @@ mod tests {
         }
 
         assert_eq!(fs::read_to_string(&path).expect("test precondition"), "abc");
-        assert!(!rotated_log_path(&path, 1).exists());
+        assert!(
+            !rotated_log_path(&path, 1)
+                .try_exists()
+                .expect("test precondition")
+        );
     }
 
     #[test]

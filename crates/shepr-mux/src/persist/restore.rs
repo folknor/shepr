@@ -471,14 +471,32 @@ fn restore_tab(
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
 
-        if !saved_pane.cwd.is_dir() {
-            let terminal = restored_terminal(
-                saved_pane,
-                RestoredPaneStart::Unavailable(
+        // A stat error other than absence is reported as itself: calling an
+        // unreadable directory missing would send the user to restore
+        // something that is still there.
+        let cwd_unavailable = match std::fs::metadata(&saved_pane.cwd) {
+            Ok(metadata) if metadata.is_dir() => None,
+            Ok(_) => Some(
+                "Saved directory is unavailable. Restore the directory and restart this session."
+                    .to_string(),
+            ),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Some(
                     "Saved directory is unavailable. Restore the directory and restart this session."
-                        .into(),
-                ),
-            );
+                        .to_string(),
+                )
+            }
+            Err(error) => Some(format!(
+                "Saved directory cannot be read ({error}). Fix its access and restart this session."
+            )),
+        };
+        if let Some(reason) = cwd_unavailable {
+            let terminal = restored_terminal(saved_pane, RestoredPaneStart::Unavailable(reason));
             runtime_context
                 .history_carry
                 .carry_restored(&terminal.id, saved_history);
@@ -512,8 +530,7 @@ fn restore_tab(
             .map(String::as_str);
         let launch_env = public_pane_id
             .and_then(|pane_id| pane_id.parse::<shepr_protocol::PublicPaneId>().ok())
-            .map(|pane_id| PaneLaunchEnv::from_extra(Vec::new()).with_pane_id(pane_id))
-            .unwrap_or_default();
+            .map_or_default(|pane_id| PaneLaunchEnv::from_extra(Vec::new()).with_pane_id(pane_id));
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(saved_pane, RestoredPaneStart::PendingResume(plan));
             // Native resume owns what this pane shows once it runs, so the
@@ -1036,7 +1053,7 @@ mod tests {
             });
             if missing_cwd {
                 pane.cwd = pane.cwd.join("__shepr_missing_restore_directory__");
-                assert!(!pane.cwd.exists());
+                assert!(!pane.cwd.try_exists().expect("test stat"));
             }
             let saved_cwd = pane.cwd.clone();
             history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
@@ -1175,7 +1192,7 @@ mod tests {
         let cwd = std::env::current_dir()
             .expect("test precondition")
             .join("__shepr_missing_restore_directory__");
-        assert!(!cwd.exists());
+        assert!(!cwd.try_exists().expect("test stat"));
         super::super::snapshot::PaneSnapshot {
             cwd,
             label: None,
@@ -1648,7 +1665,7 @@ mod tests {
             .expect("test precondition");
             let cwd = std::env::current_dir().expect("test precondition");
             let missing = cwd.join("__shepr_missing_restore_directory__");
-            assert!(!missing.exists());
+            assert!(!missing.try_exists().expect("test stat"));
             for workspace in &mut snapshot.workspaces {
                 workspace.identity_cwd = cwd.clone();
                 for tab in &mut workspace.tabs {

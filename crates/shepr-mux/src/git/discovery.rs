@@ -13,7 +13,7 @@ pub struct GitSpaceMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitWorktreeInfo {
+pub(crate) struct GitWorktreeInfo {
     pub repo_root: PathBuf,
     pub git_dir: PathBuf,
     pub git_common_dir: PathBuf,
@@ -38,10 +38,10 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
     shepr_core::workspace_label::workspace_label_from_cwd(cwd, None, home.as_deref())
 }
 
-pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
+pub(crate) fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     let repo_root = git_repo_root(cwd)?;
     let git_dir = canonicalize_best_effort_path(&git_dir_for_repo_root(&repo_root)?);
-    let git_common_dir = canonicalize_best_effort_path(&git_common_dir_for_git_dir(&git_dir));
+    let git_common_dir = canonicalize_best_effort_path(&git_common_dir_for_git_dir(&git_dir)?);
     let is_linked_worktree = git_dir != git_common_dir;
     let is_bare = git_dir_is_bare(&git_dir);
 
@@ -100,17 +100,26 @@ pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn git_common_dir_for_git_dir(git_dir: &Path) -> PathBuf {
+/// The common directory a Git directory shares its refs with: itself unless
+/// a `commondir` file names another. `None` when `commondir` exists but
+/// cannot be read: taking the Git directory as its own common directory then
+/// would give a linked worktree the wrong space key.
+fn git_common_dir_for_git_dir(git_dir: &Path) -> Option<PathBuf> {
     let commondir = git_dir.join("commondir");
-    let Ok(contents) = std::fs::read_to_string(commondir) else {
-        return git_dir.to_path_buf();
+    let contents = match std::fs::read_to_string(&commondir) {
+        Ok(contents) => contents,
+        Err(error) if is_absence(&error) => return Some(git_dir.to_path_buf()),
+        Err(error) => {
+            tracing::debug!(path = %commondir.display(), %error, "git commondir unreadable");
+            return None;
+        }
     };
     let path = Path::new(contents.trim());
-    if path.is_absolute() {
+    Some(if path.is_absolute() {
         path.to_path_buf()
     } else {
         git_dir.join(path)
-    }
+    })
 }
 
 /// Outcome of reading one Git ref file, classified without collapsing metadata
@@ -129,24 +138,14 @@ pub(super) enum RefFileRead {
 pub(super) fn read_git_ref_file_state(path: &Path) -> RefFileRead {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
+        Err(error) if is_absence(&error) => {
             return match std::fs::symlink_metadata(path) {
-                // The directory entry exists but its symlink target is missing
-                // or traverses a non-directory. Git treats the loose ref as
-                // broken and does not fall back to an older packed ref.
-                Ok(_) => RefFileRead::Unavailable,
-                Err(metadata_error)
-                    if metadata_error.kind() == std::io::ErrorKind::NotFound
-                        || metadata_error.kind() == std::io::ErrorKind::NotADirectory =>
-                {
-                    RefFileRead::Absent
-                }
-                Err(_) => RefFileRead::Unavailable,
+                Err(metadata_error) if is_absence(&metadata_error) => RefFileRead::Absent,
+                // An entry that exists has a symlink target that is missing or
+                // traverses a non-directory: Git treats the loose ref as broken
+                // and does not fall back to an older packed ref. Any other stat
+                // error leaves the ref's identity unknown.
+                Ok(_) | Err(_) => RefFileRead::Unavailable,
             };
         }
         // Permission or I/O errors: the ref may exist, so its identity is
@@ -172,32 +171,87 @@ pub(super) fn read_git_ref_file(path: &Path) -> Option<String> {
     }
 }
 
-pub(super) fn git_dir_for_repo_root(repo_root: &Path) -> Option<PathBuf> {
-    let git_path = repo_root.join(".git");
-    if git_path.is_dir() {
-        return Some(git_path);
-    }
-
-    if let Ok(gitdir) = std::fs::read_to_string(&git_path)
-        && let Some(relative) = gitdir.trim().strip_prefix("gitdir:").map(str::trim)
-    {
-        let resolved = Path::new(relative);
-        return Some(if resolved.is_absolute() {
-            resolved.to_path_buf()
-        } else {
-            repo_root.join(resolved)
-        });
-    }
-
-    if path_is_git_dir_layout(repo_root) && git_dir_is_bare(repo_root) {
-        return Some(repo_root.to_path_buf());
-    }
-
-    None
+/// Whether an error from a stat or open means "nothing is there": `NotFound`,
+/// or `NotADirectory` for a path through a file.
+fn is_absence(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
-fn path_is_git_dir_layout(path: &Path) -> bool {
-    path.join("HEAD").is_file() && path.join("objects").is_dir() && path.join("refs").is_dir()
+/// The type of the entry at `path`, following symlinks as Git's discovery
+/// does, or `None` when nothing is there. Any other stat error (`EACCES`,
+/// `ELOOP`) is returned rather than read as absence: discovery that took an
+/// unreadable `.git` for a missing one would ascend past the checkout it
+/// cannot see and attribute the directory to an enclosing one.
+fn entry_type(path: &Path) -> std::io::Result<Option<std::fs::FileType>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata.file_type())),
+        Err(error) if is_absence(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_dir_entry(path: &Path) -> std::io::Result<bool> {
+    Ok(matches!(entry_type(path)?, Some(kind) if kind.is_dir()))
+}
+
+fn is_file_entry(path: &Path) -> std::io::Result<bool> {
+    Ok(matches!(entry_type(path)?, Some(kind) if kind.is_file()))
+}
+
+/// The Git directory for a checkout root, or `None` when `repo_root` is not
+/// one. Callers that only want an answer use this; an unreadable candidate is
+/// logged and gives `None`, since none of them can do more with it.
+pub(super) fn git_dir_for_repo_root(repo_root: &Path) -> Option<PathBuf> {
+    match locate_git_dir(repo_root) {
+        Ok(git_dir) => git_dir,
+        Err(error) => {
+            tracing::debug!(path = %repo_root.display(), %error, "git directory unreadable");
+            None
+        }
+    }
+}
+
+/// [`git_dir_for_repo_root`] with a stat or read error kept apart from "not a
+/// checkout root", so the discovery walk can stop instead of ascending.
+fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<PathBuf>> {
+    let git_path = repo_root.join(".git");
+    match entry_type(&git_path)? {
+        Some(kind) if kind.is_dir() => return Ok(Some(git_path)),
+        Some(kind) if kind.is_file() => match std::fs::read_to_string(&git_path) {
+            Ok(gitdir) => {
+                if let Some(relative) = gitdir.trim().strip_prefix("gitdir:").map(str::trim) {
+                    let resolved = Path::new(relative);
+                    return Ok(Some(if resolved.is_absolute() {
+                        resolved.to_path_buf()
+                    } else {
+                        repo_root.join(resolved)
+                    }));
+                }
+            }
+            // A `.git` file that is not UTF-8 is not a gitfile; one that
+            // vanished since the stat is absent. Both fall through to the
+            // bare-layout check, as a malformed `.git` file always has.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData || is_absence(&error) => {
+            }
+            Err(error) => return Err(error),
+        },
+        Some(_) | None => {}
+    }
+
+    if path_is_git_dir_layout(repo_root)? && git_dir_is_bare(repo_root) {
+        return Ok(Some(repo_root.to_path_buf()));
+    }
+
+    Ok(None)
+}
+
+fn path_is_git_dir_layout(path: &Path) -> std::io::Result<bool> {
+    Ok(is_file_entry(&path.join("HEAD"))?
+        && is_dir_entry(&path.join("objects"))?
+        && is_dir_entry(&path.join("refs"))?)
 }
 
 pub(super) fn git_symbolic_head_full(repo_root: &Path) -> Option<String> {
@@ -262,7 +316,7 @@ fn strip_git_config_comment(value: &str) -> &str {
 
 fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
     // host-program-ok: production asks Git what a reftable store holds
-    let output = std::process::Command::new("git")
+    let output = shepr_platform::child_command("git", repo_root)
         .arg("-C")
         .arg(repo_root)
         .args(args)
@@ -334,20 +388,36 @@ pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
 
 /// [`git_repo_root`] with the ceilings handed in: the walk examines `start`
 /// (or its parent, for a file) and each ancestor up to, not including, the
-/// nearest ceiling.
+/// nearest ceiling. A directory whose Git state cannot be read (a stat or
+/// read error other than absence) ends the walk with `None` rather than being
+/// passed over: ascending past it could attribute `start` to an enclosing
+/// checkout it is not part of.
 fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> {
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
-    } else {
-        start.parent()?.to_path_buf()
+    let mut current = match is_dir_entry(start) {
+        Ok(true) => start.to_path_buf(),
+        Ok(false) => start.parent()?.to_path_buf(),
+        Err(error) => {
+            tracing::debug!(path = %start.display(), %error, "git discovery start unreadable");
+            return None;
+        }
     };
 
     loop {
-        if git_dir_for_repo_root(&current)
-            .map(|git_dir| git_dir.join("HEAD").is_file())
-            .unwrap_or(false)
-        {
-            return Some(current);
+        let found = locate_git_dir(&current).and_then(|git_dir| match git_dir {
+            Some(git_dir) => is_file_entry(&git_dir.join("HEAD")),
+            None => Ok(false),
+        });
+        match found {
+            Ok(true) => return Some(current),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::debug!(
+                    path = %current.display(),
+                    %error,
+                    "git discovery stopped at an unreadable directory"
+                );
+                return None;
+            }
         }
         if !current.pop() || ceilings.contains(&current) {
             return None;
@@ -825,7 +895,7 @@ mod tests {
         let root = temp_test_dir("reftable-ref-oid");
         let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
-        let output = std::process::Command::new("git")
+        let output = shepr_test_support::command_in_scratch("git", "reftable-ref-oid-init")
             .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
             .output()
             .expect("test precondition");

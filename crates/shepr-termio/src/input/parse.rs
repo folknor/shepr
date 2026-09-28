@@ -1152,15 +1152,21 @@ mod tests {
         }
     }
 
+    fn read_fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+    }
+
     #[test]
     fn keyboard_protocol_corpus_fixture_parses() {
-        let corpus = include_str!("../../../../tests/fixtures/keyboard_protocol_corpus.tsv");
-        assert_fixture_corpus_parses(corpus);
+        assert_fixture_corpus_parses(&read_fixture("keyboard_protocol_corpus.tsv"));
     }
 
     #[test]
     fn linux_terminal_variants_fixture_parses() {
-        let corpus = include_str!("../../../../tests/fixtures/linux_terminal_variants.tsv");
-        assert_fixture_corpus_parses(corpus);
+        assert_fixture_corpus_parses(&read_fixture("linux_terminal_variants.tsv"));
     }
 }

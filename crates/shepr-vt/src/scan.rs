@@ -117,8 +117,7 @@ impl Scanner {
             State::Escape => self.escape(byte),
             State::EscapeIntermediate => match byte {
                 0x1b => self.enter(State::Escape),
-                0x18 | 0x1a => self.enter(State::Ground),
-                0x30..=0x7e => self.enter(State::Ground),
+                0x18 | 0x1a | 0x30..=0x7e => self.enter(State::Ground),
                 _ => {}
             },
             State::Csi => match byte {
@@ -142,11 +141,7 @@ impl Scanner {
                 _ => {}
             },
             State::Osc => match byte {
-                0x07 => {
-                    self.dispatch_osc(index, events);
-                    self.enter(State::Ground);
-                }
-                0x18 | 0x1a => {
+                0x07 | 0x18 | 0x1a => {
                     self.dispatch_osc(index, events);
                     self.enter(State::Ground);
                 }
@@ -223,16 +218,14 @@ impl Scanner {
 
     fn escape(&mut self, byte: u8) {
         match byte {
-            0x18 | 0x1a => self.enter(State::Ground),
-            // ESC ESC restarts the escape; other C0 controls execute in place.
-            0x00..=0x1f => {}
             0x20..=0x2f => self.enter(State::EscapeIntermediate),
             b'[' => self.enter(State::Csi),
             b']' => self.enter(State::Osc),
             b'P' => self.enter(State::DcsIntro),
             b'X' | b'^' | b'_' => self.enter(State::StringIgnore),
-            0x30..=0x7e => self.enter(State::Ground),
-            // vte ignores DEL and high bytes while an escape is pending.
+            0x18 | 0x1a | 0x30..=0x7e => self.enter(State::Ground),
+            // ESC ESC restarts the escape and other C0 controls execute in
+            // place; vte ignores DEL and high bytes while an escape is pending.
             _ => {}
         }
     }
@@ -376,10 +369,9 @@ fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
         // TN: terminal name.
         b"544E" => Some(Some(super::PANE_TERM.as_bytes())),
         // Co / colors: palette size.
-        b"436F" => Some(Some(b"256")),
-        b"636F6C6F7273" => Some(Some(b"256")),
-        // Tc: truecolor boolean.
-        b"5463" => Some(None),
+        b"436F" | b"636F6C6F7273" => Some(Some(b"256")),
+        // Tc: truecolor, and Su: styled underlines; both boolean.
+        b"5463" | b"5375" => Some(None),
         // RGB: bits per channel.
         b"524742" => Some(Some(b"8")),
         // setrgbf / setrgbb.
@@ -387,8 +379,6 @@ fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
         b"73657472676262" => Some(Some(b"\\E[48:2:%p1%d:%p2%d:%p3%dm")),
         // Ms: OSC 52 clipboard.
         b"4D73" => Some(Some(b"\\E]52;%p1%s;%p2%s\\007")),
-        // Su: styled underlines boolean.
-        b"5375" => Some(None),
         // Smulx: underline style.
         b"536D756C78" => Some(Some(b"\\E[4:%p1%dm")),
         // Setulc: underline color.

@@ -235,19 +235,14 @@ impl ClientShellState {
         match action {
             ClientContextMenuAction::NewTab => {
                 if self.config.prompt_new_tab_name {
-                    let default_name = (self
-                        .snapshot
-                        .as_deref()
-                        .map(|snapshot| {
-                            snapshot
-                                .tabs
-                                .iter()
-                                .filter(|tab| tab.workspace_id == workspace_id)
-                                .count()
-                        })
-                        .unwrap_or(0)
-                        + 1)
-                    .to_string();
+                    let existing_tabs = self.snapshot.as_deref().map_or(0, |snapshot| {
+                        snapshot
+                            .tabs
+                            .iter()
+                            .filter(|tab| tab.workspace_id == workspace_id)
+                            .count()
+                    });
+                    let default_name = (existing_tabs + 1).to_string();
                     self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
                         title: "new tab",
                         input: TextEditor::new(&default_name, true),

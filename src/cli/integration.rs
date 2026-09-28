@@ -46,8 +46,8 @@ pub(super) fn run_integration_command(
 ) -> super::CliResult<i32> {
     let integration_paths = shepr_agent::integration::AgentIntegrationPaths::resolve();
     match command {
-        Command::Install { target } => Ok(integration_install(&target, &integration_paths)),
-        Command::Uninstall { target } => Ok(integration_uninstall(&target, &integration_paths)),
+        Command::Install { target } => integration_install(&target, &integration_paths),
+        Command::Uninstall { target } => integration_uninstall(&target, &integration_paths),
         Command::Status { outdated_only } => {
             Ok(integration_status(&integration_paths, outdated_only))
         }
@@ -60,7 +60,12 @@ fn integration_status(
     outdated_only: bool,
 ) -> i32 {
     if outdated_only {
-        shepr_agent::integration::print_outdated_update_notice(paths);
+        // A notice, not a failure: it goes to stderr and the check still
+        // exits 0.
+        if let Some(notice) = shepr_agent::integration::outdated_update_notice(paths) {
+            shepr_platform::begin_cli_output();
+            eprintln!("{notice}");
+        }
         return 0;
     }
 
@@ -77,12 +82,11 @@ fn integration_status(
                 println!("{target}: {state} ({})", status.path.display());
             }
             Err(error) => {
+                // The message names what could not be checked (an unresolved
+                // directory or a failed stat), so it is shown as given.
                 unresolved = true;
                 let target = shepr_agent::integration::integration_target_label(error.target);
-                println!(
-                    "{target}: unknown (directory unavailable: {})",
-                    error.message
-                );
+                println!("{target}: unknown ({})", error.message);
             }
         }
     }
@@ -119,44 +123,32 @@ fn describe_integration_state(
 fn integration_install(
     label: &str,
     paths: &shepr_agent::integration::AgentIntegrationPaths,
-) -> i32 {
-    let Some(target) = target_from_label(label) else {
-        return unknown_target(label);
-    };
-
+) -> super::CliResult<i32> {
+    let target = target_from_label(label).ok_or_else(|| unknown_target(label))?;
     report_outcome(shepr_agent::integration::install_target(paths, target))
 }
 
 fn integration_uninstall(
     label: &str,
     paths: &shepr_agent::integration::AgentIntegrationPaths,
-) -> i32 {
-    let Some(target) = target_from_label(label) else {
-        return unknown_target(label);
-    };
-
+) -> super::CliResult<i32> {
+    let target = target_from_label(label).ok_or_else(|| unknown_target(label))?;
     report_outcome(shepr_agent::integration::uninstall_target(paths, target))
 }
 
-fn report_outcome(outcome: std::io::Result<Vec<String>>) -> i32 {
-    match outcome {
-        Ok(messages) => {
-            for message in messages {
-                println!("{message}");
-            }
-            0
-        }
-        Err(err) => {
-            eprintln!("{err}");
-            1
-        }
+/// Prints what an install or uninstall did. A failure travels to the CLI's
+/// error printer like every other command's.
+fn report_outcome(outcome: std::io::Result<Vec<String>>) -> super::CliResult<i32> {
+    for message in outcome? {
+        println!("{message}");
     }
+    Ok(0)
 }
 
 /// Only reachable if the spec's possible values and [`target_from_label`]
 /// disagree; the test below keeps them in step.
-fn unknown_target(target: &str) -> i32 {
-    super::usage_error(&format!("unknown integration target: {target}"))
+fn unknown_target(target: &str) -> super::CliError {
+    super::CliError::Usage(format!("unknown integration target: {target}"))
 }
 
 /// Maps a `TARGET` value back to its target. The labels are the ones the spec

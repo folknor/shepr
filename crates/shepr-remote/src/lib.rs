@@ -40,6 +40,7 @@ pub use launch::{
     check_saved_ssh, interactive_shell_command, prepare_saved_ssh, run_remote, shell_quote,
 };
 pub use saved::*;
+pub use server_lifecycle::{Confirmation, Operator};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,9 +241,16 @@ fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
     )
 }
 
-pub fn run_remote_api_bridge(check: bool, paths: &shepr_config::AppPaths) -> std::io::Result<()> {
+/// Relays this process's stdio to the server's API socket. It runs without the
+/// idle watchdog, so the outcome is always
+/// [`shepr_platform::RemoteBridgeOutcome::Closed`]; it is returned so the
+/// binary handles both bridges alike.
+pub fn run_remote_api_bridge(
+    check: bool,
+    paths: &shepr_config::AppPaths,
+) -> std::io::Result<shepr_platform::RemoteBridgeOutcome> {
     if check {
-        return Ok(());
+        return Ok(shepr_platform::RemoteBridgeOutcome::Closed);
     }
     let path = shepr_api::socket_path(paths);
     let stream = shepr_platform::ipc::connect_local_stream(&path).map_err(|error| {
@@ -257,25 +265,34 @@ pub fn run_remote_api_bridge(check: bool, paths: &shepr_config::AppPaths) -> std
     shepr_platform::forward_remote_bridge_stdio(stream, false)
 }
 
-pub fn print_saved_ssh_error_hint(err: &std::io::Error, target: &str) {
+/// Operator hint lines for a failed saved-machine SSH operation, one per
+/// line and without a trailing newline. Empty when there is no hint. The
+/// binary renders them; this crate does not print.
+pub fn saved_ssh_error_hint(err: &std::io::Error, target: &str) -> Vec<String> {
     if is_remote_host_key_error(err) {
-        eprintln!(
+        vec![
             "hint: saved machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
-        );
+                .to_string(),
+        ]
     } else {
-        print_remote_error_hint(err, target);
+        remote_error_hint(err, target)
     }
 }
 
-pub fn print_remote_error_hint(err: &std::io::Error, target: &str) {
+/// Operator hint lines for a failed remote launch, one per line and without a
+/// trailing newline. Empty when there is no hint.
+pub fn remote_error_hint(err: &std::io::Error, target: &str) -> Vec<String> {
     if is_remote_auth_error(err) {
-        eprintln!(
-            "hint: verify SSH access first with `{}`.",
-            ssh_check_command(target)
-        );
-        eprintln!(
+        vec![
+            format!(
+                "hint: verify SSH access first with `{}`.",
+                ssh_check_command(target)
+            ),
             "hint: if your SSH key has a passphrase, load it into ssh-agent with `ssh-add` before retrying."
-        );
+                .to_string(),
+        ]
+    } else {
+        Vec::new()
     }
 }
 

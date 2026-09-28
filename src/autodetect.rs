@@ -16,12 +16,15 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// stderr before the TUI takes the terminal, where it is on screen again once
 /// the TUI exits, and the Local endpoint's handshake reports a build mismatch
 /// with the same session-aware guidance as its status in the sidebar.
-pub fn auto_detect_launch(
+///
+/// A launch failure before the client runs is the error; once the client has
+/// run, its own result is handed back untouched for the caller to report.
+pub(crate) fn auto_detect_launch<T>(
     saved_federation: bool,
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
-    run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> io::Result<()>,
-) -> io::Result<()> {
+    run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> T,
+) -> io::Result<T> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
     shepr_platform::terminal_grid_size().map_err(|err| {
@@ -60,10 +63,10 @@ pub fn auto_detect_launch(
         }
         // No tracing subscriber is installed in this process yet, so a log
         // line here would reach no one.
-        eprintln!("{}", local_startup_notice(&error));
+        crate::cli::print_notice(&local_startup_notice(&error));
     }
 
-    run_client(config, paths)
+    Ok(run_client(config, paths))
 }
 
 /// What the operator is told when Local fails to start or is refused while

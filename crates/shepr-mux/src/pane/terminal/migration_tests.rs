@@ -399,9 +399,11 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
     ));
     let core =
         shepr_vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
-    // `RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)`
-    // that `map` wants here; the closure below is not actually redundant.
-    #[allow(clippy::redundant_closure_for_method_calls)]
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "`RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)` \
+                  that `map` wants here; the closure below is not actually redundant"
+    )]
     let dirty: Vec<_> = core
         .render_state
         .iter_rows()

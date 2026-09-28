@@ -231,13 +231,12 @@ impl DiscoveryProgress {
         let rejection = self
             .rejected_shell_unsafe_candidate
             .as_ref()
-            .map(|candidate| {
+            .map_or_default(|candidate| {
                 format!(
                     "; rejected executable path {:?}: {}",
                     candidate.path, candidate.reason
                 )
-            })
-            .unwrap_or_default();
+            });
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!(

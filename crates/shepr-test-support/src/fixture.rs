@@ -424,19 +424,32 @@ struct Run {
     children: Vec<Child>,
 }
 
+/// Whether a script goes on to its next step or ends the process.
+enum Flow {
+    Continue,
+    /// A [`Step::Exit`] ran: stop here with this code.
+    Exit(i32),
+}
+
+/// The exit status the kernel reports for `exit(code)`: its low byte.
+fn exit_code(code: i32) -> std::process::ExitCode {
+    std::process::ExitCode::from(code.to_le_bytes()[0])
+}
+
 /// The `shepr-fixture` binary's whole body: work out how this process was
 /// invoked, then run its script.
 pub fn main() -> std::process::ExitCode {
     match run_invocation() {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(code) => exit_code(code),
         Err(error) => {
             let _ = writeln!(io::stderr(), "{FIXTURE_NAME}: {error}");
-            std::process::exit(FIXTURE_FAILURE_EXIT);
+            exit_code(FIXTURE_FAILURE_EXIT)
         }
     }
 }
 
-fn run_invocation() -> Result<(), String> {
+/// Runs the script and returns the code the process exits with.
+fn run_invocation() -> Result<i32, String> {
     let argv: Vec<OsString> = std::env::args_os().collect();
     let own = std::env::current_exe()
         .map_err(|error| format!("finding this program's own path: {error}"))?;
@@ -464,8 +477,12 @@ fn run_invocation() -> Result<(), String> {
         operands,
         children: Vec::new(),
     };
-    run.steps(&steps)?;
-    flush_stdout()
+    let code = match run.steps(&steps)? {
+        Flow::Continue => 0,
+        Flow::Exit(code) => code,
+    };
+    flush_stdout()?;
+    Ok(code)
 }
 
 fn script_path(program: &Path) -> PathBuf {
@@ -486,8 +503,7 @@ fn read_stand_in_script(program: &Path) -> Result<Option<Vec<OsString>>, String>
                 .map(|token| OsString::from_vec(token.to_vec()))
                 .collect::<Vec<_>>()
                 .split_last()
-                .map(|(_, tokens)| tokens.to_vec())
-                .unwrap_or_default(),
+                .map_or_default(|(_, tokens)| tokens.to_vec()),
         )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("reading {}: {error}", path.display())),
@@ -525,18 +541,36 @@ fn read_stdin_byte() -> Option<u8> {
 }
 
 impl Run {
-    fn steps(&mut self, steps: &[Step]) -> Result<(), String> {
+    fn steps(&mut self, steps: &[Step]) -> Result<Flow, String> {
         for step in steps {
-            self.step(step)?;
+            if let Flow::Exit(code) = self.step(step)? {
+                return Ok(Flow::Exit(code));
+            }
         }
-        Ok(())
+        Ok(Flow::Continue)
     }
 
     #[expect(
         clippy::disallowed_methods,
         reason = "print-env reports a pane child's raw environment, which is what the fixture is asked to show"
     )]
-    fn step(&mut self, step: &Step) -> Result<(), String> {
+    fn print_env(name: &str) -> Result<(), String> {
+        let mut bytes = std::env::var_os(name).map_or_default(OsString::into_vec);
+        bytes.push(b'\n');
+        write_stdout(&bytes)
+    }
+
+    /// A spawned child runs where the script is running: it is part of this
+    /// fixture's own process tree, and a `cd` step before the spawn sets it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a Spawn child inherits the fixture's working directory, which the script controls"
+    )]
+    fn spawn_command(&self) -> std::process::Command {
+        std::process::Command::new(&self.fixture)
+    }
+
+    fn step(&mut self, step: &Step) -> Result<Flow, String> {
         match step {
             Step::Sleep(duration) => std::thread::sleep(*duration),
             Step::Print(text) => write_stdout(text.as_bytes())?,
@@ -565,13 +599,7 @@ impl Run {
                 let session = unsafe { libc::getsid(0) };
                 write_stdout(session.to_string().as_bytes())?;
             }
-            Step::PrintEnv(name) => {
-                let mut bytes = std::env::var_os(name)
-                    .map(OsString::into_vec)
-                    .unwrap_or_default();
-                bytes.push(b'\n');
-                write_stdout(&bytes)?;
-            }
+            Step::PrintEnv(name) => Self::print_env(name)?,
             Step::Fill { byte, count } => {
                 let mut stdout = io::BufWriter::new(io::stdout().lock());
                 let chunk = [*byte; 4096];
@@ -655,7 +683,8 @@ impl Run {
                 } else {
                     Stdio::null()
                 };
-                let child = std::process::Command::new(&self.fixture)
+                let child = self
+                    .spawn_command()
                     .arg0(argv0)
                     .args(args(&[Step::Sleep(*sleep)]))
                     .stdin(stdin)
@@ -672,16 +701,13 @@ impl Run {
                         .map_err(|error| format!("waiting for a child: {error}"))?;
                 }
             }
-            Step::Exit(code) => {
-                flush_stdout()?;
-                std::process::exit(*code);
-            }
+            Step::Exit(code) => return Ok(Flow::Exit(*code)),
             Step::Exec(argv) => {
                 flush_stdout()?;
                 let Some((program, rest)) = argv.split_first() else {
                     return Err("exec needs a program".into());
                 };
-                let error = std::process::Command::new(program).args(rest).exec();
+                let error = exec(program, rest);
                 return Err(format!(
                     "executing {}: {error}",
                     Path::new(program).display()
@@ -694,12 +720,23 @@ impl Run {
                     .map(|operand| operand.to_str())
                     .eq(operands.iter().map(|operand| Some(operand.as_str())))
                 {
-                    self.steps(steps)?;
+                    return self.steps(steps);
                 }
             }
         }
-        Ok(())
+        Ok(Flow::Continue)
     }
+}
+
+/// Replaces this process with `program`, returning only the error when that
+/// fails.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "exec replaces this process in place, so the program runs in the fixture's working \
+              directory, which the script controls with `cd`"
+)]
+fn exec(program: &OsStr, rest: &[OsString]) -> io::Error {
+    std::process::Command::new(program).args(rest).exec()
 }
 
 fn redirect_stdout(file: &std::fs::File) -> Result<(), String> {
@@ -739,7 +776,11 @@ pub fn path() -> &'static Path {
         exe.ancestors()
             .skip(1)
             .map(|dir| dir.join(FIXTURE_NAME))
-            .find(|candidate| std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file()))
+            .find(|candidate| match std::fs::metadata(candidate) {
+                Ok(metadata) => metadata.is_file(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => panic!("inspecting {}: {error}", candidate.display()),
+            })
             .unwrap_or_else(|| {
                 panic!(
                     "the test fixture program `{FIXTURE_NAME}` is missing from every directory \
@@ -765,10 +806,15 @@ pub fn path_str() -> &'static str {
         .unwrap_or_else(|| panic!("the fixture path {} is not UTF-8", path().display()))
 }
 
-/// A command running the fixture with this script.
+/// A command running the fixture with this script, in a fresh scratch
+/// directory ([`crate::command_in_scratch`]).
+///
+/// # Panics
+///
+/// As [`path`] and [`crate::ScratchDir::new`].
 #[must_use]
 pub fn command(steps: &[Step]) -> std::process::Command {
-    let mut command = std::process::Command::new(path());
+    let mut command = crate::command_in_scratch(path(), "fixture-command");
     command.args(args(steps));
     command
 }

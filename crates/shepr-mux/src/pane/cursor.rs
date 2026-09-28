@@ -10,10 +10,12 @@ pub(crate) fn decscusr_cursor_shape(
 ) -> shepr_protocol::CursorShapeParam {
     use shepr_protocol::CursorShapeParam;
     match (style, blinking) {
-        (shepr_vt::CursorVisualStyle::Block, true)
-        | (shepr_vt::CursorVisualStyle::BlockHollow, true) => CursorShapeParam::BlinkingBlock,
-        (shepr_vt::CursorVisualStyle::Block, false)
-        | (shepr_vt::CursorVisualStyle::BlockHollow, false) => CursorShapeParam::SteadyBlock,
+        (shepr_vt::CursorVisualStyle::Block | shepr_vt::CursorVisualStyle::BlockHollow, true) => {
+            CursorShapeParam::BlinkingBlock
+        }
+        (shepr_vt::CursorVisualStyle::Block | shepr_vt::CursorVisualStyle::BlockHollow, false) => {
+            CursorShapeParam::SteadyBlock
+        }
         (shepr_vt::CursorVisualStyle::Underline, true) => CursorShapeParam::BlinkingUnderline,
         (shepr_vt::CursorVisualStyle::Underline, false) => CursorShapeParam::SteadyUnderline,
         (shepr_vt::CursorVisualStyle::Bar, true) => CursorShapeParam::BlinkingBar,

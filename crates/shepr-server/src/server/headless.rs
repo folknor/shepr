@@ -67,7 +67,7 @@ mod retained_surface;
 mod surface_interest;
 
 use api_dispatcher::AltScreenReadConflict;
-pub use bootstrap::run_server;
+pub use bootstrap::{RunServerError, ServerReady, ServerSocket, run_server};
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
 #[cfg(test)]

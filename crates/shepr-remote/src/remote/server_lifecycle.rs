@@ -1,7 +1,7 @@
 use super::*;
 
 use serde::Deserialize;
-use std::io::{self, IsTerminal, Write as _};
+use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,7 @@ pub(super) struct RemoteServerCapabilitiesJson {
 }
 
 pub(super) fn ensure_remote_server_ready(
+    operator: &mut dyn Operator,
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<()> {
@@ -48,8 +49,8 @@ pub(super) fn ensure_remote_server_ready(
     else {
         return ensure_remote_server_build(ssh.target(), &status);
     };
-    if confirm_remote_server_stop(&ssh.destination(), version.as_deref())? {
-        return stop_remote_server(ssh, remote_shepr);
+    if confirm_remote_server_stop(operator, &ssh.destination(), version.as_deref())? {
+        return stop_remote_server(operator, ssh, remote_shepr);
     }
     ensure_remote_server_build(ssh.target(), &status)
 }
@@ -139,31 +140,79 @@ fn remote_server_compatibility_error(
 
 /// Offers to restart a remote server that was not started as a detached
 /// daemon. Declining, or having no terminal to ask on, keeps it running.
-pub(super) fn confirm_remote_server_stop(target: &str, version: Option<&str>) -> io::Result<bool> {
-    if !io::stdin().is_terminal() {
-        eprintln!(
-            "remote shepr server on {target} is still running v{}.",
-            version_label(version)
-        );
-        return Ok(false);
+pub(super) fn confirm_remote_server_stop(
+    operator: &mut dyn Operator,
+    target: &str,
+    version: Option<&str>,
+) -> io::Result<bool> {
+    let confirmation = Confirmation {
+        context: vec![
+            format!("remote shepr server on {target} is currently running:"),
+            format!("  server: v{}", version_label(version)),
+            String::new(),
+            "the remote server was not started as a detached daemon and may not survive SSH connection loss. restart it so network drops disconnect only this client."
+                .to_owned(),
+            "This stops active remote pane processes, including shells, agents, dev servers, and tests."
+                .to_owned(),
+        ],
+        question: "restart the remote server now?".to_owned(),
+        default: false,
+    };
+    match operator.confirm(&confirmation)? {
+        Some(answer) => Ok(answer),
+        None => {
+            operator.notice(&format!(
+                "remote shepr server on {target} is still running v{}.",
+                version_label(version)
+            ));
+            Ok(false)
+        }
+    }
+}
+
+/// The operator on the far side of an interactive remote operation. This
+/// crate never writes to the terminal or reads stdin itself: the binary owns
+/// operator output and implements this.
+pub trait Operator {
+    /// Shows one line of progress or status text.
+    fn notice(&mut self, line: &str);
+
+    /// Asks a yes/no question. `Ok(None)` means there is no terminal to ask
+    /// on, which the caller treats as the question going unanswered.
+    fn confirm(&mut self, confirmation: &Confirmation) -> io::Result<Option<bool>>;
+}
+
+/// A yes/no question for the operator. The question carries its own default,
+/// so the rendered `[y/N]` hint and the answer to an empty line come from one
+/// value and cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirmation {
+    /// Lines shown before the question, in order; an empty string is a blank
+    /// line.
+    pub context: Vec<String>,
+    /// The question itself, without the answer hint.
+    pub question: String,
+    /// The answer an empty line gives.
+    pub default: bool,
+}
+
+impl Confirmation {
+    /// The prompt line, question plus answer hint, with a trailing space and
+    /// no newline.
+    pub fn prompt(&self) -> String {
+        let hint = if self.default { "[Y/n]" } else { "[y/N]" };
+        format!("{} {hint} ", self.question)
     }
 
-    eprintln!("remote shepr server on {target} is currently running:");
-    eprintln!("  server: v{}", version_label(version));
-    eprintln!();
-    eprintln!(
-        "the remote server was not started as a detached daemon and may not survive SSH connection loss. restart it so network drops disconnect only this client."
-    );
-    eprintln!(
-        "This stops active remote pane processes, including shells, agents, dev servers, and tests."
-    );
-    eprint!("restart the remote server now? [y/N] ");
-    io::stderr().flush()?;
-
-    read_remote_confirmation(&mut io::stdin().lock(), false)
+    /// Reads one answer line. End of input and an unrecognised answer cancel
+    /// the operation.
+    pub fn read_answer(&self, reader: &mut impl io::BufRead) -> io::Result<bool> {
+        read_remote_confirmation(reader, self.default)
+    }
 }
 
 pub(super) fn stop_remote_server(
+    operator: &mut dyn Operator,
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<()> {
@@ -180,10 +229,10 @@ pub(super) fn stop_remote_server(
     }
 
     wait_for_remote_server_shutdown(ssh, remote_shepr)?;
-    eprintln!(
+    operator.notice(&format!(
         "stopped the remote shepr server on {}; it will restart when the remote client bridge attaches.",
         ssh.target()
-    );
+    ));
     Ok(())
 }
 
@@ -269,6 +318,49 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::Unsupported);
             assert!(error.to_string().contains("compatibility error on host"));
         }
+    }
+
+    /// The rendered hint and the answer to an empty line come from one value.
+    #[test]
+    fn a_confirmation_prompt_and_its_empty_answer_share_one_default() {
+        for (default, hint) in [(false, "[y/N]"), (true, "[Y/n]")] {
+            let confirmation = Confirmation {
+                context: Vec::new(),
+                question: "restart?".into(),
+                default,
+            };
+            assert_eq!(confirmation.prompt(), format!("restart? {hint} "));
+            assert_eq!(
+                confirmation
+                    .read_answer(&mut "\n".as_bytes())
+                    .expect("an empty line takes the default"),
+                default
+            );
+        }
+    }
+
+    /// With no terminal to ask on, the server keeps running and the operator
+    /// is told so; nothing is printed by this crate.
+    #[test]
+    fn an_unanswerable_restart_question_keeps_the_server() {
+        struct Absent(Vec<String>);
+        impl Operator for Absent {
+            fn notice(&mut self, line: &str) {
+                self.0.push(line.to_owned());
+            }
+            fn confirm(&mut self, _confirmation: &Confirmation) -> io::Result<Option<bool>> {
+                Ok(None)
+            }
+        }
+        let mut operator = Absent(Vec::new());
+        assert!(
+            !confirm_remote_server_stop(&mut operator, "host", Some("1.0"))
+                .expect("no terminal is not an error")
+        );
+        assert_eq!(
+            operator.0,
+            ["remote shepr server on host is still running v1.0."]
+        );
     }
 
     #[test]

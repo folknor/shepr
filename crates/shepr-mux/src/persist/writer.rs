@@ -504,7 +504,7 @@ mod tests {
 
     fn backups(writer: &SessionWriter) -> Vec<Vec<u8>> {
         let directory = writer.path.with_file_name("session-backups");
-        if !directory.exists() {
+        if !directory.try_exists().expect("test stat") {
             return Vec::new();
         }
         let mut entries: Vec<_> = std::fs::read_dir(directory)
@@ -544,7 +544,7 @@ mod tests {
         }
         let _ = writer.clear();
         assert!(
-            !writer.path.exists(),
+            !writer.path.try_exists().expect("test stat"),
             "intentional clear must still persist"
         );
         assert_eq!(snapshots(&writer), files);
@@ -584,9 +584,10 @@ mod tests {
         assert!(
             !directory
                 .join(format!("session-{:039}-1-0.json", 0))
-                .exists()
+                .try_exists()
+                .expect("test stat")
         );
-        assert!(manual.exists());
+        assert!(manual.try_exists().expect("test stat"));
 
         for (_, path) in snapshots(&writer) {
             std::fs::remove_file(path).expect("test precondition");
@@ -659,8 +660,8 @@ mod tests {
         let removable = writer.path.with_file_name("removable");
         std::fs::write(&removable, b"old").expect("test precondition");
         assert!(prune_backups(&[(1, locked.clone()), (2, removable.clone())], 2).is_ok());
-        assert!(locked.exists());
-        assert!(!removable.exists());
+        assert!(locked.try_exists().expect("test stat"));
+        assert!(!removable.try_exists().expect("test stat"));
         assert!(prune_backups(&[(1, locked)], 1).is_err());
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -672,9 +673,9 @@ mod tests {
         std::fs::write(writer.path.with_file_name("session-snapshots"), b"blocked")
             .expect("test precondition");
         let _ = writer.save(&snapshot(), None);
-        assert!(writer.path.exists());
+        assert!(writer.path.try_exists().expect("test stat"));
         let _ = writer.clear();
-        assert!(!writer.path.exists());
+        assert!(!writer.path.try_exists().expect("test stat"));
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -689,10 +690,10 @@ mod tests {
             }
             let _ = writer.save(&snapshot(), None);
             assert!(!writer.protect_unloaded);
-            assert!(writer.path.exists());
+            assert!(writer.path.try_exists().expect("test stat"));
             let _ = writer.save(&snapshot(), None);
             let _ = writer.clear();
-            assert!(!writer.path.exists());
+            assert!(!writer.path.try_exists().expect("test stat"));
             assert!(backups(&writer).is_empty());
             std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
                 .expect("test precondition");
@@ -725,7 +726,7 @@ mod tests {
         assert!(!writer.protect_unloaded);
         let _ = writer.save(&snapshot(), None);
         let _ = writer.clear();
-        assert!(!writer.path.exists());
+        assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![original.to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -783,7 +784,10 @@ mod tests {
                 .is_err()
         );
         assert!(!writer.protect_unloaded);
-        assert!(history_path.exists(), "history pairs with the new layout");
+        assert!(
+            history_path.try_exists().expect("test stat"),
+            "history pairs with the new layout"
+        );
 
         // A save that never reached the target changes nothing else.
         let path = writer.path.clone();
@@ -804,7 +808,7 @@ mod tests {
                 .is_err()
         );
         assert!(failed.protect_unloaded);
-        assert!(!history_path.exists());
+        assert!(!history_path.try_exists().expect("test stat"));
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -885,7 +889,7 @@ mod tests {
         // A clear forgets what was written, so the same history is written
         // again afterwards.
         let _ = writer.clear();
-        assert!(!history_path.exists());
+        assert!(!history_path.try_exists().expect("test stat"));
         let _ = writer.save(&snapshot(), Some(&history("two")));
         assert_eq!(
             std::fs::read(&history_path).expect("test precondition"),
@@ -928,7 +932,7 @@ mod tests {
         assert!(writer.protect_unloaded);
         std::fs::write(&writer.path, b"late layout").expect("test precondition");
         let _ = writer.clear();
-        assert!(!writer.path.exists());
+        assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -967,14 +971,17 @@ mod tests {
             .path
             .with_file_name("session-000000000000000000000000000000000000001-1-0.json");
         let mut source = io::Cursor::new(b"partial").chain(Interrupted);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a panic mid-copy stands in for a crash after the prefix is written; \
+                      catching it lets the test inspect what that crash leaves on disk"
+        )]
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            copy_recovery(&mut source, &backup)
+        }));
+        assert!(interrupted.is_err());
         assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                copy_recovery(&mut source, &backup)
-            }))
-            .is_err()
-        );
-        assert!(
-            !backup.exists(),
+            !backup.try_exists().expect("test stat"),
             "an interrupted copy must not look complete"
         );
         assert_eq!(
@@ -1050,7 +1057,7 @@ mod tests {
                     .file_type()
                     .is_symlink()
             );
-            assert!(target.exists());
+            assert!(target.try_exists().expect("test stat"));
             if late_target {
                 assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
                 let backup = std::fs::read_dir(writer.path.with_file_name("session-backups"))
@@ -1079,7 +1086,7 @@ mod tests {
                     .file_type()
                     .is_symlink()
             );
-            assert!(!target.exists());
+            assert!(!target.try_exists().expect("test stat"));
             let _ = writer.save(&snapshot(), None);
             assert!(
                 std::fs::symlink_metadata(&writer.path)
@@ -1087,7 +1094,7 @@ mod tests {
                     .file_type()
                     .is_symlink()
             );
-            assert!(target.exists());
+            assert!(target.try_exists().expect("test stat"));
             std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
                 .expect("test precondition");
         }

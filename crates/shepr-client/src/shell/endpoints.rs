@@ -65,9 +65,7 @@ impl ClientShellState {
                 snapshot: previous.and_then(|endpoint| endpoint.snapshot.clone()),
                 resolved_config: previous.and_then(|endpoint| endpoint.resolved_config.clone()),
                 snapshot_generation: previous.and_then(|endpoint| endpoint.snapshot_generation),
-                agent_recency: previous
-                    .map(|endpoint| endpoint.agent_recency.clone())
-                    .unwrap_or_default(),
+                agent_recency: previous.map_or_default(|endpoint| endpoint.agent_recency.clone()),
             });
         }
 

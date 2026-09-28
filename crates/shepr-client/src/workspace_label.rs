@@ -1,10 +1,10 @@
 use std::path::Path;
 
 pub(super) fn derive_label_from_cwd(cwd: &Path) -> String {
-    // host-program-ok: production asks Git for the checkout root
-    let repo_root = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    // host-program-ok: production asks Git for the checkout root. Git runs in
+    // the directory it inspects; a directory that cannot be entered fails the
+    // spawn, which leaves the label to the non-Git fallbacks below.
+    let repo_root = shepr_platform::child_command("git", cwd)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()

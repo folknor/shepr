@@ -82,8 +82,9 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
             ClientError::from(shepr_protocol::FramingError::UnexpectedEof)
         }
         PreambleError::Io(error) => ClientError::from(shepr_protocol::FramingError::Io(error)),
-        error @ PreambleError::NotShepr => ClientError::Preamble(error),
-        error @ PreambleError::DifferentBuild(_) => ClientError::Preamble(error),
+        error @ (PreambleError::NotShepr | PreambleError::DifferentBuild(_)) => {
+            ClientError::Preamble(error)
+        }
     }
 }
 

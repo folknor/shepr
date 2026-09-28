@@ -472,7 +472,7 @@ pub(super) fn store_private_json(
         .map_err(|error| format!("failed to persist {description} directory: {error}"))
 }
 
-pub fn catalog_path(paths: &shepr_config::AppPaths) -> PathBuf {
+pub(crate) fn catalog_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.state_dir().join("client").join("endpoints.json")
 }
 
@@ -818,6 +818,6 @@ mod tests {
                 .store_selection_to_path(&selection_path, Some(&missing))
                 .is_err()
         );
-        assert!(!selection_path.exists());
+        assert!(!selection_path.try_exists().expect("stat selection file"));
     }
 }

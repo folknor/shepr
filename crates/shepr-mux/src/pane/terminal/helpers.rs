@@ -435,9 +435,8 @@ pub(super) fn ghostty_recent_read_range(
             break;
         }
     }
-    let end = last_content_row
-        .map(|row| row.max(cursor_row))
-        .unwrap_or_else(|| total_rows.saturating_sub(1));
+    let end =
+        last_content_row.map_or_else(|| total_rows.saturating_sub(1), |row| row.max(cursor_row));
     let start = end.saturating_add(1).saturating_sub(lines);
     Ok(Some((start, end, cols)))
 }

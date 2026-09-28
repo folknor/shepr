@@ -108,6 +108,10 @@ pub enum NavDirection {
 /// A node in the BSP tree. Pane leaves connect layout order to `Tab.panes`;
 /// pane state and public numbers live in those tab records.
 #[derive(Clone)]
+#[expect(
+    variant_size_differences,
+    reason = "a split is 23 bytes; boxing it would allocate per split to save that much per leaf"
+)]
 pub enum Node {
     Pane(PaneId),
     Split {
@@ -371,9 +375,7 @@ impl TileLayout {
 
         if let Some(split) = best {
             let path = split.path.clone();
-            let current_ratio = get_ratio_at(&self.root, &path)
-                .map(SplitRatio::get)
-                .unwrap_or(0.5);
+            let current_ratio = get_ratio_at(&self.root, &path).map_or(0.5, SplitRatio::get);
             let adj = if grows { delta } else { -delta };
             self.set_ratio_at(&path, current_ratio + adj);
         }
@@ -819,8 +821,11 @@ fn split_extent(total: u16, ratio: f32) -> (u16, u16) {
     // For axes at least two cells wide, keep one cell for each child even when
     // the requested fraction rounds to an endpoint. A one-cell axis cannot
     // show both children, so retain the ratio-based allocation there.
-    // SplitRatio keeps the product finite and within [0, total] before rounding.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "SplitRatio keeps the product finite and within [0, total] before rounding"
+    )]
     let first = (f32::from(total) * ratio).round() as u16;
     let first = if total >= 2 {
         first.clamp(1, total - 1)

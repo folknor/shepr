@@ -38,8 +38,10 @@ pub fn sequence_is_fresh(
     })
 }
 
-// Callers distinguish capacity exhaustion from stale reports with this small result.
-#[allow(clippy::result_unit_err)]
+#[expect(
+    clippy::result_unit_err,
+    reason = "callers distinguish capacity exhaustion from stale reports with this small result"
+)]
 pub fn accept_sequence(
     sequences: &mut SequenceMarks,
     source: &str,

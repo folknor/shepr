@@ -20,7 +20,7 @@ pub struct ForegroundJob {
 }
 
 /// Upper bound on the number of processes visited while resolving a pane's
-/// foreground process-group tree. Foreground-job detection reads /proc/<pid>/stat
+/// foreground process-group tree. Foreground-job detection reads `/proc/<pid>/stat`
 /// and task/children files for every visited process on a repeated (per-tick/5s)
 /// cadence, so an unbounded walk lets accumulated descendants or unreaped zombies
 /// under the pane shell grow the server's read-syscall rate and CPU without limit
@@ -370,7 +370,7 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
 }
 
 /// Get the current working directory of a process.
-/// Uses /proc/<pid>/cwd symlink.
+/// Uses the `/proc/<pid>/cwd` symlink.
 pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     if pid == 0 {
         return None;

@@ -37,7 +37,7 @@ pub(crate) fn render_pane_scrollbar_buffer(
 
 pub(super) fn render_pane_scrollbar(
     app: &AppState,
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
     info: &PaneInfo,
     rt: &shepr_mux::pane::PaneRuntime,
 ) {

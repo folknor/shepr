@@ -245,9 +245,8 @@ fn tab_bar_status_area(snapshot: &ClientShellSnapshot, area: Rect) -> Option<Rec
 }
 
 fn tab_bar_content_area(snapshot: &ClientShellSnapshot, area: Rect) -> Rect {
-    let reserved = tab_bar_status_area(snapshot, area)
-        .map(|status| status.width.saturating_add(1))
-        .unwrap_or(0);
+    let reserved =
+        tab_bar_status_area(snapshot, area).map_or(0, |status| status.width.saturating_add(1));
     Rect {
         width: area.width.saturating_sub(reserved),
         ..area

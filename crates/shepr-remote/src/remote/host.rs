@@ -3,7 +3,13 @@
 use std::io;
 use std::time::Duration;
 
-pub fn run_remote_client_bridge(paths: &shepr_config::AppPaths) -> io::Result<()> {
+/// Relays this process's stdio to the server's client socket until either side
+/// closes or the idle watchdog fires. The outcome goes back to the binary: on
+/// [`shepr_platform::RemoteBridgeOutcome::IdleExpired`] it must end the
+/// process promptly with status 1, without writing to stdout.
+pub fn run_remote_client_bridge(
+    paths: &shepr_config::AppPaths,
+) -> io::Result<shepr_platform::RemoteBridgeOutcome> {
     ensure_remote_server_running(paths)?;
     let _ssh_agent = super::ssh_agent::Registration::start(paths);
 

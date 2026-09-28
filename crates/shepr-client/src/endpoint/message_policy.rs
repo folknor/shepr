@@ -49,10 +49,10 @@ impl PresentationGate {
         }
 
         match message {
-            ServerMessage::PaneSurface(_) if self.activation_pending => {
-                PresentationDecision::Buffer
-            }
-            ServerMessage::ClientShellEndpointResponseChunk { .. } if self.activation_pending => {
+            ServerMessage::PaneSurface(_)
+            | ServerMessage::ClientShellEndpointResponseChunk { .. }
+                if self.activation_pending =>
+            {
                 PresentationDecision::Buffer
             }
             ServerMessage::ClientShellEndpointResponseChunk { .. } if self.command_response => {

@@ -477,10 +477,6 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                 | NamedPrivateMode::ReportCellMouseMotion
                 | NamedPrivateMode::ReportAllMouseMotion,
             ) => self.modes.x10_mouse = false,
-            PrivateMode::Named(NamedPrivateMode::SgrMouse) => {
-                // 1006 is the base SGR mode for 1016's pixel coordinates.
-                // Applications may resend it without disabling 1016.
-            }
             PrivateMode::Named(NamedPrivateMode::Utf8Mouse) => {
                 self.modes.sgr_pixels_mouse = false;
             }
@@ -495,6 +491,8 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                 self.resume_rows();
                 return;
             }
+            // Including 1006, the base SGR mode for 1016's pixel coordinates:
+            // applications may resend it without disabling 1016.
             _ => {}
         }
         Handler::set_private_mode(self.term, mode);

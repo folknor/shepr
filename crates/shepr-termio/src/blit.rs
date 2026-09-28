@@ -647,9 +647,10 @@ fn resolve_host_cursor_state(
         };
     }
 
-    let position = (*last_visible_cursor)
-        .map(|(x, y)| clamp_cursor_position(frame, x, y))
-        .unwrap_or_else(|| default_hidden_cursor_position(frame));
+    let position = (*last_visible_cursor).map_or_else(
+        || default_hidden_cursor_position(frame),
+        |(x, y)| clamp_cursor_position(frame, x, y),
+    );
     HostCursorState {
         position,
         visible: false,

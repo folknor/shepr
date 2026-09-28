@@ -5,8 +5,22 @@ use std::path::PathBuf;
 pub(super) struct UsableCwd(PathBuf);
 
 impl UsableCwd {
+    /// `None` for a relative path, a non-directory, an absent path, or one
+    /// that cannot be stat'd: none of them is usable. The last is traced
+    /// with its error, so an unreadable directory is not mistaken for a
+    /// missing one when a pane's cwd is not picked up.
     pub(super) fn new(path: PathBuf) -> Option<Self> {
-        (path.is_absolute() && path.is_dir()).then_some(Self(path))
+        if !path.is_absolute() {
+            return None;
+        }
+        match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.is_dir().then_some(Self(path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                tracing::trace!(path = %path.display(), %error, "cwd cannot be stat'd");
+                None
+            }
+        }
     }
 
     pub(super) fn into_path_buf(self) -> PathBuf {

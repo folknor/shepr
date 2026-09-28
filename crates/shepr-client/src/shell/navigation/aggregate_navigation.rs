@@ -167,15 +167,13 @@ pub(super) fn navigator_rows(
                 let mut children = Vec::new();
                 let workspace_tabs = tabs_by_workspace
                     .get(workspace.workspace_id.as_str())
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
+                    .map_or_default(Vec::as_slice);
                 let multiple_tabs = workspace_tabs.len() > 1;
                 for tab in workspace_tabs {
                     let tab_matches = workspace_matches || text(&tab.label);
                     let tab_panes = panes_by_tab
                         .get(tab.tab_id.as_str())
-                        .map(Vec::as_slice)
-                        .unwrap_or_default();
+                        .map_or_default(Vec::as_slice);
                     for (index, pane) in tab_panes.iter().enumerate() {
                         let agent = agents.get(pane.pane_id.as_str()).copied();
                         let status = agent.map_or(shepr_api::schema::AgentStatus::Idle, |agent| {

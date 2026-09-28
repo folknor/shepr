@@ -24,12 +24,11 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
         .active_index()
         .and_then(|ws_idx| state.workspaces.get(ws_idx))
         .and_then(|workspace| workspace.tabs().get(workspace.active_tab))
-        .map(|tab| {
+        .map_or_default(|tab| {
             state
                 .pane_geometry_in(area)
                 .tab_panes(&tab.layout, tab.zoomed)
         })
-        .unwrap_or_default()
         .into_iter()
         .map(|mut pane| {
             pane.inner_rect = shepr_mux::workspace::pane_inner_rect(pane.rect, pane.borders);
@@ -571,7 +570,7 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
         .expect("test precondition");
     state
         .public_pane_id_aliases
-        .insert("wOLD:p9".into(), pane_id);
+        .insert(shepr_protocol::PublicPaneId::new("wOLD", 9), pane_id);
     state.direct_attach_resize_locks.insert(terminal_id.clone());
     state.session_dirty = false;
 
@@ -1388,10 +1387,10 @@ fn close_workspace_prunes_aliases_and_resize_locks_of_its_panes() {
         .expect("test precondition");
     state
         .public_pane_id_aliases
-        .insert("wOLD:p1".into(), closing_pane);
+        .insert(shepr_protocol::PublicPaneId::new("wOLD", 1), closing_pane);
     state
         .public_pane_id_aliases
-        .insert("wOLD:p2".into(), kept_pane);
+        .insert(shepr_protocol::PublicPaneId::new("wOLD", 2), kept_pane);
     state
         .direct_attach_resize_locks
         .insert(closing_terminal.clone());
@@ -1401,9 +1400,15 @@ fn close_workspace_prunes_aliases_and_resize_locks_of_its_panes() {
 
     state.close_workspace_at(0);
 
-    assert!(!state.public_pane_id_aliases.contains_key(&"wOLD:p1".into()));
+    assert!(
+        !state
+            .public_pane_id_aliases
+            .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 1))
+    );
     assert_eq!(
-        state.public_pane_id_aliases.get(&"wOLD:p2".into()),
+        state
+            .public_pane_id_aliases
+            .get(&shepr_protocol::PublicPaneId::new("wOLD", 2)),
         Some(&kept_pane)
     );
     assert!(!state.direct_attach_resize_locks.contains(&closing_terminal));

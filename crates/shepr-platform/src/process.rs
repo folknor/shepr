@@ -314,7 +314,14 @@ pub(super) fn session_member_handles_with(
             handles.push(handle);
         }
     }
-    if leader_reaped() && Path::new(&format!("/proc/{session_id}")).exists() {
+    // A stat failure other than absence cannot rule out reuse, so it is read
+    // as "reused" and nothing is returned: the members are left alone rather
+    // than risk signalling another session's processes.
+    if leader_reaped()
+        && Path::new(&format!("/proc/{session_id}"))
+            .try_exists()
+            .unwrap_or(true)
+    {
         return Vec::new();
     }
     handles

@@ -79,15 +79,13 @@ pub(crate) fn compute_tab_surface_for(
     let tab = resolved.and_then(|(workspace_index, tab_index)| {
         app.workspaces.get(workspace_index)?.tabs().get(tab_index)
     });
-    let split_borders = tab
-        .map(|tab| {
-            if tab.zoomed {
-                Vec::new()
-            } else {
-                tab.layout.splits(area)
-            }
-        })
-        .unwrap_or_default();
+    let split_borders = tab.map_or_default(|tab| {
+        if tab.zoomed {
+            Vec::new()
+        } else {
+            tab.layout.splits(area)
+        }
+    });
     let pane_infos = resolved.map_or_else(Vec::new, |(workspace_index, tab_index)| {
         compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area)
     });
@@ -146,7 +144,7 @@ pub(crate) fn render_tab_surface(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     surface: TabSurfaceView<'_>,
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
 ) {
     render_panes(
         app,

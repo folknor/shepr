@@ -96,18 +96,16 @@ pub(super) fn snapshot_from_session(
                 })
                 .cloned()
                 .or_else(|| workspace.active_tab_id.parse().ok())?;
-            let new_workspace_cwd = workspace_index
-                .map(|workspace_index| {
-                    let active_tab_index = app.parse_tab_id(&active_tab_id).and_then(
-                        |(tab_workspace_index, tab_index)| {
-                            (tab_workspace_index == workspace_index).then_some(tab_index)
-                        },
-                    );
-                    app.resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index)
-                        .display()
-                        .to_string()
-                })
-                .unwrap_or_default();
+            let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
+                let active_tab_index = app.parse_tab_id(&active_tab_id).and_then(
+                    |(tab_workspace_index, tab_index)| {
+                        (tab_workspace_index == workspace_index).then_some(tab_index)
+                    },
+                );
+                app.resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index)
+                    .display()
+                    .to_string()
+            });
             Some(shepr_protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
                 workspace_id: workspace_id.into(),
@@ -307,7 +305,7 @@ pub(super) fn render_pane_surface(
     let panes = target
         .as_ref()
         .and_then(|target| target.resolve(&app.state))
-        .map(|(workspace_index, _)| {
+        .map_or_default(|(workspace_index, _)| {
             layout
                 .pane_infos
                 .iter()
@@ -371,8 +369,7 @@ pub(super) fn render_pane_surface(
                         })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let pane_frames = layout
         .pane_infos
         .iter()

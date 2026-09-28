@@ -29,8 +29,8 @@ pub fn watch_terminal_resize_signal() {
     // SAFETY: sigaction is a plain C struct; all-zero is a valid value (no
     // flags, empty mask, SIG_DFL), and the fields that matter are set below.
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-    action.sa_sigaction =
-        record_terminal_resize_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    let handler: extern "C" fn(libc::c_int) = record_terminal_resize_signal;
+    action.sa_sigaction = handler as libc::sighandler_t;
     // Keep blocking stdin and socket reads from failing with EINTR.
     action.sa_flags = libc::SA_RESTART;
     // SAFETY: `action` is a live local that sigaction only reads, the old
@@ -63,6 +63,20 @@ fn set_sigpipe_disposition(handler: libc::sighandler_t) {
 
 pub fn begin_cli_output() {
     set_sigpipe_disposition(libc::SIG_DFL);
+}
+
+/// A child process command that runs in `cwd` rather than inheriting this
+/// process's working directory. A long-lived child that inherits it pins that
+/// directory (an unmount fails with EBUSY, a deleted one stays referenced) and
+/// resolves any relative path against wherever shepr happened to start.
+pub fn child_command(program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the shared constructor; it states the working directory on the next line"
+    )]
+    let mut command = Command::new(program);
+    command.current_dir(cwd);
+    command
 }
 
 pub fn detach_server_daemon_command(command: &mut Command) {
@@ -106,19 +120,26 @@ pub(super) fn is_detached_session(pid: u32, session: i32, tty_nr: i32) -> bool {
 /// another process: once an install replaces the binary, Linux reports the
 /// running one as "/…/shepr (deleted)", a path nothing can execute.
 pub fn launch_executable() -> std::io::Result<PathBuf> {
-    Ok(resolve_launch_executable(
-        std::env::current_exe()?,
-        Path::is_file,
-    ))
+    resolve_launch_executable(std::env::current_exe()?, is_regular_file)
+}
+
+/// Whether `path` names a regular file (following symlinks). Absence is
+/// `false`; any other stat failure is an error, not absence.
+fn is_regular_file(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 pub(super) fn resolve_launch_executable(
     executable: PathBuf,
-    is_file: impl Fn(&Path) -> bool,
-) -> PathBuf {
+    is_file: impl Fn(&Path) -> std::io::Result<bool>,
+) -> std::io::Result<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
 
-    if !is_file(&executable) {
+    if !is_file(&executable)? {
         // Linux marks the old inode as deleted after an update replaces the binary.
         if let Some(path) = executable
             .as_os_str()
@@ -126,12 +147,12 @@ pub(super) fn resolve_launch_executable(
             .strip_suffix(b" (deleted)")
         {
             let replacement = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-            if is_file(&replacement) {
-                return replacement;
+            if is_file(&replacement)? {
+                return Ok(replacement);
             }
         }
     }
-    executable
+    Ok(executable)
 }
 
 /// The machine's node name, as shown by tmux's `#h`.

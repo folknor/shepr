@@ -669,7 +669,7 @@ fn agent_from_response(
     response: &crate::error::ApiResult,
 ) -> Result<crate::schema::AgentInfo, ErrorResponse> {
     match response {
-        Ok(ResponseResult::AgentInfo { agent }) | Ok(ResponseResult::AgentPrompted { agent }) => {
+        Ok(ResponseResult::AgentInfo { agent } | ResponseResult::AgentPrompted { agent }) => {
             Ok(agent.clone())
         }
         Err(error) => Err(ErrorResponse {

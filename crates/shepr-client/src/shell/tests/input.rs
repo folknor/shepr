@@ -142,7 +142,7 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
         title: "rename pane",
         input: TextEditor::new("replace me", true),
         target: ClientRenameTarget::Pane {
-            pane_id: "pane_1".into(),
+            pane_id: test_pane_id("ws_1:p1"),
         },
     }));
     let mut outcome = ClientShellInput::default();
@@ -258,7 +258,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
             "boot-1",
             &selection_request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
-                pane_id: "pane_1".into(),
+                pane_id: "ws_1:p1".into(),
                 text: "needle".into(),
             }),
         )
@@ -301,7 +301,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     assert!(matches!(
         &release.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
-            if pane_id == "pane_1"
+            if pane_id == "ws_1:p1"
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
@@ -327,7 +327,7 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
     let ClientMessage::ClientShellPaneInput { pane_id, events } = &text.requests[0] else {
         panic!("expected targeted pane input");
     };
-    assert_eq!(pane_id, "pane_1");
+    assert_eq!(pane_id, "ws_1:p1");
     assert_eq!(events.len(), 5);
     assert!(matches!(
         &events[0],
@@ -415,7 +415,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
     assert!(matches!(
         &press.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
-            if pane_id == "pane_1"
+            if pane_id == "ws_1:p1"
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Key { generated_text: Some(text), .. }] if text == "h"
@@ -426,7 +426,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
         matches!(
             &release.requests[..],
             [ClientMessage::ClientShellPaneInput { pane_id, events }]
-                if pane_id == "pane_1"
+                if pane_id == "ws_1:p1"
                     && matches!(
                         &events[..],
                         [ClientPaneInputEvent::Key {
@@ -653,7 +653,7 @@ fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::PaneRename(params)
-            if params.pane_id == "pane_1" && params.label.as_deref() == Some("")
+            if params.pane_id == "ws_1:p1" && params.label.as_deref() == Some("")
     ));
 }
 
@@ -670,7 +670,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     );
     state.set_pane_surface(pane_surface);
     let mut selection = shepr_vt::selection::Selection::range(
-        "pane_1".into(),
+        test_pane_id("ws_1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
     );

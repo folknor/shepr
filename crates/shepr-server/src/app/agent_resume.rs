@@ -414,7 +414,25 @@ impl App {
         };
         let launch_env = launch_env.for_agent_resume();
 
-        if !cwd.is_dir() {
+        // Any stat failure makes the directory unavailable for the resume; one
+        // other than absence (permissions, a dead mount) is logged, since the
+        // pane's message cannot tell the user which it was.
+        let directory_available = match std::fs::metadata(cwd) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        pane = pane_id.raw(),
+                        terminal = %terminal_id,
+                        cwd = %cwd.display(),
+                        %error,
+                        "saved agent resume directory cannot be read"
+                    );
+                }
+                false
+            }
+        };
+        if !directory_available {
             if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                 terminal.abandon_agent_resume(
                     "Saved directory is unavailable. Restore the directory and restart this session.".into(),
@@ -575,10 +593,9 @@ mod tests {
             app.state.set_active_index(Some(0));
             app.state.view.terminal_area = Rect::new(0, 0, 100, 30);
             app.state.ensure_test_terminals();
-            let missing = std::env::current_dir()
-                .expect("test precondition")
-                .join("__missing_resume_cwd__");
-            assert!(!missing.exists());
+            let missing =
+                crate::test_support::ScratchDir::new("resume-cwd").join("__missing_resume_cwd__");
+            assert!(!missing.try_exists().expect("stat missing resume cwd"));
             for terminal in app.state.terminals.values_mut() {
                 terminal.cwd = missing.clone();
                 terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
@@ -764,10 +781,9 @@ mod tests {
                 .get_mut(&terminal_id)
                 .expect("test precondition");
             if !missing_shell {
-                terminal.cwd = std::env::current_dir()
-                    .expect("test precondition")
+                terminal.cwd = crate::test_support::ScratchDir::new("resume-cwd")
                     .join("__shepr_missing_resume_cwd__");
-                assert!(!terminal.cwd.exists());
+                assert!(!terminal.cwd.try_exists().expect("stat missing resume cwd"));
             }
             let session = shepr_agent::agent::resume::PersistedAgentSession {
                 source: "shepr:codex".into(),

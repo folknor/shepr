@@ -21,23 +21,23 @@ At a glance:
 |---|---|---|
 | `_brokkr_config.py` port, A1-A7, A9, A10 | Adopted now | Done |
 | A8 `#[allow]` carries a comment | Dropped (superseded by B9) | - |
-| B1 print macros (library-crate textlint) | Adopted now | |
-| B2 `process::exit` only in `src/main.rs` | Adopted now | |
-| B3 `debug_assert!` ban, `debug_assertions` switch removed | Adopted now | |
-| B4 `Path::exists`, `Path::is_file`, `Path::is_dir` seal | Adopted now | |
-| B5 `catch_unwind` seal | Adopted now | |
-| B6 child working-directory seal (clippy form) | Adopted now | |
+| B1 print macros (library-crate textlint) | Adopted now | Done |
+| B2 `process::exit` only in `src/main.rs` | Adopted now | Done |
+| B3 `debug_assert!` ban, `debug_assertions` switch removed | Adopted now | Done |
+| B4 `Path::exists`, `Path::is_file`, `Path::is_dir` seal | Adopted now | Done |
+| B5 `catch_unwind` seal | Adopted now | Done (owner expects, no shared helper) |
+| B6 child working-directory seal (clippy form) | Adopted now | Done |
 | B7 clock seam | Adopted incrementally | |
 | B8 per-crate `limits` modules | Adopted incrementally | |
-| B9 `#[expect(.., reason)]` instead of `#[allow]` | Adopted now | |
-| B10 extra compiler lints and the rustdoc phase | Adopted, later round | |
+| B9 `#[expect(.., reason)]` instead of `#[allow]` | Adopted now | Done |
+| B10 extra compiler lints and the rustdoc phase | Adopted, later round | Done, but `let_underscore_must_use` (see there) |
 | B11 release-profile sweep in `brokkr check` | Rejected; release gets `overflow-checks = true` instead | |
 | B12 install shape | Tracked elsewhere (piece 4 of the test-isolation work) | |
-| B13 tree debris | Adopted, later round | |
-| B14 scripts roster | Adopted, later round | |
-| B15 workspace dependency pins | Adopted, later round | |
-| B16 tests do not read compiled content | Adopted, later round | |
-| B17 seal witness | Adopted, later round | |
+| B13 tree debris | Adopted, later round | Done |
+| B14 scripts roster | Adopted, later round | Done |
+| B15 workspace dependency pins | Adopted, later round | Done |
+| B16 tests do not read compiled content | Adopted, later round | Done |
+| B17 seal witness | Adopted, later round | Done (reduced; see there) |
 
 Two related decisions from the same round: the `research/alacritty` and
 `research/vte` citations are reworded to point at the pinned sources in the
@@ -686,6 +686,11 @@ CLI's own `eprintln!` sites (HYGC-004) are not held by this rule. Wire A9's
 `check_skip_after_scopes.py` with it, or the three `shepr-remote/src/lib.rs`
 prints stay hidden.
 
+**Done**, as drafted: `library-crates-do-not-print`, with the skip-after
+witness re-checking the production items below an early `#[cfg(test)]`
+(`shepr-mux/src/pane/runtime.rs` has one near its top). The library prints
+were swept out first.
+
 **Catches** `print!`/`println!`/`eprint!`/`eprintln!`. They panic on a closed pipe
 and reach no log file. In shepr the CLI (`src/`) is safe on the first count:
 `shepr_platform::begin_cli_output` resets `SIGPIPE` to default, so a closed pipe
@@ -735,6 +740,13 @@ and joining it could hang forever"). Moving the exit to `main.rs` needs a way to
 unblock that copy (shutting down the fds, or a poll with a deadline), not just a
 returned outcome.
 
+**Done**, in both forms: `std::process::exit` is in `clippy.toml`'s
+`disallowed-methods`, and the `exits-from-main` textlint confines the spelling
+to `src/main.rs`. `main` itself now returns an `ExitCode`, so it has no exit
+call; the one escape is the bridge test's re-exec child
+(`shepr-platform/src/remote_bridge_tests.rs`), which stands in for that main.
+The remote bridges return a `RemoteBridgeOutcome` the binary maps to a status.
+
 **Catches** exits that skip destructors. Shepr has real destructor-dependent
 cleanup: `TerminalGuard::drop` restores the host terminal, and
 `release_ssh_resources_before_exit` exists because `process::exit` skips it
@@ -778,6 +790,10 @@ directory the sockets live in, so after the change a dev build started with
 starting its own; that recipe needs a replacement (for example a named session
 or a scratch `XDG_*` set) when the switch goes. The `cfg!(test)` arm is a
 separate question (BUG-021).
+
+**Done**: the three macros are in `clippy.toml`'s `disallowed-macros`
+(`disallowed_macros = "deny"`), the `no-profile-dependent-behaviour` textlint
+is wired, and the tree has no `debug_assert!` or `debug_assertions` left.
 
 **Catches** checks whose behaviour depends on the profile. Directly relevant to
 shepr: `brokkr check` and (with `[test] debug = true`) `brokkr test` build dev,
@@ -824,6 +840,10 @@ test-file sites convert as well. The seal is extended to `Path::is_file` and
 `Path::is_dir`, which swallow stat errors the same way (HYGG-078's
 `ssh_config_include` is one).
 
+**Done**: all three paths are in `disallowed-methods`, and no site escapes
+them; presence checks match on `fs::metadata` / `symlink_metadata` and handle
+`NotFound` explicitly.
+
 **Catches** presence probes that swallow the stat error (`EACCES`, `ELOOP`) as
 "absent". Relevant to shepr's config and state paths, where a permission problem
 should fail the launch ("Any config problem fails the launch; no fallbacks").
@@ -851,6 +871,16 @@ concentrations: `crates/shepr-mux/src/persist/io.rs` 11,
 home every site's crate can reach. No hygiene or bug entry records the five
 sites.
 
+**Done**, without the shared helper: `std::panic::catch_unwind` is in
+`disallowed-methods`, and each remaining owner carries a scoped `#[expect]`
+saying what a caught panic becomes (`shepr-pty/src/actor.rs`: log and close
+the pane; `shepr-server/src/app/git_refresh.rs`: always send the completion
+event). The event hub site was removed; the other two escapes are tests
+(`shepr-vt/src/locks.rs` poisons a mutex, `shepr-mux/src/persist/writer.rs`
+simulates a crash mid-copy, `shepr-test-support/src/lib.rs` reads a refusal
+panic). Two production owners with different contracts did not justify a
+shared helper; the textlint allowlist is what reviews a new one.
+
 **Catches** ad hoc panic containment. Broadarrow routes every catch through one
 scoped helper. Shepr has five independent sites:
 
@@ -877,6 +907,15 @@ work removes anyway, so the helper mostly serves the re-exec and stand-in
 spawns. `build_server_daemon_command` becomes a violation and gets a stated
 directory. The seal is about children only: `std::env::current_dir()` read as a
 test input (HYGP-005, HYGG-010) is a different spelling it does not catch.
+
+**Done**: `std::process::Command::new` is in `disallowed-methods`. Production
+spawns go through `shepr_platform::child_command(program, dir)`, tests through
+`shepr_test_support::command_in_scratch`, and the pane child's constructor in
+`shepr-pty/src/command.rs` states the pane directory. The server daemon runs
+in the home directory; its current directory for `new_terminal_cwd` is the
+launch directory handed over as `SHEPR_STARTUP_CWD`
+(`AppPaths::resolve_for_server`), so `"current"` and relative paths keep their
+meaning.
 
 **Catches** `Command::new` without `current_dir`: the child inherits the parent's
 directory. For shepr this has a concrete consequence:
@@ -973,6 +1012,11 @@ allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 ```
 
+**Done**: both are denied and no `#[allow]` is left. Expectations that were
+never fulfilled (`too_many_arguments` on functions under the threshold of 11,
+`large_enum_variant` on `Method`, `unwrap_in_result` on a function returning no
+`Result`) were removed rather than kept.
+
 **Violations: 40 `#[allow]` sites in 20 files** (full list:
 `rg -n '#!?\[allow\(' crates src`). Most are `too_many_arguments` (21, in
 `crates/shepr-mux/src/workspace.rs`, `workspace/tab.rs`, `pane/runtime.rs`,
@@ -987,6 +1031,29 @@ If adopted, A8 becomes redundant.
 ## B10. Extra compiler lints and the rustdoc phase
 
 **Decision:** adopted; applied in a later round.
+
+**Done, except `let_underscore_must_use`.** `[workspace.lints.rust]` and
+`[workspace.lints.rustdoc]` carry broadarrow's sets, `[workspace.lints.clippy]`
+adds `map_unwrap_or`, `match_same_arms`, `redundant_else` and
+`unnested_or_patterns`, and `brokkr.toml` has `[rustdoc] document_private_items
+= true`. The first run reported 690 diagnostics across the workspace (about
+370 `let_underscore_must_use`, 156 `unreachable_pub`, 74 `map_unwrap_or`, 39
+`match_same_arms`, and small counts of the rest). `unreachable_pub` was
+narrowed to `pub(crate)` from the diagnostics' positions
+(`scripts/narrow_unreachable_pub.py`); the rest were fixed by hand. The seven
+`variant_size_differences` hits are small Copy or tree enums (7 to 23 bytes
+largest variant) and carry an `#[expect]` saying so rather than a `Box`, as
+does one control-sequence state table that reads by source state
+(`match_same_arms` in `tab_bar_status.rs`).
+
+`let_underscore_must_use` is not enabled. About 370 sites discard a
+`#[must_use]` value with `let _ = ..`, most of them channel sends, socket
+writes and cleanup removals whose failure is deliberately ignored, a third of
+them in tests. The only mechanical fix is respelling each as `.ok();` or
+`drop(..)`, which changes no behaviour and records no decision, and the lint's
+value is exactly that decision. Adopting it means reviewing each discard
+(handle, log, or state why it is safe to drop), crate by crate like B7 and B8;
+it needs the owner's go-ahead for that shape.
 
 Broadarrow denies lints shepr does not: `[workspace.lints.rust]`
 (`unreachable_pub`, `rust_2018_idioms`, `single_use_lifetimes`, `trivial_casts`,
@@ -1081,6 +1148,10 @@ Violations: unknown until run.
 
 **Decision:** adopted; applied in a later round.
 
+**Done** as `scripts/check_tree_debris.py`, wired as `tree-debris`. The
+root-package `tests/fixtures` corpora moved into
+`crates/shepr-termio/tests/fixtures` with B16, so the root has no `tests/`.
+
 `check_tree_debris.py` refuses anything in a crate root outside
 `Cargo.toml`, `README.md`, `build.rs`, `src`, `tests`, `benches`, `examples`, an
 untracked file under a crate's sources with an extension the tracked sources do
@@ -1098,6 +1169,12 @@ it.
 `_brokkr_config.py`, the three gate scripts wired by A7 and A9, and the
 `textlint_sweep.py` diagnostic to classify.
 
+**Done**: `scripts/check_scripts_roster.py` and `scripts/README.md`, wired as
+`scripts-roster`. The one-off migration scripts (`fix_unwraps.py`,
+`hygiene_merge.py`, the three `test_isolation_*.py`,
+`narrow_unreachable_pub.py`) are rostered as tools; whether they stay is the
+owner's call.
+
 `check_scripts_roster.py` requires a `scripts/README.md` table stating each
 script's standing (gate, tool, diagnostic) and that every `gate` is wired in
 `brokkr.toml`. Portable as-is; `SHARED_GATE_FILES` becomes `{"_brokkr_config.py"}`.
@@ -1110,6 +1187,9 @@ whether the one-shot migration scripts should stay.
 
 **Decision:** adopted; applied in a later round.
 
+**Done** as `scripts/check_workspace_dependencies.py`, wired as
+`workspace-dependencies`; it reads the root package too.
+
 `check_workspace_dependencies.py`: every name in the root
 `[workspace.dependencies]` is taken with `workspace = true` and no restated
 version, and an external dependency used by two or more members must be pinned
@@ -1120,6 +1200,10 @@ every member already inherits. A cheap tripwire if the owner wants it.
 
 **Decision:** adopted; applied in a later round. The first violation below
 disappears with A10's test deletion.
+
+**Done**, as drafted. The termio corpus tests read their fixtures from
+`crates/shepr-termio/tests/fixtures` through `CARGO_MANIFEST_DIR`, so no test
+climbs into another crate.
 
 Broadarrow's `no-test-reads-compiled-content` refuses `include_str!` in tests (read
 from disk through `CARGO_MANIFEST_DIR` instead). Shepr bundles manifests, the
@@ -1155,6 +1239,16 @@ message = "a test reads its fixture from disk through CARGO_MANIFEST_DIR; includ
 **Decision:** adopted (a witness that `clippy.toml`'s ban paths still resolve);
 applied in a later round. The draft below argued against it; the owner
 decided otherwise.
+
+**Done, reduced**, as `scripts/check_seal_paths.py`, wired as `seal-paths`.
+The resolution leg is not ported because the pinned toolchain already does
+it: an unresolvable `disallowed-methods` or `disallowed-macros` path makes
+clippy report "`<path>` does not refer to a reachable function" (or macro)
+against `clippy.toml`, and brokkr's clippy phase fails on it (checked with a
+probe entry of each kind). That also settles broadarrow surprise 1 below for
+this toolchain: clippy does not fail open. The script holds what clippy cannot
+see: every seal is a path with a reason, the root `clippy.toml` is the only
+one (a nested one would shadow it), and both `disallowed_*` lints stay denied.
 
 Broadarrow's `check_origin_seal.py` proves each `disallowed-methods` path still
 binds, by linting a fixture crate. Mostly Nautilus-specific and heavy (it runs

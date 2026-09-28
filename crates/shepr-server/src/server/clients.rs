@@ -1017,7 +1017,7 @@ mod tests {
     fn semantic_text_press_does_not_create_a_server_release_lease() {
         let mut client = shell_client();
         client.track_shell_input(
-            &"w1:p1".into(),
+            &shepr_protocol::PublicPaneId::new("w1", 1),
             &[ClientPaneInputEvent::Key {
                 code: shepr_protocol::ClientKeyCode::Char('x'),
                 modifiers: shepr_protocol::WireModifiers::NONE,
@@ -1043,7 +1043,7 @@ mod tests {
             generated_text: None,
         };
         client.track_shell_input(
-            &"w1:p1".into(),
+            &shepr_protocol::PublicPaneId::new("w1", 1),
             &[
                 key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
                 key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),

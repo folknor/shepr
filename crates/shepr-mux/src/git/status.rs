@@ -366,7 +366,7 @@ fn read_upstream(repo: &mut RepoContext, branch: &str) -> Option<GitUpstreamIden
 fn git_ahead_behind_between(cwd: &Path, head_oid: &str, upstream_oid: &str) -> Option<AheadBehind> {
     let range = format!("{head_oid}...{upstream_oid}");
     // host-program-ok: production counts ahead and behind with Git's commit walk
-    let output = std::process::Command::new("git")
+    let output = shepr_platform::child_command("git", cwd)
         .arg("-C")
         .arg(cwd)
         .args(["rev-list", "--left-right", "--count", &range])
@@ -490,7 +490,7 @@ mod tests {
         let root = temp_test_dir("reftable-branch");
         let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
-        let output = std::process::Command::new("git")
+        let output = shepr_test_support::command_in_scratch("git", "reftable-branch-init")
             .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
             .output()
             .expect("test precondition");
@@ -787,7 +787,7 @@ mod tests {
         let root = temp_test_dir("reftable-fingerprint");
         let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
-        let output = std::process::Command::new("git")
+        let output = shepr_test_support::command_in_scratch("git", "reftable-fingerprint-init")
             .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
             .output()
             .expect("test precondition");

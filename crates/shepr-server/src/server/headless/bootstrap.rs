@@ -1,10 +1,108 @@
 use super::*;
 
+/// Which of the server's two sockets another server already holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerSocket {
+    /// The JSON API socket.
+    Api,
+    /// The binary client-protocol socket.
+    Client,
+}
+
+impl std::fmt::Display for ServerSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Api => "api socket",
+            Self::Client => "client socket",
+        })
+    }
+}
+
+/// Why [`run_server`] refused to start or stopped with an error. The server
+/// prints nothing itself: the binary renders this and picks the exit status.
+#[derive(Debug)]
+pub enum RunServerError {
+    /// Another server for this session already listens on `path`.
+    AlreadyRunning { socket: ServerSocket, path: PathBuf },
+    /// Startup or the event loop failed.
+    Io(io::Error),
+}
+
+impl std::fmt::Display for RunServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRunning { socket, path } => write!(
+                f,
+                "shepr server is already running ({socket}: {})",
+                path.display()
+            ),
+            Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for RunServerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::AlreadyRunning { .. } => None,
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for RunServerError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<RunServerError> for io::Error {
+    fn from(error: RunServerError) -> Self {
+        match error {
+            RunServerError::Io(error) => error,
+            already_running @ RunServerError::AlreadyRunning { .. } => {
+                io::Error::new(io::ErrorKind::AddrInUse, already_running.to_string())
+            }
+        }
+    }
+}
+
+/// Where a started server listens and logs, handed to the `on_ready` callback
+/// of [`run_server`] once both sockets are bound. Its `Display` form is the
+/// operator notice a foreground `shepr server` shows.
+#[derive(Clone, Debug)]
+pub struct ServerReady {
+    pub api_socket: PathBuf,
+    pub client_socket: PathBuf,
+    pub log_file: PathBuf,
+}
+
+impl std::fmt::Display for ServerReady {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "shepr server running; you can use any shepr CLI command in another terminal."
+        )?;
+        writeln!(f, "api socket: {}", self.api_socket.display())?;
+        writeln!(f, "client socket: {}", self.client_socket.display())?;
+        writeln!(f, "logs: {}", self.log_file.display())?;
+        write!(
+            f,
+            "did you mean to open the Shepr TUI? run `shepr`; you do not need `shepr server`."
+        )
+    }
+}
+
 /// Run the headless server. This is the entry point called from main.rs.
+///
+/// `on_ready` runs once, after both sockets are bound and before the event
+/// loop starts; the binary uses it to tell a foreground operator where the
+/// server listens. It runs on the tokio runtime, so it must not block.
 pub fn run_server(
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
-) -> io::Result<()> {
+    on_ready: impl FnOnce(&ServerReady),
+) -> Result<(), RunServerError> {
     let resolved_config = encode_resolved_config(config)?;
 
     // Consume the startup-cwd hint before anything below starts a thread: the
@@ -40,11 +138,12 @@ pub fn run_server(
     ) {
         Ok(server) => server,
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-            eprintln!("error: shepr server is already running");
-            eprintln!("api socket: {}", shepr_api::socket_path(paths).display());
-            std::process::exit(1);
+            return Err(already_running(
+                ServerSocket::Api,
+                shepr_api::socket_path(paths),
+            ));
         }
-        Err(err) => return Err(err),
+        Err(err) => return Err(err.into()),
     };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -70,25 +169,27 @@ pub fn run_server(
             match HeadlessServer::new(app, Some(_api_server), resolved_config, stop_requested) {
                 Ok(server) => server,
                 Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-                    eprintln!("error: shepr server is already running");
-                    eprintln!("client socket: {}", client_socket_path(paths).display());
-                    std::process::exit(1);
+                    return Err(already_running(
+                        ServerSocket::Client,
+                        client_socket_path(paths),
+                    ));
                 }
-                Err(err) => return Err(err),
+                Err(err) => return Err(err.into()),
             };
 
+        let ready = ServerReady {
+            api_socket: shepr_api::socket_path(paths),
+            client_socket: client_socket_path(paths),
+            log_file: session_data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
+        };
         info!(
-            api_socket = %shepr_api::socket_path(paths).display(),
-            client_socket = %client_socket_path(paths).display(),
+            api_socket = %ready.api_socket.display(),
+            client_socket = %ready.client_socket.display(),
             "shepr server started"
         );
-        print_ready_message(
-            &shepr_api::socket_path(paths),
-            &client_socket_path(paths),
-            &session_data_dir,
-        );
+        on_ready(&ready);
 
-        server.run().await
+        server.run().await.map_err(RunServerError::from)
     });
 
     rt.shutdown_timeout(Duration::from_millis(100));
@@ -157,17 +258,11 @@ fn startup_cwd_from_env_value(
     })
 }
 
-fn print_ready_message(api_socket: &Path, client_socket: &Path, session_data_dir: &Path) {
-    eprintln!("shepr server running; you can use any shepr CLI command in another terminal.");
-    eprintln!("api socket: {}", api_socket.display());
-    eprintln!("client socket: {}", client_socket.display());
-    eprintln!(
-        "logs: {}",
-        session_data_dir
-            .join(shepr_platform::logging::SERVER_LOG_FILE)
-            .display()
-    );
-    eprintln!("did you mean to open the Shepr TUI? run `shepr`; you do not need `shepr server`.");
+/// The refusal for a socket another server holds, recorded in the server log
+/// as well: a daemonized server's stderr goes nowhere.
+fn already_running(socket: ServerSocket, path: PathBuf) -> RunServerError {
+    tracing::error!(%socket, path = %path.display(), "shepr server is already running");
+    RunServerError::AlreadyRunning { socket, path }
 }
 
 #[cfg(test)]

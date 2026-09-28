@@ -39,13 +39,13 @@ const MODE_MOUSE_ANY_MOTION: u16 = 1003;
 
 /// Scroll metrics together with the row origin read under one terminal lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScrollPosition {
+pub(crate) struct ScrollPosition {
     pub metrics: ScrollMetrics,
 }
 
 impl ScrollPosition {
     #[cfg(test)]
-    pub fn viewport_top_row(self) -> shepr_vt::AbsRow {
+    pub(crate) fn viewport_top_row(self) -> shepr_vt::AbsRow {
         self.metrics.viewport_top_row()
     }
 }
@@ -153,7 +153,7 @@ pub enum TerminalDirtyPatchOutcome {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InputState {
+pub(crate) struct InputState {
     pub alternate_screen: bool,
     pub application_cursor: bool,
     pub bracketed_paste: bool,
@@ -169,11 +169,11 @@ pub struct InputState {
 
 #[cfg(test)]
 impl InputState {
-    pub fn mouse_reporting_enabled(self) -> bool {
+    pub(crate) fn mouse_reporting_enabled(self) -> bool {
         self.mouse_protocol_mode != shepr_termio::input::MouseProtocolMode::None
     }
 
-    pub fn plain_page_keys_use_host_scrollback(self) -> bool {
+    pub(crate) fn plain_page_keys_use_host_scrollback(self) -> bool {
         !self.alternate_screen
             && !self.mouse_reporting_enabled()
             // Bracketed paste distinguishes zsh's line editor (where it's on)
@@ -233,7 +233,7 @@ pub(crate) struct PaneTerminal {
 }
 
 impl PaneTerminal {
-    pub fn new(ghostty: GhosttyPaneTerminal) -> Self {
+    pub(crate) fn new(ghostty: GhosttyPaneTerminal) -> Self {
         Self { ghostty }
     }
 
@@ -249,7 +249,7 @@ impl PaneTerminal {
         shepr_vt::terminal_core_is_poisoned(&self.ghostty.core)
     }
 
-    pub fn process_pty_bytes(
+    pub(crate) fn process_pty_bytes(
         &self,
         pane_id: PaneId,
         shell_pid: u32,
@@ -280,38 +280,38 @@ impl PaneTerminal {
             .flush_expired_synchronized_output(pane_id, shell_pid)
     }
 
-    pub fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
+    pub(crate) fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
         self.ghostty.resize(geometry)
     }
 
-    pub fn scroll_up(&self, lines: usize) {
+    pub(crate) fn scroll_up(&self, lines: usize) {
         self.ghostty.scroll_up(lines);
     }
 
-    pub fn scroll_down(&self, lines: usize) {
+    pub(crate) fn scroll_down(&self, lines: usize) {
         self.ghostty.scroll_down(lines);
     }
 
-    pub fn scroll_reset(&self) {
+    pub(crate) fn scroll_reset(&self) {
         self.ghostty.scroll_reset();
     }
 
-    pub fn clear_screen(&self) -> Result<(), PaneClearError> {
+    pub(crate) fn clear_screen(&self) -> Result<(), PaneClearError> {
         self.ghostty.clear_screen()
     }
 
-    pub fn set_scroll_offset_from_bottom(&self, lines: usize) {
+    pub(crate) fn set_scroll_offset_from_bottom(&self, lines: usize) {
         self.ghostty.set_scroll_offset_from_bottom(lines);
     }
 
-    pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+    pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {
         self.ghostty.scroll_metrics()
     }
 
     /// Copy-mode search with screen rows. Screen rows shift once history at
     /// its limit evicts lines; [`PaneTerminal::search_text_window_absolute`]
     /// takes and returns absolute rows, which do not.
-    pub fn search_text_window(
+    pub(crate) fn search_text_window(
         &self,
         query: &str,
         case_sensitive: bool,
@@ -352,7 +352,7 @@ impl PaneTerminal {
 
     /// Word motion with screen rows; see
     /// [`PaneTerminal::word_motion_target_absolute`].
-    pub fn word_motion_target(
+    pub(crate) fn word_motion_target(
         &self,
         row: ScreenRow,
         col: u16,
@@ -368,14 +368,14 @@ impl PaneTerminal {
         Some(screen_point(target, origin))
     }
 
-    pub fn dimensions(&self) -> Option<(u16, u16)> {
+    pub(crate) fn dimensions(&self) -> Option<(u16, u16)> {
         let core = shepr_vt::lock_terminal_core(&self.ghostty.core).ok()?;
         Some((core.terminal.cols(), core.terminal.rows()))
     }
 
     /// Paragraph motion with screen rows; see
     /// [`PaneTerminal::paragraph_motion_target_absolute`].
-    pub fn paragraph_motion_target(
+    pub(crate) fn paragraph_motion_target(
         &self,
         row: ScreenRow,
         direction: i8,
@@ -388,102 +388,102 @@ impl PaneTerminal {
     }
 
     #[cfg(test)]
-    pub fn input_state(&self) -> Option<InputState> {
+    pub(crate) fn input_state(&self) -> Option<InputState> {
         self.ghostty.input_state()
     }
 
-    pub fn bracketed_paste_enabled(&self) -> bool {
+    pub(crate) fn bracketed_paste_enabled(&self) -> bool {
         self.ghostty.bracketed_paste_enabled()
     }
 
-    pub fn focus_reporting_enabled(&self) -> bool {
+    pub(crate) fn focus_reporting_enabled(&self) -> bool {
         self.ghostty.focus_reporting_enabled()
     }
 
-    pub fn mouse_reporting_enabled(&self) -> bool {
+    pub(crate) fn mouse_reporting_enabled(&self) -> bool {
         self.ghostty.mouse_reporting_enabled()
     }
 
-    pub fn modify_other_keys_level(&self) -> u8 {
+    pub(crate) fn modify_other_keys_level(&self) -> u8 {
         self.ghostty.modify_other_keys_level()
     }
 
-    pub fn sgr_pixel_mouse_enabled(&self) -> bool {
+    pub(crate) fn sgr_pixel_mouse_enabled(&self) -> bool {
         self.ghostty.sgr_pixel_mouse_enabled()
     }
 
-    pub fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
+    pub(crate) fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
         self.ghostty.plain_page_keys_use_host_scrollback()
     }
 
-    pub fn alternate_screen_active(&self) -> bool {
+    pub(crate) fn alternate_screen_active(&self) -> bool {
         self.ghostty.alternate_screen_active()
     }
 
-    pub fn wheel_routing(&self) -> Option<crate::pane::WheelRouting> {
+    pub(crate) fn wheel_routing(&self) -> Option<crate::pane::WheelRouting> {
         self.ghostty.wheel_routing()
     }
 
-    pub fn screen_text_snapshot(
+    pub(crate) fn screen_text_snapshot(
         &self,
     ) -> Option<(shepr_vt::ActiveScreen, u16, Vec<shepr_vt::ScreenTextRow>)> {
         self.ghostty.screen_text_snapshot()
     }
 
-    pub fn cursor_state(&self) -> Option<TerminalCursorState> {
+    pub(crate) fn cursor_state(&self) -> Option<TerminalCursorState> {
         self.ghostty.cursor_state()
     }
 
-    pub fn synchronized_output_active(&self) -> bool {
+    pub(crate) fn synchronized_output_active(&self) -> bool {
         self.ghostty.synchronized_output_active()
     }
 
-    pub fn synchronized_output_state(&self) -> (bool, u64) {
+    pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
         self.ghostty.synchronized_output_state()
     }
 
-    pub fn visible_text(&self) -> String {
+    pub(crate) fn visible_text(&self) -> String {
         self.ghostty.visible_text()
     }
 
-    pub fn visible_ansi(&self) -> String {
+    pub(crate) fn visible_ansi(&self) -> String {
         self.ghostty.visible_ansi()
     }
 
-    pub fn detection_text(&self) -> String {
+    pub(crate) fn detection_text(&self) -> String {
         self.ghostty.detection_text()
     }
 
-    pub fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+    pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         self.ghostty.recent_text_snapshot(lines)
     }
 
-    pub fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+    pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         self.ghostty.recent_ansi_snapshot(lines)
     }
 
-    pub fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+    pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         self.ghostty.recent_unwrapped_text_snapshot(lines)
     }
 
-    pub fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+    pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         self.ghostty.recent_unwrapped_ansi_snapshot(lines)
     }
 
     /// The selected text, read by stable row identity. Returns `None` if
     /// either row has been evicted from terminal history.
-    pub fn extract_selection<P>(
+    pub(crate) fn extract_selection<P>(
         &self,
         selection: &shepr_vt::selection::Selection<P>,
     ) -> Option<String> {
         self.ghostty.extract_selection(selection)
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
+    pub(crate) fn render(&self, frame: &mut Frame<'_>, area: Rect, show_cursor: bool) {
         self.ghostty.render(frame, area, show_cursor);
     }
 
-    pub fn collect_dirty_patch(
+    pub(crate) fn collect_dirty_patch(
         &self,
         area_width: u16,
         area_height: u16,
@@ -491,55 +491,62 @@ impl PaneTerminal {
         self.ghostty.collect_dirty_patch(area_width, area_height)
     }
 
-    pub fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
+    pub(crate) fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
         self.ghostty.visible_hyperlinks(area)
     }
 
-    pub fn apply_host_terminal_theme(&self, theme: shepr_termio::host_term::theme::TerminalTheme) {
+    pub(crate) fn apply_host_terminal_theme(
+        &self,
+        theme: shepr_termio::host_term::theme::TerminalTheme,
+    ) {
         self.ghostty.apply_host_terminal_theme(theme);
     }
 
-    pub fn apply_host_terminal_appearance(
+    pub(crate) fn apply_host_terminal_appearance(
         &self,
         appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
         self.ghostty.apply_host_terminal_appearance(appearance)
     }
 
-    pub fn has_transient_default_color_override(&self) -> bool {
+    pub(crate) fn has_transient_default_color_override(&self) -> bool {
         self.ghostty.has_transient_default_color_override()
     }
 
-    pub fn maybe_restore_host_terminal_theme(&self, pane_id: PaneId, shell_pid: u32) -> bool {
+    pub(crate) fn maybe_restore_host_terminal_theme(
+        &self,
+        pane_id: PaneId,
+        shell_pid: u32,
+    ) -> bool {
         self.ghostty
             .maybe_restore_host_terminal_theme(pane_id, shell_pid)
     }
 
-    pub fn terminal_title(&self) -> Option<String> {
+    pub(crate) fn terminal_title(&self) -> Option<String> {
         self.ghostty.terminal_title()
     }
 
-    pub fn agent_osc_title(&self) -> String {
+    pub(crate) fn agent_osc_title(&self) -> String {
         self.ghostty.agent_osc_title()
     }
 
-    pub fn agent_osc_progress(&self) -> String {
+    pub(crate) fn agent_osc_progress(&self) -> String {
         self.ghostty.agent_osc_progress()
     }
 
     /// Clears retained OSC title/progress evidence on foreground agent change.
-    pub fn clear_agent_osc_state(&self) {
+    pub(crate) fn clear_agent_osc_state(&self) {
         self.ghostty.clear_agent_osc_state();
     }
 
-    pub fn keyboard_protocol(
+    pub(crate) fn keyboard_protocol(
         &self,
         fallback: shepr_termio::input::KeyboardProtocol,
     ) -> shepr_termio::input::KeyboardProtocol {
         self.ghostty.keyboard_protocol().unwrap_or(fallback)
     }
 
-    pub fn encode_terminal_key(
+    pub(crate) fn encode_terminal_key(
         &self,
         key: shepr_termio::input::TerminalKey,
         protocol: shepr_termio::input::KeyboardProtocol,
@@ -547,7 +554,7 @@ impl PaneTerminal {
         self.ghostty.encode_terminal_key(key, protocol)
     }
 
-    pub fn encode_mouse_button(
+    pub(crate) fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
@@ -556,7 +563,7 @@ impl PaneTerminal {
         self.ghostty.encode_mouse_button(kind, position, modifiers)
     }
 
-    pub fn encode_mouse_motion(
+    pub(crate) fn encode_mouse_motion(
         &self,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
@@ -565,7 +572,7 @@ impl PaneTerminal {
         self.ghostty.encode_mouse_motion(kind, position, modifiers)
     }
 
-    pub fn encode_mouse_wheel(
+    pub(crate) fn encode_mouse_wheel(
         &self,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
@@ -577,13 +584,18 @@ impl PaneTerminal {
 
 /// Direct readers addressed by stable absolute row IDs, plus primary history
 /// reads for session persistence.
-// The copy-search and copy-motion endpoints use screen rows. These helpers
-// keep the absolute-row operations directly testable without scroll metrics.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the copy-search and copy-motion endpoints use screen rows; these helpers \
+                  keep the absolute-row operations directly testable without scroll metrics"
+    )
+)]
 impl PaneTerminal {
     /// The viewport position and the absolute row id of screen row 0, read
     /// together; see [`ScrollPosition`].
-    pub fn scroll_position(&self) -> Option<ScrollPosition> {
+    pub(crate) fn scroll_position(&self) -> Option<ScrollPosition> {
         self.ghostty.scroll_position()
     }
 
@@ -634,7 +646,7 @@ impl PaneTerminal {
     /// gives no access to the inactive primary grid, and the active grid then
     /// holds the full-screen program's frame, which must not overwrite the
     /// history saved earlier.
-    pub fn primary_history_ansi(&self) -> Option<String> {
+    pub(crate) fn primary_history_ansi(&self) -> Option<String> {
         self.ghostty.primary_history_ansi()
     }
 }

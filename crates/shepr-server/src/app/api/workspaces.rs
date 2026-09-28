@@ -63,17 +63,20 @@ impl App {
                 ),
             }
         };
-        let cwd = params.cwd.map(PathBuf::from).unwrap_or_else(|| {
-            source_context.map_or_else(
-                || self.resolve_new_terminal_cwd(None),
-                |context| {
-                    self.resolved_new_workspace_cwd_from_tab(
-                        context.workspace_index,
-                        Some(context.tab_index),
-                    )
-                },
-            )
-        });
+        let cwd = params.cwd.map_or_else(
+            || {
+                source_context.map_or_else(
+                    || self.resolve_new_terminal_cwd(None),
+                    |context| {
+                        self.resolved_new_workspace_cwd_from_tab(
+                            context.workspace_index,
+                            Some(context.tab_index),
+                        )
+                    },
+                )
+            },
+            PathBuf::from,
+        );
         let extra_env = super::env::normalize_launch_env(params.env)?;
         match self.create_workspace_with_launch_env(&cwd, params.focus, extra_env) {
             Ok(index) => {

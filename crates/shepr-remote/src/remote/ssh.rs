@@ -181,7 +181,7 @@ pub(super) fn authentication_command_with_config(
     target: &SshTarget,
     config: ManagedSshConfig,
 ) -> SshAuthenticationCommand {
-    let mut command = Command::new("ssh");
+    let mut command = ssh_command();
     apply_managed_ssh_options(&mut command, Some(&config.options));
     command
         .env(shepr_core::env::ChildEnv::SshAskpassRequire, "never")
@@ -332,7 +332,7 @@ impl RemoteSsh {
     }
 
     pub(super) fn base_command(&self) -> Command {
-        let mut command = Command::new("ssh");
+        let mut command = ssh_command();
         apply_managed_ssh_options(&mut command, self.options());
         command
     }
@@ -506,10 +506,29 @@ pub(super) fn ssh_config_quote(path: &str) -> String {
 }
 
 /// Returns the quoted `Include` value for an SSH config file, or `None` when
-/// there is no such file.
-pub(super) fn ssh_config_include(path: Option<&Path>) -> Option<String> {
-    path.filter(|path| path.is_file())
-        .map(|path| ssh_config_quote(&path.to_string_lossy()))
+/// there is no such file (or the path names something other than a file).
+/// A stat failure other than absence, such as `EACCES`, is an error rather
+/// than a silently dropped include.
+pub(super) fn ssh_config_include(path: Option<&Path>) -> io::Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(ssh_config_quote(&path.to_string_lossy()))),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("could not read SSH config {}: {error}", path.display()),
+        )),
+    }
+}
+
+/// An `ssh` child. Every one runs in `/`: shepr passes it only absolute paths,
+/// and a ControlPersist master it forks outlives the command, so inheriting
+/// shepr's working directory would pin that directory for the master's life.
+pub(super) fn ssh_command() -> Command {
+    shepr_platform::child_command("ssh", Path::new("/"))
 }
 
 /// The directory a managed config names the shared OpenSSH control socket
@@ -562,8 +581,8 @@ pub(super) fn write_managed_ssh_config(
     let path = dir.join("config");
     let mut contents = String::new();
     for include in [
-        ssh_config_include(paths.user_config.as_deref()),
-        ssh_config_include(paths.system_config.as_deref()),
+        ssh_config_include(paths.user_config.as_deref())?,
+        ssh_config_include(paths.system_config.as_deref())?,
     ]
     .into_iter()
     .flatten()

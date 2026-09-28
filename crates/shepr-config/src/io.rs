@@ -18,7 +18,7 @@ use super::{
 /// kept apart from the installed server by running it in a named session
 /// (`--session <name>`), and a server of another build is refused by the
 /// build-identity checks, which cover the build profile as well as the source.
-pub fn app_dir_name() -> &'static str {
+pub(crate) fn app_dir_name() -> &'static str {
     // `cfg!(test)` holds only while this crate's own unit tests are compiled;
     // a test in any other crate that reaches this compiles it as a normal
     // dependency and gets `shepr`. What keeps every test out of the real
@@ -102,7 +102,9 @@ pub struct PathProvenance {
     pub runtime_dir: ConfigSource,
     pub config_file: ConfigSource,
     pub home_dir: ConfigSource,
-    /// Captured from the process at launch; no config setting selects its source.
+    /// Captured at launch: the process's working directory, or for the server
+    /// the launch directory handed over as `SHEPR_STARTUP_CWD`. No config
+    /// setting selects it.
     pub current_dir: ConfigSource,
     pub session_id: ConfigSource,
     pub api_socket: ConfigSource,
@@ -177,7 +179,7 @@ impl AppPaths {
     /// Resolve XDG directories, session identity and socket target once from
     /// the inherited process environment.
     pub fn resolve() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(None, None, false)
+        resolve_paths_from_env(None, None, false, CurrentDirOrigin::Process)
     }
 
     /// Resolve paths and the local session/socket target from one environment
@@ -189,13 +191,45 @@ impl AppPaths {
         let session_source = requested_session
             .as_ref()
             .map(|_| ConfigSource::CliFlag("--session".to_owned()));
-        resolve_paths_from_env(requested_session, session_source, false)
+        resolve_paths_from_env(
+            requested_session,
+            session_source,
+            false,
+            CurrentDirOrigin::Process,
+        )
+    }
+
+    /// Resolve paths for the headless server process. The server daemon runs
+    /// in the home directory so it never pins the directory it was launched
+    /// from, but its current directory is still the one the user launched
+    /// `shepr` from: the spawning client hands that over as
+    /// `SHEPR_STARTUP_CWD`, and it is what `new_terminal_cwd = "current"`, a
+    /// relative `new_terminal_cwd` and the new-terminal fallback resolve
+    /// against. A server started without the handoff (by hand, from a shell)
+    /// uses its own working directory.
+    pub fn resolve_for_server(
+        requested_session: Option<super::SessionId>,
+    ) -> Result<Self, Vec<String>> {
+        let session_source = requested_session
+            .as_ref()
+            .map(|_| ConfigSource::CliFlag("--session".to_owned()));
+        resolve_paths_from_env(
+            requested_session,
+            session_source,
+            false,
+            CurrentDirOrigin::StartupHandoff,
+        )
     }
 
     /// Resolve only the machine catalog's local paths, without allowing local
     /// session or socket environment values to affect a remote command.
     pub fn resolve_for_machine() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(Some(super::SessionId::Default), None, true)
+        resolve_paths_from_env(
+            Some(super::SessionId::Default),
+            None,
+            true,
+            CurrentDirOrigin::Process,
+        )
     }
 
     #[cfg(test)]
@@ -271,10 +305,46 @@ fn socket_path_override(variable: EnvVar, diagnostics: &mut Vec<String>) -> Opti
     })
 }
 
+/// Where a process's resolved current directory comes from.
+#[derive(Clone, Copy)]
+enum CurrentDirOrigin {
+    /// The process's own working directory.
+    Process,
+    /// The launch directory a spawning client handed the server as
+    /// `SHEPR_STARTUP_CWD`, falling back to the process's own directory when
+    /// the variable is unset.
+    StartupHandoff,
+}
+
+fn resolve_current_dir(
+    origin: CurrentDirOrigin,
+) -> Result<(Option<PathBuf>, ConfigSource), String> {
+    let process = || (std::env::current_dir().ok(), ConfigSource::Default);
+    match origin {
+        CurrentDirOrigin::Process => Ok(process()),
+        CurrentDirOrigin::StartupHandoff => {
+            match shepr_core::env::read_path(EnvVar::SheprStartupCwd) {
+                Ok(Some(path)) if path.is_absolute() => Ok((
+                    Some(path),
+                    ConfigSource::EnvironmentVariable(EnvVar::SheprStartupCwd.name().to_owned()),
+                )),
+                Ok(Some(path)) => Err(format!(
+                    "{} must be an absolute path, got {}",
+                    EnvVar::SheprStartupCwd,
+                    path.display()
+                )),
+                Ok(None) => Ok(process()),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+    }
+}
+
 fn resolve_paths_from_env(
     requested_session: Option<super::SessionId>,
     requested_session_source: Option<ConfigSource>,
     ignore_local_target_env: bool,
+    current_dir_origin: CurrentDirOrigin,
 ) -> Result<AppPaths, Vec<String>> {
     let session_selection_was_forced = requested_session.is_some();
     let mut target_env_diagnostics = Vec::new();
@@ -311,15 +381,18 @@ fn resolve_paths_from_env(
             .map_err(|error| vec![format!("session selection error: {error}")])?;
 
     let home_dir = shepr_core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
-    let current_dir = std::env::current_dir().ok();
+    let (current_dir, current_dir_source) =
+        resolve_current_dir(current_dir_origin).map_err(|error| vec![error])?;
     let (config_dir, config_dir_source) =
-        platform_xdg_dir(EnvVar::XdgConfigHome, ".config", Some(&home_dir))
-            .map(|(path, source)| (Ok(path), source))
-            .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
+        platform_xdg_dir(EnvVar::XdgConfigHome, ".config", Some(&home_dir)).map_or_else(
+            |error| (Err(error), ConfigSource::Default),
+            |(path, source)| (Ok(path), source),
+        );
     let (state_dir, state_dir_source) =
-        platform_xdg_dir(EnvVar::XdgStateHome, ".local/state", Some(&home_dir))
-            .map(|(path, source)| (Ok(path), source))
-            .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
+        platform_xdg_dir(EnvVar::XdgStateHome, ".local/state", Some(&home_dir)).map_or_else(
+            |error| (Err(error), ConfigSource::Default),
+            |(path, source)| (Ok(path), source),
+        );
     // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Unset
     // and empty are an error for shepr because its runtime sockets need a
     // user-private runtime directory; a relative value is refused by the
@@ -460,7 +533,7 @@ fn resolve_paths_from_env(
                     runtime_dir: runtime_dir_source,
                     config_file: config_file_source,
                     home_dir: home_dir_source,
-                    current_dir: ConfigSource::Default,
+                    current_dir: current_dir_source,
                     session_id: session_source,
                     api_socket: api_socket_source,
                     client_socket: client_socket_source,
@@ -1142,6 +1215,55 @@ tab_bar_right = [
             errors
                 .iter()
                 .any(|error| error.contains("SHEPR_CONFIG_PATH") && error.contains("whitespace")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn server_current_dir_is_the_handed_over_launch_directory() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let launch = env.path().join("launch");
+        std::fs::create_dir_all(launch.join("project")).expect("create launch directory");
+        let process_dir = std::env::current_dir().ok();
+        assert_ne!(process_dir.as_deref(), Some(launch.as_path()));
+
+        // Without the handoff the server uses its own working directory.
+        let paths = AppPaths::resolve_for_server(None).expect("server paths resolve");
+        assert_eq!(paths.current_dir(), process_dir.as_deref());
+        assert_eq!(paths.provenance().current_dir, ConfigSource::Default);
+
+        env.set(EnvVar::SheprStartupCwd, &launch);
+        let paths = AppPaths::resolve_for_server(None).expect("server paths resolve");
+        assert_eq!(paths.current_dir(), Some(launch.as_path()));
+        assert_eq!(
+            paths.provenance().current_dir,
+            ConfigSource::EnvironmentVariable(EnvVar::SheprStartupCwd.name().to_owned())
+        );
+        // Only the server reads the handoff; any other process keeps its own.
+        let cli = AppPaths::resolve().expect("CLI paths resolve");
+        assert_eq!(cli.current_dir(), process_dir.as_deref());
+
+        // `current` and a relative new_cwd resolve against the launch directory.
+        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        std::fs::write(paths.config_file(), "[terminal]\nnew_cwd = \"project\"\n")
+            .expect("write config fixture");
+        let config = Config::load_validated(&paths).expect("relative new_cwd validates");
+        assert_eq!(
+            config.terminal().new_cwd,
+            crate::NewTerminalCwd::Path(launch.join("project"))
+        );
+        std::fs::write(paths.config_file(), "[terminal]\nnew_cwd = \"current\"\n")
+            .expect("write config fixture");
+        let config = Config::load_validated(&paths).expect("current new_cwd validates");
+        assert_eq!(config.terminal().new_cwd, crate::NewTerminalCwd::Current);
+        assert_eq!(config.paths().current_dir(), Some(launch.as_path()));
+
+        env.set(EnvVar::SheprStartupCwd, "relative/launch");
+        let errors = AppPaths::resolve_for_server(None).expect_err("a relative handoff is refused");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("SHEPR_STARTUP_CWD") && error.contains("absolute")),
             "{errors:?}"
         );
     }

@@ -299,7 +299,6 @@ impl Workspace {
         self.cached_git_space = None;
     }
 
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     pub fn new_with_extra_env(
         initial_cwd: &Path,
         rows: u16,
@@ -325,7 +324,6 @@ impl Workspace {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     fn new_with_tab(
         initial_cwd: &Path,
         rows: u16,
@@ -406,9 +404,6 @@ impl Workspace {
         }
     }
 
-    // Tab creation threads geometry, host context, launch policy and the
-    // spawn handles through to the runtime spawn.
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     pub fn create_tab(
         &self,
         rows: u16,
@@ -436,7 +431,6 @@ impl Workspace {
     }
 
     // Same argument set as `create_tab`, with an argv instead of a shell.
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     pub fn create_tab_argv_command(
         &self,
         rows: u16,
@@ -464,7 +458,6 @@ impl Workspace {
     }
 
     // Shared body of the two tab constructors above.
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     fn create_tab_with_runtime(
         &self,
         rows: u16,
@@ -583,7 +576,10 @@ impl Workspace {
     }
 
     // Workspace split routing carries pane identity, geometry, host context, and focus policy.
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "pane creation needs launch settings and spawn context"
+    )]
     pub fn split_pane(
         &self,
         pane_id: PaneId,
@@ -617,7 +613,10 @@ impl Workspace {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "pane creation needs launch settings and spawn context"
+    )]
     pub fn split_pane_with_ratio(
         &self,
         pane_id: PaneId,
@@ -652,7 +651,10 @@ impl Workspace {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "pane creation needs launch settings and spawn context"
+    )]
     fn split_pane_with_runtime(
         &self,
         pane_id: PaneId,

@@ -1,5 +1,10 @@
 too-many-arguments-threshold = 11
 
+# Every seal below is denied workspace-wide in the root `Cargo.toml`, and every
+# escape is a scoped `#[expect(clippy::disallowed_methods, reason = ..)]`.
+# `brokkr.toml`'s `disallowed-escapes-are-allowlisted` textlint lists the files
+# allowed to carry one.
+#
 # The one environment reader (`shepr_core::env`). Every variable a shepr
 # process interprets is an `EnvVar` with a declared kind, read under one
 # policy: empty is unset (a selector refuses empty), surrounding whitespace
@@ -8,9 +13,7 @@ too-many-arguments-threshold = 11
 # the raw sites that stay are the pane child's environment copied from the
 # server's, the `IsolatedEnv` test guard, and test harness probes, each under a
 # scoped `#[expect(clippy::disallowed_methods, reason = ..)]` naming why it is
-# outside the policy. `brokkr.toml`'s `disallowed-escapes-are-allowlisted`
-# textlint lists the files allowed to carry one. The lint is denied
-# workspace-wide in the root `Cargo.toml`.
+# outside the policy.
 disallowed-methods = [
   { path = "std::env::var", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
   { path = "std::env::var_os", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
@@ -28,4 +31,29 @@ disallowed-methods = [
   # `no-host-temp-dir` textlint cannot see; that textlint is what refuses an
   # escape, since no site has one.
   { path = "std::env::temp_dir", reason = "use shepr_test_support::ScratchDir; no site escapes this" },
+  # An exit skips destructors: the host terminal restore, SSH resource release
+  # and log flushing all run from them. Library code returns a status or an
+  # error; `brokkr.toml`'s `exits-from-main` textlint confines the escapes to
+  # the binary's `main.rs`.
+  { path = "std::process::exit", reason = "return a status or error to main; expect only in src/main.rs" },
+  # A presence probe that answers a bool swallows the stat error (EACCES,
+  # ELOOP) as absent, so a permission problem reads as a missing file.
+  { path = "std::path::Path::exists", reason = "preserve stat errors: use Path::try_exists or match ErrorKind::NotFound on the metadata or open" },
+  { path = "std::path::Path::is_file", reason = "preserve stat errors: match on fs::metadata and check file_type, handling NotFound explicitly" },
+  { path = "std::path::Path::is_dir", reason = "preserve stat errors: match on fs::metadata and check file_type, handling NotFound explicitly" },
+  # Panic containment has one owner per containment contract; each owner
+  # carries a scoped expect saying what a caught panic becomes.
+  { path = "std::panic::catch_unwind", reason = "contain panics only at a named owner that says what a caught panic becomes; expect there" },
+  # A child inherits the parent's working directory unless told otherwise, and
+  # the server daemon runs in the home directory. Only std's builder: clap's
+  # `Command::new` is a different path and is not caught.
+  { path = "std::process::Command::new", reason = "a child gets a stated working directory: set current_dir and expect at the site naming it, or spawn through the test helper" },
+]
+
+# A debug assertion panics in the dev build the gate runs and vanishes in the
+# release build that is installed, so the two builds behave differently.
+disallowed-macros = [
+  { path = "core::debug_assert", reason = "panics in one profile and vanishes in the other; use assert! or handle the case" },
+  { path = "core::debug_assert_eq", reason = "panics in one profile and vanishes in the other; use assert_eq! or handle the case" },
+  { path = "core::debug_assert_ne", reason = "panics in one profile and vanishes in the other; use assert_ne! or handle the case" },
 ]

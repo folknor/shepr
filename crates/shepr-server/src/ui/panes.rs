@@ -166,7 +166,7 @@ fn compute_pane_infos(
 pub(super) fn render_panes(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
     target: Option<&super::tab_surface::TabSurfaceTarget>,
     pane_infos: &[PaneInfo],
     split_borders: &[shepr_core::layout::SplitBorder],
@@ -216,7 +216,7 @@ fn render_pane_borders(
     ws: &shepr_mux::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[shepr_core::layout::SplitBorder],
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
 ) {
     if !app.settings.pane_borders.draws_borders()
         || pane_infos.iter().all(|info| info.borders.is_empty())
@@ -386,7 +386,7 @@ fn render_pane_border_titles(
     app: &AppState,
     ws: &shepr_mux::workspace::Workspace,
     pane_infos: &[PaneInfo],
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
 ) {
     let buf = frame.buffer_mut();
     let area = buf.area;
@@ -444,12 +444,8 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
         (true, true, false, true) => "├",
         (true, false, true, true) => "┴",
         (false, true, true, true) => "┬",
-        (true, true, false, false) | (true, false, false, false) | (false, true, false, false) => {
-            "│"
-        }
-        (false, false, true, true) | (false, false, true, false) | (false, false, false, true) => {
-            "─"
-        }
+        (true, _, false, false) | (false, true, false, false) => "│",
+        (false, false, true, _) | (false, false, false, true) => "─",
         (false, true, false, true) => "┌",
         (false, true, true, false) => "┐",
         (true, false, false, true) => "└",
@@ -502,7 +498,7 @@ mod tests {
         app: &AppState,
         ws: &Workspace,
         split_borders: &[shepr_core::layout::SplitBorder],
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
     ) {
         render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
     }

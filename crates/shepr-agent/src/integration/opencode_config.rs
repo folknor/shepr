@@ -9,6 +9,7 @@ use serde_json::Value;
 use super::config_file::{
     ConfigUpdateLock, check_config_target, lock_config_for_update, write_config,
 };
+use super::file_ops::{is_file, read_if_file};
 
 const TUI_CONFIG_NAME: &str = "tui.jsonc";
 
@@ -50,11 +51,9 @@ pub(crate) fn validate_tui_plugin_config(config_dir: &Path) -> io::Result<()> {
 }
 
 fn validate_plugin_config(config_path: &Path, key: &str) -> io::Result<()> {
-    if !config_path.is_file() {
+    let Some(content) = read_if_file(config_path)? else {
         return Ok(());
-    }
-
-    let content = fs::read_to_string(config_path)?;
+    };
     let root = parse_root(&content, config_path)?;
     let object = root_object(&root, config_path)?;
     if object
@@ -96,7 +95,7 @@ pub(crate) fn prepare_cli_plugin(
     // while those sources still exist so we do not skip the migration; otherwise
     // create cli.json ourselves, since OpenCode will never do it for a fresh V2
     // install with nothing to migrate.
-    if !path.is_file() && cli_migration_pending(config_dir, state_dir) {
+    if !is_file(&path)? && cli_migration_pending(config_dir, state_dir)? {
         return Ok(None);
     }
     prepare_plugin(path, "plugins", plugin_spec).map(Some)
@@ -113,8 +112,8 @@ pub(crate) fn add_cli_plugin(
         .transpose()
 }
 
-fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> bool {
-    config_dir.join("tui.json").is_file() || state_dir.join("kv.json").is_file()
+fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> io::Result<bool> {
+    Ok(is_file(&config_dir.join("tui.json"))? || is_file(&state_dir.join("kv.json"))?)
 }
 
 fn prepare_plugin(
@@ -124,11 +123,7 @@ fn prepare_plugin(
 ) -> io::Result<PluginConfigEdit> {
     check_config_target(&config_path)?;
     let update_lock = lock_config_for_update(&config_path)?;
-    let content = if config_path.is_file() {
-        fs::read_to_string(&config_path)?
-    } else {
-        "{}\n".to_string()
-    };
+    let content = read_if_file(&config_path)?.unwrap_or_else(|| "{}\n".to_string());
     let root = parse_root(&content, &config_path)?;
     let object = root_object(&root, &config_path)?;
 
@@ -185,11 +180,9 @@ pub(crate) fn remove_cli_plugin(config_dir: &Path, plugin_spec: &str) -> io::Res
 fn remove_plugin(config_path: &Path, key: &str, plugin_spec: &str) -> io::Result<bool> {
     check_config_target(config_path)?;
     let _update_lock = lock_config_for_update(config_path)?;
-    if !config_path.is_file() {
+    let Some(content) = read_if_file(config_path)? else {
         return Ok(false);
-    }
-
-    let content = fs::read_to_string(config_path)?;
+    };
     let root = parse_root(&content, config_path)?;
     let object = root_object(&root, config_path)?;
     let Some(property) = object.get(key) else {
@@ -436,7 +429,7 @@ mod tests {
         let config_path = add_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition");
 
         assert_eq!(config_path, dir.join("tui.jsonc"));
-        assert!(!dir.join("tui.json").exists());
+        assert!(!dir.join("tui.json").try_exists().expect("stat tui.json"));
         assert_eq!(
             fs::read_to_string(legacy_config_path).expect("test precondition"),
             legacy_config
@@ -459,7 +452,7 @@ mod tests {
             remove_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition"),
             vec![config_path.clone()]
         );
-        assert!(config_path.is_file());
+        assert!(fs::metadata(&config_path).expect("stat config").is_file());
         assert_eq!(parse_config(&config_path), json!({}));
 
         fs::remove_dir_all(dir).expect("test precondition");
@@ -560,7 +553,7 @@ mod tests {
                 .expect("test precondition")
                 .is_none()
         );
-        assert!(!dir.join("cli.json").exists());
+        assert!(!dir.join("cli.json").try_exists().expect("stat cli.json"));
 
         fs::remove_file(dir.join("tui.json")).expect("test precondition");
         fs::write(state.join("kv.json"), "{}").expect("test precondition");
@@ -569,7 +562,7 @@ mod tests {
                 .expect("test precondition")
                 .is_none()
         );
-        assert!(!dir.join("cli.json").exists());
+        assert!(!dir.join("cli.json").try_exists().expect("stat cli.json"));
 
         fs::remove_dir_all(dir).expect("test precondition");
         fs::remove_dir_all(state).expect("test precondition");

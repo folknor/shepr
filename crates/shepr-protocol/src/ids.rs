@@ -179,19 +179,19 @@ impl std::ops::Deref for PublicTabId {
     }
 }
 
-/// Text that does not parse as a public tab id is kept verbatim, with no
-/// workspace and number 0: an id no server issues, which client tests use as
-/// an opaque label. Deserializing refuses such text.
+/// This crate's own tests spell ids as literals; the text must be canonical.
+/// Other crates have no conversion: they build ids with [`PublicTabId::new`]
+/// or parse them, so no id exists that a server would not issue.
+#[cfg(test)]
 impl From<&str> for PublicTabId {
     fn from(value: &str) -> Self {
-        value.parse().unwrap_or_else(|_| Self {
-            workspace_id: WorkspaceId::new(""),
-            number: 0,
-            encoded: value.to_owned(),
-        })
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("{value:?} is not a canonical public tab id"))
     }
 }
 
+#[cfg(test)]
 impl From<String> for PublicTabId {
     fn from(value: String) -> Self {
         value.as_str().into()
@@ -289,19 +289,19 @@ impl std::ops::Deref for PublicPaneId {
     }
 }
 
-/// Text that does not parse as a public pane id is kept verbatim, with no
-/// workspace and number 0: an id no server issues, which client tests use as
-/// an opaque label. Deserializing refuses such text.
+/// This crate's own tests spell ids as literals; the text must be canonical.
+/// Other crates have no conversion: they build ids with [`PublicPaneId::new`]
+/// or parse them, so no id exists that a server would not issue.
+#[cfg(test)]
 impl From<&str> for PublicPaneId {
     fn from(value: &str) -> Self {
-        value.parse().unwrap_or_else(|_| Self {
-            workspace_id: WorkspaceId::new(""),
-            number: 0,
-            encoded: value.to_owned(),
-        })
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("{value:?} is not a canonical public pane id"))
     }
 }
 
+#[cfg(test)]
 impl From<String> for PublicPaneId {
     fn from(value: String) -> Self {
         value.as_str().into()
@@ -366,8 +366,7 @@ impl TerminalId {
     pub fn alloc() -> Self {
         let micros = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_micros())
-            .unwrap_or(0);
+            .map_or(0, |duration| duration.as_micros());
         let counter = NEXT_TERMINAL_ID.fetch_add(1, Ordering::Relaxed);
         Self(format!("term_{micros:x}{counter:x}"))
     }

@@ -161,40 +161,39 @@ pub(super) fn render_mode_bar(
                         buffer.set_string(bar.right() - footer_width, bar.y, footer, base);
                     }
                     return Some(bar);
-                } else {
-                    let select = if copy_mode.selection.is_some() {
-                        "selecting"
-                    } else {
-                        "select"
-                    };
-                    let match_status = copy_mode
-                        .search_current_global
-                        .map(|current| format!(" {}/{}", current + 1, copy_mode.search_total))
-                        .or_else(|| (!copy_mode.search_query.is_empty()).then(|| " 0/0".to_owned()))
-                        .unwrap_or_default();
-                    let (exit_keys, exit_label) =
-                        if copy_mode.search_query.is_empty() && copy_mode.selection.is_none() {
-                            ("q/esc", " exit")
-                        } else {
-                            ("esc", " clear  q exit")
-                        };
-                    segments.extend([
-                        (" COPY ".to_owned(), mode_style),
-                        (" ".to_owned(), base),
-                        ("h/j/k/l w/b/e { }".to_owned(), key),
-                        (" move  ".to_owned(), base),
-                        ("/ ?".to_owned(), key),
-                        (" search  ".to_owned(), base),
-                        ("n/N".to_owned(), key),
-                        (format!(" repeat{match_status}  "), base),
-                        ("v/space".to_owned(), key),
-                        (format!(" {select}  "), base),
-                        ("y/enter".to_owned(), key),
-                        (" copy  ".to_owned(), base),
-                        (exit_keys.to_owned(), key),
-                        (exit_label.to_owned(), base),
-                    ]);
                 }
+                let select = if copy_mode.selection.is_some() {
+                    "selecting"
+                } else {
+                    "select"
+                };
+                let match_status = copy_mode
+                    .search_current_global
+                    .map(|current| format!(" {}/{}", current + 1, copy_mode.search_total))
+                    .or_else(|| (!copy_mode.search_query.is_empty()).then(|| " 0/0".to_owned()))
+                    .unwrap_or_default();
+                let (exit_keys, exit_label) =
+                    if copy_mode.search_query.is_empty() && copy_mode.selection.is_none() {
+                        ("q/esc", " exit")
+                    } else {
+                        ("esc", " clear  q exit")
+                    };
+                segments.extend([
+                    (" COPY ".to_owned(), mode_style),
+                    (" ".to_owned(), base),
+                    ("h/j/k/l w/b/e { }".to_owned(), key),
+                    (" move  ".to_owned(), base),
+                    ("/ ?".to_owned(), key),
+                    (" search  ".to_owned(), base),
+                    ("n/N".to_owned(), key),
+                    (format!(" repeat{match_status}  "), base),
+                    ("v/space".to_owned(), key),
+                    (format!(" {select}  "), base),
+                    ("y/enter".to_owned(), key),
+                    (" copy  ".to_owned(), base),
+                    (exit_keys.to_owned(), key),
+                    (exit_label.to_owned(), base),
+                ]);
             }
             // Terminal mode without an error returned at the top.
             ClientShellMode::Terminal => return None,

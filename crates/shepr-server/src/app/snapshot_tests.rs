@@ -36,12 +36,11 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
         .active_index()
         .and_then(|ws_idx| state.workspaces.get(ws_idx))
         .and_then(|workspace| workspace.tabs().get(workspace.active_tab))
-        .map(|tab| {
+        .map_or_default(|tab| {
             state
                 .pane_geometry_in(area)
                 .tab_panes(&tab.layout, tab.zoomed)
         })
-        .unwrap_or_default()
         .into_iter()
         .map(|mut pane| {
             pane.inner_rect = shepr_mux::workspace::pane_inner_rect(pane.rect, pane.borders);

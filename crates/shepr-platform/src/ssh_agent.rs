@@ -360,7 +360,7 @@ mod tests {
         drop(lease_a);
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
         drop(lease_b);
-        assert!(!stable.exists());
+        assert!(!stable.try_exists().expect("test precondition"));
         assert!(fs::symlink_metadata(&stable).is_ok());
         let _lease_b = registry.register(b.clone()).expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);

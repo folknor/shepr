@@ -121,13 +121,17 @@ mod tests {
     #[test]
     fn checked_history_reports_unavailable_instead_of_empty_after_poison() {
         let hub = EventHub::default();
-        assert!(
-            std::panic::catch_unwind(|| {
-                let _guard = hub.inner.lock().expect("test precondition");
-                panic!("poison the test event history");
-            })
-            .is_err()
-        );
+        // A thread that panics while holding the lock poisons it; its join
+        // reports the panic, so no catch_unwind is needed.
+        let poisoner = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _guard = hub.inner.lock().expect("test precondition");
+                    panic!("poison the test event history");
+                })
+                .join()
+        });
+        assert!(poisoner.is_err());
         assert_eq!(
             hub.events_after_checked(0),
             Err(EventHistoryError::Unavailable)

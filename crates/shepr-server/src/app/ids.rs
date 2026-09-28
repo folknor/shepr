@@ -188,14 +188,15 @@ mod tests {
             .expect("test precondition");
         app.state
             .public_pane_id_aliases
-            .insert(current_id.clone().into(), moved_pane);
+            .insert(current_id.parse().expect("test precondition"), moved_pane);
 
         assert_eq!(app.parse_pane_id(&current_id), Some((0, current_pane)));
         assert_eq!(app.parse_pane_id("old-workspace:p9"), None);
 
-        app.state
-            .public_pane_id_aliases
-            .insert("old-workspace:p9".into(), moved_pane);
+        app.state.public_pane_id_aliases.insert(
+            shepr_protocol::PublicPaneId::new("old-workspace", 9),
+            moved_pane,
+        );
         assert_eq!(app.parse_pane_id("old-workspace:p9"), Some((1, moved_pane)));
     }
 

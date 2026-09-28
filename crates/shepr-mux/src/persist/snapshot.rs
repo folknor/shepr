@@ -22,7 +22,7 @@ mod path_bytes {
     use serde::de::{SeqAccess, Visitor};
     use serde::{Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -33,7 +33,7 @@ mod path_bytes {
         }
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -206,6 +206,10 @@ pub struct PaneHistorySnapshot {
 
 /// Serializable BSP tree.
 #[derive(Serialize, Deserialize)]
+#[expect(
+    variant_size_differences,
+    reason = "a split is 23 bytes; boxing it would allocate per split to save that much per leaf"
+)]
 pub enum LayoutSnapshot {
     Pane(u32),
     Split {
@@ -266,8 +270,7 @@ fn capture_workspace(
     let identity_cwd = tabs
         .first()
         .and_then(|tab| tab.root_pane.and_then(|id| tab.panes.get(&id)))
-        .map(|pane| pane.cwd.clone())
-        .unwrap_or_else(|| ws.identity_cwd.clone());
+        .map_or_else(|| ws.identity_cwd.clone(), |pane| pane.cwd.clone());
     WorkspaceSnapshot {
         id: Some(ws.id.to_string()),
         custom_name: ws.custom_name.clone(),
@@ -310,15 +313,14 @@ fn capture_tab(
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
         let (agent_name, managed_agent_kind) = terminal
             .filter(|terminal| !terminal.managed_agent_launch_pending())
-            .map(|terminal| {
+            .map_or_default(|terminal| {
                 (
                     terminal.agent_name.clone(),
                     terminal
                         .managed_agent_kind()
                         .map(|agent| shepr_agent::detect::agent_label(agent).to_string()),
                 )
-            })
-            .unwrap_or_default();
+            });
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
         let agent_session = terminal.and_then(|terminal| {
             if let Some(authority) = terminal.hook_authority.as_ref()

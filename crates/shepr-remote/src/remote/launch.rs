@@ -8,6 +8,7 @@ pub fn run_remote(
     remote: RemoteLaunch,
     settings: super::SavedSshSettings,
     paths: &shepr_config::AppPaths,
+    operator: &mut dyn Operator,
 ) -> io::Result<()> {
     let session_name = paths.session_id().display_name().to_owned();
     let runtime_dir = paths.xdg_runtime_dir();
@@ -24,9 +25,9 @@ pub fn run_remote(
         paths,
     )?;
     let prepared_remote = prepare_remote_shepr(&remote_ssh)?;
-    ensure_remote_server_ready(&remote_ssh, &prepared_remote.remote_shepr)?;
+    ensure_remote_server_ready(operator, &remote_ssh, &prepared_remote.remote_shepr)?;
 
-    let _bridge = SshStdioBridge::start(
+    let bridge = SshStdioBridge::start(
         remote.target,
         &prepared_remote.remote_shepr,
         local_socket.clone(),
@@ -35,7 +36,19 @@ pub fn run_remote(
         false,
     )?;
 
-    run_client_process(&local_socket, &reattach_command, remote.keybindings)
+    // The bridge reports its own failure (typed, so the binary's hints can
+    // classify it) instead of printing it under the client's TUI. When the
+    // client exits unsuccessfully, that failure is the more useful cause.
+    let launch_dir = paths
+        .current_dir()
+        .unwrap_or_else(|| std::path::Path::new("/"));
+    run_client_process(
+        &local_socket,
+        &reattach_command,
+        remote.keybindings,
+        launch_dir,
+    )
+    .map_err(|client_error| bridge.reported_failure().unwrap_or(client_error))
 }
 
 pub fn check_saved_ssh(
@@ -69,6 +82,7 @@ pub fn prepare_saved_ssh(
     target: &SshTarget,
     session_name: &str,
     settings: super::SavedSshSettings,
+    operator: &mut dyn Operator,
 ) -> io::Result<RemoteExecutable> {
     shepr_api::session::validate_name(session_name)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -79,7 +93,7 @@ pub fn prepare_saved_ssh(
         paths,
     )?;
     let prepared = prepare_remote_shepr(&ssh)?;
-    ensure_remote_server_ready(&ssh, &prepared.remote_shepr)?;
+    ensure_remote_server_ready(operator, &ssh, &prepared.remote_shepr)?;
 
     // The bridge already owns daemon startup. EOF closes only this temporary attachment,
     // leaving the named server running even when no local TUI is open yet.
@@ -323,13 +337,14 @@ mod shell_command_tests {
         .expect("fake executable path is valid");
         let script = posix_remote_output_command(&executable.api_bridge_check_command("agents"));
         // host-program-ok: the generated remote script is the subject, run as sshd runs it
-        let mut child = std::process::Command::new("/bin/sh")
-            .arg("-s")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start POSIX shell");
+        let mut child =
+            shepr_test_support::command_in_scratch("/bin/sh", "api-forwarding-probe-sh")
+                .arg("-s")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start POSIX shell");
         child
             .stdin
             .take()

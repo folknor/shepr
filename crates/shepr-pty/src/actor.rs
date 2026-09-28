@@ -903,12 +903,15 @@ impl PtyIoActorRunner {
                 // `PtyIoActorHandle::response_order`.
                 let response_order = Arc::clone(&self.response_order);
                 let _order = crate::locks::lock_auxiliary(&response_order);
-                // A panic in the terminal core must not unwind out of the
-                // actor thread: that would skip the reader-exit report and
-                // leave the pane dead with nobody told. Catching it costs
-                // nothing on the non-panicking path.
                 let on_read = &mut self.on_read;
                 let bytes = &buf[..n];
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "a panic in the terminal core must not unwind out of the actor \
+                              thread: that would skip the reader-exit report and leave the pane \
+                              dead with nobody told. The panic is logged and the pane closed. \
+                              Catching it costs nothing on the non-panicking path"
+                )]
                 let result =
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_read(bytes)))
                     {

@@ -248,7 +248,7 @@ mod tests {
     use super::*;
     use std::io::{BufRead, Read};
     use std::os::unix::net::UnixStream;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, Stdio};
     use std::sync::Mutex;
 
     #[tokio::test]
@@ -396,7 +396,7 @@ mod tests {
     async fn delay_lock_is_held_until_checkpoint_and_retaken_after_cancellation() {
         for already_preparing in [false, true] {
             let mut bus = PrivateBus(
-                Command::new("dbus-daemon")
+                shepr_test_support::command_in_scratch("dbus-daemon", "private-dbus")
                     .args(["--session", "--nofork", "--print-address=1"])
                     .stdout(Stdio::piped())
                     .spawn()

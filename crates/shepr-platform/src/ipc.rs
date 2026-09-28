@@ -379,9 +379,10 @@ pub fn peer_is_same_user(stream: &LocalStream) -> io::Result<bool> {
         uid: 0,
         gid: 0,
     };
-    // `size_of::<ucred>()` is a small compile-time constant, well within
-    // `socklen_t` (u32) range, so this cast never truncates.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "`size_of::<ucred>()` is a small compile-time constant, well within `socklen_t` (u32) range, so this cast never truncates"
+    )]
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: `cred` is a valid, exclusively borrowed `ucred` and `len` holds
     // its exact size, which is what `SO_PEERCRED` writes; `fd` stays open for

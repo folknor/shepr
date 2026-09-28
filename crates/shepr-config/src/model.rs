@@ -737,8 +737,7 @@ impl Default for UiConfig {
 impl UiConfig {
     pub fn mouse_scroll_lines(&self) -> usize {
         self.mouse_scroll_lines
-            .map(NonZeroUsize::get)
-            .unwrap_or(DEFAULT_MOUSE_SCROLL_LINES)
+            .map_or(DEFAULT_MOUSE_SCROLL_LINES, NonZeroUsize::get)
     }
 
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {

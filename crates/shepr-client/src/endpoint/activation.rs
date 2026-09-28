@@ -277,6 +277,10 @@ impl PendingEndpointActivation {
         match &self.phase {
             ActivationPhase::ReleasingSource {
                 request_id: expected,
+            }
+            | ActivationPhase::RestoringSource {
+                request_id: expected,
+                ..
             } => {
                 endpoint_matches(&self.source, endpoint_id, generation, boot_id)
                     && expected == request_id
@@ -293,13 +297,6 @@ impl PendingEndpointActivation {
                 request_id: expected,
             } => {
                 endpoint_matches(&self.target, endpoint_id, generation, boot_id)
-                    && expected == request_id
-            }
-            ActivationPhase::RestoringSource {
-                request_id: expected,
-                ..
-            } => {
-                endpoint_matches(&self.source, endpoint_id, generation, boot_id)
                     && expected == request_id
             }
             ActivationPhase::SynchronizingPresentation {
@@ -458,20 +455,8 @@ impl PendingEndpointActivation {
             ActivationPhase::RestoringSource {
                 acknowledged_revision,
                 ..
-            } => {
-                let revision = match surface_set_revision(&result, true) {
-                    Ok(revision) => revision,
-                    Err(message) => {
-                        return SurfaceActivationProgress::Rejected {
-                            message,
-                            source_release_rejected: false,
-                        };
-                    }
-                };
-                *acknowledged_revision = Some(revision);
-                self.progress()
             }
-            ActivationPhase::SynchronizingPresentation {
+            | ActivationPhase::SynchronizingPresentation {
                 acknowledged_revision,
                 ..
             } => {
@@ -789,7 +774,9 @@ impl PendingEndpointActivation {
             }
         }
         match self.phase {
-            ActivationPhase::ReleasingSource { .. } => ActivationRollback::Unavailable(error),
+            ActivationPhase::ReleasingSource { .. } | ActivationPhase::RestoringSource { .. } => {
+                ActivationRollback::Unavailable(error)
+            }
             ActivationPhase::ActivatingTarget { .. } => {
                 match self.start_target_release(endpoints) {
                     Ok(()) => ActivationRollback::Pending,
@@ -799,7 +786,6 @@ impl PendingEndpointActivation {
                 }
             }
             ActivationPhase::ReleasingTargetForRollback { .. } => ActivationRollback::Pending,
-            ActivationPhase::RestoringSource { .. } => ActivationRollback::Unavailable(error),
             ActivationPhase::SynchronizingPresentation { ref lease, .. }
             | ActivationPhase::AwaitingPresentationEffects { ref lease, .. } => {
                 if lease.endpoint_id == self.target.endpoint_id {
@@ -980,9 +966,15 @@ impl PendingEndpointActivation {
         {
             return Err("endpoint became unavailable during activation".into());
         }
-        let activated = shell.activate_endpoint_projection(&lease.endpoint_id);
-        debug_assert!(activated, "preflighted endpoint projection must activate");
-        debug_assert!(shell.endpoint_is_active(endpoints.active_id()));
+        // The preflight above makes both of these hold; if either does not, the handoff is
+        // rolled back like any other activation failure rather than presenting a surface
+        // under the wrong projection.
+        if !shell.activate_endpoint_projection(&lease.endpoint_id) {
+            return Err("preflighted endpoint projection did not activate".into());
+        }
+        if !shell.endpoint_is_active(endpoints.active_id()) {
+            return Err("activated endpoint projection is not the active endpoint".into());
+        }
         shell.set_pane_surface(surface);
         self.start_presentation_sync(endpoints, &lease, completion)?;
         Ok(ActivationCompletion::AwaitingPresentationSync {

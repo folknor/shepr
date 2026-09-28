@@ -71,7 +71,7 @@ pub enum SessionError {
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidName(message) => f.write_str(message),
+            Self::InvalidName(message) | Self::Protocol(message) => f.write_str(message),
             Self::NotRunning {
                 label,
                 path,
@@ -113,7 +113,6 @@ impl std::fmt::Display for SessionError {
                 "session {name} does not match an exact session name; use the spelling shown by `shepr session list`"
             ),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
-            Self::Protocol(message) => f.write_str(message),
             Self::BuildMismatch {
                 label,
                 running,
@@ -797,12 +796,11 @@ mod tests {
                         if let Ok(reader_stream) = stream.try_clone() {
                             let mut request = String::new();
                             match BufReader::new(reader_stream).read_line(&mut request) {
-                                Ok(0) => continue,
+                                Ok(0) | Err(_) => continue,
                                 Ok(_) if request.contains("server.stop") => {
                                     held_streams.push(stream);
                                 }
                                 Ok(_) => {}
-                                Err(_) => continue,
                             }
                         }
                     }
@@ -1257,10 +1255,8 @@ mod tests {
                         if let Ok(reader_stream) = stream.try_clone() {
                             let mut request = String::new();
                             match BufReader::new(reader_stream).read_line(&mut request) {
-                                Ok(0) => continue,
-                                Ok(_) if request.trim().is_empty() => continue,
-                                Ok(_) => {}
-                                Err(_) => continue,
+                                Ok(_) if !request.trim().is_empty() => {}
+                                _ => continue,
                             }
                         }
                         let _ = stream.write_all(b"{\"id\":\"cli:session:stop\",\"result\":{}}\n");

@@ -26,7 +26,7 @@ use super::{ClientLoopEvent, ParsedHostInput};
 /// These bytes are keystrokes and paste contents (passwords included). Neither this loop
 /// nor the client loop that consumes them logs them; keep it that way, and log sizes or
 /// errors only (the oversized-paste warning in `attach::forward_input` logs the length).
-pub fn stdin_reader_loop(
+pub(crate) fn stdin_reader_loop(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
     host_color_query_sent: bool,
@@ -148,7 +148,6 @@ fn consume_input_bytes(
     )
 }
 
-#[allow(clippy::too_many_arguments)] // The reader owns these independent input states.
 fn flush_idle_input<R: AsRawFd>(
     reader: &R,
     framer: &mut super::host_replies::HostInputFramer,

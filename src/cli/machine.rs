@@ -3,6 +3,7 @@ use serde::Serialize;
 
 use shepr_remote::machine::{EndpointCatalog, SshMetadataCache, SshTarget};
 
+use super::CliError;
 use super::matches::{flag, required, string};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,13 +122,9 @@ fn status(
 ) -> super::CliResult<i32> {
     let catalog = load_catalog(paths)?;
     let profiles = match selector {
-        Some(selector) => match super::target::resolve_machine(&catalog.ssh, selector) {
-            Ok(profile) => vec![profile],
-            Err(error) => {
-                eprintln!("{error}");
-                return Ok(2);
-            }
-        },
+        Some(selector) => {
+            vec![super::target::resolve_machine(&catalog.ssh, selector).map_err(CliError::Usage)?]
+        }
         None => catalog.ssh.iter().collect(),
     };
     let rows = profiles
@@ -185,24 +182,20 @@ fn reconnect(
 ) -> super::CliResult<i32> {
     use std::io::IsTerminal;
     let catalog = load_catalog(paths)?;
-    let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
-        Ok(profile) => profile,
-        Err(error) => {
-            eprintln!("{error}");
-            return Ok(2);
-        }
-    };
+    let profile =
+        super::target::resolve_machine(&catalog.ssh, selector).map_err(CliError::Usage)?;
     if !std::io::stdin().is_terminal() {
-        eprintln!(
+        return Err(CliError::Usage(
             "reconnect requires an interactive terminal; use shepr machine status for noninteractive checks"
-        );
-        return Ok(2);
+                .into(),
+        ));
     }
     let mut authentication =
         shepr_remote::ssh_authentication_command(paths, &profile.target, settings)?;
     if !authentication.command.status()?.success() {
-        eprintln!("SSH authentication failed; the saved machine was not changed.");
-        return Ok(1);
+        return Err(failed(
+            "SSH authentication failed; the saved machine was not changed.",
+        ));
     }
     shepr_remote::check_saved_ssh(paths, &profile.target, &profile.session, settings)?;
     println!(
@@ -239,45 +232,34 @@ fn add(
         label,
         session,
     } = args;
-    let target = match SshTarget::parse(target) {
-        Ok(target) => target,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return Ok(2);
-        }
-    };
+    let target = SshTarget::parse(target).map_err(CliError::Usage)?;
     let mut catalog = load_catalog(paths)?;
     // This preflight validates fields and capacity before remote setup can wait. Its ID is
     // intentionally discarded; IDs identify saved rows. Duplicate labels are permitted,
     // and selectors report ambiguity so callers can use the profile ID.
-    match catalog.add_ssh(label.clone(), target.clone(), session.clone()) {
-        Ok(_) => {}
-        Err(error) => {
-            eprintln!("error: {error}");
-            return Ok(2);
-        }
-    }
-    let executable = match shepr_remote::prepare_saved_ssh(paths, &target, &session, settings) {
-        Ok(executable) => executable,
-        Err(error) => {
-            eprintln!("error: {error}; machine was not saved");
-            shepr_remote::print_saved_ssh_error_hint(&error, &target);
-            return Ok(1);
-        }
-    };
+    catalog
+        .add_ssh(label.clone(), target.clone(), session.clone())
+        .map_err(CliError::Usage)?;
+    let executable = shepr_remote::prepare_saved_ssh(
+        paths,
+        &target,
+        &session,
+        settings,
+        &mut super::operator::TerminalOperator,
+    )
+    .map_err(|error| CliError::Failed {
+        message: format!("{error}; machine was not saved"),
+        hints: shepr_remote::saved_ssh_error_hint(&error, &target),
+    })?;
     // Setup can wait for human approval. Do not overwrite catalog edits made meanwhile.
     let mut catalog = load_catalog(paths).map_err(|error| {
         std::io::Error::other(format!(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    let id = match catalog.add_ssh(label, target.clone(), &session) {
-        Ok(id) => id,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return Ok(2);
-        }
-    };
+    let id = catalog
+        .add_ssh(label, target.clone(), &session)
+        .map_err(CliError::Usage)?;
     store_catalog(&mut catalog).map_err(|error| {
         std::io::Error::other(format!(
             "remote prepared, but machine was not saved: {error}"
@@ -300,20 +282,14 @@ fn saved_ssh_settings(
 
 fn remove(paths: &shepr_config::AppPaths, selector: &str) -> super::CliResult<i32> {
     let mut catalog = load_catalog(paths)?;
-    let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
-        Ok(profile) => profile,
-        Err(error) => {
-            eprintln!("{error}");
-            return Ok(2);
-        }
-    };
+    let profile =
+        super::target::resolve_machine(&catalog.ssh, selector).map_err(CliError::Usage)?;
     let id = profile.id.clone();
     let was_selected = catalog.load_selection().as_ref() == Some(&id);
     let metadata_cache =
         SshMetadataCache::new(paths, &id, profile.target.as_str(), &profile.session);
     if !catalog.remove_ssh(&id) {
-        eprintln!("machine profile {id} was not found");
-        return Ok(1);
+        return Err(failed(&format!("machine profile {id} was not found")));
     }
     store_catalog(&mut catalog)?;
     metadata_cache.invalidate();
@@ -325,6 +301,14 @@ fn remove(paths: &shepr_config::AppPaths, selector: &str) -> super::CliResult<i3
     }
     println!("Removed SSH machine {id}.");
     Ok(0)
+}
+
+/// A command failure reported as prose, exit status 1.
+fn failed(message: &str) -> CliError {
+    CliError::Failed {
+        message: message.to_owned(),
+        hints: Vec::new(),
+    }
 }
 
 fn load_catalog(paths: &shepr_config::AppPaths) -> super::CliResult<EndpointCatalog> {

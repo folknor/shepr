@@ -16,6 +16,8 @@ use crate::agent::{KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER};
 use shepr_core::env::EnvVar;
 use shepr_test_support::IsolatedEnv;
 
+use super::test_support::StatPath;
+
 #[test]
 fn extract_version_triple_parses_common_outputs() {
     assert_eq!(extract_version_triple("0.14.0"), Some((0, 14, 0)));
@@ -174,7 +176,7 @@ fn install_pi_creates_extensions_dir_when_agent_dir_exists() {
         path,
         agent_dir.join("extensions").join(PI_EXTENSION_INSTALL_NAME)
     );
-    assert!(path.is_file());
+    assert!(path.stat_is_file());
 
     let _ = fs::remove_dir_all(base);
 }
@@ -278,8 +280,8 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
         installed.extension_path,
         omp_dir.join("extensions").join(OMP_EXTENSION_INSTALL_NAME)
     );
-    assert!(pi_extension.is_file());
-    assert!(installed.extension_path.is_file());
+    assert!(pi_extension.stat_is_file());
+    assert!(installed.extension_path.stat_is_file());
 
     clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
@@ -301,7 +303,7 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
         installed.extension_path,
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
-    assert!(ext_dir.is_dir());
+    assert!(ext_dir.stat_is_dir());
 
     let _ = fs::remove_dir_all(base);
 }
@@ -327,7 +329,7 @@ fn uninstall_omp_removes_embedded_extension_when_present() {
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
     assert!(result.removed_extension);
-    assert!(!result.extension_path.exists());
+    assert!(!result.extension_path.try_exists().expect("stat"));
 
     let _ = fs::remove_dir_all(base);
 }
@@ -367,7 +369,7 @@ fn uninstall_pi_removes_embedded_extension_when_present() {
         ext_dir.join(PI_EXTENSION_INSTALL_NAME)
     );
     assert!(result.removed_extension);
-    assert!(!result.extension_path.exists());
+    assert!(!result.extension_path.try_exists().expect("stat"));
 
     let _ = fs::remove_dir_all(base);
 }
@@ -567,7 +569,7 @@ fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
 
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
-    assert!(!result.hook_path.exists());
+    assert!(!result.hook_path.try_exists().expect("stat"));
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["hooks"]
             .as_array()
@@ -770,7 +772,7 @@ fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
 
     assert!(result.removed_hook_file);
     assert!(result.updated_hooks);
-    assert!(!result.hook_path.exists());
+    assert!(!result.hook_path.try_exists().expect("stat"));
     assert_eq!(
         hooks["hooks"]["SessionStart"][0]["hooks"]
             .as_array()
@@ -948,7 +950,7 @@ fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
 
     assert!(result.removed_hook_file);
     assert!(result.updated_config);
-    assert!(!result.hook_path.exists());
+    assert!(!result.hook_path.try_exists().expect("stat"));
     assert!(config.contains("default_model = \"moonshot\""));
     assert!(config.contains("command = \"echo keep\""));
     assert!(!config.contains(KIMI_CONFIG_BLOCK_BEGIN));
@@ -1100,7 +1102,7 @@ fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
 
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
-    assert!(!result.hook_path.exists());
+    assert!(!result.hook_path.try_exists().expect("stat"));
     assert_eq!(
         settings["hooks"]["SessionStart"]
             .as_array()
@@ -1250,7 +1252,7 @@ fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
 
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
-    assert!(!hook_path.exists());
+    assert!(!hook_path.try_exists().expect("stat"));
     assert_eq!(
         settings["hooks"]["UserPromptSubmit"]
             .as_array()
@@ -1407,7 +1409,7 @@ fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
 
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
-    assert!(!result.hook_path.exists());
+    assert!(!result.hook_path.try_exists().expect("stat"));
     assert!(settings["hooks"].get("SessionStart").is_none());
     assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "Edit");
 
@@ -1498,7 +1500,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
             install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
         assert_eq!(installed.tui_config_path, json_path);
         assert!(installed.cli_config_path.is_none());
-        assert!(!dir.join("tui.jsonc").exists());
+        assert!(!dir.join("tui.jsonc").try_exists().expect("stat"));
         assert_eq!(
             fs::read_to_string(&json_path).expect("test precondition"),
             original
@@ -1509,6 +1511,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
                 installed.plugin_path,
                 OPENCODE_INTEGRATION_VERSION,
             )
+            .expect("stat plugin")
             .state,
             IntegrationStatusKind::Current
         );
@@ -1550,8 +1553,8 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
             .is_empty()
     );
     assert_eq!(fs::read_link(&dir).expect("test precondition"), dotfiles);
-    assert!(!result.plugin_path.exists());
-    assert!(!result.tui_plugin_path.exists());
+    assert!(!result.plugin_path.try_exists().expect("stat"));
+    assert!(!result.tui_plugin_path.try_exists().expect("stat"));
     fs::remove_dir_all(base).expect("test precondition");
 }
 
@@ -1568,12 +1571,12 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
     let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert!(installed.cli_config_path.is_none());
-    assert!(!opencode_dir.join("cli.json").exists());
+    assert!(!opencode_dir.join("cli.json").try_exists().expect("stat"));
     assert!(
         opencode_dir
             .join(OPENCODE_V2_TUI_PLUGIN_DIR)
             .join("tui.js")
-            .is_file()
+            .stat_is_file()
     );
 
     let _ = fs::remove_dir_all(base);
@@ -1601,6 +1604,7 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
             installed.plugin_path.clone(),
             OPENCODE_INTEGRATION_VERSION,
         )
+        .expect("stat plugin")
         .state
     };
     assert_eq!(status(), IntegrationStatusKind::Current);
@@ -1617,7 +1621,7 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
     assert_eq!(status(), IntegrationStatusKind::Outdated);
     install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(!entry.exists());
+    assert!(!entry.try_exists().expect("stat"));
     assert_eq!(
         serde_json::from_str::<Value>(&fs::read_to_string(cli).expect("test precondition"))
             .expect("test precondition"),
@@ -1661,8 +1665,12 @@ fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
         shepr_platform::config_file_link_count(&config).expect("test precondition"),
         2
     );
-    assert!(!dir.join("tui.jsonc").exists());
-    assert!(!dir.join(OPENCODE_V2_TUI_PLUGIN_DIR).exists());
+    assert!(!dir.join("tui.jsonc").try_exists().expect("stat"));
+    assert!(
+        !dir.join(OPENCODE_V2_TUI_PLUGIN_DIR)
+            .try_exists()
+            .expect("stat")
+    );
     fs::remove_dir_all(base).expect("test precondition");
 }
 
@@ -1707,8 +1715,12 @@ fn opencode_json_config_validation_precedes_asset_changes() {
         fs::read_to_string(&alias).expect("test precondition"),
         original
     );
-    assert!(!dir.join("tui.jsonc").exists());
-    assert!(!dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME).exists());
+    assert!(!dir.join("tui.jsonc").try_exists().expect("stat"));
+    assert!(
+        !dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME)
+            .try_exists()
+            .expect("stat")
+    );
     fs::remove_dir_all(base).expect("test precondition");
 }
 
@@ -1728,7 +1740,7 @@ fn opencode_invalid_cli_config_does_not_overwrite_existing_plugins() {
         fs::read_to_string(plugin).expect("test precondition"),
         "previous integration"
     );
-    assert!(!dir.join("tui.jsonc").exists());
+    assert!(!dir.join("tui.jsonc").try_exists().expect("stat"));
     let _ = fs::remove_dir_all(base);
 }
 
@@ -1747,6 +1759,7 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
             installed.plugin_path.clone(),
             OPENCODE_INTEGRATION_VERSION,
         )
+        .expect("stat plugin")
         .state
     };
 
@@ -1779,9 +1792,9 @@ fn uninstall_opencode_removes_plugins_and_managed_tui_config_entry() {
         result.updated_tui_configs,
         vec![installed.tui_config_path.clone()]
     );
-    assert!(!result.plugin_path.exists());
-    assert!(!result.tui_plugin_path.exists());
-    assert!(installed.tui_config_path.exists());
+    assert!(!result.plugin_path.try_exists().expect("stat"));
+    assert!(!result.tui_plugin_path.try_exists().expect("stat"));
+    assert!(installed.tui_config_path.try_exists().expect("stat"));
     let tui_config: Value = serde_json::from_str(
         &fs::read_to_string(&installed.tui_config_path).expect("test precondition"),
     )
@@ -1811,9 +1824,15 @@ fn install_opencode_invalid_tui_config_does_not_write_plugins() {
         !opencode_dir
             .join("plugins")
             .join(OPENCODE_PLUGIN_INSTALL_NAME)
-            .exists()
+            .try_exists()
+            .expect("stat")
     );
-    assert!(!opencode_dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME).exists());
+    assert!(
+        !opencode_dir
+            .join(OPENCODE_TUI_PLUGIN_INSTALL_NAME)
+            .try_exists()
+            .expect("stat")
+    );
 
     let _ = fs::remove_dir_all(base);
 }
@@ -1844,8 +1863,8 @@ fn uninstall_opencode_removes_plugins_when_tui_config_is_invalid() {
         .to_string();
 
     assert!(err.contains("failed to parse OpenCode TUI config"));
-    assert!(!plugin_path.exists());
-    assert!(!tui_plugin_path.exists());
+    assert!(!plugin_path.try_exists().expect("stat"));
+    assert!(!tui_plugin_path.try_exists().expect("stat"));
     assert_eq!(
         serde_json::from_str::<Value>(&fs::read_to_string(json_path).expect("test precondition"))
             .expect("test precondition"),
@@ -1910,7 +1929,7 @@ fn uninstall_kilo_removes_plugin_when_present() {
     let result = uninstall_kilo(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert!(result.removed_plugin);
-    assert!(!result.plugin_path.exists());
+    assert!(!result.plugin_path.try_exists().expect("stat"));
 
     let _ = fs::remove_dir_all(base);
 }
@@ -2063,8 +2082,7 @@ fn omp_handler(event: &str) -> &'static str {
     let rest = &OMP_EXTENSION_ASSET[start..];
     let end = rest[1..]
         .find("\n\n  pi.")
-        .map(|offset| offset + 1)
-        .unwrap_or(rest.len());
+        .map_or(rest.len(), |offset| offset + 1);
     &rest[..end]
 }
 
@@ -2206,7 +2224,7 @@ fn install_qodercli_writes_hook_and_updates_settings() {
         qoder_dir.join("hooks").join(QODERCLI_HOOK_INSTALL_NAME)
     );
     assert_eq!(installed.settings_path, qoder_dir.join("settings.json"));
-    assert!(installed.hook_path.is_file());
+    assert!(installed.hook_path.stat_is_file());
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(&installed.settings_path).expect("test precondition"),
@@ -2370,7 +2388,7 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
         qwen_dir.join("hooks").join(QWEN_HOOK_INSTALL_NAME)
     );
     assert_eq!(installed.settings_path, qwen_dir.join("settings.json"));
-    assert!(installed.hook_path.is_file());
+    assert!(installed.hook_path.stat_is_file());
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(&installed.settings_path).expect("test precondition"),
@@ -2516,7 +2534,7 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
     let result = uninstall_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
-    assert!(!installed.hook_path.exists());
+    assert!(!installed.hook_path.try_exists().expect("stat"));
     let settings: Value =
         serde_json::from_str(&fs::read_to_string(&settings_path).expect("test precondition"))
             .expect("test precondition");
@@ -2534,7 +2552,7 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
 fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     use shepr_test_support::fixture::{self, Step};
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2553,7 +2571,7 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     );
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
-    let mut child = Command::new("sh")
+    let mut child = shepr_test_support::command_in_scratch("sh", "letta-session-hook")
         .arg(&installed.hook_path)
         .arg("session")
         .env("SHEPR_ENV", "1")
@@ -2593,13 +2611,14 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
 /// Runs the bundled Kimi hook with `payload` on stdin and returns the request
 /// line it sent to a stand-in server socket, or `None` when it sent nothing.
 /// The hook needs python3; callers skip when [`python3_available`] is false.
-// The `expect` calls below are test preconditions (fixture setup), not the
-// `None` path this function's return type communicates to callers.
-#[allow(clippy::unwrap_in_result)]
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "the expect calls are test preconditions (fixture setup), not the None path this function's return type communicates to callers"
+)]
 fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     fs::create_dir_all(base).expect("test precondition");
     let hook = base.join(KIMI_HOOK_INSTALL_NAME);
@@ -2609,7 +2628,7 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
     listener.set_nonblocking(true).expect("test precondition");
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
-    let mut child = Command::new("sh")
+    let mut child = shepr_test_support::command_in_scratch("sh", "kimi-hook")
         .arg(&hook)
         .arg(action)
         .env("SHEPR_ENV", "1")
@@ -2642,7 +2661,7 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
 
 fn python3_available() -> bool {
     // host-program-ok: the shipped python hook assets are the subject
-    std::process::Command::new("python3")
+    shepr_test_support::command_in_scratch("python3", "python3-probe")
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -2686,12 +2705,10 @@ fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
 /// Runs a session-only python hook asset with `payload` on stdin. Returns the
 /// hook's exit success, its stderr, and the request it sent to a stand-in
 /// server socket (if any).
-// The `expect` calls below are test preconditions (fixture setup).
-#[allow(clippy::unwrap_in_result)]
 fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>, Option<String>) {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     fs::create_dir_all(base).expect("test precondition");
     let hook = base.join("hook.sh");
@@ -2701,7 +2718,7 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
     listener.set_nonblocking(true).expect("test precondition");
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
-    let mut child = Command::new("sh")
+    let mut child = shepr_test_support::command_in_scratch("sh", "session-hook")
         .arg(&hook)
         .arg("session")
         .env("SHEPR_ENV", "1")
@@ -2879,7 +2896,8 @@ fn install_letta_does_not_publish_hook_when_settings_are_invalid() {
         !letta_dir
             .join("hooks")
             .join(LETTA_HOOK_INSTALL_NAME)
-            .exists()
+            .try_exists()
+            .expect("stat")
     );
 
     let _ = fs::remove_dir_all(base);
@@ -2935,7 +2953,8 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
         !letta_dir
             .join("hooks")
             .join(LETTA_HOOK_INSTALL_NAME)
-            .exists(),
+            .try_exists()
+            .expect("stat"),
         "a rejected settings target must not leave a hook behind"
     );
     assert!(uninstall_letta(&AgentIntegrationPaths::resolve()).is_err());
@@ -3053,7 +3072,7 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     let result = uninstall_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.updated_hooks);
-    assert!(!cursor_dir.join(CURSOR_HOOK_INSTALL_NAME).is_file());
+    assert!(!cursor_dir.join(CURSOR_HOOK_INSTALL_NAME).stat_is_file());
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(cursor_dir.join("hooks.json")).expect("test precondition"),
@@ -3319,7 +3338,7 @@ fn install_mastracode_refuses_when_config_dir_missing() {
         err.contains("mastracode config directory not found"),
         "{err}"
     );
-    assert!(!base.join(".mastracode").exists());
+    assert!(!base.join(".mastracode").try_exists().expect("stat"));
 
     let _ = fs::remove_dir_all(base);
 }
@@ -3355,7 +3374,7 @@ fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
             .join(".mastracode")
             .join("hooks")
             .join(MASTRACODE_HOOK_INSTALL_NAME)
-            .is_file()
+            .stat_is_file()
     );
 
     let hooks_file: Value =
@@ -3419,8 +3438,8 @@ fn uninstall_grok_removes_files() {
     let result = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.removed_config_file);
-    assert!(!result.hook_path.is_file());
-    assert!(!result.config_path.is_file());
+    assert!(!result.hook_path.stat_is_file());
+    assert!(!result.config_path.stat_is_file());
 
     // Uninstalling again is a no-op.
     let again = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -3659,7 +3678,10 @@ fn install_antigravity_cli_errors_when_config_dir_missing() {
     let err =
         install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect_err("test precondition");
     assert!(err.to_string().contains("install antigravity cli first"));
-    assert!(!agy_dir.exists(), "install must not create the config dir");
+    assert!(
+        !agy_dir.try_exists().expect("stat"),
+        "install must not create the config dir"
+    );
 
     env.remove(EnvVar::AntigravityCliConfigDir);
     let _ = fs::remove_dir_all(base);
@@ -3800,13 +3822,13 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
     // Install first
     let installed =
         install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(installed.hook_path.is_file());
+    assert!(installed.hook_path.stat_is_file());
 
     // Uninstall
     let result =
         uninstall_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
-    assert!(!installed.hook_path.is_file());
+    assert!(!installed.hook_path.stat_is_file());
     assert!(result.updated_hooks);
 
     let hooks_file: Value = serde_json::from_str(
@@ -3892,7 +3914,13 @@ fn install_kimi_leaves_a_damaged_config_and_no_hook() {
         fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition"),
         damaged
     );
-    assert!(!kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME).exists());
+    assert!(
+        !kimi_dir
+            .join("hooks")
+            .join(KIMI_HOOK_INSTALL_NAME)
+            .try_exists()
+            .expect("stat")
+    );
 
     clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
@@ -3967,7 +3995,7 @@ const ASSET_INTERNAL_SHEPR_NAMES: &[&str] = &[
 fn collect_asset_files(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("read an asset directory") {
         let path = entry.expect("read an asset directory entry").path();
-        if path.is_dir() {
+        if path.stat_is_dir() {
             collect_asset_files(&path, files);
         } else {
             files.push(path);

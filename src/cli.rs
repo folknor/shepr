@@ -22,6 +22,7 @@ mod error;
 mod integration;
 mod machine;
 mod matches;
+pub(crate) mod operator;
 mod pane;
 mod runtime;
 mod server;
@@ -32,8 +33,8 @@ mod tab;
 mod target;
 mod workspace;
 
-pub(crate) use error::CliError;
 use error::SessionCliError;
+pub(crate) use error::{CliError, finish_client, print_notice};
 pub(crate) type CliResult<T> = Result<T, CliError>;
 
 pub(crate) fn parse_token_assignment(raw: &str) -> Result<(String, Option<String>), String> {
@@ -634,8 +635,12 @@ fn run_terminal_command(
                 Some(config) => config,
                 None => load_validated_config(context)?,
             };
-            shepr_client::run_terminal_attach(&config, context, terminal_id, takeover)?;
-            Ok(0)
+            finish_client(shepr_client::run_terminal_attach(
+                &config,
+                context,
+                terminal_id,
+                takeover,
+            ))
         }
         TerminalCommand::TitleSet { title } => print_response(&send_request(
             context,

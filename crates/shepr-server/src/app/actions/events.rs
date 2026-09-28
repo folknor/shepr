@@ -206,9 +206,13 @@ impl AppState {
                     .collect()
                 }
             }
-            // Host-local effects are intercepted by HeadlessServer and forwarded to the
-            // foreground client; they never touch AppState. Kept for AppEvent exhaustiveness.
-            AppEvent::ClipboardWrite { .. } => Vec::new(),
+            // Handled before this match, which keeps them for AppEvent
+            // exhaustiveness: a clipboard write is a host-local effect the
+            // HeadlessServer forwards to the foreground client, and git and
+            // tab-bar results are applied by the App's internal-event handler.
+            AppEvent::ClipboardWrite { .. }
+            | AppEvent::GitStatusRefreshed { .. }
+            | AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
                 // The PTY reader thread that publishes this event has already
                 // checked that the path is an existing directory. Repeating
@@ -233,15 +237,6 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::GitStatusRefreshed {
-                results,
-                cache_updates,
-            } => {
-                let _ = results;
-                let _ = cache_updates;
-                Vec::new()
-            }
-            AppEvent::TabBarCommandFinished { .. } => Vec::new(),
         }
     }
 

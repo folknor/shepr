@@ -16,10 +16,9 @@ pub(super) fn status_glyph(
     use shepr_config::StatusIndicatorStyle;
     let text = match (indicator_style, status) {
         (StatusIndicatorStyle::Dots, AgentStatus::Working | AgentStatus::Blocked) => "●",
-        (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
+        (_, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
         (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
     };
     let color = if stale {
         palette.overlay0

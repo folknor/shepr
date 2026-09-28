@@ -409,8 +409,10 @@ impl PaneRuntime {
         });
     }
 
-    // Runtime construction threads PTY geometry, host context, launch policy, and render hooks.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "runtime construction threads PTY geometry, host context, launch policy, and render hooks"
+    )]
     pub fn spawn(
         pane_id: PaneId,
         rows: u16,
@@ -442,8 +444,10 @@ impl PaneRuntime {
         )
     }
 
-    // Runtime construction needs to thread PTY size, environment, theme, and render hooks together.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "runtime construction needs to thread PTY size, environment, theme, and render hooks together"
+    )]
     pub(crate) fn spawn_with_initial_history(
         pane_id: PaneId,
         rows: u16,
@@ -480,8 +484,10 @@ impl PaneRuntime {
         )
     }
 
-    // Runtime construction needs to thread PTY size, environment, theme, and render hooks together.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "runtime construction needs to thread PTY size, environment, theme, and render hooks together"
+    )]
     pub(crate) fn spawn_argv_command(
         pane_id: PaneId,
         rows: u16,
@@ -524,8 +530,10 @@ impl PaneRuntime {
         )
     }
 
-    // Runtime construction needs to thread PTY size, environment, theme, and render hooks together.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "runtime construction needs to thread PTY size, environment, theme, and render hooks together"
+    )]
     fn spawn_command_builder(
         pane_id: PaneId,
         rows: u16,
@@ -582,7 +590,7 @@ impl PaneRuntime {
         let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
-        let io = {
+        let io: Box<dyn ChildIo> = {
             // The shadowed clone below moves into the read callback; the
             // startup-failure path needs its own handle on the same liveness.
             let startup_child_liveness = Arc::clone(&child_liveness);
@@ -770,7 +778,7 @@ impl PaneRuntime {
                 }
             };
             let _ = timer_writer.set(actor.clone());
-            Box::new(actor) as Box<dyn ChildIo>
+            Box::new(actor)
         };
 
         // Start the watcher only after the PTY actor exists. If actor setup
@@ -1399,7 +1407,7 @@ impl PaneRuntime {
         self.terminal.extract_selection(selection)
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
+    pub fn render(&self, frame: &mut Frame<'_>, area: Rect, show_cursor: bool) {
         self.terminal.render(frame, area, show_cursor);
     }
 
@@ -2084,7 +2092,13 @@ mod tests {
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000))
             .expect("make cwd path untraversable");
 
-        let path_is_traversable = cwd.is_dir();
+        // Only a refused stat means the path is untraversable; any other
+        // error is a broken fixture, not a skip.
+        let path_is_traversable = match std::fs::metadata(&cwd) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("stat the process cwd: {error}"),
+        };
         let observed = (!path_is_traversable)
             .then(|| absolute_process_cwd(child.id()))
             .flatten();

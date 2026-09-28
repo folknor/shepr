@@ -67,8 +67,6 @@ pub struct Tab {
 }
 
 impl Tab {
-    // Tab construction threads pane runtime geometry, host context, and render hooks.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         number: usize,
         initial_cwd: PathBuf,
@@ -96,8 +94,6 @@ impl Tab {
         )
     }
 
-    // Command tab construction mirrors the shell tab runtime arguments.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_argv_command(
         number: usize,
         initial_cwd: PathBuf,
@@ -125,7 +121,6 @@ impl Tab {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn new_with_runtime(
         number: usize,
         initial_cwd: PathBuf,
@@ -207,7 +202,10 @@ impl Tab {
     /// Prepare a shell split on a cloned layout and start its runtime. The
     /// returned layout is installed by the workspace command after startup.
     /// Focus moves only when `focus_new_pane` is set.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a split threads target, geometry, host context, launch policy, and render hooks"
+    )]
     pub fn split_pane_shell(
         &self,
         target: PaneId,
@@ -244,7 +242,10 @@ impl Tab {
 
     /// Split `target` with an argv-command pane. Same focus contract as
     /// `split_pane_shell`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an argv split mirrors the shell split's arguments plus the command"
+    )]
     pub fn split_pane_argv(
         &self,
         target: PaneId,
@@ -279,8 +280,10 @@ impl Tab {
         )
     }
 
-    // Split construction threads geometry, host context, launch policy, and command state.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "split construction threads geometry, host context, launch policy, and command state"
+    )]
     fn split_pane_with_runtime(
         &self,
         target: PaneId,

@@ -107,7 +107,7 @@ impl From<KeyEvent> for TerminalKey {
     }
 }
 
-pub const KITTY_FLAG_REPORT_ALL_KEYS: u16 = KittyKeyboardFlags::REPORT_ALL_KEYS.bits();
+pub(crate) const KITTY_FLAG_REPORT_ALL_KEYS: u16 = KittyKeyboardFlags::REPORT_ALL_KEYS.bits();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModifyOtherKeysMode {

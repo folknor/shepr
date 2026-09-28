@@ -4,7 +4,7 @@ use super::*;
 fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     let mut snapshot = snapshot();
     snapshot.tabs.extend((2..=8).map(|number| ClientShellTab {
-        tab_id: format!("tab_{number}").into(),
+        tab_id: shepr_protocol::PublicTabId::new("ws_1", number),
         workspace_id: "ws_1".into(),
         number,
         label: number.to_string(),
@@ -31,19 +31,31 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     assert_eq!(state.tab_scroll, 1);
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
-    update.focused_tab_id = Some("tab_8".into());
+    update.focused_tab_id = Some(test_tab_id("ws_1:t8"));
     for tab in &mut update.tabs {
-        tab.focused = tab.tab_id == "tab_8";
+        tab.focused = tab.tab_id == "ws_1:t8";
     }
     state.set_snapshot(Box::new(update));
     state.compose(80, 20).expect("focused overflow tab");
-    assert!(state.hits.tabs.iter().any(|(_, tab_id)| tab_id == "tab_8"));
+    assert!(
+        state
+            .hits
+            .tabs
+            .iter()
+            .any(|(_, tab_id)| tab_id == "ws_1:t8")
+    );
 
     state.compose(300, 20).expect("tabs without overflow");
     assert_eq!(state.tab_scroll, 0);
     assert_eq!(state.hits.tabs.len(), 8);
     state.compose(80, 20).expect("focused tab after narrowing");
-    assert!(state.hits.tabs.iter().any(|(_, tab_id)| tab_id == "tab_8"));
+    assert!(
+        state
+            .hits
+            .tabs
+            .iter()
+            .any(|(_, tab_id)| tab_id == "ws_1:t8")
+    );
 }
 
 #[test]
@@ -63,7 +75,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .iter()
         .enumerate()
         .map(|(index, label)| ClientShellTab {
-            tab_id: format!("tab_{}", index + 1).into(),
+            tab_id: shepr_protocol::PublicTabId::new("ws_1", index + 1),
             workspace_id: "ws_1".into(),
             number: index + 1,
             label: (*label).into(),
@@ -75,10 +87,10 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .collect();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     for number in [8, 7, 8] {
-        let tab_id = format!("tab_{number}");
-        projected.focused_tab_id = Some(tab_id.clone().into());
-        projected.workspaces[0].active_tab_id = tab_id.clone().into();
-        projected.panes[0].tab_id = tab_id.clone().into();
+        let tab_id = shepr_protocol::PublicTabId::new("ws_1", number);
+        projected.focused_tab_id = Some(tab_id.clone());
+        projected.workspaces[0].active_tab_id = tab_id.clone();
+        projected.panes[0].tab_id = tab_id.clone();
         for tab in &mut projected.tabs {
             tab.focused = tab.tab_id == tab_id;
         }
@@ -380,7 +392,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::PaneSplit(params)
-            if params.target_pane_id.as_deref() == Some("pane_1")
+            if params.target_pane_id.as_deref() == Some("ws_1:p1")
                 && params.direction == shepr_api::schema::SplitDirection::Right
     ));
 }
@@ -532,7 +544,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
     oversized.panes[0].pixel_width = 1600;
     oversized.panes[0].pixel_height = 960;
     let mut off_screen = oversized.panes[0].clone();
-    off_screen.pane_id = "pane_off_screen".into();
+    off_screen.pane_id = test_pane_id("ws_1:p2");
     let far = SurfaceRect {
         x: 190,
         y: 0,
@@ -552,7 +564,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
         "a pane with no visible cell has no hit"
     );
     let hit = &state.hits.panes[0];
-    assert_eq!(hit.pane_id, "pane_1");
+    assert_eq!(hit.pane_id, "ws_1:p1");
     assert_eq!(hit.inner_rect, area);
     assert_eq!((hit.pixel_width, hit.pixel_height), (0, 0));
     assert!(state.hits.pane_splits.is_empty());
@@ -563,7 +575,7 @@ fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.selection = Some(shepr_vt::selection::Selection::range(
-        "pane_1".into(),
+        test_pane_id("ws_1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));

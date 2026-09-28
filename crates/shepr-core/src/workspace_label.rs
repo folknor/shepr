@@ -16,8 +16,7 @@ pub fn workspace_label_from_cwd(
         .or_else(|| cwd.file_name())
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| cwd.display().to_string())
+        .map_or_else(|| cwd.display().to_string(), str::to_owned)
 }
 
 #[cfg(test)]

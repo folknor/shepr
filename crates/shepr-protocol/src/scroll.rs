@@ -44,9 +44,11 @@ pub fn scrollbar_thumb(metrics: ScrollMetrics, track: Rect) -> Option<ScrollbarT
         return None;
     }
 
-    // The ratio is clamped to [1.0, track_height] just below, so the
-    // rounded result always fits in usize without truncation or sign loss.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the ratio is clamped to [1.0, track_height] just below, so the rounded result always fits in usize without truncation or sign loss"
+    )]
     let thumb_len = ((metrics.viewport_rows * track_height) as f32 / total_rows as f32)
         .round()
         .max(1.0)
@@ -58,8 +60,11 @@ pub fn scrollbar_thumb(metrics: ScrollMetrics, track: Rect) -> Option<ScrollbarT
     let thumb_top = if max_thumb_top == 0 || metrics.max_offset_from_bottom == 0 {
         0
     } else {
-        // Clamped to [0.0, max_thumb_top] just above, so this always fits in usize.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to [0.0, max_thumb_top] just above, so this always fits in usize"
+        )]
         let clamped = ((scrolled_from_top * max_thumb_top) as f32
             / metrics.max_offset_from_bottom as f32)
             .round()
@@ -67,13 +72,15 @@ pub fn scrollbar_thumb(metrics: ScrollMetrics, track: Rect) -> Option<ScrollbarT
         clamped
     };
 
-    // track.y is a small terminal row coordinate and thumb_len/thumb_top are
-    // bounded by track_height above, so these narrow to u16 without loss.
-    #[allow(clippy::cast_possible_truncation)]
-    Some(ScrollbarThumb {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "track.y is a small terminal row coordinate and thumb_len/thumb_top are bounded by track_height above, so these narrow to u16 without loss"
+    )]
+    let thumb = ScrollbarThumb {
         top: track.y + thumb_top as u16,
         len: thumb_len as u16,
-    })
+    };
+    Some(thumb)
 }
 
 pub fn scrollbar_thumb_grab_offset(metrics: ScrollMetrics, track: Rect, row: u16) -> Option<u16> {
@@ -86,18 +93,18 @@ fn scrollbar_offset_from_thumb_top(metrics: ScrollMetrics, track: Rect, thumb_to
         return 0;
     }
 
-    let thumb_len = scrollbar_thumb(metrics, track)
-        .map(|thumb| thumb.len as usize)
-        .unwrap_or(1);
+    let thumb_len = scrollbar_thumb(metrics, track).map_or(1, |thumb| thumb.len as usize);
     let max_thumb_top = track.height as usize - thumb_len.min(track.height as usize);
     if max_thumb_top == 0 {
         return 0;
     }
 
     let desired_top = thumb_top.min(max_thumb_top);
-    // desired_top / max_thumb_top <= 1, so the scaled result stays within
-    // metrics.max_offset_from_bottom and fits in usize.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "desired_top / max_thumb_top <= 1, so the scaled result stays within metrics.max_offset_from_bottom and fits in usize"
+    )]
     let scrolled_from_top = ((desired_top * metrics.max_offset_from_bottom) as f32
         / max_thumb_top as f32)
         .round() as usize;

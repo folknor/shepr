@@ -8,14 +8,19 @@ exclude = ["crates/shepr-agent/src/detect/manifests"]
 [test]
 debug = true
 
-# The environment seal (`clippy.toml`, `shepr_core::env`). Every raw
-# `std::env` read or write outside the reader carries a scoped
-# `#[expect(clippy::disallowed_methods, reason = ..)]` naming why the site is
-# outside the policy. Adding a file to this exclude list is the review of its
-# escape.
+# Evaluates `[workspace.lints.rustdoc]` in the root Cargo.toml, which nothing
+# else runs.
+[rustdoc]
+document_private_items = true
+
+# The clippy seals (`clippy.toml`): the environment reader, exits, bool path
+# probes, panic containment, child working directories and debug assertions.
+# Every escape is a scoped `#[expect(clippy::disallowed_methods, reason = ..)]`
+# (or `disallowed_macros`) naming why the site is outside the seal. Adding a
+# file to this exclude list is the review of its escapes.
 [[textlint]]
 name = "disallowed-escapes-are-allowlisted"
-pattern = '\bclippy::disallowed_methods\b'
+pattern = '\bclippy::disallowed_(?:methods|macros)\b'
 paths = ["crates/**/*.rs", "src/**/*.rs", "build.rs"]
 region = "code"
 exclude = [
@@ -25,13 +30,68 @@ exclude = [
     "crates/shepr-agent/src/integration/opencode_config.rs",
     "crates/shepr-core/src/env.rs",
     "crates/shepr-mux/src/pane/terminal/migration_tests.rs",
+    "crates/shepr-mux/src/persist/writer.rs",
+    "crates/shepr-platform/src/host.rs",
     "crates/shepr-platform/src/remote_bridge_tests.rs",
+    "crates/shepr-pty/src/actor.rs",
     "crates/shepr-pty/src/command.rs",
+    "crates/shepr-server/src/app/git_refresh.rs",
     "crates/shepr-test-support/src/fixture.rs",
     "crates/shepr-test-support/src/lib.rs",
+    "crates/shepr-vt/src/locks.rs",
     "src/test_support.rs",
 ]
-message = "a new clippy seal escape; read or write through shepr_core::env, or add this file to the exclude list as the reviewed exception"
+message = "a new clippy seal escape; use the sanctioned alternative the seal's reason names (shepr_core::env, try_exists, a stated current_dir, a returned status), or add this file to the exclude list as the reviewed exception"
+
+# Library crates do not print: a print macro panics on a closed pipe and
+# reaches no log file (the server daemon's stderr is /dev/null). The CLI in
+# `src/` resets SIGPIPE before printing and is not held by this rule. The
+# test-code excludes and `skip_after` spare tests; `check_skip_after_scopes.py`
+# re-checks the production items under a file's first `#[cfg(test)]`.
+[[textlint]]
+name = "library-crates-do-not-print"
+pattern = '\b(?:print|println|eprint|eprintln)!\s*[\(\[\{]'
+paths = ["crates/*/src/**/*.rs"]
+exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+message = "a print macro panics on a closed pipe and reaches no log file; log through tracing, or return the text to the CLI to print"
+
+# An exit skips destructors (the host terminal restore, SSH teardown, log
+# flushing), so the process ends only by returning from `src/main.rs`. The
+# bridge test's re-exec child stands in for that main and exits the same way.
+[[textlint]]
+name = "exits-from-main"
+pattern = '\bprocess::exit\s*\('
+paths = ["crates/**/*.rs", "src/**/*.rs", "build.rs"]
+exclude = ["src/main.rs", "crates/shepr-platform/src/remote_bridge_tests.rs"]
+region = "code"
+message = "exit only from src/main.rs; return the status or error instead"
+
+# The gate builds the dev profile and `brokkr install` builds release, which no
+# sweep builds, so behaviour must not depend on the profile. `clippy.toml`
+# bans the debug-assertion macros; this catches the cfg spelling.
+[[textlint]]
+name = "no-profile-dependent-behaviour"
+pattern = '\bdebug_assertions\b'
+paths = ["crates/**/*.rs", "src/**/*.rs", "build.rs"]
+region = "code"
+message = "behaviour must not depend on the build profile; the installed build is release and no sweep builds it"
+
+# `include_str!` is for content shepr ships (the default config, detection
+# manifests, integration assets). A test reads its fixture from disk, so a
+# fixture is not compiled into the test binary and a moved crate fails loudly.
+[[textlint]]
+name = "no-test-reads-compiled-content"
+pattern = '\binclude_(?:str|bytes)!'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+exclude = [
+    "crates/shepr-config/src/lib.rs",
+    "crates/shepr-agent/src/detect/manifest.rs",
+    "crates/shepr-agent/src/integration/mod.rs",
+]
+region = "code"
+message = "a test reads its fixture from disk through CARGO_MANIFEST_DIR; include_str! is for content shepr ships"
 
 # No shouting: all-caps emphasis in comments and prose. The excepts are the
 # all-caps words that are names, not emphasis: environment variables, terminal
@@ -257,6 +317,37 @@ stage = "pre-clippy"
 name = "skip-after-scopes"
 command = "python3 scripts/check_skip_after_scopes.py"
 expect = "skip_after scopes ok"
+match = "last-line"
+stage = "pre-clippy"
+
+# The backstop for a test writing through a path relative to its crate
+# directory: crate roots hold only a crate's own parts, and untracked files in
+# the sources carry an extension the tracked sources use.
+[[script_check]]
+name = "tree-debris"
+command = "python3 scripts/check_tree_debris.py"
+expect = "tree debris ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
+name = "scripts-roster"
+command = "python3 scripts/check_scripts_roster.py"
+expect = "scripts roster ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
+name = "workspace-dependencies"
+command = "python3 scripts/check_workspace_dependencies.py"
+expect = "workspace dependencies ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
+name = "seal-paths"
+command = "python3 scripts/check_seal_paths.py"
+expect = "seal paths ok"
 match = "last-line"
 stage = "pre-clippy"
 

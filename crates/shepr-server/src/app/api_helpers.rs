@@ -183,7 +183,9 @@ fn read_validated_terminal_snapshot(
         (ReadFormat::Text, ReadSource::RecentUnwrapped) => {
             terminal.recent_unwrapped_text_snapshot(recent_lines)
         }
-        (ReadFormat::Text, ReadSource::Detection) => {
+        // ANSI detection reads are rejected by `validate_read_request`; the
+        // arm keeps the match total so it needs no panic arm.
+        (ReadFormat::Text | ReadFormat::Ansi, ReadSource::Detection) => {
             limit_snapshot_lines(terminal.detection_text(), line_limit)
         }
         (ReadFormat::Ansi, ReadSource::Visible) => {
@@ -192,11 +194,6 @@ fn read_validated_terminal_snapshot(
         (ReadFormat::Ansi, ReadSource::Recent) => terminal.recent_ansi_snapshot(recent_lines),
         (ReadFormat::Ansi, ReadSource::RecentUnwrapped) => {
             terminal.recent_unwrapped_ansi_snapshot(recent_lines)
-        }
-        // Rejected by `validate_read_request`; kept total so the match needs
-        // no panic arm.
-        (ReadFormat::Ansi, ReadSource::Detection) => {
-            limit_snapshot_lines(terminal.detection_text(), line_limit)
         }
     }
 }

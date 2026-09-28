@@ -2,7 +2,7 @@ use super::*;
 use std::{
     io::{Read, Write},
     os::fd::AsRawFd,
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant},
 };
 
@@ -17,6 +17,13 @@ pub(super) struct ClipboardCommand {
 /// selection owner that never answers, a compositor that is gone) and must
 /// not outlive the request that started it.
 pub(super) const CLIPBOARD_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Clipboard helpers run in the root directory: they read no paths, and
+/// `wl-copy` forks a server that outlives the request, which must not pin the
+/// directory shepr happened to start in.
+fn clipboard_helper_dir() -> &'static std::path::Path {
+    std::path::Path::new("/")
+}
 
 pub fn write_clipboard(bytes: &[u8]) -> bool {
     write_clipboard_with(&clipboard_commands(ClipboardSession::from_env()), bytes)
@@ -189,7 +196,7 @@ pub(super) fn read_clipboard_text_with_command(
 ) -> Option<String> {
     const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
 
-    let mut child = Command::new(command.program)
+    let mut child = child_command(command.program, clipboard_helper_dir())
         .args(command.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -228,7 +235,7 @@ pub(super) fn run_clipboard_command(
     bytes: &[u8],
     deadline: Instant,
 ) -> bool {
-    let mut child = match Command::new(command.program)
+    let mut child = match child_command(command.program, clipboard_helper_dir())
         .args(command.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

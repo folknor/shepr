@@ -1,20 +1,21 @@
 use super::*;
 use crate::test_support::*;
 
+use crate::server::client_transport::RenderLaneReceiver;
 use bytes::Bytes;
 
-pub fn handle_server_event(
+pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
     event: crate::server::client_transport::ServerEvent,
 ) -> bool {
     server.handle_server_event(event)
 }
 
-pub fn render_and_stream(server: &mut HeadlessServer) {
+pub(crate) fn render_and_stream(server: &mut HeadlessServer) {
     server.render_and_stream();
 }
 
-pub fn outer_terminal_focus(
+pub(crate) fn outer_terminal_focus(
     server: &HeadlessServer,
     client_id: crate::server::ClientId,
 ) -> Option<bool> {
@@ -25,7 +26,7 @@ pub fn outer_terminal_focus(
         .and_then(|shell| shell.outer_terminal_focus)
 }
 
-pub fn dispatch_lifecycle_messages(
+pub(crate) fn dispatch_lifecycle_messages(
     server: &mut HeadlessServer,
     client_id: crate::server::ClientId,
     messages: Vec<shepr_protocol::ClientMessage>,
@@ -91,7 +92,7 @@ async fn client_listener_readiness_wakes_for_new_connection() {
     assert!(listener.accept().is_ok());
 }
 
-pub fn client_shell_snapshot(
+pub(crate) fn client_shell_snapshot(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Box<shepr_protocol::ClientShellSnapshot> {
     let ServerMessage::EndpointSnapshot(snapshot) = read_server_message(
@@ -104,7 +105,7 @@ pub fn client_shell_snapshot(
     snapshot
 }
 
-pub fn test_headless_server() -> HeadlessServer {
+pub(crate) fn test_headless_server() -> HeadlessServer {
     test_headless_server_with_event_hub(shepr_api::EventHub::default())
 }
 
@@ -166,13 +167,13 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
     }
 }
 
-pub fn shutdown_test_runtimes(server: &mut HeadlessServer) {
+pub(crate) fn shutdown_test_runtimes(server: &mut HeadlessServer) {
     for (_, runtime) in server.app.terminal_runtimes.drain() {
         drop(runtime);
     }
 }
 
-pub fn read_server_message(bytes: Vec<u8>) -> ServerMessage {
+pub(crate) fn read_server_message(bytes: Vec<u8>) -> ServerMessage {
     let mut cursor = std::io::Cursor::new(bytes);
     shepr_protocol::read_message(&mut cursor, MAX_FRAME_SIZE).expect("decode server message")
 }
@@ -201,7 +202,7 @@ fn read_server_shutdown_reason(bytes: Vec<u8>) -> Option<String> {
 fn frame_server_message_refuses_payloads_over_the_frame_cap() {
     let small = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
         kind: shepr_protocol::NoticeKind::PaneInputDropped {
-            pane_id: "w1:p1".into(),
+            pane_id: shepr_protocol::PublicPaneId::new("w1", 1),
             events: 1,
         },
     })
@@ -881,18 +882,12 @@ async fn promoted_client_window_title_uses_its_own_view() {
     shutdown_test_runtimes(&mut server);
 }
 
-pub fn test_client_writer() -> (
+pub(crate) fn test_client_writer() -> (
     ClientWriter,
     std::sync::mpsc::Receiver<Vec<u8>>,
-    std::sync::mpsc::Receiver<Vec<u8>>,
+    RenderLaneReceiver,
 ) {
-    let (control_tx, control_rx) = std::sync::mpsc::channel();
-    let (render_tx, render_rx) = std::sync::mpsc::sync_channel(1);
-    (
-        ClientWriter::test_channel(control_tx, render_tx),
-        control_rx,
-        render_rx,
-    )
+    ClientWriter::test_pair()
 }
 
 #[tokio::test]
@@ -1297,10 +1292,7 @@ fn connect_test_shell(
     client_id: u64,
     surface_cols: u16,
     surface_rows: u16,
-) -> (
-    std::sync::mpsc::Receiver<Vec<u8>>,
-    std::sync::mpsc::Receiver<Vec<u8>>,
-) {
+) -> (std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver) {
     let (writer, control, render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
@@ -1321,10 +1313,7 @@ fn connect_test_shell(
 fn connect_matching_test_shell(
     server: &mut HeadlessServer,
     client_id: u64,
-) -> (
-    std::sync::mpsc::Receiver<Vec<u8>>,
-    std::sync::mpsc::Receiver<Vec<u8>>,
-) {
+) -> (std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver) {
     connect_test_shell(server, client_id, 80, 23)
 }
 
@@ -1729,12 +1718,12 @@ async fn ensure_default_workspace_invalidates_the_shell_projection() {
 /// surface it sent on that connection, so decoding them here needs the same
 /// running baseline a real endpoint client would keep.
 struct PaneSurfaceReceiver {
-    receiver: std::sync::mpsc::Receiver<Vec<u8>>,
+    receiver: RenderLaneReceiver,
     decoder: shepr_protocol::surface_reuse::Decoder,
 }
 
 impl PaneSurfaceReceiver {
-    fn new(receiver: std::sync::mpsc::Receiver<Vec<u8>>) -> Self {
+    fn new(receiver: RenderLaneReceiver) -> Self {
         Self {
             receiver,
             decoder: shepr_protocol::surface_reuse::Decoder::default(),
@@ -3073,7 +3062,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(22),
-        pane_id: second_pane_id.into(),
+        pane_id: second_pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
             "typed".into(),
         )],
@@ -3425,7 +3414,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
     assert!(
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![
                 shepr_protocol::ClientPaneInputEvent::Key {
                     code: shepr_protocol::ClientKeyCode::Char('c'),
@@ -3548,7 +3537,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.clone().into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
@@ -3556,7 +3545,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
         })
     );
@@ -3611,7 +3600,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: public_pane_id.clone().into(),
+            pane_id: public_pane_id.parse().expect("test precondition"),
             events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
                 "x".to_owned(),
             )],
@@ -3635,7 +3624,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: public_pane_id.into(),
+            pane_id: public_pane_id.parse().expect("test precondition"),
             events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
                 "y".to_owned(),
             )],
@@ -3676,7 +3665,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
                 kind: shepr_protocol::ClientMouseKind::Moved,
                 position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
@@ -3718,7 +3707,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
                 kind: shepr_protocol::ClientMouseKind::Moved,
                 position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
@@ -3771,7 +3760,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         .collect();
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(11),
-        pane_id: pane_id.clone().into(),
+        pane_id: pane_id.parse().expect("test precondition"),
         events,
     });
 
@@ -3795,7 +3784,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
     shutdown_test_runtimes(&mut server);
 }
 
-pub fn install_focused_test_runtime(
+pub(crate) fn install_focused_test_runtime(
     server: &mut HeadlessServer,
     terminal_bytes: &[u8],
 ) -> tokio::sync::mpsc::Receiver<Bytes> {
@@ -3822,7 +3811,7 @@ fn retained_test_server_with_control(
 ) -> (
     HeadlessServer,
     std::sync::mpsc::Receiver<Vec<u8>>,
-    std::sync::mpsc::Receiver<Vec<u8>>,
+    RenderLaneReceiver,
     shepr_core::layout::PaneId,
 ) {
     let mut server = test_headless_server();
@@ -4585,7 +4574,7 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     );
     let (control, render_rx) = connect_test_shell(&mut server, 91, 80, 24);
     // The test writer forwards queued control messages from a background
-    // thread (see `ClientWriter::test_channel`), so a message queued by this
+    // thread (see `ClientWriter::test_pair`), so a message queued by this
     // render is not necessarily visible to a bare `try_recv` yet. Wait a
     // short beat for the drain thread instead of racing it.
     let drain_notices = || {
@@ -5881,7 +5870,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
-            pane_id: pane_id.clone().into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
@@ -5891,7 +5880,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
-            pane_id: pane_id.clone().into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
         })
     );
@@ -5904,7 +5893,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
-            pane_id: pane_id.into(),
+            pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );

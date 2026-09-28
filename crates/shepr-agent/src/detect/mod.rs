@@ -456,9 +456,8 @@ fn is_interactive_letta_process(process: &ForegroundProcess) -> bool {
         &parsed_cmdline
     };
 
-    let cli_args = letta_entrypoint_index(argv, Some(process.pid))
-        .map(|index| &argv[index + 1..])
-        .unwrap_or(argv);
+    let cli_args =
+        letta_entrypoint_index(argv, Some(process.pid)).map_or(argv, |index| &argv[index + 1..]);
 
     if cli_args.iter().any(|arg| {
         let option = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
@@ -1527,7 +1526,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let job = foreground_job(pid);
-        let process_group_id = job.as_ref().map(|job| job.process_group_id).unwrap_or(pid);
+        let process_group_id = job.as_ref().map_or(pid, |job| job.process_group_id);
         let process_group_id =
             i32::try_from(process_group_id).expect("test process group fits pid_t");
         // SAFETY: the process group belongs to this test's PTY child; a negative PID

@@ -59,22 +59,20 @@ impl App {
         let shell_pid = runtime.child_pid();
         let foreground_job = shell_pid.and_then(shepr_agent::detect::foreground_job);
         let foreground_process_group_id = foreground_job.as_ref().map(|job| job.process_group_id);
-        let foreground_processes = foreground_job
-            .map(|job| {
-                job.processes
-                    .into_iter()
-                    .map(|process| PaneProcessInfoProcess {
-                        pid: process.pid,
-                        name: process.name,
-                        argv0: process.argv0,
-                        argv: process.argv,
-                        cmdline: process.cmdline,
-                        cwd: shepr_agent::detect::process_cwd(process.pid)
-                            .map(|cwd| cwd.display().to_string()),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let foreground_processes = foreground_job.map_or_default(|job| {
+            job.processes
+                .into_iter()
+                .map(|process| PaneProcessInfoProcess {
+                    pid: process.pid,
+                    name: process.name,
+                    argv0: process.argv0,
+                    argv: process.argv,
+                    cmdline: process.cmdline,
+                    cwd: shepr_agent::detect::process_cwd(process.pid)
+                        .map(|cwd| cwd.display().to_string()),
+                })
+                .collect()
+        });
 
         success(
             id,
@@ -932,17 +930,15 @@ impl App {
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
             ResolvedPaneMoveDestination::NewWorkspace { label, tab_label } => {
-                let identity_cwd = self
-                    .state
-                    .terminals
-                    .get(&source_terminal_id)
-                    .map(|terminal| terminal.cwd.clone())
-                    .unwrap_or_else(|| {
+                let identity_cwd = self.state.terminals.get(&source_terminal_id).map_or_else(
+                    || {
                         self.paths
                             .current_dir()
                             .unwrap_or_else(|| std::path::Path::new("/"))
                             .to_path_buf()
-                    });
+                    },
+                    |terminal| terminal.cwd.clone(),
+                );
                 let moved_pane_id = moved.pane_id;
                 let workspace = shepr_mux::workspace::Workspace::from_existing_pane(
                     label,

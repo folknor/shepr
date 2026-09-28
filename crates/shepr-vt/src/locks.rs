@@ -59,6 +59,10 @@ pub fn terminal_core_is_poisoned<T>(mutex: &Mutex<T>) -> bool {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "poisoning a mutex takes a panic while it is held; catching it keeps the test alive to read the poison"
+    )]
     fn poison<T>(mutex: &Mutex<T>) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = mutex.lock().expect("test mutex starts unpoisoned");

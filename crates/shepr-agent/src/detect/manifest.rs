@@ -810,9 +810,7 @@ pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionEx
 }
 
 fn rule_state(rule: &ManifestRule) -> AgentState {
-    rule.state
-        .map(AgentState::from)
-        .unwrap_or(AgentState::Unknown)
+    rule.state.map_or(AgentState::Unknown, AgentState::from)
 }
 
 fn rule_detection(rule: &ManifestRule) -> AgentDetection {
@@ -929,15 +927,14 @@ fn fallback_explain(
     context: Option<(&LoadedManifest, Vec<EvaluatedRule>)>,
 ) -> DetectionExplain {
     let has_manifest = context.is_some();
-    let (source, evaluated_rules, warning) = context
-        .map(|(loaded, evaluated)| {
+    let (source, evaluated_rules, warning) =
+        context.map_or((None, Vec::new(), None), |(loaded, evaluated)| {
             (
                 Some(loaded.source.clone()),
                 evaluated,
                 loaded.warning.clone(),
             )
-        })
-        .unwrap_or((None, Vec::new(), None));
+        });
 
     DetectionExplain {
         agent: agent.map(|agent| agent_label(agent).to_string()),
@@ -968,11 +965,17 @@ fn load_manifest_uncached(agent: Agent, override_dir: Option<&Path>) -> Option<L
     let Some(path) = override_dir.map(|directory| override_path(directory, agent)) else {
         return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
     };
-    if !path.exists() {
-        return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
-    }
+    // A stat error (EACCES, ELOOP) is not absence: the override is reported
+    // as unloadable rather than silently skipped.
+    let override_readable = match path.try_exists() {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
+        }
+        Err(err) => Err(err.to_string()),
+    };
 
-    let warning = match read_override_manifest(&path) {
+    let warning = match override_readable.and_then(|()| read_override_manifest(&path)) {
         Ok(manifest) if manifest_matches_agent(&manifest, agent) => {
             match loaded_manifest(manifest, ManifestSource::Override(path.clone())) {
                 Ok(loaded) => return Some(loaded),
@@ -1773,8 +1776,7 @@ fn is_horizontal_rule(line: &str) -> bool {
     let rule_bytes = trimmed
         .char_indices()
         .nth(rule_chars)
-        .map(|(index, _)| index)
-        .unwrap_or(trimmed.len());
+        .map_or(trimmed.len(), |(index, _)| index);
     let suffix = trimmed[rule_bytes..].trim_start();
 
     suffix.is_empty() || rule_chars >= 3

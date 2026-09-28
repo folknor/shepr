@@ -28,9 +28,9 @@
 
 # CWD policy for new panes, tabs, and workspaces when no explicit --cwd is provided.
 # Use "follow" to inherit the source pane/workspace, "home" for $HOME,
-# "current" for Shepr's process directory, or a fixed path such as "~/Projects".
-# Fixed paths must name an existing directory. Relative paths use the Shepr
-# process working directory captured at launch; an empty path is an error.
+# "current" for the directory Shepr was launched from, or a fixed path such as
+# "~/Projects". Fixed paths must name an existing directory. Relative paths
+# resolve against the launch directory; an empty path is an error.
 # new_cwd = "follow"
 
 

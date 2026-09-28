@@ -21,6 +21,36 @@ pub(crate) fn remove_dir_all_if_exists(path: &Path) -> io::Result<bool> {
     }
 }
 
+/// Whether `path` is a regular file (following symlinks). Absence is `false`;
+/// any other stat error (`EACCES`, `ELOOP`) is returned, not read as absence.
+pub(crate) fn is_file(path: &Path) -> io::Result<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// Whether `path` is a directory (following symlinks). Absence is `false`;
+/// any other stat error is returned, not read as absence.
+pub(crate) fn is_dir(path: &Path) -> io::Result<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// The contents of `path` when it is a regular file, `None` when nothing
+/// (or a non-file) is there. Stat and read errors are returned.
+pub(crate) fn read_if_file(path: &Path) -> io::Result<Option<String>> {
+    if is_file(path)? {
+        fs::read_to_string(path).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 

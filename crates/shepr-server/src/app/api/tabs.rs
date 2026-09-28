@@ -65,9 +65,10 @@ impl App {
         } else {
             return failure(id, ApiErrorCode::WorkspaceNotFound, "no active workspace");
         };
-        let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
-            self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
-        });
+        let cwd = cwd.map_or_else(
+            || self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx)),
+            PathBuf::from,
+        );
         let (rows, cols) = self.state.pane_geometry().sole_pane_size();
         let default_shell = self.state.settings.default_shell.clone();
         let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
@@ -254,15 +255,11 @@ impl App {
     }
 
     fn tab_list_info(&self, ws_idx: usize) -> Vec<shepr_api::schema::TabInfo> {
-        self.state
-            .workspaces
-            .get(ws_idx)
-            .map(|ws| {
-                (0..ws.tabs().len())
-                    .filter_map(|idx| self.tab_info(ws_idx, idx))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.state.workspaces.get(ws_idx).map_or_default(|ws| {
+            (0..ws.tabs().len())
+                .filter_map(|idx| self.tab_info(ws_idx, idx))
+                .collect()
+        })
     }
 }
 
@@ -376,10 +373,10 @@ mod tests {
         let root = app.state.workspaces[0].tabs()[0].root_pane;
         app.state
             .public_pane_id_aliases
-            .insert("wOLD:p1".into(), root);
+            .insert(shepr_protocol::PublicPaneId::new("wOLD", 1), root);
         app.state
             .public_pane_id_aliases
-            .insert("wOLD:p2".into(), split);
+            .insert(shepr_protocol::PublicPaneId::new("wOLD", 2), split);
         let closed_panes = [
             app.public_pane_id(0, root).expect("test precondition"),
             app.public_pane_id(0, split).expect("test precondition"),
@@ -399,12 +396,12 @@ mod tests {
         assert!(
             !app.state
                 .public_pane_id_aliases
-                .contains_key(&"wOLD:p1".into())
+                .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 1))
         );
         assert!(
             !app.state
                 .public_pane_id_aliases
-                .contains_key(&"wOLD:p2".into())
+                .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 2))
         );
         let events = event_hub.events_after(0);
         let mut pane_closed = events

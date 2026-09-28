@@ -45,18 +45,17 @@ impl ChildLiveness {
 
     /// Whether the child has exited; a zombie counts as exited.
     pub(super) fn has_exited(&self) -> bool {
-        self.leader
-            .as_ref()
-            .map(shepr_platform::ProcessHandle::has_exited)
-            .unwrap_or_else(|| self.wait_completed())
+        self.leader.as_ref().map_or_else(
+            || self.wait_completed(),
+            shepr_platform::ProcessHandle::has_exited,
+        )
     }
 
     /// Whether the child has been reaped and its pid can be reused.
     pub(super) fn is_reaped(&self) -> bool {
         self.leader
             .as_ref()
-            .map(|leader| !leader.is_unreaped())
-            .unwrap_or_else(|| self.wait_completed())
+            .map_or_else(|| self.wait_completed(), |leader| !leader.is_unreaped())
     }
 
     pub(super) fn leader(&self) -> Option<&shepr_platform::ProcessHandle> {

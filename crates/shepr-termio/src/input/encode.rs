@@ -172,11 +172,13 @@ fn encode_mouse_cb(
     modifiers: KeyModifiers,
     encoding: MouseProtocolEncoding,
 ) -> Option<Vec<u8>> {
-    let mut cb = match (encoding, release) {
-        (MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels, true) => base_button,
-        (_, true) => 3,
-        (_, false) => base_button,
-    };
+    // SGR reports which button was released; the legacy encodings report
+    // every release as button 3.
+    let sgr = matches!(
+        encoding,
+        MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels
+    );
+    let mut cb = if release && !sgr { 3 } else { base_button };
     if modifiers.contains(KeyModifiers::SHIFT) {
         cb += 4;
     }

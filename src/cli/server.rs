@@ -94,13 +94,10 @@ fn server_stop(paths: &super::target::CliContext, force: bool) -> super::CliResu
         });
     }
 
-    match shepr_api::session::stop_active_server(paths, force) {
-        Ok(()) => Ok(0),
-        Err(err) => {
-            eprintln!("{err}");
-            Ok(1)
-        }
-    }
+    // Reported like `session stop` and the remote refusal above.
+    shepr_api::session::stop_active_server(paths, force)
+        .map_err(|error| super::CliError::Session(super::error::SessionCliError::Stop(error)))?;
+    Ok(0)
 }
 
 fn server_agent_manifests(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {

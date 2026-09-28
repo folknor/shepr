@@ -247,7 +247,14 @@ fn deduplicate_git_refresh_items(
 fn refresh_output_or_empty(
     refresh: impl FnOnce() -> WorkspaceGitRefreshOutput,
 ) -> WorkspaceGitRefreshOutput {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(refresh)).unwrap_or_else(|_| {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the git refresh thread must always send its completion event: the loop \
+                  holds git_refresh_in_flight until it arrives, so an uncaught panic in a \
+                  git probe would stop sidebar git refreshes for the server's lifetime"
+    )]
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(refresh));
+    caught.unwrap_or_else(|_| {
         tracing::warn!("git status refresh panicked; reporting an empty refresh");
         WorkspaceGitRefreshOutput {
             results: Vec::new(),

@@ -127,12 +127,10 @@ pub(crate) fn resolve_palette(
         }
         palette
     });
-    let overrides = config
-        .theme
-        .custom
-        .as_ref()
-        .map(CustomThemeColors::parse)
-        .unwrap_or_else(|| Ok(ParsedThemeColors::default()));
+    let overrides = config.theme.custom.as_ref().map_or_else(
+        || Ok(ParsedThemeColors::default()),
+        CustomThemeColors::parse,
+    );
     if let Err(errors) = &overrides {
         diagnostics.extend(errors.iter().cloned());
     }

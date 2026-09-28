@@ -54,11 +54,10 @@ impl WorkspaceGitStatusSnapshot {
         status_cache_key: PathBuf,
         demand: GitStatusRefreshDemand,
     ) -> WorkspaceGitStatus {
-        let auto_label = self
-            .space
-            .as_ref()
-            .map(|space| automatic_workspace_label(&resolved_identity_cwd, &space.repo_root))
-            .unwrap_or_else(|| fallback_label_from_cwd(&resolved_identity_cwd));
+        let auto_label = self.space.as_ref().map_or_else(
+            || fallback_label_from_cwd(&resolved_identity_cwd),
+            |space| automatic_workspace_label(&resolved_identity_cwd, &space.repo_root),
+        );
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd,

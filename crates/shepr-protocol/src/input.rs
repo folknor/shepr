@@ -30,8 +30,10 @@ impl ClientSurfaceSize {
     /// first so the shell layout tracks the host; trim excess height.
     pub fn clamped(self) -> Self {
         let cols = self.cols.clamp(1, MAX_SURFACE_DIMENSION);
-        // Bounded by `MAX_SURFACE_DIMENSION` (a u16) via `.min(...)`, so this never truncates.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "bounded by MAX_SURFACE_DIMENSION (a u16) via .min(...), so this never truncates"
+        )]
         let max_rows =
             (MAX_SURFACE_CELLS / usize::from(cols)).min(usize::from(MAX_SURFACE_DIMENSION)) as u16;
         Self {
@@ -49,6 +51,10 @@ pub enum ClientKeyKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[expect(
+    variant_size_differences,
+    reason = "a char is four bytes; the whole key code is a small value"
+)]
 pub enum ClientKeyCode {
     Backspace,
     Enter,
@@ -90,6 +96,10 @@ pub enum ClientMouseKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    variant_size_differences,
+    reason = "a Copy value of at most a dozen bytes; boxing the pixel form would allocate per mouse event"
+)]
 pub enum ClientMousePosition {
     Cell {
         column: u16,

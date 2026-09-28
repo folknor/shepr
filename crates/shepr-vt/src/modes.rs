@@ -54,6 +54,10 @@ impl ExtraMode {
 
 /// How a mode's current value is read.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    variant_size_differences,
+    reason = "a Copy mode-table entry of eight bytes; the terminal mode flags are the largest"
+)]
 pub(super) enum Getter {
     Term(TermMode),
     CursorBlink,
@@ -66,7 +70,6 @@ pub(super) enum Getter {
 /// How a write reaches the terminal.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Setter {
-    #[allow(dead_code)] // Documents the table; read by tests through `handler::private_mode`.
     Vte(NamedPrivateMode),
     Extra(ExtraMode),
 }
@@ -74,7 +77,10 @@ pub(super) enum Setter {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ModeSpec {
     pub(super) number: u16,
-    #[allow(dead_code)] // Documents the table; read by tests.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "documents the table; read by tests")
+    )]
     pub(super) name: &'static str,
     pub(super) get: Getter,
     pub(super) set: Setter,

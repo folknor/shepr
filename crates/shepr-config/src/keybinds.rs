@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Config;
 
-pub type KeyCombo = (KeyCode, KeyModifiers);
+pub(crate) type KeyCombo = (KeyCode, KeyModifiers);
 
 /// The key fields needed to resolve configured bindings.
 pub trait BindingKey {
@@ -1046,7 +1046,7 @@ pub fn normalize_key_combo((mut code, mut modifiers): KeyCombo) -> KeyCombo {
 }
 
 #[cfg(test)]
-pub fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
+pub(crate) fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
     key_parts_match_combo(key.code, key.modifiers, None, combo)
 }
 

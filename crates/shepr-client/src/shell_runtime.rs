@@ -122,8 +122,7 @@ fn install_pending_activation(
 ) {
     let retired = activation
         .source_command_lane()
-        .map(|source| endpoint_commands.retire_lane(source))
-        .unwrap_or_default();
+        .map_or_default(|source| endpoint_commands.retire_lane(source));
     if let Some(shell) = state.mode.shell_mut() {
         for request_id in retired {
             shell.cancel_endpoint_request(&request_id);
@@ -302,11 +301,10 @@ pub(super) fn begin_endpoint_activation(
                 pending,
                 &format!(
                     "{}: {error}",
-                    state
-                        .mode
-                        .shell()
-                        .map(|shell| shell.endpoint_label(&endpoint_id).to_owned())
-                        .unwrap_or_else(|| format!("{endpoint_id:?}"))
+                    state.mode.shell().map_or_else(
+                        || format!("{endpoint_id:?}"),
+                        |shell| shell.endpoint_label(&endpoint_id).to_owned(),
+                    )
                 ),
                 false,
             );
@@ -614,7 +612,6 @@ pub(super) fn stale_freeze_recovery(
 /// Returns whether the endpoint that owned (or last owned) the presentation was retired.
 /// The caller then clears its host effects and hands the presentation to Local, as if the
 /// user had picked Local.
-#[allow(clippy::too_many_arguments)] // The same loop state `handle_endpoint_disconnect` takes.
 pub(super) fn follow_endpoint_catalog(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,

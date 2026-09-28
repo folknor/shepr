@@ -1,6 +1,10 @@
 use super::*;
 
 #[derive(Clone, Copy)]
+#[expect(
+    variant_size_differences,
+    reason = "a Copy row coordinate of sixteen bytes, passed by value"
+)]
 enum Coordinates {
     Screen(ScreenRow),
     Viewport(ViewportRow),

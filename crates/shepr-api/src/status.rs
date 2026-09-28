@@ -15,7 +15,18 @@ pub fn read_runtime_status_at(
     socket_path: &Path,
     timeout: Duration,
 ) -> io::Result<Option<RuntimeStatus>> {
-    if !socket_path.exists() {
+    // Absence is "no status"; a stat that fails otherwise (EACCES, ELOOP) is
+    // an error, not a missing server.
+    let present = socket_path.try_exists().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "could not check server socket {}: {error}",
+                socket_path.display()
+            ),
+        )
+    })?;
+    if !present {
         return Ok(None);
     }
 

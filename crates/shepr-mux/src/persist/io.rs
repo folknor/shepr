@@ -50,11 +50,13 @@ pub(super) fn containing_directory(path: &Path) -> &Path {
 
 /// Directories `create_dir_all` will add, from the requested leaf toward its
 /// nearest existing ancestor. Each new directory's parent needs a sync for
-/// that directory entry to be durable.
-fn missing_directory_chain(directory: &Path) -> Vec<PathBuf> {
+/// that directory entry to be durable. A stat error other than `NotFound` is
+/// returned: read as absence it would add an existing directory to the chain,
+/// or stop short of a missing one, and the durability walk would be wrong.
+fn missing_directory_chain(directory: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut missing = Vec::new();
     let mut current = directory;
-    while !current.as_os_str().is_empty() && !current.exists() {
+    while !current.as_os_str().is_empty() && !current.try_exists()? {
         missing.push(current.to_path_buf());
         let Some(parent) = current.parent() else {
             break;
@@ -65,7 +67,7 @@ fn missing_directory_chain(directory: &Path) -> Vec<PathBuf> {
             parent
         };
     }
-    missing
+    Ok(missing)
 }
 
 /// A save whose new content is in place at the target path.
@@ -164,7 +166,7 @@ fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io:
 fn save_serialized_to_path(path: &Path, json: &str) -> std::io::Result<Published> {
     let target = resolve_write_target(path)?;
     let directory = containing_directory(&target);
-    let missing_directories = missing_directory_chain(directory);
+    let missing_directories = missing_directory_chain(directory)?;
     std::fs::create_dir_all(directory)?;
     let pending = target.with_extension("json.tmp");
     remove_stale_temporary(&pending)?;
@@ -347,8 +349,8 @@ mod tests {
 
         save_history_to_path(&history_path, None).expect("test precondition");
 
-        assert!(session_path.exists());
-        assert!(!history_path.exists());
+        assert!(session_path.try_exists().expect("test stat"));
+        assert!(!history_path.try_exists().expect("test stat"));
     }
 
     #[test]
@@ -358,7 +360,7 @@ mod tests {
 
         clear_path(&path).expect("test precondition");
 
-        assert!(!path.exists());
+        assert!(!path.try_exists().expect("test stat"));
     }
 
     #[test]
@@ -367,7 +369,7 @@ mod tests {
 
         clear_path(&path).expect("test precondition");
 
-        assert!(!path.exists());
+        assert!(!path.try_exists().expect("test stat"));
     }
 
     #[test]
@@ -408,7 +410,7 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
-        assert!(target.exists());
+        assert!(target.try_exists().expect("test stat"));
     }
 
     #[test]
@@ -434,7 +436,12 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "{}", path.display());
         }
-        assert!(!session_path.with_extension("json.tmp").exists());
+        assert!(
+            !session_path
+                .with_extension("json.tmp")
+                .try_exists()
+                .expect("test stat")
+        );
     }
 
     #[test]
@@ -451,7 +458,12 @@ mod tests {
         let parsed = parse_snapshot(&std::fs::read_to_string(&path).expect("test precondition"))
             .expect("test precondition");
         assert_eq!(parsed.selected, 3);
-        assert!(!path.with_extension("json.tmp").exists());
+        assert!(
+            !path
+                .with_extension("json.tmp")
+                .try_exists()
+                .expect("test stat")
+        );
     }
 
     #[test]
@@ -463,7 +475,7 @@ mod tests {
         let link = dir.join("link.json");
         std::os::unix::fs::symlink("real.json", &link).expect("test precondition");
         save_to_path(&link, &empty_snapshot()).expect("test precondition");
-        assert!(target.exists());
+        assert!(target.try_exists().expect("test stat"));
 
         clear_path(&link).expect("test precondition");
 
@@ -473,7 +485,7 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
-        assert!(!target.exists());
+        assert!(!target.try_exists().expect("test stat"));
         // Clearing again with the link dangling is a no-op.
         clear_path(&link).expect("test precondition");
         assert!(
@@ -501,6 +513,6 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
-        assert!(target.exists());
+        assert!(target.try_exists().expect("test stat"));
     }
 }

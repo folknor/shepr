@@ -7,7 +7,8 @@
 //! - Reads stdin events (keystrokes, mouse, paste) and sends them as ClientMessage::Input
 //! - Detects terminal resize and sends ClientMessage::Resize
 //! - Restores terminal on exit (normal or error)
-//! - Handles ServerShutdown gracefully (clean exit, informative message to stderr)
+//! - Handles ServerShutdown gracefully (clean exit, informative message returned for the
+//!   binary to print once the terminal is restored)
 //! - Handles server unreachable (clear error screen, not blank/hang)
 //! - Forwards OSC 52 clipboard writes from server to its own stdout
 
@@ -71,8 +72,8 @@ use terminal_setup::{
 use attach::AttachEscapeState;
 use attach::direct_attach_pixel_mouse;
 use attach::{AttachInputAction, attach_semantic_message};
-pub use errors::ClientError;
 use errors::ClientErrorContext;
+pub use errors::{ClientError, ClientExit, ClientRunError};
 #[cfg(test)]
 use handshake::REMOTE_HANDSHAKE_READ_TIMEOUT;
 use handshake::{ClientProcessRole, do_handshake};
@@ -120,7 +121,7 @@ fn run_client_with_mode(
     paths: &shepr_config::AppPaths,
     mode: ClientLaunchMode,
     log_message: &'static str,
-) -> io::Result<()> {
+) -> Result<ClientExit, ClientRunError> {
     let (attach_request, attach_escape) = match mode {
         ClientLaunchMode::Shell => (None, None),
         ClientLaunchMode::Attach {
@@ -184,9 +185,9 @@ fn run_client_with_mode(
             None
         }
         Err(error) => {
-            return Err(io::Error::other(
+            return Err(ClientRunError::Launch(io::Error::other(
                 ClientError::ConnectionFailed(error).to_string(),
-            ));
+            )));
         }
     };
 
@@ -229,7 +230,7 @@ fn run_client_with_mode(
             warn!(%error, "Local handshake failed; keeping saved machines available");
             None
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(ClientRunError::Launch(error)),
     };
 
     // A shell with saved machines can show connection notices without a server snapshot.
@@ -239,10 +240,7 @@ fn run_client_with_mode(
     } else {
         setup_terminal(mouse_capture)
     }
-    .map_err(|err| {
-        eprintln!("shepr: failed to set up terminal: {err}");
-        err
-    })?;
+    .map_err(|err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")))?;
     loop_config.host_escape_disambiguation_active =
         terminal_guard.host_escape_disambiguation_active();
     loop_config.initial_host_input = terminal_guard.take_buffered_host_input();
@@ -288,39 +286,31 @@ fn run_client_with_mode(
         .await
     });
 
-    // Restore the terminal before printing any final status message.
+    // Restore the terminal before the binary prints any final status message.
     let terminal_restore_failed = terminal_guard.restore().is_err();
-    // A later successful detach does not erase notices collected while forwarding earlier input.
-    for notice in direct_notices {
-        let _ = writeln!(io::stderr(), "shepr: {notice}");
-    }
-
-    if let Err(err) = result {
-        let detached = matches!(
-            &err,
-            ClientError::ServerShutdown {
-                reason: Some(reason)
-            } if *reason == shepr_protocol::ShutdownReason::Detached
-        );
-        let error_message = err.display_with_context(&error_context);
-        let _ = writeln!(io::stderr(), "shepr: {error_message}");
-        rt.shutdown_timeout(Duration::from_millis(100));
-        shepr_remote::release_ssh_resources_before_exit(Duration::from_secs(1));
-        shepr_platform::logging::shutdown("client");
-
-        let connection_lost_during_terminal_hangup =
-            terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
-        if detached || connection_lost_during_terminal_hangup {
-            return Ok(());
-        }
-
-        std::process::exit(1);
-    }
-
     rt.shutdown_timeout(Duration::from_millis(100));
     shepr_remote::release_ssh_resources_before_exit(Duration::from_secs(1));
     shepr_platform::logging::shutdown("client");
-    Ok(())
+
+    // A later successful detach does not erase notices collected while forwarding earlier input.
+    let notices = Vec::from(direct_notices);
+    let Err(err) = result else {
+        return Ok(ClientExit::new(notices, None));
+    };
+    let detached = matches!(
+        &err,
+        ClientError::ServerShutdown {
+            reason: Some(reason)
+        } if *reason == shepr_protocol::ShutdownReason::Detached
+    );
+    let connection_lost_during_terminal_hangup =
+        terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
+    let exit = ClientExit::new(notices, Some(err.display_with_context(&error_context)));
+    if detached || connection_lost_during_terminal_hangup {
+        Ok(exit)
+    } else {
+        Err(ClientRunError::Session(exit))
+    }
 }
 
 /// The main client event loop.
@@ -330,8 +320,6 @@ fn run_client_with_mode(
 /// - resize poller thread → sends resize events to main loop
 /// - server reader thread → reads ServerMessages and sends to main loop
 /// - main loop: coordinates input, output, and server communication
-// The startup handshake consumes these launch values once before building ClientLoop.
-#[allow(clippy::too_many_arguments)]
 async fn run_client_loop(
     initial: Option<LocalStream>,
     endpoint_catalog: endpoint::EndpointCatalog,
@@ -660,7 +648,7 @@ impl ClientLoop<'_> {
                 tokio::select! {
                     biased;
                     _ = tokio::time::sleep_until(timer_deadline.into()) => ClientLoopEvent::Timer,
-                    ev = self.supervisor_rx.recv() => ev.map(ClientLoopEvent::EndpointSupervisor).unwrap_or(ClientLoopEvent::Timer),
+                    ev = self.supervisor_rx.recv() => ev.map_or(ClientLoopEvent::Timer, ClientLoopEvent::EndpointSupervisor),
                     ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
                 }
             };
@@ -1454,8 +1442,9 @@ impl ClientLoop<'_> {
                 }
                 return Ok(ClientLoopAction::NextEvent);
             }
-            ServerMessage::HealthPong(_) => return Ok(ClientLoopAction::NextEvent),
-            ServerMessage::EndpointWelcome(_) => return Ok(ClientLoopAction::NextEvent),
+            ServerMessage::HealthPong(_) | ServerMessage::EndpointWelcome(_) => {
+                return Ok(ClientLoopAction::NextEvent);
+            }
             ServerMessage::EndpointSnapshot(snapshot) => {
                 let projection_pending = activation_message;
                 let activation_progress = activation_message
@@ -1603,11 +1592,10 @@ impl ClientLoop<'_> {
             .filter(|activation| activation.expired(now))
             .map(|activation| activation.target().clone())
         {
-            let label = state
-                .mode
-                .shell()
-                .map(|shell| shell.endpoint_label(&endpoint_id).to_owned())
-                .unwrap_or_else(|| "Endpoint".into());
+            let label = state.mode.shell().map_or_else(
+                || "Endpoint".into(),
+                |shell| shell.endpoint_label(&endpoint_id).to_owned(),
+            );
             rollback_endpoint_activation(
                 state,
                 write_stream,

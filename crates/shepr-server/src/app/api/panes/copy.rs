@@ -189,14 +189,16 @@ impl App {
                         1
                     },
                 )
-                .map(|target| shepr_mux::pane::TerminalTextPoint {
-                    row: target.row,
-                    col: params.cursor.col,
-                })
-                .unwrap_or(shepr_mux::pane::TerminalTextPoint {
-                    row: params.cursor.row,
-                    col: params.cursor.col,
-                }),
+                .map_or(
+                    shepr_mux::pane::TerminalTextPoint {
+                        row: params.cursor.row,
+                        col: params.cursor.col,
+                    },
+                    |target| shepr_mux::pane::TerminalTextPoint {
+                        row: target.row,
+                        col: params.cursor.col,
+                    },
+                ),
         };
         let after = runtime.content_seq();
         if params.content_revision.is_some() && after != before {

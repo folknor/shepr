@@ -2,7 +2,7 @@ use interprocess::local_socket::{ToFsName as _, traits::Stream as _};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_millis(300);
@@ -20,8 +20,20 @@ fn bridge_child() {
         .to_fs_name::<interprocess::local_socket::GenericFilePath>()
         .expect("test precondition");
     let stream = interprocess::local_socket::Stream::connect(name).expect("test precondition");
-    super::forward_remote_bridge_stdio_with_timeout(stream, Some(TIMEOUT))
+    let outcome = super::forward_remote_bridge_stdio_with_timeout(stream, Some(TIMEOUT))
         .expect("test precondition");
+    if outcome == super::RemoteBridgeOutcome::IdleExpired {
+        exit_as_expired_bridge();
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "this re-exec child stands in for the bridge process, whose main exits 1 on IdleExpired; \
+              returning to libtest would block its result report on the full stdout pipe"
+)]
+fn exit_as_expired_bridge() -> ! {
+    std::process::exit(1)
 }
 
 struct Bridge {
@@ -35,7 +47,10 @@ impl Bridge {
         let path = shepr_test_support::ScratchDir::new("bridge").join("s.sock");
         let listener = UnixListener::bind(&path).expect("test precondition");
         listener.set_nonblocking(true).expect("test precondition");
-        let mut command = Command::new(std::env::current_exe().expect("test precondition"));
+        let mut command = shepr_test_support::command_in_scratch(
+            std::env::current_exe().expect("test precondition"),
+            "bridge-child",
+        );
         command
             .args([
                 "--exact",

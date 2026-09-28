@@ -157,16 +157,13 @@ fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super:
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
-                let response = ErrorResponse {
+                return Err(super::CliError::Response(ErrorResponse {
                     id: "cli:agent:explain".into(),
                     error: ErrorBody {
                         code: "agent_explain_file_read_failed".into(),
                         message: format!("failed to read agent explain file {path}: {err}"),
                     },
-                };
-                let response = serde_json::to_string(&response).map_err(std::io::Error::other)?;
-                eprintln!("{response}");
-                return Ok(1);
+                }));
             }
         };
         shepr_agent::detect::manifest::explain_to_json_value(
@@ -452,11 +449,17 @@ fn agent_attach(
         return Ok(1);
     }
     let Some(terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
-        eprintln!("agent attach failed: response did not include terminal_id");
-        return Ok(1);
+        return Err(super::CliError::Failed {
+            message: "agent attach failed: response did not include terminal_id".into(),
+            hints: Vec::new(),
+        });
     };
-    shepr_client::run_terminal_attach(&config, paths, terminal_id.to_owned(), takeover)?;
-    Ok(0)
+    super::finish_client(shepr_client::run_terminal_attach(
+        &config,
+        paths,
+        terminal_id.to_owned(),
+        takeover,
+    ))
 }
 
 fn agent_wait(paths: &super::target::CliContext, params: AgentWaitParams) -> super::CliResult<i32> {
@@ -521,7 +524,6 @@ fn wait_for_named_agent(
                     "agent_not_ready",
                     format!("agent {name} is blocked during startup and is not ready for prompts"),
                 ))),
-                Some("working") => None,
                 Some("idle") if agent["interactive_ready"].as_bool() == Some(true) => {
                     Some(Ok(agent.clone()))
                 }
@@ -532,6 +534,7 @@ fn wait_for_named_agent(
                         "agent process exited before becoming interactive",
                     )))
                 }
+                // Working, or idle with its launch still pending: keep polling.
                 _ => None,
             }
         };

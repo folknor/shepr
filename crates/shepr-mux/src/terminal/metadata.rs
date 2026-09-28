@@ -158,8 +158,10 @@ impl TerminalState {
             })
     }
 
-    // The unit error represents the bounded sequence table reaching capacity.
-    #[allow(clippy::result_unit_err)]
+    #[expect(
+        clippy::result_unit_err,
+        reason = "the unit error represents the bounded sequence table reaching capacity"
+    )]
     pub fn accept_metadata_report(
         &mut self,
         source: &str,

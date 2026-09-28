@@ -274,8 +274,10 @@ pub struct ValidatedUiConfig {
 
 /// Working directory policy resolved from launch config.
 /// `Path` is an existing absolute directory. Configured relative paths are
-/// resolved against the process working directory captured at launch, so
-/// creating a pane later does not depend on the caller's working directory.
+/// resolved against the current directory captured at launch
+/// ([`AppPaths::current_dir`]; for the server, the directory `shepr` was
+/// launched from), so creating a pane later does not depend on the caller's
+/// working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewTerminalCwd {
     Follow,

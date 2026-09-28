@@ -1,6 +1,6 @@
 use super::*;
 
-fn receive_message(receiver: &std::sync::mpsc::Receiver<Vec<u8>>) -> (Vec<u8>, ServerMessage) {
+fn receive_message(receiver: &RenderLaneReceiver) -> (Vec<u8>, ServerMessage) {
     let bytes = receiver
         .recv_timeout(Duration::from_secs(1))
         .expect("render message");

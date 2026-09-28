@@ -1,5 +1,7 @@
 use std::io;
+use std::process::ExitCode;
 
+use cli::{CliError, CliResult};
 use shepr_core::env::SHEPR_ENV_IN_PANE;
 
 const NESTED_SHEPR_MESSAGES: [&str; 6] = [
@@ -37,25 +39,20 @@ fn random_nested_message() -> &'static str {
 
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.subsec_nanos() as usize)
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.subsec_nanos() as usize);
     let index = (nanos ^ (std::process::id() as usize)) % NESTED_SHEPR_MESSAGES.len();
     NESTED_SHEPR_MESSAGES[index]
 }
 
-fn exit_if_nested_disabled(config: &shepr_config::ValidatedConfig) {
-    let blocked = should_block_nested(config).unwrap_or_else(|error| {
-        eprintln!("shepr: configuration error:");
-        eprintln!("  {error}");
-        std::process::exit(1);
-    });
+fn refuse_if_nested_disabled(config: &shepr_config::ValidatedConfig) -> CliResult<()> {
+    let blocked =
+        should_block_nested(config).map_err(|error| CliError::Config(vec![error.to_string()]))?;
     if blocked {
-        eprintln!("\x1b[1merror:\x1b[0m nested shepr is disabled by default.");
-        eprintln!("see configuration if you want to enable it.");
-        eprintln!();
-        eprintln!("\x1b[2m\"{}\"\x1b[0m", random_nested_message());
-        std::process::exit(1);
+        return Err(CliError::Nested {
+            quip: random_nested_message(),
+        });
     }
+    Ok(())
 }
 
 fn args_as_utf8<I>(args: I) -> Result<Vec<String>, String>
@@ -71,32 +68,29 @@ where
         .collect()
 }
 
-fn finish_cli(outcome: cli::CliResult<i32>) -> io::Result<()> {
-    match outcome {
-        Ok(code) => std::process::exit(code),
+/// The one place the process ends. Every launch below returns its exit status
+/// or a typed [`CliError`]; the error is printed here, once, and its
+/// `exit_code` becomes the status. Returning from `main` rather than calling
+/// `std::process::exit` lets the destructors of everything `launch` held run
+/// first (the client's terminal guard, SSH teardown registrations).
+fn main() -> ExitCode {
+    let code = match launch() {
+        Ok(code) => code,
         Err(error) => {
             error.print();
-            std::process::exit(error.exit_code());
+            error.exit_code()
         }
-    }
-}
-
-fn usage_exit(message: &str) -> ! {
-    let error = cli::CliError::Usage(message.into());
-    error.print();
-    std::process::exit(error.exit_code());
-}
-
-fn main() -> io::Result<()> {
-    let raw_args: Vec<String> = match args_as_utf8(std::env::args_os()) {
-        Ok(args) => args,
-        Err(err) => usage_exit(&err),
     };
+    ExitCode::from(u8::try_from(code).unwrap_or(1))
+}
+
+fn launch() -> CliResult<i32> {
+    let raw_args: Vec<String> = args_as_utf8(std::env::args_os()).map_err(CliError::Usage)?;
     // The one command-line parser: the clap spec in `cli/spec.rs`. It prints
-    // its own usage errors and subcommand help.
+    // its own usage errors and subcommand help, and hands back only the status.
     let invocation = match cli::parse_invocation(&raw_args) {
         Ok(invocation) => invocation,
-        Err(exit_code) => std::process::exit(exit_code),
+        Err(exit_code) => return Ok(exit_code),
     };
 
     let command = match &invocation.launch {
@@ -104,27 +98,20 @@ fn main() -> io::Result<()> {
         _ => None,
     };
     if let Some(machine) = invocation.machine() {
-        return finish_cli(cli::run_on_machine(command, &machine));
+        return cli::run_on_machine(command, &machine);
     }
-    let requested_session = match invocation.requested_session() {
-        Ok(session) => session,
-        Err(err) => usage_exit(&err),
-    };
-    let requested_session = match requested_session
+    let requested_session = invocation
+        .requested_session()
+        .map_err(CliError::Usage)?
         .as_deref()
         .map(shepr_config::SessionId::parse)
         .transpose()
-    {
-        Ok(session) => session,
-        Err(err) => usage_exit(&err.to_string()),
-    };
-    let remote_launch = match shepr_remote::remote_launch(
+        .map_err(|err| CliError::Usage(err.to_string()))?;
+    let remote_launch = shepr_remote::remote_launch(
         invocation.remote().as_deref(),
         invocation.remote_keybindings().as_deref(),
-    ) {
-        Ok(remote_launch) => remote_launch,
-        Err(err) => usage_exit(&err),
-    };
+    )
+    .map_err(CliError::Usage)?;
 
     if remote_launch.is_some()
         && invocation.has_subcommand()
@@ -132,70 +119,70 @@ fn main() -> io::Result<()> {
             || invocation.version_requested()
             || invocation.default_config_requested())
     {
-        usage_exit("--remote can only be used with the default launch command");
+        return Err(CliError::Usage(
+            "--remote can only be used with the default launch command".into(),
+        ));
     }
 
     // Root-level `--help`, `--version` and `--default-config` win over any
     // subcommand given with them.
     if invocation.help_requested() {
         cli::print_help(requested_session.clone());
-        return Ok(());
+        return Ok(0);
     }
 
     if invocation.version_requested() {
         shepr_platform::begin_cli_output();
         println!("shepr {}", shepr_protocol::build_version());
-        return Ok(());
+        return Ok(0);
     }
 
     if invocation.default_config_requested() {
         shepr_platform::begin_cli_output();
         print!("{}", shepr_config::DEFAULT_CONFIG);
-        return Ok(());
+        return Ok(0);
     }
 
     if let Some(command) = command {
-        return finish_cli(cli::run(command, requested_session.clone()));
+        return cli::run(command, requested_session.clone());
     }
 
     match &invocation.launch {
         cli::Launch::ApiBridge { check } => {
-            let paths = shepr_config::AppPaths::resolve_with_session(requested_session.clone())
-                .map_err(|errors| {
-                    io::Error::other(format!(
-                        "application paths could not be resolved: {}",
-                        errors.join("; ")
-                    ))
-                })?;
-            return shepr_remote::run_remote_api_bridge(*check, &paths);
+            let paths = resolve_bridge_paths(requested_session.clone())?;
+            return finish_bridge(shepr_remote::run_remote_api_bridge(*check, &paths)?);
         }
         cli::Launch::ClientBridge => {
-            let paths = shepr_config::AppPaths::resolve_with_session(requested_session.clone())
-                .map_err(|errors| {
-                    io::Error::other(format!(
-                        "application paths could not be resolved: {}",
-                        errors.join("; ")
-                    ))
-                })?;
-            return shepr_remote::run_remote_client_bridge(&paths);
+            let paths = resolve_bridge_paths(requested_session.clone())?;
+            return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
         }
         _ => {}
     }
 
-    let loaded_config = load_validated_config_or_exit(requested_session);
+    // The server daemon runs in the home directory; its current directory is
+    // the launch directory the spawning client hands over.
+    let resolved_paths = if matches!(invocation.launch, cli::Launch::HeadlessServer) {
+        shepr_config::AppPaths::resolve_for_server(requested_session)
+    } else {
+        shepr_config::AppPaths::resolve_with_session(requested_session)
+    };
+    let loaded_config = load_validated_config(resolved_paths)?;
     let paths = loaded_config.paths();
 
     match invocation.launch {
         cli::Launch::HeadlessServer => {
-            return shepr_server::server::headless::run_server(&loaded_config, paths);
+            shepr_server::server::headless::run_server(&loaded_config, paths, |ready| {
+                cli::print_notice(ready);
+            })?;
+            return Ok(0);
         }
         cli::Launch::Client => {
-            exit_if_nested_disabled(&loaded_config);
-            return shepr_client::run_client(&loaded_config, paths);
+            refuse_if_nested_disabled(&loaded_config)?;
+            return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
         }
         cli::Launch::Tui { .. } => {}
         cli::Launch::ApiBridge { .. } | cli::Launch::ClientBridge | cli::Launch::Cli(_) => {
-            return Err(io::Error::other("launch was already handled"));
+            return Err(io::Error::other("launch was already handled").into());
         }
     }
 
@@ -204,53 +191,60 @@ fn main() -> io::Result<()> {
         let ssh_settings = shepr_remote::SavedSshSettings {
             manage_ssh_config: loaded_config.remote().manage_ssh_config,
         };
-        if let Err(err) = shepr_remote::run_remote(remote_launch, ssh_settings, paths) {
-            eprintln!("error: {err}");
-            shepr_remote::print_remote_error_hint(&err, &remote_target);
-            std::process::exit(1);
-        }
-        return Ok(());
+        shepr_remote::run_remote(
+            remote_launch,
+            ssh_settings,
+            paths,
+            &mut cli::operator::TerminalOperator,
+        )
+        .map_err(|error| CliError::Failed {
+            message: error.to_string(),
+            hints: shepr_remote::remote_error_hint(&error, &remote_target),
+        })?;
+        return Ok(0);
     }
 
-    exit_if_nested_disabled(&loaded_config);
+    refuse_if_nested_disabled(&loaded_config)?;
 
     let saved_federation =
         shepr_remote::machine::EndpointCatalog::load(paths).is_ok_and(|catalog| catalog.has_ssh());
-    if let Err(err) = autodetect::auto_detect_launch(
+    let client = autodetect::auto_detect_launch(
         saved_federation,
         &loaded_config,
         paths,
         shepr_client::run_client,
-    ) {
-        eprintln!("shepr: {err}");
-        std::process::exit(1);
-    }
-    Ok(())
+    )
+    .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
+    cli::finish_client(client)
 }
 
-fn load_validated_config_or_exit(
-    requested_session: Option<shepr_config::SessionId>,
-) -> shepr_config::ValidatedConfig {
-    let paths = match shepr_config::AppPaths::resolve_with_session(requested_session) {
-        Ok(paths) => paths,
-        Err(diagnostics) => {
-            eprintln!("shepr: configuration error:");
-            for diagnostic in diagnostics {
-                eprintln!("  {diagnostic}");
-            }
-            std::process::exit(1);
-        }
-    };
-    match shepr_config::load_validated(&paths) {
-        Ok(config) => config,
-        Err(diagnostics) => {
-            eprintln!("shepr: configuration error:");
-            for diagnostic in diagnostics {
-                eprintln!("  {diagnostic}");
-            }
-            std::process::exit(1);
-        }
+/// A bridge that ended on its idle watchdog ends the process with status 1
+/// and prints nothing: its relay threads may still hold stdin and stdout.
+fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32> {
+    match outcome {
+        shepr_platform::RemoteBridgeOutcome::Closed => Ok(0),
+        shepr_platform::RemoteBridgeOutcome::IdleExpired => Err(CliError::BridgeIdle),
     }
+}
+
+fn resolve_bridge_paths(
+    requested_session: Option<shepr_config::SessionId>,
+) -> CliResult<shepr_config::AppPaths> {
+    shepr_config::AppPaths::resolve_with_session(requested_session).map_err(|errors| {
+        CliError::Io(io::Error::other(format!(
+            "application paths could not be resolved: {}",
+            errors.join("; ")
+        )))
+    })
+}
+
+fn load_validated_config(
+    resolved_paths: Result<shepr_config::AppPaths, Vec<String>>,
+) -> CliResult<shepr_config::ValidatedConfig> {
+    let paths = resolved_paths.map_err(CliError::Config)?;
+    shepr_config::load_validated(&paths).map_err(|diagnostics| {
+        CliError::Config(diagnostics.iter().map(ToString::to_string).collect())
+    })
 }
 
 #[cfg(test)]

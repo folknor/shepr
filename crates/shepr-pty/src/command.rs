@@ -112,7 +112,7 @@ impl PtyCommand {
     /// `crate::backend`.
     pub fn to_std_command(&self) -> io::Result<std::process::Command> {
         let dir: OsString = match self.cwd.as_ref() {
-            Some(dir) if Path::new(dir).is_dir() => dir.clone(),
+            Some(dir) if usable_directory(Path::new(dir), "pty working directory") => dir.clone(),
             requested => {
                 let home = self.home_dir();
                 if let Some(requested) = requested {
@@ -128,7 +128,7 @@ impl PtyCommand {
         let (mut cmd, shell) = match &self.program {
             Program::Shell { login } => {
                 let shell = self.resolve_shell(&dir, ShellResolutionPolicy::PaneProgram)?;
-                let mut cmd = std::process::Command::new(&shell);
+                let mut cmd = command_in(&shell, &dir);
                 if *login {
                     let basename = Path::new(&shell).file_name().unwrap_or(shell.as_os_str());
                     let mut argv0 = OsString::from("-");
@@ -146,13 +146,12 @@ impl PtyCommand {
                     ));
                 };
                 let resolved = self.search_path(program, &dir)?;
-                let mut cmd = std::process::Command::new(resolved);
+                let mut cmd = command_in(&resolved, &dir);
                 cmd.arg0(program);
                 cmd.args(args);
                 (cmd, shell)
             }
         };
-        cmd.current_dir(dir);
         cmd.env_clear();
         cmd.envs(&self.envs);
         // The child sees the same resolved `$SHELL` that was selected above.
@@ -190,14 +189,14 @@ impl PtyCommand {
     }
 
     fn home_dir(&self) -> OsString {
-        if let Some(home) = self
-            .get_env(EnvVar::Home)
-            .filter(|home| Path::new(home).is_absolute() && Path::new(home).is_dir())
-        {
+        let usable = |home: &OsStr| {
+            Path::new(home).is_absolute() && usable_directory(Path::new(home), "home directory")
+        };
+        if let Some(home) = self.get_env(EnvVar::Home).filter(|home| usable(home)) {
             return home.to_owned();
         }
         passwd_field(|entry| entry.pw_dir.cast_const())
-            .filter(|home| Path::new(home).is_absolute() && Path::new(home).is_dir())
+            .filter(|home| usable(home.as_os_str()))
             .unwrap_or_else(|| OsString::from("/"))
     }
 
@@ -222,7 +221,9 @@ impl PtyCommand {
                     let status = classify_candidate(&candidate);
                     match status {
                         CandidateStatus::Executable => return Ok(candidate.into_os_string()),
-                        CandidateStatus::Directory | CandidateStatus::NotExecutable => {
+                        CandidateStatus::Directory
+                        | CandidateStatus::NotExecutable
+                        | CandidateStatus::Uninspectable(_) => {
                             errors.push(candidate_problem(&candidate, status));
                         }
                         CandidateStatus::Missing => {}
@@ -245,23 +246,74 @@ impl PtyCommand {
     }
 }
 
+/// The launch command for `program`, run in `dir`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a pane child starts in the pane's resolved working directory (or its home fallback), \
+              set on the next line, never in the server's"
+)]
+fn command_in(program: &OsStr, dir: &OsStr) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    command.current_dir(dir);
+    command
+}
+
+/// Whether `path` is a directory (following symlinks). Absence, and a
+/// non-directory anywhere along the path, are `Ok(false)`; any other stat
+/// failure is the error, never read as absence.
+fn is_directory(path: &Path) -> io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// [`is_directory`] for a path that has a fallback: a stat failure is logged
+/// as itself and the path is not used.
+fn usable_directory(path: &Path, what: &str) -> bool {
+    is_directory(path).unwrap_or_else(|err| {
+        tracing::warn!(
+            path = %path.display(),
+            err = %err,
+            "{what} cannot be inspected; not using it"
+        );
+        false
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CandidateStatus {
     Executable,
     Directory,
     NotExecutable,
     Missing,
+    /// The candidate could not be inspected for a reason other than absence
+    /// (a `PATH` directory that cannot be searched, a symlink loop, ...).
+    Uninspectable(io::ErrorKind),
 }
 
 fn classify_candidate(path: &Path) -> CandidateStatus {
-    if path.is_dir() {
-        CandidateStatus::Directory
-    } else if access_ok(path, libc::X_OK) {
-        CandidateStatus::Executable
-    } else if access_ok(path, libc::F_OK) {
-        CandidateStatus::NotExecutable
-    } else {
-        CandidateStatus::Missing
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => CandidateStatus::Directory,
+        Ok(_) if access_ok(path, libc::X_OK) => CandidateStatus::Executable,
+        Ok(_) => CandidateStatus::NotExecutable,
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            CandidateStatus::Missing
+        }
+        Err(err) => CandidateStatus::Uninspectable(err.kind()),
     }
 }
 
@@ -270,6 +322,9 @@ fn candidate_problem(path: &Path, status: CandidateStatus) -> String {
         CandidateStatus::Directory => format!("{} exists but is a directory", path.display()),
         CandidateStatus::NotExecutable => {
             format!("{} exists but is not executable", path.display())
+        }
+        CandidateStatus::Uninspectable(kind) => {
+            format!("{} cannot be inspected: {kind}", path.display())
         }
         CandidateStatus::Executable | CandidateStatus::Missing => String::new(),
     }
@@ -288,6 +343,10 @@ fn candidate_error(path: &Path, status: CandidateStatus) -> io::Error {
         CandidateStatus::Missing => (
             io::ErrorKind::NotFound,
             format!("{} does not exist", path.display()),
+        ),
+        CandidateStatus::Uninspectable(kind) => (
+            kind,
+            format!("{} cannot be inspected: {kind}", path.display()),
         ),
         CandidateStatus::Executable => (
             io::ErrorKind::InvalidInput,
@@ -514,7 +573,8 @@ mod tests {
             cmd.env("HOME", &unusable);
             let home = cmd.home_dir();
             assert_ne!(home, unusable);
-            assert!(Path::new(&home).is_absolute() && Path::new(&home).is_dir());
+            assert!(Path::new(&home).is_absolute());
+            assert!(is_directory(Path::new(&home)).expect("test precondition"));
         }
     }
 

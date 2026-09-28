@@ -1327,8 +1327,9 @@ impl ClientShellState {
             .into_iter()
             .chain(self.selection_repaint_deadline)
             .min()
-            .map(|deadline| deadline.saturating_duration_since(now).min(default))
-            .unwrap_or(default)
+            .map_or(default, |deadline| {
+                deadline.saturating_duration_since(now).min(default)
+            })
     }
 
     /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize

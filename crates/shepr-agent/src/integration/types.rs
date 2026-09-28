@@ -148,8 +148,9 @@ pub struct IntegrationStatus {
     pub expected_version: u32,
 }
 
-/// A supported target whose status could not be checked because its
-/// directory did not resolve (for example, no usable home directory).
+/// A supported target whose status could not be checked: its directory did
+/// not resolve (for example, no usable home directory), or a stat on its
+/// installed file failed with something other than absence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegrationStatusError {
     pub target: crate::agent::IntegrationTarget,

@@ -484,9 +484,11 @@ fn handshake_error(error: crate::ClientError, mismatch_guidance: Option<&str>) -
     use crate::ClientError;
     use shepr_protocol::FramingError;
     let error = match error {
-        ClientError::EndpointSetup(error) => error,
-        ClientError::ConnectionFailed(error) | ClientError::ConnectionLost(error) => error,
-        ClientError::HostTerminal(error) => error,
+        ClientError::EndpointSetup(error)
+        | ClientError::ConnectionFailed(error)
+        | ClientError::ConnectionLost(error)
+        | ClientError::HostTerminal(error)
+        | ClientError::Protocol(FramingError::Io(error)) => error,
         ClientError::HandshakeRejected { error, .. } => {
             std::io::Error::new(std::io::ErrorKind::Unsupported, error)
         }
@@ -510,7 +512,6 @@ fn handshake_error(error: crate::ClientError, mismatch_guidance: Option<&str>) -
             std::io::ErrorKind::InvalidData,
             crate::ClientError::SurfaceUpdateBeforeDecode,
         ),
-        ClientError::Protocol(FramingError::Io(error)) => error,
         // A peer that closes before Welcome is a server restarting, a dropped SSH link or a
         // remote launch that failed: all transient, so this must stay out of InvalidData,
         // which the attention classifier treats as a compatibility problem.

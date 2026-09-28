@@ -6,7 +6,7 @@ use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -137,11 +137,11 @@ impl SshStdioBridge {
                             noninteractive,
                             &thread_stop,
                         ) {
-                            if noninteractive {
-                                tracing::warn!(error = %err, "saved SSH endpoint bridge failed");
-                            } else {
-                                eprintln!("shepr: remote bridge failed: {err}");
-                            }
+                            // Logged, never printed: this thread runs under a
+                            // TUI (the interactive client) or a background
+                            // supervisor. The owner reads the error back
+                            // through `reported_failure` and presents it.
+                            tracing::warn!(error = %err, noninteractive, "remote SSH bridge failed");
                             // The original error, so its typed SSH failure survives.
                             let _ = failure_tx.try_send(err);
                         }
@@ -150,11 +150,11 @@ impl SshStdioBridge {
                         thread::sleep(BRIDGE_ACCEPT_POLL);
                     }
                     Err(err) => {
-                        if noninteractive {
-                            tracing::warn!(error = %err, "saved SSH endpoint listener failed");
-                        } else {
-                            eprintln!("shepr: remote bridge listener failed: {err}");
-                        }
+                        tracing::warn!(error = %err, noninteractive, "remote SSH bridge listener failed");
+                        let _ = failure_tx.try_send(io::Error::new(
+                            err.kind(),
+                            format!("remote bridge listener failed: {err}"),
+                        ));
                         break;
                     }
                 }
@@ -346,7 +346,7 @@ pub(super) fn bridge_connection(
     noninteractive: bool,
     bridge_stop: &Arc<AtomicBool>,
 ) -> io::Result<()> {
-    let mut command = Command::new("ssh");
+    let mut command = ssh_command();
     apply_managed_ssh_options(&mut command, ssh_options);
     if noninteractive {
         apply_noninteractive_ssh_options(&mut command);
@@ -679,13 +679,17 @@ pub(super) fn copy_local_stream_to_writer<W: io::Write>(
     Ok(total)
 }
 
+/// Runs the foreground client for `shepr --remote`. It runs in `launch_dir`,
+/// the directory the user ran `shepr` from: it is a foreground child that ends
+/// with this process, so it pins nothing the user's shell does not already.
 pub(super) fn run_client_process(
     local_socket: &Path,
     reattach_command: &str,
     keybindings: RemoteKeybindings,
+    launch_dir: &Path,
 ) -> io::Result<()> {
     let exe = shepr_platform::launch_executable()?;
-    let status = Command::new(exe)
+    let status = shepr_platform::child_command(exe, launch_dir)
         .arg("client")
         .env(shepr_core::env::EnvVar::SheprClientSocketPath, local_socket)
         .env(

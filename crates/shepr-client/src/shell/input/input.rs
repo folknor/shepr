@@ -446,15 +446,17 @@ impl ClientShellState {
         }
         matches!(
             self.overlay.as_ref(),
-            Some(ClientShellOverlay::Rename(_))
-                | Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
-                    search_focused: true,
-                    ..
-                }))
-                | Some(ClientShellOverlay::Help(ClientHelpOverlay {
-                    search_focused: true,
-                    ..
-                }))
+            Some(
+                ClientShellOverlay::Rename(_)
+                    | ClientShellOverlay::Navigator(ClientNavigatorOverlay {
+                        search_focused: true,
+                        ..
+                    })
+                    | ClientShellOverlay::Help(ClientHelpOverlay {
+                        search_focused: true,
+                        ..
+                    })
+            )
         )
     }
 

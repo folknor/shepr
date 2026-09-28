@@ -581,7 +581,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
                     .as_deref(),
                 Some("ws_1")
             );
-            assert_eq!(state.focused_pane_id().as_deref(), Some("pane_1"));
+            assert_eq!(state.focused_pane_id().as_deref(), Some("ws_1:p1"));
             assert_local_highlight(&mut state, "ws_3");
             state.invalidate_pane_surface();
             assert_local_highlight(&mut state, "ws_3");
@@ -757,7 +757,7 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
                 panic!("expected PaneFocusDirection");
             };
             assert_eq!(params.direction, direction);
-            assert_eq!(params.pane_id.as_deref(), Some("pane_1"));
+            assert_eq!(params.pane_id.as_deref(), Some("ws_1:p1"));
             assert!(state.pending_workspace_highlight.is_none());
             assert_local_highlight(&mut state, "ws_1");
             let result = if rejected {

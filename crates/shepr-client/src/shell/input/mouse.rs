@@ -1878,8 +1878,6 @@ impl ClientShellState {
                     });
                 }
             }
-            MouseEventKind::Up(MouseButton::Left | MouseButton::Middle)
-            | MouseEventKind::Drag(MouseButton::Left | MouseButton::Middle) => {}
             MouseEventKind::Moved => {
                 if let Some(hit) = self
                     .hits
@@ -1913,6 +1911,8 @@ impl ClientShellState {
                     self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
                 }
             }
+            // Left and middle releases and drags outside a gesture, and the
+            // rest, change nothing here.
             _ => {}
         }
     }

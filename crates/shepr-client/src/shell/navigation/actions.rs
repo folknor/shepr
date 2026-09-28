@@ -201,11 +201,10 @@ impl ClientShellState {
         body: impl Into<String>,
     ) -> bool {
         let key = ClientEndpointNoticeKey {
-            boot_id: self
-                .snapshot
-                .as_deref()
-                .map(|snapshot| snapshot.boot_id.clone())
-                .unwrap_or_else(|| "disconnected".into()),
+            boot_id: self.snapshot.as_deref().map_or_else(
+                || "disconnected".into(),
+                |snapshot| snapshot.boot_id.clone(),
+            ),
             kind,
             code: code.into(),
         };
@@ -334,11 +333,16 @@ impl ClientShellState {
         );
         // A cancelled copy-mode request does not continue its key queue
         // (`continue_queue` is false on every error), so nothing but a repaint
-        // can come out of it.
-        debug_assert!(
-            outcome.actions.is_empty() && outcome.requests.is_empty(),
-            "cancellation must not start another action"
-        );
+        // can come out of it. Callers take only the repaint, so anything else
+        // would be dropped; say so in the log instead of losing it silently.
+        if !(outcome.actions.is_empty() && outcome.requests.is_empty()) {
+            tracing::warn!(
+                request_id,
+                actions = outcome.actions.len(),
+                requests = outcome.requests.len(),
+                "cancelled endpoint request produced follow-up work, which is dropped"
+            );
+        }
         outcome.repaint
     }
 

@@ -53,7 +53,7 @@ const ROOT_INPUTS: [&str; 3] = ["Cargo.toml", "Cargo.lock", "build.rs"];
 /// The identity of a build whose profile inputs could not be established.
 /// Sixteen ASCII bytes, so it fits the preamble's fixed identity field, and not
 /// hex, so it never compares equal to anything.
-pub const UNIDENTIFIABLE_BUILD_ID: &str = "unidentifiable--";
+pub(crate) const UNIDENTIFIABLE_BUILD_ID: &str = "unidentifiable--";
 
 /// Profile variables cargo sets for every build script. A build missing one
 /// cannot say how it was built.
@@ -100,7 +100,7 @@ impl Fnv {
 
 /// The build-profile half of the identity.
 #[derive(Debug, Clone, Default)]
-pub struct ProfileInputs {
+pub(crate) struct ProfileInputs {
     /// Every profile variable read, by name, with its raw value or `None` when
     /// unset. Order does not matter; the hash sorts them.
     pub vars: Vec<(String, Option<OsString>)>,
@@ -109,19 +109,20 @@ pub struct ProfileInputs {
 }
 
 impl ProfileInputs {
-    /// Reads the profile inputs cargo hands this build script.
+    /// Reads the profile inputs cargo hands this build script. The compiler is
+    /// asked for its version from `root`, the workspace root.
     #[expect(
         clippy::disallowed_methods,
-        reason = "a build script reads cargo's own variables; shepr_core::env governs the variables shepr processes interpret"
+        reason = "a build script reads cargo's own variables (shepr_core::env governs the variables shepr processes interpret) and runs the compiler with std's Command, stating its working directory; shepr_platform is not a build dependency"
     )]
     #[cfg_attr(
         test,
-        allow(
+        expect(
             dead_code,
             reason = "unit tests include this script as a module and state their own inputs"
         )
     )]
-    fn from_env() -> Self {
+    fn from_env(root: &Path) -> Self {
         let mut vars = REQUIRED_PROFILE_VARS
             .iter()
             .chain(OPTIONAL_PROFILE_VARS.iter())
@@ -141,6 +142,7 @@ impl ProfileInputs {
         }
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
         let rustc_version = std::process::Command::new(rustc)
+            .current_dir(root)
             .arg("--version")
             .output()
             .ok()
@@ -154,7 +156,7 @@ impl ProfileInputs {
     }
 
     /// Whether every input that is always present in a real build is present.
-    pub fn is_established(&self) -> bool {
+    pub(crate) fn is_established(&self) -> bool {
         self.rustc_version.is_some()
             && REQUIRED_PROFILE_VARS.iter().all(|required| {
                 self.vars
@@ -200,16 +202,35 @@ fn relative_name(root: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
 ///
 /// A required source input that is missing or unreadable. The build fails on
 /// it rather than stamping an identity that silently leaves the input out.
-pub fn build_id(root: &Path, profile: &ProfileInputs) -> Result<String, Box<dyn Error>> {
+pub(crate) fn build_id(root: &Path, profile: &ProfileInputs) -> Result<String, Box<dyn Error>> {
     let mut files = Vec::new();
     for name in ROOT_INPUTS {
         let path = root.join(name);
-        if !path.is_file() {
-            return Err(format!(
-                "required build-identity input {} is missing; the build identity cannot be established without it",
-                path.display()
-            )
-            .into());
+        // A stat failure other than absence (EACCES, ELOOP) is reported as
+        // itself, not folded into "missing", and a present non-file refuses too.
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "required build-identity input {} is not a file; the build identity cannot be established without it",
+                    path.display()
+                )
+                .into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "required build-identity input {} is missing; the build identity cannot be established without it",
+                    path.display()
+                )
+                .into());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot read build-identity input {}: {error}",
+                    path.display()
+                )
+                .into());
+            }
         }
         files.push(path);
     }
@@ -260,12 +281,12 @@ pub fn build_id(root: &Path, profile: &ProfileInputs) -> Result<String, Box<dyn 
 )]
 #[cfg_attr(
     test,
-    allow(
+    expect(
         dead_code,
         reason = "unit tests include this script as a module for build_id and never run main"
     )
 )]
-pub fn main() -> Result<(), Box<dyn Error>> {
+pub(crate) fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,
     );
@@ -283,7 +304,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
 
-    let build_id = build_id(&root, &ProfileInputs::from_env())?;
+    let build_id = build_id(&root, &ProfileInputs::from_env(&root))?;
 
     fs::write(
         out_dir.join("build_id.rs"),

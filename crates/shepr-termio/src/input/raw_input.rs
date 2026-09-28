@@ -989,8 +989,7 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
         };
         if buffer[..seq_len].starts_with(b"\x1b[M") {
             let event = parse_default_mouse(&buffer[..seq_len])
-                .map(RawInputEvent::Mouse)
-                .unwrap_or(RawInputEvent::Unsupported);
+                .map_or(RawInputEvent::Unsupported, RawInputEvent::Mouse);
             return Some((event, seq_len));
         }
         let Ok(seq) = std::str::from_utf8(&buffer[..seq_len]) else {
@@ -1109,6 +1108,10 @@ enum ControlStringFamily {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    variant_size_differences,
+    reason = "a Copy scan result of sixteen bytes, returned by value from the input parser"
+)]
 enum ControlString {
     Complete {
         len: usize,
@@ -1572,7 +1575,7 @@ fn parse_mouse_cb(cb: u8) -> Option<(MouseEventKind, KeyModifiers)> {
         (3, false) => MouseEventKind::Up(MouseButton::Left),
         // Crossterm cannot represent extended-button drags. Preserve their
         // position as motion so a stuck host button cannot suppress hover.
-        (3, true) | (4, true) | (5, true) | (8, true) | (9, true) => MouseEventKind::Moved,
+        (3 | 4 | 5 | 8 | 9, true) => MouseEventKind::Moved,
         (4, false) => MouseEventKind::ScrollUp,
         (5, false) => MouseEventKind::ScrollDown,
         (6, false) => MouseEventKind::ScrollLeft,
@@ -2323,16 +2326,22 @@ mod tests {
         }
     }
 
+    fn read_fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+    }
+
     #[test]
     fn raw_input_corpus_fixture_extracts_whole_events() {
-        let corpus = include_str!("../../../../tests/fixtures/keyboard_protocol_corpus.tsv");
-        assert_fixture_extracts_whole_events(corpus);
+        assert_fixture_extracts_whole_events(&read_fixture("keyboard_protocol_corpus.tsv"));
     }
 
     #[test]
     fn raw_input_linux_terminal_variants_fixture_extracts_whole_events() {
-        let corpus = include_str!("../../../../tests/fixtures/linux_terminal_variants.tsv");
-        assert_fixture_extracts_whole_events(corpus);
+        assert_fixture_extracts_whole_events(&read_fixture("linux_terminal_variants.tsv"));
     }
 
     #[test]

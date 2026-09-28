@@ -161,11 +161,10 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == workspace_id)
                 .map(|workspace| workspace.new_workspace_cwd.clone())
         });
-        let suggested_name = cwd
-            .as_deref()
-            .map(std::path::Path::new)
-            .map(crate::workspace_label::derive_label_from_cwd)
-            .unwrap_or_else(|| "workspace".to_owned());
+        let suggested_name = cwd.as_deref().map(std::path::Path::new).map_or_else(
+            || "workspace".to_owned(),
+            crate::workspace_label::derive_label_from_cwd,
+        );
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "new workspace",
             input: TextEditor::new(&suggested_name, true),
@@ -565,9 +564,8 @@ impl ClientShellState {
                     }
                 }
                 KeyCode::Up
-                | KeyCode::Char('k')
                 | KeyCode::Down
-                | KeyCode::Char('j')
+                | KeyCode::Char('k' | 'j')
                 | KeyCode::PageUp
                 | KeyCode::PageDown => {
                     let delta = match code {

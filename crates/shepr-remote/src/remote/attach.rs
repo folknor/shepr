@@ -267,7 +267,7 @@ mod tests {
         drop(bridge);
 
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(!socket.exists());
+        assert!(!socket.try_exists().expect("stat bridge socket"));
     }
 
     #[test]
@@ -305,7 +305,10 @@ mod tests {
         // first-value-wins keeps the user's own settings.
         if let Some(home) = paths.home_dir() {
             let user_config = home.join(".ssh").join("config");
-            if user_config.is_file() {
+            if ssh_config_include(Some(user_config.as_path()))
+                .expect("stat user ssh config")
+                .is_some()
+            {
                 let include = format!(
                     "Include {}",
                     ssh_config_quote(&user_config.to_string_lossy())
@@ -362,12 +365,20 @@ mod tests {
         assert_ne!(socket.parent(), first.options.config_path.parent());
         let config_path = first.options.config_path.clone();
         drop(first);
-        assert!(!config_path.exists());
+        assert!(!config_path.try_exists().expect("stat dropped config"));
         // Dropping one helper's config removes only its own directory: the
         // runtime directory the configs live in, and the other helper's
         // config, stay.
-        assert!(paths.xdg_runtime_dir().is_dir());
-        assert!(second.options.config_path.is_file());
+        assert!(
+            std::fs::metadata(paths.xdg_runtime_dir())
+                .expect("stat runtime directory")
+                .is_dir()
+        );
+        assert!(
+            std::fs::metadata(&second.options.config_path)
+                .expect("stat surviving config")
+                .is_file()
+        );
     }
 
     #[test]
@@ -407,9 +418,9 @@ mod tests {
         let path = config.options.config_path.clone();
         let worker_options = config.options.clone();
         drop(config);
-        assert!(path.is_file());
+        assert!(std::fs::metadata(&path).expect("stat config").is_file());
         drop(worker_options);
-        assert!(!path.exists());
+        assert!(!path.try_exists().expect("stat dropped config"));
     }
 
     #[test]
@@ -575,10 +586,13 @@ mod tests {
         registry.release_all(Duration::from_millis(50));
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(
-            !leaked.exists(),
+            !leaked.try_exists().expect("stat leaked directory"),
             "the sweep removes what is still registered"
         );
-        assert!(released.exists(), "deregistered resources are left alone");
+        assert!(
+            released.try_exists().expect("stat released directory"),
+            "deregistered resources are left alone"
+        );
     }
 
     #[test]
@@ -870,7 +884,7 @@ mod tests {
 
         // The script, run by a real /bin/sh, still frames its output with the marker.
         // host-program-ok: the generated remote script is the subject, run as sshd runs it
-        let output = std::process::Command::new("/bin/sh")
+        let output = shepr_test_support::command_in_scratch("/bin/sh", "saved-bridge-command-sh")
             .arg("-c")
             .arg(posix_remote_output_command("printf payload"))
             .output()
@@ -888,13 +902,14 @@ mod tests {
 
         let run = |script: &str| {
             // host-program-ok: the generated remote script is the subject, run as sshd runs it
-            let mut child = std::process::Command::new("/bin/sh")
-                .arg("-s")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .expect("test precondition");
+            let mut child =
+                shepr_test_support::command_in_scratch("/bin/sh", "remote-output-wrapper-sh")
+                    .arg("-s")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("test precondition");
             child
                 .stdin
                 .take()
@@ -956,7 +971,7 @@ mod tests {
                 assert!(!script.contains(forbidden), "{forbidden:?} in {script}");
             }
             // host-program-ok: the generated remote script is the subject, run as sshd runs it
-            std::process::Command::new("/bin/sh")
+            shepr_test_support::command_in_scratch("/bin/sh", "cached-api-command-sh")
                 .arg("-c")
                 .arg(&script)
                 .stdin(std::process::Stdio::null())

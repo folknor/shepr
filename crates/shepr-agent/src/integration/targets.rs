@@ -20,7 +20,9 @@ use super::config_edit::{
 };
 use super::config_file::{check_config_targets, lock_config_for_update, write_config};
 use super::env::AgentIntegrationPaths;
-use super::file_ops::{remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset};
+use super::file_ops::{
+    is_dir, is_file, remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset,
+};
 use super::opencode_config::{
     PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, remove_cli_plugin, remove_tui_plugin,
     validate_tui_plugin_config,
@@ -68,7 +70,7 @@ fn write_hook_script(target: Target, path: &Path) -> io::Result<()> {
 }
 
 fn read_json_config(path: &Path, default: Value) -> io::Result<Value> {
-    if !path.is_file() {
+    if !is_file(path)? {
         return Ok(default);
     }
     serde_json::from_str::<Value>(&fs::read_to_string(path)?)
@@ -76,10 +78,14 @@ fn read_json_config(path: &Path, default: Value) -> io::Result<Value> {
 }
 
 fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
-    if dir.is_dir() {
+    if is_dir(dir)? {
         return Ok(());
     }
-    if dir.parent().is_some_and(Path::is_dir) {
+    let parent_is_dir = match dir.parent() {
+        Some(parent) => is_dir(parent)?,
+        None => false,
+    };
+    if parent_is_dir {
         return fs::create_dir_all(dir);
     }
     Err(io::Error::other(format!(
@@ -116,7 +122,7 @@ pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<OmpInstal
 pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<ClaudeInstallPaths> {
     let dir = paths.directory("claude")?;
     check_config_targets(&dir, &["settings.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "claude directory not found at {}. install claude code first",
             dir.display()
@@ -128,7 +134,7 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Claude
 
     let settings_path = dir.join("settings.json");
     let _settings_lock = lock_config_for_update(&settings_path)?;
-    let existing_settings = if settings_path.is_file() {
+    let existing_settings = if is_file(&settings_path)? {
         fs::read_to_string(&settings_path)?
     } else {
         "{}".to_string()
@@ -153,7 +159,7 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Claude
 pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexInstallPaths> {
     let dir = paths.directory("codex")?;
     check_config_targets(&dir, &["hooks.json", "config.toml"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "codex config directory not found at {}. install codex first",
             dir.display()
@@ -184,7 +190,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexIn
 
     let config_path = dir.join("config.toml");
     let _config_lock = lock_config_for_update(&config_path)?;
-    let existing_config = if config_path.is_file() {
+    let existing_config = if is_file(&config_path)? {
         fs::read_to_string(&config_path)?
     } else {
         String::new()
@@ -207,7 +213,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexIn
 pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInstallPaths> {
     let dir = paths.directory("kimi")?;
     check_config_targets(&dir, &["config.toml"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "kimi code config directory not found at {}. install kimi code first",
             dir.display()
@@ -218,7 +224,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInst
     let hook_path = hooks_dir.join(KIMI_HOOK_INSTALL_NAME);
     let config_path = dir.join("config.toml");
     let _config_lock = lock_config_for_update(&config_path)?;
-    let existing_config = if config_path.is_file() {
+    let existing_config = if is_file(&config_path)? {
         fs::read_to_string(&config_path)?
     } else {
         String::new()
@@ -243,7 +249,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInst
 pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<CopilotInstallPaths> {
     let dir = paths.directory("copilot")?;
     check_config_targets(&dir, &["settings.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "copilot config directory not found at {}. install github copilot cli first",
             dir.display()
@@ -292,7 +298,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Copil
 pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinInstallPaths> {
     let dir = paths.directory("devin")?;
     check_config_targets(&dir, &["config.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "devin config directory not found at {}. install devin cli first",
             dir.display()
@@ -339,7 +345,7 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinIn
 pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidInstallPaths> {
     let dir = paths.directory("droid")?;
     check_config_targets(&dir, &["settings.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "droid config directory not found at {}. install droid first",
             dir.display()
@@ -388,7 +394,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidIn
 pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<OpenCodeInstallPaths> {
     let dir = paths.directory("opencode")?;
     check_config_targets(&dir, &["tui.jsonc", "tui.json", "cli.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "opencode config directory not found at {}. install opencode first",
             dir.display()
@@ -436,7 +442,7 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Open
 
 pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloInstallPaths> {
     let dir = paths.directory("kilo")?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "kilo config directory not found at {}. install kilo first",
             dir.display()
@@ -484,7 +490,7 @@ pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<Clau
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
-    if settings_path.is_file() {
+    if is_file(&settings_path)? {
         let existing_settings = fs::read_to_string(&settings_path)?;
         let new_settings =
             uninstall_claude_settings(&existing_settings, &settings_path, &hook_path)?;
@@ -513,7 +519,7 @@ pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<Codex
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
-    if hooks_path.is_file() {
+    if is_file(&hooks_path)? {
         let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
             .map_err(|err| {
                 io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
@@ -553,7 +559,7 @@ pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiUn
     let _config_lock = lock_config_for_update(&config_path)?;
     let mut updated_config = false;
 
-    if config_path.is_file() {
+    if is_file(&config_path)? {
         let existing_config = fs::read_to_string(&config_path)?;
         let new_config = remove_kimi_config_block(&existing_config)?;
         if new_config != existing_config {
@@ -582,7 +588,7 @@ pub(crate) fn uninstall_copilot(
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
-    if settings_path.is_file() {
+    if is_file(&settings_path)? {
         let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
             .map_err(|err| {
                 io::Error::other(format!(
@@ -630,7 +636,7 @@ pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<Devin
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
-    if settings_path.is_file() {
+    if is_file(&settings_path)? {
         let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
             .map_err(|err| {
                 io::Error::other(format!(
@@ -678,7 +684,7 @@ pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<Droid
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
-    if settings_path.is_file() {
+    if is_file(&settings_path)? {
         let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
             .map_err(|err| {
                 io::Error::other(format!(
@@ -779,7 +785,7 @@ pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloUn
 pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<QodercliInstallPaths> {
     let dir = paths.directory("qodercli")?;
     check_config_targets(&dir, &["settings.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "qodercli config directory not found at {}. install qodercli first",
             dir.display()
@@ -833,7 +839,7 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Qode
 pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInstallPaths> {
     let dir = paths.directory("qwen")?;
     check_config_targets(&dir, &["settings.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "qwen code config directory not found at {}. install qwen code first",
             dir.display()
@@ -906,7 +912,7 @@ fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> i
 pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaInstallPaths> {
     let dir = paths.directory("letta")?;
     check_config_targets(&dir, &["settings.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "letta code config directory not found at {}. install letta code first",
             dir.display()
@@ -918,7 +924,7 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaIn
 
     let settings_path = dir.join("settings.json");
     let _settings_lock = lock_config_for_update(&settings_path)?;
-    let mut settings = if settings_path.is_file() {
+    let mut settings = if is_file(&settings_path)? {
         serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
             io::Error::other(format!(
                 "failed to parse {}: {err}",
@@ -976,7 +982,7 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaIn
 pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<CursorInstallPaths> {
     let dir = paths.directory("cursor")?;
     check_config_targets(&dir, &["hooks.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "cursor config directory not found at {}. install cursor agent cli first",
             dir.display()
@@ -1030,7 +1036,7 @@ pub(crate) fn uninstall_qodercli(
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
-    if settings_path.is_file() {
+    if is_file(&settings_path)? {
         let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
             .map_err(|err| {
                 io::Error::other(format!(
@@ -1078,7 +1084,7 @@ pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenUn
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
-    if settings_path.is_file() {
+    if is_file(&settings_path)? {
         let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
             .map_err(|err| {
                 io::Error::other(format!(
@@ -1126,7 +1132,7 @@ pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<Letta
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
-    if settings_path.is_file() {
+    if is_file(&settings_path)? {
         let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
             .map_err(|err| {
                 io::Error::other(format!(
@@ -1168,7 +1174,7 @@ pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<Curs
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
-    if hooks_path.is_file() {
+    if is_file(&hooks_path)? {
         let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
             .map_err(|err| {
                 io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
@@ -1208,7 +1214,7 @@ pub(crate) fn install_mastracode(
 ) -> io::Result<MastracodeInstallPaths> {
     let mastracode_home = paths.directory("mastracode")?;
     check_config_targets(&mastracode_home, &["hooks.json"])?;
-    if !mastracode_home.is_dir() {
+    if !is_dir(&mastracode_home)? {
         return Err(io::Error::other(format!(
             "mastracode config directory not found at {}. install mastracode first",
             mastracode_home.display()
@@ -1266,7 +1272,7 @@ pub(crate) fn uninstall_mastracode(
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
-    if hooks_path.is_file() {
+    if is_file(&hooks_path)? {
         let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
             .map_err(|err| {
                 io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
@@ -1309,7 +1315,7 @@ pub(crate) fn install_antigravity_cli(
 ) -> io::Result<AntigravityCliInstallPaths> {
     let dir = paths.directory("antigravity_cli")?;
     check_config_targets(&dir, &["hooks.json"])?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "antigravity cli config directory not found at {}. install antigravity cli first",
             dir.display()
@@ -1382,7 +1388,7 @@ pub(crate) fn uninstall_antigravity_cli(
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
-    if hooks_path.is_file() {
+    if is_file(&hooks_path)? {
         let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
             .map_err(|err| {
                 io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
@@ -1442,7 +1448,7 @@ pub(crate) fn grok_hook_config(hook_path: &Path) -> Value {
 
 pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokInstallPaths> {
     let dir = paths.directory("grok")?;
-    if !dir.is_dir() {
+    if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "grok config directory not found at {}. install grok cli first",
             dir.display()

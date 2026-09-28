@@ -357,9 +357,7 @@ fn handle_connection_with_stop(
                 id: String,
             }
             let id = if line.starts_with('{') {
-                serde_json::from_str::<RequestId>(line)
-                    .map(|request| request.id)
-                    .unwrap_or_default()
+                serde_json::from_str::<RequestId>(line).map_or_default(|request| request.id)
             } else {
                 String::new()
             };
@@ -1193,7 +1191,10 @@ mod tests {
             1,
             "listener thread must have exited"
         );
-        assert!(!path.exists(), "socket file must be removed");
+        assert!(
+            !path.try_exists().expect("stat socket file"),
+            "socket file must be removed"
+        );
     }
 
     #[test]
@@ -1237,7 +1238,7 @@ mod tests {
         assert_eq!(fs::read_link(&stable).expect("test precondition"), agent);
         drop(client);
         worker.join().expect("test precondition");
-        assert!(!stable.exists());
+        assert!(!stable.try_exists().expect("stat stable agent link"));
         drop(registry);
     }
 

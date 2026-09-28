@@ -133,13 +133,13 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.selection = Some(shepr_vt::selection::Selection::range(
-        "pane_1".into(),
+        test_pane_id("ws_1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));
     for result in [
         Ok(shepr_api::schema::ResponseResult::PaneSelection {
-            pane_id: "pane_1".into(),
+            pane_id: "ws_1:p1".into(),
             text: String::new(),
         }),
         Err(ClientShellEndpointError {

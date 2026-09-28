@@ -1,7 +1,7 @@
 //! Shared local server startup and build checks for direct and SSH clients.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -111,7 +111,12 @@ pub fn spawn_server_daemon(paths: &shepr_config::AppPaths) -> io::Result<u32> {
 
     info!(exe = %exe.display(), "spawning server daemon");
 
-    let mut command = build_server_daemon_command(&exe, paths.current_dir(), paths);
+    let mut command = build_server_daemon_command(
+        &exe,
+        &server_daemon_working_dir(paths),
+        paths.current_dir(),
+        paths,
+    );
 
     let pid = command.spawn().map(|child| child.id()).map_err(|err| {
         io::Error::new(err.kind(), format!("failed to spawn shepr server: {err}"))
@@ -121,12 +126,30 @@ pub fn spawn_server_daemon(paths: &shepr_config::AppPaths) -> io::Result<u32> {
     Ok(pid)
 }
 
+/// The working directory the server daemon runs in: the user's home
+/// directory, or `/` when there is none. Not the launching shell's directory:
+/// the daemon outlives that shell, and inheriting it would pin the directory
+/// for the server's whole life (an unmount fails with EBUSY, a deleted
+/// directory stays referenced). The directory the user launched from still
+/// reaches the server, as `SHEPR_STARTUP_CWD`, and is the server's resolved
+/// current directory (`AppPaths::resolve_for_server`): new terminals,
+/// `new_terminal_cwd = "current"` and a relative `new_terminal_cwd` resolve
+/// against it, not against this working directory. Home rather than `/` in
+/// case a launch hands over no directory, since the server then falls back
+/// to its own.
+fn server_daemon_working_dir(paths: &shepr_config::AppPaths) -> PathBuf {
+    paths
+        .home_dir()
+        .map_or_else(|| PathBuf::from("/"), Path::to_path_buf)
+}
+
 fn build_server_daemon_command(
     exe: &Path,
+    working_dir: &Path,
     startup_cwd: Option<&Path>,
     paths: &shepr_config::AppPaths,
 ) -> Command {
-    let mut command = Command::new(exe);
+    let mut command = shepr_platform::child_command(exe, working_dir);
     command
         .arg("server")
         // Redirect stdio to /dev/null
@@ -251,6 +274,7 @@ mod tests {
 
         let command = build_server_daemon_command(
             &PathBuf::from("/tmp/shepr-test"),
+            Path::new("/"),
             Some(Path::new("/home/test")),
             &paths,
         );
@@ -271,14 +295,39 @@ mod tests {
     fn server_daemon_command_passes_current_dir_as_startup_cwd() {
         let expected = Path::new("/home/test");
         let paths = shepr_config::AppPaths::test_default();
-        let command =
-            build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"), Some(expected), &paths);
+        let command = build_server_daemon_command(
+            &PathBuf::from("/tmp/shepr-test"),
+            Path::new("/"),
+            Some(expected),
+            &paths,
+        );
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
             *key == OsStr::new(EnvVar::SheprStartupCwd.name())
                 && value == &Some(expected.as_os_str())
         }));
+    }
+
+    #[test]
+    fn server_daemon_runs_in_home_not_the_launch_directory() {
+        let scratch = ScratchDir::new("daemon-working-dir");
+        let paths = shepr_config::AppPaths::test_at(scratch.path());
+        let working_dir = server_daemon_working_dir(&paths);
+        assert_eq!(
+            Some(working_dir.as_path()),
+            paths.home_dir().or(Some(Path::new("/")))
+        );
+
+        let launch_dir = scratch.join("launch");
+        let command = build_server_daemon_command(
+            &PathBuf::from("/tmp/shepr-test"),
+            &working_dir,
+            Some(&launch_dir),
+            &paths,
+        );
+        assert_eq!(command.get_current_dir(), Some(working_dir.as_path()));
+        assert_ne!(command.get_current_dir(), Some(launch_dir.as_path()));
     }
 
     #[test]

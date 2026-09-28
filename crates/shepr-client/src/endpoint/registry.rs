@@ -28,7 +28,7 @@ pub(crate) struct EndpointConnection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EndpointTransportFailure {
+pub(crate) struct EndpointTransportFailure {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) generation: u64,
     pub(crate) kind: io::ErrorKind,

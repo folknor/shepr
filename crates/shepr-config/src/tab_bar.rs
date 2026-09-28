@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 5;
 pub(crate) const DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 2;
-pub const MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 31_536_000;
-pub const MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 3_600;
-pub const MAX_TAB_BAR_RIGHT_ENTRIES: usize = 16;
+pub(crate) const MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 31_536_000;
+pub(crate) const MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 3_600;
+pub(crate) const MAX_TAB_BAR_RIGHT_ENTRIES: usize = 16;
 
 #[derive(Debug, Clone)]
 pub enum ValidatedTabBarRightEntry {
@@ -58,7 +58,7 @@ pub enum TabBarRightEntryConfig {
     },
 }
 
-pub fn parse_tab_bar_datetime_format(
+pub(crate) fn parse_tab_bar_datetime_format(
     value: &str,
 ) -> Result<time::format_description::OwnedFormatItem, String> {
     if value.is_empty() {
@@ -72,7 +72,7 @@ pub fn parse_tab_bar_datetime_format(
     Ok(format)
 }
 
-pub fn parse_tab_bar_right_entries(
+pub(crate) fn parse_tab_bar_right_entries(
     entries: &[TabBarRightEntryConfig],
 ) -> Result<Vec<ValidatedTabBarRightEntry>, Vec<String>> {
     let mut diagnostics = Vec::new();

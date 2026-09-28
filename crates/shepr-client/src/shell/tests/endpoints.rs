@@ -22,7 +22,7 @@ fn agent(
     ClientShellAgent {
         pane_id: "ws_1:p1".parse().expect("test precondition"),
         workspace_id: "ws_1".into(),
-        tab_id: "tab_1".into(),
+        tab_id: test_tab_id("ws_1:t1"),
         name: Some(name.into()),
         display_agent: None,
         agent: Some("pi".into()),
@@ -243,7 +243,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .agents
             .iter()
             .map(|agent| ClientShellPane {
-                pane_id: agent.pane_id.to_string().into(),
+                pane_id: agent.pane_id.clone(),
                 focused: agent.focused,
                 ..projection.panes[0].clone()
             })
@@ -322,7 +322,7 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
         if select_pane {
             assert!(state.focus_or_activate(
                 remote.clone(),
-                ClientEndpointFocusTarget::Pane("ws_1:p1".into()),
+                ClientEndpointFocusTarget::Pane(test_pane_id("ws_1:p1")),
                 &mut outcome,
             ));
         } else {
@@ -494,7 +494,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
     assert!(matches!(
         input.requests.as_slice(),
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
-            if pane_id == "pane_1" && events.len() == 1
+            if pane_id == "ws_1:p1" && events.len() == 1
     ));
 }
 
@@ -778,7 +778,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     let add_second_workspace = |snapshot: &mut ClientShellSnapshot| {
         let mut workspace = snapshot.workspaces[0].clone();
         workspace.workspace_id = "ws_2".into();
-        workspace.active_tab_id = "tab_2".into();
+        workspace.active_tab_id = test_tab_id("ws_2:t1");
         workspace.number = 2;
         workspace.label = "second-workspace".into();
         workspace.focused = false;
@@ -1747,7 +1747,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
                     ClientNavigatorTarget::Pane {
                         endpoint_id: target_endpoint,
                         pane_id,
-                    } if target_endpoint == &endpoint_id && pane_id == "pane_1"
+                    } if target_endpoint == &endpoint_id && pane_id == "ws_1:p1"
                 )
             })
             .map(|row| row.target.clone())
@@ -1771,7 +1771,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
         [ClientShellAction::ActivateEndpoint {
             endpoint_id: activated,
             target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-        }] if activated == &endpoint_id && pane_id == "pane_1"
+        }] if activated == &endpoint_id && pane_id == "ws_1:p1"
     ));
     assert!(state.overlay.is_none());
 }
@@ -1887,7 +1887,7 @@ fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
             navigator.selected,
             Some(ClientNavigatorTarget::Pane {
                 endpoint_id: expected_endpoint,
-                pane_id: "pane_1".into(),
+                pane_id: test_pane_id("ws_1:p1"),
             })
         );
     }

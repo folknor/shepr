@@ -1,6 +1,7 @@
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
-use std::process::{Command, Output, Stdio};
+use std::path::Path;
+use std::process::{Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -111,12 +112,14 @@ pub(crate) fn enforce_agent_version(
 /// Polls the version command so a process that exceeds the deadline is killed.
 /// Stdout is drained without blocking, so a grandchild that inherits the pipe
 /// and outlives the command cannot hold the probe past the deadline. Stderr
-/// goes to /dev/null.
+/// goes to /dev/null. The probe runs in `/`: a `--version` call reads nothing
+/// relative to its directory, and `/` neither pins the caller's directory nor
+/// can vanish under it.
 fn run_version_probe(
     requirement: &AgentVersionRequirement,
     timeout: Duration,
 ) -> io::Result<Option<Output>> {
-    let mut child = Command::new(requirement.binary)
+    let mut child = shepr_platform::child_command(requirement.binary, Path::new("/"))
         .args(requirement.args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

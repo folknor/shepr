@@ -17,7 +17,15 @@ use shepr_config::ValidatedTabBarRightEntry;
 
 impl App {
     /// Environment and working directory for tab bar status commands.
-    fn status_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
+    ///
+    /// The working directory is the active pane's, the same one exported as
+    /// `SHEPR_ACTIVE_PANE_CWD`: a status segment describes what the user is
+    /// looking at, so `git branch --show-current` or `ls` must see the focused
+    /// pane's directory. With no focused pane, or when its directory is gone,
+    /// the command runs in the home directory, and in `/` when that is unknown
+    /// or missing too. It never inherits the server's own working directory, which is
+    /// wherever the daemon happened to be started.
+    fn status_command_env(&self) -> (Vec<(String, String)>, std::path::PathBuf) {
         use shepr_core::env::{ChildEnv, EnvVar};
 
         let mut env = vec![(
@@ -59,14 +67,39 @@ impl App {
                             ChildEnv::SheprActivePaneCwd.name().to_string(),
                             pane_cwd.display().to_string(),
                         ));
-                        if pane_cwd.is_dir() {
+                        if is_directory(&pane_cwd) {
                             cwd = Some(pane_cwd);
                         }
                     }
                 }
             }
         }
+        let cwd = cwd.unwrap_or_else(|| {
+            self.paths
+                .home_dir()
+                .filter(|home| is_directory(home))
+                .map_or_else(|| std::path::PathBuf::from("/"), Path::to_path_buf)
+        });
         (env, cwd)
+    }
+}
+
+/// Whether `path` names a directory a status command can start in. A stat
+/// failure other than absence (a permission problem, a dead mount) is logged,
+/// and the caller falls back as it would for a missing directory: a status
+/// command has to run somewhere.
+fn is_directory(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            tracing::debug!(
+                path = %path.display(),
+                %error,
+                "status command cannot start in this directory"
+            );
+            false
+        }
     }
 }
 
@@ -365,6 +398,10 @@ enum ControlSequenceState {
     StString,
 }
 
+#[expect(
+    clippy::match_same_arms,
+    reason = "a state transition table reads by source state; merging rows by target state scatters each state's transitions"
+)]
 fn strip_terminal_control_sequences(value: &[u8]) -> Vec<u8> {
     use ControlSequenceState::*;
 
@@ -498,7 +535,7 @@ fn spawn_status_command(
     command: String,
     timeout: Duration,
     environment: Vec<(String, String)>,
-    cwd: Option<std::path::PathBuf>,
+    cwd: std::path::PathBuf,
 ) -> StatusCommandTask {
     let control = Arc::new(StatusCommandControl {
         terminated: AtomicBool::new(false),
@@ -536,23 +573,21 @@ async fn run_status_command(
     timeout: Duration,
     deadline: tokio::time::Instant,
     environment: Vec<(String, String)>,
-    cwd: Option<std::path::PathBuf>,
+    cwd: std::path::PathBuf,
 ) -> Result<Option<String>, String> {
     if control.is_terminated() || tokio::time::Instant::now() >= deadline {
         return Err(format!("timed out after {}s", timeout.as_secs()));
     }
 
     // host-program-ok: a status command is the user's shell command line
-    let mut process = std::process::Command::new("/bin/sh");
+    // The working directory is chosen by `App::status_command_env`.
+    let mut process = shepr_platform::child_command("/bin/sh", &cwd);
     process
         .args(["-lc", &command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .envs(environment);
-    if let Some(cwd) = cwd {
-        process.current_dir(cwd);
-    }
     configure_status_command(&mut process);
 
     let mut process = tokio::process::Command::from(process);
@@ -625,6 +660,17 @@ mod tests {
     /// A marker path a status command writes to, in a fresh scratch directory
     /// that outlives the test body (a descendant may still write after it
     /// ends).
+    fn marker_exists(path: &std::path::Path) -> bool {
+        path.try_exists().expect("stat status command marker")
+    }
+
+    /// A stated working directory for a status command a test spawns directly.
+    fn command_cwd() -> std::path::PathBuf {
+        crate::test_support::ScratchDir::new("tab-status-cwd")
+            .path()
+            .to_path_buf()
+    }
+
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
         crate::test_support::ScratchDir::new("tab-status").join(name)
     }
@@ -638,7 +684,7 @@ mod tests {
             multiline_command(),
             Duration::from_secs(2),
             Vec::new(),
-            None,
+            command_cwd(),
         );
 
         let event = tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
@@ -665,7 +711,7 @@ mod tests {
             command,
             Duration::from_secs(1),
             Vec::new(),
-            None,
+            command_cwd(),
         );
 
         std::thread::sleep(Duration::from_millis(1100));
@@ -673,7 +719,7 @@ mod tests {
             .await
             .expect("status command timed out")
             .expect("status command event channel closed");
-        let command_ran = ran.exists();
+        let command_ran = marker_exists(&ran);
         let _ = std::fs::remove_file(ran);
         assert!(matches!(
             event,
@@ -694,7 +740,7 @@ mod tests {
             over_cap_command(),
             Duration::from_secs(2),
             Vec::new(),
-            None,
+            command_cwd(),
         );
 
         let event = tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
@@ -737,13 +783,13 @@ mod tests {
         );
         app.handle_tab_bar_status_tasks(std::time::Instant::now());
         for _ in 0..50 {
-            if descendant_started.exists() {
+            if marker_exists(&descendant_started) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
-            descendant_started.exists(),
+            marker_exists(&descendant_started),
             "status command descendant did not start"
         );
 
@@ -753,7 +799,7 @@ mod tests {
         // this current-thread test runtime long enough for the descendant to
         // run, proving teardown kills its process group synchronously.
         std::thread::sleep(Duration::from_millis(400));
-        let descendant_survived = survived.exists();
+        let descendant_survived = marker_exists(&survived);
         let _ = std::fs::remove_file(&descendant_started);
         let _ = std::fs::remove_file(&survived);
         assert!(!descendant_survived, "status command descendant survived");
@@ -912,7 +958,13 @@ impl StatusCommandGuard {
             leader
                 .as_ref()
                 .map(shepr_platform::ProcessHandle::is_unreaped),
-            || Path::new(&format!("/proc/{process_group_id}")).exists(),
+            // A stat error other than absence cannot prove the number free,
+            // so it counts as held: skipping the kill is the safe side.
+            || {
+                Path::new(&format!("/proc/{process_group_id}"))
+                    .try_exists()
+                    .unwrap_or(true)
+            },
         );
         if !ours {
             return;

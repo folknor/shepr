@@ -28,15 +28,15 @@ pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_c
 pub use clipboard::{read_clipboard_text, write_clipboard};
 pub use config_file::{config_file_link_count, create_config_temporary, write_config_temporary};
 pub use host::{
-    begin_cli_output, current_process_is_detached_server_daemon, detach_server_daemon_command,
-    hostname, launch_executable, local_datetime, take_terminal_resize_signal, terminal_grid_size,
-    watch_terminal_resize_signal,
+    begin_cli_output, child_command, current_process_is_detached_server_daemon,
+    detach_server_daemon_command, hostname, launch_executable, local_datetime,
+    take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
 };
 pub use private_file::{create_private_file, sync_directory};
 pub use process::{
     ProcessHandle, Signal, reap_pidfd, session_member_handles, wait_for_process_exits,
 };
-pub use remote_bridge_io::{RemoteBridgeWake, forward_remote_bridge_stdio};
+pub use remote_bridge_io::{RemoteBridgeOutcome, RemoteBridgeWake, forward_remote_bridge_stdio};
 pub use shutdown::HostShutdownMonitor;
 pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::{

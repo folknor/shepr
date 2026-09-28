@@ -79,7 +79,7 @@ fn all_eight_fields_route_shared_text_editing() {
 
 #[test]
 fn text_delivery_paths_insert_at_the_cursor() {
-    for delivery in 0..4 {
+    for delivery in 0..3 {
         let mut state = shell(0);
         *editor(&mut state) = TextEditor::from("ab");
         press(&mut state, KeyCode::Left, KeyModifiers::NONE);
@@ -89,7 +89,6 @@ fn text_delivery_paths_insert_at_the_cursor() {
                     .with_generated_text(Some("X".into())),
             )]),
             1 => state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]),
-            2 => state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]),
             _ => {
                 let mut result = ClientShellInput::default();
                 assert!(state.handle_modal_paste_shortcut_with(
@@ -132,7 +131,7 @@ fn cursor_movement_preserves_filter_selection_and_scroll() {
                 v.scroll = 3;
                 v.selected = Some(ClientNavigatorTarget::Pane {
                     endpoint_id: ClientEndpointId::Local,
-                    pane_id: "pane_1".into(),
+                    pane_id: test_pane_id("ws_1:p1"),
                 });
             }
             ClientShellOverlay::Help(v) => v.scroll = 3,

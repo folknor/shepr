@@ -173,8 +173,7 @@ fn prepare_pty_child() -> io::Result<()> {
     }
     // SAFETY: TIOCSCTTY on fd 0 (std has dup'd the PTY slave there) takes an
     // integer argument, not a pointer, so no memory is read or written.
-    #[allow(clippy::cast_lossless)] // TIOCSCTTY's type differs between libc targets.
-    if unsafe { libc::ioctl(0, libc::TIOCSCTTY as _, 0) } == -1 {
+    if unsafe { libc::ioctl(0, libc::TIOCSCTTY, 0) } == -1 {
         return Err(io::Error::last_os_error());
     }
     mark_inherited_fds_cloexec()?;
