@@ -11,20 +11,20 @@ use super::{
     validated::CwdCheck,
 };
 
+/// The directory name shepr uses under every XDG base directory.
+///
+/// Every build profile uses the same name: a dev build and the installed
+/// release build share config, state and runtime directories. A dev run is
+/// kept apart from the installed server by running it in a named session
+/// (`--session <name>`), and a server of another build is refused by the
+/// build-identity checks, which cover the build profile as well as the source.
 pub fn app_dir_name() -> &'static str {
-    // Unit tests get a directory name of their own in every profile. `brokkr
-    // test` builds release, where the name would otherwise be the installed
-    // `shepr`, so a test that resolved a config or state path without
-    // isolating `HOME` (`test_support::IsolatedEnv`) would land in the real
-    // `~/.config/shepr`. This keeps such a slip out of both the release and
-    // the dev directory.
-    if cfg!(test) {
-        "shepr-test"
-    } else if cfg!(debug_assertions) {
-        "shepr-dev"
-    } else {
-        "shepr"
-    }
+    // `cfg!(test)` holds only while this crate's own unit tests are compiled;
+    // a test in any other crate that reaches this compiles it as a normal
+    // dependency and gets `shepr`. What keeps every test out of the real
+    // directories is `shepr_test_support::IsolatedEnv`, which points `HOME`
+    // and the XDG variables at scratch, not this name.
+    if cfg!(test) { "shepr-test" } else { "shepr" }
 }
 
 /// Paths and the local target resolved once at the process boundary and

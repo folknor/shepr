@@ -2,7 +2,8 @@
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-// Exact source fingerprint shared by the wire preamble and JSON status API.
+// Exact source and build-profile fingerprint shared by the wire preamble and
+// JSON status API. Compare it through `is_this_build`, never with `==`.
 include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 
 /// Maximum allowed frame payload size (2 MB) in either direction. Readers

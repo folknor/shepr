@@ -448,7 +448,11 @@ pub(super) fn parse_client_status_json(status: &str) -> Option<RemoteClientStatu
 }
 
 fn ensure_remote_client_build(target: &str, status: &RemoteClientStatusJson) -> io::Result<()> {
-    if status.build_id.as_deref() == Some(shepr_protocol::BUILD_ID) {
+    if status
+        .build_id
+        .as_deref()
+        .is_some_and(shepr_protocol::is_this_build)
+    {
         Ok(())
     } else {
         Err(remote_compatibility_error(target, status))

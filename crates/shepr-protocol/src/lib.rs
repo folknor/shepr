@@ -46,7 +46,45 @@ pub fn build_version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), limits::BUILD_ID)
 }
 
+/// Length of a build identity the workspace build script can state.
+const BUILD_ID_HEX_LEN: usize = 16;
+
+/// Whether `id` states a build identity: exactly the sixteen lowercase hex
+/// digits the build script mints. The build script's marker for a build whose
+/// inputs could not be established is not hex, and neither is an empty,
+/// truncated or garbled field, so none of them is an identity.
+pub fn is_identifiable_build_id(id: &str) -> bool {
+    id.len() == BUILD_ID_HEX_LEN
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Whether two builds are provably the same build: `ours` states an identity
+/// and `peer` states the same one. Not reflexive on purpose: a build that
+/// cannot establish its own identity matches nothing, itself included, so it
+/// is refused everywhere rather than attaching to whatever answers.
+pub fn builds_match(ours: &str, peer: &str) -> bool {
+    is_identifiable_build_id(ours) && ours == peer
+}
+
+/// Whether a peer that announced `peer` is this exact build. Every build
+/// comparison (the preamble, `ping`, `status`, the CLI's per-command check and
+/// the remote checks) goes through here.
+pub fn is_this_build(peer: &str) -> bool {
+    builds_match(BUILD_ID, peer)
+}
+
 pub use scroll::ScrollMetrics;
+
+/// The workspace build script, compiled as a module so its identity recipe is
+/// tested against the same code that stamps `BUILD_ID`.
+#[cfg(test)]
+#[path = "../../../build.rs"]
+mod build_script;
+
+#[cfg(test)]
+mod build_identity_tests;
 
 #[cfg(test)]
 mod build_version_tests {
@@ -58,7 +96,7 @@ mod build_version_tests {
             build_version(),
             format!("{}+{}", env!("CARGO_PKG_VERSION"), BUILD_ID)
         );
-        assert_eq!(BUILD_ID.len(), 16);
-        assert!(BUILD_ID.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(is_identifiable_build_id(BUILD_ID), "{BUILD_ID}");
+        assert!(is_this_build(BUILD_ID));
     }
 }

@@ -1435,6 +1435,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shepr-core",
+ "shepr-test-support",
  "shepr-vt",
  "tracing",
 ]

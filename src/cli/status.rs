@@ -281,14 +281,16 @@ fn build_compatible_label(server: &ServerRuntimeStatus) -> &'static str {
 
 fn build_compatible_bool(server: &ServerRuntimeStatus) -> Option<bool> {
     match server {
-        ServerRuntimeStatus::Running { build_id, .. } => Some(build_id == shepr_protocol::BUILD_ID),
+        ServerRuntimeStatus::Running { build_id, .. } => {
+            Some(shepr_protocol::is_this_build(build_id))
+        }
         ServerRuntimeStatus::NotRunning => None,
     }
 }
 
 fn restart_needed_bool(server: &ServerRuntimeStatus) -> bool {
     match server {
-        ServerRuntimeStatus::Running { build_id, .. } => build_id != shepr_protocol::BUILD_ID,
+        ServerRuntimeStatus::Running { build_id, .. } => !shepr_protocol::is_this_build(build_id),
         ServerRuntimeStatus::NotRunning => false,
     }
 }

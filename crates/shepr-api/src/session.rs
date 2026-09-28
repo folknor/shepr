@@ -59,6 +59,13 @@ pub enum SessionError {
         source: io::Error,
     },
     Protocol(String),
+    /// A stop aimed at a server of another build, or one whose build could not
+    /// be read, without [`FORCE_STOP_FLAG`].
+    BuildMismatch {
+        label: String,
+        running: String,
+        force_command: String,
+    },
 }
 
 impl std::fmt::Display for SessionError {
@@ -107,6 +114,15 @@ impl std::fmt::Display for SessionError {
             ),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
             Self::Protocol(message) => f.write_str(message),
+            Self::BuildMismatch {
+                label,
+                running,
+                force_command,
+            } => write!(
+                f,
+                "refusing to stop {label}: it runs a different shepr build (running build {running}; this is build {}). Stopping it exits its pane processes. If that is the server you mean to stop, run `{force_command}`. To run this build alongside it instead, give it a session of its own with `--session <name>`.",
+                shepr_protocol::BUILD_ID
+            ),
         }
     }
 }
@@ -143,14 +159,26 @@ impl From<SessionError> for String {
     }
 }
 
+/// Guidance for a build meeting a running server of another build.
+///
+/// Two ways out, and the non-destructive one first: that server may be the
+/// installed one with every live agent in it, and a dev run landing on its
+/// session is the ordinary way to get here. Running this build in a session of
+/// its own leaves it alone; stopping it exits its panes, and because the stop
+/// is refused against a mismatched server without [`FORCE_STOP_FLAG`], the
+/// command named here carries the flag.
 pub fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
-    // A build mismatch can only be cleared by stopping the server, and the
-    // correct command depends on the active session and socket overrides.
     let restart = match attach_command {
-        Some(command) => format!("Run `{stop_command}`, then run `{command}` again."),
-        None => format!("Run `{stop_command}`, then restart Shepr with the same socket override."),
+        Some(command) => {
+            format!("Run `{stop_command} {FORCE_STOP_FLAG}`, then run `{command}` again.")
+        }
+        None => format!(
+            "Run `{stop_command} {FORCE_STOP_FLAG}`, then restart Shepr with the same socket override."
+        ),
     };
-    format!("Stop the running server to use this build.\nStopping exits pane processes.\n{restart}")
+    format!(
+        "To keep the running server and its panes, run this build in a session of its own: pass `--session <name>` with a name no running server uses.\nTo use this build here instead, stop the running server; stopping exits its pane processes. {restart}"
+    )
 }
 
 pub fn restart_after_update_guidance_for(paths: &shepr_config::AppPaths) -> String {
@@ -241,17 +269,128 @@ pub fn parse_target_name(name: &str) -> Result<SessionId, SessionError> {
     SessionId::parse(name).map_err(Into::into)
 }
 
+/// The flag that lets `server stop` and `session stop` stop a server of
+/// another build.
+pub const FORCE_STOP_FLAG: &str = "--force";
+
+/// How long a stop waits for the target's `ping` before treating its build as
+/// unknown.
+const STOP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What a stop learned about the build of the server it is about to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopTargetBuild {
+    /// Nothing is listening, or the socket cannot be reached. The stop request
+    /// itself reports that, and there is no server it could wrongly stop.
+    NotListening,
+    /// The server states this exact build.
+    ThisBuild,
+    /// The server states another build, or could not say which build it is.
+    Other { running: String },
+}
+
+impl StopTargetBuild {
+    /// The classification of a build a server stated.
+    pub fn from_running_build(build_id: &str) -> Self {
+        if shepr_protocol::is_this_build(build_id) {
+            Self::ThisBuild
+        } else {
+            Self::Other {
+                running: build_id.to_owned(),
+            }
+        }
+    }
+}
+
+/// Asks the server listening at `socket_path` which build it runs.
+pub fn stop_target_build(socket_path: &Path) -> StopTargetBuild {
+    match shepr_platform::ipc::probe(socket_path) {
+        shepr_platform::ipc::Liveness::Absent
+        | shepr_platform::ipc::Liveness::Stale
+        | shepr_platform::ipc::Liveness::Unreachable(_) => StopTargetBuild::NotListening,
+        shepr_platform::ipc::Liveness::Live => {
+            match crate::read_runtime_status_at(socket_path, STOP_STATUS_TIMEOUT) {
+                Ok(Some(status)) => StopTargetBuild::from_running_build(&status.build_id),
+                Ok(None) => StopTargetBuild::Other {
+                    running: "unknown (the server did not answer the status request)".into(),
+                },
+                Err(error) => StopTargetBuild::Other {
+                    running: format!("unknown ({error})"),
+                },
+            }
+        }
+    }
+}
+
+/// Refuses to stop a server of another build unless the operator stated the
+/// intent with [`FORCE_STOP_FLAG`].
+///
+/// `server stop` and `session stop` cannot use the per-command build check,
+/// because the mismatch guidance tells the operator to stop exactly such a
+/// server. Skipping the check silently, though, let a dev build's `server
+/// stop` without `--session` stop the installed server and every pane in it.
+/// So the mismatch is refused, naming both builds and the forced command.
+///
+/// # Errors
+///
+/// [`SessionError::BuildMismatch`] when `target` is another build and `force`
+/// is not set.
+pub fn guard_mismatched_stop(
+    label: &str,
+    target: &StopTargetBuild,
+    force: bool,
+    force_command: &str,
+) -> Result<(), SessionError> {
+    match target {
+        StopTargetBuild::Other { running } if !force => Err(SessionError::BuildMismatch {
+            label: label.into(),
+            running: running.clone(),
+            force_command: force_command.into(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// `shepr session stop --force <name>`, with an option terminator before a
+/// name that starts with `-`, which session names may.
+fn forced_session_stop_command(name: &str) -> String {
+    let terminator = if name.starts_with('-') { "-- " } else { "" };
+    format!("shepr session stop {FORCE_STOP_FLAG} {terminator}{name}")
+}
+
+/// Stops a session. A server of another build is stopped only with `force`.
+///
+/// # Errors
+///
+/// As [`guard_mismatched_stop`], or when the stop request fails.
 pub fn stop_session(
     paths: &shepr_config::AppPaths,
     session: &SessionId,
+    force: bool,
 ) -> Result<SessionInfo, SessionError> {
-    stop_session_with_timeout(paths, session, STOP_WAIT_TIMEOUT)
+    stop_session_with_timeout(paths, session, force, STOP_WAIT_TIMEOUT)
 }
 
-pub fn stop_active_server(paths: &shepr_config::AppPaths) -> Result<(), SessionError> {
+/// Stops the server the resolved address names. A server of another build is
+/// stopped only with `force`.
+///
+/// # Errors
+///
+/// As [`guard_mismatched_stop`], or when the stop request fails.
+pub fn stop_active_server(paths: &shepr_config::AppPaths, force: bool) -> Result<(), SessionError> {
     let address = paths.server_address();
     let socket_path = address.api_socket().to_path_buf();
     let client_socket_path = address.client_socket().to_path_buf();
+    let force_command = format!(
+        "{} {FORCE_STOP_FLAG}",
+        address.stop_command(paths.session_id())
+    );
+    guard_mismatched_stop(
+        "the server",
+        &stop_target_build(&socket_path),
+        force,
+        &force_command,
+    )?;
     stop_socket_with_timeout(
         &socket_path,
         &[socket_path.clone(), client_socket_path],
@@ -263,11 +402,18 @@ pub fn stop_active_server(paths: &shepr_config::AppPaths) -> Result<(), SessionE
 fn stop_session_with_timeout(
     paths: &shepr_config::AppPaths,
     session: &SessionId,
+    force: bool,
     timeout: Duration,
 ) -> Result<SessionInfo, SessionError> {
     let socket_path = api_socket_path_for(paths, session);
     let client_socket_path = client_socket_path_for(paths, session);
     let label = format!("session {}", session.display_name());
+    guard_mismatched_stop(
+        &label,
+        &stop_target_build(&socket_path),
+        force,
+        &forced_session_stop_command(session.display_name()),
+    )?;
     stop_socket_with_timeout(
         &socket_path,
         &[socket_path.clone(), client_socket_path],
@@ -667,7 +813,9 @@ mod tests {
             }
         });
 
-        let err = stop_session_with_timeout(&paths, &session, Duration::from_millis(75))
+        // Forced: this fake never answers the build probe, and the timeout is
+        // what is under test.
+        let err = stop_session_with_timeout(&paths, &session, true, Duration::from_millis(75))
             .expect_err("silent session should fail after timeout");
 
         assert!(matches!(err, SessionError::TimedOut { .. }), "{err}");
@@ -796,6 +944,8 @@ mod tests {
         assert_eq!(named.stop_command(), "shepr session stop work");
     }
 
+    const KEEP_GUIDANCE: &str = "To keep the running server and its panes, run this build in a session of its own: pass `--session <name>` with a name no running server uses.\nTo use this build here instead, stop the running server; stopping exits its pane processes.";
+
     #[test]
     fn restart_after_update_guidance_names_stop_and_attach_commands() {
         assert_eq!(
@@ -803,7 +953,27 @@ mod tests {
                 "shepr session stop work",
                 Some("shepr session attach work")
             ),
-            "Stop the running server to use this build.\nStopping exits pane processes.\nRun `shepr session stop work`, then run `shepr session attach work` again."
+            format!(
+                "{KEEP_GUIDANCE} Run `shepr session stop work --force`, then run `shepr session attach work` again."
+            )
+        );
+    }
+
+    /// The non-destructive way out is offered first, and the stop it names is
+    /// the forced one, since a mismatched stop is refused without the flag.
+    #[test]
+    fn restart_after_update_guidance_offers_a_separate_session_before_stopping() {
+        let guidance = restart_after_update_guidance("shepr server stop", Some("shepr"));
+        let session = guidance
+            .find("--session <name>")
+            .expect("the separate-session option is offered");
+        let stop = guidance
+            .find("shepr server stop --force")
+            .expect("the forced stop is named");
+        assert!(session < stop, "{guidance}");
+        assert!(
+            restart_after_update_guidance("shepr server stop", None)
+                .contains("Run `shepr server stop --force`, then restart Shepr")
         );
     }
 
@@ -815,7 +985,9 @@ mod tests {
 
         assert_eq!(
             restart_after_update_guidance_for(&paths),
-            "Stop the running server to use this build.\nStopping exits pane processes.\nRun `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
+            format!(
+                "{KEEP_GUIDANCE} Run `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop --force`, then run `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
+            )
         );
     }
 
@@ -828,8 +1000,170 @@ mod tests {
 
         assert_eq!(
             restart_after_update_guidance_for(&paths),
-            "Stop the running server to use this build.\nStopping exits pane processes.\nRun `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
+            format!(
+                "{KEEP_GUIDANCE} Run `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop --force`, then run `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
+            )
         );
+    }
+
+    /// A build id that is not this build's.
+    fn other_build() -> &'static str {
+        if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+            "0000000000000000"
+        } else {
+            "ffffffffffffffff"
+        }
+    }
+
+    #[test]
+    fn a_mismatched_stop_is_refused_without_force_naming_both_builds() {
+        let other = StopTargetBuild::from_running_build(other_build());
+        let error = guard_mismatched_stop("the server", &other, false, "shepr server stop --force")
+            .expect_err("a mismatched stop needs explicit intent");
+        assert!(matches!(error, SessionError::BuildMismatch { .. }));
+        let message = error.to_string();
+        for expected in [
+            other_build(),
+            shepr_protocol::BUILD_ID,
+            "`shepr server stop --force`",
+            "--session <name>",
+            "exits its pane processes",
+        ] {
+            assert!(message.contains(expected), "{expected}: {message}");
+        }
+
+        assert!(guard_mismatched_stop("the server", &other, true, "unused").is_ok());
+        for passes in [
+            StopTargetBuild::ThisBuild,
+            StopTargetBuild::NotListening,
+            StopTargetBuild::from_running_build(shepr_protocol::BUILD_ID),
+        ] {
+            assert!(guard_mismatched_stop("the server", &passes, false, "unused").is_ok());
+        }
+    }
+
+    #[test]
+    fn the_forced_session_stop_command_survives_a_dash_name() {
+        assert_eq!(
+            forced_session_stop_command("work"),
+            "shepr session stop --force work"
+        );
+        assert_eq!(
+            forced_session_stop_command("-work"),
+            "shepr session stop --force -- -work"
+        );
+    }
+
+    /// Serves `ping` with `build_id` at `socket_path` and records every
+    /// request line, so a test can prove no `server.stop` was sent.
+    fn serve_build(
+        socket_path: &Path,
+        build_id: &'static str,
+    ) -> (
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::thread::JoinHandle<Vec<String>>,
+    ) {
+        std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
+            .expect("test precondition");
+        let listener =
+            std::os::unix::net::UnixListener::bind(socket_path).expect("test precondition");
+        listener.set_nonblocking(true).expect("test precondition");
+        let keep_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let keep_running_for_thread = std::sync::Arc::clone(&keep_running);
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            while keep_running_for_thread.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).expect("test precondition");
+                        let mut request = String::new();
+                        let reader = stream.try_clone().expect("test precondition");
+                        if BufReader::new(reader).read_line(&mut request).is_err() {
+                            continue;
+                        }
+                        if request.contains("ping") {
+                            let _ = stream.write_all(
+                                format!(
+                                    "{{\"id\":\"runtime:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.0.0\",\"build_id\":\"{build_id}\"}}}}\n"
+                                )
+                                .as_bytes(),
+                            );
+                        }
+                        requests.push(request);
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+            requests
+        });
+        (keep_running, handle)
+    }
+
+    #[test]
+    fn server_stop_refuses_a_server_of_another_build_without_sending_stop() {
+        let (_env, paths) = isolated_config_env();
+        let socket_path = paths.server_address().api_socket().to_path_buf();
+        let (keep_running, handle) = serve_build(&socket_path, other_build());
+
+        let error = stop_active_server(&paths, false).expect_err("a mismatched stop is refused");
+
+        keep_running.store(false, Ordering::Relaxed);
+        let requests = handle.join().expect("test precondition");
+        assert!(
+            matches!(&error, SessionError::BuildMismatch { running, force_command, .. }
+                if running == other_build() && force_command == "shepr server stop --force"),
+            "{error}"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.contains("server.stop")),
+            "{requests:?}"
+        );
+    }
+
+    #[test]
+    fn session_stop_refuses_a_server_of_another_build_without_sending_stop() {
+        let (_env, paths) = isolated_config_env();
+        let session = SessionId::parse("work").expect("test precondition");
+        let socket_path = api_socket_path_for(&paths, &session);
+        let (keep_running, handle) = serve_build(&socket_path, other_build());
+
+        let error =
+            stop_session(&paths, &session, false).expect_err("a mismatched stop is refused");
+
+        keep_running.store(false, Ordering::Relaxed);
+        let requests = handle.join().expect("test precondition");
+        assert!(
+            matches!(&error, SessionError::BuildMismatch { label, force_command, .. }
+                if label == "session work" && force_command == "shepr session stop --force work"),
+            "{error}"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.contains("server.stop")),
+            "{requests:?}"
+        );
+    }
+
+    #[test]
+    fn the_stop_probe_reads_the_running_build() {
+        let (_env, paths) = isolated_config_env();
+        let socket_path = paths.server_address().api_socket().to_path_buf();
+        assert_eq!(
+            stop_target_build(&socket_path),
+            StopTargetBuild::NotListening
+        );
+
+        let (keep_running, handle) = serve_build(&socket_path, shepr_protocol::BUILD_ID);
+        let this_build = stop_target_build(&socket_path);
+        keep_running.store(false, Ordering::Relaxed);
+        handle.join().expect("test precondition");
+        assert_eq!(this_build, StopTargetBuild::ThisBuild);
     }
 
     #[test]
@@ -939,7 +1273,9 @@ mod tests {
             }
         });
 
-        let err = stop_session_with_timeout(&paths, &session, Duration::from_millis(75))
+        // Forced: this fake answers every request with an empty result, not a
+        // build, and the timeout is what is under test.
+        let err = stop_session_with_timeout(&paths, &session, true, Duration::from_millis(75))
             .expect_err("still-running session should fail");
 
         assert!(

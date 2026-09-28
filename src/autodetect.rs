@@ -9,10 +9,13 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Checks the local server, starts it when needed, then runs the client.
 ///
-/// A running server of a different build fails the launch with stop guidance
-/// for the resolved session and socket target. With saved machines
-/// configured, local startup failures only warn so the remote machines stay
-/// reachable; the Local endpoint's handshake then reports the problem.
+/// A running server of a different build fails the launch with guidance for
+/// the resolved session and socket target. With saved machines configured, a
+/// local startup failure does not end the launch, so the remote machines stay
+/// reachable. It is still refused, not swallowed: the failure is printed to
+/// stderr before the TUI takes the terminal, where it is on screen again once
+/// the TUI exits, and the Local endpoint's handshake reports a build mismatch
+/// with the same session-aware guidance as its status in the sidebar.
 pub fn auto_detect_launch(
     saved_federation: bool,
     config: &shepr_config::ValidatedConfig,
@@ -31,9 +34,9 @@ pub fn auto_detect_launch(
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
     // The running server is checked whether or not saved machines are
-    // enabled. With saved machines a mismatch only downgrades to a warning
-    // below, so they stay reachable; the Local endpoint's own handshake then
-    // rejects the different build with the build-identity preamble error.
+    // enabled. With saved machines a mismatch does not end the launch below,
+    // so they stay reachable; the Local endpoint's own handshake then rejects
+    // the different build and shows the same guidance.
     let startup = match shepr_remote::local_server::is_server_listening(paths) {
         Ok(true) => {
             tracing::info!("server already running, attaching as client");
@@ -55,8 +58,35 @@ pub fn auto_detect_launch(
         if !saved_federation {
             return Err(error);
         }
-        tracing::warn!(%error, "Local startup failed; keeping saved machines available");
+        // No tracing subscriber is installed in this process yet, so a log
+        // line here would reach no one.
+        eprintln!("{}", local_startup_notice(&error));
     }
 
     run_client(config, paths)
+}
+
+/// What the operator is told when Local fails to start or is refused while
+/// saved machines keep the client running.
+fn local_startup_notice(error: &io::Error) -> String {
+    format!("shepr: Local is unavailable; saved machines stay available.\n{error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refusal reaches the operator whole, guidance included, instead of
+    /// a log line nothing receives.
+    #[test]
+    fn the_local_startup_notice_carries_the_whole_refusal() {
+        let error = io::Error::other(format!(
+            "the running shepr server is a different build.\n\n{}",
+            shepr_api::session::restart_after_update_guidance("shepr server stop", Some("shepr"))
+        ));
+        let notice = local_startup_notice(&error);
+        assert!(notice.contains("saved machines stay available"), "{notice}");
+        assert!(notice.contains("--session <name>"), "{notice}");
+        assert!(notice.contains("`shepr server stop --force`"), "{notice}");
+    }
 }

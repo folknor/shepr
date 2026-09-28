@@ -92,15 +92,39 @@ The libraries, from lower layers to higher layers:
 | `cargo install --path .` | `brokkr install` |
 
 - `brokkr check` is the gate; run it before every commit.
-- `brokkr test <name>` is a substring filter over unit and integration tests,
-  release profile by default (`--debug` for dev).
+- `brokkr test <name>` is a substring filter over unit and integration tests.
+  It builds the dev profile here (`brokkr.toml`'s `[test] debug = true`;
+  `--release` for release), and so does `brokkr check`'s test phase.
 - `brokkr man` lists the bundled docs (`man check`, `man config`, `man run`,
   ...). Read those rather than guessing at flags.
 - Never run two brokkr/cargo invocations at once.
 
-When testing a new build from inside a running shepr session, clear the
-inherited socket overrides so the debug binary talks to its own server:
-`env -u SHEPR_SOCKET_PATH -u SHEPR_CLIENT_SOCKET_PATH brokkr run -- <command>`.
+### Running a dev build next to the installed one
+
+Every build profile uses the same config, state and runtime directories.
+What keeps a dev run apart from the installed server is a named session, and
+what keeps them from talking is the build identity: it covers the build
+profile as well as the source, so a dev and a release build of one tree
+differ, and a server of another build is always refused with guidance. To
+try a new build from inside a running shepr session, give it a session of
+its own:
+
+`env -u SHEPR_SOCKET_PATH -u SHEPR_CLIENT_SOCKET_PATH brokkr run -- --session dev [<command>]`
+
+- Use the `--session` flag, not `SHEPR_SESSION`: only an explicit
+  `--session` outranks a socket override.
+- The `env -u` prefix stays for now: panes are currently launched with an
+  empty `SHEPR_SOCKET_PATH`, and the path resolver refuses an empty socket
+  override before the session picks the address, even alongside `--session`.
+- Without `--session` the dev build targets the installed server's default
+  session, and while that server runs the dev build is refused. Its `server
+  stop` is refused too, naming both builds; `--force` overrides that and
+  stops the installed server with every pane in it.
+- A named session has its own saved layout and history. A dev server run
+  without `--session` shares the default session's: if the installed server
+  is down, it restores that layout and saves over it. That is by design, since
+  the session is what separates them. Config and the saved-machine catalog
+  are shared whatever the session.
 
 ## Principles
 

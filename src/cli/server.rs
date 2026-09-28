@@ -2,7 +2,7 @@ use shepr_api::schema::{EmptyParams, Method, Request};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
-    Stop,
+    Stop { force: bool },
     AgentManifests { json: bool },
     ReloadAgentManifests,
     Invalid,
@@ -11,7 +11,7 @@ pub(crate) enum Command {
 impl Command {
     pub(super) fn name(self) -> &'static str {
         match self {
-            Self::Stop => "stop",
+            Self::Stop { .. } => "stop",
             Self::AgentManifests { .. } => "agent-manifests",
             Self::ReloadAgentManifests => "reload-agent-manifests",
             Self::Invalid => "",
@@ -21,14 +21,16 @@ impl Command {
     pub(super) fn is_api_command(self) -> bool {
         matches!(
             self,
-            Self::Stop | Self::AgentManifests { .. } | Self::ReloadAgentManifests
+            Self::Stop { .. } | Self::AgentManifests { .. } | Self::ReloadAgentManifests
         )
     }
 }
 
 pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
     match matches.subcommand() {
-        Some(("stop", _)) => Command::Stop,
+        Some(("stop", command)) => Command::Stop {
+            force: super::matches::flag(command, "force"),
+        },
         Some(("agent-manifests", command)) => Command::AgentManifests {
             json: super::matches::flag(command, "json"),
         },
@@ -42,20 +44,42 @@ pub(super) fn run_server_command(
     paths: &super::target::CliContext,
 ) -> super::CliResult<i32> {
     match command {
-        Command::Stop => server_stop(paths),
+        Command::Stop { force } => server_stop(paths, force),
         Command::AgentManifests { json } => server_agent_manifests(paths, json),
         Command::ReloadAgentManifests => server_reload_agent_manifests(paths),
         Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
-/// Both paths skip the build check on purpose, like `session stop`: the
+/// Both paths skip the per-command build check, like `session stop`: the
 /// build-mismatch error tells the user to stop the server, so this must be
 /// able to stop a server from another build. That holds for `--machine` too,
-/// where an in-place upgrade of the remote binary leaves the old server
-/// running.
-fn server_stop(paths: &super::target::CliContext) -> super::CliResult<i32> {
+/// where an in-place upgrade of the remote binary leaves the previous server
+/// running. It is not silent, though: a server of another build is stopped
+/// only with `--force`, because the one a dev build reaches without
+/// `--session` is the installed server with every live pane in it.
+fn server_stop(paths: &super::target::CliContext, force: bool) -> super::CliResult<i32> {
     if paths.is_remote() {
+        if !force {
+            let client = super::target::api_client(paths)?;
+            let status = super::target::server_status(paths, &client).map_err(|error| {
+                super::target::remote_error(paths, super::api_client_error_to_io(error))
+            })?;
+            let (machine, _) = super::target::remote_identity(paths).unwrap_or_default();
+            if let Err(error) = shepr_api::session::guard_mismatched_stop(
+                &format!("the server on machine '{machine}'"),
+                &shepr_api::session::StopTargetBuild::from_running_build(&status.build_id),
+                false,
+                &format!(
+                    "shepr --machine {machine} server stop {}",
+                    shepr_api::session::FORCE_STOP_FLAG
+                ),
+            ) {
+                return Err(super::CliError::Session(
+                    super::error::SessionCliError::Stop(error),
+                ));
+            }
+        }
         let response = super::send_request_unchecked(
             paths,
             &Request {
@@ -70,7 +94,7 @@ fn server_stop(paths: &super::target::CliContext) -> super::CliResult<i32> {
         });
     }
 
-    match shepr_api::session::stop_active_server(paths) {
+    match shepr_api::session::stop_active_server(paths, force) {
         Ok(()) => Ok(0),
         Err(err) => {
             eprintln!("{err}");

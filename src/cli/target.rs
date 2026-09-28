@@ -222,12 +222,23 @@ pub(super) fn remote_error(context: &CliContext, error: io::Error) -> io::Error 
 
 pub(super) fn restart_guidance(context: &CliContext) -> String {
     match &*context.target.borrow() {
-        ApiTarget::Machine(target) => format!(
-            "Install the same Shepr build on machine '{}' and stop its server (session {}) with `shepr --machine {} server stop`; the next connection starts it again. Stopping the server exits its pane processes.",
-            target.profile.label, target.profile.session, target.profile.id
+        ApiTarget::Machine(target) => machine_restart_guidance(
+            &target.profile.label,
+            &target.profile.session,
+            target.profile.id.as_str(),
         ),
         ApiTarget::Local => shepr_api::session::restart_after_update_guidance_for(context),
     }
+}
+
+/// The saved-machine form of the mismatch guidance: like the local one, the
+/// way that keeps the running server and its panes comes first, and the stop
+/// it names is the forced one a mismatched stop requires.
+fn machine_restart_guidance(label: &str, session: &str, id: &str) -> String {
+    format!(
+        "Install the same Shepr build on machine '{label}'. To keep its running server (session {session}) and its panes, save the machine again with a session of its own: `shepr machine add <ssh-target> --label <label> --remote-session <name>`. To replace that server instead, stop it with `shepr --machine {id} server stop {}`; the next connection starts it again. Stopping the server exits its pane processes.",
+        shepr_api::session::FORCE_STOP_FLAG
+    )
 }
 
 pub(super) fn remote_identity(context: &CliContext) -> Option<(String, String)> {
@@ -395,6 +406,19 @@ mod tests {
         let matches =
             parse(&["agent", "prompt", "w4:p1", "--machine=mac"]).expect("test precondition");
         assert_eq!(super::super::matches::string(&matches, "machine"), None);
+    }
+
+    #[test]
+    fn machine_guidance_offers_a_separate_session_and_the_forced_stop() {
+        let guidance = machine_restart_guidance("mac", "agents", "m1");
+        let session = guidance
+            .find("--remote-session <name>")
+            .expect("the separate-session option is offered");
+        let stop = guidance
+            .find("`shepr --machine m1 server stop --force`")
+            .expect("the forced stop is named");
+        assert!(session < stop, "{guidance}");
+        assert!(guidance.contains("session agents"), "{guidance}");
     }
 
     #[test]

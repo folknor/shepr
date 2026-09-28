@@ -67,7 +67,10 @@ pub(super) fn ensure_remote_server_build(
     else {
         return Ok(());
     };
-    if build_id.as_deref() == Some(shepr_protocol::BUILD_ID) {
+    if build_id
+        .as_deref()
+        .is_some_and(shepr_protocol::is_this_build)
+    {
         return Ok(());
     }
     Err(remote_server_compatibility_error(
@@ -164,7 +167,13 @@ pub(super) fn stop_remote_server(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<()> {
-    let command = remote_shepr.session_command(ssh.session_name(), &["server", "stop"]);
+    // Forced: the operator already confirmed this stop, and the server being
+    // replaced may be of another build than the remote binary, which an
+    // unforced stop refuses.
+    let command = remote_shepr.session_command(
+        ssh.session_name(),
+        &["server", "stop", shepr_api::session::FORCE_STOP_FLAG],
+    );
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         return Err(command_failed("remote server stop failed", &output));

@@ -149,7 +149,11 @@ fn server_command() -> Command {
     // Bare `shepr server` runs the headless server, so no subcommand is required.
     Command::new("server")
         .about("Run or control the headless server")
-        .subcommand(Command::new("stop").about("Stop the running server"))
+        .subcommand(
+            Command::new("stop")
+                .about("Stop the running server")
+                .arg(force_stop_flag()),
+        )
         .subcommand(
             Command::new("agent-manifests")
                 .about("Show active agent detection manifests")
@@ -705,6 +709,7 @@ fn session_command() -> Command {
                 .about("Stop a session")
                 .arg(required("name", "NAME"))
                 .arg(json_flag())
+                .arg(force_stop_flag())
                 .after_help("Use 'default' as NAME to stop the default session."),
         )
         .subcommand(
@@ -810,6 +815,13 @@ fn text_json_format_option() -> Arg {
 
 fn json_flag() -> Arg {
     flag("json")
+}
+
+/// `server stop` and `session stop` refuse a server of another build, since
+/// stopping it exits its panes and it may be the installed server a dev build
+/// reached by default; this flag states that stopping it is intended.
+fn force_stop_flag() -> Arg {
+    flag("force").help("Stop the server even when it runs a different shepr build")
 }
 
 fn help_flag() -> Arg {

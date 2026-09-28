@@ -66,12 +66,12 @@ fn read_server_status(
 pub fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let Some(status) = read_server_status(paths)? else {
         return Err(io::Error::other(format!(
-            "a shepr server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
+            "a shepr server is listening, but its status API is unavailable, so its build cannot be confirmed.\n\n{}\nIf that fails, stop the server process manually.",
             shepr_api::session::restart_after_update_guidance_for(paths)
         )));
     };
 
-    if status.build_id == shepr_protocol::BUILD_ID {
+    if shepr_protocol::is_this_build(&status.build_id) {
         return Ok(());
     }
 
@@ -468,11 +468,11 @@ test "$sid" = "$$"
 
         let _ = handle.join();
         assert!(
-            message.contains("Stop the running server to use this build"),
+            message.contains("run this build in a session of its own"),
             "unexpected error: {message}"
         );
         assert!(
-            message.contains("Run `shepr session stop work`"),
+            message.contains("Run `shepr session stop work --force`"),
             "unexpected error: {message}"
         );
         assert!(

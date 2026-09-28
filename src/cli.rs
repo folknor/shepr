@@ -211,9 +211,18 @@ impl TerminalCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionCommand {
-    List { json: bool },
-    Stop { name: String, json: bool },
-    Delete { name: String, json: bool },
+    List {
+        json: bool,
+    },
+    Stop {
+        name: String,
+        json: bool,
+        force: bool,
+    },
+    Delete {
+        name: String,
+        json: bool,
+    },
     Invalid,
 }
 
@@ -226,6 +235,7 @@ impl SessionCommand {
             Some(("stop", command)) => Self::Stop {
                 name: matches::required(command, "name"),
                 json: matches::flag(command, "json"),
+                force: matches::flag(command, "force"),
             },
             Some(("delete", command)) => Self::Delete {
                 name: matches::required(command, "name"),
@@ -648,7 +658,7 @@ fn run_terminal_command(
 fn run_session_command(command: SessionCommand, paths: &target::CliContext) -> CliResult<i32> {
     match command {
         SessionCommand::List { json } => session_list(paths, json),
-        SessionCommand::Stop { name, json } => session_stop(&name, json, paths),
+        SessionCommand::Stop { name, json, force } => session_stop(&name, json, force, paths),
         SessionCommand::Delete { name, json } => session_delete(&name, json, paths),
         SessionCommand::Invalid => Ok(missing_subcommand()),
     }
@@ -673,11 +683,17 @@ fn session_list(paths: &shepr_config::AppPaths, json: bool) -> CliResult<i32> {
 /// Deliberately skips the build check that `send_request` does: the
 /// build-mismatch error tells the user to run `session stop` / `server
 /// stop`, so stopping must keep working against a server from another build.
-/// `shepr_api::session` sends a bare `server.stop` JSON line for that reason.
-fn session_stop(name: &str, json: bool, paths: &shepr_config::AppPaths) -> CliResult<i32> {
+/// `shepr_api::session` sends a bare `server.stop` JSON line for that reason,
+/// and refuses a server of another build unless `force` states the intent.
+fn session_stop(
+    name: &str,
+    json: bool,
+    force: bool,
+    paths: &shepr_config::AppPaths,
+) -> CliResult<i32> {
     let target = shepr_api::session::parse_target_name(name)
         .map_err(|message| CliError::Session(SessionCliError::InvalidName(message)))?;
-    match shepr_api::session::stop_session(paths, &target) {
+    match shepr_api::session::stop_session(paths, &target, force) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
@@ -780,7 +796,7 @@ fn ensure_server_build_matches(
     }
     let status = target::server_status(context, client)
         .map_err(|err| map_server_not_running_or_io(context, err, request_id, client))?;
-    if status.build_id == shepr_protocol::BUILD_ID {
+    if shepr_protocol::is_this_build(&status.build_id) {
         context.mark_build_checked();
         return Ok(());
     }
@@ -1032,11 +1048,44 @@ mod tests {
         let Launch::Cli(command) = invocation.launch else {
             panic!("session stop should be a typed CLI command");
         };
-        let CliCommand::Session(SessionCommand::Stop { name, json }) = *command else {
+        let CliCommand::Session(SessionCommand::Stop { name, json, force }) = *command else {
             panic!("session stop should be a typed CLI command");
         };
         assert_eq!(name, "-work");
         assert!(json);
+        assert!(!force);
+    }
+
+    /// `--force` is the stated intent to stop a server of another build, on
+    /// both stop commands, and it is spelled as the refusal names it.
+    #[test]
+    fn both_stop_commands_parse_the_force_flag() {
+        let force = shepr_api::session::FORCE_STOP_FLAG;
+        let invocation = parse(&["session", "stop", force, "work"]);
+        let Launch::Cli(command) = invocation.launch else {
+            panic!("session stop should be a typed CLI command");
+        };
+        assert!(matches!(
+            *command,
+            CliCommand::Session(SessionCommand::Stop { force: true, .. })
+        ));
+
+        for (args, forced) in [
+            (&["server", "stop", force][..], true),
+            (&["server", "stop"][..], false),
+        ] {
+            let invocation = parse(args);
+            let Launch::Cli(command) = invocation.launch else {
+                panic!("{args:?} should be a typed CLI command");
+            };
+            assert!(
+                matches!(
+                    *command,
+                    CliCommand::Server(super::server::Command::Stop { force }) if force == forced
+                ),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

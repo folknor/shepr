@@ -84,8 +84,9 @@ fn encode(build_id: &str) -> [u8; PREAMBLE_LEN] {
     let mut preamble = [0u8; PREAMBLE_LEN];
     let (magic, id) = preamble.split_at_mut(PREAMBLE_MAGIC.len());
     magic.copy_from_slice(&PREAMBLE_MAGIC);
-    // `BUILD_ID` is 16 hex digits (`build.rs`); anything shorter is padded
-    // with zeros and anything longer truncated, so the record stays fixed.
+    // `BUILD_ID` is 16 hex digits or the 16-byte unidentifiable marker
+    // (`build.rs`); anything shorter is padded with zeros and anything longer
+    // truncated, so the record stays fixed.
     for (slot, byte) in id.iter_mut().zip(build_id.bytes()) {
         *slot = byte;
     }
@@ -112,11 +113,18 @@ pub fn read_preamble<R: Read>(reader: &mut R) -> Result<(), PreambleError> {
 }
 
 fn check(received: &[u8; PREAMBLE_LEN]) -> Result<(), PreambleError> {
+    check_against(received, super::limits::BUILD_ID)
+}
+
+/// Accepts `received` only when it announces `ours` and `ours` is an identity
+/// at all: a build whose identity could not be established matches no peer,
+/// including one announcing the same marker.
+fn check_against(received: &[u8; PREAMBLE_LEN], ours: &str) -> Result<(), PreambleError> {
     let (magic, id) = received.split_at(PREAMBLE_MAGIC.len());
     if magic != PREAMBLE_MAGIC {
         return Err(PreambleError::NotShepr);
     }
-    if *received == local_preamble() {
+    if *received == encode(ours) && super::is_identifiable_build_id(ours) {
         return Ok(());
     }
     let build_id = id
@@ -173,6 +181,21 @@ mod tests {
             read_preamble(&mut other.as_slice()),
             Err(PreambleError::DifferentBuild(_))
         ));
+    }
+
+    /// A build that could not establish its identity is refused by a peer
+    /// stating the same marker, so two such builds never talk.
+    #[test]
+    fn an_unidentifiable_build_matches_no_peer_not_even_itself() {
+        let unidentifiable = "unidentifiable--";
+        let received = encode(unidentifiable);
+        match check_against(&received, unidentifiable) {
+            Err(PreambleError::DifferentBuild(peer)) => {
+                assert_eq!(peer.build_id, unidentifiable);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(check_against(&encode("0123456789abcdef"), "0123456789abcdef").is_ok());
     }
 
     #[test]
