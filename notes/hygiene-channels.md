@@ -201,23 +201,9 @@ Reported from five scopes.
   same sentence under a comment reading "worded like the client shell's".
   Nothing keeps them in step; the threshold itself is correctly single-owned as
   `shepr_protocol::MAX_INPUT_PAYLOAD`.
-- Launch-env validation exists twice with different messages:
-  `shepr-server/src/app/api/env.rs` (validating a JSON map) versus `src/cli.rs`
-  (parsing `KEY=VALUE`). NUL in a key is "env key must not contain NUL bytes"
-  in one and "env must not contain NUL bytes" in the other; NUL in a value names
-  the key in one and not the other; the key-contains-`=` case is rejected with
-  its own message in the API and is impossible by construction in the CLI. The
-  same rejected request yields different operator text depending on whether it
-  arrived via `--env` or the JSON API, and within `api/env.rs` alone two of the
-  four messages name the key and two do not.
-- `shepr-remote/src/remote/server_lifecycle.rs` has two independent policies for
-  rendering an untrusted remote version string: `version_label` is
-  `version.unwrap_or("unknown")`, while `remote_server_compatibility_error` and
-  `remote_compatibility_error` each define their own `printable` closure doing
-  `unwrap_or("unknown")` *plus* an ASCII-graphic filter. The stricter one is not
-  the one used in the interactive prompt, so `confirm_remote_server_stop` prints
-  a remote-controlled version string to the terminal with no control-character
-  filtering. The remote hunter called that a terminal-injection hole.
+- Launch-env validation exists twice with different messages: see HYGP-017.
+- An untrusted remote version string is rendered by two policies, and the
+  unfiltered one reaches the terminal: see BUG-038.
 
 Enforcement named: have each install return a
 `Vec<(InstalledArtifact, PathBuf)>` and format once (agent); one guidance
@@ -227,10 +213,9 @@ load-bearing; make `restore_error` a typed enum
 (`RestoreFailure::DirectoryUnavailable { path }` / `ShellStartFailed { err }`)
 and put the wording in whatever owns presentation - a `String` field invites
 ad-hoc text, an enum does not; one `fn paste_rejected_notice(size, max)`; one
-validator in `shepr-api` returning one `ApiError`; one
-`printable_remote_value` used everywhere, plus a test that a version string
-containing `\x1b[2J` is filtered by every path that renders it. The wording
-itself is not mechanically holdable.
+validator in `shepr-api` returning one `ApiError` (HYGP-017); one
+`printable_remote_value` used everywhere (BUG-038). The wording itself is not
+mechanically holdable.
 
 ## HYGC-006 - Severity encoded as a text prefix instead of a level
 
@@ -244,46 +229,11 @@ the prefix.
 
 ## HYGC-007 - The CLI process installs no tracing subscriber, so everything it logs is discarded
 
-Reported from more than one scope; filed once.
-
-`init_file_logging` is called from exactly two places: `shepr-client/src/lib.rs`
-and `shepr-server/src/server/headless/bootstrap.rs`. Nothing in `src/main.rs`,
-`src/cli.rs` or any subcommand initialises one. Consequences named:
-
-- `src/autodetect.rs` emits `tracing::info!("auto-detect launch starting")`,
-  `"server already running, attaching as client"`, `"no server running,
-  spawning server daemon"`, and `tracing::warn!(%error, "Local startup failed;
-  keeping saved machines available")` - all before `run_client` installs the
-  subscriber. Every one is dropped. The warn is the only trace of a swallowed
-  local-server startup failure, so the user sees nothing at all. The api/cli
-  hunter called this pairing a live defect rather than hygiene.
-- `shepr_api::serialize_response_or_error`'s `tracing::error!("failed to
-  serialize API response")` and `send_api_response`'s debug line are dead in the
-  CLI process (they are live in the server, which is the main caller).
-
-Enforcement named: a test asserting a subscriber exists before
-`auto_detect_launch` runs, or structurally, moving logging init into `main`
-ahead of the launch dispatch. The general rule ("no `tracing::` call in a
-process with no subscriber") is not mechanically checkable; the specific
-ordering is.
+Merged into BUG-025 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-008 - `SHEPR_LOG` degrades silently on a bad filter, and a second subscriber install is discarded
 
-`shepr-platform/src/logging.rs`:
-`EnvFilter::try_from_env("SHEPR_LOG").unwrap_or_else(|_| EnvFilter::new("shepr=info"))`.
-A typo in the filter (`shepr=inof`) produces no diagnostic of any kind - the
-`Err` is discarded and the default installed. Given the project rule "any config
-problem fails the launch; no fallbacks", this is the one config input that
-contradicts the stated rule, and it is in the module that owns diagnostics, so
-the failure cannot even be reported through itself. The next line has the same
-shape: `let _ = tracing_subscriber::fmt()... try_init();`. A second
-`init_file_logging` call (two roles in one process, a test harness, a future
-embed) silently keeps the first subscriber and the caller believes its writer is
-installed.
-
-Enforcement named: return `Result` from `init_file_logging`, fail the launch on a
-bad filter, and add `clippy::let_underscore_must_use` - or just make the
-signature `-> io::Result<()>` so `unused_must_use` fires.
+Merged into BUG-044 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-009 - The domain event catalogue, and one API level policy, live in the bottom platform crate
 
@@ -558,22 +508,7 @@ finding is filed.
 
 ## HYGC-017 - A persistent tab-bar status failure re-logs every interval, at warn, carrying the user's command line
 
-`shepr-server/src/app/tab_bar_status.rs`:
-`tracing::warn!(command = %runtime.command, error, "tab bar status command
-failed")`. A status command that fails persistently emits a warn line every
-`interval_seconds` (configurable as low as 1) for the server's whole life -
-unbounded log growth on a permanent condition. The command line is user-authored
-shell, so a `tab_bar_right` entry that curls an endpoint with a bearer token puts
-that token in the log at warn level.
-
-Two further facts in the same module: the status command's stderr is discarded
-(`.stderr(Stdio::null())`), so a failing status command produces a segment that
-silently goes blank with the exit status as the only diagnostic; and the timeout
-message is `format!("timed out after {}s", timeout.as_secs())` - it names no
-command, and `as_secs()` renders any sub-second timeout as "after 0s".
-
-Enforcement named: a test that the second consecutive identical failure does not
-re-log, once a rate limit exists. Nothing mechanical for the secret.
+Merged into BUG-060 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-018 - Drops on the terminal-reply and dirty-patch paths with no counter and no log
 
@@ -615,22 +550,7 @@ fix also removes measurable work from a hot path.
 
 ## HYGC-020 - Three response-encoding implementations, with different behaviour on encoder failure
 
-`shepr-api::serialize_response_or_error` is the owner: on a serde failure it logs
-and emits a valid `serialization_error` JSON body preserving the request id.
-`error::encode_result` and `error_response_json` go through it. But
-`shepr-api/src/wait.rs` bypasses it four times with
-`serde_json::to_string(&ErrorResponse{..}).map_err(std::io::Error::other)?`, and
-`subscriptions.rs` / `server.rs` use `write_json_line`, which maps an encode
-failure to `io::Error::other("failed to encode json: ..")`. So the same class of
-failure either produces a well-formed error response to the client (owner path)
-or kills the connection with an io error and no response at all. The fallback
-machinery in `serialize_response_or_error`, which has a dedicated test, is
-defeated on those paths.
-
-Enforcement named: have `write_json_line` and the `wait.rs` sites call
-`serialize_response_or_error`, then delete the raw
-`serde_json::to_string(&ErrorResponse...)` spellings; a text rule ("no
-`to_string` of an `ErrorResponse`/`SuccessResponse` outside `lib.rs`") holds it.
+Merged into BUG-029 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-021 - A second, hand-rolled API client transport
 
@@ -721,15 +641,8 @@ banning the bare literals; either use or delete the `_context` parameter.
   {error}"). Nothing downstream can branch on why the catalog was rejected -
   compare `SshFailureDiagnostic`, which exists in the same crate and does this
   properly.
-- `shepr-remote`: `is_launch_fatal_setup_error` decides a launch-versus-retry
-  policy from an `io::ErrorKind`, treating every `InvalidInput` as launch-fatal.
-  `InvalidInput` is produced by `shepr_platform::remote_bridge_endpoint_path`
-  for "socket path exceeds the Unix socket length limit", by
-  `validate_private_runtime_dir` for a relative runtime dir, by
-  `shared_ssh_control_path`, and by `RemoteExecutable::parse` failures arriving
-  through other paths. Some are genuinely deterministic; the classification is
-  by kind, not by cause, and the typed-error mechanism the same function uses
-  for `UnsafeSshRuntimeDirectory` is the right one and is used once.
+- `shepr-remote`: `is_launch_fatal_setup_error` classifies launch-versus-retry
+  by `io::ErrorKind` rather than by cause: see BUG-039.
 - `shepr-remote`: `print_saved_ssh_error_hint` reclassifies an error by
   re-parsing it - `is_remote_host_key_error` / `is_remote_auth_error` call
   `SshFailureDiagnostic::from_error`, which for an error that is not already a
@@ -760,11 +673,8 @@ banning the bare literals; either use or delete the `_context` parameter.
   which is where the context loss in HYGC-022 comes from.
 
 Enforcement named: typed errors - `CatalogError` mirroring
-`SshFailureDiagnostic`'s design; a `DeterministicSetupError` marker on every
-deterministic producer plus dropping the `ErrorKind::InvalidInput` blanket
-(note: the existing test `only_typed_runtime_directory_policy_errors_are_launch_fatal`
-pins the looser rule in place, so this needs the test changed, not added);
-`print_saved_ssh_error_hint` taking `&SshFailureDiagnostic` rather than
+`SshFailureDiagnostic`'s design; the `DeterministicSetupError` marker in
+BUG-039; `print_saved_ssh_error_hint` taking `&SshFailureDiagnostic` rather than
 `&io::Error`, so the typed value must be threaded; a typed
 `ManifestOverrideError` plus a `config check` path that loads overrides; a typed
 error carrying the segment's configured command; structured error types instead
@@ -907,26 +817,7 @@ fixes.
 
 ## HYGC-028 - The rotating log writer swallows write errors by contract, and its poisoned-mutex branch never recovers
 
-`shepr-platform/src/logging.rs`: `RotatingFileGuard::write` returns
-`Ok(buf.len())` on a poisoned mutex and on any write failure, and `flush`
-returns `Ok(())` on a poisoned mutex. The recovery design - remember the first
-error, report it into the log when writing resumes - is sound and tested. The
-poisoned-mutex branch is not covered by it: it returns success and records
-nothing in `lost_error`, so a panic inside the rotation path silently turns the
-process into one that logs nothing, forever, with no "lines were lost" note when
-it recovers, because it never recovers.
-
-Related: `RotatingFileState`'s mutex is held across `flock(LOCK_EX)` - a blocking
-syscall that waits for another process - plus `rename`, `remove_file` and
-`write`, so every thread in the process that emits a log line blocks behind a
-cross-process lock. (The lock-scope half of that is filed in the per-call-site
-policy sibling document; it is recorded here because it is the mechanism by which
-the writer's state can become poisoned.)
-
-Enforcement named: use `PoisonError::into_inner` (as `shepr-test-support`
-already does for its own mutexes) so the state is recovered rather than
-abandoned; the existing `writer_recovers_after_an_io_error_and_notes_the_gap`
-test shape extends to it.
+Merged into BUG-043 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-029 - Poisoned locks answered with success, a fabricated value, or a silent drop
 
@@ -990,36 +881,7 @@ structurally cannot.
 
 ## HYGC-031 - Git failure collapses to `None` everywhere, so nothing ever reaches an operator
 
-`shepr-mux/src/git`: every Git read in the crate returns `Option`. Spawn failure,
-non-zero exit, non-UTF-8 output, a permission error on `.git/config`, a
-64 KiB-exceeding ref file - all become `None`, and `None` means "this repo has no
-branch". The `RefFileRead` enum in `discovery.rs` is a striking exception: it
-goes to real trouble to distinguish `Absent` from `Unavailable` (with a careful
-comment about `Path::exists()` lying on metadata errors), and then
-`read_git_ref_file` immediately collapses both to `None`. The one place in the
-module that models the distinction has exactly one caller, which throws it away.
-`git_status_snapshot_for_cwd_with_demand` then applies the same 30-second retry
-to "not a repo" and to "git is broken", so a missing `git` binary is retried
-forever, quietly, once per workspace per 30 s.
-
-`shepr-mux/src/git/discovery.rs::git_trimmed_stdout` and
-`status.rs::git_ahead_behind_between` swallow spawn failure, non-zero exit and
-non-UTF-8 output into `None`, so if `git` is not on the server's `PATH` the
-sidebar shows no branch, forever, with no diagnostic.
-
-`shepr-client/src/workspace_label.rs::derive_label_from_cwd` is the same shape in
-the client: `.output().ok().filter(|o| o.status.success()).and_then(|o|
-String::from_utf8(o.stdout).ok())`, so `git` missing, `git` failing, non-UTF-8
-output and "this cwd is genuinely not a repo" all become `None`, which is read as
-"not a repo" and changes the label offered to the user. Nothing is logged. The
-termio/client hunter noted this copy is the least careful of the four production
-`git` invocation sites in the workspace.
-
-Enforcement named: a `GitReadError` travelling to the refresh task, logged once
-per distinct cause rather than per attempt, with `Absent` staying `None`. The
-absence of an operator-visible signal is not lintable; the enum is. In the client
-copy, distinguishing "not a repo" (exit 128) from "could not run git" and logging
-the latter is the individual fix.
+Merged into BUG-065 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-032 - Failures answered with a valid-looking sentinel instead of a refusal
 
@@ -1088,17 +950,7 @@ to deserialization.
 
 ## HYGC-034 - An unbounded write with no send timeout
 
-`shepr-api/src/client.rs`: in `ApiClient::request_value`, the
-`response_timeout(request) == None` branch (`agent.prompt` without `wait`, and
-waits sent without `timeout_ms`) connects and writes with no `set_send_timeout`,
-unlike `request_value_with_timeout`. A server that accepts the connection and
-never drains the socket buffer blocks the CLI in `write_all` forever with no
-diagnostic. The unbounded *read* is deliberate and well argued in the comment;
-the unbounded *write* looks incidental to it. The api/cli hunter called this the
-closest thing to a live hang in that scope.
-
-Enforcement named: a test using a listener that never reads - the file already
-has three tests of exactly that shape.
+Merged into BUG-027 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-035 - Presentation and restore results discarded in the client
 

@@ -260,21 +260,7 @@ enforceable.
 
 ## HYGV-011 - `SHEPR_LOG` is read at the moment of use and an invalid value degrades silently
 
-Reported by the core/platform hunter.
-
-`crates/shepr-platform/src/logging.rs`:
-`EnvFilter::try_from_env("SHEPR_LOG").unwrap_or_else(|_| EnvFilter::new("shepr=info"))`.
-A typo in the filter (`shepr=inof`) produces no diagnostic of any kind: the `Err`
-is discarded and the default installed. Given the project's "config is read and
-validated once at launch; any config problem fails the launch; no fallbacks",
-this is the one config input that contradicts the stated rule, and it is in the
-module that owns diagnostics, so the failure cannot be reported through itself.
-The next line has the same shape: `let _ = tracing_subscriber::fmt()... try_init();`,
-so a second `init_file_logging` call silently keeps the first subscriber while the
-caller believes its writer is installed.
-
-Enforcement: return `Result` from `init_file_logging` and fail the launch on a bad
-filter; the signature change makes `unused_must_use` fire.
+Merged into BUG-044 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGV-012 - `SHEPR_PROCESS_DETECTION` is read at the moment of use, not validated at startup
 
@@ -373,38 +359,7 @@ exists primarily as a test seam.
 
 ## HYGV-017 - Exit code literals have no owner, and two library crates exit the process
 
-Reported by the core/platform, api/cli, remote, server and termio/client hunters.
-
-`src/cli/error.rs::exit_code()` is the owner of shepr's exit statuses. Bypassing
-it:
-
-- `crates/shepr-platform/src/remote_bridge.rs` calls `std::process::exit(1)` from
-  a watchdog thread inside a library crate, and the `1` is re-spelled an
-  additional time as an assertion in `remote_bridge_tests.rs`.
-- `crates/shepr-client/src/lib.rs` calls `std::process::exit(1)` from library
-  code, skipping every remaining destructor in the process; the client is the
-  crate with the most to lose from that (terminal restore), and it works today
-  only because restore runs a few lines earlier.
-- `crates/shepr-server/src/server/headless/bootstrap.rs` exits 1 on `AddrInUse`
-  from inside `run_server`, which returns `io::Result<()>`; that also skips
-  `logging::shutdown("server")`, so the last log lines may not be flushed.
-- `src/main.rs` exits at eight sites (`usage_exit` for invalid UTF-8 argv, a bad
-  `--session`, a bad `--remote`, `--remote` with a subcommand;
-  `exit_if_nested_disabled`; `load_validated_config_or_exit` twice; the
-  remote-launch failure; the autodetect failure), bypassing `finish_cli`, which
-  exists to turn a `CliResult` into an exit code. Consequence: none of those
-  paths is reachable from a test.
-- `src/cli/machine.rs` returns a bare `Ok(2)` at five sites to mean "usage
-  error" instead of `CliError::Usage`, the type that owns exit code 2. The remote
-  hunter records this as fact: `machine` is the only command family in the CLI
-  that spells 2 by hand. `src/main.rs` also exits 1 on a `run_remote` failure
-  after printing, bypassing `CliError::exit_code`'s 1/2 distinction.
-
-Enforcement: move every code into the `exit_code` owner as named constants; a
-`clippy.toml disallowed_methods` entry for `std::process::exit` outside
-`src/main.rs`; changing `run_machine_command`'s return type to `CliResult<()>` so
-the integer cannot be spelled; and for the platform bridge, returning a
-`BridgeOutcome::IdleExpired` and letting the caller exit.
+Merged into HYGC-025 (`notes/hygiene-channels.md`), which carries the full finding.
 
 ## HYGV-018 - The remote exit codes `255` and `254` are literals in a shell string with no decoder
 
@@ -528,46 +483,11 @@ deleted rather than restated.
 
 ## HYGV-022 - The session-start-source vocabulary is spelled three times and the copies disagree
 
-**Decision (partial):** Hermes support is removed entirely, so the hermes
-asset's invented start sources go. The remaining disagreement (enum versus
-`SESSION_START_MATCHER`, Grok's `load`) stays open.
-
-Reported by the agent hunter, as fact.
-
-- `crates/shepr-agent/src/agent/resume.rs::AgentSessionStartSource::parse`
-  accepts eight values: `startup resume clear compact branch new fork select`.
-- `integration/claude_settings.rs::SESSION_START_MATCHER` is
-  `^(startup|resume|clear|compact|fork)$`: five.
-- The kimi asset defaults to the literal `"startup"`; the hermes asset emits
-  `startup`, `new`, `resume` and invents those three start sources itself.
-
-The comment above `SESSION_START_MATCHER` says Grok "uses new/load", and `load`
-is in none of the three lists, so a grok-imported Claude hook firing with `load`
-normalises to `None` and is treated as unrecognised by
-`session_start_source_is_recognized` in `shepr-mux`'s hook handling.
-
-Enforcement: derive the matcher regex from the enum's variant strings, and give
-the enum a single `as_str` so the assets can be grepped against it.
+Merged into BUG-018 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGV-023 - The `shepr:<agent>` source string and the agent label are hard-coded in every asset
 
-Reported by the agent hunter (and by the mux hunter, whose fifteen hook-authority
-call sites all fail open on a mismatch).
-
-The owner is `AgentDescriptor::integration_source`. Every asset spells its own:
-`source = "shepr:claude"`, `"shepr:kimi"`, `_SOURCE = "shepr:hermes"`, and so on,
-with the agent label duplicated next to it (`"agent": "claude"`). A typo in an
-asset makes the report arrive as `AgentSource::Custom`, which silently loses
-`full_lifecycle_hook_authority` and `session_identity_only_integration` in
-`crates/shepr-mux/src/terminal/state/hooks.rs` with no log line at all. Today
-only two assertions exist anywhere (one for qwen, one for letta), both
-incidental.
-
-Forced copy, same reason as HYGV-006. Enforcement both hunters converge on: a
-test iterating `INTEGRATION_SPECS` that asserts each asset's text contains its
-target's `integration_source` and its canonical label. The agent hunter calls
-this the single highest-value mechanical check in that crate; the mux hunter
-calls it the whole mechanical answer to the forced duplication.
+Merged into HYGG-102 (`notes/hygiene-guards.md`), which carries the full finding.
 
 ## HYGV-024 - `/etc/ssh/ssh_config` is hardcoded, in an `Option` that is never `None`
 
@@ -602,19 +522,7 @@ which makes the socket limit look like it has two owners.
 
 ## HYGV-026 - Socket basenames are single-owned but the test fixture spells them relatively
 
-Reported by the protocol/config hunter.
-
-`crates/shepr-config/src/session_id.rs::api_socket_path_under` owns
-`"shepr.sock"`, and `address.rs::derive_client_socket_from_api_socket` derives
-the client name: one owner each, which is right. But `ServerAddress`'s test-only
-`Default` spells both literally and relatively (`"shepr.sock"`,
-`"shepr-client.sock"`), which its own `validate_paths` would reject as
-non-absolute. `Deserialize` validates; `Default` does not, so every test using
-`ServerAddress::default()` asserts against a value production cannot produce.
-
-Enforcement: route the fixture through `ServerAddress::resolve_paths` with an
-absolute root (as `AppPaths::test_with_context` already does), or have `Default`
-call `validate_paths().expect(...)` so the fixture cannot drift.
+Merged into HYGG-024 (`notes/hygiene-guards.md`), which carries the full finding.
 
 ## HYGV-027 - The client state subdirectory is spelled at three sites, two ways
 
@@ -668,19 +576,7 @@ Fix: a `const RECOVERY_TIMESTAMP_DIGITS: usize = 39` used by the format string
 
 ## HYGV-030 - Two pending-file naming conventions in one module
 
-Reported by the mux hunter.
-
-`crates/shepr-mux/src/persist/io.rs` publishes through
-`target.with_extension("json.tmp")`; `writer.rs::copy_recovery` publishes through
-`backup.with_extension("pending")`. Both go through the same
-`publish_private_file`, so the crash-recovery reasoning in `remove_stale_temporary`
-(which only knows about `json.tmp`) covers one and not the other: a crash between
-create and rename in `copy_recovery` leaves a `.pending` file nothing ever cleans
-up, and the next attempt at that exact name fails `AlreadyExists` and burns one of
-the 128 sequence slots.
-
-Fix: one suffix const passed into `publish_private_file`, and extend
-`remove_stale_temporary` to both. Testable.
+Merged into BUG-069 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGV-031 - The temp-file prefix in `store_private_json` is wrong for two of its three users
 
@@ -1304,15 +1200,7 @@ type: embed `RowWrap`.
 
 ## HYGV-057 - The seqlock protocol on `content_seq` is hand-copied at six sites, and the sync epoch bump at four
 
-Reported by the vt/pty hunter.
-
-Six copies of "lock `content_write_lock`, `fetch_add(AcqRel)`, mutate,
-`fetch_add(Release)`": `on_read`, the timer, `resize`, `clear_screen`,
-`test_process_pty_bytes` and `test_contend_during_dirty_collection`. Fix by type:
-a `ContentWriteGuard` whose constructor and `Drop` do the two increments.
-
-Separately, `if before != after { epoch += 1 }` for the synchronized-output epoch
-is repeated four times across `backend.rs` and `helpers.rs`.
+Merged into HYGP-020 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGV-058 - `PANE_TERM` has one owner but `PANE_COLORTERM` lives in another crate, and a test re-spells both
 
@@ -1576,36 +1464,7 @@ independent. Fix: delete the aliases and use the protocol constants directly.
 
 ## HYGV-071 - The Git configuration rule has four owners, and two of the parsers already disagree
 
-Reported by the mux hunter (the XDG half is also in HYGV-008).
-
-`crates/shepr-mux/src/git/config.rs::git_user_config_paths` re-resolves
-`XDG_CONFIG_HOME` and `HOME` behind `shepr-config`'s back, a fourth independent
-XDG implementation alongside `shepr-config/src/io.rs::platform_xdg_dir`,
-`shepr-agent/src/integration/env.rs::absolute_xdg_home` and
-`shepr-core/src/pathutil.rs::home_dir`. These are Git's paths rather than
-shepr's, and the file says so, but the answer is incomplete in a way that has
-already produced divergence: `git_user_config_paths` does not honour
-`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` or `GIT_CONFIG_NOSYSTEM` and never
-reads `/etc/gitconfig`, while the `git` subprocess invoked from
-`git/discovery.rs` and `git/status.rs` honours all of them. For one repository
-the file-reading path and the subprocess path can therefore report different
-upstreams and a different `core.bare`.
-
-Two Git config parsers also live in that one module. `git/discovery.rs` has
-`read_git_config_value` / `simple_git_config_section` /
-`strip_git_config_comment`: about forty lines that read one key from one file,
-skip any `[section "subsection"]` header, and know nothing about `include.path`
-or `includeIf`. `git/config.rs` is 784 lines implementing the real thing. The
-naive parser answers two real questions - `git_dir_is_bare` (`core.bare`) and
-`git_ref_storage_is_reftable` (`extensions.refstorage`) - from exactly one file,
-so `core.bare = true` set via an `include.path` or in `~/.gitconfig` is missed,
-and a reftable repo is then read with the loose-file path and reports no branch.
-
-Fix: delete `read_git_config_value` and route both questions through
-`config.rs`'s reader. Enforcement: a test using an `include.path` and an
-`[extensions]` block in an included file, plus a test comparing `read_config`'s
-answer against `git config --get` for a repo with a global config and a
-`GIT_CONFIG_GLOBAL` override. The hunter expects the latter to fail today.
+Merged into BUG-063 (`notes/bugs.md`) and BUG-064 (`notes/bugs.md`), which carry the full finding.
 
 ## HYGV-072 - Three boolean-from-string parsers, no owner, and one is an incomplete implementation of an external grammar
 
@@ -1763,25 +1622,7 @@ is the domain source its module doc claims.
 
 ## HYGV-080 - Shell-name lists have already diverged three ways, and panes running some shells get no detection
 
-Reported by the agent hunter, as fact rather than prediction.
-
-- `detect/proc_tree.rs::is_pane_shell_process_name` knows twelve shells
-  (`sh bash dash zsh fish ksh mksh csh tcsh elvish xonsh nu`).
-- `detect/mod.rs::is_generic_runtime_or_shell` knows four plus
-  `tmux node bun`.
-- `wrapped_agent_name_from_runtime_argv` matches four.
-
-Consequence today: a pane shell that is `dash`, `nu`, `ksh` or `xonsh` running an
-agent through `-c` is not unwrapped, so the agent is not identified, so there is
-no detection for that pane. `is_pane_shell_process_name` also fails open on any
-name outside its twelve (a wrapper like `nix-shell` or `toolbox`, or a user's
-`$SHELL` symlink named something else), which changes `available_pane_shell` and
-the whole child-groups path while reporting nothing.
-
-Fix: one `ShellKind` table with per-use predicates (`is_pane_shell`,
-`supports_dash_c`) derived from it. The hunter adds that the config already knows
-the user's shell, so a launch-time check ("your configured shell is not one shepr
-recognises as a pane shell") would turn a silent no-op into a warning at boot.
+Merged into BUG-017 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGV-081 - Two walkers over one argv grammar, each with its own flag list
 
@@ -1914,78 +1755,7 @@ Reported by the core/platform, protocol/config, remote and server hunters.
 
 ## HYGV-088 - The clock has no injection point in several subsystems, and tests wait or fabricate mtimes as a result
 
-Reported by the mux, server, termio/client, remote, protocol/config, agent and
-api/cli hunters. The hunters also filed ambient clock reads under per-call-site
-policy, which belongs to a sibling document; what is collected here is the
-question-2 half, a value with no injection point forcing tests to accept whatever
-it says.
-
-- **mux `persist`**: `crates/shepr-mux/src/persist/writer.rs` reaches
-  `SystemTime::now()` at four sites (`preserve_snapshot_history`,
-  `prepare_snapshot_history`, `preserve_existing_in` twice). The 15-minute
-  snapshot gate therefore cannot be tested except by lying about file mtimes,
-  which one test does: `.set_modified(SystemTime::now() + Duration::from_secs(86400))`.
-  A test that sets a file's mtime a day in the future to walk past a gate is a
-  report that the gate has no seam. `crates/shepr-mux/src/terminal/state/**` and
-  `pane/process_probe.rs` thread `now: Instant` through every entry point and are
-  cleanly testable, so the crate already knows how.
-- **server**: `server/headless/render.rs::rebuild_shell_session_cache` calls
-  `Instant::now()` while every reader of the resulting `built_at` takes an
-  injected `now` (`shell_cwd_refresh_due(now)`), so a test of the
-  `SHELL_CWD_REFRESH_INTERVAL` cadence cannot set the built-at time and must
-  sleep a real second. The loop at `server/headless.rs` already has a `now` to
-  pass. The same hunter counted about twenty-five further production
-  `Instant::now()` sites inside a loop that already threads a `now`, and named
-  the resulting sleeps in tests: 30 ms in `app/mod.rs`, 1100 ms and 400 ms in
-  `tab_bar_status.rs`, 5 ms in loops in `client_transport.rs`.
-- **client**: `endpoint/registry.rs::insert` calls
-  `EndpointHealth::new(Instant::now())` one level below the injection point,
-  while `endpoint/health.rs` is the model (every method takes `now: Instant` and
-  its tests need no sleeps). So `connected_at`, which drives
-  `initial_snapshot_expired`, cannot be injected; the registry's test has to
-  write `Instant::now() + Duration::from_secs(300)` to get past a ten-second
-  timeout, and no test can exercise the initial-snapshot expiry boundary.
-  `endpoint/activation.rs` sets `self.deadline = Instant::now() + ACTIVATION_TIMEOUT`
-  at five sites, so no test can drive an activation to its five-second timeout
-  without waiting five seconds, and none does, even though `activation_tests.rs`
-  is 1622 lines. `shell/input/mouse.rs` calls `Instant::now()` at six sites
-  inside event handling (autoscroll arming, two drag throttles, drag repaint, the
-  double-click check, click recording) and `shell/input/word_selection.rs` at one
-  more, which is why the 1312-line `shell/tests/mouse_selection.rs` never
-  exercises a throttle or a double-click window. The clipboard bounded-read
-  helper takes a `Duration` and a closure and is almost injectable; only the
-  clock it measures against is not, so one test sleeps 400 ms and asserts
-  `started.elapsed() < Duration::from_millis(300)`.
-- **remote**: `bridge_connection` hardcodes a 250 ms post-EOF grace before
-  killing the child, which no test can shorten. `ssh_agent::Registration`
-  hardcodes a 100 ms probe interval, a 500 ms connect timeout and a 10 ms read
-  poll, so `registration_retries_when_the_api_is_initially_missing` sleeps in
-  10 ms increments against a five-second wall-clock deadline.
-  `local_server::wait_for_server_socket` takes its timeout but not its poll
-  interval. `SshMetadataCache`, `SavedSshConnector::connect` and
-  `RemoteSsh::noninteractive_timeout` read `Instant::now()` / `SystemTime::now()`
-  directly. `EndpointCatalogWatch::poll(now)` is the single place in that crate
-  that takes the clock as a parameter, and it is also the only one of these with
-  a fast, deterministic test.
-- **shepr-config**: `tab_bar.rs` `Command` entries carry `interval_seconds` and
-  `timeout_seconds` whose effects are untestable without waiting.
-- **core/platform**: the hunter names this as the root cause of most of that
-  crate's timing tests: `ipc.rs::deadline_reader_cuts_off_a_trickling_peer`
-  (300 ms deadline, 50 ms trickle, 2 s bound, real thread sleeps), 200 ms
-  deadlines with 5 s bounds in `tests.rs`, a 2 s marker-file poll in the wl-copy
-  owner test, 300 ms `TIMEOUT` with 60 ms sleeps and 3 s waits in
-  `remote_bridge_tests.rs` (including a test that proves a negative by sleeping
-  `TIMEOUT * 2`), and 5 s timeouts with 5 ms polls in `shutdown.rs`. None can be
-  made deterministic while the timeouts are `Instant`-based constants with no
-  injection point. `SshAgentLease::refresh_at(now)` shows the pattern that works,
-  and `Activity`, `DeadlineReader`, `wait_child_until` and
-  `wait_for_process_exits` all take deadlines already and could take a clock.
-
-Enforcement the hunters converge on: a `Clock` trait or a plain `now` parameter
-(the pattern several modules already use), plus a `clippy.toml
-disallowed_methods` entry or a `brokkr.toml` text rule for
-`Instant::now` / `SystemTime::now` outside designated modules - per-directory
-where that is cheaper (`src/persist/`, `src/git/`, `shell/input/`).
+Merged into HYGP-001 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGV-089 - Remote configuration is validated at the moment of use, on the client, at attach time
 
@@ -2142,26 +1912,7 @@ the parser.
 
 ## HYGV-097 - The remote `status --json` contract is two independent structs with no shared type
 
-Reported by the remote hunter, as fact.
-
-`src/cli/status.rs` defines `ServerStatusJson` / `ClientStatusJson`
-(`Serialize`); `shepr-remote` defines `RemoteServerStatusJson` /
-`RemoteClientStatusJson` (`Deserialize`) and parses the same JSON over SSH. Field
-names (`running`, `version`, `build_id`,
-`capabilities.detached_server_daemon`) are spelled independently on both sides,
-so renaming `running` in `status.rs` breaks every saved machine at runtime and the
-build says nothing. The only thing pinning them is a hand-written JSON literal in
-`attach.rs`, which can drift from `status.rs` freely.
-
-Also fact: `ServerStatusJson` carries both
-`status: "running" | "not_running"` and `running: bool` - two representations of
-one fact - and `shepr-remote` reads only `running`, so the `status` string is
-unread by the only programmatic consumer.
-
-Fix: put the shape in `shepr-api::schema` and have both sides use the one type;
-this is a cross-process contract inside one build, so no copy is needed at all.
-Failing that, a test that serialises `ServerStatusJson` and deserialises it as
-`RemoteServerStatusJson`, which is possible today and absent.
+Merged into HYGG-080 (`notes/hygiene-guards.md`), which carries the full finding.
 
 ## HYGV-098 - The `local` / `server` keybinding-role round trip is spelled twice, in two crates
 
@@ -2207,56 +1958,11 @@ without merging them.
 
 ## HYGV-100 - An untrusted remote version string is rendered by two policies, and the looser one is the interactive prompt
 
-Reported by the remote hunter, as fact.
-
-`server_lifecycle.rs::version_label(Option<&str>) -> &str` is
-`version.unwrap_or("unknown")`, and both its callers are in
-`confirm_remote_server_stop`. Meanwhile `remote_server_compatibility_error` and
-`remote_compatibility_error` each define their own `printable` closure that does
-`unwrap_or("unknown")` plus an ASCII-graphic filter: two independent policies for
-rendering an untrusted version string, and the stricter one is not the one used in
-the interactive prompt, so `confirm_remote_server_stop` prints a
-remote-controlled version string to the terminal with no control-character
-filtering.
-
-Fix: one `printable_remote_value` used everywhere; delete `version_label`.
-Enforcement: a test that a version string containing `\x1b[2J` is filtered by
-every path that renders it. The hunter flagged the unfiltered site as a terminal
-injection hole, so the security half may also appear in `notes/bugs.md`; the
-duplicated-policy half is here.
+Merged into BUG-038 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGV-101 - `input_wire` is one conversion layer written twice, with the accounting rule byte-identical and the unknown-bit policy opposite
 
-Reported by the server hunter.
-
-`crates/shepr-server/src/server/input_wire.rs` and
-`crates/shepr-client/src/input_wire.rs` share a file name, the trait names
-(`WireKeyKind`, `WireKeyCode`, `WireMouseButton`, `WireMouseKind`,
-`WirePaneInput`) and mirror-image directions. Two concrete problems:
-
-1. `text_bytes` is byte-identical in both copies, including its doc comment, and
-   it is the function that computes the `MAX_INPUT_PAYLOAD` budget. The client
-   uses it to decide what to batch; the server uses it to decide what to reject.
-   If the copies drift, the client either sends batches the server refuses or
-   under-fills and loses throughput. Two writers of one accounting rule who have
-   never been introduced.
-2. Opposite policies for unrecognised bits: the client uses
-   `WireModifiers::from_bits_retain(modifiers.bits())`, the server
-   `KeyModifiers::from_bits_truncate(modifiers.bits())`. One preserves unknown
-   bits, the other drops them silently; equivalent today because both bitflag
-   sets cover the same bits, divergent the moment either gains one. Meanwhile
-   `server/headless/render.rs` uses `KittyKeyboardFlags::from_bits_retain` for a
-   value going the other way, so the server crate holds both policies for wire
-   bitflags.
-
-Neither crate depends on the other, which is what people usually cite here, but
-both depend on `shepr-protocol`, which owns `ClientPaneInputEvent`,
-`WireModifiers` and `MAX_INPUT_PAYLOAD`. There is no forced duplication: this is
-one module in the wrong crate, twice. Fix: move both directions into
-`shepr-protocol` (or `shepr-termio`, also a dependency of both) as inherent impls
-on the wire types, so `text_bytes` sits next to the constant it charges against
-and the direction is chosen by which method you call. The hunter names this as
-the second of two structural moves for that scope.
+Merged into HYGP-023 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGV-102 - The local endpoint's name exists in three spellings
 
@@ -2308,37 +2014,11 @@ refusal. Checkable by a test that launches with a read-only state directory.
 
 ## HYGV-105 - Two distinct types named `DeadlineReader` in one crate
 
-Reported by the core/platform hunter, as fact.
-
-`crates/shepr-platform/src/ipc.rs` has one (re-arms `SO_RCVTIMEO` per read on a
-`LocalStream`, because `interprocess`'s `set_recv_timeout` is the only knob on
-that stream) and `clipboard.rs` has another (generic `R: Read + AsRawFd`, polls
-with `poll_timeout_until`). Same name, same crate, same concept - a reader with
-an overall deadline - two implementations.
-
-No mechanical rule catches duplicate private type names. The enforcement is a
-signature that makes it unrepresentable: one `Deadline<R>` in `child_io.rs` used
-by both, or at minimum two distinct names.
+Merged into HYGP-007 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGV-106 - Nine `serde` bounded-vec annotations restate the codec's own default cap
 
-Reported by the protocol/config hunter.
-
-In `crates/shepr-protocol/src/projection.rs` (seven fields) and adjacent types,
-`Vec` fields carry
-`serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"`
-and the matching `deserialize_with`, but the codec's own
-`put_collection_len` / `read_collection_len` already enforce
-`MAX_COLLECTION_ITEMS` on every sequence in both directions. Eighteen lines of
-attribute doing nothing, contradicting `serialize_bounded_vec`'s own doc comment
-("lets wire fields state a tighter rule"), and teaching the reader that a `Vec`
-field without the annotation is unbounded.
-
-Fix: delete them; the remaining annotations (`MAX_SURFACE_PANES`,
-`MAX_SURFACE_SPLITS`, `MAX_SURFACE_HYPERLINKS`, `MAX_SURFACE_CELLS`,
-`MAX_SURFACE_PATCH_SPANS`, `MAX_SURFACE_SPLIT_PATH`, `MAX_SURFACE_DIMENSION`) are
-all genuinely tighter. A text rule could ban
-`serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }` specifically.
+Merged into HYGP-056 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGV-107 - `read_message`'s `max_frame_size` parameter has had one value at every production call site
 
@@ -2355,18 +2035,5 @@ signature then makes the bad spelling unrepresentable.
 
 ## HYGV-108 - `git` is invoked from four production sites with four policies, and the client's is the least careful
 
-Reported by the termio/client hunter (the mux hunter reported the same set from
-the other side, with the environment and timeout detail).
+Merged into BUG-066 (`notes/bugs.md`), which carries the full finding.
 
-Sites: `crates/shepr-client/src/workspace_label.rs`,
-`crates/shepr-mux/src/git/status.rs` (three),
-`crates/shepr-mux/src/git/discovery.rs` (two), and
-`crates/shepr-server/src/app/git_refresh.rs`. Each spells
-`Command::new("git")` itself. The client's copy has no timeout, no environment
-scrubbing, and drops every failure with `.ok()`, so whatever policy
-`shepr-mux/src/git` has arrived at for environment, timeouts and error reporting,
-the client does not share it.
-
-Fix: one `git` runner, which belongs below `shepr-mux` (for example in
-`shepr-platform`), taking the directory and args and returning a typed error.
-Enforcement: a text rule forbidding `Command::new("git")` outside it.

@@ -94,20 +94,7 @@ the hunter notes the code under test only canonicalises paths, so writing a
 
 ## HYGG-003 - The only behavioural test of the logind protocol never runs
 
-`shepr-platform/src/shutdown.rs`'s
-`delay_lock_is_held_until_checkpoint_and_retaken_after_cancellation` is
-`#[ignore = "requires dbus-daemon; ..."]`. It is the sole test of
-`watch_connection`: inhibitor acquisition, the hold-until-checkpoint invariant,
-retake-after-cancellation, and the `already_preparing` reconnect branch.
-Everything `brokkr check` actually exercises in that module is the three pure
-`Shared` tests. The mechanism `AGENTS.md` calls out as the reason `zbus` is a
-dependency at all - logind's delay inhibitor letting the server save before host
-shutdown kills panes - is unverified by the gate.
-
-Enforcement rule named: `zbus` can serve the `LoginManager` interface over a
-`UnixStream` pair or a `p2p` connection with no `dbus-daemon` at all, which
-removes the external-binary dependency and lets the test run in the gate. The
-hunter calls this worth doing.
+Merged into BUG-047 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-004 - `failed_cli_registration_preserves_existing_config` re-executes the test binary through the host `bash`
 
@@ -189,28 +176,7 @@ text rule against `SystemTime::now()` / `Instant::now()` in `src/persist/`.
 
 ## HYGG-007 - Tests that skip silently, or return early, and report success
 
-`shepr-remote/src/remote/local_server.rs::is_server_listening_returns_permission_errors_instead_of_false`
-`return`s early when running as root, so it silently passes as a no-op in a root
-container.
-
-`process_cwd_does_not_require_traversing_the_directory_path` in
-`shepr-mux/src/pane/runtime.rs` does `eprintln!("skipping untraversable cwd
-assertion for privileged test process")` and passes. Reported by both the
-`shepr-mux` and the `shepr-vt`/`shepr-pty` hunters. The notice goes to stderr,
-which the harness hides on success, so nothing reports it. The `shepr-mux`
-hunter adds that this is the crate's only `eprintln!` in a source file: the
-project has no channel for "test was skipped", so one was invented. Rust's
-harness has no skip state, so the mechanical answer is either to make the test
-not need privilege separation (run the assertion in a subprocess that drops
-privileges, or assert the platform behaviour rather than the effect) or to fail
-when running privileged so the condition is loud.
-
-`shepr-agent`'s `python3`-dependent tests skip when the interpreter is absent
-(see HYGG-001).
-
-Enforcement rule named by the `shepr-remote` hunter: make the root skip an
-explicit failure or an `#[ignore]`, plus a rule that a `return` inside a
-`#[test]` needs a comment.
+Merged into BUG-073 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-008 - `bridge_child` is a `#[test]` that returns immediately and passes
 
@@ -226,30 +192,7 @@ the harness can be told to skip it. The same file hardcodes libtest CLI flags
 
 ## HYGG-009 - `config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access` compares a value to itself on every normal run
 
-`shepr-platform/src/tests.rs`:
-
-```rust
-if effective_uid() == 0 {
-    assert_eq!(unsafe { libc::fchown(input.as_raw_fd(), 1001, 1002) }, 0);
-}
-...
-assert_eq!(
-    (actual.uid(), actual.gid(), actual.mode()),
-    (original.uid(), original.gid(), original.mode())
-);
-```
-
-Unless the suite runs as root the `fchown` never happens, so source and
-destination were both created by the same uid/gid and the ownership half of the
-assertion cannot fail no matter what `write_config_temporary` does to ownership.
-`brokkr check` does not run as root. The ownership-preservation logic - `fchown`
-plus the `EPERM` tolerance in `config_file.rs` - is therefore untested and the
-test's name advertises it. The ACL half of the test is real.
-
-Enforcement rule named: split the ownership case into a test that is
-`#[ignore]`d with a stated reason when not root, so the suite stops reporting it
-as covered, or drive `write_config_temporary` with injected metadata instead of
-real `fchown`.
+Merged into BUG-073 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-010 - Tests that take their inputs from the developer's directory layout
 
@@ -350,34 +293,11 @@ outside `shepr-test-support` plus a documented exemption; a text rule against
 
 ## HYGG-013 - `capture_bounded_migration_observations` cannot fail
 
-`shepr-mux/src/pane/terminal/migration_tests.rs`, reported by both the
-`shepr-mux` and the `shepr-vt`/`shepr-pty` hunters. The test writes mixed
-input, resizes through three geometries, writes control sequences, scrolls and
-resets, pushing an observation after each step - and its only assertion is
-`assert_eq!(observations.last().expect(...), &terminal.observe())`, comparing
-the last observation against observing the same unchanged terminal again. Both
-sides come from the same place; it passes for any behaviour the emulator could
-have. It reads as coverage of eleven semantic dimensions across four geometries
-and asserts none of them.
-
-Its real purpose - dumping to `SHEPR_MIGRATION_OBSERVATIONS` for a human to
-diff two builds - belongs to a finished migration: there is no "old" build in
-this repository, no committed fixture to compare against, and the env var has
-one writer and no reader. The file header comment ("Keep the same runner for
-old/candidate captures") describes a workflow that cannot be performed.
-
-Enforcement named: either a committed golden fixture the test compares against,
-or deletion of the test and the env var, holdable by a text rule against
-`SHEPR_MIGRATION_OBSERVATIONS`. The `shepr-mux` hunter is explicit that the
-file's other six tests are real and should stay.
+Merged into HYGP-036 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-014 - `primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries` has a setup step that does nothing
 
-`shepr-mux/src/pane/terminal/migration_tests.rs`. The test spawns host `bash`
-and polls `/proc` for a process named "droid" so it can pass a real pid, but
-`GhosttyPaneTerminal::process_pty_bytes` ignores `_shell_pid`. The setup does
-nothing: the test is pure environment dependence, as its own comment about "the
-former process-specific filter" admits.
+Merged into HYGP-036 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-015 - `child_sees_resolved_shell_not_a_non_executable_shell_env` compares against the function under test
 
@@ -418,12 +338,7 @@ test would close the gap.
 
 ## HYGG-020 - `MAX_CLIPBOARD_TEXT_BYTES` is restated as a magic number in its own test
 
-`shepr-platform/src/clipboard.rs` declares
-`const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024` inside a function body;
-`tests.rs` asserts the limit with `yes x | head -c 1048578`. Change the constant
-and the test still passes while testing nothing in particular. Enforcement
-named: hoist the const to module scope and have the test compute
-`MAX_CLIPBOARD_TEXT_BYTES + 2`.
+Merged into HYGV-043 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-021 - Four small `shepr-platform` assertions that cannot fail, or that hide a failure
 
@@ -546,33 +461,11 @@ so the return value cannot be false; call sites presumably
 
 ## HYGG-030 - The three bun test files never run
 
-**Decision:** deferred; tracked by the "Resolve typescript question" item in
-`notes/todo.md`. Not handled in the hygiene fix pass.
-
-`shepr-agent/src/integration/assets/shepr-agent-state.test.ts`,
-`assets/opencode/shepr-agent-state.test.ts` and
-`assets/opencode/shepr-tui-session.test.ts` import `bun:test`. There is no
-`package.json`, no bun or vitest config, and `brokkr.toml` runs cargo only. They
-read as coverage for the JavaScript and TypeScript hook assets (the Pi, OMP,
-opencode and Kilo integrations) and provide none. They also write sockets into
-the system temp directory and mutate `process.env` globally. `notes/todo.md` has
-an open item ("Resolve typescript question"), so this is known, but the files sit
-beside code as if live. The hunter's position: either wire a bun step into
-`brokkr check` or delete them; a test that cannot run is worse than no test.
+Merged into BUG-016 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-031 - `src/netside_tests.rs` has four unbounded `recv()` loops that hang instead of failing
 
-Around the source-release ack, the presentation-sync ack, the sync snapshot, the
-presentation-effects fence, and the final returning-activation loop, each
-`loop { ... control.recv().expect(..) ... }` with `continue` arms and no
-deadline. If the expected message never arrives the test blocks forever rather
-than failing, and `brokkr check` has no per-test timeout to rescue it. The
-contrast named is
-`crates/shepr-api/src/server/subscription_socket_tests.rs`, which defines
-`RESPONSE_TIMEOUT` and threads a deadline through every read.
-
-Enforcement named: a deadline helper plus a text rule banning bare `.recv()` in
-tests in favour of `recv_timeout`.
+Merged into BUG-030 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-032 - One `netside_tests.rs` assertion discards the result it exists to check
 
@@ -637,25 +530,7 @@ duplicated.
 
 ## HYGG-038 - `managed_ssh_config_includes_user_config_then_fallback` never runs its headline assertion
 
-`shepr-remote/src/remote/attach.rs`:
-
-```rust
-if let Some(home) = paths.home_dir() {
-    let user_config = home.join(".ssh").join("config");
-    if user_config.is_file() { ...assert include_at < fallback_at... }
-}
-```
-
-`paths` comes from `test_app_paths()`, which is
-`AppPaths::test_with_context(&root, Some(&root), None)` where `root` is a fresh
-`ScratchDir`. A fresh scratch directory never contains `.ssh/config`, so the
-inner block is dead in every run. The test's name and its comment ("any user
-config is Included (quoted) BEFORE it so first-value-wins keeps the user's own
-settings") describe behaviour the test does not check. The hunter calls this the
-"worse than no test" shape, because it reads as coverage for the one ordering
-rule OpenSSH's first-value-wins semantics depend on, and marks the test's own
-claim false today. Fix named: write a `config` file into the scratch home and
-assert unconditionally, i.e. remove the `if`. Interacts with HYGG-052.
+Merged into BUG-036 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-039 - `remote_executable_accepts_only_cacheable_absolute_paths` has no accepting case
 
@@ -671,11 +546,7 @@ friends.
 
 ## HYGG-040 - Three names for one remote-locate call make a test assert nothing about their agreement
 
-`shepr-remote`: `locate_remote_shepr`, `prepare_remote_shepr` (wrapping it in a
-one-field `PreparedRemoteShepr`) and `find_installed_remote_shepr` (identical
-body to `locate_remote_shepr`) are the same call. `discovery_tests.rs` exercises
-`DiscoveryProgress` directly, so nothing tests that the three entry points
-agree - they agree by being copies.
+Merged into HYGP-041 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-041 - `attach.rs` is a 1112-line test file named after a subject it does not contain
 
@@ -707,60 +578,11 @@ actually building.
 
 ## HYGG-043 - Tests that clean up by hand, so a failing assertion leaks the resource
 
-`shepr-mux/src/git/test_support.rs::temp_test_dir` returns
-`ScratchDir::new(name).keep_until_exit()` and the doc says callers that clean up
-remove it themselves. Callers then do
-`std::fs::remove_dir_all(base).expect("test precondition")` *after* their
-assertions (`git/status.rs`, two sites in `workspace.rs`). Any failing assertion
-skips the cleanup, and `keep_until_exit()` is being used to opt out of the
-crate's own RAII scratch directory for no stated reason.
-
-`shepr-client`'s `handshake.rs::socket_pair` does the same: a `ScratchDir` with
-`.keep_until_exit()`, and each test removes the socket file by hand with
-`let _ = std::fs::remove_file(path)` after `peer.join()`. A test that panics
-before that line leaves the socket behind.
-
-Enforcement named: hold the `ScratchDir` guard in a binding, delete
-`keep_until_exit()` and every manual removal, and hold it with a text rule
-against `remove_dir_all` in test modules.
+Merged into BUG-076 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-044 - The gate may never compile the feature set that ships
 
-Reported from three scopes, with the same mechanism: a package that appears in
-`[dependencies]` without features and in `[dev-dependencies]` with a test
-feature gets that feature unified on for any `--all-targets` build, which is
-what a clippy-plus-tests gate runs.
-
-`shepr-mux` / `shepr-server`: root `Cargo.toml` has `shepr-server` plain and
-with `features = ["test-api"]` as a dev-dependency, and `shepr-server`'s
-`test-api` pulls in `shepr-mux/test-api`. So `brokkr check` builds both crates
-with `test-api` on, and the configuration `brokkr install` ships - `test-api`
-off - is compiled by no gate step. A `#[cfg(not(feature = "test-api"))]` path,
-or code that accidentally depends on a test-only item, would not be caught. This
-matters more than usual because `test-api` is not cosmetic in `shepr-mux`: it
-adds a whole variant to a production enum (`PaneRuntimeIo::TestChannel`), plus
-`Workspace::clear_tabs_for_test`, `PaneRuntimeRegistry::drain`,
-`TerminalState::set_detected_state` and nine `PaneRuntime::test_*`
-constructors. The same hunter notes it also means the production shape of
-`src/git/status.rs` (whose `GitStatusRefreshDemand::ALL` and two helpers are
-`cfg`-gated) is never compiled by the gate.
-
-`shepr-client`: root `Cargo.toml` depends on it plainly and as a dev-dependency
-with `features = ["test-support"]`, so under `cargo test` /
-`cargo build --tests` items gated `#[cfg(any(test, feature = "test-support"))]` -
-including `ClientState::test_new()`, the activation test hooks and the shell
-hooks in `endpoints.rs` - are reachable from `shepr-client`'s own production
-modules in that build. Nothing prevents a production code path from calling
-them; only the fact that none does today. The hunter marks the vt/pty sibling of
-this (the root `Cargo.toml` enabling `shepr-server/test-api`) as inference, not
-verified.
-
-Enforcement named: add a `[[check]]` entry to `brokkr.toml` that builds the
-workspace with default features and without `--all-targets`, so the shipped
-feature set is compiled by the gate. The `shepr-client` hunter adds that real
-isolation means moving the helpers into a separate crate, the
-`shepr-test-support` pattern the workspace already uses, so the production
-module cannot name them.
+Merged into HYGP-031 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-045 - `advertised_client_shell_methods_all_exist` cannot fail for most breakages
 
@@ -797,52 +619,11 @@ is the behaviour actually at stake.
 
 ## HYGG-047 - Two `#[cfg(test)]` shortcuts make every agent-hosting assertion unfalsifiable
 
-`shepr-server/src/app/agents.rs`:
-
-```rust
-fn available_shell_name(runtime: &PaneRuntime) -> Option<String> {
-    #[cfg(test)]
-    if runtime.child_pid().is_none() { return Some("sh".into()); }
-    ...
-}
-pub(super) fn runtime_hosts_agent(runtime: &PaneRuntime, expected: Agent) -> bool {
-    #[cfg(test)]
-    if runtime.child_pid().is_none() { return true; }
-    ...
-}
-```
-
-Any test using a `PaneRuntime` without a live child - which is most of them,
-including every `PaneRuntime::test_with_screen_bytes` fixture - gets
-`runtime_hosts_agent == true` for every agent, so assertions that a pane hosts
-the expected agent cannot fail. The shortcut is gated on `cfg(test)` only while
-the rest of the crate gates test affordances on
-`any(test, feature = "test-api")`, so the root binary's integration tests see
-the production path and unit tests see the shortcut - the two suites test
-different code.
-
-Enforcement named: inject the probe (a `ProcessProbe` trait, or an `Option<fn>`
-on the runtime) rather than branching on `cfg(test)`, so a test that wants
-"hosts the agent" must say so.
+Merged into BUG-059 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-048 - `#[cfg(test)]` changes where client frames go, so no test covers the production writer
 
-`shepr-client/src/state.rs::try_present_frame` picks its sink by `cfg`
-(`io::stdout()` in production, `io::sink()` under test) with a comment
-explaining that a full-screen frame written to the test runner's real stdout
-would scribble on the developer's terminal. The consequence for question 5: the
-whole presentation test surface - `shell/tests/copy.rs` (2492 lines),
-`mouse_selection.rs` (1312), `endpoints.rs` (1934) - runs against `io::sink()`
-for full frames, no test asserts anything about what the production sink
-receives, and the sibling `present_surface_patch` path is not even the same code
-(it writes `io::stdout()` unconditionally, which the hunter files separately as
-a live defect).
-
-Enforcement named: an injected writer on `ClientState`, so the tests assert on a
-`Vec<u8>` and run the same code production runs, and the `#[cfg(test)]`
-divergence between what tests exercise and what production runs disappears. The
-same hunter notes there is no owner of host-terminal output at all, which it
-files under its question-3 section.
+Merged into BUG-070 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-049 - `an_attempt_deadline_caps_a_silent_peer_below_the_read_timeout` asserts against a quarter of a 60-second constant
 
@@ -921,28 +702,7 @@ inside `shepr-agent`'s own test helper) and HYGG-054.
 
 ## HYGG-054 - `app_dir_name()`'s `cfg!(test)` guard is false outside its own crate
 
-`shepr-config/src/io.rs`:
-
-```rust
-// Unit tests get a directory name of their own in every profile. ...
-if cfg!(test) { "shepr-test" } else if cfg!(debug_assertions) { "shepr-dev" } else { "shepr" }
-```
-
-`cfg!(test)` is per-crate: it is true only while compiling `shepr-config`'s own
-unit tests. A test in `shepr-server`, `shepr-client` or `shepr-remote` that
-reaches `AppPaths::resolve()` compiles `shepr-config` as a normal dependency,
-and `brokkr test` builds release by default so `debug_assertions` is off too -
-the directory name is `shepr`, the real `~/.config/shepr`. The comment says this
-slip is kept out of both the release and dev directory; for the majority of the
-workspace's tests it is not. What actually prevents damage is `IsolatedEnv`
-pointing `HOME`/`XDG_*` at scratch, i.e. discipline, not the `cfg!`. The hunter
-marks this **the most dangerous false claim it found**.
-
-Enforcement named: make the guard positive rather than negative - have
-`shepr-test-support` set a variable (for example `SHEPR_TEST_DIR_NAME`) that
-`app_dir_name()` honours, so isolation is something a test opts into and the
-name is wrong loudly rather than silently. Failing that, at minimum reword the
-comment.
+Merged into BUG-021 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-055 - `WSL_MARKER_ENV_VARS` is a two-entry list that goes quiet when the names change
 
@@ -955,17 +715,7 @@ it is not false today as far as can be determined by reading.
 
 ## HYGG-056 - The clipboard detach behaviour hangs on the program name `wl-copy`
 
-`shepr-platform/src/clipboard.rs`:
-`clipboard_program_name(command.program) == "wl-copy"` is the entire trigger for
-"detach the clipboard owner instead of waiting for it". Rename the helper, wrap
-it, or point at `wl-copy-wrapper` - a case the test in `tests.rs` explicitly
-demonstrates produces `"wl-copy-wrapper"` - and the write path silently reverts
-to waiting for a process that never exits until the 2 s timeout kills it, taking
-the user's clipboard content with it. The hunter marks it checkable and worth
-fixing structurally: the "owns the selection after exit" property belongs on
-`ClipboardCommand` as a field, not inferred from the program name. It also
-lists this among its lateral live-defect findings, so a fix pass should expect
-the bug document to carry an overlapping entry.
+Merged into BUG-042 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-057 - `is_posix_acl_xattr` is keyed on the `system.posix_acl_` prefix
 
@@ -982,23 +732,7 @@ practice, but it is the fail-open shape.
 
 ## HYGG-060 - `is_pane_shell_process_name` fails open on a shell it does not know, and three shell-name lists have already diverged
 
-`shepr-agent/src/detect/proc_tree.rs::is_pane_shell_process_name` knows twelve
-shells (`sh bash dash zsh fish ksh mksh csh tcsh elvish xonsh nu`);
-`detect/mod.rs::is_generic_runtime_or_shell` knows four plus `tmux node bun`;
-`wrapped_agent_name_from_runtime_argv` matches four. The hunter states the
-consequence as a fact, not a prediction: a pane shell that is `dash`, `nu`,
-`ksh` or `xonsh` running an agent through `-c` is not unwrapped, so the agent is
-not identified, so there is no detection for that pane.
-
-Separately as a fail-open guard: any shell outside the twelve-name list, or a
-wrapper like `nix-shell`, `toolbox`, or a user's `$SHELL` symlink named
-something else, is treated as not-a-pane-shell, which changes
-`available_pane_shell` and the whole child-groups path, reporting nothing.
-Checkable against the configured default shell: the config already knows the
-user's shell, so a launch-time check ("your configured shell is not one shepr
-recognises as a pane shell") would turn a silent no-op into a warning at boot.
-The structural fix named is one `ShellKind` table with per-use predicates
-(`is_pane_shell`, `supports_dash_c`) derived from it.
+Merged into BUG-017 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-061 - `hook_registration_is_current` fails open for five targets and the coupling is invisible
 
@@ -1015,26 +749,11 @@ exhaustive over data rather than over a target list.
 
 ## HYGG-062 - `json_hook_commands_registered` verifies installation by substring search
 
-`shepr-agent`. Install writes an exact shape - four different shapes across
-`ensure_command_hook`, `ensure_flat_command_hook`, `ensure_direct_command_hook`
-and `ensure_simple_command_hook` - and status verifies by walking the event's
-value recursively for a matching command string anywhere inside it
-(`json_contains_string`). So a command string sitting in a disabled block, in a
-comment-like field, or in an unrelated nested entry counts as registered.
-Enforcement named: have status reuse the install shape
-(`is_matching_command_hook` already exists for one of the four) instead of a
-generic search.
+Merged into BUG-019 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-063 - Ancestor depths in `hook_registration_is_current` mirror the install paths by hand
 
-`shepr-agent`: `json_in(2, "settings.json", ...)` for Claude because the hook
-lives at `<dir>/hooks/<name>`, `json_in(1, ...)` for Codex because it lives at
-`<dir>/<name>`, `ancestor(hook_path, 3)` for Hermes. Those numbers are
-`spec.path.len() + 1` and nothing says so. Change a spec path and status quietly
-reports Outdated forever - the hook is fine, the check is looking in the wrong
-directory - with no log line. Enforcement named: derive the depth from
-`spec.path.len()`, or better, keep the config path on the spec row and stop
-walking upward from the hook path.
+Merged into HYGV-075 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-064 - `ProcessDetectionMode::ChildGroups` is a claim nothing exercises
 
@@ -1147,89 +866,23 @@ HYGG-023 for the data half.
 ## HYGG-068 - Claim: "Config is read and validated once at launch. No reload, no fallbacks. Any config problem fails the launch"
 
 `AGENTS.md`. Five scopes report this claim as **partly false today**, at
-different sites.
+different sites. Each site is filed in full elsewhere; this entry is the index
+for the claim.
 
-*Across a host boundary* (`shepr-protocol`/`shepr-config`): the local path
-holds - `Config::load_validated` returns `Err` if `diagnostics` is non-empty,
-`main.rs::load_validated_config_or_exit` exits 1, and
-`bootstrap.rs::encode_resolved_config` propagates an encode failure with `?` so
-the server refuses to boot. But `ValidatedConfig`'s `Deserialize` re-runs
-`from_resolution(..., CwdCheck::Received)`, so a remote endpoint's config is
-validated at the moment of use, on the client, at attach time - not at that
-client's launch, and a config the server accepted can be rejected by the client.
-That duplication is forced (two hosts, two binaries, one config travelling
-between them) and what keeps the two validations in step is the exact-build
-preamble plus the shared crate - which the hunter says is worth saying out loud
-in the `AGENTS.md` sentence, currently written as absolute.
-
-*XDG path variables* (`shepr-config/src/io.rs`): the empty/relative rule is
-invented three times inside `resolve_paths_from_env` / `platform_xdg_dir` /
-`socket_path_override`, and the five variables get four rules.
-`XDG_CONFIG_HOME` and `XDG_STATE_HOME` treat empty and relative as unset and
-fall back to `HOME`, silently, with provenance reporting `Default`;
-`XDG_RUNTIME_DIR` is a hard error; `SHEPR_SOCKET_PATH` and
-`SHEPR_CLIENT_SOCKET_PATH` produce a diagnostic; `SHEPR_CONFIG_PATH` produces a
-diagnostic when empty and is *joined to the cwd* when relative; `SHEPR_SESSION`
-is parsed. The one that fails open is also the one that silently sends config
-reads somewhere other than where the user pointed them:
-`XDG_CONFIG_HOME=relative/path` is a config problem that produces a silent
-fallback. Enforcement named: one `env_path(variable, policy)` helper with an
-explicit policy enum used for all of them, plus a test table over the five
-variables pinning the matrix.
-
-*`SHEPR_LOG`* (`shepr-platform/src/logging.rs`):
-`EnvFilter::try_from_env("SHEPR_LOG").unwrap_or_else(|_| EnvFilter::new("shepr=info"))`.
-A typo in the filter (`shepr=inof`) produces no diagnostic of any kind - the
-`Err` is discarded and the default installed. The hunter calls this the one
-config input in the project that contradicts the stated rule, and notes it is in
-the module that owns diagnostics, so the failure cannot even be reported through
-itself. The next line has the same shape: `let _ = tracing_subscriber::fmt()...
-try_init();`. Enforcement named: return `Result` from `init_file_logging`, fail
-the launch on a bad filter, and add `clippy::let_underscore_must_use` (or just
-make the signature `-> io::Result<()>` so `unused_must_use` fires).
-
-*`SHEPR_PROCESS_DETECTION`* (decided: deleted with WSL support, not moved into
-config) (`shepr-agent/src/detect/proc_tree.rs`):
-`process_detection_mode` reads the variable behind a `OnceLock` on the first
-foreground probe, and an unrecognised value produces `tracing::warn!` and native
-mode. It is config in all but name and breaks both halves of the rule: a typo is
-discovered hours in, on whichever pane probed first, and is tolerated rather
-than refused. It is also invisible to `shepr config check`. Enforcement named:
-move it into the config file, or validate it during launch and pass the mode
-down; `parse_process_detection_mode` is already the right shape.
-
-*`SHEPR_DEBUG_OSC_EVIDENCE`* (`shepr-mux/src/pane/osc.rs`):
-`impl Default for OscDebugTracker { fn default() -> Self { Self::from_env() } }`,
-reached from `GhosttyPaneCore` construction, so the process environment is read
-once per pane rather than once at startup. This knob reloads on every new pane,
-and a typo (`SHEPR_DEBUG_OSC_EVIDENCEE=1`, or `=yes please`) is not a launch
-failure but a silent no-op discovered hours later. It is also documented nowhere
-at all - no `docs/`, no `reference/`, no `brokkr man` page - and the flag puts
-pane content (OSC 0/2/9/21337 payloads, truncated to 512 chars) into the log at
-`debug`, which nothing tells the user.
-
-*`terminal.default_shell`* (`shepr-config/src/validated.rs`): stored as a raw
-`String`, with PATH lookup and the executability check happening in
-`PtyCommand::to_std_command` at every spawn, so a typo fails each pane rather
-than the launch. `default.toml` says "Empty means $SHELL, then /bin/sh", but a
-`$SHELL` that is set and invalid is an error in pane mode, not a fall-through to
-`/bin/sh`. Enforcement named: a `ValidatedShell` produced at config load.
-
-*Manifest overrides* (`shepr-agent/src/detect/manifest.rs`): an override that
-does not compile is collapsed into a `warning: String` attached to the fallback
-manifest and surfaces only through `explain`/`reload` summaries, so a bad
-override at server boot is visible only if someone asks. Given the rule, the
-hunter argues it ought to fail `shepr config check`. Enforcement named: a typed
-`ManifestOverrideError` plus a `config check` path that loads overrides.
-
-*Sidebar chrome preferences* (`shepr-client/src/shell/presentation/config.rs`):
-`persist_chrome_preferences` writes preferences and, on failure, raises a UI
-banner hours into a session on whatever gesture happened to trigger a persist.
-The preferences path is `Option` and a `None` silently skips persistence
-entirely. Nothing at launch checks the path is writable, so the first sidebar
-drag of the session is where an unwritable state directory is discovered.
-Enforcement named: a startup probe on the preferences path, checkable by a test
-that launches with a read-only state dir.
+- Remote config is validated on the client at attach time: HYGV-089 (and
+  BUG-022 for the discarded decode error). The recommendation there is to state
+  the forced cross-host revalidation in the `AGENTS.md` sentence, which reads
+  as absolute.
+- XDG path variables get four empty/relative rules and `XDG_CONFIG_HOME` falls
+  back silently: HYGV-008.
+- An invalid `SHEPR_LOG` filter degrades silently: BUG-044.
+- `SHEPR_PROCESS_DETECTION`: decided, deleted with WSL support (HYGV-012).
+- `SHEPR_DEBUG_OSC_EVIDENCE` is read per pane and documented nowhere: HYGV-013.
+- `terminal.default_shell` is validated per spawn rather than at launch:
+  BUG-010.
+- A manifest override that does not compile only warns: HYGC-023.
+- Sidebar chrome preferences discover an unwritable state dir mid-session:
+  HYGV-104.
 
 The `shepr-protocol`/`shepr-config` hunter also records the contrasting
 positive: everything else in that crate is genuinely front-loaded, including the
@@ -1239,69 +892,15 @@ scope and reports no finding there.
 
 ## HYGG-069 - Claim: every CLI subcommand acting on a running server goes through the JSON API, and local-state commands cannot be sent with `--machine`
 
-`AGENTS.md` and `src/cli/`. The hunter's verdict: the `--machine` gate is real
-and tested (`validate_machine_command` plus
-`machine_commands_reject_real_local_commands`, see HYGG-033), and the API-only
-half leaks in named places. `session stop`, `session delete` and local
-`server stop` reach a running server without going through `ApiClient` at all -
-`shepr-api/src/session.rs` hand-rolls a second client transport. `status`
-(overview) and `status client` also act on a running server through the API
-while declaring `is_api_command() == false`.
-
-`status`'s refusal message for the second case is both wrong and malformed: with
-`--machine` the user gets "`status ` is not an API-backed machine command",
-with a dangling space, because `Command::Overview.name()` returns `""` - the
-same value `Command::Invalid` returns. Two distinct states share one name
-string, and the message asserts something untrue about the command. The
-`""`-for-two-states pattern repeats in every `src/cli/*.rs` `name()` (agent,
-pane, tab, workspace, machine, integration, server, session, terminal, config) -
-ten copies.
-
-`is_api_command` also has no single owner: `src/cli.rs::CliCommand::is_api_command`
-hardcodes `false` for `Config`, `Machine`, `Session` and `Integration`, while
-`Status`, `Server`, `Workspace`, `Tab`, `Pane`, `Agent` and `Terminal` delegate
-to per-module methods. If an `integration` or `machine` subcommand ever becomes
-API-backed, the blanket `false` silently blocks it with no test failing.
-
-Enforcement named: the classification should be "may this run against a remote
-machine", not "is this API-backed"; `name()` should not be able to return `""`
-(make it `Option<&str>`, or give `Overview` the name `"status"` and drop the
-`Invalid` variant in favour of `Result`/`Option` at parse time); and every
-group's `Command` should implement one trait method, so a missing
-implementation is a compile error.
+Merged into BUG-028 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-070 - Claim: API error codes, response shapes and operator guidance each have one owner
 
-`AGENTS.md`-adjacent framing checked by the `shepr-api`/CLI hunter, verdict
-**false in several places.** Nine wire error codes are minted as string literals
-outside `ApiErrorCode` (`agent_explain_file_read_failed`, `agent_start_failed`,
-`agent_start_transport_failed`, `agent_kind_mismatch`, `agent_name_not_found`,
-`build_mismatch`, `server_not_running`, `invalid_session_name`,
-`session_stop_failed`, `session_delete_failed`), two codes that *are* in the
-enum are spelled as literals at the site that emits them, the response-encoding
-path has three independent implementations with different failure behaviour, and
-operator guidance is assembled at three sites. The guard that should catch this
-is HYGG-071.
+Merged into HYGV-019 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-071 - `error_response_json`'s `impl Into<ApiErrorCode>` is a check that fails open on a name
 
-`crates/shepr-api/src/server.rs` passes `"invalid_ssh_agent"` /
-`"ssh_agent_unavailable"` to `error_response_json`, whose signature is
-`code: impl Into<ApiErrorCode>`, so a typo silently becomes
-`External("invald_ssh_agent")` with no compile error and no log -
-`ApiErrorCode::InvalidSshAgent` and `SshAgentUnavailable` both exist. The
-`From<&str>` mapping of an unknown string to `External(s)` is correct for
-parsing responses off the wire; it is the emit path that gets a silent
-pass-through instead of a rejection. `src/cli/agent.rs` additionally emits the
-literal `"timeout"` and `agent_not_ready`, duplicating `ApiErrorCode::Timeout`
-and `ApiErrorCode::AgentNotReady`, and `api_response_outcome` re-parses the JSON
-it just serialized and matches `"timeout"` literally - a third spelling.
-
-Enforcement named: change `error_response_json` to take `ApiErrorCode` directly
-and delete the `From<&str>`-driven coercion from that path; `From<&str>` is
-needed for wire parsing but need not be reachable from an emit site. Weaker
-fallback: a text rule that no string literal is assigned to an `ErrorBody.code`
-field outside `error.rs`.
+Merged into HYGV-019 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-072 - `server_not_running`'s test helpers string-match the code their own comment says they do not
 
@@ -1316,15 +915,7 @@ false.**
 
 ## HYGG-073 - `startup_command` keys on path equality and falls back to a bare `shepr`
 
-`src/cli/server_not_running.rs`. If the socket path is not exactly
-`paths.server_address().api_socket()`, the guidance degrades to "run `shepr`" -
-which for a `--session work` invocation or a `SHEPR_SOCKET_PATH` override is the
-wrong command and will attach the wrong server. Nothing reports that the
-fallback was taken. The `--machine` case never reaches here (it is routed to
-`target::remote_error`), so the reachable wrong-advice cases are socket
-overrides. Enforcement named: make the address the source of the command -
-`ServerAddress::attach_command` already takes the session - rather than
-comparing paths.
+Merged into BUG-031 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-074 - `matches::required` returns `String::default()` when the spec and the handler disagree, and a comment claims a test would catch it
 
@@ -1399,18 +990,7 @@ list itself cannot be enforced against OpenSSH's actual search order.
 
 ## HYGG-079 - `discard_remote_output_preamble` and two siblings are keyed on version-suffixed markers for a compatibility story the project does not have
 
-**Decision:** delete. The `--idle-timeout-v1` flag goes entirely (HYGP-039);
-the two markers keep their role and lose their `:1` / `-v1` suffixes.
-
-`REMOTE_OUTPUT_READY_MARKER = "shepr-remote-output-ready:1"`,
-`STALE_API_METADATA = "shepr-machine-metadata-stale-v1"`, and the
-`--idle-timeout-v1` flag. Three `v1`/`:1` suffixes encoding version negotiation
-that nothing reads: per `AGENTS.md` there are no wire compatibility obligations
-and client and server are always the same build. Fix named: drop the version
-suffixes, or state in one place why they exist - they are the one thing that
-could legitimately differ if a stale remote binary is somehow reached, but
-`build_id` checking already covers that before the marker is read. Not
-enforceable; a decision to record.
+Merged into HYGP-039 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-080 - The remote `status --json` contract is two independent structs with no shared type
 
@@ -1470,53 +1050,15 @@ the parser.
 
 ## HYGG-082 - Claim: `SocketStartupLock` must be acquired before `prepare_socket_path` and held until the listener stops
 
-`shepr-platform/src/ipc.rs`'s doc comment. Reported from two scopes.
-`SocketStartupLock` is a separate value from the listener; nothing in the type
-system requires the ordering or the lifetime. The `shepr-remote` hunter
-enumerates the three callers and marks the claim **false today at one of them**:
-
-| site | startup lock | prepare | bind | identity | extra chmod |
-|---|---|---|---|---|---|
-| `shepr-remote/src/remote/bridge.rs` | yes | yes | yes | yes | yes (`0o600`) |
-| `shepr-api/src/server.rs` | yes | yes | yes | yes | no |
-| `shepr-server/src/server/headless.rs` (client protocol socket) | **no** | yes | yes | yes | no |
-
-The client protocol socket - the one the whole TUI attaches to - skips the
-startup lock the doc comment says to take, which is exactly the race the lock
-exists to close. The bridge's extra `restrict_socket_permissions(0o600)` is
-redundant, since `bind_private_local_listener` already ends owner-only.
-
-Enforcement named by both hunters, structurally: one
-`shepr_platform::ipc::bind_private_socket(path, busy_message) -> (Listener,
-SocketStartupLock, SocketFileIdentity)` - or `prepare_socket_path` taking
-`&SocketStartupLock` - so the wrong order is unrepresentable and the three
-callers lose the choice.
+Merged into BUG-035 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-083 - Claim: the client's five-second HealthPing renews the bridge's sixty-second byte-level watchdog
 
-`shepr-platform/src/remote_bridge.rs`'s module doc: "The client endpoint sends
-HealthPing after five seconds without received data, and the server answers
-HealthPong. Those protocol frames renew this byte-level watchdog." A 60-second
-`IDLE_TIMEOUT` in `shepr-platform` whose safety depends on a five-second
-interval defined in `shepr-client`/`shepr-protocol`
-(`shepr_client::endpoint::health::HEARTBEAT_INTERVAL`). Nothing relates the two
-numbers; halve the timeout or double the ping interval and healthy idle bridges
-start dying. Reported from two scopes. `shepr-platform` sits below
-`shepr-client`, and `shepr-remote` sits between them passing only
-`idle_timeout: bool` through, so neither crate can see the other's constant.
-
-Enforcement named: put both constants where both crates can read them
-(`shepr-core`, or the interval in `shepr-protocol`) and add a test asserting
-`IDLE_TIMEOUT > HEALTH_PING_INTERVAL * k` - the `shepr-remote` hunter proposes
-`IDLE_TIMEOUT >= HEARTBEAT_INTERVAL * 4`. Today nothing would notice either
-number changing.
+Merged into HYGV-037 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-084 - Claim: `ProcessIdentity::StartTime` has a pid-reuse race window of a few syscalls
 
-`shepr-platform/src/process.rs` documents the window; no test reaches it and no
-assertion guards it. The hunter's own answer is that the right move is deleting
-the branch rather than testing it - the deletion is filed as dead code in a
-sibling document - but the unenforced claim is recorded here.
+Merged into HYGP-038 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-085 - `shepr-platform`'s `lib.rs` says domain rules live in modules that do not exist there
 
@@ -1684,59 +1226,15 @@ assert `json["method"] == traits().name`.
 
 ## HYGG-096 - `#![cfg_attr(feature = "test-api", allow(dead_code))]` silences dead-code detection for `shepr-server` in exactly the build that would run it
 
-`crates/shepr-server/src/lib.rs`. The root package depends on `shepr-server`
-normally and with `features = ["test-api"]` as a dev-dependency, so under
-feature unification any build that includes dev-dependencies - `cargo test`,
-`cargo clippy --all-targets`, i.e. what `brokkr check` runs - turns `test-api`
-on and with it silences `dead_code` across all roughly 45 000 lines of the
-crate. The gate cannot report an unused function, module, field or variant in
-`shepr-server`. The hunter calls this a guard that fails open and says it is the
-reason its own dead-code section is hand-found; it also declines to call three
-candidates dead (`MIN_CLIENT_COLS`/`MIN_CLIENT_ROWS`, the
-`AttachInputDelivery::Failed` variant, `ShutdownLifecycle::set_frozen_session_policy_for_test`)
-until the lint is enabled, since a wrong deletion is the mistake nobody can undo
-by reading. It is also the only crate-wide `allow(dead_code)` in the repo;
-`shepr-vt` and `shepr-mux` use narrow per-item allows with justifying comments,
-which is the house style.
-
-Enforcement named: delete the blanket allow, gate the test fixtures on the items
-themselves with `#[cfg(any(test, feature = "test-api"))]` as the crate already
-does nearly everywhere, and let `dead_code` run. The hunter names this the one
-finding to fix first in its scope, because it is the one that hides other
-findings.
+Merged into BUG-056 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-097 - Two `debug_assert_eq!` phase claims are not checked in the build that ships
 
-`shepr-server/src/server/headless/lifecycle.rs` asserts the lifecycle phase at
-two sites. `brokkr.toml` sets `[test] debug = true` so they do run under
-`brokkr test`, but `brokkr test <name>` defaults to release per `AGENTS.md` and
-the shipped binary is release. These are the only two invariant assertions in
-the serving layer, and they cover the phase machine, which is the one piece of
-state written by signal, API and logind threads. Enforcement named: make the
-phase transitions total functions on `ShutdownPhase` returning `Result`, so an
-illegal transition is unrepresentable rather than asserted.
+Merged into BUG-058 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-098 - `unregister_moved_pane` is a guard that vanishes in release
 
-**Decision:** delete the method and its call site in
-`shepr-server/src/app/api/panes/geometry.rs`. `take_pane_for_move` already
-removes the record and number together.
-
-`shepr-mux/src/workspace.rs`:
-
-```rust
-pub fn unregister_moved_pane(&mut self, _pane_id: PaneId) {
-    // `take_pane_for_move` removes the pane record and its public number
-    // together; the API still calls this to acknowledge that removal.
-    debug_assert!(self.pane_state(_pane_id).is_none());
-}
-```
-
-Called from production at `shepr-server/src/app/api/panes/geometry.rs`. In a
-release build (`brokkr install`) `debug_assert!` compiles away and this is a
-`&mut self` method that does nothing, so the shipped binary takes a mutable
-borrow of the workspace to acknowledge something. It is either an invariant
-check that should be a real `assert!` or return `Result`, or it is dead.
+Merged into BUG-058 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-099 - The one-tab workspace invariant is enforced by opt-in test calls and one `Deref` panic
 
@@ -1781,24 +1279,7 @@ needing to be reachable.
 
 ## HYGG-101 - A pruning-policy guard keyed on a directory-name string literal
 
-`shepr-mux/src/persist/writer.rs::preserve_existing_in`:
-
-```rust
-if let Err(err) = prune_backups(&older, keep) {
-    if directory_name == "session-snapshots" {
-        std::fs::remove_file(&backup)?;   // snapshot copies: pruning failure is fatal
-        return Err(err);
-    }
-    tracing::warn!(...);                  // session-backups: pruning failure is a warning
-}
-```
-
-Two different error policies selected by string comparison against one of the
-five spellings of `"session-snapshots"` in the same file. Rename the directory at
-the four call sites and forget this one, and snapshot pruning failures silently
-become warnings - the directory grows without bound and nothing says so.
-Enforcement named: pass a `PrunePolicy { Fatal, Warn }` alongside `keep`, which
-removes the string entirely and makes the bad spelling unrepresentable.
+Merged into HYGV-028 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-102 - Fifteen hook-authority guards key on `(source, agent_label)` strings that arrive from shipped shell scripts, with nothing keeping the two sides in step
 
@@ -1877,117 +1358,27 @@ test that parses or greps the asset.
 
 ## HYGG-105 - Hermes's and Grok's declared hook events are fiction
 
-**Decision (partial):** Hermes support is removed entirely. The Grok half
-remains open.
-
-`shepr-agent`. `HERMES_HOOK_EVENTS` in `agent/mod.rs` declares one event,
-`SessionStart`, with action `Session`; the actual asset
-(`assets/hermes/__init__.py`) registers `on_session_start`, `on_session_reset`
-and `pre_llm_call`, and invents three start sources (`startup`, `new`,
-`resume`). Nothing consumes the Hermes row, so nothing notices. Same shape for
-Grok: its descriptor carries `integration_hook_events: &[]`, yet
-`targets.rs::grok_hook_config` writes a real `SessionStart` hook with action
-`session`, so any generic consumer of `IntegrationTarget::hook_events()` sees
-Grok as hookless. Enforcement named: a test asserting that a target with a
-config-registered hook has a non-empty event list, plus deriving the written
-config from the event list instead of hand-writing it.
+Merged into BUG-015 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-106 - The session-start-source vocabulary is spelled three times and the copies disagree
 
-`shepr-agent`. `resume.rs::AgentSessionStartSource::parse` accepts eight values
-(`startup resume clear compact branch new fork select`);
-`claude_settings.rs::SESSION_START_MATCHER` is
-`^(startup|resume|clear|compact|fork)$` (five); the kimi asset defaults to the
-literal `"startup"`; the hermes asset emits `startup`, `new`, `resume`. The
-comment above `SESSION_START_MATCHER` says Grok "uses new/load", and `load` is
-in none of the three lists, so a grok-imported Claude hook firing with `load`
-normalises to `None` and is treated as unrecognised by
-`session_start_source_is_recognized` in `shepr-mux`'s `hooks.rs`. Enforcement
-named: derive the matcher regex from the enum's variant strings, and give the
-enum a single `as_str` so the assets can be grepped against it.
+Merged into BUG-018 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-107 - `default.toml`'s theme list has already diverged from `THEME_NAMES`
 
-`shepr-config/src/theme.rs`'s `THEME_NAMES` holds 18 themes; `default.toml`'s
-comment lists 11. Every light variant - `catppuccin-latte`, `tokyo-night-day`,
-`gruvbox-light`, `one-light`, `solarized-light`, `kanagawa-lotus`,
-`rose-pine-dawn` - is implemented, accepted by `canonical_theme_name`, named in
-the *error message* for an unknown theme, and absent from the printed default
-config. **A fact, not a prediction.** Enforcement named: assert every
-`THEME_NAMES` entry appears in `DEFAULT_CONFIG`, the same shape as the existing
-keybinding test.
-
-Theme names are also spelled three times in code (`THEME_NAMES`,
-`canonical_theme_name`'s match, `Palette::from_name`'s match) plus 18
-constructor functions. `built_in_theme_names_resolve` covers
-`THEME_NAMES -> canonical -> from_name` in one direction only, so a palette
-implemented but missing from `THEME_NAMES` is undetected - which is exactly the
-failure mode that produced the divergence above.
+Merged into HYGV-066 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-108 - `default.toml` restates four more lists the code owns, none of them checked
 
-`shepr-config`. Beyond the theme list (HYGG-107) and the keybinding list (which
-*is* checked, by
-`src/main.rs::default_config_documents_every_keybinding_with_its_default`),
-`default.toml` restates the `cjk_ime_agents` accepted-name list (22 agent names,
-hand-written, generated by `ConfigAgent::all()`), the sidebar built-in token
-lists, and the `right_click_passthrough_modifier` alias list. None is checked.
-
-The keybinding test that does exist covers `[keys]` only, and only
-string-valued entries - it `continue`s past anything that is not a TOML string.
-Unchecked defaults documented in the same file: `sidebar_width = 26`,
-`sidebar_min_width = 18`, `sidebar_max_width = 36`, `mouse_scroll_lines = 3`,
-`headless_cols = 120`, `headless_rows = 40`,
-`scrollback_limit_bytes = 10000000`, `startup_per_agent_delay_ms = 100`,
-`row_gap = 0`, `window_title = "{hostname}: {workspace}"`, every enum default,
-and the whole `[theme]` and `[remote]` blocks. The hunter also flags
-`ui.accent`: `default.toml` says "Unset uses the theme accent" and documents
-`#89b4fa`, while the Rust `Default` is `"cyan"` (never applied, since
-`resolve_palette` only uses `ui.accent` when the provenance is explicit) and a
-user who reads the doc and writes `accent = ""` gets a refused launch.
-
-Enforcement named: generalise the existing `main.rs` test - serialise
-`Config::default()` to a TOML table, walk every leaf, assert each appears as
-`# key = <value>` in `DEFAULT_CONFIG` - plus one test per list in the same
-shape. The mechanism already exists in `main.rs`; it is just scoped to one
-table. The hunter ranks this third among the things a single mechanism buys, and
-notes it would have caught HYGG-107.
+Merged into HYGV-065 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-109 - `default.toml` ships one active setting
 
-Every line is commented out except `pane_history = false` under
-`[experimental]`. Since the file is only printed (`shepr --default-config`) and
-never parsed, the effect is that a user who redirects it to
-`~/.config/shepr/config.toml` gets a config that explicitly pins one
-experimental flag while leaving everything else to defaults. The hunter calls it
-almost certainly an editing slip. Enforcement named: a test asserting every
-non-blank, non-`[section]` line in `DEFAULT_CONFIG` starts with `#`.
+Merged into BUG-024 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-110 - `shepr --help` documents one of five environment variables the CLI honours
 
-The CLI's behaviour is changed by `SHEPR_CONFIG_PATH`, `SHEPR_SESSION`
-(`shepr_config::SESSION_ENV_VAR`), `SHEPR_SOCKET_PATH` and
-`SHEPR_CLIENT_SOCKET_PATH` (`shepr_config::address`), and `SHEPR_PANE_ID`
-(`shepr_mux::pane`, read by `CliContext::local` to resolve `--current`).
-`shepr --help` documents exactly one, and spells its name as a literal rather
-than interpolating `shepr_config::CONFIG_PATH_ENV_VAR`. A user debugging why
-`--current` says "belongs to a different server" has no way to discover from the
-CLI that two socket variables are involved, even though the error text names one
-of them.
-
-Enforcement named: a slice of `(const, description)` in one place rendered by
-`print_help`, with a test asserting the slice covers every `*_ENV_VAR` const the
-binary's crates export. Without the test it is a list that drifts.
-
-Related, from `shepr-platform`: `SHEPR_LOG` is a bare literal in `logging.rs`
-with no constant at all, and it appears in no registry, no `--help` text and no
-doc. And from `shepr-vt`/`shepr-pty`: nothing lists which `SHEPR_*` variables a
-pane may inherit - the pane environment is inherited wholesale and then scrubbed
-by a denylist split across `shepr-mux`'s `launch.rs` (host terminal keys) and
-`shepr-agent` (agent keys), with server-only variables removed ad hoc elsewhere
-(`SHEPR_STARTUP_CWD` via `unsafe remove_var` in `headless/bootstrap.rs`). The
-test named there: every `*_ENV_VAR` constant is either scrubbed or explicitly
-allowed.
+Merged into HYGV-005 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-111 - `manifest.rs`'s module doc enumerates region names, matcher keys, gate keys and limits in prose
 
@@ -2041,16 +1432,7 @@ by reading; `AGENTS.md` already directs the reader to the pinned
 
 ## HYGG-114 - `TerminalState`'s docs and a whole test module describe a migration that is over
 
-`shepr-mux/src/terminal/state/mod.rs`: "Pure state for a server-owned terminal.
-**During the migration** this is still one-to-one with a pane-backed PTY, but
-pane/view state no longer owns terminal identity, cwd, labels, or agent
-metadata." And `src/pane/state.rs`: "Viewport state for a pane. Terminal
-identity, cwd, labels, and agent metadata live in TerminalState." The migration
-is complete - `PaneState` now holds two fields - so three doc comments and a
-test module named `migration_tests` describe a transition nobody can still
-observe, and nothing in the build would notice them becoming false; they were
-already false when `PaneState` shrank. Not mechanically enforceable; it is a
-deletion.
+Merged into HYGP-036 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-115 - `handler.rs` claims every `Handler` method is listed explicitly, and vte is not pinned
 
@@ -2104,101 +1486,19 @@ its answer.
 
 ## HYGG-120 - The keybinding help screen is a hand-maintained restatement of the `Keybinds` struct
 
-**Decision:** the six hard-coded entries become configurable bindings with
-defaults - keys are either rebindable or not, and they are. Done together with
-the declarative keybinding table (HYGV-063).
-
-`shepr-client/src/keybind_help.rs::keybind_help_groups` enumerates
-`keybinds.<field>` by hand for every one of `Keybinds`' 47 fields plus
-`NavigateKeybinds`' 6. The hunter checked: today every field does appear, so
-this is a checkable claim that is true right now with nothing holding it. Adding
-a config key and forgetting the help line compiles, ships, and is invisible -
-the key simply has no help entry.
-
-The same function also hard-codes six entries that come from nowhere:
-`entry("esc", "back")`, `entry("tab / shift+tab", "cycle pane")`,
-`entry("enter", "open workspace")`, `entry("1..9", "switch workspace")`. If any
-of those is rebindable the help is lying; if none is, they are undocumented
-fixed keys the config cannot reach. Worth deciding which.
-
-Enforcement named, at compile time: destructure `Keybinds { navigate, help,
-new_workspace, .. }` exhaustively (no `..`) at the top of `keybind_help_groups`
-and build the groups from the bindings, so adding a field fails to compile until
-it is placed. The hunter calls this the single highest-value mechanical fix in
-its scope. It also supersedes widening HYGG-051.
-
-The help screen is one of eight sites the `shepr-config` hunter counts for the
-keybinding action list, of which only three are compiler-checked; the uncovered
-one it singles out is the roughly 51
-`apply_action!`/`apply_indexed!`/`apply_navigate!` lines in `keybinds.rs` - add a
-field to `KeysConfig` and forget its `apply_action!` line and it compiles, the
-user's binding parses, and the action simply never fires with no diagnostic. Same
-for a missing `shepr-termio/src/input/keybindings.rs` dispatch row or a missing
-`keybind_help.rs` entry. Its enforcement proposal is one declarative table naming
-each action once with its kind, default binding and help text, generating
-`KeysConfig`, its `Default`, `Keybinds`, the apply loop, the wire mapping and the
-help entries, so every omission is a compile error. The hunter says it thinks
-this rewrite is worth it and that it is the only way the eight sites stop
-drifting. Adjacent: `KEY_BINDING_COUNT = 51` in `wire.rs` is a hand-maintained
-count of a compile-time-known list, correct today, whose only job is a runtime
-error that cannot trigger; derive it from the macro or delete it.
+Merged into HYGV-063 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-121 - `modes.rs`'s mouse-clear list and its test are maintained by hand, together
 
-`shepr-termio`. `DISABLE_HOST_MOUSE_REPORTING_SEQUENCE` lists eight modes; the
-test `clears_all_known_host_mouse_modes` loops over the same eight spelled again
-as strings. The test restates the constant rather than deriving anything from it,
-so adding a ninth mode to the constant and not to the test passes, and adding it
-to the test and not the constant fails with a clear message - half a guard.
-Meanwhile `\x1b[?1016h`, the enable for one of those eight, lives in
-`shepr-client/src/terminal_setup.rs`, which is the copy the test cannot see at
-all. Enforcement named: derive the list from a single `const MODES: [&str; N]`
-used by both the sequence builder and the test.
+Merged into HYGV-060 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-122 - `MAX_RETRY_DELAY`'s doc asserts a user-visible promise nothing checks
 
-`shepr-client/src/endpoint/supervisor.rs`'s doc comment states that
-`shepr machine reconnect` tells the user open clients retry within 30 seconds,
-and that `ATTEMPT_BUDGET` (25 s) plus the retry accounting keep that promise.
-Three separate constants, a fourth in `shepr-remote` (the 15-second per-command
-discovery budget the comment cites), and the CLI's user-facing wording all have
-to agree, and nothing in the build would notice any of them drifting. The hunter
-calls it a careful, correct comment about an unenforced invariant - which is the
-finding.
-
-Enforcement named, cheap: `const _: () = assert!(ATTEMPT_BUDGET.as_secs() <
-MAX_RETRY_DELAY.as_secs());` plus a test asserting the CLI's reconnect message
-quotes `MAX_RETRY_DELAY` rather than a literal `30`. The `shepr-remote` hunter
-reports the same relation from the other side and adds that `supervisor.rs`
-already applies half of this pattern (`ATTEMPT_BUDGET < MAX_RETRY_DELAY` is
-asserted there), and that the fix is to export
-`shepr_remote::NONINTERACTIVE_SSH_COMMAND_TIMEOUT` and the handshake timeout and
-define `ATTEMPT_BUDGET` in terms of them, since changing the SSH timeout to 30 s
-silently invalidates the 25 s budget and the documented argument for it with no
-test failing.
+Merged into HYGV-047 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-123 - `ClientProcessRole::from_env` is the model for environment resolution and nothing holds the others to it
 
-`shepr-client`. `from_env` enumerates the accepted values, treats absent as
-`Local`, and refuses startup on anything else, including non-UTF-8. It is the
-only environment read in `shepr-termio` plus `shepr-client` that follows that
-pattern; the hunter records it here as the enforceable model rather than as a
-defect.
-
-The three that do not: `input/model.rs::host_modify_other_keys_mode()` reads
-`TMUX`, `TERM_PROGRAM` and `WEZTERM_PANE` when
-`setup_terminal_with_capabilities` happens to run, not at launch resolution, so
-the values never reach `ClientSettings`, nothing in the client can report what
-host protocol it decided on, and the decision is invisible to every test of
-terminal setup. Within that one function there are three different resolution
-rules, none stated: `WEZTERM_PANE` uses `var_os(...).is_some()` (empty counts as
-set), `TMUX` uses `var(...).is_ok()` (empty also counts), and `TERM_PROGRAM`
-compares case-insensitively.
-
-Enforcement named: move all env resolution into one launch module and forbid
-`env::var` elsewhere by text rule - cheap today, since the two crates have only
-four production `env::var` call sites. The same rule shape recurs across the
-hunt (HYGG-053, HYGG-068, HYGG-110).
+Merged into HYGV-014 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-124 - `HostModes::apply_mouse` records the restore flag only when a parameter that means something else is true
 

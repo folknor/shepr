@@ -163,36 +163,7 @@ production `env::var` sites, so the rule is cheap there today.
 
 ## HYGP-003 - Identifier allocation reaches process-global counters, and there are two id schemes
 
-- `shepr-core`: `layout.rs` `static NEXT_PANE_ID`; `PaneId::alloc()` reads it,
-  and `alloc_from(&counter)` exists purely so the exhaustion test can inject one.
-  A test wanting deterministic pane ids must use `from_raw`, which bypasses
-  validation entirely (it accepts `0`, the documented placeholder, while
-  `collect_validated_ids` rejects `0`). Suggested: `from_raw -> Option<PaneId>`
-  is compiler-enforced at every site; removing the global needs an allocator
-  value threaded through `Workspace`, which the hunter calls the larger and
-  better fix.
-- `shepr-protocol`: `ids.rs` `static NEXT_TERMINAL_ID: AtomicU64`,
-  `Ordering::Relaxed`, combined with `SystemTime::now()` in the id string.
-  Uniqueness rests on the clock being monotonic across the process or the counter
-  never wrapping, and `duration_since(UNIX_EPOCH)` falls back to
-  `.unwrap_or(0)`, at which point ids become `term_<counter>` only. Suggested:
-  own the counter in a `TerminalIdSource` passed to callers.
-- `shepr-remote`: `ProfileId::generate` is a hand-rolled scheme (`sha2` of
-  `"{pid}:{nanos}:{seq}"` truncated to 16 bytes) beside the existing
-  `shepr_platform::unpredictable_token` (getrandom). Its comment says "not
-  secrets; practical uniqueness is enough", which was written for the catalog row
-  and not for the socket file name in the shared XDG runtime directory that the
-  id later became (`saved_bridge_path`, `SavedSshApiBridge`). Fix would also drop
-  `sha2` from the crate and from its `brokkr.toml` allowlist.
-- `shepr-server`: the client-shell boot id's format lives in a struct literal at
-  its only call site: `format!("{}-{}", std::process::id(), SystemTime::now()...
-  .as_nanos())`. `shepr_protocol::BootId` is a newtype over `String` with
-  `From<String>` and no constructor owning the format, while the value is
-  compared in `client_commands.rs`, `client_transport.rs`, `surface_reuse.rs` and
-  four places in `shepr-client`. `unwrap_or_default()` means a pre-epoch clock
-  collapses every boot id to `pid-0`, silently defeating the stale-boot rejection
-  it exists for. Suggested: `BootId::for_this_process()` in `shepr-protocol`,
-  with `From<String>` restricted to deserialization.
+Merged into HYGV-087 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGP-004 - The process id and the randomness source are reached from logic, with the randomness utility living in the SSH module
 
@@ -514,27 +485,7 @@ record.
 
 ## HYGP-012 - The manifest registry is a process-global whose first caller fixes the override policy for the process
 
-From `shepr-agent`. `manifest::registry()` initialises the process-wide
-`MANIFESTS` `OnceLock` with `override_dir = None` when nothing has called
-`reload_manifests(config_dir)` first, and `registry()` and `reload_manifests()`
-race for the same `OnceLock` (plus `MANIFEST_INIT_LOCK`, with each doing its own
-double-checked init). Only the server calls `reload_manifests`
-(`server/headless/bootstrap.rs`, `app/api.rs`, `api_dispatcher.rs`), and in the
-server the ordering happens to be right today because bootstrap runs before any
-detection tick. Nothing in the build would notice if a future early call to
-`has_screen_manifest` or `detect_with_osc` moved ahead of bootstrap: the result
-is silently bundled-only detection with no warning.
-
-`reload_lock` correctly serialises reloads, and the test comment ("tests build
-their own `ManifestRegistry` ... so they never touch this") shows the design is
-understood.
-
-Enforcement named: remove the global - pass a `&ManifestRegistry` (or an override
-directory) down, which makes the bad spelling unrepresentable; weakly, a debug
-assertion that `detect_with_osc` is never the initialiser. The hunter also
-reported the CLI-side consequence of the same root cause as a live defect
-(`shepr agent explain --file` explaining against bundled-only manifests), which
-belongs in `notes/bugs.md`.
+Merged into BUG-014 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGP-013 - Mutex poison policy is re-decided at every lock site, and one mutex has two policies
 
@@ -600,16 +551,8 @@ belongs in `notes/bugs.md`.
   without going through restore's sanitising. They only read
   `version` / `workspaces.len()` / `layout_fingerprint` today, so the harm is
   that the next consumer gets unvalidated data by default.
-- `shepr-remote`: `is_launch_fatal_setup_error` decides a launch-versus-retry
-  policy from an `io::ErrorKind`, treating every `InvalidInput` as launch-fatal.
-  `InvalidInput` is produced by `remote_bridge_endpoint_path` (socket path too
-  long), `validate_private_runtime_dir` (relative runtime dir),
-  `shared_ssh_control_path`, and `RemoteExecutable::parse` failures arriving
-  through other paths. Some are genuinely deterministic; the classification is by
-  kind, not by cause. The typed mechanism the same function uses for
-  `UnsafeSshRuntimeDirectory` is the right one and is used once. Note the
-  existing test `only_typed_runtime_directory_policy_errors_are_launch_fatal`
-  pins the looser rule in place, so this needs the test changed, not added.
+- `shepr-remote`: `is_launch_fatal_setup_error` classifies by `ErrorKind`, not
+  by cause: see BUG-039.
 - Decided: resolved by deleting the `--state-label` feature end to end
   (HYGV-021). `shepr-agent` / `shepr-server`: `IntegrationHookAction::as_str` owns
   `session working blocked idle` and `PaneAgentState` owns the wire spelling, but
@@ -637,21 +580,7 @@ rule exists once.
 
 ## HYGP-016 - User-supplied regexes arrive off the wire and are compiled with no size limit, by two independently written call sites
 
-From `shepr-api`: `subscriptions.rs` (`Subscription::PaneOutputMatched`) and
-`wait.rs` (`wait_for_output`) both call `Regex::new(value)` on a pattern from an
-API request. `regex` is not backtracking so there is no catastrophic-backtracking
-risk, but `RegexBuilder::size_limit` defaults to 10 MiB of compiled program per
-pattern, `events.subscribe` accepts a list of subscriptions on one connection
-each with its own pattern, and there is one connection thread per subscription -
-so a client (or a misbehaving agent hook, a local semi-untrusted caller) can
-allocate a large multiple of that per connection. The hunter notes this is the
-only place in that scope where a value coming off the wire is validated by two
-independently written call sites.
-
-Enforcement named: one shared constructor
-`fn compile_match_regex(&str) -> Result<Regex, ApiError>` with `size_limit` and
-`dfa_size_limit` set, used by both, plus a text rule banning `Regex::new`
-outside it.
+Merged into BUG-032 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGP-017 - Launch-environment validation exists twice, with different rules and different operator text
 
@@ -687,30 +616,7 @@ subprocesses get none of that care (HYGP-019).
 
 ## HYGP-019 - `git` is spawned from four production sites with four policies, no timeout budget and an inherited environment
 
-- `shepr-mux/src/git/discovery.rs::git_trimmed_stdout` and
-  `src/git/status.rs::git_ahead_behind_between` (plus
-  `src/git/test_support.rs::run_git`) each build
-  `Command::new("git").arg("-C").arg(dir).args(..)` independently.
-  `shepr-client/src/workspace_label.rs` and
-  `shepr-server/src/app/git_refresh.rs` add two more, and the client's copy is
-  the least careful of the four: no timeout, no environment scrubbing, every
-  failure dropped with `.ok()`.
-- Consequences the `shepr-mux` hunter draws out: no deadline anywhere (there is a
-  30-second retry delay and no timeout), so `git rev-list --left-right --count`
-  on a repository whose objects live on a stalled network filesystem blocks the
-  calling thread indefinitely; the environment is inherited whole, so `GIT_DIR`,
-  `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG_GLOBAL`,
-  `GIT_CEILING_DIRECTORIES`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_ASKPASS`
-  and `GIT_TERMINAL_PROMPT` all reach the child (the owner is a heavy Git user
-  running shepr from inside a repo, and an unset `GIT_TERMINAL_PROMPT` means a
-  credential prompt can block the spawn); stdin is inherited, so an interactive
-  credential helper has a terminal.
-
-Enforcement named: one `fn run_git(dir, args) -> Result<String, GitReadError>`
-with a scrubbed environment (`GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`,
-`-c core.fsmonitor=false`, null stdin), a deadline and typed errors, held by a
-text rule banning `Command::new("git")` outside it. The `shepr-client` hunter
-places the shared runner below `shepr-mux`, in `shepr-platform`.
+Merged into BUG-066 (`notes/bugs.md`) and BUG-065 (`notes/bugs.md`), which carry the full finding.
 
 ## HYGP-020 - "Flush the synchronized-output buffer if it has expired" is re-implemented at six call sites
 
@@ -815,24 +721,11 @@ after which the branch is unspellable at call sites.
 
 ## HYGP-025 - Three sanitizers decide what may appear in the same tab bar row, with three different rules
 
-From `shepr-server` `app/tab_bar_status.rs`: `sanitize_separator` strips control
-characters only; `sanitize_literal_text` strips control characters only;
-`sanitize_status_text` trims, strips control characters, strips unicode format
-controls and caps at 80 characters. All three feed `AppState::tab_bar_right`,
-rendered into one row - so a configured `text` entry can carry a bidi override
-(U+202A to U+202E) that an identical string from a `command` entry cannot, and
-the separator is uncapped.
-
-Enforcement named: one `TabBarText` newtype whose only constructor sanitizes, so
-`tab_bar_right` and `tab_bar_right_separator` cannot hold anything else.
+Merged into BUG-061 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGP-026 - A three-entry key-alias table lives away from the key parser
 
-From `shepr-server` `app/api_helpers.rs::normalize_api_key_alias`: maps
-`"C-c" | "c-c" => "ctrl+c"` and `"+" => "plus"`. Key-name parsing otherwise
-belongs entirely to `shepr-config::parse_key_combo`, so a fourth alias will be
-added here rather than there and the two will drift. Enforcement named: move the
-aliases into `shepr-config` next to the parser.
+Merged into HYGV-096 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGP-027 - "Only send if enough time has passed since `last_sent_at`" is reimplemented three times in the client mouse layer
 
@@ -935,10 +828,8 @@ recorded here so the absence is not re-hunted.
   visible; what is missing is a line in the docs saying the flag puts pane
   content in the log, since the flag is documented nowhere (HYGP-002).
 - `shepr-server`: `app/tab_bar_status.rs` logs the full status command line at
-  `warn` on every failure, at every interval (default as low as 1 s) for the
-  server's whole life - unbounded log growth on a permanent condition, and a
-  `tab_bar_right` entry that curls an endpoint with a bearer token puts that
-  token in the log at warn level. `render.rs` puts a terminal id into a
+  `warn` every interval, so a bearer token in a command reaches the log (see
+  BUG-060). `render.rs` puts a terminal id into a
   `ServerShutdown` message text sent to the client (benign, but operator text
   assembled at the site). `app/api/workspaces.rs` does
   `let _ = std::fs::remove_dir_all(&source_cwd)` - a recursive delete whose
@@ -953,11 +844,8 @@ recorded here so the absence is not re-hunted.
   reaching a log was found, recorded so it is not re-hunted. One note for
   whoever adds context to `clipboard_forwarding.rs`'s invalid-payload warning:
   add the length, not the data.
-- `shepr-remote` again, and adjacent to this entry:
-  `confirm_remote_server_stop` prints a remote-controlled version string to the
-  terminal with no control-character filtering while the error path filters it
-  through a `printable` closure (see HYGP-046) - a terminal-injection hole
-  through the one unfiltered site.
+- `shepr-remote` again, and adjacent to this entry: an unfiltered
+  remote-controlled version string reaches the terminal (see BUG-038).
 
 ## HYGP-031 - Test-only code is compiled into production libraries through Cargo feature unification (`test-api`, `test-support`)
 
@@ -1331,14 +1219,9 @@ for each is the hunter's.
   `discovery_tests.rs` exercises `DiscoveryProgress` directly and nothing tests
   that the three entry points agree - they agree by being copies. Keep
   `locate_remote_shepr`; delete the other two names and the struct.
-- `shepr-remote` `server_lifecycle.rs::version_label(Option<&str>) -> &str` is
-  `version.unwrap_or("unknown")`, with both callers inside
-  `confirm_remote_server_stop`. Meanwhile `remote_server_compatibility_error` and
-  `remote_compatibility_error` each define their own `printable` closure doing
-  `unwrap_or("unknown")` plus an ASCII-graphic filter - two policies for
-  rendering an untrusted version string, and the stricter one is not the one used
-  in the interactive prompt (see HYGP-030). Fix: one
-  `printable_remote_value` everywhere; delete `version_label`.
+- `shepr-remote` `server_lifecycle.rs::version_label` is a one-line
+  `unwrap_or("unknown")` beside two stricter `printable` closures; the fix
+  (one `printable_remote_value`, delete `version_label`) is in BUG-038.
 - `shepr-api` `session.rs`: `data_dir_for`, `client_socket_path_for` and
   `api_socket_path_for` are `pub` one-line forwarders to `SessionId` methods
   (one, one and two callers). None is dead; all are redundant indirection that
@@ -1543,24 +1426,7 @@ for each is the hunter's.
 
 ## HYGP-047 - `ModifyOtherKeysMode` is a second enum over a `shepr-vt` concept, and its output is recovered by sniffing a byte string
 
-From `shepr-termio` / `shepr-client`.
-`shepr_termio::input::model::ModifyOtherKeysMode` (`Mode1`/`Mode2`) emits
-`b"\x1b[>4;1m"` / `b"\x1b[>4;2m"` from `set_sequence()`;
-`shepr_vt::ModifyOtherKeysLevel` is a second enum over the same concept, written
-as `\x1b[>4;{level}m` by `host_term::modes::set_direct_host_keyboard_protocol`.
-`terminal_setup::setup_terminal_with_capabilities` bridges them with
-`let parameter = if mode.set_sequence().ends_with(b";1m") { 1 } else { 2 };`
-followed by `ModifyOtherKeysLevel::from_parameter(parameter)`. So the
-mode-to-parameter mapping is owned three times and `set_sequence()`'s only
-remaining consumer is the sniff - the bytes it builds are never written. A
-`Mode3` or a spelling change in `set_sequence` silently yields `2`.
-
-Evidence it is dead: one caller, which discards the bytes. The hunter also
-records that this is not a forced copy: `shepr-vt` sits below `shepr-termio` in
-the documented layering and `shepr-termio` already depends on it. Fix: delete
-`ModifyOtherKeysMode` and have `host_modify_other_keys_mode()` return
-`shepr_vt::ModifyOtherKeysLevel` directly, which also removes the `;1m`/`;2m`
-literals from `model.rs`.
+Merged into HYGV-059 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGP-048 - Public surface nobody outside the crate names
 
@@ -1633,15 +1499,7 @@ literals from `model.rs`.
 
 ## HYGP-051 - `shepr-server`'s question-8 candidates cannot be confirmed while `dead_code` is silenced
 
-From `shepr-server`. Because the crate-wide
-`#![cfg_attr(feature = "test-api", allow(dead_code))]` is active in exactly the
-build that would run the lint (HYGP-031), the hunter declined to call the
-following dead without the lint enabled: `MIN_CLIENT_COLS` / `MIN_CLIENT_ROWS`
-(used, but only to clamp to 1 - constants that have had one value and whose only
-effect is "not zero"), the `AttachInputDelivery::Failed` variant, and
-`ShutdownLifecycle::set_frozen_session_policy_for_test`. Their stated order of
-operations: fix the blanket allow first and let the build answer, since the cost
-of a wrong deletion here is the one nobody can undo by reading.
+Merged into BUG-056 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGP-052 - `shepr-agent`'s `types.rs` and `actions.rs` are thirty-six structs and eighteen match arms serving one shape
 

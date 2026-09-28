@@ -217,6 +217,9 @@ better, remove the global and pass a `&ManifestRegistry` down.
 
 ## BUG-015 - Declared hook events disagree with the hooks actually written, for Hermes and Grok
 
+**Decision (partial):** Hermes support is removed entirely. The Grok half
+remains open.
+
 `HERMES_HOOK_EVENTS` in `crates/shepr-agent/src/agent/mod.rs` declares one event,
 `SessionStart`, with action `Session`. The asset
 (`integration/assets/hermes/__init__.py`) registers `on_session_start`,
@@ -232,6 +235,9 @@ non-empty event list, and deriving the written config from the event list instea
 of hand-writing it.
 
 ## BUG-016 - The three bun test files never run
+
+**Decision:** deferred; tracked by the "Resolve typescript question" item in
+`notes/todo.md`. Not handled in the hygiene fix pass.
 
 `crates/shepr-agent/src/integration/assets/shepr-agent-state.test.ts`,
 `assets/opencode/shepr-agent-state.test.ts` and
@@ -262,6 +268,10 @@ Fix suggested: one `ShellKind` table with per-use predicates (`is_pane_shell`,
 shell is one shepr recognises.
 
 ## BUG-018 - The session-start-source vocabulary has three copies and they disagree
+
+**Decision (partial):** Hermes support is removed entirely, so the hermes
+asset's invented start sources go. The remaining disagreement (enum versus
+`SESSION_START_MATCHER`, Grok's `load`) stays open.
 
 `crates/shepr-agent/src/agent/resume.rs::AgentSessionStartSource::parse` accepts
 eight values (`startup resume clear compact branch new fork select`);
@@ -871,6 +881,10 @@ behind traits or into separate crates so production modules cannot name them.
 
 ## BUG-058 - Invariant checks that vanish in the build that ships
 
+**Decision (partial):** `unregister_moved_pane` is deleted along with its call
+site; `take_pane_for_move` already removes the record and number together. The
+lifecycle phase assertions remain open.
+
 - `crates/shepr-mux/src/workspace.rs::unregister_moved_pane` has a body of
   exactly `debug_assert!(self.pane_state(_pane_id).is_none());` and is called
   from production at
@@ -1217,3 +1231,29 @@ the pattern that works.
   before that line leaves the socket behind.
 
 Fix suggested in both cases: hold the `ScratchDir` guard and let `Drop` own it.
+
+## BUG-077 - Most panes are launched with an empty `SHEPR_SOCKET_PATH`
+
+`crates/shepr-mux/src/pane/launch.rs`: `PaneLaunchEnv::from_extra` starts with
+an empty `api_socket_path`, and `apply_pane_launch_env` always writes
+`SHEPR_SOCKET_PATH` from it. The only call to `with_api_socket_path` is in
+`crates/shepr-server/src/app/ids.rs::pane_launch_env`, which is reached from
+agent resume. Every other pane - new workspaces (`creation.rs` ->
+`Workspace::new_with_extra_env`), new tabs, API splits (`api/panes.rs` ->
+`split_pane`), layout apply and session restore (`persist/restore.rs`) - is
+built by `from_extra` alone, so the child sees `SHEPR_SOCKET_PATH=""`.
+
+Consequences, if the trace holds:
+
+- Every hook asset exits early when `SHEPR_SOCKET_PATH` is empty, so hook-based
+  agent state and session reporting silently does nothing in ordinary panes.
+- `pane_agent_socket(Path::new(""))` means those panes also never get shepr's
+  forwarded `SSH_AUTH_SOCK`.
+
+Found by reading during the `SHEPR_AGENT` removal; the field arrived in
+253d332 threaded only through `ids.rs`. Not yet confirmed by execution:
+`echo $SHEPR_SOCKET_PATH` in a fresh split settles it.
+
+Fix suggested: make the socket path a required input of `PaneLaunchEnv`
+construction rather than an optional builder step, so a pane cannot be launched
+without it, plus a test that every pane creation path sets a non-empty value.
