@@ -130,7 +130,7 @@ fn remote_server_compatibility_error(
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. Restart the remote server with this build and retry",
+            "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To keep that server and its panes, save the machine with a session of its own instead: `shepr machine add <ssh-target> --label <label> --remote-session <name>`. To replace it with this build instead, stop the remote server and retry",
             shepr_protocol::build_version(),
             shepr_protocol::BUILD_ID
         ),
@@ -269,5 +269,26 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::Unsupported);
             assert!(error.to_string().contains("compatibility error on host"));
         }
+    }
+
+    #[test]
+    fn server_build_mismatch_offers_a_separate_remote_session_before_a_stop() {
+        let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+            "0000000000000000"
+        } else {
+            "ffffffffffffffff"
+        };
+        let stale = running(Some(shepr_protocol::build_version()), Some(other_build));
+        let error = ensure_remote_server_build("host", &stale).expect_err("stale daemon");
+        let message = error.to_string();
+        assert!(message.contains("--remote-session <name>"), "{message}");
+        let session_offer = message
+            .find("--remote-session <name>")
+            .expect("checked above");
+        let stop_mention = message.find("stop").expect("mentions stopping the server");
+        assert!(
+            session_offer < stop_mention,
+            "the separate-session offer should come before the stop instruction: {message}"
+        );
     }
 }

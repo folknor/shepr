@@ -27,6 +27,7 @@ exclude = [
     "crates/shepr-mux/src/pane/terminal/migration_tests.rs",
     "crates/shepr-platform/src/remote_bridge_tests.rs",
     "crates/shepr-pty/src/command.rs",
+    "crates/shepr-test-support/src/fixture.rs",
     "crates/shepr-test-support/src/lib.rs",
     "src/test_support.rs",
 ]
@@ -174,6 +175,44 @@ paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs", "build.rs"]
 region = "code"
 message = "scratch state lives under the build tree, not the host temp directory; use shepr_test_support::ScratchDir"
 
+# Tests spawn the workspace-built fixture program
+# (`shepr_test_support::fixture`), never a program borrowed from the host, so
+# a fixture's behaviour is the repository's to define. The rules scan
+# production code too; its spawns of the shell and Git are production
+# behaviour and carry the marker, as do the two exempt kinds of test: those
+# whose subject is a script run under its interpreter (the generated remote
+# scripts, the shipped hook assets), and those of production code that itself
+# spawns Git, whose fixtures only Git can write. The marker names which, on
+# the line or the two above it.
+[textlint_preset.host-programs]
+paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs"]
+allow_marker = "host-program-ok"
+allow_marker_above = 2
+
+[[textlint]]
+name = "no-borrowed-process-stand-ins"
+preset = "host-programs"
+pattern = '\b(?:(?:Pty)?Command::new|PaneShellConfig::new|interactive_shell)\(\s*"(?:/usr)?(?:/s?bin/)?(?:sh|bash|dash|zsh|sleep|true|false|yes|cat|echo|printf|head|tr|ps|env|git)"'
+message = "spawn a shepr_test_support::fixture script; a borrowed host utility makes the fixture's behaviour the host's to define (host-program-ok: <why> where the host program is the subject)"
+
+[[textlint]]
+name = "no-interpreter-stand-ins"
+preset = "host-programs"
+pattern = '\bCommand::new\(\s*"(?:/usr)?(?:/s?bin/)?(?:python3?|perl|ruby|node|bun)"'
+message = "spawn a shepr_test_support::fixture script, not a language runtime the host may not have (host-program-ok: <why> where the script under it is the subject)"
+
+[[textlint]]
+name = "no-authored-shell-stubs"
+preset = "host-programs"
+pattern = '#!\s*/(?:usr/)?s?bin/'
+message = "a fixture needing a program installs a shepr_test_support::fixture::stand_in; an authored shell stub depends on the host's shell and whatever it shells out to"
+
+[[textlint]]
+name = "fixtures-compile-their-own-executables"
+preset = "host-programs"
+pattern = '\b(?:fs::copy|hard_link|symlink)\s*\(\s*"/'
+message = "install a shepr_test_support::fixture::stand_in, not a host binary; a multi-call coreutils image dispatches on argv[0] and a renamed copy resolves no applet"
+
 # Nothing durable sends its reader into the notes folder. brokkr.toml is left
 # out of `paths` for the same self-match reason as the agent-instructions rule,
 # and the message avoids spelling the folder with a slash.
@@ -241,6 +280,10 @@ packages = [
     "shepr-termio",
     "shepr-vt",
 ]
+# The fixture program tests spawn instead of host programs
+# (`shepr_test_support::fixture`). Testing shepr-test-support builds it too;
+# this also builds it for a `brokkr test -p` that names another package.
+build_packages = ["shepr-test-support"]
 
 [manifest]
 sort_dependencies = true
@@ -271,11 +314,12 @@ allow = ["bytes", "libc", "shepr-core", "tokio", "tracing"]
 kinds = ["normal"]
 
 # `IsolatedEnv` isolates tests from `shepr_core::env`'s registry, so a
-# variable added there is isolated with no change in this crate.
+# variable added there is isolated with no change in this crate. libc is the
+# fixture program's signals, file-size limit and session id.
 [[dependency_rule]]
 name = "shepr-test-support-layer"
 from = "shepr-test-support"
-allow = ["shepr-core"]
+allow = ["libc", "shepr-core"]
 kinds = ["normal"]
 
 [[dependency_rule]]

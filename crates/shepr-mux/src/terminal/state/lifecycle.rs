@@ -38,7 +38,7 @@ impl TerminalState {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
-        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        let previous_presentation = self.effective_presentation_at(now);
         let previous_session = self.current_session_identity_for_persistence();
         self.suppress_current_full_lifecycle_hook_authority(
             FullLifecycleHookSuppressionReason::HookClear,
@@ -93,7 +93,7 @@ impl TerminalState {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
-        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        let previous_presentation = self.effective_presentation_at(now);
         let previous_session = self.current_session_identity_for_persistence();
         self.suppress_full_lifecycle_hook_report(
             source,
@@ -156,7 +156,7 @@ impl TerminalState {
         let agent_label = self.effective_agent_label().map(str::to_string);
         let known_agent = self.effective_known_agent();
         let state = self.state;
-        let presentation = self.effective_presentation_for_state_at(state, now);
+        let presentation = self.effective_presentation_at(now);
         EffectiveStateChange {
             previous_agent_label: agent_label.clone(),
             previous_known_agent: known_agent,

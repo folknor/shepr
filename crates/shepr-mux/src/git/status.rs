@@ -365,6 +365,7 @@ fn read_upstream(repo: &mut RepoContext, branch: &str) -> Option<GitUpstreamIden
 
 fn git_ahead_behind_between(cwd: &Path, head_oid: &str, upstream_oid: &str) -> Option<AheadBehind> {
     let range = format!("{head_oid}...{upstream_oid}");
+    // host-program-ok: production counts ahead and behind with Git's commit walk
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
@@ -391,7 +392,7 @@ fn parse_git_ahead_behind_output(stdout: &str) -> Option<AheadBehind> {
 mod tests {
     use super::*;
     use crate::git::test_support::{
-        live_git_space, run_git, temp_test_dir, write_fake_tracked_repo,
+        git_written_fixture, live_git_space, temp_test_dir, write_fake_tracked_repo,
     };
 
     #[test]
@@ -482,10 +483,13 @@ mod tests {
         );
     }
 
+    /// Production reads a reftable store through Git, and the store is a
+    /// binary format only Git writes, so Git makes this fixture.
     #[test]
     fn branch_reads_unborn_symbolic_head_from_reftable_repo() {
         let root = temp_test_dir("reftable-branch");
         let root_arg = root.to_string_lossy().to_string();
+        // host-program-ok: a reftable store is written by Git; production reads it through Git
         let output = std::process::Command::new("git")
             .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
             .output()
@@ -776,10 +780,13 @@ mod tests {
         );
     }
 
+    /// As the reftable branch test: Git writes the store production reads
+    /// through Git.
     #[test]
     fn git_status_fingerprint_reads_reftable_branch_identity() {
         let root = temp_test_dir("reftable-fingerprint");
         let root_arg = root.to_string_lossy().to_string();
+        // host-program-ok: a reftable store is written by Git; production reads it through Git
         let output = std::process::Command::new("git")
             .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
             .output()
@@ -787,9 +794,9 @@ mod tests {
         if !output.status.success() {
             return;
         }
-        run_git(&root, &["config", "user.email", "shepr@example.invalid"]);
-        run_git(&root, &["config", "user.name", "Shepr Test"]);
-        run_git(&root, &["commit", "--allow-empty", "-m", "initial"]);
+        git_written_fixture(&root, &["config", "user.email", "shepr@example.invalid"]);
+        git_written_fixture(&root, &["config", "user.name", "Shepr Test"]);
+        git_written_fixture(&root, &["commit", "--allow-empty", "-m", "initial"]);
 
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
 
@@ -803,6 +810,8 @@ mod tests {
         );
     }
 
+    /// Production counts ahead and behind with `git rev-list`, which walks
+    /// real commit objects, so Git makes this fixture.
     #[test]
     fn git_status_recomputes_ahead_behind_when_head_moves() {
         let base = temp_test_dir("head-moves");
@@ -810,14 +819,14 @@ mod tests {
         let repo = base.join("repo");
         std::fs::create_dir_all(&repo).expect("test precondition");
         let remote_arg = remote.to_string_lossy().to_string();
-        run_git(&base, &["init", "--bare", &remote_arg]);
-        run_git(&repo, &["init"]);
-        run_git(&repo, &["config", "user.email", "shepr@example.invalid"]);
-        run_git(&repo, &["config", "user.name", "Shepr Test"]);
-        run_git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
-        run_git(&repo, &["branch", "-M", "main"]);
-        run_git(&repo, &["remote", "add", "origin", &remote_arg]);
-        run_git(&repo, &["push", "-u", "origin", "main"]);
+        git_written_fixture(&base, &["init", "--bare", &remote_arg]);
+        git_written_fixture(&repo, &["init"]);
+        git_written_fixture(&repo, &["config", "user.email", "shepr@example.invalid"]);
+        git_written_fixture(&repo, &["config", "user.name", "Shepr Test"]);
+        git_written_fixture(&repo, &["commit", "--allow-empty", "-m", "initial"]);
+        git_written_fixture(&repo, &["branch", "-M", "main"]);
+        git_written_fixture(&repo, &["remote", "add", "origin", &remote_arg]);
+        git_written_fixture(&repo, &["push", "-u", "origin", "main"]);
 
         let (initial, cache_entry) = git_status_snapshot_for_cwd(&repo, None);
         assert_eq!(
@@ -827,7 +836,7 @@ mod tests {
                 behind: 0
             })
         );
-        run_git(&repo, &["commit", "--allow-empty", "-m", "ahead"]);
+        git_written_fixture(&repo, &["commit", "--allow-empty", "-m", "ahead"]);
 
         let (updated, _) = git_status_snapshot_for_cwd(&repo, cache_entry.as_ref());
 

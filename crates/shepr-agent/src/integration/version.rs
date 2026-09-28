@@ -226,10 +226,32 @@ mod tests {
 
     #[test]
     fn version_probe_deadline_includes_inherited_stdout() {
+        use shepr_test_support::fixture::{self, Held, Step};
+
+        // The probed program exits at once, leaving a child that holds its
+        // stdout for 300 ms.
+        let args: Vec<&'static str> = fixture::args(&[
+            Step::Spawn {
+                argv0: "stdout-holder".into(),
+                sleep: Duration::from_millis(300),
+                held: Held::Stdout,
+            },
+            Step::Exit(0),
+        ])
+        .into_iter()
+        .map(|token| -> &'static str {
+            Box::leak(
+                token
+                    .into_string()
+                    .expect("a UTF-8 fixture token")
+                    .into_boxed_str(),
+            )
+        })
+        .collect();
         let requirement = AgentVersionRequirement {
             label: "test command",
-            binary: "/bin/sh",
-            args: &["-c", "sleep 0.3 & exit 0"],
+            binary: fixture::path_str(),
+            args: Box::leak(args.into_boxed_slice()),
             min_version: "0.0.0",
         };
         let started = Instant::now();

@@ -503,9 +503,9 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         };
 
         assert_eq!(
-            agent_rows(&config, &context(&entry), "deep in the mines"),
+            agent_rows(&config, &context(&entry), "working"),
             vec![vec![
-                ResolvedToken::unstyled(ResolvedTokenKind::StateText("deep in the mines".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::StateText("working".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::Custom("reviewing auth".into())),
             ]]
         );

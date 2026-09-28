@@ -5,7 +5,7 @@ use shepr_pty::PtyCommand;
 /// Time allowed for a restored agent to appear after its resume launch.
 pub const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-const PANE_COLORTERM: &str = "truecolor";
+pub(super) const PANE_COLORTERM: &str = "truecolor";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LaunchPurpose {

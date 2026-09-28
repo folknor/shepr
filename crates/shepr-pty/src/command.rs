@@ -403,6 +403,7 @@ fn is_cwd_relative_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_support::fixture;
 
     #[test]
     fn cwd_relative_paths_are_recognized() {
@@ -419,7 +420,8 @@ mod tests {
         let directory = scratch.join("directory");
         std::fs::create_dir(&directory).expect("test precondition");
         let executable = scratch.join("executable");
-        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").expect("test precondition");
+        // Never run: classification reads only the mode bits.
+        std::fs::write(&executable, "content").expect("test precondition");
         let not_executable = scratch.join("not-executable");
         std::fs::write(&not_executable, "content").expect("test precondition");
         {
@@ -444,7 +446,7 @@ mod tests {
 
     #[test]
     fn env_edits_are_visible_before_spawn() {
-        let mut cmd = PtyCommand::new("/bin/sh");
+        let mut cmd = PtyCommand::new(fixture::path());
         cmd.env("SHEPR_PTY_TEST_KEY", "value");
         assert_eq!(cmd.get_env("SHEPR_PTY_TEST_KEY"), Some(OsStr::new("value")));
         cmd.env_remove("SHEPR_PTY_TEST_KEY");
@@ -455,7 +457,7 @@ mod tests {
 
     #[test]
     fn std_command_carries_exactly_the_command_env() {
-        let mut cmd = PtyCommand::new("/bin/sh");
+        let mut cmd = PtyCommand::new(fixture::path());
         cmd.env("SHEPR_PTY_TEST_SET", "1");
         cmd.env("SHEPR_PTY_TEST_REMOVED", "1");
         cmd.env_remove("SHEPR_PTY_TEST_REMOVED");
@@ -473,15 +475,15 @@ mod tests {
 
     #[test]
     fn login_shell_execs_shell_env_without_arguments() {
-        let cmd = PtyCommand::interactive_shell("/bin/sh", true);
+        let cmd = PtyCommand::interactive_shell(fixture::path_str(), true);
         let std_cmd = cmd.to_std_command().expect("build std command");
-        assert_eq!(std_cmd.get_program(), OsStr::new("/bin/sh"));
+        assert_eq!(std_cmd.get_program(), fixture::path().as_os_str());
         assert_eq!(std_cmd.get_args().count(), 0);
     }
 
     #[test]
     fn child_sees_resolved_shell_not_a_non_executable_shell_env() {
-        let mut cmd = PtyCommand::new("/bin/sh");
+        let mut cmd = PtyCommand::new(fixture::path());
         cmd.env("SHELL", "/__shepr_missing_shell__");
         let std_cmd = cmd.to_std_command().expect("build std command");
         let shell = std_cmd
@@ -501,7 +503,7 @@ mod tests {
     #[test]
     fn home_fallback_requires_an_existing_absolute_directory() {
         let scratch = shepr_test_support::ScratchDir::new("pty-home");
-        let mut cmd = PtyCommand::new("/bin/sh");
+        let mut cmd = PtyCommand::new(fixture::path());
         cmd.env("HOME", scratch.path());
         assert_eq!(cmd.home_dir(), scratch.path().as_os_str());
 

@@ -274,9 +274,9 @@ AGENTS.md multiplicative performance paths"). State the hot-path argument inline
 ## A3. No pre-deployment older-peer compatibility
 
 **Decision:** adopted now. A violation is cleared by deleting the compatibility
-code it sits on, not by rewording the comment; HYGP-040 (the log tightening) and
-HYGP-036 (the finished-migration prose) in `notes/hygiene-policy.md` carry two of
-them.
+code it sits on, not by rewording the comment; the log-tightening violation
+(formerly HYGP-040, now resolved and removed) and HYGP-036 (the
+finished-migration prose) in `notes/hygiene-policy.md` carried two of them.
 
 **Done**, as drafted. The log-permission tightening in `logging.rs` and its
 test half are deleted; the `lines` comment in `snapshot.rs` is gone (no code
@@ -332,8 +332,8 @@ migration gates ... old/candidate captures"), a migration harness named as one.
 
 ## A4. No plan or issue labels in durable text
 
-**Decision:** adopted now, both rules. `raw_input.rs`'s `Issue #3911` comment is
-also HYGG-052 in `notes/hygiene-guards.md`.
+**Decision:** adopted now, both rules. `raw_input.rs`'s `Issue #3911` comment was
+also HYGG-052 in `notes/hygiene-guards.md`, now resolved and removed.
 
 **Done**, both rules as drafted; the eight issue citations are removed.
 

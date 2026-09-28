@@ -44,8 +44,7 @@ Reported independently by the vt/pty, agent, api/cli and mux hunters.
 - `crates/shepr-pty/src/backend.rs` spells `cmd.env("SHEPR_ENV", "1")` as a bare
   literal pair.
 - The shipped hook assets restate the rule: the opencode
-  `shepr-tui-session.js` / `.test.ts` compare `!== "1"`, the hermes asset checks
-  `== "1"`.
+  `shepr-tui-session.js` / `.test.ts` compare `!== "1"`.
 
 The resolution rule lives only in `main.rs::should_block_nested_for_env`: exact
 equality with `"1"`, so `SHEPR_ENV=true` and `SHEPR_ENV=` do not block nesting.
@@ -74,7 +73,7 @@ Reported by the vt/pty, agent, mux and server hunters.
   `SHEPR_PANE_ID_ENV_VAR`.
 - `crates/shepr-server/src/app/tab_bar_status.rs` writes it as a bare literal
   too, so there are two independent writers with no shared definition.
-- The qwen, letta, hermes, qodercli and other hook assets spell it, with the
+- The qwen, letta, qodercli and other hook assets spell it, with the
   fallback rule "unset means the bare name `shepr`" restated per asset.
 
 Same fix and enforcement as HYGV-001.
@@ -287,51 +286,9 @@ module is the natural owner). Enforcement: a `brokkr.toml` text rule forbidding
 the literal `"SSH_AUTH_SOCK"` outside `shepr-platform/src/ssh_agent.rs`, the same
 shape as the existing `alacritty-terminal-only-in-shepr-vt` rule.
 
-## HYGV-010 - Two different rules for "am I running under WSL", already divergent
-
-**Decision:** WSL support is removed entirely; shepr is Linux only. Both WSL
-predicates and every WSL branch go, which resolves this entry.
-
-Reported by the core/platform hunter.
-
-`crates/shepr-platform/src/host.rs::detect_running_inside_wsl` is the owner: four
-signals (`/proc/sys/kernel/osrelease`, `/proc/version`, `WSL_DISTRO_NAME` or
-`WSL_INTEROP`, `/run/WSL`), memoised in a `OnceLock`.
-`crates/shepr-platform/src/terminal_environment.rs::prefers_osc52_clipboard`
-calls it and then adds a fifth signal of its own,
-`Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists()`.
-
-On a host where only the binfmt marker is present the process answers two
-different ways about the same fact in the same run:
-`should_draw_host_cursor_by_default()` and
-`should_query_host_terminal_palette()` say "not WSL" while the clipboard path
-says "WSL". Two expressions of one predicate, about forty lines apart, in one
-crate.
-
-Fix: move the extra probe into `detect_running_inside_wsl`'s list and have
-`prefers_osc52_clipboard` take `running_inside_wsl()` unmodified. Enforcement:
-partly - a test asserting the `wsl` argument equals `running_inside_wsl()` is not
-expressible while the probe is inline, but making `host.rs` the only place that
-names a WSL marker string plus a text rule forbidding `WSL` elsewhere is
-enforceable.
-
 ## HYGV-011 - `SHEPR_LOG` is read at the moment of use and an invalid value degrades silently
 
 Merged into BUG-044 (`notes/bugs.md`), which carries the full finding.
-
-## HYGV-012 - `SHEPR_PROCESS_DETECTION` is read at the moment of use, not validated at startup
-
-**Decision:** removed with WSL support: `ProcessDetectionMode::ChildGroups`, the
-variable and its parser are deleted rather than validated.
-
-Reported by the agent hunter.
-
-`crates/shepr-agent/src/detect/proc_tree.rs::process_detection_mode` reads the
-variable behind a `OnceLock` on the first foreground probe, and an unrecognised
-value produces a `tracing::warn!` and native mode. This variable is config in all
-but name and breaks both halves of the stated rule: a typo is discovered hours
-in, on whichever pane probed first, and is tolerated rather than refused. It is
-also invisible to `shepr config check`.
 
 Fix: move it into the config file (or validate it during launch and pass the mode
 down); `parse_process_detection_mode` is already the right shape for that. See
@@ -390,25 +347,20 @@ alongside it, and forbid `env::var` outside the launch module by text rule (the
 two crates have only four production `env::var` call sites, so the rule is cheap
 today).
 
-## HYGV-015 - `prefers_osc52_clipboard` re-reads four environment values on every call
+## HYGV-015 - `prefers_osc52_clipboard` re-reads three environment values on every call
 
-**Decision (partial):** the WSL inputs (the `WSLInterop` stat and the
-`running_inside_wsl()` combination) go with WSL support. The SSH and VS Code
-reads remain open.
-
-**Decision (partial):** for the SSH and VS Code reads, piece 1 (the `shepr-core`
-environment registry, after broadarrow's `core::env`) adopts the entry's
-enforcement: `SSH_CONNECTION`, `SSH_TTY` and `VSCODE_IPC_HOOK_CLI` become
-registry entries and raw `std::env::var_os` is banned in `clippy.toml`. Open:
-the per-call re-read; resolving "does this host have a local clipboard" once at
-startup.
+**Decision (partial):** WSL support is removed entirely, so the `WSLInterop`
+stat and the `running_inside_wsl()` combination this entry named are gone. For
+the remaining SSH and VS Code reads, piece 1 (the `shepr-core` environment
+registry, after broadarrow's `core::env`) adopts the entry's enforcement:
+`SSH_CONNECTION`, `SSH_TTY` and `VSCODE_IPC_HOOK_CLI` become registry entries
+and raw `std::env::var_os` is banned in `clippy.toml`. Open: the per-call
+re-read; resolving "does this host have a local clipboard" once at startup.
 
 Reported by the core/platform hunter.
 
 `crates/shepr-platform/src/terminal_environment.rs` reads `SSH_CONNECTION`,
-`SSH_TTY`, `VSCODE_IPC_HOOK_CLI` and stats
-`/proc/sys/fs/binfmt_misc/WSLInterop` per call, while the WSL answer it combines
-them with is `OnceLock`-memoised in the same crate. It is called from
+`SSH_TTY` and `VSCODE_IPC_HOOK_CLI` per call. It is called from
 `crates/shepr-termio/src/host_term/title.rs` on every clipboard write. The pure
 inner function exists and is testable; what is missing is the caching, and a
 single startup-time resolution of "does this host have a local clipboard".
@@ -432,10 +384,9 @@ Reported by the agent hunter.
 `crates/shepr-agent/src/integration/env.rs` documents the boundary ("install and
 status code receives this value and never consults the process environment") and
 holds it for install and status. But every `*_dir()` function reads
-`std::env::var_os` itself and is `pub(crate)`, so `hermes_plugin_dir` calls
-`hermes_dir` (a second environment read behind `resolve`), and tests must
-manipulate real environment variables through `IsolatedEnv` to steer paths.
-Fourteen resolvers do this.
+`std::env::var_os` itself and is `pub(crate)`, so each one is a second
+environment read behind `resolve`, and tests must manipulate real environment
+variables through `IsolatedEnv` to steer paths. About twenty resolvers do this.
 
 Fix by signature: give the resolvers an explicit environment argument (a
 `&dyn Fn(&str) -> Option<OsString>` or a captured map) so the only environment
@@ -530,40 +481,22 @@ single `resolve_workspace(...) -> Result<usize, ApiError>` that owns the code, a
 table test over the layout handlers asserting the code per resolution failure,
 and a text rule banning the bare literals.
 
-## HYGV-021 - The agent state label vocabulary has four or five owners, and one of them rejects a state the table accepts
+## HYGV-021 - "Unknown presents as Idle" has four statements and two implementations
 
 **Decision (partial):** the `--state-label STATUS=TEXT` feature is deleted end
-to end (CLI flag, API params `state_labels`/`clear_state_labels`, storage in
-`shepr-mux` metadata, projection, sidebar rendering). That removes
-`state_label_assignment` and `normalize_state_labels`, so the `unknown` question
-is moot. The "Unknown presents as Idle" half remains open.
+to end (CLI flag, API params, storage in `shepr-mux` metadata, projection,
+sidebar rendering), which removed this entry's `state_label_assignment` /
+`normalize_state_labels` half and the vocabulary-ownership question with it.
+The "Unknown presents as Idle" half remains open.
 
-Reported by the agent, api/cli and mux hunters.
-
-- `IntegrationHookAction::as_str` owns `session working blocked idle`.
-- The hook assets spell them in their `case "$action"` guards.
-- `PaneAgentState` in `shepr-api` owns the wire spelling.
-- `crates/shepr-server/src/app/api/panes.rs::normalize_state_labels` re-checks
-  `matches!(status.as_str(), "idle" | "working" | "blocked")` against a fresh
-  literal list.
-- `src/cli/spec.rs` owns `AGENT_STATUSES` and `PANE_AGENT_STATES` as typed
-  `(&str, T)` tables (the good pattern), and then `state_label_assignment` in the
-  same file re-implements the list as bare strings with the same `matches!`.
-  `PANE_AGENT_STATES` has a fourth entry, `unknown`, which the string list
-  rejects. Whether `--state-label unknown=...` should be accepted is a product
-  question; today the answer is set by an independently maintained `matches!`
-  rather than by the table.
-
-Separately, the "Unknown presents as Idle" rule has four statements and two
-implementations (mux hunter): stated in `AGENTS.md`, implemented in
+Reported by the mux hunter: the rule has four statements and two
+implementations - stated in `AGENTS.md`, implemented in
 `crates/shepr-agent/src/detect/mod.rs::attention_rank`, implemented again in
 `crates/shepr-server/src/app/api_helpers.rs::pane_agent_status`, and documented
 in `crates/shepr-mux/src/workspace/aggregate.rs` as happening "at the API edge",
 which is a claim about a different crate. Consistent today.
 
-Enforcement: have `normalize_state_labels` parse into `PaneAgentState` and let
-serde validate; have `state_label_assignment` parse its key through
-`Choice(AGENT_STATUSES)`; one mapping function in `shepr-agent` used by both
+Enforcement: one mapping function in `shepr-agent` used by both
 `attention_rank` and `pane_agent_status`, with the `aggregate.rs` doc comment
 deleted rather than restated.
 
@@ -595,8 +528,12 @@ fixed-width digests and proves a socket-leaf budget at the deepest handed-out
 path through the production `sun_path` check (`check_unix_socket_path`), rather
 than restating the number. Decided: the `sun_path` limit and its check move
 from `shepr-platform` down to `shepr-core`, so the scratch code can prove the
-budget without depending on the platform crate. Open: the `ipc.rs` prose, the
-`platform/src/tests.rs` literals and the `bridge.rs` shim.
+budget without depending on the platform crate. Also decided: the managed SSH
+config writer (`crates/shepr-remote/src/remote/ssh.rs::write_managed_ssh_config`)
+takes its control directory as an input rather than computing one internally,
+so its tests can pass a short path instead of one that cannot fit `sun_path`
+under a deep checkout. Open: the `ipc.rs` prose, the `platform/src/tests.rs`
+literals and the `bridge.rs` shim.
 
 Reported by the core/platform and remote hunters.
 
@@ -1690,7 +1627,7 @@ Reported by the agent hunter.
 
 `json_in(2, "settings.json", ...)` for Claude because the hook lives at
 `<dir>/hooks/<name>`, `json_in(1, ...)` for Codex because it lives at
-`<dir>/<name>`, `ancestor(hook_path, 3)` for Hermes. Those numbers are
+`<dir>/<name>`, `ancestor(hook_path, 2)` for Kimi. Those numbers are
 `spec.path.len() + 1` and nothing says so. Change a spec path and status quietly
 reports Outdated forever - the hook is fine, the check is looking in the wrong
 directory - with no log line.
@@ -1716,9 +1653,9 @@ which cannot be written as a bare integer into JSON.
 
 ## HYGV-077 - The remote `shepr` CLI's argument spellings are re-spelled in `shepr-remote` with no shared constant
 
-**Decision (partial):** `--idle-timeout-v1` is deleted (see HYGP-039), which
-removes one of the listed spellings. The shared-constant and round-trip-test
-proposal remains open for the rest.
+**Decision (partial):** `--idle-timeout-v1` is deleted, which removes one of the
+listed spellings. The shared-constant and round-trip-test proposal remains open
+for the rest.
 
 Reported by the remote hunter, as fact.
 
@@ -1736,7 +1673,7 @@ Enforcement: a test that round-trips each generated remote command string throug
 The only current check is byte-for-byte golden strings in `attach.rs`, which pin
 the producer to itself and say nothing about the parser.
 
-## HYGV-078 - The asset version parity test carries a hand-written list, and Hermes has a fourth version number
+## HYGV-078 - The asset version parity test carries a hand-written list
 
 **Decision (partial):** Hermes support is removed entirely, so the
 `plugin.yaml` version and name findings go with it. The hand-written parity
@@ -1744,22 +1681,12 @@ list (the two opencode TUI assets) remains open.
 
 Reported by the agent hunter.
 
-`bundled_integration_asset_versions_match_expected_versions` enumerates eighteen
-`(name, asset, version)` triples and omits `OPENCODE_TUI_PLUGIN_ASSET`,
-`OPENCODE_V2_TUI_PLUGIN_ASSET` and `HERMES_PLUGIN_MANIFEST_ASSET` (whose
-`version: "1.0"` in `assets/hermes/plugin.yaml` is a fourth spelling of the
-Hermes version that nothing on shepr's side reads; status parses `__init__.py`'s
-marker instead). A new target added without extending the list is silently
-uncovered, and `registry::integration_asset(target)` already exists, so iterating
-`INTEGRATION_SPECS` would make the test exhaustive by construction.
-
-Same file, same shape: `assets/hermes/plugin.yaml`'s `name:` duplicates
-`HERMES_PLUGIN_INSTALL_NAME` (the install directory is
-`<hermes>/plugins/shepr-agent-state` from a Rust const, the manifest inside it
-declares `name: shepr-agent-state` in YAML). Divergence means the plugin is
-installed under a directory Hermes will not associate with the manifest, and
-status only checks that `plugin.yaml` exists, not what it says. Checkable with a
-test that parses or greps the asset.
+`bundled_integration_asset_versions_match_expected_versions` enumerates its
+`(name, asset, version)` triples by hand and omits `OPENCODE_TUI_PLUGIN_ASSET`
+and `OPENCODE_V2_TUI_PLUGIN_ASSET`. A new target added without extending the
+list is silently uncovered, and `registry::integration_asset(target)` already
+exists, so iterating `INTEGRATION_SPECS` would make the test exhaustive by
+construction.
 
 ## HYGV-079 - Claude's hook event and action are re-spelled six times, beside a descriptor that already declares them
 
@@ -1822,29 +1749,6 @@ which is exactly the right kind of enforcement. Worth knowing that
 (`("agy", include_str!("manifests/antigravity.toml"))`), so a label rename breaks
 the join - and the existing test catches that. The recommendation is: keep the
 test, it is the enforcement.
-
-## HYGV-084 - `ProcessDetectionMode::ChildGroups` has no injection point, so no test can reach it
-
-**Decision:** WSL support is removed entirely; the mode is deleted.
-
-Reported by the agent hunter.
-
-The only way to select the mode is the process-wide `OnceLock` behind
-`SHEPR_PROCESS_DETECTION` (HYGV-012), so no test can flip it without leaking into
-other tests in the process. The two `*_with` seams
-(`child_groups_foreground_process_group_with`) exist precisely because the mode
-itself is untestable, and no test sets `SHEPR_PROCESS_DETECTION=child-groups` end
-to end.
-
-The hunter's reading is that this is probably also a switch with one value: the
-comment justifies the mode for "environments that do not expose terminal
-foreground groups", but shepr is Linux-only and `/proc/<pid>/stat` always exposes
-`tpgid`, so the trigger condition (native detection returning `None`) is rare to
-nonexistent, and the mode looks like a WSL-era leftover. Counter-evidence the
-same hunter records: `shepr_platform::running_inside_wsl()` still exists and is
-called from three places in that crate, so somebody deliberately supported WSL at
-some point; ask before deleting. The deletion question itself is filed with the
-dead-code findings.
 
 ## HYGV-085 - Version-probe timing has no injection point at the outer entry
 

@@ -302,12 +302,11 @@ mod tests {
         let other = repo.join("other");
         std::fs::create_dir_all(&nested).expect("create nested dir");
         std::fs::create_dir_all(&other).expect("create other dir");
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .arg("init")
-            .output()
-            .expect("run git init");
+        // The repository as Git lays one out, in plain files: deduplication
+        // only needs the checkout discovered.
+        std::fs::create_dir_all(repo.join(".git/objects")).expect("create git objects dir");
+        std::fs::create_dir_all(repo.join(".git/refs/heads")).expect("create git refs dir");
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write git HEAD");
 
         let output = refresh_workspace_git_statuses_with_cache_and_demand(
             vec![

@@ -94,6 +94,11 @@ todo = "deny"
 # outside `shepr_core::env`, and escapes carry a scoped `#[expect]`.
 disallowed_methods = "deny"
 
+[profile.release]
+# The gate never builds release, so a release binary should still panic on
+# overflow instead of silently wrapping like the default release profile.
+overflow-checks = true
+
 [dependencies]
 clap = { workspace = true }
 serde = { workspace = true }

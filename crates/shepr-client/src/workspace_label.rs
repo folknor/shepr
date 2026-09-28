@@ -1,6 +1,7 @@
 use std::path::Path;
 
 pub(super) fn derive_label_from_cwd(cwd: &Path) -> String {
+    // host-program-ok: production asks Git for the checkout root
     let repo_root = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)

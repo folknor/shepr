@@ -34,7 +34,7 @@ impl TerminalState {
         let agent_label = self.effective_agent_label().map(str::to_string);
         let known_agent = self.effective_known_agent();
 
-        let presentation = self.effective_presentation_for_state_at(state, now);
+        let presentation = self.effective_presentation_at(now);
         self.clear_expiry_pending_for_hidden_metadata();
 
         if previous_agent_label == agent_label

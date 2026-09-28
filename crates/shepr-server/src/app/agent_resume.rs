@@ -728,15 +728,18 @@ mod tests {
     }
 
     fn long_running_test_argv() -> Vec<String> {
-        vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()]
+        use shepr_test_support::fixture::{self, Step};
+        fixture::argv(&[Step::Sleep(std::time::Duration::from_secs(5))])
     }
 
+    /// An argv whose marker needs shell quoting to survive injection into
+    /// the restored shell as one word.
     fn marker_resume_test_argv() -> Vec<String> {
-        vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            "printf '%s' 'restored agent: shell quoted | marker'; sleep 5".into(),
-        ]
+        use shepr_test_support::fixture::{self, Step};
+        fixture::argv(&[
+            Step::Print("restored agent: shell quoted | marker".into()),
+            Step::Sleep(std::time::Duration::from_secs(5)),
+        ])
     }
 
     #[tokio::test]

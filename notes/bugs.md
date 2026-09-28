@@ -220,17 +220,12 @@ Fix suggested: make the override directory an argument of the explain entry
 point, or have the CLI resolve config paths and call `reload_manifests` first;
 better, remove the global and pass a `&ManifestRegistry` down.
 
-## BUG-015 - Declared hook events disagree with the hooks actually written, for Hermes and Grok
+## BUG-015 - Declared hook events disagree with the hooks actually written, for Grok
 
-**Decision (partial):** Hermes support is removed entirely. The Grok half
-remains open.
+**Decision (partial):** Hermes support is removed entirely, so the Hermes half
+of this entry is gone. The Grok half remains open.
 
-`HERMES_HOOK_EVENTS` in `crates/shepr-agent/src/agent/mod.rs` declares one event,
-`SessionStart`, with action `Session`. The asset
-(`integration/assets/hermes/__init__.py`) registers `on_session_start`,
-`on_session_reset` and `pre_llm_call`, and invents three start sources
-(`startup`, `new`, `resume`). Nothing consumes the Hermes row, so nothing
-notices. Grok's descriptor carries `integration_hook_events: &[]` yet
+Grok's descriptor carries `integration_hook_events: &[]` yet
 `targets.rs::grok_hook_config` writes a real `SessionStart` hook with action
 `session`, so any generic consumer of `IntegrationTarget::hook_events()` sees
 Grok as hookless.
@@ -282,7 +277,7 @@ asset's invented start sources go. The remaining disagreement (enum versus
 eight values (`startup resume clear compact branch new fork select`);
 `integration/claude_settings.rs::SESSION_START_MATCHER` is
 `^(startup|resume|clear|compact|fork)$` (five); the kimi asset defaults to the
-literal `"startup"`; the hermes asset emits `startup`, `new`, `resume`. The
+literal `"startup"`. The
 comment above `SESSION_START_MATCHER` says Grok "uses new/load", and `load` is in
 none of the three lists, so a grok-imported Claude hook firing with `load`
 normalises to `None` and is treated as unrecognised
@@ -844,26 +839,6 @@ the one place where failing quietly means the log stays readable by others.
 Fix suggested: make the `let _ =` sites explicit, and a startup sweep keyed on
 "own uid, no live pid".
 
-## BUG-049 - Kept scratch directories leak indefinitely after a SIGKILL
-
-**Decision:** piece 2 of the test-isolation work adopted from broadarrow: scratch
-directories move under the project's `target/` tree with broadarrow's
-per-process slot locks, so a rerun takes the same slot and clears its trees in
-place, and `temp_dir` is banned. Nothing relies on `atexit` or on pid reuse, and
-the `/tmp` question disappears.
-
-`crates/shepr-test-support/src/lib.rs`: the scratch root is
-`std::env::temp_dir().join(format!("shepr-test-{pid}"))`, and
-`ScratchDir::keep_until_exit` relies on `atexit`, so a test process killed with
-SIGKILL leaves the directory behind. The only cleanup for a stale one is a later
-run reusing the same pid - an unbounded growth path on a machine where tests get
-killed. (The `/tmp` location itself is a documented-constraint question for the
-hygiene pass: `sun_path` length is the stated reason, and neither AGENTS.md nor
-CLAUDE.md records the exemption.)
-
-Fix suggested: sweep `shepr-test-*` at scratch-root creation rather than matching
-an exact pid.
-
 ## BUG-050 - `ctrlc::set_handler` failure is swallowed on the server's only signal path
 
 `crates/shepr-server/src/server/headless.rs`: `let _ = ctrlc::set_handler(move ||
@@ -1017,33 +992,25 @@ behind traits or into separate crates so production modules cannot name them.
 
 ## BUG-058 - Invariant checks that vanish in the build that ships
 
-**Decision:** `unregister_moved_pane` is deleted along with its call site;
-`take_pane_for_move` already removes the record and number together. For the
-lifecycle phase, `debug_assert!` is banned workspace-wide (a `disallowed-macros`
-seal adopted from broadarrow), so the two `debug_assert_eq!`s become `assert_eq!`
-where a panic is the right containment, or typed handling (the `Result`-returning
-transitions suggested below) otherwise. Building the release profile in
-`brokkr check` is decided against, so the answer is to remove the profile
-dependence, not to test the other profile. The text below predates
-`[test] debug = true`: `brokkr test` builds dev unless `--release` is passed.
-The same answer covers integer overflow: release builds get
-`overflow-checks = true` in the root `Cargo.toml` profile, so overflow panics
-in the shipped build as it does in dev and in tests. That closes the
-dev/release overflow difference without building release in the gate, which
-still does not build it.
+**Decision (partial):** `unregister_moved_pane` is deleted along with its call
+site (landed); `take_pane_for_move` already removes the record and number
+together. For the lifecycle phase, `debug_assert!` is banned workspace-wide (a
+`disallowed-macros` seal adopted from broadarrow), so the two `debug_assert_eq!`s
+become `assert_eq!` where a panic is the right containment, or typed handling
+(the `Result`-returning transitions suggested below) otherwise. Building the
+release profile in `brokkr check` is decided against, so the answer is to
+remove the profile dependence, not to test the other profile. The same answer
+covers integer overflow: release builds get `overflow-checks = true` in the
+root `Cargo.toml` profile, so overflow panics in the shipped build as it does in
+dev and in tests. That closes the dev/release overflow difference without
+building release in the gate, which still does not build it. Open: the two
+`debug_assert_eq!`s below, which still vanish in the build that ships.
 
-- `crates/shepr-mux/src/workspace.rs::unregister_moved_pane` has a body of
-  exactly `debug_assert!(self.pane_state(_pane_id).is_none());` and is called
-  from production at
-  `crates/shepr-server/src/app/api/panes/geometry.rs`. In a release build
-  (`brokkr install`) it is a `&mut self` method that does nothing, so the shipped
-  binary takes a mutable borrow of the workspace to acknowledge something. It is
-  either an invariant check that should be a real `assert!`/`Result`, or dead.
-- `crates/shepr-server/src/server/headless/lifecycle.rs` has the serving layer's
-  only two invariant assertions, two `debug_assert_eq!` on the lifecycle phase.
-  `brokkr.toml` sets `[test] debug = true`, but `brokkr test <name>` defaults to
-  release and the shipped binary is release. They cover the phase machine, the
-  one piece of state written by signal, API and logind threads.
+`crates/shepr-server/src/server/headless/lifecycle.rs` has the serving layer's
+only two invariant assertions, two `debug_assert_eq!` on the lifecycle phase.
+`brokkr.toml` sets `[test] debug = true`, but `brokkr test <name>` defaults to
+release and the shipped binary is release. They cover the phase machine, the
+one piece of state written by signal, API and logind threads.
 
 Fix suggested for the second: make the phase transitions total functions on
 `ShutdownPhase` returning `Result`.
@@ -1118,6 +1085,12 @@ struct passed to callers.
 
 ## BUG-063 - Two Git config parsers in one module, and the naive one decides two real questions
 
+**Decision:** shepr's own git discovery now honours `GIT_CEILING_DIRECTORIES`
+with git's semantics - it was the one upward walk that ignored it - and
+`IsolatedEnv` sets the ceiling to the scratch base, so a test's upward walk
+cannot escape it. Unrelated to this entry's naive-parser defect, which stays
+open.
+
 `crates/shepr-mux/src/git/discovery.rs` has `read_git_config_value` /
 `simple_git_config_section` / `strip_git_config_comment`: about forty lines that
 read one key from one file, skip any `[section "subsection"]` header, and know
@@ -1135,6 +1108,12 @@ Fix suggested: delete `read_git_config_value` and route both questions through
 block in an included file.
 
 ## BUG-064 - The file-reading Git path and the subprocess Git path can disagree about one repository
+
+**Decision:** shepr's own git discovery now honours `GIT_CEILING_DIRECTORIES`
+with git's semantics - it was the one upward walk that ignored it - and
+`IsolatedEnv` sets the ceiling to the scratch base. This entry's divergence
+(`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`, `/etc/gitconfig`)
+is unrelated and stays open.
 
 `crates/shepr-mux/src/git/config.rs::git_user_config_paths` reads
 `XDG_CONFIG_HOME` directly, filters on `is_absolute()`, and falls back to
@@ -1401,29 +1380,6 @@ The common cause named across reports is that these timeouts are `Instant`-based
 constants with no injection point; `SshAgentLease::refresh_at(now)`,
 `EndpointCatalogWatch::poll(now)` and `shepr-mux`'s `terminal/state` are cited as
 the pattern that works.
-
-## BUG-076 - Tests that clean up by hand, so a failure leaks the directory or socket
-
-**Decision (partial):** piece 2 of the test-isolation work adopted from
-broadarrow answers this the other way from the fix suggested below: broadarrow
-rejected a `Drop`-owned scratch tree (`scratch_root("x").join("y")` deletes the
-tree before the caller uses it) in favour of trees cleared on claim and reused in
-place per slot, so a failing test's leftovers are removed by the next run and
-`keep_until_exit` goes. Landed: `keep_until_exit` is gone and its callers hold a
-plain `ScratchDir` with the hand cleanup dropped; this entry can be removed.
-
-- `crates/shepr-mux/src/git/test_support.rs::temp_test_dir` returns
-  `ScratchDir::new(name).keep_until_exit()` and its doc says callers that clean
-  up remove it themselves; callers then call
-  `std::fs::remove_dir_all(base).expect("test precondition")` after their
-  assertions (`git/status.rs`, `workspace.rs` twice), so any failing assertion
-  skips the cleanup.
-- `crates/shepr-client/src/handshake.rs::socket_pair` builds a `ScratchDir` with
-  `.keep_until_exit()` and each test removes the socket file by hand with
-  `let _ = std::fs::remove_file(path)` after `peer.join()`; a test that panics
-  before that line leaves the socket behind.
-
-Fix suggested in both cases: hold the `ScratchDir` guard and let `Drop` own it.
 
 ## BUG-077 - Most panes are launched with an empty `SHEPR_SOCKET_PATH`
 

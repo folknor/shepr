@@ -261,6 +261,7 @@ fn strip_git_config_comment(value: &str) -> &str {
 }
 
 fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
+    // host-program-ok: production asks Git what a reftable store holds
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -395,7 +396,9 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::git::test_support::{live_git_space, run_git, temp_test_dir};
+    use crate::git::test_support::{
+        add_linked_worktree, git_written_fixture, live_git_space, temp_test_dir, write_git_dir,
+    };
 
     #[test]
     fn oversized_loose_ref_is_unavailable_not_absent() {
@@ -703,7 +706,7 @@ mod tests {
     #[test]
     fn git_space_metadata_supports_standalone_bare_repo() {
         let bare = temp_test_dir("bare-space");
-        run_git(&bare, &["init", "--bare", "."]);
+        write_git_dir(&bare, "main", true);
         let nested = bare.join("refs");
 
         let info = git_worktree_info(&nested).expect("bare repo should be discovered");
@@ -752,42 +755,12 @@ mod tests {
     #[test]
     fn embedded_dot_bare_source_and_checkout_use_container_repo_name() {
         let base = temp_test_dir("embedded-dot-bare");
-        let seed = base.join("seed");
         let repo = base.join("reported-repo");
         let bare = repo.join(".bare");
         let checkout = repo.join("develop");
-        std::fs::create_dir_all(&seed).expect("test precondition");
-        std::fs::create_dir_all(&repo).expect("test precondition");
-        run_git(&seed, &["init", "--quiet"]);
-        run_git(&seed, &["config", "user.email", "shepr@example.invalid"]);
-        run_git(&seed, &["config", "user.name", "Shepr Test"]);
-        run_git(
-            &seed,
-            &["commit", "--quiet", "--allow-empty", "-m", "initial"],
-        );
-        run_git(
-            &base,
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                seed.to_str().expect("test precondition"),
-                bare.to_str().expect("test precondition"),
-            ],
-        );
+        write_git_dir(&bare, "main", true);
         std::fs::write(repo.join(".git"), "gitdir: ./.bare\n").expect("test precondition");
-        run_git(
-            &bare,
-            &[
-                "worktree",
-                "add",
-                "--quiet",
-                "-b",
-                "develop",
-                checkout.to_str().expect("test precondition"),
-                "HEAD",
-            ],
-        );
+        add_linked_worktree(&bare, "develop", &checkout);
 
         let source = live_git_space(&repo).expect("test precondition");
         let linked = live_git_space(&checkout).expect("test precondition");
@@ -799,7 +772,7 @@ mod tests {
     #[test]
     fn git_space_metadata_marks_bare_dot_git_repo() {
         let root = temp_test_dir("bare-dot-git");
-        run_git(&root, &["init", "--bare", ".git"]);
+        write_git_dir(&root.join(".git"), "main", true);
 
         let info = git_worktree_info(&root).expect("bare .git repo should be discovered");
         assert!(info.is_bare);
@@ -845,10 +818,13 @@ mod tests {
         assert_eq!(derive_label_from_cwd(Path::new(&root)), label);
     }
 
+    /// Production reads a reftable store through Git, and the store is a
+    /// binary format only Git writes, so Git makes this fixture.
     #[test]
     fn git_rev_parse_verify_reads_reftable_refs() {
         let root = temp_test_dir("reftable-ref-oid");
         let root_arg = root.to_string_lossy().to_string();
+        // host-program-ok: a reftable store is written by Git; production reads it through Git
         let output = std::process::Command::new("git")
             .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
             .output()
@@ -857,9 +833,9 @@ mod tests {
             return;
         }
 
-        run_git(&root, &["config", "user.email", "shepr@example.invalid"]);
-        run_git(&root, &["config", "user.name", "Shepr Test"]);
-        run_git(&root, &["commit", "--allow-empty", "-m", "initial"]);
+        git_written_fixture(&root, &["config", "user.email", "shepr@example.invalid"]);
+        git_written_fixture(&root, &["config", "user.name", "Shepr Test"]);
+        git_written_fixture(&root, &["commit", "--allow-empty", "-m", "initial"]);
 
         let head_oid = git_rev_parse_verify(&root, "HEAD").expect("test precondition");
 

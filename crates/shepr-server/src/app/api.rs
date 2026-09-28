@@ -232,8 +232,9 @@ fn agent_manifest_info(
 
 #[cfg(any(test, feature = "test-api"))]
 pub(super) mod test_support {
+    /// A program that exits 0 at once: the fixture program with no script.
     pub(crate) fn exiting_test_command() -> &'static str {
-        "/usr/bin/true"
+        shepr_test_support::fixture::path_str()
     }
 
     pub(crate) fn shutdown_test_runtimes(app: &mut crate::app::App) {

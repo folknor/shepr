@@ -125,8 +125,19 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
         }
     }
     let pty = shepr_pty::backend::open_pty(24, 80).expect("open pty");
-    let mut command = shepr_pty::PtyCommand::new("bash");
-    command.args(["-c", "exec -a droid sleep 999"]);
+    // A fixture stand-in named `droid`, found on the child's PATH, so its
+    // command line is `droid 999` as a launched Droid's would be.
+    let bin = shepr_test_support::ScratchDir::new("droid-bin");
+    let _droid = shepr_test_support::fixture::stand_in(
+        &bin,
+        "droid",
+        &[shepr_test_support::fixture::Step::Sleep(
+            Duration::from_secs(999),
+        )],
+    );
+    let mut command = shepr_pty::PtyCommand::new("droid");
+    command.arg("999");
+    command.env("PATH", bin.path());
     let child =
         ChildGuard(shepr_pty::backend::spawn_in_pty(&pty.slave, &command).expect("spawn in pty"));
     let pid = child.0.id();

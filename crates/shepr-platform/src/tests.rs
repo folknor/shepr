@@ -1,10 +1,10 @@
 use super::*;
 use shepr_core::socket_path::fits_unix_socket_path;
+use shepr_test_support::fixture::{self, Held, Step};
 use std::{
     io::Read,
     os::fd::AsRawFd,
     path::{Path, PathBuf},
-    process::Command,
     time::{Duration, Instant},
 };
 
@@ -451,8 +451,7 @@ fn both_handle_kinds(pid: u32) -> [ProcessHandle; 2] {
 #[test]
 fn process_handle_follows_one_process_through_exit_and_reap() {
     for kind in 0..2 {
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
+        let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
             .spawn()
             .expect("spawn sleep");
         let handles = both_handle_kinds(child.id());
@@ -478,8 +477,7 @@ fn process_handle_follows_one_process_through_exit_and_reap() {
 
 #[test]
 fn wait_for_process_exits_times_out_on_a_live_process() {
-    let mut child = Command::new("/bin/sleep")
-        .arg("30")
+    let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
         .spawn()
         .expect("spawn sleep");
     for handle in &both_handle_kinds(child.id()) {
@@ -495,8 +493,14 @@ fn wait_for_process_exits_times_out_on_a_live_process() {
 fn spawn_session_with_background_job() -> std::process::Child {
     use std::os::unix::process::CommandExt as _;
 
-    let mut command = Command::new("/bin/sh");
-    command.args(["-c", "sleep 30 & exec sleep 30"]);
+    let mut command = fixture::command(&[
+        Step::Spawn {
+            argv0: "background-job".into(),
+            sleep: Duration::from_secs(30),
+            held: Held::All,
+        },
+        Step::Sleep(Duration::from_secs(30)),
+    ]);
     // SAFETY: setsid has no Rust memory preconditions in the single-threaded child.
     unsafe {
         command.pre_exec(|| {
@@ -557,15 +561,33 @@ fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
     }
 }
 
+#[test]
+fn server_daemon_detach_creates_new_session() {
+    let mut command = fixture::command(&[Step::PrintSid]);
+    detach_server_daemon_command(&mut command);
+    let child = command
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("test precondition");
+    let pid = child.id();
+    let output = child.wait_with_output().expect("test precondition");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        pid.to_string(),
+        "detached server child should be its own session leader"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Clipboard
 // ---------------------------------------------------------------------------
 
 // None of these clipboard tests touch the process environment: the command
-// lists take the session as an argument and fake clipboard programs are run
-// by absolute path with their output paths baked into the script. Test
-// threads run concurrently, and a `PATH` or `DISPLAY` mutated here would leak
-// into every other test that spawns a program.
+// lists take the session as an argument and fake clipboard programs are
+// fixture stand-ins run by absolute path, with their output paths in their
+// scripts. Test threads run concurrently, and a `PATH` or `DISPLAY` mutated
+// here would leak into every other test that spawns a program.
 
 fn clipboard_deadline() -> Instant {
     Instant::now() + CLIPBOARD_HELPER_TIMEOUT
@@ -575,24 +597,37 @@ fn fake_clipboard_dir(name: &str) -> shepr_test_support::ScratchDir {
     shepr_test_support::ScratchDir::new(name)
 }
 
-/// Write an executable script and return its absolute path as the
-/// `'static` program name `ClipboardCommand` wants (leaked; tests only).
-fn fake_clipboard_program(dir: &Path, name: &str, script: &str) -> &'static str {
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = dir.join(name);
-    std::fs::write(&path, script).expect("fake clipboard program should be written");
-    let mut permissions = std::fs::metadata(&path)
-        .expect("fake clipboard program metadata")
-        .permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions)
-        .expect("fake clipboard program should be executable");
-    Box::leak(path.to_string_lossy().into_owned().into_boxed_str())
+fn leak(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
 }
 
-fn quoted_path(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+/// Install a fixture stand-in named like the clipboard helper it replaces,
+/// since production recognises wl-copy by name, and return its absolute
+/// path as the `'static` program name `ClipboardCommand` wants (leaked;
+/// tests only).
+fn fake_clipboard_program(dir: &Path, name: &str, steps: &[Step]) -> &'static str {
+    leak(
+        fixture::stand_in(dir, name, steps)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// A clipboard command running the fixture with this script (leaked; tests
+/// only).
+fn fixture_clipboard_command(steps: &[Step]) -> ClipboardCommand {
+    let args: Vec<&'static str> = fixture::args(steps)
+        .into_iter()
+        .map(|token| leak(token.into_string().expect("a UTF-8 fixture token")))
+        .collect();
+    ClipboardCommand {
+        program: fixture::path_str(),
+        args: Box::leak(args.into_boxed_slice()),
+    }
+}
+
+fn sleep_30() -> Step {
+    Step::Sleep(Duration::from_secs(30))
 }
 
 #[test]
@@ -653,12 +688,15 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
     let fake_wl_copy = fake_clipboard_program(
         &helper_dir,
         "wl-copy",
-        &format!(
-            "#!/bin/sh\ncat > {payload}\nprintf '%s\\n' \"$@\" > {args}\nprintf '%s' \"$$\" > {marker}\nexec sleep 30\n",
-            payload = quoted_path(&payload),
-            args = quoted_path(&args),
-            marker = quoted_path(&marker),
-        ),
+        &[
+            Step::To(payload.clone()),
+            Step::Cat,
+            Step::To(args.clone()),
+            Step::PrintArgs,
+            Step::To(marker.clone()),
+            Step::PrintPid,
+            sleep_30(),
+        ],
     );
 
     let (result_tx, result_rx) = mpsc::channel();
@@ -674,14 +712,21 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
         ));
     });
 
+    // The marker is created before the pid is written into it, so wait for a
+    // whole pid rather than for the file.
     let marker_deadline = Instant::now() + Duration::from_secs(2);
-    while !marker.exists() && Instant::now() < marker_deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let owner_pid: i32 = std::fs::read_to_string(&marker)
-        .expect("fake wl-copy should enter its clipboard-owner phase")
-        .parse()
-        .expect("owner pid should be numeric");
+    let owner_pid: i32 = loop {
+        match std::fs::read_to_string(&marker)
+            .ok()
+            .and_then(|pid| pid.parse().ok())
+        {
+            Some(pid) => break pid,
+            None if Instant::now() < marker_deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            None => panic!("fake wl-copy should enter its clipboard-owner phase"),
+        }
+    };
     cleanup.owner_pid = Some(owner_pid);
     let returned_while_owner_running = result_rx
         .recv_timeout(Duration::from_secs(2))
@@ -719,16 +764,9 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
 fn failed_wl_copy_uses_x11_fallback() {
     let temp_dir = fake_clipboard_dir("fallback");
     let payload = temp_dir.join("xclip-payload");
-    let fake_wl_copy = fake_clipboard_program(
-        &temp_dir,
-        "wl-copy",
-        "#!/bin/sh\n/bin/cat >/dev/null\nexit 7\n",
-    );
-    let fake_xclip = fake_clipboard_program(
-        &temp_dir,
-        "xclip",
-        &format!("#!/bin/sh\n/bin/cat > {}\n", quoted_path(&payload)),
-    );
+    let fake_wl_copy = fake_clipboard_program(&temp_dir, "wl-copy", &[Step::Drain, Step::Exit(7)]);
+    let fake_xclip =
+        fake_clipboard_program(&temp_dir, "xclip", &[Step::To(payload.clone()), Step::Cat]);
 
     // Same order `clipboard_commands` produces for a session with both a
     // Wayland and an X11 display, with the fakes standing in by path.
@@ -753,14 +791,8 @@ fn failed_wl_copy_uses_x11_fallback() {
 
 #[test]
 fn finite_clipboard_commands_report_exit_status() {
-    let success = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "cat >/dev/null"],
-    };
-    let failure = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "cat >/dev/null; exit 7"],
-    };
+    let success = fixture_clipboard_command(&[Step::Drain]);
+    let failure = fixture_clipboard_command(&[Step::Drain, Step::Exit(7)]);
 
     assert!(run_clipboard_command(
         &success,
@@ -777,14 +809,8 @@ fn finite_clipboard_commands_report_exit_status() {
 #[test]
 fn a_clipboard_writer_that_hangs_is_killed_at_the_deadline() {
     // One helper never reads its input, the other reads it and never exits.
-    let never_reads = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "exec sleep 30"],
-    };
-    let never_exits = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "cat >/dev/null; exec sleep 30"],
-    };
+    let never_reads = fixture_clipboard_command(&[sleep_30()]);
+    let never_exits = fixture_clipboard_command(&[Step::Drain, sleep_30()]);
     let payload = vec![b'x'; 1024 * 1024];
     for (command, bytes) in [(&never_reads, &payload[..]), (&never_exits, &b"text"[..])] {
         let started = Instant::now();
@@ -823,10 +849,7 @@ fn read_clipboard_text_commands_include_session_backends() {
 
 #[test]
 fn read_clipboard_text_with_command_reads_utf8() {
-    let command = ClipboardCommand {
-        program: "printf",
-        args: &["feature/linear-302"],
-    };
+    let command = fixture_clipboard_command(&[Step::Print("feature/linear-302".into())]);
 
     assert_eq!(
         read_clipboard_text_with_command(&command, clipboard_deadline()).as_deref(),
@@ -836,10 +859,11 @@ fn read_clipboard_text_with_command_reads_utf8() {
 
 #[test]
 fn read_clipboard_text_with_command_rejects_oversized_output() {
-    let command = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "yes x | head -c 1048578"],
-    };
+    // Two bytes past the one-mebibyte cap.
+    let command = fixture_clipboard_command(&[Step::Fill {
+        byte: b'x',
+        count: 1_048_578,
+    }]);
 
     assert_eq!(
         read_clipboard_text_with_command(&command, clipboard_deadline()),
@@ -851,18 +875,10 @@ fn read_clipboard_text_with_command_rejects_oversized_output() {
 fn a_clipboard_reader_that_hangs_is_killed_at_the_deadline() {
     // Silent, half an answer with the pipe left open, and a full answer from
     // a helper that then never exits.
-    let silent = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "exec sleep 30"],
-    };
-    let partial = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "printf partial; exec sleep 30"],
-    };
-    let lingering = ClipboardCommand {
-        program: "sh",
-        args: &["-c", "printf text; exec >&-; exec sleep 30"],
-    };
+    let silent = fixture_clipboard_command(&[sleep_30()]);
+    let partial = fixture_clipboard_command(&[Step::Print("partial".into()), sleep_30()]);
+    let lingering =
+        fixture_clipboard_command(&[Step::Print("text".into()), Step::CloseStdout, sleep_30()]);
     for command in [&silent, &partial, &lingering] {
         let started = Instant::now();
         let deadline = started + Duration::from_millis(200);

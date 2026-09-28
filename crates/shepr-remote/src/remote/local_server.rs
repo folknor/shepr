@@ -281,23 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn server_daemon_detach_creates_new_session() {
-        let mut command = Command::new("sh");
-        command.arg("-c").arg(
-            r#"sid=$(ps -o sid= -p $$ | tr -d ' ')
-test "$sid" = "$$"
-"#,
-        );
-        shepr_platform::detach_server_daemon_command(&mut command);
-
-        let status = command.status().expect("test precondition");
-        assert!(
-            status.success(),
-            "detached server child should be its own session leader"
-        );
-    }
-
-    #[test]
     fn is_server_listening_returns_true_for_live_socket() {
         let dir = ScratchDir::new("live");
         let path = dir.join("s.sock");

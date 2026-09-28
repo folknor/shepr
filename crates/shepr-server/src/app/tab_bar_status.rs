@@ -540,6 +540,7 @@ async fn run_status_command(
         return Err(format!("timed out after {}s", timeout.as_secs()));
     }
 
+    // host-program-ok: a status command is the user's shell command line
     let mut process = std::process::Command::new("/bin/sh");
     process
         .args(["-lc", &command])
@@ -589,6 +590,7 @@ mod tests {
     use super::*;
     use shepr_config::Config;
     use shepr_mux::events::AppEvent;
+    use shepr_test_support::fixture::{self, Step};
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -600,8 +602,23 @@ mod tests {
         )
     }
 
-    const MULTILINE_COMMAND: &str = "printf 'old\\nfinal\\n'";
-    const OVER_CAP_COMMAND: &str = "head -c 5000 /dev/zero | tr '\\0' x; printf '\\nREADY\\n'";
+    // Status commands are shell command lines, since production runs them
+    // under the shell; these run the fixture program through it.
+
+    fn multiline_command() -> String {
+        fixture::shell_line(&[Step::Print("old\nfinal\n".into())])
+    }
+
+    /// Output far past the capture cap, then a last line.
+    fn over_cap_command() -> String {
+        fixture::shell_line(&[
+            Step::Fill {
+                byte: b'x',
+                count: 5000,
+            },
+            Step::Print("\nREADY\n".into()),
+        ])
+    }
 
     /// A marker path a status command writes to, in a fresh scratch directory
     /// that outlives the test body (a descendant may still write after it
@@ -616,7 +633,7 @@ mod tests {
         spawn_status_command(
             event_tx,
             3,
-            MULTILINE_COMMAND.into(),
+            multiline_command(),
             Duration::from_secs(2),
             Vec::new(),
             None,
@@ -638,7 +655,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn status_command_timeout_starts_before_task_is_polled() {
         let ran = unique_temp_path("ran-after-timeout");
-        let command = format!("printf ran > {}", ran.display());
+        let command = fixture::shell_line(&[Step::To(ran.clone()), Step::Print("ran".into())]);
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         spawn_status_command(
             event_tx,
@@ -672,7 +689,7 @@ mod tests {
         spawn_status_command(
             event_tx,
             3,
-            OVER_CAP_COMMAND.into(),
+            over_cap_command(),
             Duration::from_secs(2),
             Vec::new(),
             None,
@@ -695,10 +712,17 @@ mod tests {
     async fn dropping_the_app_kills_an_in_flight_command_and_its_descendants() {
         let descendant_started = unique_temp_path("descendant-started");
         let survived = unique_temp_path("survived");
+        // A background descendant of the command's shell marks that it
+        // started, and would mark that it survived 300 ms later.
         let command = format!(
-            "(printf descendant-started > {}; sleep 0.3; printf survived > {}) & wait",
-            descendant_started.display(),
-            survived.display()
+            "{} & wait",
+            fixture::shell_line(&[
+                Step::To(descendant_started.clone()),
+                Step::Print("descendant-started".into()),
+                Step::Sleep(Duration::from_millis(300)),
+                Step::To(survived.clone()),
+                Step::Print("survived".into()),
+            ])
         );
         let mut app = test_app();
         app.configure_tab_bar_status_config(
@@ -738,7 +762,7 @@ mod tests {
         let mut app = test_app();
         app.configure_tab_bar_status_config(
             &[TabBarRightEntryConfig::Command {
-                command: MULTILINE_COMMAND.into(),
+                command: multiline_command(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
             }],
@@ -932,8 +956,16 @@ mod status_command_tests {
 
     #[tokio::test]
     async fn status_guard_kills_the_group_while_the_leader_is_unreaped() {
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "sleep 30 & exec sleep 30"]);
+        use shepr_test_support::fixture::{self, Held, Step};
+
+        let mut command = fixture::command(&[
+            Step::Spawn {
+                argv0: "background-job".into(),
+                sleep: Duration::from_secs(30),
+                held: Held::All,
+            },
+            Step::Sleep(Duration::from_secs(30)),
+        ]);
         configure_status_command(&mut command);
         let mut child = tokio::process::Command::from(command)
             .spawn()

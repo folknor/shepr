@@ -450,6 +450,21 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         .expect("test precondition")
         .clone();
     let (events, _rx) = tokio::sync::mpsc::channel(32);
+    // A stand-in pane shell that moves to `new` while reporting `old` over
+    // OSC 7, then stays alive.
+    let shell_dir = crate::test_support::ScratchDir::new("persist-cwd-shell");
+    let shell = shepr_test_support::fixture::stand_in(
+        &shell_dir,
+        "sh",
+        &[
+            shepr_test_support::fixture::Step::Cd(new.clone()),
+            shepr_test_support::fixture::Step::Print(format!(
+                "\x1b]7;file://{}\x07",
+                old.display()
+            )),
+            shepr_test_support::fixture::Step::Sleep(std::time::Duration::from_secs(30)),
+        ],
+    );
     let runtime = shepr_mux::pane::PaneRuntime::spawn(
         pane_id,
         24,
@@ -458,7 +473,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         0,
         Default::default(),
         None,
-        shepr_mux::pane::PaneShellConfig::new("/bin/sh", false),
+        shepr_mux::pane::PaneShellConfig::new(shell.to_str().expect("test precondition"), false),
         &shepr_mux::pane::PaneLaunchEnv::default(),
         &events,
         &std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -466,13 +481,6 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     )
     .expect("test precondition");
     let pid = runtime.child_pid().expect("test precondition");
-    runtime
-        .try_send_bytes(bytes::Bytes::from(format!(
-            "cd '{}'; printf '\\033]7;file://{}\\007'; exec sleep 30\n",
-            new.display(),
-            old.display()
-        )))
-        .expect("test precondition");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while (shepr_agent::detect::process_cwd(pid).as_ref() != Some(&new)
         || runtime.cwd().as_ref() != Some(&old))

@@ -387,12 +387,23 @@ fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
     }
     let dir = Directory::new();
     fs::write(dir.0.join("existing"), b"original").expect("test precondition");
-    let output = std::process::Command::new("bash")
-        .args(["-c", "trap '' XFSZ; ulimit -f 1; exec \"$@\"", "shepr-test"])
-        .arg(std::env::current_exe().expect("test precondition"))
-        .args(["--exact", "integration::config_file::tests::partial_write_errors_preserve_files_and_do_not_remove_collisions", "--nocapture"])
-        .env(CHILD, &dir.0)
-        .output().expect("test precondition");
+    // A one-kibibyte limit, which the 8 KiB writes cross partway. Ignoring
+    // SIGXFSZ makes the kernel return EFBIG instead of killing the child; the
+    // ignored disposition and the limit both survive the exec.
+    use shepr_test_support::fixture::{self, Signal, Step};
+    let output = fixture::command(&[
+        Step::Ignore(Signal::Xfsz),
+        Step::LimitFileSize(1024),
+        Step::Exec(vec![
+            std::env::current_exe().expect("test precondition").into(),
+            "--exact".into(),
+            "integration::config_file::tests::partial_write_errors_preserve_files_and_do_not_remove_collisions".into(),
+            "--nocapture".into(),
+        ]),
+    ])
+    .env(CHILD, &dir.0)
+    .output()
+    .expect("test precondition");
     assert!(output.status.success(), "child failed: {output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("partial-write paths executed"));
     assert_eq!(

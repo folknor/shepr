@@ -2532,8 +2532,8 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
 
 #[test]
 fn letta_session_hook_is_silent_and_encodes_default_conversation() {
+    use shepr_test_support::fixture::{self, Step};
     use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
 
     let env = IsolatedEnv::new();
@@ -2543,22 +2543,16 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     env.set("HOME", &home);
     let installed = install_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
+    // The shepr the hook reports through: a fixture stand-in recording the
+    // arguments it was given, one per line.
     let capture = base.join("args.txt");
-    let fake_shepr = base.join("shepr");
-    fs::write(
-        &fake_shepr,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
-            capture.display()
-        ),
-    )
-    .expect("test precondition");
-    let mut permissions = fs::metadata(&fake_shepr)
-        .expect("test precondition")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&fake_shepr, permissions).expect("test precondition");
+    let fake_shepr = fixture::stand_in(
+        &base,
+        "shepr",
+        &[Step::To(capture.clone()), Step::PrintArgs],
+    );
 
+    // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut child = Command::new("sh")
         .arg(&installed.hook_path)
         .arg("session")
@@ -2583,7 +2577,11 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    let args = fs::read_to_string(capture).expect("test precondition");
+    let args = fs::read_to_string(capture)
+        .expect("test precondition")
+        .lines()
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(args.contains("report-agent-session w1:p2"));
     assert!(args.contains("--source shepr:letta --agent letta"));
     assert!(args.contains("--agent-session-id default:agent-123"));
@@ -2610,6 +2608,7 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
     let listener = UnixListener::bind(&socket_path).expect("test precondition");
     listener.set_nonblocking(true).expect("test precondition");
 
+    // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut child = Command::new("sh")
         .arg(&hook)
         .arg(action)
@@ -2642,6 +2641,7 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
 }
 
 fn python3_available() -> bool {
+    // host-program-ok: the shipped python hook assets are the subject
     std::process::Command::new("python3")
         .arg("--version")
         .stdout(std::process::Stdio::null())
@@ -2700,6 +2700,7 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
     let listener = UnixListener::bind(&socket_path).expect("test precondition");
     listener.set_nonblocking(true).expect("test precondition");
 
+    // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut child = Command::new("sh")
         .arg(&hook)
         .arg("session")

@@ -193,16 +193,13 @@ pub(super) fn wait_with_output_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use shepr_test_support::fixture::{self, Held, Step};
+    use std::process::Stdio;
 
     #[test]
     fn timeout_kills_the_child() {
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg("exec sleep 10")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut command = fixture::command(&[Step::Sleep(Duration::from_secs(10))]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let started = Instant::now();
         let error = wait_with_output_timeout(
             command.spawn().expect("test precondition"),
@@ -217,12 +214,16 @@ mod tests {
     /// still open: the child exits at once, a background process keeps the pipe.
     #[test]
     fn a_stderr_pipe_held_by_a_background_process_does_not_block_the_result() {
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg("sleep 5 >/dev/null </dev/null & printf out; printf err >&2")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut command = fixture::command(&[
+            Step::Spawn {
+                argv0: "control-master".into(),
+                sleep: Duration::from_secs(5),
+                held: Held::Stderr,
+            },
+            Step::Print("out".into()),
+            Step::PrintErr("err".into()),
+        ]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let started = Instant::now();
         let output = wait_with_output_timeout(
             command.spawn().expect("test precondition"),

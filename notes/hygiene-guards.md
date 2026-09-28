@@ -94,6 +94,10 @@ included, after broadarrow's `ba-mock-worker` and its
 `write_fake_tracked_repo` already does. Decided exempt: `live_git_space` and any
 test that exercises production code which itself spawns `git` keep the real
 `git` - the production spawn has no injection point for a stand-in (BUG-066).
+Separately: shepr's own git discovery now honours `GIT_CEILING_DIRECTORIES`
+with git's semantics, and `IsolatedEnv` sets the ceiling to the scratch base, so
+a fixture repo under scratch cannot have its upward walk escape into a real
+ancestor repository.
 
 `shepr-mux/src/git/test_support.rs::run_git` spawns `git` and
 `.expect("test precondition")`s the spawn. `init_repo_with_commit`,
@@ -148,8 +152,9 @@ held per subsystem by scoped textlints in the shape of broadarrow's
 `control-loop-reads-the-clock-seam` (full finding: HYGP-001 in
 `notes/hygiene-policy.md`). That is the injection point these tests lack, and it
 answers the enforcement named below with text rules rather than a workspace
-`disallowed_methods` entry. The `legacy_bridge_has_no_idle_deadline` sleep goes
-with HYGP-039's deletion. Open: each test, as its subsystem gets the seam.
+`disallowed_methods` entry. The `legacy_bridge_has_no_idle_deadline` sleep is
+gone along with `--idle-timeout-v1` (formerly HYGP-039, now resolved and
+removed). Open: each remaining test, as its subsystem gets the seam.
 
 Reported from every scope that has timing at all. None can be made
 deterministic while the timeouts are `Instant`-based constants with no injection
@@ -317,35 +322,15 @@ resolvers consult - checkable by construction if the resolvers take their
 variable name from the list. Related: HYGG-030 (the same shape one layer up, in
 `IsolatedEnv`).
 
-## HYGG-012 - Scratch directories and test fixtures live under `/tmp`, against a project rule
+## HYGG-012 - Fixed `/tmp` literals remain in test data, standing in for a scratch directory
 
 **Decision (partial):** piece 2 of the test-isolation work adopted from
-broadarrow: scratch directories move under the project's `target/` tree
-(broadarrow's `target/t`, with one documented override variable), named by
-fixed-width digests budgeted against `sun_path`, with per-process slot locks so a
-rerun reuses and clears its trees in place, a claim registry, and
-`std::env::temp_dir` banned (`clippy.toml` plus a `no-host-temp-dir` textlint).
-The `/tmp` rule then needs no exemption and the SIGKILL leak goes. Open: the
-fixed `/tmp` literals in test data (`writer.rs`, `aggregate.rs`,
-`socket_paths.rs`).
-
-`shepr-test-support/src/lib.rs` builds its scratch root as
-`std::env::temp_dir().join(format!("shepr-test-{pid}"))`, while `AGENTS.md` and
-`CLAUDE.md` both state "Never read or write from `/tmp`. All data lives in the
-project." The doc comment gives the reason - socket paths must fit `sun_path`,
-and a deep checkout eats the budget; `target/` under this checkout is already
-about 30 bytes deep before any scratch name - which the hunter accepts as a real
-constraint. The finding is that this is a rule the build cannot enforce because
-the code deliberately breaks it, and neither document records the exemption.
-Either `AGENTS.md` should name the exemption or the scratch root should move
-under a short symlink inside the project.
-
-Related leak in the same place: `ScratchDir::keep_until_exit` relies on
-`atexit`, so a test process killed with SIGKILL leaves the directory behind
-indefinitely, and the only cleanup for a stale one is a later run reusing the
-same pid - an unbounded `/tmp` growth path on a machine where tests get killed.
-The fix named is a `shepr-test-*` sweep at scratch-root creation rather than an
-exact-pid match.
+broadarrow (scratch directories move under the project's `target/` tree, named
+by fixed-width digests budgeted against `sun_path`, with per-process slot locks
+so a rerun reuses and clears its trees in place, a claim registry, and
+`std::env::temp_dir` banned) closes the scratch root's own `/tmp` use and the
+SIGKILL leak that came with it. Open: the fixed `/tmp` literals below, which are
+test data rather than the scratch root itself.
 
 Fixed `/tmp` paths inside test data elsewhere: `shepr-mux/src/persist/writer.rs`'s
 `snapshot()` helper builds JSON containing
@@ -660,10 +645,6 @@ exists enforces it - a one-line tightening of a check somebody already paid for.
 The hunter flags this as one of the two findings it would most want confirmed by
 actually building.
 
-## HYGG-043 - Tests that clean up by hand, so a failing assertion leaks the resource
-
-Merged into BUG-076 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-044 - The gate may never compile the feature set that ships
 
 Merged into HYGP-031 (`notes/hygiene-policy.md`), which carries the full finding.
@@ -742,24 +723,6 @@ reads as coverage of the whole help screen and is coverage of five rows. The
 hunter's position is that the fix is not to widen this test but to make the help
 list structural - see HYGG-070.
 
-## HYGG-052 - A test comment cites an unresolvable issue number and a second-precise timestamp
-
-**Decision:** broadarrow's issue-citation textlint is adopted in a narrow form
-(`no-upstream-issue-citations`, A4 in `notes/broadarrow-ports.md`: `issue #N`,
-`(#N)` and `on #N`, not a bare `#\d+`), so the over-breadth the hunter objected
-to does not arise. This comment is one of its violations; keep the behavioural
-content and drop the issue number and the timestamp.
-
-`shepr-client/src/input/raw_input.rs`: `// Issue #3911, 2026-09-13 07:02:14
-UTC: this prefix timed out, then its tail arrived 33 ms later.` Nobody working
-in this repository can look up issue #3911 (shepr is a personal fork with no
-tracker), and the timestamp is precise to the second for no purpose. The
-behavioural content - a prefix, a 33 ms gap, two idle flushes - is the valuable
-part and survives without either citation. Per the documentation rule in
-`AGENTS.md`, the drifting specific should be reworded away rather than updated.
-The hunter says no text rule is worth writing for this (`#\d+` in comments would
-be over-broad).
-
 ## HYGG-053 - `IsolatedEnv` guarantees isolation from a list it does not own
 
 **Decision:** piece 1 (the `shepr-core` environment registry, after broadarrow's
@@ -799,15 +762,6 @@ inside `shepr-agent`'s own test helper) and HYGG-054.
 ## HYGG-054 - `app_dir_name()`'s `cfg!(test)` guard is false outside its own crate
 
 Merged into BUG-021 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-055 - `WSL_MARKER_ENV_VARS` is a two-entry list that goes quiet when the names change
-
-**Decision:** WSL support is removed entirely; the list is deleted.
-
-`shepr-platform/src/host.rs`. When Microsoft renames or drops a variable the
-check quietly stops contributing, and there is no log and no test that the list
-is non-empty or current. Checkable only against a real WSL host; the hunter says
-it is not false today as far as can be determined by reading.
 
 ## HYGG-056 - The clipboard detach behaviour hangs on the program name `wl-copy`
 
@@ -854,25 +808,6 @@ Merged into BUG-019 (`notes/bugs.md`), which carries the full finding.
 ## HYGG-063 - Ancestor depths in `hook_registration_is_current` mirror the install paths by hand
 
 Merged into HYGV-075 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-064 - `ProcessDetectionMode::ChildGroups` is a claim nothing exercises
-
-**Decision:** WSL support is removed entirely; the mode is deleted.
-
-`shepr-agent`. No test sets `SHEPR_PROCESS_DETECTION=child-groups` end to end -
-the two `*_with` tests call the inner function directly - and on Linux
-`foreground_process_group_id` always succeeds when `/proc` is readable, so the
-mode's trigger condition (native detection returning `None`) is rare to
-nonexistent. The comment justifies the mode for "environments that do not expose
-terminal foreground groups", but shepr is Linux-only and `/proc/<pid>/stat`
-always exposes `tpgid`; the hunter suspects a WSL-era leftover and says: if it
-is a WSL accommodation it should say so, and if not it is dead code. It also
-notes the mode has no injection point at all - the only way to reach it is the
-process-wide `OnceLock`, so no test can flip it without leaking into other tests
-in the process, and the two `*_with` seams exist precisely because the mode
-itself is untestable. The `shepr-platform` hunter's note that
-`shepr_platform::running_inside_wsl()` still exists and is called from three
-places argues for asking before deleting.
 
 ## HYGG-065 - Sidebar and theme guards keyed on strings before the strings become enums
 
@@ -976,7 +911,6 @@ for the claim.
 - XDG path variables get four empty/relative rules and `XDG_CONFIG_HOME` falls
   back silently: HYGV-008.
 - An invalid `SHEPR_LOG` filter degrades silently: BUG-044.
-- `SHEPR_PROCESS_DETECTION`: decided, deleted with WSL support (HYGV-012).
 - `SHEPR_DEBUG_OSC_EVIDENCE` is read per pane and documented nowhere: HYGV-013.
 - `terminal.default_shell` is validated per spawn rather than at launch:
   BUG-010.
@@ -1094,10 +1028,6 @@ HYGG-038, the include ordering is neither tested nor observable. Fix named: log
 at `debug` which includes were emitted and which paths were skipped; the path
 list itself cannot be enforced against OpenSSH's actual search order.
 
-## HYGG-079 - `discard_remote_output_preamble` and two siblings are keyed on version-suffixed markers for a compatibility story the project does not have
-
-Merged into HYGP-039 (`notes/hygiene-policy.md`), which carries the full finding.
-
 ## HYGG-080 - The remote `status --json` contract is two independent structs with no shared type
 
 `src/cli/status.rs` defines `ServerStatusJson`/`ClientStatusJson` (`Serialize`);
@@ -1118,7 +1048,7 @@ needed at all. Failing that, a test that serialises `ServerStatusJson` and
 deserialises it as `RemoteServerStatusJson` - possible today and absent. A
 related rule the same hunter proposes for the producer side: a test that
 round-trips each generated remote command string
-(`"remote-client-bridge"`, `"--idle-timeout-v1"`, `"remote-api-bridge"`,
+(`"remote-client-bridge"`, `"remote-api-bridge"`,
 `"--check"`, `"status"`, `"client"`, `"server"`, `"--json"`, `"server stop"`,
 `"--session"`) through `cli::spec::command().try_get_matches_from`, so the
 parser proves the producer - the only current check is byte-for-byte golden
@@ -1338,10 +1268,6 @@ Merged into BUG-056 (`notes/bugs.md`), which carries the full finding.
 
 Merged into BUG-058 (`notes/bugs.md`), which carries the full finding.
 
-## HYGG-098 - `unregister_moved_pane` is a guard that vanishes in release
-
-Merged into BUG-058 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-099 - The one-tab workspace invariant is enforced by opt-in test calls and one `Deref` panic
 
 **Decision (partial):** `debug_assert!` is banned (a `disallowed-macros` seal
@@ -1412,7 +1338,7 @@ hook-authoritative to screen-detected, silently, with no log line at any site.
 The failure mode is "the sidebar became less accurate", which is exactly the
 kind of regression nobody bisects. `shepr-agent` adds the same point from the
 producing side: `assets/claude/...sh` has `source = "shepr:claude"`, kimi has
-`"shepr:kimi"`, hermes has `_SOURCE = "shepr:hermes"`, with the agent label
+`_SOURCE = "shepr:kimi"`, with the agent label
 duplicated next to it, while the owner is
 `AgentDescriptor::integration_source`; a typo makes the report arrive as
 `AgentSource::Custom`, which silently loses `full_lifecycle_hook_authority` and
@@ -1458,23 +1384,13 @@ manifest and plugin-name findings go with it. The hand-written list remains
 open.
 
 `shepr-agent`'s `bundled_integration_asset_versions_match_expected_versions`
-enumerates eighteen `(name, asset, version)` triples and omits
-`OPENCODE_TUI_PLUGIN_ASSET`, `OPENCODE_V2_TUI_PLUGIN_ASSET` and
-`HERMES_PLUGIN_MANIFEST_ASSET` (whose `version: "1.0"` in
-`assets/hermes/plugin.yaml` is a fourth spelling of the Hermes version that
-nothing reads). A new target added without extending the list is silently
-uncovered. `registry::integration_asset(target)` already exists, so iterating
+enumerates its `(name, asset, version)` triples by hand and omits
+`OPENCODE_TUI_PLUGIN_ASSET` and `OPENCODE_V2_TUI_PLUGIN_ASSET`. A new target
+added without extending the list is silently uncovered.
+`registry::integration_asset(target)` already exists, so iterating
 `INTEGRATION_SPECS` would make the test exhaustive by construction.
 
-Related unchecked claim in the same area: `assets/hermes/plugin.yaml`'s `name:`
-duplicates `HERMES_PLUGIN_INSTALL_NAME` - the install directory is
-`<hermes>/plugins/shepr-agent-state` (Rust const) and the manifest inside it
-declares `name: shepr-agent-state` (YAML asset). Divergence means the plugin is
-installed under a directory Hermes will not associate with the manifest, and
-status only checks that `plugin.yaml` exists, not what it says. Checkable with a
-test that parses or greps the asset.
-
-## HYGG-105 - Hermes's and Grok's declared hook events are fiction
+## HYGG-105 - Grok's declared hook events are fiction
 
 Merged into BUG-015 (`notes/bugs.md`), which carries the full finding.
 

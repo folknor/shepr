@@ -1767,6 +1767,7 @@ impl PaneRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_support::fixture::{self, Held, Signal, Step};
     use std::ffi::OsStr;
 
     fn shell_probe(
@@ -2127,8 +2128,7 @@ mod tests {
         let cwd = private.join("cwd");
         std::fs::create_dir_all(&cwd).expect("create process cwd");
 
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "sleep 30"])
+        let mut child = fixture::command(&[Step::Sleep(std::time::Duration::from_secs(30))])
             .current_dir(&cwd)
             .spawn()
             .expect("spawn process in cwd");
@@ -2213,8 +2213,17 @@ mod tests {
         // The common close path: the pane's child has exited and been reaped,
         // but it left a job behind in its session that ignores SIGHUP and
         // SIGTERM, as a daemonised dev server might.
-        let mut cmd = PtyCommand::new("/bin/sh");
-        cmd.args(["-c", "trap '' HUP TERM; sleep 30 & exit 0"]);
+        let mut cmd = PtyCommand::new(fixture::path());
+        cmd.args(fixture::args(&[
+            Step::Ignore(Signal::Hup),
+            Step::Ignore(Signal::Term),
+            Step::Spawn {
+                argv0: "dev-server".into(),
+                sleep: std::time::Duration::from_secs(30),
+                held: Held::All,
+            },
+            Step::Exit(0),
+        ]));
         let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session");
         let leader_pid = spawned.child.id();
         let leader = shepr_platform::ProcessHandle::open(leader_pid).expect("leader pidfd");
@@ -2271,13 +2280,17 @@ mod tests {
         shutdown_pane_processes(PaneId::from_raw(0), Arc::new(ChildLiveness::new(0, None)));
     }
 
-    fn capture_shell_output(command: &str, extra_env: &[(&str, &str)]) -> String {
+    /// The `TERM` and `COLORTERM` a pane child sees, one per line.
+    fn capture_terminal_identity(extra_env: &[(&str, &str)]) -> String {
         let scratch = crate::test_support::ScratchDir::new("pane-term");
         let output_path = scratch.join("output.txt");
-        let mut cmd = PtyCommand::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg(format!("{command} > '{}'", output_path.display()));
-        cmd.cwd(std::env::current_dir().expect("test precondition"));
+        let mut cmd = PtyCommand::new(fixture::path());
+        cmd.args(fixture::args(&[
+            Step::To(output_path.clone()),
+            Step::PrintEnv("TERM".into()),
+            Step::PrintEnv("COLORTERM".into()),
+        ]));
+        cmd.cwd(scratch.path());
         cmd.env("TERM", "xterm-ghostty");
         cmd.env("COLORTERM", "falsecolor");
         apply_pane_terminal_env(&mut cmd);
@@ -2286,8 +2299,8 @@ mod tests {
         }
 
         let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn in pty");
-        let status = spawned.child.wait().expect("wait for shell");
-        assert!(status.success(), "shell command failed: {status:?}");
+        let status = spawned.child.wait().expect("wait for the fixture");
+        assert!(status.success(), "the fixture failed: {status:?}");
 
         let output = std::fs::read_to_string(&output_path).expect("test precondition");
         let _ = std::fs::remove_file(output_path);
@@ -2296,26 +2309,28 @@ mod tests {
 
     #[test]
     fn login_shell_builder_uses_one_resolved_path_for_exec_and_shell_env() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new("/bin/sh", true));
+        let shell = fixture::path_str();
+        let cmd = pane_shell_command_builder(PaneShellConfig::new(shell, true));
         assert!(cmd.is_login_shell());
         let std_cmd = cmd.to_std_command().expect("test precondition");
-        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new("/bin/sh"));
+        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new(shell));
         assert_eq!(std_cmd.get_args().count(), 0);
         assert_eq!(
             std_cmd
                 .get_envs()
                 .find(|(key, _)| *key == std::ffi::OsStr::new("SHELL"))
                 .and_then(|(_, value)| value),
-            Some(std::ffi::OsStr::new("/bin/sh"))
+            Some(std::ffi::OsStr::new(shell))
         );
     }
 
     #[test]
     fn non_login_shell_builder_execs_configured_shell_without_login_argv0() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new("/bin/sh", false));
+        let shell = fixture::path_str();
+        let cmd = pane_shell_command_builder(PaneShellConfig::new(shell, false));
         assert!(!cmd.is_login_shell());
         let std_cmd = cmd.to_std_command().expect("test precondition");
-        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new("/bin/sh"));
+        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new(shell));
         assert_eq!(std_cmd.get_args().count(), 0);
     }
 
@@ -2331,7 +2346,8 @@ mod tests {
     fn pane_shell_spawn_resolves_a_bare_name_on_the_child_path() {
         let bin = crate::test_support::ScratchDir::new("bin");
         let shell = bin.join("fake-shell");
-        std::fs::write(&shell, "#!/bin/sh\nexit 0\n").expect("test precondition");
+        // Never run: resolution reads only the mode bits.
+        std::fs::write(&shell, "content").expect("test precondition");
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755))
@@ -2353,16 +2369,16 @@ mod tests {
 
     #[test]
     fn pane_terminal_identity_overrides_outer_terminal_env() {
-        let output = capture_shell_output("printf '%s\\n%s\\n' \"$TERM\" \"$COLORTERM\"", &[]);
-        assert_eq!(output, "xterm-256color\ntruecolor\n");
+        let output = capture_terminal_identity(&[]);
+        assert_eq!(
+            output,
+            format!("{}\n{PANE_COLORTERM}\n", shepr_vt::PANE_TERM)
+        );
     }
 
     #[test]
     fn pane_terminal_identity_allows_explicit_override() {
-        let output = capture_shell_output(
-            "printf '%s\\n%s\\n' \"$TERM\" \"$COLORTERM\"",
-            &[("TERM", "vt100"), ("COLORTERM", "24bit")],
-        );
+        let output = capture_terminal_identity(&[("TERM", "vt100"), ("COLORTERM", "24bit")]);
         assert_eq!(output, "vt100\n24bit\n");
     }
 

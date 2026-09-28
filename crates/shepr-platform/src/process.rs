@@ -443,10 +443,10 @@ mod reap_tests {
     use std::os::fd::AsFd;
     use std::os::unix::process::ExitStatusExt;
 
-    fn reap(script: &str) -> (std::process::ExitStatus, std::process::Child) {
-        let child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(script)
+    use shepr_test_support::fixture::{self, Step};
+
+    fn reap(step: Step) -> (std::process::ExitStatus, std::process::Child) {
+        let child = fixture::command(&[step])
             .spawn()
             .expect("test precondition");
         let handle = ProcessHandle::open(child.id()).expect("child is alive");
@@ -459,13 +459,13 @@ mod reap_tests {
 
     #[test]
     fn reaped_status_matches_what_wait_reports() {
-        let (status, mut child) = reap("exit 7");
+        let (status, mut child) = reap(Step::Exit(7));
         assert_eq!(status.code(), Some(7));
         assert_eq!(status.signal(), None);
         // Already reaped: a second wait finds no child, so none is left a zombie.
         assert!(child.try_wait().is_err());
 
-        let (status, _child) = reap("kill -KILL $$");
+        let (status, _child) = reap(Step::Raise(fixture::Signal::Kill));
         assert_eq!(status.code(), None);
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         assert!(!status.core_dumped());

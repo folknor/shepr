@@ -321,6 +321,24 @@ fn remote_client_status_requires_an_exact_build_id() {
 }
 
 #[test]
+fn client_build_mismatch_offers_a_separate_remote_session() {
+    let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+        "0000000000000000"
+    } else {
+        "ffffffffffffffff"
+    };
+    let mismatched = RemoteClientStatusJson {
+        version: Some(shepr_protocol::build_version()),
+        build_id: Some(other_build.into()),
+    };
+    let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
+    assert!(
+        error.to_string().contains("--remote-session <name>"),
+        "{error}"
+    );
+}
+
+#[test]
 fn exhausted_discovery_names_a_path_rejected_for_shell_quoting() {
     struct QuotedInstall(Option<RejectedShellUnsafeCandidate>);
     impl DiscoverySteps for QuotedInstall {

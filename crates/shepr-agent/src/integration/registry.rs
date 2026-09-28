@@ -664,10 +664,7 @@ mod registration_tests {
         fs::create_dir_all(path.parent().expect("test precondition")).expect("test precondition");
         fs::write(
             path,
-            format!(
-                "#!/bin/bash\n# {}1\n",
-                super::super::INTEGRATION_VERSION_MARKER
-            ),
+            format!("# {}1\n", super::super::INTEGRATION_VERSION_MARKER),
         )
         .expect("test precondition");
     }

@@ -869,6 +869,7 @@ mod tests {
         assert!(!script.contains('\n'), "{script}");
 
         // The script, run by a real /bin/sh, still frames its output with the marker.
+        // host-program-ok: the generated remote script is the subject, run as sshd runs it
         let output = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(posix_remote_output_command("printf payload"))
@@ -886,6 +887,7 @@ mod tests {
         use std::io::Write as _;
 
         let run = |script: &str| {
+            // host-program-ok: the generated remote script is the subject, run as sshd runs it
             let mut child = std::process::Command::new("/bin/sh")
                 .arg("-s")
                 .stdin(std::process::Stdio::piped())
@@ -921,17 +923,25 @@ mod tests {
     /// and both of its branches behave when a real /bin/sh runs it.
     #[test]
     fn cached_api_command_does_not_depend_on_a_posix_login_shell() {
-        use std::os::unix::fs::PermissionsExt as _;
+        use shepr_test_support::fixture::{self, Step};
 
+        // The remote shepr: a fixture stand-in that passes the bridge check
+        // and otherwise answers as the bridge, naming the session it was given.
         let dir = shepr_test_support::ScratchDir::new("api-command");
-        let fake = dir.join("shepr");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\nif [ \"$4\" = --check ]; then exit 0; else echo bridged-$2; fi\n",
-        )
-        .expect("test precondition");
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
-            .expect("test precondition");
+        let check = ["--session", "agents", "remote-api-bridge", "--check"];
+        let fake = fixture::stand_in(
+            &dir,
+            "shepr",
+            &[
+                Step::When {
+                    operands: check.map(String::from).to_vec(),
+                    steps: vec![Step::Exit(0)],
+                },
+                Step::Print("bridged-".into()),
+                Step::PrintArg(2),
+                Step::Print("\n".into()),
+            ],
+        );
 
         let run = |executable: &str| {
             let executable =
@@ -945,6 +955,7 @@ mod tests {
             for forbidden in ['\'', '\n', '\\', '"'] {
                 assert!(!script.contains(forbidden), "{forbidden:?} in {script}");
             }
+            // host-program-ok: the generated remote script is the subject, run as sshd runs it
             std::process::Command::new("/bin/sh")
                 .arg("-c")
                 .arg(&script)

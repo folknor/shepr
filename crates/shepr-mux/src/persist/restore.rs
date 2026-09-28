@@ -888,7 +888,7 @@ mod tests {
     }
 
     fn test_restore_shell() -> &'static str {
-        "/bin/sh"
+        shepr_test_support::fixture::idle_shell()
     }
 
     #[test]

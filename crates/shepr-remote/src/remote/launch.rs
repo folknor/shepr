@@ -281,28 +281,39 @@ mod shell_command_tests {
 
     #[test]
     fn api_forwarding_probe_runs_status_and_check_under_posix_sh() {
-        use std::os::unix::fs::PermissionsExt as _;
+        use shepr_test_support::fixture::{self, Step};
         use std::process::Stdio;
 
+        // The remote shepr: a fixture stand-in answering exactly the two
+        // invocations the probe makes, and failing any other.
         let scratch = shepr_test_support::ScratchDir::new("api-forwarding-probe");
-        let executable_path = scratch.join("shepr");
-        std::fs::write(
-            &executable_path,
-            r#"#!/bin/sh
-case "$*" in
-  "status client --json") printf '%s\n' '{"version":"test","build_id":"0123456789abcdef"}' ;;
-  "--session agents remote-api-bridge --check") exit 0 ;;
-  *) exit 64 ;;
-esac
-"#,
-        )
-        .expect("write fake remote shepr");
-        let mut permissions = std::fs::metadata(&executable_path)
-            .expect("read fake remote shepr metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&executable_path, permissions)
-            .expect("make fake remote shepr executable");
+        let answers = |operands: &[&str], steps: Vec<Step>| Step::When {
+            operands: operands
+                .iter()
+                .map(|operand| (*operand).to_owned())
+                .collect(),
+            steps,
+        };
+        let executable_path = fixture::stand_in(
+            &scratch,
+            "shepr",
+            &[
+                answers(
+                    &["status", "client", "--json"],
+                    vec![
+                        Step::Print(
+                            "{\"version\":\"test\",\"build_id\":\"0123456789abcdef\"}\n".into(),
+                        ),
+                        Step::Exit(0),
+                    ],
+                ),
+                answers(
+                    &["--session", "agents", "remote-api-bridge", "--check"],
+                    vec![Step::Exit(0)],
+                ),
+                Step::Exit(64),
+            ],
+        );
 
         let executable = RemoteExecutable::parse(
             executable_path
@@ -311,6 +322,7 @@ esac
         )
         .expect("fake executable path is valid");
         let script = posix_remote_output_command(&executable.api_bridge_check_command("agents"));
+        // host-program-ok: the generated remote script is the subject, run as sshd runs it
         let mut child = std::process::Command::new("/bin/sh")
             .arg("-s")
             .stdin(Stdio::piped())

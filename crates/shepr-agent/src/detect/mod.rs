@@ -587,6 +587,8 @@ fn is_python_runtime(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_support::fixture::{self, Held, Step};
+    use std::time::Duration;
 
     #[test]
     fn attention_rank_orders_blocked_working_idle_and_unknown_as_idle() {
@@ -1340,16 +1342,16 @@ mod tests {
         let dir = temp_detection_path("relative-argv-cwd");
         std::fs::create_dir_all(dir.join("bin")).expect("test directory should be created");
         let target = dir.join("bin").join("cursor-agent");
-        std::fs::write(&target, b"#!/bin/sh\n").expect("target should be written");
+        // Never run: only the link's target name is read.
+        std::fs::write(&target, b"cursor-agent").expect("target should be written");
         std::os::unix::fs::symlink(&target, dir.join("bin").join("agent"))
             .expect("symlink should be created");
 
         // A process whose cwd is the test directory stands in for the agent.
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
+        let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
             .current_dir(&dir)
             .spawn()
-            .expect("sleep should spawn");
+            .expect("the fixture should spawn");
         let resolved_via_target = agent_name_from_path_token("bin/agent", Some(child.id()));
         let resolved_via_dot = agent_name_from_path_token("./bin/agent", Some(child.id()));
         child.kill().ok();
@@ -1379,7 +1381,8 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("test directory should be created");
         let target = dir.join("cursor-agent");
         let link = dir.join("agent");
-        std::fs::write(&target, b"#!/bin/sh\n").expect("target should be written");
+        // Never run: only the link's target name is read.
+        std::fs::write(&target, b"cursor-agent").expect("target should be written");
         std::os::unix::fs::symlink(&target, &link).expect("symlink should be created");
 
         let argv0 = link.to_string_lossy().into_owned();
@@ -1419,9 +1422,9 @@ mod tests {
 
         let pty = open_test_pty();
 
-        // Spawn "sleep 999" - a known, deterministic process
-        let mut cmd = PtyCommand::new("sleep");
-        cmd.arg("999");
+        // A known, deterministic process that is no agent.
+        let mut cmd = PtyCommand::new(fixture::path());
+        cmd.args(fixture::args(&[Step::Sleep(Duration::from_secs(999))]));
         let mut child = spawn_in_pty(&pty.slave, &cmd).expect("failed to spawn");
         let pid = child.id();
 
@@ -1430,13 +1433,15 @@ mod tests {
 
         let job = foreground_job(pid).expect("expected foreground job");
         assert!(
-            job.processes.iter().any(|p| p.name == "sleep"),
-            "expected sleep in {job:?}"
+            job.processes
+                .iter()
+                .any(|p| p.name == fixture::FIXTURE_NAME),
+            "expected the fixture in {job:?}"
         );
         assert_eq!(
             identify_agent_in_job(&job),
             None,
-            "sleep should not map to an agent"
+            "the fixture should not map to an agent"
         );
 
         // Clean up
@@ -1451,28 +1456,44 @@ mod tests {
 
         let pty = open_test_pty();
 
-        // Spawn a shell, then run a command inside it
-        let cmd = PtyCommand::new("sh");
+        // A stand-in shell named `sh` that, given a line, replaces itself
+        // with a command, as `exec` typed into a shell does.
+        let bin = shepr_test_support::ScratchDir::new("detect-shell");
+        let shell = fixture::stand_in(
+            &bin,
+            "sh",
+            &[
+                Step::ReadLine,
+                Step::Exec(
+                    fixture::argv(&[Step::Sleep(Duration::from_secs(999))])
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                ),
+            ],
+        );
+        let cmd = PtyCommand::new(&shell);
         let mut child = spawn_in_pty(&pty.slave, &cmd).expect("failed to spawn");
         let pid = child.id();
 
         // Write a command to the shell
         let mut writer = std::fs::File::from(pty.master.try_clone().expect("clone master"));
-        // Use exec so sleep replaces sh as the foreground process
-        writer.write_all(b"exec sleep 999\n").ok();
+        writer.write_all(b"exec the command\n").ok();
         drop(writer);
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let job = foreground_job(pid).expect("expected foreground job");
         assert!(
-            job.processes.iter().any(|p| p.name == "sleep"),
-            "expected sleep in {job:?}"
+            job.processes
+                .iter()
+                .any(|p| p.name == fixture::FIXTURE_NAME),
+            "expected the command in {job:?}"
         );
         assert_eq!(
             identify_agent_in_job(&job),
             None,
-            "sleep should not map to an agent"
+            "the command should not map to an agent"
         );
 
         child.kill().ok();
@@ -1485,9 +1506,22 @@ mod tests {
 
         let pty = open_test_pty();
 
-        let mut cmd = PtyCommand::new("bash");
-        cmd.arg("-c");
-        cmd.arg("bash -c 'exec -a codex sleep 999' & wait");
+        // A stand-in wrapper named `bash` that starts a child whose argv[0]
+        // is `codex` and waits for it.
+        let bin = shepr_test_support::ScratchDir::new("detect-wrapper");
+        let wrapper = fixture::stand_in(
+            &bin,
+            "bash",
+            &[
+                Step::Spawn {
+                    argv0: "codex".into(),
+                    sleep: Duration::from_secs(999),
+                    held: Held::All,
+                },
+                Step::Wait,
+            ],
+        );
+        let cmd = PtyCommand::new(&wrapper);
         let mut child = spawn_in_pty(&pty.slave, &cmd).expect("failed to spawn");
         let pid = child.id();
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1507,7 +1541,7 @@ mod tests {
         assert!(
             job.processes.iter().any(|process| process.name == "bash")
                 && job.processes.iter().any(|process| {
-                    process.name == "sleep"
+                    process.name == fixture::FIXTURE_NAME
                         && process
                             .argv
                             .as_deref()

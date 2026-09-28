@@ -5,14 +5,54 @@ pub(super) fn temp_test_dir(name: &str) -> PathBuf {
     shepr_test_support::ScratchDir::new(name).to_path_buf()
 }
 
-fn init_repo_with_commit(repo: &Path) {
-    std::fs::create_dir_all(repo).expect("test precondition");
-    run_git(repo, &["init", "--quiet"]);
-    run_git(repo, &["config", "user.email", "shepr@example.invalid"]);
-    run_git(repo, &["config", "user.name", "Shepr Test"]);
-    run_git(
-        repo,
-        &["commit", "--quiet", "--allow-empty", "-m", "initial"],
+/// The commit every plain-file fixture's branches point at. No object backs
+/// it: discovery and the files-backend status read refs, never objects.
+const FIXTURE_OID: &str = "1111111111111111111111111111111111111111";
+
+fn write(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("test precondition");
+    }
+    std::fs::write(path, contents).expect("test precondition");
+}
+
+/// A repository directory as Git lays one out, in plain files: `HEAD` on
+/// `branch`, which points at [`FIXTURE_OID`], empty `objects`, and a config
+/// saying whether it is bare.
+pub(super) fn write_git_dir(git_dir: &Path, branch: &str, bare: bool) {
+    std::fs::create_dir_all(git_dir.join("objects")).expect("test precondition");
+    write(
+        &git_dir.join("HEAD"),
+        &format!("ref: refs/heads/{branch}\n"),
+    );
+    write(
+        &git_dir.join("refs/heads").join(branch),
+        &format!("{FIXTURE_OID}\n"),
+    );
+    write(
+        &git_dir.join("config"),
+        &format!("[core]\n\trepositoryformatversion = 0\n\tbare = {bare}\n"),
+    );
+}
+
+/// A linked worktree of the repository whose common directory is
+/// `common_dir`, checked out at `checkout` on a new branch `name`, laid out
+/// as `git worktree add` lays it out.
+pub(super) fn add_linked_worktree(common_dir: &Path, name: &str, checkout: &Path) {
+    let admin = common_dir.join("worktrees").join(name);
+    write(&admin.join("HEAD"), &format!("ref: refs/heads/{name}\n"));
+    write(&admin.join("commondir"), "../..\n");
+    write(
+        &admin.join("gitdir"),
+        &format!("{}\n", checkout.join(".git").display()),
+    );
+    write(
+        &common_dir.join("refs/heads").join(name),
+        &format!("{FIXTURE_OID}\n"),
+    );
+    write(
+        &checkout.join(".git"),
+        &format!("gitdir: {}\n", admin.display()),
     );
 }
 
@@ -20,50 +60,17 @@ pub fn create_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBu
     let base = temp_test_dir(name);
     let repo = base.join("shepr");
     let checkout = base.join("testr56");
-    init_repo_with_commit(&repo);
-    run_git(
-        &repo,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "testr56",
-            checkout.to_str().expect("test precondition"),
-            "HEAD",
-        ],
-    );
+    write_git_dir(&repo.join(".git"), "main", false);
+    add_linked_worktree(&repo.join(".git"), "testr56", &checkout);
     (base, repo, checkout)
 }
 
 pub(crate) fn create_bare_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let base = temp_test_dir(name);
-    let seed = base.join("seed");
     let bare = base.join(".bare");
     let checkout = base.join("feature");
-    init_repo_with_commit(&seed);
-    run_git(
-        &base,
-        &[
-            "clone",
-            "--quiet",
-            "--bare",
-            seed.to_str().expect("test precondition"),
-            bare.to_str().expect("test precondition"),
-        ],
-    );
-    run_git(
-        &bare,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "feature",
-            checkout.to_str().expect("test precondition"),
-            "HEAD",
-        ],
-    );
+    write_git_dir(&bare, "main", true);
+    add_linked_worktree(&bare, "feature", &checkout);
     (base, bare, checkout)
 }
 
@@ -102,7 +109,12 @@ pub(super) fn live_git_space(cwd: &Path) -> Option<crate::git::GitSpaceMetadata>
     .space
 }
 
-pub(super) fn run_git(cwd: &Path, args: &[&str]) {
+/// Runs the host's Git to build a fixture only Git can write: a reftable ref
+/// store, which is a binary format, or real commit objects for production's
+/// own `git rev-list` to walk. Only tests of production code that itself
+/// spawns Git use it; every other repository fixture is plain files.
+pub(super) fn git_written_fixture(cwd: &Path, args: &[&str]) {
+    // host-program-ok: the fixture feeds production code that spawns Git itself
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)

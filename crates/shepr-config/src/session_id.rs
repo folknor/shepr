@@ -119,14 +119,14 @@ impl SessionId {
     pub fn attach_command(&self) -> String {
         match self {
             Self::Default => "shepr".to_string(),
-            Self::Named(name) => format!("shepr session attach {}", name.as_str()),
+            Self::Named(name) => format!("shepr session attach {}", shell_safe_name(name.as_str())),
         }
     }
 
     pub fn stop_command(&self) -> String {
         match self {
             Self::Default => "shepr server stop".to_string(),
-            Self::Named(name) => format!("shepr session stop {}", name.as_str()),
+            Self::Named(name) => format!("shepr session stop {}", shell_safe_name(name.as_str())),
         }
     }
 
@@ -139,6 +139,18 @@ impl SessionId {
                 command.env(shepr_core::env::EnvVar::SheprSession, name.as_str());
             }
         }
+    }
+}
+
+/// A session name is a clap positional argument (`src/cli/spec.rs`'s
+/// `required("name", "NAME")`), so a name starting with `-` would otherwise
+/// be parsed as a flag when the printed command is run in a shell. Prefix it
+/// with `--` to force positional parsing.
+fn shell_safe_name(name: &str) -> String {
+    if name.starts_with('-') {
+        format!("-- {name}")
+    } else {
+        name.to_string()
     }
 }
 
@@ -163,4 +175,23 @@ pub fn validate_session_name(name: &str) -> Result<(), SessionNameError> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_and_attach_commands_escape_leading_hyphen_names() {
+        let session = SessionId::parse("-foo").expect("- is a valid leading byte");
+        assert_eq!(session.stop_command(), "shepr session stop -- -foo");
+        assert_eq!(session.attach_command(), "shepr session attach -- -foo");
+    }
+
+    #[test]
+    fn stop_and_attach_commands_leave_ordinary_names_unquoted() {
+        let session = SessionId::parse("feature").expect("valid name");
+        assert_eq!(session.stop_command(), "shepr session stop feature");
+        assert_eq!(session.attach_command(), "shepr session attach feature");
+    }
 }

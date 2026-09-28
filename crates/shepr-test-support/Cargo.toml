@@ -4,7 +4,17 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+# The fixture program tests spawn instead of host programs. Cargo builds a
+# package's binaries for its integration tests, so this package's own fixture
+# integration test is also what makes testing the package build it.
+[[bin]]
+name = "shepr-fixture"
+path = "src/bin/shepr-fixture.rs"
+test = false
+doctest = false
+
 [dependencies]
+libc = { workspace = true }
 shepr-core = { path = "../shepr-core" }
 
 [lints]

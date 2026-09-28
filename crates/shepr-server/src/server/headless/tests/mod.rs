@@ -5568,8 +5568,8 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
 async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client() {
     let mut server = test_headless_server();
     // Keep a shell reading its PTY so the resume command cannot race the
-    // default `/usr/bin/true` test shell exiting before the input is queued.
-    server.app.state.settings.default_shell = "/bin/sh".into();
+    // default test shell, which exits at once, before the input is queued.
+    server.app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.tabs()[0].root_pane;
     let terminal_id = workspace
@@ -5587,7 +5587,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .expect("test terminal should exist")
         .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
-        vec!["/bin/true".into()],
+        vec![crate::app::exiting_test_command().into()],
     ));
 
     server.render_and_stream();
@@ -5623,8 +5623,8 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
 async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_ticks() {
     let mut server = test_headless_server();
     // Keep a shell reading its PTY so the resume command cannot race the
-    // default `/usr/bin/true` test shell exiting before the input is queued.
-    server.app.state.settings.default_shell = "/bin/sh".into();
+    // default test shell, which exits at once, before the input is queued.
+    server.app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.tabs()[0].root_pane;
     let terminal_id = workspace
@@ -5642,7 +5642,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .expect("test terminal should exist")
         .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
-        vec!["/bin/true".into()],
+        vec![crate::app::exiting_test_command().into()],
     ));
     server.render_and_stream();
 

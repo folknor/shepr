@@ -345,18 +345,22 @@ mod tests {
         let original = r#"{"theme":{"name":"catppuccin"},"plugins":["example"]}"#;
         fs::write(&path, original).expect("test precondition");
         // Apply the limit only to a child, after seeding the existing preferences.
-        // Ignoring SIGXFSZ makes the kernel return EFBIG instead of killing it.
-        let output = std::process::Command::new("bash")
-            .args(["-c", "trap '' XFSZ; ulimit -f 0; exec \"$@\"", "shepr-test"])
-            .arg(std::env::current_exe().expect("test precondition"))
-            .args([
-                "--exact",
-                "integration::opencode_config::tests::failed_cli_registration_preserves_existing_config",
-                "--nocapture",
-            ])
-            .env(CHILD_CONFIG, &dir)
-            .output()
-            .expect("test precondition");
+        // Ignoring SIGXFSZ makes the kernel return EFBIG instead of killing it;
+        // the ignored disposition and the limit both survive the exec.
+        use shepr_test_support::fixture::{self, Signal, Step};
+        let output = fixture::command(&[
+            Step::Ignore(Signal::Xfsz),
+            Step::LimitFileSize(0),
+            Step::Exec(vec![
+                std::env::current_exe().expect("test precondition").into(),
+                "--exact".into(),
+                "integration::opencode_config::tests::failed_cli_registration_preserves_existing_config".into(),
+                "--nocapture".into(),
+            ]),
+        ])
+        .env(CHILD_CONFIG, &dir)
+        .output()
+        .expect("test precondition");
         let actual = fs::read_to_string(&path).expect("test precondition");
         let remaining_files = fs::read_dir(&dir).expect("test precondition").count();
         fs::remove_dir_all(&dir).expect("test precondition");

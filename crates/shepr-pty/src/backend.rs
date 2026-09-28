@@ -307,8 +307,15 @@ fn mark_inherited_fds_cloexec() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_support::fixture::{self, Step};
     use std::io::Read;
     use std::sync::{Mutex, OnceLock};
+
+    fn fixture_command(steps: &[Step]) -> PtyCommand {
+        let mut cmd = PtyCommand::new(fixture::path());
+        cmd.args(fixture::args(steps));
+        cmd
+    }
 
     fn pty_fd_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -337,7 +344,7 @@ mod tests {
     fn pty_spawn_leaves_one_parent_pty_fd() {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let before = parent_pty_fd_count();
-        let mut cmd = PtyCommand::new("/bin/cat");
+        let mut cmd = fixture_command(&[Step::Cat]);
         cmd.env("SHEPR_ENV", "1");
 
         let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
@@ -357,8 +364,7 @@ mod tests {
 
     #[test]
     fn child_is_session_leader_with_pty_as_controlling_terminal() {
-        let mut cmd = PtyCommand::new("/bin/sh");
-        cmd.args(["-c", "sleep 30"]);
+        let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
         let pid = libc::pid_t::try_from(spawned.child.id()).expect("pid fits pid_t");
 
@@ -382,8 +388,7 @@ mod tests {
 
     #[test]
     fn child_output_reaches_master_and_exit_status_is_reported() {
-        let mut cmd = PtyCommand::new("/bin/sh");
-        cmd.args(["-c", "printf shepr-pty-ok; exit 7"]);
+        let cmd = fixture_command(&[Step::Print("shepr-pty-ok".into()), Step::Exit(7)]);
         let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
         let status = spawned.child.wait().expect("wait for child");
         assert_eq!(status.code(), Some(7));

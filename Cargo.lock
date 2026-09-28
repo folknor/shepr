@@ -1524,6 +1524,7 @@ dependencies = [
 name = "shepr-test-support"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "shepr-core",
 ]
 

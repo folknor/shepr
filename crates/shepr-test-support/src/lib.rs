@@ -1,7 +1,13 @@
 //! Test isolation shared by every unit test in the workspace.
 //!
-//! Two rules, each implemented once, here:
+//! Three rules, each implemented once, here:
 //!
+//! - A test that needs a process spawns the workspace-built fixture program
+//!   ([`fixture`]), never a program borrowed from the host (`sh`, `sleep`,
+//!   `printf`, `cat`, an authored shell script, ...). The exceptions
+//!   are tests whose subject is a script itself and tests of production code
+//!   that spawns a host program; each is marked at its site, and
+//!   `brokkr.toml`'s host-program textlints hold the rest.
 //! - Scratch files live in a [`ScratchDir`]: a private directory under the
 //!   project's build tree, cleared when it is handed out. Never the host's
 //!   temp directory (`clippy.toml` bans `std::env::temp_dir` with no escape),
@@ -88,6 +94,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use shepr_core::env::EnvVar;
 use shepr_core::socket_path::fits_unix_socket_path;
+
+pub mod fixture;
 
 /// The environment variable naming where scratch trees are sited instead of
 /// the workspace's `target/t`.
