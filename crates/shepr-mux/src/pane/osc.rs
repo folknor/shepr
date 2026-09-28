@@ -4,7 +4,7 @@ use tracing::info;
 
 use shepr_core::layout::PaneId;
 
-use super::terminal::GhosttyPaneCore;
+use super::terminal::PaneTerminalCore;
 
 pub(super) fn parse_reported_cwd(value: &[u8]) -> Option<PathBuf> {
     let value = std::str::from_utf8(value).ok()?.trim();
@@ -386,7 +386,7 @@ pub(super) fn should_restore_host_terminal_theme(
 /// This clears the core's override slots directly; nothing is written into
 /// the child's byte stream.
 pub(super) fn restore_host_terminal_theme_if_needed(
-    core: &mut GhosttyPaneCore,
+    core: &mut PaneTerminalCore,
     pane_id: PaneId,
     shell_pid: u32,
     alternate_screen: bool,
@@ -448,10 +448,10 @@ mod tests {
     }
 
     fn pane_default_theme(
-        pane: &super::super::GhosttyPaneTerminal,
+        pane: &super::super::PaneTerminal,
     ) -> shepr_termio::host_term::theme::TerminalTheme {
         let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
-        let super::super::terminal::GhosttyPaneCore {
+        let super::super::terminal::PaneTerminalCore {
             terminal,
             render_state,
             ..
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn restore_host_terminal_theme_reapplies_cached_colors() {
         let terminal = shepr_vt::Terminal::new(80, 24, 0);
-        let pane = super::super::GhosttyPaneTerminal::new(terminal);
+        let pane = super::super::PaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         let shell_pid = 7;
         let host_theme = shepr_termio::host_term::theme::TerminalTheme {

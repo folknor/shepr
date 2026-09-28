@@ -217,7 +217,7 @@ mod tests {
     use crate::endpoint::EndpointTransport as _;
     use interprocess::local_socket::traits::{Listener as _, Stream as _};
     use std::io::{Read as _, Write as _};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn server_reader_errors_keep_eof_io_and_decode_causes() {

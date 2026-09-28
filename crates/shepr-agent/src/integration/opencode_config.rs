@@ -11,8 +11,6 @@ use super::config_file::{
 };
 use super::file_ops::{is_file, read_if_file};
 
-const TUI_CONFIG_NAME: &str = "tui.jsonc";
-
 pub(crate) struct PluginConfigEdit {
     path: PathBuf,
     updated_contents: Option<String>,
@@ -38,8 +36,8 @@ impl PluginConfigEdit {
 
 fn tui_config_paths(config_dir: &Path) -> [PathBuf; 2] {
     [
-        config_dir.join(TUI_CONFIG_NAME),
-        config_dir.join("tui.json"),
+        config_dir.join(super::OPENCODE_TUI_CONFIG_NAME),
+        config_dir.join(super::OPENCODE_LEGACY_TUI_CONFIG_NAME),
     ]
 }
 
@@ -47,7 +45,7 @@ pub(crate) fn validate_tui_plugin_config(config_dir: &Path) -> io::Result<()> {
     for path in tui_config_paths(config_dir) {
         validate_plugin_config(&path, "plugin")?;
     }
-    validate_plugin_config(&config_dir.join("cli.json"), "plugins")
+    validate_plugin_config(&config_dir.join(super::OPENCODE_CLI_CONFIG_NAME), "plugins")
 }
 
 fn validate_plugin_config(config_path: &Path, key: &str) -> io::Result<()> {
@@ -75,7 +73,11 @@ pub(crate) fn prepare_tui_plugin(
         }
     }
     // Keep tui.json absent on fresh installs so OpenCode can migrate its settings.
-    prepare_plugin(config_dir.join(TUI_CONFIG_NAME), "plugin", plugin_spec)
+    prepare_plugin(
+        config_dir.join(super::OPENCODE_TUI_CONFIG_NAME),
+        "plugin",
+        plugin_spec,
+    )
 }
 
 #[cfg(test)]
@@ -88,7 +90,7 @@ pub(crate) fn prepare_cli_plugin(
     state_dir: &Path,
     plugin_spec: &str,
 ) -> io::Result<Option<PluginConfigEdit>> {
-    let path = config_dir.join("cli.json");
+    let path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
     check_config_target(&path)?;
     // OpenCode imports V1 TUI preferences (`tui.json`, `kv.json`) into cli.json on
     // its first V2 start, but only while cli.json is absent. Defer registration
@@ -113,7 +115,10 @@ pub(crate) fn add_cli_plugin(
 }
 
 fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> io::Result<bool> {
-    Ok(is_file(&config_dir.join("tui.json"))? || is_file(&state_dir.join("kv.json"))?)
+    Ok(
+        is_file(&config_dir.join(super::OPENCODE_LEGACY_TUI_CONFIG_NAME))?
+            || is_file(&state_dir.join("kv.json"))?,
+    )
 }
 
 fn prepare_plugin(
@@ -174,7 +179,11 @@ pub(crate) fn remove_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Res
 }
 
 pub(crate) fn remove_cli_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<bool> {
-    remove_plugin(&config_dir.join("cli.json"), "plugins", plugin_spec)
+    remove_plugin(
+        &config_dir.join(super::OPENCODE_CLI_CONFIG_NAME),
+        "plugins",
+        plugin_spec,
+    )
 }
 
 fn remove_plugin(config_path: &Path, key: &str, plugin_spec: &str) -> io::Result<bool> {
@@ -219,7 +228,11 @@ pub(crate) fn tui_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> 
 }
 
 pub(crate) fn cli_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> bool {
-    plugin_is_configured(&config_dir.join("cli.json"), "plugins", plugin_spec)
+    plugin_is_configured(
+        &config_dir.join(super::OPENCODE_CLI_CONFIG_NAME),
+        "plugins",
+        plugin_spec,
+    )
 }
 
 fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> bool {
@@ -374,7 +387,7 @@ mod tests {
     fn add_and_remove_tui_plugin_preserves_jsonc_config() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
-        let config_path = dir.join(TUI_CONFIG_NAME);
+        let config_path = dir.join("tui.jsonc");
         fs::write(
             &config_path,
             concat!(
@@ -480,7 +493,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         fs::write(
-            dir.join(TUI_CONFIG_NAME),
+            dir.join("tui.jsonc"),
             r#"{"plugin":[["./shepr-tui-state.js",{"enabled":true}]]}"#,
         )
         .expect("test precondition");
@@ -488,7 +501,7 @@ mod tests {
         assert!(tui_plugin_is_configured(&dir, "./shepr-tui-state.js"));
         assert_eq!(
             remove_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition"),
-            vec![dir.join(TUI_CONFIG_NAME)]
+            vec![dir.join("tui.jsonc")]
         );
 
         fs::remove_dir_all(dir).expect("test precondition");

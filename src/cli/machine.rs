@@ -16,13 +16,13 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> Option<&'static str> {
+    pub(super) fn name(&self) -> &'static str {
         match self {
-            Self::List { .. } => Some("list"),
-            Self::Status { .. } => Some("status"),
-            Self::Reconnect { .. } => Some("reconnect"),
-            Self::Add(_) => Some("add"),
-            Self::Remove { .. } => Some("remove"),
+            Self::List { .. } => "list",
+            Self::Status { .. } => "status",
+            Self::Reconnect { .. } => "reconnect",
+            Self::Add(_) => "add",
+            Self::Remove { .. } => "remove",
         }
     }
 
@@ -371,20 +371,21 @@ mod tests {
 
     #[test]
     fn machine_mutation_commands_only_expose_add_and_remove() {
-        for command in ["rename", "enable", "disable"] {
-            let argv = [
-                "shepr",
-                "machine",
-                command,
-                "0123456789abcdef0123456789abcdef",
-            ];
-            assert!(
-                super::super::spec::command()
-                    .try_get_matches_from(argv)
-                    .is_err(),
-                "{command} must not be exposed"
-            );
-        }
+        let spec = super::super::spec::command();
+        let machine = spec
+            .get_subcommands()
+            .find(|command| command.get_name() == "machine")
+            .expect("machine command should be present");
+        let mut subcommands = machine
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect::<Vec<_>>();
+        subcommands.sort_unstable();
+
+        assert_eq!(
+            subcommands,
+            vec!["add", "list", "reconnect", "remove", "status"]
+        );
     }
 
     #[test]

@@ -82,6 +82,9 @@ pub struct SessionWriter {
 }
 
 impl SessionWriter {
+    /// Canonical file name for the saved session layout.
+    pub const SESSION_FILE_NAME: &'static str = super::io::SESSION_FILE_NAME;
+
     pub fn new(lease: super::lock::DataDirLease, protect_unloaded: bool) -> Self {
         let path = super::io::session_path(lease.directory());
         Self {
@@ -123,18 +126,8 @@ impl SessionWriter {
 
     /// Saves the layout and optional history, reporting durability failures.
     /// An error may follow publication if syncing or writing the history fails.
+    /// `now` supplies the time used for recovery-copy naming and preservation.
     pub fn save(
-        &mut self,
-        snapshot: &SessionSnapshot,
-        history: Option<&SessionHistorySnapshot>,
-    ) -> io::Result<()> {
-        // The clock boundary: everything below receives this one value.
-        // persist-clock-boundary-ok
-        self.save_at(snapshot, history, SystemTime::now())
-    }
-
-    /// Saves with the supplied clock value for recovery cadence and naming.
-    fn save_at(
         &mut self,
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
@@ -309,13 +302,11 @@ impl SessionWriter {
     }
 
     /// Clears the layout and history, reporting either file's clear failure.
-    pub fn clear(&mut self) -> io::Result<()> {
+    /// `now` supplies the time used for recovery-copy naming and preservation.
+    pub fn clear(&mut self, now: SystemTime) -> io::Result<()> {
         if !self.may_write() {
             return Ok(());
         }
-        // The clock boundary: everything below receives this one value.
-        // persist-clock-boundary-ok
-        let now = SystemTime::now();
         self.written_history = None;
         let result = self.preserve_unloaded(now).and_then(|()| {
             self.preserve_snapshot_history(now);
@@ -562,6 +553,23 @@ fn recovery_timestamp(name: &str) -> Option<u128> {
 mod tests {
     use super::*;
 
+    impl SessionWriter {
+        /// A save at the real current time, for tests whose subject is not
+        /// the recovery cadence.
+        fn save_for_test(
+            &mut self,
+            snapshot: &SessionSnapshot,
+            history: Option<&SessionHistorySnapshot>,
+        ) -> io::Result<()> {
+            self.save(snapshot, history, SystemTime::now())
+        }
+
+        /// A clear at the real current time; see [`Self::save_for_test`].
+        fn clear_for_test(&mut self) -> io::Result<()> {
+            self.clear(SystemTime::now())
+        }
+    }
+
     fn writer(protect_unloaded: bool) -> SessionWriter {
         let directory = crate::test_support::ScratchDir::new("session-recovery");
         SessionWriter::new(
@@ -618,14 +626,14 @@ mod tests {
     fn snapshot_survives_exit_bursts_clears_and_writer_restarts() {
         let mut writer = writer(false);
         let original = snapshot();
-        writer.save(&original, None).expect("save");
+        writer.save_for_test(&original, None).expect("save");
         let files = snapshots(&writer);
         assert_eq!(files.len(), 1);
         let saved = std::fs::read(&files[0].1).expect("test precondition");
         for i in 0..100 {
             let mut shrinking = snapshot();
             shrinking.workspaces[0].custom_name = Some(format!("remaining pane {i}"));
-            writer.save(&shrinking, None).expect("save");
+            writer.save_for_test(&shrinking, None).expect("save");
             let path = writer.path.clone();
             drop(writer);
             writer = SessionWriter::new(
@@ -634,7 +642,7 @@ mod tests {
                 false,
             );
         }
-        writer.clear().expect("clear");
+        writer.clear_for_test().expect("clear");
         assert!(
             !writer.path.try_exists().expect("test stat"),
             "intentional clear must still persist"
@@ -671,7 +679,7 @@ mod tests {
                 .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
                 .expect("test precondition");
         }
-        writer.save(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot(), None).expect("save");
         assert_eq!(snapshots(&writer).len(), SNAPSHOT_LIMIT);
         assert!(
             !directory
@@ -697,7 +705,7 @@ mod tests {
             .expect("test precondition")
             .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
             .expect("test precondition");
-        writer.save(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot(), None).expect("save");
         assert_eq!(snapshots(&writer), vec![(1, old)]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -706,10 +714,13 @@ mod tests {
     #[test]
     fn snapshot_cadence_recovers_after_clock_rollback_and_restart() {
         let mut writer = writer(false);
-        writer.save(&snapshot(), None).expect("save");
-        // A clock rolled back a day: the newest copy's mtime is then in the
-        // future, and must not hold off preservation. persist-clock-boundary-ok
-        let rolled_back = SystemTime::now() - std::time::Duration::from_secs(86400);
+        writer.save_for_test(&snapshot(), None).expect("save");
+        // The supplied clock is one day behind the saved file's mtime.
+        let saved_at = std::fs::metadata(&writer.path)
+            .expect("session metadata")
+            .modified()
+            .expect("session mtime");
+        let rolled_back = saved_at - std::time::Duration::from_secs(86400);
         let mut changed = snapshot();
         let tab = &mut changed.workspaces[0].tabs[0];
         let pane = tab.panes.remove(&0).expect("test precondition");
@@ -717,7 +728,7 @@ mod tests {
         tab.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
         tab.focused = Some(1);
         tab.root_pane = Some(1);
-        writer.save_at(&changed, None, rolled_back).expect("save");
+        writer.save(&changed, None, rolled_back).expect("save");
         assert_eq!(snapshots(&writer).len(), 2);
         let path = writer.path.clone();
         drop(writer);
@@ -727,7 +738,7 @@ mod tests {
             false,
         );
         changed.workspaces[0].custom_name = Some("after restart".into());
-        writer.save(&changed, None).expect("save");
+        writer.save_for_test(&changed, None).expect("save");
         assert_eq!(
             snapshots(&writer).len(),
             2,
@@ -740,7 +751,9 @@ mod tests {
     #[test]
     fn snapshot_interval_uses_supplied_clock() {
         let mut writer = writer(false);
-        writer.save(&snapshot(), None).expect("initial save");
+        writer
+            .save_for_test(&snapshot(), None)
+            .expect("initial save");
         let latest = snapshots(&writer).pop().expect("initial snapshot").1;
         let modified = std::fs::metadata(latest)
             .expect("snapshot metadata")
@@ -754,7 +767,7 @@ mod tests {
         tab.focused = Some(1);
         tab.root_pane = Some(1);
         writer
-            .save_at(
+            .save(
                 &changed,
                 None,
                 modified + SNAPSHOT_INTERVAL - std::time::Duration::from_nanos(1),
@@ -762,7 +775,7 @@ mod tests {
             .expect("save inside interval");
         assert_eq!(snapshots(&writer).len(), 1);
         writer
-            .save_at(&changed, None, modified + SNAPSHOT_INTERVAL)
+            .save(&changed, None, modified + SNAPSHOT_INTERVAL)
             .expect("save at interval");
         assert_eq!(snapshots(&writer).len(), 2);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -792,9 +805,9 @@ mod tests {
             b"blocked",
         )
         .expect("test precondition");
-        writer.save(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot(), None).expect("save");
         assert!(writer.path.try_exists().expect("test stat"));
-        writer.clear().expect("clear");
+        writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -808,11 +821,11 @@ mod tests {
                 super::super::io::save_to_path(&writer.path, &snapshot())
                     .expect("test precondition");
             }
-            writer.save(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot(), None).expect("save");
             assert!(!writer.protect_unloaded);
             assert!(writer.path.try_exists().expect("test stat"));
-            writer.save(&snapshot(), None).expect("save");
-            writer.clear().expect("clear");
+            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.clear_for_test().expect("clear");
             assert!(!writer.path.try_exists().expect("test stat"));
             assert!(backups(&writer).is_empty());
             std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -832,10 +845,10 @@ mod tests {
         let directory = super::super::io::backup_directory(&writer.path);
         std::fs::write(&directory, b"blocks recovery").expect("test precondition");
         writer
-            .save(&snapshot(), None)
+            .save_for_test(&snapshot(), None)
             .expect_err("a blocked recovery copy must fail the save");
         writer
-            .clear()
+            .clear_for_test()
             .expect_err("a blocked recovery copy must fail the clear");
         assert!(writer.protect_unloaded);
         assert_eq!(
@@ -848,10 +861,10 @@ mod tests {
         );
 
         std::fs::remove_file(&directory).expect("test precondition");
-        writer.save(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot(), None).expect("save");
         assert!(!writer.protect_unloaded);
-        writer.save(&snapshot(), None).expect("save");
-        writer.clear().expect("clear");
+        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![original.to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -870,14 +883,14 @@ mod tests {
             b"unavailable",
         )
         .expect("test precondition");
-        assert!(writer.save(&snapshot(), None).is_err());
+        assert!(writer.save_for_test(&snapshot(), None).is_err());
         assert!(
             !writer.protect_unloaded,
             "structural session was saved successfully"
         );
         let mut changed = snapshot();
         changed.workspaces[0].custom_name = Some("latest layout".into());
-        assert!(writer.save(&changed, None).is_err());
+        assert!(writer.save_for_test(&changed, None).is_err());
         let saved: SessionSnapshot =
             serde_json::from_slice(&std::fs::read(&writer.path).expect("test precondition"))
                 .expect("test precondition");
@@ -962,7 +975,7 @@ mod tests {
     #[test]
     fn retiring_releases_the_directory_and_ignores_later_saves() {
         let mut writer = writer(false);
-        writer.save(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot(), None).expect("save");
         assert!(writer.may_write());
         let lock = File::open(
             writer
@@ -981,9 +994,11 @@ mod tests {
         let mut changed = snapshot();
         changed.workspaces[0].custom_name = Some("after shutdown".into());
         writer
-            .save(&changed, None)
+            .save_for_test(&changed, None)
             .expect("a retired writer ignores the save");
-        writer.clear().expect("a retired writer ignores the clear");
+        writer
+            .clear_for_test()
+            .expect("a retired writer ignores the clear");
         assert_eq!(
             std::fs::read(&writer.path).expect("test precondition"),
             saved
@@ -1005,13 +1020,13 @@ mod tests {
             super::super::io::containing_directory(&writer.path),
         );
         writer
-            .save(&snapshot(), Some(&history("one")))
+            .save_for_test(&snapshot(), Some(&history("one")))
             .expect("save");
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o400))
             .expect("test precondition");
         writer
-            .save(&snapshot(), Some(&history("one")))
+            .save_for_test(&snapshot(), Some(&history("one")))
             .expect("save");
         assert_eq!(
             std::fs::metadata(&history_path)
@@ -1024,17 +1039,17 @@ mod tests {
         );
 
         writer
-            .save(&snapshot(), Some(&history("two")))
+            .save_for_test(&snapshot(), Some(&history("two")))
             .expect("save");
         let changed = std::fs::read(&history_path).expect("test precondition");
         assert!(String::from_utf8_lossy(&changed).contains("two"));
 
         // A clear forgets what was written, so the same history is written
         // again afterwards.
-        writer.clear().expect("clear");
+        writer.clear_for_test().expect("clear");
         assert!(!history_path.try_exists().expect("test stat"));
         writer
-            .save(&snapshot(), Some(&history("two")))
+            .save_for_test(&snapshot(), Some(&history("two")))
             .expect("save");
         assert_eq!(
             std::fs::read(&history_path).expect("test precondition"),
@@ -1055,12 +1070,14 @@ mod tests {
         let history_path = super::super::io::session_history_path(
             super::super::io::containing_directory(&writer.path),
         );
-        writer.save(&snapshot(), Some(&history())).expect("save");
+        writer
+            .save_for_test(&snapshot(), Some(&history()))
+            .expect("save");
         let expected = std::fs::read(&history_path).expect("test precondition");
 
         std::fs::remove_file(&history_path).expect("test precondition");
         writer
-            .save(&snapshot(), Some(&history()))
+            .save_for_test(&snapshot(), Some(&history()))
             .expect("save after history deletion");
 
         assert_eq!(
@@ -1088,7 +1105,7 @@ mod tests {
         for i in 0..5u8 {
             writer.protect_unloaded = true;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            writer.save(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot(), None).expect("save");
         }
         assert_eq!(
             std::fs::read(manual).expect("test precondition"),
@@ -1107,10 +1124,10 @@ mod tests {
     #[test]
     fn first_clear_preserves_an_unloaded_file_even_after_an_earlier_missing_clear() {
         let mut writer = writer(true);
-        writer.clear().expect("clear");
+        writer.clear_for_test().expect("clear");
         assert!(writer.protect_unloaded);
         std::fs::write(&writer.path, b"late layout").expect("test precondition");
-        writer.clear().expect("clear");
+        writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -1124,17 +1141,17 @@ mod tests {
         let temporary = writer.path.with_extension("json.tmp");
         std::fs::create_dir(&temporary).expect("test precondition");
         writer
-            .save(&snapshot(), None)
+            .save_for_test(&snapshot(), None)
             .expect_err("a directory in the temporary's place must fail the save");
         writer
-            .save(&snapshot(), None)
+            .save_for_test(&snapshot(), None)
             .expect_err("a directory in the temporary's place must fail the save");
         assert_eq!(
             std::fs::read(&writer.path).expect("test precondition"),
             b"original"
         );
         std::fs::remove_dir(&temporary).expect("test precondition");
-        writer.save(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot(), None).expect("save");
         assert_eq!(backups(&writer), vec![b"original".to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -1216,7 +1233,7 @@ mod tests {
         for i in 2..4u8 {
             writer.protect_unloaded = true;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            writer.save(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot(), None).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![1], vec![2], vec![3]]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -1229,11 +1246,11 @@ mod tests {
         for i in 0..5u8 {
             writer.protect_unloaded = true;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            writer.save(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot(), None).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
-        writer.save(&snapshot(), None).expect("save");
-        writer.clear().expect("clear");
+        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.clear_for_test().expect("clear");
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -1249,7 +1266,7 @@ mod tests {
             if late_target {
                 std::fs::write(&target, b"late layout").expect("test precondition");
             }
-            writer.save(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot(), None).expect("save");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")
@@ -1278,7 +1295,7 @@ mod tests {
             }
             // A clear removes the session behind the link and keeps the link,
             // so the next save writes through it again.
-            writer.clear().expect("clear");
+            writer.clear_for_test().expect("clear");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")
@@ -1286,7 +1303,7 @@ mod tests {
                     .is_symlink()
             );
             assert!(!target.try_exists().expect("test stat"));
-            writer.save(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot(), None).expect("save");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")

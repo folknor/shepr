@@ -730,7 +730,7 @@ mod tests {
     fn test_app(config: &shepr_config::Config) -> super::super::App {
         super::super::App::new(
             config,
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
             shepr_api::EventHub::default(),
         )

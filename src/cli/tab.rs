@@ -24,14 +24,14 @@ pub(crate) struct CreateArgs {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> Option<&'static str> {
+    pub(super) fn name(&self) -> &'static str {
         match self {
-            Self::List { .. } => Some("list"),
-            Self::Create(_) => Some("create"),
-            Self::Get { .. } => Some("get"),
-            Self::Focus { .. } => Some("focus"),
-            Self::Rename { .. } => Some("rename"),
-            Self::Close { .. } => Some("close"),
+            Self::List { .. } => "list",
+            Self::Create(_) => "create",
+            Self::Get { .. } => "get",
+            Self::Focus { .. } => "focus",
+            Self::Rename { .. } => "rename",
+            Self::Close { .. } => "close",
         }
     }
 

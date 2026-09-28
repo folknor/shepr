@@ -44,6 +44,16 @@ pub(super) struct HostShutdownFreeze {
     generation: Option<u64>,
 }
 
+impl HostShutdownFreeze {
+    pub(super) fn restored_policy(&self) -> crate::app::AppPolicy {
+        if self.persist_session {
+            crate::app::AppPolicy::Production
+        } else {
+            crate::app::AppPolicy::Suspended
+        }
+    }
+}
+
 /// Owns the server's lifecycle phase and the asynchronous request latches that
 /// feed it. The latches are written by signal, API and logind threads; the
 /// event loop is the sole owner of phase transitions and session policy.
@@ -273,11 +283,7 @@ impl HeadlessServer {
                 if self.lifecycle.frozen_warning_generation() != generation
                     && let Some(freeze) = self.lifecycle.restart_host_shutdown_warning()
                 {
-                    self.app.policy = if freeze.persist_session {
-                        crate::app::AppPolicy::PRODUCTION
-                    } else {
-                        crate::app::AppPolicy::Suspended
-                    };
+                    self.app.policy = freeze.restored_policy();
                     self.freeze_for_host_shutdown();
                 }
             }
@@ -329,11 +335,7 @@ impl HeadlessServer {
 
     fn thaw_after_host_shutdown(&mut self, freeze: &HostShutdownFreeze) {
         info!("host shutdown cancelled; resuming session saves");
-        self.app.policy = if freeze.persist_session {
-            crate::app::AppPolicy::PRODUCTION
-        } else {
-            crate::app::AppPolicy::Suspended
-        };
+        self.app.policy = freeze.restored_policy();
         self.app.state.mark_session_dirty();
     }
 

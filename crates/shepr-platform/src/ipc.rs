@@ -4,7 +4,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use interprocess::local_socket::traits::Stream as _;
 use sha2::{Digest as _, Sha256};
@@ -87,10 +87,20 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(lock_path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.uid() != super::effective_uid() {
+    let expected_uid = super::effective_uid();
+    if !metadata.is_file() || metadata.uid() != expected_uid {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "lock must be a regular file owned by this user",
+            format!(
+                "lock file {} must be a regular file owned by uid {expected_uid}; found a {} owned by uid {}",
+                lock_path.display(),
+                if metadata.is_file() {
+                    "regular file"
+                } else {
+                    "non-regular file"
+                },
+                metadata.uid(),
+            ),
         ));
     }
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -303,6 +313,7 @@ pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
             io::ErrorKind::AddrInUse,
             format!("socket busy at {}", path.display()),
         )),
+        Err(StagedBindError::RandomSource(error)) => Err(error),
         Err(StagedBindError::Unavailable(err)) => {
             tracing::warn!(
                 path = %path.display(),
@@ -335,6 +346,8 @@ fn bind_in_place_then_restrict(path: &Path) -> io::Result<LocalListener> {
 enum StagedBindError {
     /// Something already exists at the target path.
     Busy,
+    /// No private staging name can be created without kernel randomness.
+    RandomSource(io::Error),
     /// Staging itself failed; binding in place may still work.
     Unavailable(io::Error),
 }
@@ -353,7 +366,9 @@ fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindErro
         // A hard kill can leave this private directory behind. Its name has
         // no PID to distinguish an abandoned bind from a live one, and adding
         // one would make staging unavailable for more socket paths.
-        let staging_name = format!(".s{:016x}", super::ssh_paths::unpredictable_token());
+        let staging_token =
+            super::random::unpredictable_token().map_err(StagedBindError::RandomSource)?;
+        let staging_name = format!(".s{staging_token:016x}");
         let staging_dir = parent.join(staging_name);
         // A name somebody else already created is never used: the directory
         // must be ours and fresh for the 0700 guarantee to hold.
@@ -462,51 +477,46 @@ pub fn peer_is_same_user(stream: &LocalStream) -> io::Result<bool> {
     Ok(cred.uid == own_uid || cred.uid == 0)
 }
 
-/// Reader that enforces one overall deadline across any number of reads.
-///
-/// `SO_RCVTIMEO` alone is a per-read idle timeout: it restarts on every
-/// successful read, so a peer sending one byte just inside each timeout keeps
-/// a blocking read loop alive indefinitely. This wrapper re-arms the receive
-/// timeout with only the time left before each read and fails with
-/// `TimedOut` once the deadline has passed. The stream must be in blocking
-/// mode; the caller clears the receive timeout when it is done.
-pub struct DeadlineReader<'a> {
-    stream: &'a mut LocalStream,
-    deadline: Instant,
+/// A local-socket adapter for the shared fd readiness deadline reader.
+pub struct LocalStreamDeadlineReader<'a> {
+    inner: super::child_io::DeadlineReader<LocalStreamReader<'a>>,
 }
 
-impl<'a> DeadlineReader<'a> {
+/// Preserve the public path used by API and client crates.
+pub type DeadlineReader<'a> = LocalStreamDeadlineReader<'a>;
+
+impl<'a> LocalStreamDeadlineReader<'a> {
     pub fn new(stream: &'a mut LocalStream, deadline: Instant) -> Self {
-        Self { stream, deadline }
-    }
-}
-
-impl Read for DeadlineReader<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let remaining = self.deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(deadline_passed());
-        }
-        // A sub-microsecond timeout could round to zero, which the socket
-        // layer treats as "no timeout"; never arm less than a millisecond.
-        self.stream
-            .set_recv_timeout(Some(remaining.max(Duration::from_millis(1))))?;
-        match self.stream.read(buf) {
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                Err(deadline_passed())
-            }
-            result => result,
+        Self {
+            inner: super::child_io::DeadlineReader::new(LocalStreamReader { stream }, deadline),
         }
     }
 }
 
-fn deadline_passed() -> io::Error {
-    io::Error::new(io::ErrorKind::TimedOut, "read deadline passed")
+impl Read for LocalStreamDeadlineReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buffer)
+    }
+}
+
+struct LocalStreamReader<'a> {
+    stream: &'a mut LocalStream,
+}
+
+impl Read for LocalStreamReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.stream.read(buffer)
+    }
+}
+
+impl AsRawFd for LocalStreamReader<'_> {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsFd as _;
+
+        match &*self.stream {
+            LocalStream::UdSocket(inner) => inner.as_fd().as_raw_fd(),
+        }
+    }
 }
 
 /// Readiness-only result for callers that only need to know whether a read
@@ -585,6 +595,7 @@ pub fn restrict_socket_permissions(path: &Path, mode: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn probe_classifies_absent_stale_and_live_sockets() {

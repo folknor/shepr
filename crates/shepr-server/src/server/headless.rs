@@ -203,8 +203,6 @@ pub struct HeadlessServer {
     /// is followed by another loop iteration, which pushes the modes before
     /// the loop sleeps again.
     host_input_modes_dirty: bool,
-    /// Configured virtual terminal size used when no clients are connected.
-    headless_size: shepr_core::geometry::GridSize,
     /// Shared pane runtime size derived from the foreground client, or the
     /// configured headless size when no clients are connected.
     effective_size: shepr_core::geometry::GridSize,
@@ -270,7 +268,7 @@ impl HeadlessServer {
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
         let (agent_manifest_reload_tx, agent_manifest_reload_rx) = mpsc::unbounded_channel();
 
-        let headless_size = app.state.settings.headless_size;
+        let effective_size = app.state.settings.headless_size;
         Ok(Self {
             app,
             _api_server: api_server,
@@ -293,8 +291,7 @@ impl HeadlessServer {
             agent_manifest_reload_rx,
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
-            headless_size,
-            effective_size: headless_size,
+            effective_size,
             lifecycle: ShutdownLifecycle::new(stop_requested),
             host_shutdown_monitor: None,
             server_event_rx,
@@ -648,7 +645,7 @@ impl HeadlessServer {
                 .is_some_and(|client| client.pixel_mouse)
         });
         let Some(client_id) = foreground_client_id else {
-            self.effective_size = self.headless_size;
+            self.effective_size = self.app.state.settings.headless_size;
             self.app.state.outer_terminal_focus = None;
             self.app.state.host_cell_size =
                 shepr_termio::host_term::cell_size::HostCellSize::default();
@@ -657,7 +654,7 @@ impl HeadlessServer {
         };
         let Some(client) = self.clients.get(&client_id) else {
             self.clients.set_foreground_client_id(None);
-            self.effective_size = self.headless_size;
+            self.effective_size = self.app.state.settings.headless_size;
             self.app.state.outer_terminal_focus = None;
             self.app.state.host_cell_size =
                 shepr_termio::host_term::cell_size::HostCellSize::default();
@@ -666,7 +663,7 @@ impl HeadlessServer {
         };
         let Some(shell) = client.shell_state() else {
             self.clients.set_foreground_client_id(None);
-            self.effective_size = self.headless_size;
+            self.effective_size = self.app.state.settings.headless_size;
             self.app.state.outer_terminal_focus = None;
             self.app.state.host_cell_size =
                 shepr_termio::host_term::cell_size::HostCellSize::default();

@@ -317,7 +317,8 @@ impl LoadedConfig {
                 config, provenance, values, paths,
             )),
             None => Err(vec![super::ConfigDiagnostic::Validation(
-                "configuration values could not be resolved".to_owned(),
+                "configuration resolution produced no values and no diagnostic; no invalid setting could be identified"
+                    .to_owned(),
             )]),
         }
     }

@@ -770,3 +770,7 @@ pub(super) fn sanitize_path_component(input: &str) -> String {
 
     sanitized.trim_matches('-').chars().take(32).collect()
 }
+
+#[cfg(test)]
+#[path = "bridge_tests.rs"]
+mod bridge_tests;

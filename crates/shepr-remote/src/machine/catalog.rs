@@ -541,7 +541,7 @@ fn remove_abandoned_temp_file(temp_path: &Path, description: &str) {
     }
 }
 
-pub(crate) fn catalog_path(paths: &shepr_config::AppPaths) -> PathBuf {
+fn catalog_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.state_dir().join("client").join("endpoints.json")
 }
 

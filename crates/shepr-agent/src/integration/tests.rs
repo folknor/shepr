@@ -3304,7 +3304,7 @@ fn install_grok_writes_hook_and_config() {
     );
     assert_eq!(
         install_path(&installed, ArtifactRole::HookConfig),
-        hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME)
+        hooks_dir.join(GROK_HOOK_CONFIG_NAME)
     );
     assert_eq!(
         fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
@@ -3370,10 +3370,10 @@ fn install_grok_is_idempotent() {
     env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
 
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let first = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME))
+    let first = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME))
         .expect("test precondition");
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let second = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME))
+    let second = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME))
         .expect("test precondition");
     assert_eq!(first, second);
 
@@ -3518,7 +3518,7 @@ fn install_grok_uses_grok_config_dir_env() {
     );
     assert_eq!(
         install_path(&installed, ArtifactRole::HookConfig),
-        hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME)
+        hooks_dir.join(GROK_HOOK_CONFIG_NAME)
     );
 
     clear_integration_path_env(&env);
@@ -3766,7 +3766,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME);
+    let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME);
 
     let grok_state = || {
         installed_integration_statuses(&AgentIntegrationPaths::resolve())
@@ -4173,7 +4173,7 @@ fn install_and_uninstall_messages_name_every_artifact() {
                 ),
                 format!(
                     "registered grok hook config at {}",
-                    shown(grok.join(GROK_HOOK_CONFIG_INSTALL_NAME))
+                    shown(grok.join(GROK_HOOK_CONFIG_NAME))
                 ),
             ],
             vec![
@@ -4183,7 +4183,7 @@ fn install_and_uninstall_messages_name_every_artifact() {
                 ),
                 format!(
                     "removed grok hook config at {}",
-                    shown(grok.join(GROK_HOOK_CONFIG_INSTALL_NAME))
+                    shown(grok.join(GROK_HOOK_CONFIG_NAME))
                 ),
             ],
             vec![
@@ -4193,7 +4193,7 @@ fn install_and_uninstall_messages_name_every_artifact() {
                 ),
                 format!(
                     "no grok hook config found at {}",
-                    shown(grok.join(GROK_HOOK_CONFIG_INSTALL_NAME))
+                    shown(grok.join(GROK_HOOK_CONFIG_NAME))
                 ),
             ],
         ),

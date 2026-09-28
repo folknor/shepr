@@ -25,6 +25,7 @@ mod handshake;
 pub(crate) mod host_replies;
 mod input;
 pub(crate) mod input_wire;
+mod limits;
 mod loop_config;
 mod shell;
 mod shell_runtime;
@@ -84,7 +85,6 @@ use std::collections::VecDeque;
 use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use interprocess::TryClone as _;
 use interprocess::local_socket::traits::Stream as _;
@@ -312,8 +312,8 @@ fn run_client_with_launch_state(
 
     // Restore the terminal before the binary prints any final status message.
     let terminal_restore_failed = terminal_guard.restore().is_err();
-    rt.shutdown_timeout(Duration::from_millis(100));
-    shepr_remote::release_ssh_resources_before_exit(Duration::from_secs(1));
+    rt.shutdown_timeout(limits::CLIENT_RUNTIME_SHUTDOWN_TIMEOUT);
+    shepr_remote::release_ssh_resources_before_exit(limits::SSH_RESOURCE_RELEASE_TIMEOUT);
     shepr_platform::logging::shutdown("client");
 
     // A later successful detach does not erase notices collected while forwarding earlier input.
@@ -680,7 +680,7 @@ impl ClientLoop<'_> {
                 .state
                 .mode
                 .shell()
-                .map_or(Duration::from_millis(100), |shell| {
+                .map_or(limits::MAX_CLIENT_TIMER_DELAY, |shell| {
                     shell.timer_delay(std::time::Instant::now())
                 });
             let timer_deadline = self
@@ -717,7 +717,7 @@ impl ClientLoop<'_> {
         now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
         match event {
-            ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs),
+            ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs, now),
             ClientLoopEvent::TerminalUnavailable(err) => self.handle_terminal_unavailable(&err),
             ClientLoopEvent::Resize(geometry) => self.handle_resize(
                 geometry.cols(),
@@ -774,6 +774,7 @@ impl ClientLoop<'_> {
     fn handle_stdin_input(
         &mut self,
         inputs: Vec<ParsedHostInput>,
+        now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
         let Self {
             state,
@@ -808,7 +809,7 @@ impl ClientLoop<'_> {
             let Some(shell) = state.mode.shell_mut() else {
                 return Ok(ClientLoopAction::NextEvent);
             };
-            let outcome = shell.handle_host_input(inputs, host_reports_all_keys);
+            let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
             let label_lookup = shell.take_workspace_label_lookup();
             let frame = outcome
                 .repaint
@@ -841,7 +842,7 @@ impl ClientLoop<'_> {
             if inputs.len() > 1 {
                 let mut data = attach_escape.take_pending_prefix().unwrap_or_default();
                 data.extend(inputs.into_iter().flat_map(|input| input.raw));
-                if let Some(notice) = attach::forward_input(write_stream, &data).notice() {
+                if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
                     remember_direct_notice(direct_notices, notice);
                 }
                 return Ok(ClientLoopAction::NextEvent);
@@ -851,7 +852,7 @@ impl ClientLoop<'_> {
             };
             if let Some(pixels) = input.pixel_mouse {
                 if let Some(prefix) = attach_escape.take_pending_prefix()
-                    && let Some(notice) = attach::forward_input(write_stream, &prefix).notice()
+                    && let Some(notice) = attach::forward_input(write_stream, &prefix, now).notice()
                 {
                     remember_direct_notice(direct_notices, notice);
                 }
@@ -883,7 +884,7 @@ impl ClientLoop<'_> {
             );
             match action {
                 AttachInputAction::Forward(data) => {
-                    if let Some(notice) = attach::forward_input(write_stream, &data).notice() {
+                    if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
                         remember_direct_notice(direct_notices, notice);
                     }
                 }
@@ -891,7 +892,9 @@ impl ClientLoop<'_> {
                 // its endpoint; the timer applies LocalFailurePolicy if Local broke.
                 AttachInputAction::ForwardPair(first, second) => {
                     for data in [first, second] {
-                        if let Some(notice) = attach::forward_input(write_stream, &data).notice() {
+                        if let Some(notice) =
+                            attach::forward_input(write_stream, &data, now).notice()
+                        {
                             remember_direct_notice(direct_notices, notice);
                         }
                     }
@@ -902,7 +905,8 @@ impl ClientLoop<'_> {
                     }
                 }
                 AttachInputAction::ForwardThenSemantic(prefix, action) => {
-                    if let Some(notice) = attach::forward_input(write_stream, &prefix).notice() {
+                    if let Some(notice) = attach::forward_input(write_stream, &prefix, now).notice()
+                    {
                         remember_direct_notice(direct_notices, notice);
                     }
                     if let Some(message) = attach_semantic_message(action) {
@@ -916,7 +920,7 @@ impl ClientLoop<'_> {
                     return Ok(ClientLoopAction::Exit);
                 }
                 AttachInputAction::ForwardThenDetach(data) => {
-                    if let Some(notice) = attach::forward_input(write_stream, &data).notice() {
+                    if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
                         remember_direct_notice(direct_notices, notice);
                     }
                     // As for Detach above: failure is recorded, and Drop resends.
@@ -956,7 +960,7 @@ impl ClientLoop<'_> {
             .into_iter()
             .flat_map(|input| input.raw)
             .collect::<Vec<_>>();
-        if let Some(notice) = attach::forward_input(write_stream, &data).notice() {
+        if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
             remember_direct_notice(direct_notices, notice);
         }
         Ok(ClientLoopAction::NextEvent)

@@ -641,6 +641,7 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
                 row: hit.y,
                 modifiers: KeyModifiers::NONE,
             },
+            std::time::Instant::now(),
             &mut outcome,
         );
         assert!(

@@ -290,8 +290,9 @@ impl HostMouseMode {
         (enabled, sgr_pixels_requested)
     }
 
-    pub(super) fn apply(
+    fn apply(
         &self,
+        writer: &mut impl io::Write,
         client_shell: bool,
         exact_geometry: bool,
         reassert: bool,
@@ -306,7 +307,7 @@ impl HostMouseMode {
             exact_geometry,
         );
         if changed.is_some() || reassert {
-            set_mouse_capture(enabled, sgr_pixels)?;
+            set_mouse_capture_with_writer(writer, enabled, sgr_pixels)?;
         }
         self.capture_active.store(enabled, Ordering::Release);
         self.sgr_pixels_active.store(sgr_pixels, Ordering::Release);
@@ -329,6 +330,68 @@ struct HostModesState {
     pane_keyboard_report_all: bool,
     keyboard_report_all_active: bool,
 }
+
+enum HostKeyboardUpdate {
+    EnhancementFlags(shepr_protocol::KittyKeyboardFlags),
+    Protocol {
+        flags: shepr_protocol::KittyKeyboardFlags,
+        modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel,
+    },
+    ModifyOtherKeys(shepr_vt::ModifyOtherKeysLevel),
+}
+
+impl HostKeyboardUpdate {
+    fn restore_state(
+        &self,
+        keyboard: &shepr_termio::host_term::modes::DirectHostKeyboardState,
+    ) -> (bool, bool) {
+        match self {
+            Self::EnhancementFlags(flags) => (!flags.is_empty(), false),
+            Self::Protocol {
+                flags,
+                modify_other_keys_level,
+            } => (
+                !flags.is_empty(),
+                *modify_other_keys_level != shepr_vt::ModifyOtherKeysLevel::Off,
+            ),
+            Self::ModifyOtherKeys(level) => (
+                keyboard.has_kitty_keyboard_entry(),
+                *level != shepr_vt::ModifyOtherKeysLevel::Off,
+            ),
+        }
+    }
+
+    fn apply<W: io::Write>(
+        self,
+        writer: &mut W,
+        keyboard: &mut shepr_termio::host_term::modes::DirectHostKeyboardState,
+    ) -> io::Result<()> {
+        match self {
+            Self::EnhancementFlags(flags) => {
+                shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
+                    writer,
+                    keyboard,
+                    flags,
+                    shepr_vt::ModifyOtherKeysLevel::Off,
+                )
+            }
+            Self::Protocol {
+                flags,
+                modify_other_keys_level,
+            } => shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
+                writer,
+                keyboard,
+                flags,
+                modify_other_keys_level,
+            ),
+            Self::ModifyOtherKeys(level) => {
+                shepr_termio::host_term::modes::set_host_modify_other_keys(writer, keyboard, level)
+            }
+        }
+    }
+}
+
+type HostRestoreAction<W> = (Option<u8>, fn(&HostModes, &mut W) -> io::Result<()>);
 
 struct HostModesInner {
     state: Mutex<HostModesState>,
@@ -451,12 +514,23 @@ impl HostModes {
         exact_geometry: bool,
         reassert: bool,
     ) -> io::Result<()> {
-        if reassert {
+        self.apply_mouse_with_writer(&mut io::stdout(), client_shell, exact_geometry, reassert)
+    }
+
+    fn apply_mouse_with_writer(
+        &self,
+        writer: &mut impl io::Write,
+        client_shell: bool,
+        exact_geometry: bool,
+        reassert: bool,
+    ) -> io::Result<()> {
+        let state = self.state();
+        if state.mouse.desired(client_shell).0 {
             self.record_restore_flag(RESTORE_MOUSE_CAPTURE);
         }
-        self.state()
+        state
             .mouse
-            .apply(client_shell, exact_geometry, reassert)
+            .apply(writer, client_shell, exact_geometry, reassert)
     }
 
     pub(super) fn set_keyboard_enhancement_flags(
@@ -465,22 +539,7 @@ impl HostModes {
         flags: crossterm::event::KeyboardEnhancementFlags,
     ) -> io::Result<()> {
         let flags = shepr_protocol::KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits()));
-        let mut state = self.state();
-        let kitty_entry = !flags.is_empty();
-        self.record_keyboard_restore_state(
-            state.keyboard.has_kitty_keyboard_entry() || kitty_entry,
-            state.keyboard.modify_other_keys_active(),
-        );
-        let result = shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
-            writer,
-            &mut state.keyboard,
-            flags,
-            shepr_vt::ModifyOtherKeysLevel::Off,
-        );
-        if result.is_ok() {
-            self.record_keyboard_restore_state(kitty_entry, false);
-        }
-        result
+        self.set_keyboard_protocol(writer, HostKeyboardUpdate::EnhancementFlags(flags))
     }
 
     pub(super) fn set_direct_keyboard_protocol(
@@ -489,23 +548,13 @@ impl HostModes {
         flags: shepr_protocol::KittyKeyboardFlags,
         modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel,
     ) -> io::Result<()> {
-        let mut state = self.state();
-        let kitty_entry = !flags.is_empty();
-        let modify_other_keys = modify_other_keys_level != shepr_vt::ModifyOtherKeysLevel::Off;
-        self.record_keyboard_restore_state(
-            state.keyboard.has_kitty_keyboard_entry() || kitty_entry,
-            state.keyboard.modify_other_keys_active() || modify_other_keys,
-        );
-        let result = shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
+        self.set_keyboard_protocol(
             writer,
-            &mut state.keyboard,
-            flags,
-            modify_other_keys_level,
-        );
-        if result.is_ok() {
-            self.record_keyboard_restore_state(kitty_entry, modify_other_keys);
-        }
-        result
+            HostKeyboardUpdate::Protocol {
+                flags,
+                modify_other_keys_level,
+            },
+        )
     }
 
     pub(super) fn set_modify_other_keys(
@@ -513,20 +562,26 @@ impl HostModes {
         writer: &mut impl io::Write,
         level: shepr_vt::ModifyOtherKeysLevel,
     ) -> io::Result<()> {
+        self.set_keyboard_protocol(writer, HostKeyboardUpdate::ModifyOtherKeys(level))
+    }
+
+    fn set_keyboard_protocol(
+        &self,
+        writer: &mut impl io::Write,
+        update: HostKeyboardUpdate,
+    ) -> io::Result<()> {
         let mut state = self.state();
-        let modify_other_keys = level != shepr_vt::ModifyOtherKeysLevel::Off;
-        let kitty_entry = state.keyboard.has_kitty_keyboard_entry();
+        let (kitty_entry, modify_other_keys) = update.restore_state(&state.keyboard);
         self.record_keyboard_restore_state(
-            kitty_entry,
+            state.keyboard.has_kitty_keyboard_entry() || kitty_entry,
             state.keyboard.modify_other_keys_active() || modify_other_keys,
         );
-        let result = shepr_termio::host_term::modes::set_host_modify_other_keys(
-            writer,
-            &mut state.keyboard,
-            level,
-        );
+        let result = update.apply(writer, &mut state.keyboard);
         if result.is_ok() {
-            self.record_keyboard_restore_state(kitty_entry, modify_other_keys);
+            self.record_keyboard_restore_state(
+                state.keyboard.has_kitty_keyboard_entry(),
+                state.keyboard.modify_other_keys_active(),
+            );
         }
         result
     }
@@ -610,66 +665,89 @@ impl HostModes {
         Ok(())
     }
 
-    pub(super) fn restore(&self, writer: &mut impl io::Write) -> io::Result<()> {
+    pub(super) fn restore<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         // These atomics let the panic hook restore without locking state that
         // may still be on the panicking thread's stack.
         let restore_state = self.inner.restore_state.swap(0, Ordering::AcqRel);
-        let mut result = Ok(());
-        let next = shepr_termio::host_term::modes::restore_host_keyboard_protocol(
-            writer,
-            restore_state & RESTORE_MODIFY_OTHER_KEYS != 0,
-            restore_state & RESTORE_KITTY_KEYBOARD_ENTRY != 0,
-        );
-        if result.is_ok() {
-            result = next;
-        }
-        if restore_state & RESTORE_COLOR_SCHEME_REPORTS != 0 {
-            let next = write_host_color_scheme_report_mode(writer, false);
-            if result.is_ok() {
-                result = next;
+        let restores: [HostRestoreAction<W>; 9] = [
+            (
+                Some(RESTORE_MODIFY_OTHER_KEYS),
+                restore_modify_other_keys::<W>,
+            ),
+            (
+                Some(RESTORE_KITTY_KEYBOARD_ENTRY),
+                restore_kitty_keyboard_entry::<W>,
+            ),
+            (
+                Some(RESTORE_COLOR_SCHEME_REPORTS),
+                restore_color_scheme_reports::<W>,
+            ),
+            (Some(RESTORE_FOCUS_CHANGE), restore_focus_change::<W>),
+            (Some(RESTORE_BRACKETED_PASTE), restore_bracketed_paste::<W>),
+            (Some(RESTORE_LINE_WRAP), restore_line_wrap::<W>),
+            (Some(RESTORE_MOUSE_CAPTURE), restore_mouse_capture::<W>),
+            (None, restore_window_title::<W>),
+            (None, restore_window_title_stack::<W>),
+        ];
+        let mut first_error = None;
+        for (flag, action) in restores {
+            if flag.is_some_and(|flag| restore_state & flag == 0) {
+                continue;
             }
+            // Every action runs even after a failure; the first error wins.
+            let result = action(self, writer);
+            first_error = first_error.or(result.err());
         }
-        if restore_state & RESTORE_FOCUS_CHANGE != 0 {
-            let next = execute!(writer, DisableFocusChange);
-            if result.is_ok() {
-                result = next;
-            }
-        }
-        if restore_state & RESTORE_BRACKETED_PASTE != 0 {
-            let next = execute!(writer, DisableBracketedPaste);
-            if result.is_ok() {
-                result = next;
-            }
-        }
-        if restore_state & RESTORE_LINE_WRAP != 0 {
-            let next = execute!(writer, EnableLineWrap);
-            if result.is_ok() {
-                result = next;
-            }
-        }
-        if restore_state & RESTORE_MOUSE_CAPTURE != 0 {
-            let next = set_mouse_capture_with_writer(writer, false, false);
-            if result.is_ok() {
-                result = next;
-            }
-        }
-        let next = self.reset_window_title(writer);
-        if result.is_ok() {
-            result = next;
-        }
-        if self.inner.title_stack_pushed.swap(false, Ordering::AcqRel) {
-            let next =
-                writer.write_all(shepr_termio::host_term::modes::HOST_WINDOW_TITLE_POP_SEQUENCE);
-            if result.is_ok() {
-                result = next;
-            }
-        }
-        let next = writer.flush();
-        if result.is_ok() {
-            result = next;
-        }
-        result
+        let flushed = writer.flush();
+        first_error = first_error.or(flushed.err());
+        first_error.map_or(Ok(()), Err)
     }
+}
+
+fn restore_modify_other_keys<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
+    shepr_termio::host_term::modes::restore_host_keyboard_protocol(writer, true, false)
+}
+
+fn restore_kitty_keyboard_entry<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
+    shepr_termio::host_term::modes::restore_host_keyboard_protocol(writer, false, true)
+}
+
+fn restore_color_scheme_reports<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
+    write_host_color_scheme_report_mode(writer, false)
+}
+
+fn restore_focus_change<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
+    execute!(writer, DisableFocusChange)
+}
+
+fn restore_bracketed_paste<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
+    execute!(writer, DisableBracketedPaste)
+}
+
+fn restore_line_wrap<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
+    execute!(writer, EnableLineWrap)
+}
+
+fn restore_mouse_capture<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
+    set_mouse_capture_with_writer(writer, false, false)
+}
+
+fn restore_window_title<W: io::Write>(host_modes: &HostModes, writer: &mut W) -> io::Result<()> {
+    host_modes.reset_window_title(writer)
+}
+
+fn restore_window_title_stack<W: io::Write>(
+    host_modes: &HostModes,
+    writer: &mut W,
+) -> io::Result<()> {
+    if host_modes
+        .inner
+        .title_stack_pushed
+        .swap(false, Ordering::AcqRel)
+    {
+        writer.write_all(shepr_termio::host_term::modes::HOST_WINDOW_TITLE_POP_SEQUENCE)?;
+    }
+    Ok(())
 }
 
 pub(super) fn host_mouse_capture_update(
@@ -682,10 +760,6 @@ pub(super) fn host_mouse_capture_update(
     let sgr_pixels = effective_sgr_pixel_mouse(enabled, sgr_pixels_requested, exact_geometry);
     (current_enabled != enabled || current_sgr_pixels != sgr_pixels)
         .then_some((enabled, sgr_pixels))
-}
-
-pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
-    set_mouse_capture_with_writer(&mut io::stdout(), enabled, sgr_pixels)
 }
 
 fn set_mouse_capture_with_writer(
@@ -739,6 +813,7 @@ fn restore_terminal_state(host_modes: &HostModes) -> io::Result<()> {
         tracing::warn!(error = %error, "failed to write host terminal restore postlude");
     }
 
+    // Preserve the host-mode failure for explicit restore callers as well as logging it here.
     modes_result.and(restore_result).and(postlude_result)
 }
 
@@ -940,6 +1015,26 @@ mod tests {
         output.clear();
         modes.restore(&mut output).expect("write to a Vec");
         assert_eq!(output, b"\x1b[<1u");
+    }
+
+    #[test]
+    fn host_modes_restores_mouse_capture_enabled_without_reassertion() {
+        let modes = HostModes::new(false, false, false);
+        modes.set_mouse_endpoint_request(true, false);
+
+        let mut setup_output = Vec::new();
+        modes
+            .apply_mouse_with_writer(&mut setup_output, false, false, false)
+            .expect("write to a Vec");
+        assert!(!setup_output.is_empty());
+        assert!(modes.state().mouse.capture_active());
+
+        let mut restore_output = Vec::new();
+        modes.restore(&mut restore_output).expect("write to a Vec");
+        assert_eq!(
+            restore_output,
+            b"\x1b[?1006l\x1b[?1016l\x1b[?1015l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l"
+        );
     }
 
     /// The bytes a shell client writes on setup and on restore (the panic hook

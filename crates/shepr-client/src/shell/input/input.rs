@@ -234,7 +234,11 @@ impl ClientShellState {
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(true, &mut outcome);
         let previous = self.host_mouse_pixels.replace(pixels);
-        self.handle_raw_event(RawInputEvent::Mouse(mouse), &mut outcome);
+        self.handle_raw_event(
+            RawInputEvent::Mouse(mouse),
+            std::time::Instant::now(),
+            &mut outcome,
+        );
         self.host_mouse_pixels = previous;
         outcome
     }
@@ -245,6 +249,7 @@ impl ClientShellState {
         &mut self,
         inputs: Vec<super::super::ParsedHostInput>,
         host_reports_all_keys: bool,
+        now: std::time::Instant,
     ) -> ClientShellInput {
         self.host_reports_all_keys = host_reports_all_keys;
         let mut outcome = ClientShellInput::default();
@@ -260,10 +265,10 @@ impl ClientShellState {
                 mouse.column = column;
                 mouse.row = row;
                 let previous = self.host_mouse_pixels.replace(pixels);
-                self.handle_raw_event(RawInputEvent::Mouse(mouse), &mut outcome);
+                self.handle_raw_event(RawInputEvent::Mouse(mouse), now, &mut outcome);
                 self.host_mouse_pixels = previous;
             } else {
-                self.handle_raw_event(input.event, &mut outcome);
+                self.handle_raw_event(input.event, now, &mut outcome);
             }
         }
         outcome
@@ -298,7 +303,12 @@ impl ClientShellState {
         }
     }
 
-    fn handle_raw_event(&mut self, event: RawInputEvent, outcome: &mut ClientShellInput) {
+    fn handle_raw_event(
+        &mut self,
+        event: RawInputEvent,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) {
         if self.handle_machine_badge_event(&event, outcome) {
             return;
         }
@@ -317,7 +327,7 @@ impl ClientShellState {
                     self.push_focused_paste(text, outcome);
                 }
             }
-            RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, outcome),
+            RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, now, outcome),
             RawInputEvent::OuterFocusGained => {
                 self.outer_focused = Some(true);
                 outcome.query_host_appearance = true;
@@ -379,10 +389,11 @@ impl ClientShellState {
 
     #[cfg(test)]
     pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
+        let now = std::time::Instant::now();
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(!events.is_empty(), &mut outcome);
         for event in events {
-            self.handle_raw_event(event, &mut outcome);
+            self.handle_raw_event(event, now, &mut outcome);
         }
         outcome
     }

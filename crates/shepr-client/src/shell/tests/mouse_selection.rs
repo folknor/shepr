@@ -1034,6 +1034,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
             pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
         }],
         false,
+        std::time::Instant::now(),
     );
     assert!(matches!(
         &outcome.requests[..],

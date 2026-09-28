@@ -19,7 +19,7 @@ use super::config_edit::{
     remove_simple_command_hook,
 };
 use super::config_file::{check_config_targets, lock_config_for_update, write_config};
-use super::env::AgentIntegrationPaths;
+use super::env::{AgentIntegrationPaths, DirectoryKey};
 use super::file_ops::{
     is_dir, is_file, remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset,
 };
@@ -27,19 +27,19 @@ use super::opencode_config::{
     PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, remove_cli_plugin, remove_tui_plugin,
     validate_tui_plugin_config,
 };
+use super::registry::config_file_names;
 use super::types::{ArtifactRole, InstallOutcome, UninstallOutcome, UninstallState};
 use super::{
     ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
     ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC, CLAUDE_HOOK_INSTALL_NAME,
     CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME,
     CURSOR_HOOK_INSTALL_NAME, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_EVENTS,
-    DROID_HOOK_INSTALL_NAME, GROK_HOOK_CONFIG_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
-    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION, LETTA_HOOK_INSTALL_NAME,
-    LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_EVENTS, MASTRACODE_HOOK_INSTALL_NAME,
-    MASTRACODE_HOOK_TIMEOUT_MS, OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME,
-    OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
-    PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_EVENTS, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS,
-    QWEN_HOOK_INSTALL_NAME,
+    DROID_HOOK_INSTALL_NAME, GROK_HOOK_INSTALL_NAME, KILO_PLUGIN_INSTALL_NAME,
+    KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION, LETTA_HOOK_INSTALL_NAME, LETTA_HOOK_TIMEOUT_MS,
+    MASTRACODE_HOOK_EVENTS, MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS,
+    OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_ASSET,
+    OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC, PI_EXTENSION_INSTALL_NAME,
+    QODERCLI_HOOK_EVENTS, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
 };
 
 // Install order for targets that register the hook in an agent config: read,
@@ -85,7 +85,7 @@ fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
 }
 
 pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("pi_extension")?;
+    let dir = paths.directory(DirectoryKey::PiExtension)?;
     ensure_extension_dir(&dir, "pi")?;
 
     let path = dir.join(PI_EXTENSION_INSTALL_NAME);
@@ -94,8 +94,8 @@ pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<InstallOut
 }
 
 pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("omp_extension")?;
-    let pi_dir = paths.directory("pi_extension")?;
+    let dir = paths.directory(DirectoryKey::OmpExtension)?;
+    let pi_dir = paths.directory(DirectoryKey::PiExtension)?;
     if dir == pi_dir {
         return Err(io::Error::other(format!(
             "Pi and OMP resolve to the same extension directory at {}; configure separate agent directories before installing OMP",
@@ -112,8 +112,8 @@ pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<InstallOu
 }
 
 pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("claude")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Claude)?;
+    check_config_targets(&dir, config_file_names(Target::Claude)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "claude directory not found at {}. install claude code first",
@@ -124,7 +124,7 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Instal
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
 
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::CLAUDE_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let existing_settings = if is_file(&settings_path)? {
         fs::read_to_string(&settings_path)?
@@ -149,8 +149,8 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Instal
 }
 
 pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("codex")?;
-    check_config_targets(&dir, &["hooks.json", "config.toml"])?;
+    let dir = paths.directory(DirectoryKey::Codex)?;
+    check_config_targets(&dir, config_file_names(Target::Codex)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "codex config directory not found at {}. install codex first",
@@ -160,7 +160,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
 
     let hook_path = dir.join(CODEX_HOOK_INSTALL_NAME);
 
-    let hooks_path = dir.join("hooks.json");
+    let hooks_path = dir.join(super::CODEX_HOOKS_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
@@ -180,7 +180,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
     )?;
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
-    let config_path = dir.join("config.toml");
+    let config_path = dir.join(super::CODEX_CONFIG_NAME);
     let _config_lock = lock_config_for_update(&config_path)?;
     let existing_config = if is_file(&config_path)? {
         fs::read_to_string(&config_path)?
@@ -203,8 +203,8 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
 }
 
 pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("kimi")?;
-    check_config_targets(&dir, &["config.toml"])?;
+    let dir = paths.directory(DirectoryKey::Kimi)?;
+    check_config_targets(&dir, config_file_names(Target::Kimi)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "kimi code config directory not found at {}. install kimi code first",
@@ -214,7 +214,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallO
 
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(KIMI_HOOK_INSTALL_NAME);
-    let config_path = dir.join("config.toml");
+    let config_path = dir.join(super::KIMI_CONFIG_NAME);
     let _config_lock = lock_config_for_update(&config_path)?;
     let existing_config = if is_file(&config_path)? {
         fs::read_to_string(&config_path)?
@@ -240,8 +240,8 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallO
 }
 
 pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("copilot")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Copilot)?;
+    check_config_targets(&dir, config_file_names(Target::Copilot)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "copilot config directory not found at {}. install github copilot cli first",
@@ -252,7 +252,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Insta
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(COPILOT_HOOK_INSTALL_NAME);
 
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::COPILOT_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
@@ -289,8 +289,8 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Insta
 }
 
 pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("devin")?;
-    check_config_targets(&dir, &["config.json"])?;
+    let dir = paths.directory(DirectoryKey::Devin)?;
+    check_config_targets(&dir, config_file_names(Target::Devin)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "devin config directory not found at {}. install devin cli first",
@@ -300,7 +300,7 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<Install
 
     let hook_path = dir.join(DEVIN_HOOK_INSTALL_NAME);
 
-    let settings_path = dir.join("config.json");
+    let settings_path = dir.join(super::DEVIN_CONFIG_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
@@ -336,8 +336,8 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<Install
 }
 
 pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("droid")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Droid)?;
+    check_config_targets(&dir, config_file_names(Target::Droid)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "droid config directory not found at {}. install droid first",
@@ -348,7 +348,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<Install
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(DROID_HOOK_INSTALL_NAME);
 
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::DROID_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
@@ -386,8 +386,8 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<Install
 }
 
 pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("opencode")?;
-    check_config_targets(&dir, &["tui.jsonc", "tui.json", "cli.json"])?;
+    let dir = paths.directory(DirectoryKey::Opencode)?;
+    check_config_targets(&dir, config_file_names(Target::Opencode)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "opencode config directory not found at {}. install opencode first",
@@ -399,7 +399,7 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Inst
     let tui_config_edit = prepare_tui_plugin(&dir, OPENCODE_TUI_PLUGIN_SPEC)?;
     let cli_config_edit = prepare_cli_plugin(
         &dir,
-        &paths.directory("opencode_state")?,
+        &paths.directory(DirectoryKey::OpencodeState)?,
         super::OPENCODE_V2_TUI_PLUGIN_SPEC,
     )?;
 
@@ -440,7 +440,7 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Inst
 }
 
 pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("kilo")?;
+    let dir = paths.directory(DirectoryKey::Kilo)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "kilo config directory not found at {}. install kilo first",
@@ -461,7 +461,7 @@ pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<InstallO
 
 pub(crate) fn uninstall_pi(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let extension_path = paths
-        .directory("pi_extension")?
+        .directory(DirectoryKey::PiExtension)?
         .join(PI_EXTENSION_INSTALL_NAME);
     let removed_extension = remove_file_if_exists(&extension_path)?;
 
@@ -472,7 +472,7 @@ pub(crate) fn uninstall_pi(paths: &AgentIntegrationPaths) -> io::Result<Uninstal
 
 pub(crate) fn uninstall_omp(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let extension_path = paths
-        .directory("omp_extension")?
+        .directory(DirectoryKey::OmpExtension)?
         .join(OMP_EXTENSION_INSTALL_NAME);
     let removed_extension = remove_file_if_exists(&extension_path)?;
 
@@ -482,10 +482,10 @@ pub(crate) fn uninstall_omp(paths: &AgentIntegrationPaths) -> io::Result<Uninsta
 }
 
 pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory("claude")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Claude)?;
+    check_config_targets(&dir, config_file_names(Target::Claude)?)?;
     let hook_path = dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::CLAUDE_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
@@ -508,11 +508,13 @@ pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<Unin
 }
 
 pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let codex_dir = paths.directory("codex")?;
-    check_config_targets(&codex_dir, &["hooks.json"])?;
+    let codex_dir = paths.directory(DirectoryKey::Codex)?;
+    // Uninstall leaves `config.toml` and its hooks feature switch alone
+    // (reported as preserved below), so only the file it edits is vetted.
+    check_config_targets(&codex_dir, &[super::CODEX_HOOKS_NAME])?;
     let hook_path = codex_dir.join(CODEX_HOOK_INSTALL_NAME);
-    let hooks_path = codex_dir.join("hooks.json");
-    let config_path = codex_dir.join("config.toml");
+    let hooks_path = codex_dir.join(super::CODEX_HOOKS_NAME);
+    let config_path = codex_dir.join(super::CODEX_CONFIG_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
@@ -547,10 +549,10 @@ pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<Unins
 }
 
 pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let kimi_dir = paths.directory("kimi")?;
-    check_config_targets(&kimi_dir, &["config.toml"])?;
+    let kimi_dir = paths.directory(DirectoryKey::Kimi)?;
+    check_config_targets(&kimi_dir, config_file_names(Target::Kimi)?)?;
     let hook_path = kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
-    let config_path = kimi_dir.join("config.toml");
+    let config_path = kimi_dir.join(super::KIMI_CONFIG_NAME);
     let _config_lock = lock_config_for_update(&config_path)?;
     let mut updated_config = false;
 
@@ -572,10 +574,10 @@ pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<Uninst
 }
 
 pub(crate) fn uninstall_copilot(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let copilot_dir = paths.directory("copilot")?;
-    check_config_targets(&copilot_dir, &["settings.json"])?;
+    let copilot_dir = paths.directory(DirectoryKey::Copilot)?;
+    check_config_targets(&copilot_dir, config_file_names(Target::Copilot)?)?;
     let hook_path = copilot_dir.join("hooks").join(COPILOT_HOOK_INSTALL_NAME);
-    let settings_path = copilot_dir.join("settings.json");
+    let settings_path = copilot_dir.join(super::COPILOT_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
@@ -618,10 +620,10 @@ pub(crate) fn uninstall_copilot(paths: &AgentIntegrationPaths) -> io::Result<Uni
 }
 
 pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let devin_dir = paths.directory("devin")?;
-    check_config_targets(&devin_dir, &["config.json"])?;
+    let devin_dir = paths.directory(DirectoryKey::Devin)?;
+    check_config_targets(&devin_dir, config_file_names(Target::Devin)?)?;
     let hook_path = devin_dir.join(DEVIN_HOOK_INSTALL_NAME);
-    let settings_path = devin_dir.join("config.json");
+    let settings_path = devin_dir.join(super::DEVIN_CONFIG_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
@@ -664,10 +666,10 @@ pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<Unins
 }
 
 pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let droid_dir = paths.directory("droid")?;
-    check_config_targets(&droid_dir, &["settings.json"])?;
+    let droid_dir = paths.directory(DirectoryKey::Droid)?;
+    check_config_targets(&droid_dir, config_file_names(Target::Droid)?)?;
     let hook_path = droid_dir.join("hooks").join(DROID_HOOK_INSTALL_NAME);
-    let settings_path = droid_dir.join("settings.json");
+    let settings_path = droid_dir.join(super::DROID_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
@@ -709,8 +711,8 @@ pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<Unins
 }
 
 pub(crate) fn uninstall_opencode(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory("opencode")?;
-    check_config_targets(&dir, &["tui.jsonc", "tui.json", "cli.json"])?;
+    let dir = paths.directory(DirectoryKey::Opencode)?;
+    check_config_targets(&dir, config_file_names(Target::Opencode)?)?;
     let plugin_path = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
     let tui_plugin_path = dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME);
     let mut errors = Vec::new();
@@ -754,7 +756,7 @@ pub(crate) fn uninstall_opencode(paths: &AgentIntegrationPaths) -> io::Result<Un
 
 pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
     let plugin_path = paths
-        .directory("kilo")?
+        .directory(DirectoryKey::Kilo)?
         .join("plugin")
         .join(KILO_PLUGIN_INSTALL_NAME);
     let removed_plugin = remove_file_if_exists(&plugin_path)?;
@@ -765,8 +767,8 @@ pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<Uninst
 }
 
 pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("qodercli")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Qodercli)?;
+    check_config_targets(&dir, config_file_names(Target::Qodercli)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "qodercli config directory not found at {}. install qodercli first",
@@ -782,7 +784,7 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Inst
     // `hooks` object keyed by event name, each entry holding a matcher + a
     // list of `{type: "command", command, timeout?}` invocations. The hook
     // script reads the event payload from stdin via `hook_event_name`.
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::QODERCLI_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
@@ -819,8 +821,8 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Inst
 }
 
 pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("qwen")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Qwen)?;
+    check_config_targets(&dir, config_file_names(Target::Qwen)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "qwen code config directory not found at {}. install qwen code first",
@@ -831,7 +833,7 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<InstallO
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(QWEN_HOOK_INSTALL_NAME);
 
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::QWEN_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
@@ -892,8 +894,8 @@ fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> i
 }
 
 pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("letta")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Letta)?;
+    check_config_targets(&dir, config_file_names(Target::Letta)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "letta code config directory not found at {}. install letta code first",
@@ -904,7 +906,7 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<Install
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(LETTA_HOOK_INSTALL_NAME);
 
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::LETTA_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = if is_file(&settings_path)? {
         serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
@@ -962,8 +964,8 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<Install
 }
 
 pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("cursor")?;
-    check_config_targets(&dir, &["hooks.json"])?;
+    let dir = paths.directory(DirectoryKey::Cursor)?;
+    check_config_targets(&dir, config_file_names(Target::Cursor)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "cursor config directory not found at {}. install cursor agent cli first",
@@ -973,7 +975,7 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
 
     let hook_path = dir.join(CURSOR_HOOK_INSTALL_NAME);
 
-    let hooks_path = dir.join("hooks.json");
+    let hooks_path = dir.join(super::CURSOR_HOOKS_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({ "version": 1 }))?;
 
@@ -1013,10 +1015,10 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
 }
 
 pub(crate) fn uninstall_qodercli(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory("qodercli")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Qodercli)?;
+    check_config_targets(&dir, config_file_names(Target::Qodercli)?)?;
     let hook_path = dir.join("hooks").join(QODERCLI_HOOK_INSTALL_NAME);
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::QODERCLI_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
@@ -1059,10 +1061,10 @@ pub(crate) fn uninstall_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Un
 }
 
 pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory("qwen")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Qwen)?;
+    check_config_targets(&dir, config_file_names(Target::Qwen)?)?;
     let hook_path = dir.join("hooks").join(QWEN_HOOK_INSTALL_NAME);
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::QWEN_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
@@ -1105,10 +1107,10 @@ pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<Uninst
 }
 
 pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory("letta")?;
-    check_config_targets(&dir, &["settings.json"])?;
+    let dir = paths.directory(DirectoryKey::Letta)?;
+    check_config_targets(&dir, config_file_names(Target::Letta)?)?;
     let hook_path = dir.join("hooks").join(LETTA_HOOK_INSTALL_NAME);
-    let settings_path = dir.join("settings.json");
+    let settings_path = dir.join(super::LETTA_SETTINGS_NAME);
     let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
@@ -1149,10 +1151,10 @@ pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<Unins
 }
 
 pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let cursor_home = paths.directory("cursor")?;
-    check_config_targets(&cursor_home, &["hooks.json"])?;
+    let cursor_home = paths.directory(DirectoryKey::Cursor)?;
+    check_config_targets(&cursor_home, config_file_names(Target::Cursor)?)?;
     let hook_path = cursor_home.join(CURSOR_HOOK_INSTALL_NAME);
-    let hooks_path = cursor_home.join("hooks.json");
+    let hooks_path = cursor_home.join(super::CURSOR_HOOKS_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
@@ -1192,8 +1194,8 @@ pub(crate) fn mastracode_hook_command(hook_path: &Path, action: &str) -> String 
 }
 
 pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let mastracode_home = paths.directory("mastracode")?;
-    check_config_targets(&mastracode_home, &["hooks.json"])?;
+    let mastracode_home = paths.directory(DirectoryKey::Mastracode)?;
+    check_config_targets(&mastracode_home, config_file_names(Target::Mastracode)?)?;
     if !is_dir(&mastracode_home)? {
         return Err(io::Error::other(format!(
             "mastracode config directory not found at {}. install mastracode first",
@@ -1203,7 +1205,7 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
     let hook_dir = mastracode_home.join("hooks");
     let hook_path = hook_dir.join(MASTRACODE_HOOK_INSTALL_NAME);
 
-    let hooks_path = mastracode_home.join("hooks.json");
+    let hooks_path = mastracode_home.join(super::MASTRACODE_HOOKS_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
@@ -1241,12 +1243,12 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
 }
 
 pub(crate) fn uninstall_mastracode(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let mastracode_home = paths.directory("mastracode")?;
-    check_config_targets(&mastracode_home, &["hooks.json"])?;
+    let mastracode_home = paths.directory(DirectoryKey::Mastracode)?;
+    check_config_targets(&mastracode_home, config_file_names(Target::Mastracode)?)?;
     let hook_path = mastracode_home
         .join("hooks")
         .join(MASTRACODE_HOOK_INSTALL_NAME);
-    let hooks_path = mastracode_home.join("hooks.json");
+    let hooks_path = mastracode_home.join(super::MASTRACODE_HOOKS_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
@@ -1287,8 +1289,8 @@ pub(crate) fn uninstall_mastracode(paths: &AgentIntegrationPaths) -> io::Result<
 }
 
 pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("antigravity_cli")?;
-    check_config_targets(&dir, &["hooks.json"])?;
+    let dir = paths.directory(DirectoryKey::AntigravityCli)?;
+    check_config_targets(&dir, config_file_names(Target::AntigravityCli)?)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "antigravity cli config directory not found at {}. install antigravity cli first",
@@ -1299,7 +1301,7 @@ pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Resu
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
 
-    let hooks_path = dir.join("hooks.json");
+    let hooks_path = dir.join(super::ANTIGRAVITY_CLI_HOOKS_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
@@ -1355,10 +1357,10 @@ pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
 pub(crate) fn uninstall_antigravity_cli(
     paths: &AgentIntegrationPaths,
 ) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory("antigravity_cli")?;
-    check_config_targets(&dir, &["hooks.json"])?;
+    let dir = paths.directory(DirectoryKey::AntigravityCli)?;
+    check_config_targets(&dir, config_file_names(Target::AntigravityCli)?)?;
     let hook_path = dir.join("hooks").join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
-    let hooks_path = dir.join("hooks.json");
+    let hooks_path = dir.join(super::ANTIGRAVITY_CLI_HOOKS_NAME);
     let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
@@ -1422,7 +1424,7 @@ pub(crate) fn grok_hook_config(hook_path: &Path) -> Value {
 }
 
 pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    let dir = paths.directory("grok")?;
+    let dir = paths.directory(DirectoryKey::Grok)?;
     if !is_dir(&dir)? {
         return Err(io::Error::other(format!(
             "grok config directory not found at {}. install grok cli first",
@@ -1439,7 +1441,7 @@ pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallO
     let hook_path = hooks_dir.join(GROK_HOOK_INSTALL_NAME);
     write_hook_script(Target::Grok, &hook_path)?;
 
-    let config_path = hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME);
+    let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
     write_managed_asset(
         &config_path,
         serde_json::to_string_pretty(&grok_hook_config(&hook_path))?.as_bytes(),
@@ -1453,9 +1455,9 @@ pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallO
 }
 
 pub(crate) fn uninstall_grok(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let hooks_dir = paths.directory("grok")?.join("hooks");
+    let hooks_dir = paths.directory(DirectoryKey::Grok)?.join("hooks");
     let hook_path = hooks_dir.join(GROK_HOOK_INSTALL_NAME);
-    let config_path = hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME);
+    let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
 
     // shepr owns both files outright, so removal is a straight delete.
     let removed_config_file = remove_file_if_exists(&config_path)?;

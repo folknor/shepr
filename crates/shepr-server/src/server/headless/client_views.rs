@@ -563,12 +563,7 @@ impl HeadlessServer {
     /// Resize unlocked panes to headless geometry when no shell controls their size.
     pub(super) fn resize_tabs_to_headless_size(&mut self, start_pending_agent_resumes: bool) {
         self.sync_foreground_client_state();
-        let area = Rect::new(
-            0,
-            0,
-            self.headless_size.cols.get(),
-            self.headless_size.rows.get(),
-        );
+        let area = self.app.state.settings.headless_rect();
         crate::ui::resize_all_tab_surfaces(
             &self.app.state,
             &self.app.terminal_runtimes,

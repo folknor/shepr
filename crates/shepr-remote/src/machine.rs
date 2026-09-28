@@ -7,7 +7,7 @@ mod target;
 pub use catalog::{
     EndpointCatalog, EndpointCatalogChanges, EndpointCatalogWatch, SavedSshEndpoint,
 };
-pub use executable::RemoteExecutable;
+pub use executable::{RemoteExecutable, RemoteExecutableError};
 pub use profile_id::ProfileId;
 pub use ssh_metadata::SshMetadataCache;
 pub use target::{IntoSshTarget, SshTarget};

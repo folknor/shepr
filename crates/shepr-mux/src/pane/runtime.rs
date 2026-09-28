@@ -19,7 +19,7 @@ use super::cwd::UsableCwd;
 use super::launch::*;
 use super::process_probe::*;
 use super::teardown::*;
-use super::terminal::{GhosttyPaneTerminal, PaneTerminal, ProcessBytesResult};
+use super::terminal::{PaneTerminal, ProcessBytesResult};
 use super::*;
 use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
@@ -792,13 +792,13 @@ impl PaneRuntime {
         );
 
         let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
-        let pane_terminal = GhosttyPaneTerminal::new(terminal);
+        let pane_terminal = PaneTerminal::new(terminal);
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
         if let Some(ansi) = initial_history_ansi {
             pane_terminal.seed_history_ansi(ansi);
         }
-        let terminal = Arc::new(PaneTerminal::new(pane_terminal));
+        let terminal = Arc::new(pane_terminal);
         let content_write_lock = Arc::new(Mutex::new(()));
 
         let spawned = shepr_pty::backend::spawn_pty(rows, cols, cmd)
@@ -1321,7 +1321,7 @@ impl PaneRuntime {
         terminal.write(screen);
         Self {
             pane_id: PaneId::from_raw(0),
-            terminal: Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal))),
+            terminal: Arc::new(PaneTerminal::new(terminal)),
             io,
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
@@ -2469,9 +2469,7 @@ mod tests {
     #[tokio::test]
     async fn an_update_left_open_by_a_quiet_child_is_flushed_by_the_timeout_task() {
         let pane_id = PaneId::from_raw(7);
-        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(
-            shepr_vt::Terminal::new(20, 5, 0),
-        )));
+        let terminal = Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(20, 5, 0)));
         let (events, _events_rx) = mpsc::channel(8);
         let effects = Arc::new(PaneReadEffects {
             pane_id,
@@ -2738,7 +2736,7 @@ mod tests {
             .mode_set(shepr_vt::DecMode::FocusEvents, true)
             .expect("test precondition");
         let pane_id = PaneId::from_raw(0);
-        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
+        let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
             pane_id,
@@ -2770,7 +2768,7 @@ mod tests {
         let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
         let terminal = shepr_vt::Terminal::new(80, 24, 0);
         let pane_id = PaneId::from_raw(0);
-        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
+        let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
             pane_id,

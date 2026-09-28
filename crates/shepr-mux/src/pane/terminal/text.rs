@@ -450,9 +450,7 @@ impl RetainedTextBuffer {
 
 #[cfg(test)]
 fn terminal_cell_text(graphemes: &[u32]) -> String {
-    if graphemes.is_empty()
-        || graphemes.first().copied() == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER)
-    {
+    if graphemes.is_empty() {
         return " ".to_string();
     }
     graphemes

@@ -1,50 +1,72 @@
+use std::fmt;
+use std::path::Path;
+
 const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
-pub(crate) const REMOTE_EXECUTABLE_ROOT: &str = "/";
-pub(crate) const REMOTE_MISE_SHIM_SUFFIX: &str = "/mise/shims/shepr";
+const REMOTE_MISE_SHIM_SUFFIX: &str = "/mise/shims/shepr";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteExecutableError {
+    NotAbsolute,
+    TooLong,
+    ContainsControlCharacters,
+    NeedsShellQuoting,
+    MiseShim,
+}
+
+impl fmt::Display for RemoteExecutableError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAbsolute => {
+                formatter.write_str("remote Shepr executable path must be absolute")
+            }
+            Self::TooLong => write!(
+                formatter,
+                "remote Shepr executable path must be at most {MAX_REMOTE_EXECUTABLE_BYTES} bytes"
+            ),
+            Self::ContainsControlCharacters => formatter
+                .write_str("remote Shepr executable path must not contain control characters"),
+            Self::NeedsShellQuoting => formatter.write_str(
+                "remote Shepr executable path must contain only unquoted shell-safe characters",
+            ),
+            Self::MiseShim => {
+                formatter.write_str("remote Shepr executable path must not be a mise shim")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RemoteExecutableError {}
 
 /// A checked absolute path to the Shepr executable on a remote machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteExecutable(String);
 
 impl RemoteExecutable {
-    pub fn parse(value: impl Into<String>) -> Result<Self, String> {
+    pub fn parse(value: impl Into<String>) -> Result<Self, RemoteExecutableError> {
         let value = value.into();
-        if value.is_empty() || !value.starts_with(REMOTE_EXECUTABLE_ROOT) {
-            return Err("remote Shepr executable path must be absolute".into());
+        if !Path::new(&value).is_absolute() {
+            return Err(RemoteExecutableError::NotAbsolute);
         }
         if value.len() > MAX_REMOTE_EXECUTABLE_BYTES {
-            return Err(format!(
-                "remote Shepr executable path must be at most {MAX_REMOTE_EXECUTABLE_BYTES} bytes"
-            ));
+            return Err(RemoteExecutableError::TooLong);
         }
         if value.chars().any(char::is_control) {
-            return Err("remote Shepr executable path must not contain control characters".into());
+            return Err(RemoteExecutableError::ContainsControlCharacters);
         }
         // The command is nested inside /bin/sh -c and then parsed by the remote
         // login shell. Keep paths as plain shell words because nested quote
         // escaping is not reliable across the non-POSIX login shells we support.
         if !Self::is_shell_plain_word(&value) {
-            return Err(
-                "remote Shepr executable path must contain only unquoted shell-safe characters"
-                    .into(),
-            );
+            return Err(RemoteExecutableError::NeedsShellQuoting);
         }
         if value.ends_with(REMOTE_MISE_SHIM_SUFFIX) {
-            return Err("remote Shepr executable path must not be a mise shim".into());
+            return Err(RemoteExecutableError::MiseShim);
         }
         Ok(Self(value))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    // Keep this predicate until the typed parse error can be re-exported from
-    // `machine.rs`; callers need the rejection reason reachable through that API.
-    /// Whether `value` would be rejected only because a nested remote shell
-    /// command could not use it as a plain word.
-    pub fn needs_shell_quoting(value: &str) -> bool {
-        !value.is_empty() && !Self::is_shell_plain_word(value)
     }
 
     pub(crate) fn is_shell_plain_word(value: &str) -> bool {
@@ -78,6 +100,14 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn parse_keeps_the_shell_quoting_rejection_reason_typed() {
+        assert_eq!(
+            RemoteExecutable::parse("/home/a b/shepr"),
+            Err(RemoteExecutableError::NeedsShellQuoting)
+        );
     }
 
     #[test]

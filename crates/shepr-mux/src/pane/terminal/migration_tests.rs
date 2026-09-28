@@ -34,7 +34,7 @@ impl Harness {
     fn new(width: u16, height: u16) -> Self {
         let terminal = shepr_vt::Terminal::new(width, height, 256);
         Self {
-            pane: PaneTerminal::new(GhosttyPaneTerminal::new(terminal)),
+            pane: PaneTerminal::new(terminal),
             width,
             height,
             effects: Effects::default(),
@@ -89,7 +89,7 @@ impl Harness {
 
     fn cursor(&self) -> Option<TerminalCursorState> {
         current_cursor_state(
-            &mut shepr_vt::lock_terminal_core(&self.pane.ghostty.core).expect("test precondition"),
+            &mut shepr_vt::lock_terminal_core(&self.pane.core).expect("test precondition"),
         )
     }
 
@@ -380,8 +380,7 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
         );
         assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 8));
 
-        let core =
-            shepr_vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
+        let core = shepr_vt::lock_terminal_core(&terminal.pane.core).expect("test precondition");
         for row in core.render_state.iter_rows() {
             assert_eq!(row.is_dirty(), height == 3 && row.y() == 4);
         }
@@ -399,8 +398,7 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         terminal.pane.collect_dirty_patch(8, 6),
         TerminalDirtyPatchOutcome::Fallback
     ));
-    let core =
-        shepr_vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
+    let core = shepr_vt::lock_terminal_core(&terminal.pane.core).expect("test precondition");
     #[expect(
         clippy::redundant_closure_for_method_calls,
         reason = "`RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)` \
@@ -423,7 +421,7 @@ fn complete_history_replay_supports_plain_append() {
     source.write(b"\x1b[31mred\x1b[0m\r\nplain");
     let ansi = source.pane.recent_unwrapped_ansi_snapshot(32).text;
     let mut restored = Harness::new(24, 4);
-    restored.pane.ghostty.seed_history_ansi(&ansi);
+    restored.pane.seed_history_ansi(&ansi);
     assert_eq!(
         restored.pane.recent_text_snapshot(32),
         source.pane.recent_text_snapshot(32)

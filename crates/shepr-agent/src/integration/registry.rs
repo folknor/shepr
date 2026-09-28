@@ -6,7 +6,7 @@ use crate::agent::IntegrationTarget as Target;
 
 use super::command::hook_command;
 use super::config_edit::{direct_command_field, is_matching_command_hook};
-use super::env::AgentIntegrationPaths;
+use super::env::{AgentIntegrationPaths, DirectoryKey};
 use super::types::{InstallOutcome, UninstallOutcome};
 
 pub fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'static str {
@@ -17,7 +17,13 @@ pub fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'st
 struct IntegrationSpec {
     target: Target,
     assets: &'static [&'static str],
-    directory: &'static str,
+    directory: DirectoryKey,
+    /// Agent-owned config files in `directory` that install edits. Install
+    /// and uninstall vet them before touching anything, and the registration
+    /// check reads them from the directory `path` is installed under.
+    config_files: &'static [&'static str],
+    /// How status confirms the agent's own config still runs the hook.
+    registration: RegistrationCheck,
     path: &'static [&'static str],
     version: u32,
     events: &'static [crate::agent::IntegrationHookEvent],
@@ -26,97 +32,152 @@ struct IntegrationSpec {
     uninstall: fn(&AgentIntegrationPaths) -> io::Result<UninstallOutcome>,
 }
 
+#[derive(Clone, Copy)]
+enum RegistrationCheck {
+    DirectoryLoaded,
+    Json { root: HooksRoot, shape: JsonShape },
+    Codex,
+    Kimi,
+    AntigravityCli,
+    Grok,
+    Opencode,
+}
+
+#[derive(Clone, Copy)]
+enum JsonShape {
+    Nested,
+    NestedStar,
+    NestedClaude,
+    Flat,
+    Direct,
+    Simple,
+}
+
 const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     IntegrationSpec {
         target: Target::Pi,
+        config_files: &[],
+        registration: RegistrationCheck::DirectoryLoaded,
         action_label: "pi",
         install: super::targets::install_pi,
         uninstall: super::targets::uninstall_pi,
         assets: &[super::PI_EXTENSION_ASSET],
-        directory: "pi_extension",
+        directory: DirectoryKey::PiExtension,
         path: &[super::PI_EXTENSION_INSTALL_NAME],
         version: super::PI_INTEGRATION_VERSION,
         events: Target::Pi.hook_events(),
     },
     IntegrationSpec {
         target: Target::Omp,
+        config_files: &[],
+        registration: RegistrationCheck::DirectoryLoaded,
         action_label: "omp",
         install: super::targets::install_omp,
         uninstall: super::targets::uninstall_omp,
         assets: &[super::OMP_EXTENSION_ASSET],
-        directory: "omp_extension",
+        directory: DirectoryKey::OmpExtension,
         path: &[super::OMP_EXTENSION_INSTALL_NAME],
         version: super::OMP_INTEGRATION_VERSION,
         events: Target::Omp.hook_events(),
     },
     IntegrationSpec {
         target: Target::Claude,
+        config_files: &[super::CLAUDE_SETTINGS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::NestedClaude,
+        },
         action_label: "claude",
         install: super::targets::install_claude,
         uninstall: super::targets::uninstall_claude,
         assets: &[super::CLAUDE_HOOK_ASSET],
-        directory: "claude",
+        directory: DirectoryKey::Claude,
         path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
         version: super::CLAUDE_INTEGRATION_VERSION,
         events: Target::Claude.hook_events(),
     },
     IntegrationSpec {
         target: Target::Codex,
+        config_files: &[super::CODEX_HOOKS_NAME, super::CODEX_CONFIG_NAME],
+        registration: RegistrationCheck::Codex,
         action_label: "codex",
         install: super::targets::install_codex,
         uninstall: super::targets::uninstall_codex,
         assets: &[super::CODEX_HOOK_ASSET],
-        directory: "codex",
+        directory: DirectoryKey::Codex,
         path: &[super::CODEX_HOOK_INSTALL_NAME],
         version: super::CODEX_INTEGRATION_VERSION,
         events: Target::Codex.hook_events(),
     },
     IntegrationSpec {
         target: Target::Copilot,
+        config_files: &[super::COPILOT_SETTINGS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::Direct,
+        },
         action_label: "copilot",
         install: super::targets::install_copilot,
         uninstall: super::targets::uninstall_copilot,
         assets: &[super::COPILOT_HOOK_ASSET],
-        directory: "copilot",
+        directory: DirectoryKey::Copilot,
         path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
         version: super::COPILOT_INTEGRATION_VERSION,
         events: Target::Copilot.hook_events(),
     },
     IntegrationSpec {
         target: Target::Devin,
+        config_files: &[super::DEVIN_CONFIG_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::Nested,
+        },
         action_label: "devin",
         install: super::targets::install_devin,
         uninstall: super::targets::uninstall_devin,
         assets: &[super::DEVIN_HOOK_ASSET],
-        directory: "devin",
+        directory: DirectoryKey::Devin,
         path: &[super::DEVIN_HOOK_INSTALL_NAME],
         version: super::DEVIN_INTEGRATION_VERSION,
         events: Target::Devin.hook_events(),
     },
     IntegrationSpec {
         target: Target::Droid,
+        config_files: &[super::DROID_SETTINGS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::Nested,
+        },
         action_label: "droid",
         install: super::targets::install_droid,
         uninstall: super::targets::uninstall_droid,
         assets: &[super::DROID_HOOK_ASSET],
-        directory: "droid",
+        directory: DirectoryKey::Droid,
         path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
         version: super::DROID_INTEGRATION_VERSION,
         events: Target::Droid.hook_events(),
     },
     IntegrationSpec {
         target: Target::Kimi,
+        config_files: &[super::KIMI_CONFIG_NAME],
+        registration: RegistrationCheck::Kimi,
         action_label: "kimi",
         install: super::targets::install_kimi,
         uninstall: super::targets::uninstall_kimi,
         assets: &[super::KIMI_HOOK_ASSET],
-        directory: "kimi",
+        directory: DirectoryKey::Kimi,
         path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
         version: super::KIMI_INTEGRATION_VERSION,
         events: Target::Kimi.hook_events(),
     },
     IntegrationSpec {
         target: Target::Opencode,
+        config_files: &[
+            super::OPENCODE_TUI_CONFIG_NAME,
+            super::OPENCODE_LEGACY_TUI_CONFIG_NAME,
+            super::OPENCODE_CLI_CONFIG_NAME,
+        ],
+        registration: RegistrationCheck::Opencode,
         action_label: "opencode",
         install: super::targets::install_opencode,
         uninstall: super::targets::uninstall_opencode,
@@ -125,100 +186,144 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
             super::OPENCODE_TUI_PLUGIN_ASSET,
             super::OPENCODE_V2_TUI_PLUGIN_ASSET,
         ],
-        directory: "opencode",
+        directory: DirectoryKey::Opencode,
         path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
         version: super::OPENCODE_INTEGRATION_VERSION,
         events: Target::Opencode.hook_events(),
     },
     IntegrationSpec {
         target: Target::Kilo,
+        config_files: &[],
+        registration: RegistrationCheck::DirectoryLoaded,
         action_label: "kilo",
         install: super::targets::install_kilo,
         uninstall: super::targets::uninstall_kilo,
         assets: &[super::KILO_PLUGIN_ASSET],
-        directory: "kilo",
+        directory: DirectoryKey::Kilo,
         path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
         version: super::KILO_INTEGRATION_VERSION,
         events: Target::Kilo.hook_events(),
     },
     IntegrationSpec {
         target: Target::Qodercli,
+        config_files: &[super::QODERCLI_SETTINGS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::NestedStar,
+        },
         action_label: "qodercli",
         install: super::targets::install_qodercli,
         uninstall: super::targets::uninstall_qodercli,
         assets: &[super::QODERCLI_HOOK_ASSET],
-        directory: "qodercli",
+        directory: DirectoryKey::Qodercli,
         path: &["hooks", super::QODERCLI_HOOK_INSTALL_NAME],
         version: super::QODERCLI_INTEGRATION_VERSION,
         events: Target::Qodercli.hook_events(),
     },
     IntegrationSpec {
         target: Target::Qwen,
+        config_files: &[super::QWEN_SETTINGS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::NestedStar,
+        },
         action_label: "qwen",
         install: super::targets::install_qwen,
         uninstall: super::targets::uninstall_qwen,
         assets: &[super::QWEN_HOOK_ASSET],
-        directory: "qwen",
+        directory: DirectoryKey::Qwen,
         path: &["hooks", super::QWEN_HOOK_INSTALL_NAME],
         version: super::QWEN_INTEGRATION_VERSION,
         events: Target::Qwen.hook_events(),
     },
     IntegrationSpec {
         target: Target::Cursor,
+        config_files: &[super::CURSOR_HOOKS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::Simple,
+        },
         action_label: "cursor",
         install: super::targets::install_cursor,
         uninstall: super::targets::uninstall_cursor,
         assets: &[super::CURSOR_HOOK_ASSET],
-        directory: "cursor",
+        directory: DirectoryKey::Cursor,
         path: &[super::CURSOR_HOOK_INSTALL_NAME],
         version: super::CURSOR_INTEGRATION_VERSION,
         events: Target::Cursor.hook_events(),
     },
     IntegrationSpec {
         target: Target::Mastracode,
+        config_files: &[super::MASTRACODE_HOOKS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::Document,
+            shape: JsonShape::Flat,
+        },
         action_label: "mastracode",
         install: super::targets::install_mastracode,
         uninstall: super::targets::uninstall_mastracode,
         assets: &[super::MASTRACODE_HOOK_ASSET],
-        directory: "mastracode",
+        directory: DirectoryKey::Mastracode,
         path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
         version: super::MASTRACODE_INTEGRATION_VERSION,
         events: Target::Mastracode.hook_events(),
     },
     IntegrationSpec {
         target: Target::AntigravityCli,
+        config_files: &[super::ANTIGRAVITY_CLI_HOOKS_NAME],
+        registration: RegistrationCheck::AntigravityCli,
         action_label: "antigravity-cli",
         install: super::targets::install_antigravity_cli,
         uninstall: super::targets::uninstall_antigravity_cli,
         assets: &[super::ANTIGRAVITY_CLI_HOOK_ASSET],
-        directory: "antigravity_cli",
+        directory: DirectoryKey::AntigravityCli,
         path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
         version: super::ANTIGRAVITY_CLI_INTEGRATION_VERSION,
         events: Target::AntigravityCli.hook_events(),
     },
     IntegrationSpec {
         target: Target::Grok,
+        config_files: &[],
+        registration: RegistrationCheck::Grok,
         action_label: "grok",
         install: super::targets::install_grok,
         uninstall: super::targets::uninstall_grok,
         assets: &[super::GROK_HOOK_ASSET],
-        directory: "grok",
+        directory: DirectoryKey::Grok,
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
         version: super::GROK_INTEGRATION_VERSION,
         events: Target::Grok.hook_events(),
     },
     IntegrationSpec {
         target: Target::Letta,
+        config_files: &[super::LETTA_SETTINGS_NAME],
+        registration: RegistrationCheck::Json {
+            root: HooksRoot::HooksKey,
+            shape: JsonShape::Nested,
+        },
         action_label: "letta",
         install: super::targets::install_letta,
         uninstall: super::targets::uninstall_letta,
         assets: &[super::LETTA_HOOK_ASSET],
-        directory: "letta",
+        directory: DirectoryKey::Letta,
         path: &["hooks", super::LETTA_HOOK_INSTALL_NAME],
         version: super::LETTA_INTEGRATION_VERSION,
         events: Target::Letta.hook_events(),
     },
 ];
+
+fn spec_for(target: Target) -> io::Result<&'static IntegrationSpec> {
+    INTEGRATION_SPECS
+        .iter()
+        .find(|spec| spec.target == target)
+        .ok_or_else(|| io::Error::other(format!("missing integration spec for {target:?}")))
+}
+
+/// The agent-owned config files `target`'s install edits, as its spec row
+/// declares them.
+pub(crate) fn config_file_names(target: Target) -> io::Result<&'static [&'static str]> {
+    spec_for(target).map(|spec| spec.config_files)
+}
 
 pub(crate) fn action_label(target: Target) -> &'static str {
     INTEGRATION_SPECS
@@ -376,7 +481,7 @@ fn grok_hook_config_is_valid(hook_path: &Path) -> bool {
     let Some(hooks_dir) = hook_path.parent() else {
         return false;
     };
-    let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_INSTALL_NAME);
+    let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
     fs::read_to_string(config_path)
         .ok()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
@@ -395,7 +500,7 @@ fn opencode_tui_integration_is_valid(
         .ok()
         .and_then(|content| parse_integration_version(&content))
         .is_some_and(|version| version >= expected_version);
-    let cli_config_path = config_dir.join("cli.json");
+    let cli_config_path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
     let cli_config_exists = cli_config_path.try_exists().map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -579,156 +684,81 @@ fn hook_event_commands(
 /// install whose config edit failed, or a user who deleted the settings entry,
 /// leaves a current hook script the agent never runs.
 ///
-/// Pi, OMP and Kilo load every file in their plugin directory, so the file is
-/// its own registration. Grok and opencode are checked by their own helpers.
-/// Keep these predicates beside the validators: the supported formats include
-/// nested, direct, flat and document-root JSON hooks, Codex's TOML feature
-/// switch, Kimi's TOML block, and dedicated Grok/OpenCode registration files.
-/// Putting those parser-specific checks into each inventory row would add a
-/// second strategy vocabulary while leaving the validators themselves here.
-fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_path: &Path) -> bool {
-    use crate::agent::IntegrationTarget as Target;
-
-    let json_in = |levels: usize,
-                   file: &str,
-                   root: HooksRoot,
-                   expected: &[(&str, String)],
-                   shape: &JsonHookShape| {
-        ancestor(hook_path, levels).is_some_and(|dir| {
-            json_hook_commands_registered(&dir.join(file), root, expected, shape)
-        })
+/// The config files are read from the directory the spec row's `path` is
+/// installed under, so the depth follows the row instead of a hand-kept count.
+fn hook_registration_is_current(
+    spec: &IntegrationSpec,
+    hook_path: &Path,
+    expected_version: u32,
+) -> io::Result<bool> {
+    let Some(dir) = ancestor(hook_path, spec.path.len()) else {
+        return Ok(false);
     };
-    match target {
-        Target::Pi | Target::Omp | Target::Kilo | Target::Grok | Target::Opencode => true,
-        Target::Claude => {
-            let matcher = super::claude_settings::claude_session_start_matcher();
-            json_in(
-                2,
-                "settings.json",
-                HooksRoot::HooksKey,
-                &hook_event_commands(
-                    hook_path,
-                    integration_hook_events(crate::agent::IntegrationTarget::Claude),
-                ),
-                &JsonHookShape::Nested {
-                    matcher: Some(matcher),
-                },
-            )
-        }
-        Target::Codex => {
-            json_in(
-                1,
-                "hooks.json",
-                HooksRoot::HooksKey,
-                &hook_event_commands(
-                    hook_path,
-                    integration_hook_events(crate::agent::IntegrationTarget::Codex),
-                ),
-                &JsonHookShape::Nested { matcher: None },
-            ) && ancestor(hook_path, 1)
-                .is_some_and(|dir| codex_hooks_feature_enabled(&dir.join("config.toml")))
-        }
-        Target::Copilot => json_in(
-            2,
-            "settings.json",
-            HooksRoot::HooksKey,
-            &integration_hook_events(crate::agent::IntegrationTarget::Copilot)
-                .iter()
-                .map(|hook| {
-                    (
-                        hook.event,
-                        hook_command(
-                            hook_path,
-                            hook.action.map(crate::agent::IntegrationHookAction::as_str),
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            &JsonHookShape::Direct,
-        ),
-        Target::Devin => json_in(
-            1,
-            "config.json",
-            HooksRoot::HooksKey,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Devin),
-            ),
-            &JsonHookShape::Nested { matcher: None },
-        ),
-        Target::Droid => json_in(
-            2,
-            "settings.json",
-            HooksRoot::HooksKey,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Droid),
-            ),
-            &JsonHookShape::Nested { matcher: None },
-        ),
-        Target::Qodercli => json_in(
-            2,
-            "settings.json",
-            HooksRoot::HooksKey,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Qodercli),
-            ),
-            &JsonHookShape::Nested {
-                matcher: Some("*".to_owned()),
-            },
-        ),
-        Target::Qwen => json_in(
-            2,
-            "settings.json",
-            HooksRoot::HooksKey,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Qwen),
-            ),
-            &JsonHookShape::Nested {
-                matcher: Some("*".to_owned()),
-            },
-        ),
-        Target::Letta => json_in(
-            2,
-            "settings.json",
-            HooksRoot::HooksKey,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Letta),
-            ),
-            &JsonHookShape::Nested { matcher: None },
-        ),
-        Target::Cursor => json_in(
-            1,
-            "hooks.json",
-            HooksRoot::HooksKey,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Cursor),
-            ),
-            &JsonHookShape::Simple,
-        ),
-        Target::Mastracode => json_in(
-            2,
-            "hooks.json",
-            HooksRoot::Document,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Mastracode),
-            ),
-            &JsonHookShape::Flat,
-        ),
-        Target::AntigravityCli => ancestor(hook_path, 2).is_some_and(|dir| {
-            read_json(&dir.join("hooks.json")).is_some_and(|document| {
-                document.get(super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME)
-                    == Some(&super::targets::antigravity_cli_hook_block(hook_path))
+    let config = |index: usize| {
+        spec.config_files
+            .get(index)
+            .map(|name| dir.join(name))
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "integration spec for {:?} declares no config file {index} for its registration check",
+                    spec.target
+                ))
             })
+    };
+    let registered = match spec.registration {
+        RegistrationCheck::DirectoryLoaded => true,
+        RegistrationCheck::Grok => grok_hook_config_is_valid(hook_path),
+        RegistrationCheck::Opencode => {
+            return opencode_tui_integration_is_valid(hook_path, expected_version);
+        }
+        RegistrationCheck::Kimi => kimi_hooks_registered(&config(0)?, hook_path),
+        RegistrationCheck::AntigravityCli => read_json(&config(0)?).is_some_and(|document| {
+            document.get(super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME)
+                == Some(&super::targets::antigravity_cli_hook_block(hook_path))
         }),
-        Target::Kimi => ancestor(hook_path, 2)
-            .is_some_and(|dir| kimi_hooks_registered(&dir.join("config.toml"), hook_path)),
-    }
+        RegistrationCheck::Codex => {
+            json_hook_commands_registered(
+                &config(0)?,
+                HooksRoot::HooksKey,
+                &hook_event_commands(hook_path, spec.events),
+                &JsonHookShape::Nested { matcher: None },
+            ) && codex_hooks_feature_enabled(&config(1)?)
+        }
+        RegistrationCheck::Json { root, shape } => {
+            let expected = match shape {
+                // A direct entry is written for every event, including the
+                // ones whose hook takes no action argument.
+                JsonShape::Direct => spec
+                    .events
+                    .iter()
+                    .map(|hook| {
+                        (
+                            hook.event,
+                            hook_command(
+                                hook_path,
+                                hook.action.map(crate::agent::IntegrationHookAction::as_str),
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                _ => hook_event_commands(hook_path, spec.events),
+            };
+            let shape = match shape {
+                JsonShape::Nested => JsonHookShape::Nested { matcher: None },
+                JsonShape::NestedStar => JsonHookShape::Nested {
+                    matcher: Some("*".to_owned()),
+                },
+                JsonShape::NestedClaude => JsonHookShape::Nested {
+                    matcher: Some(super::claude_settings::claude_session_start_matcher()),
+                },
+                JsonShape::Flat => JsonHookShape::Flat,
+                JsonShape::Direct => JsonHookShape::Direct,
+                JsonShape::Simple => JsonHookShape::Simple,
+            };
+            json_hook_commands_registered(&config(0)?, root, &expected, &shape)
+        }
+    };
+    Ok(registered)
 }
 
 fn integration_state_for_path(
@@ -767,27 +797,8 @@ pub(crate) fn integration_status_at(
 ) -> io::Result<super::IntegrationStatus> {
     let (mut state, installed_version) = integration_state_for_path(&path, expected_version)?;
 
-    // Grok only invokes the hook when the shepr-owned `hooks/shepr.json`
-    // registers it, so a current hook script with a missing or broken config
-    // is a nonfunctional install: report it as outdated so `shepr integration
-    // status` flags it and a reinstall rewrites both files.
-    if target == crate::agent::IntegrationTarget::Grok
-        && state == super::IntegrationStatusKind::Current
-        && !grok_hook_config_is_valid(&path)
-    {
-        state = super::IntegrationStatusKind::Outdated;
-    }
-    if target == crate::agent::IntegrationTarget::Opencode
-        && state == super::IntegrationStatusKind::Current
-        && !opencode_tui_integration_is_valid(&path, expected_version)?
-    {
-        state = super::IntegrationStatusKind::Outdated;
-    }
-    // Every other config-registered target: a current hook script the agent's
-    // config no longer (or never) points at does nothing, so it is outdated
-    // too, and `shepr integration install` repairs the registration.
     if state == super::IntegrationStatusKind::Current
-        && !hook_registration_is_current(target, &path)
+        && !hook_registration_is_current(spec_for(target)?, &path, expected_version)?
     {
         state = super::IntegrationStatusKind::Outdated;
     }

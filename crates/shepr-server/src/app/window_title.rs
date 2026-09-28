@@ -17,15 +17,7 @@ impl App {
         &mut self,
         template: Option<&WindowTitleTemplate>,
     ) {
-        self.window_title_template = template.cloned().map(|template| {
-            // Resolve the hostname once here rather than per render.
-            let hostname = if template.uses(WindowTitleToken::Hostname) {
-                shepr_platform::hostname().unwrap_or_default()
-            } else {
-                String::new()
-            };
-            (template, hostname)
-        });
+        self.window_title_template = template.cloned();
     }
 
     /// Test helper: parse like config validation does. An invalid template is
@@ -48,7 +40,7 @@ impl App {
     pub(crate) fn window_title_uses_terminal_title(&self) -> bool {
         self.window_title_template
             .as_ref()
-            .is_some_and(|(template, _)| template.uses(WindowTitleToken::TerminalTitle))
+            .is_some_and(|template| template.uses(WindowTitleToken::TerminalTitle))
     }
 
     /// Renders the configured outer window title, or `None` when window titles
@@ -72,7 +64,7 @@ impl App {
     }
 
     fn window_title_for_target(&self, target: Option<(usize, usize)>) -> Option<String> {
-        let (template, hostname) = self.window_title_template.as_ref()?;
+        let template = self.window_title_template.as_ref()?;
         let workspace =
             target.and_then(|(workspace_index, _)| self.state.workspaces.get(workspace_index));
         let tab = target.and_then(|(workspace_index, tab_index)| {
@@ -90,7 +82,9 @@ impl App {
         for part in template.parts() {
             match part {
                 WindowTitlePart::Literal(literal) => title.push_str(literal),
-                WindowTitlePart::Token(WindowTitleToken::Hostname) => title.push_str(hostname),
+                WindowTitlePart::Token(WindowTitleToken::Hostname) => {
+                    title.push_str(&self.hostname);
+                }
                 WindowTitlePart::Token(WindowTitleToken::Workspace) => {
                     if let Some(workspace) = workspace {
                         title.push_str(&workspace.display_name());
@@ -139,7 +133,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             event_hub,
         );

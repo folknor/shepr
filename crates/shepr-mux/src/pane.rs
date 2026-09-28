@@ -17,7 +17,7 @@ pub use runtime_registry::PaneRuntimeRegistry;
 pub use state::PaneState;
 pub use teardown::PaneTeardownTracker;
 #[cfg(test)]
-use terminal::GhosttyPaneTerminal;
+use terminal::PaneTerminal;
 pub use terminal::{PaneClearError, ScrollMetrics, TerminalCursorState};
 pub use terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalSearchDirection, TerminalSearchWindow,

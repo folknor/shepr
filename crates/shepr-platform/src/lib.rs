@@ -14,6 +14,7 @@ pub mod ipc;
 pub mod logging;
 mod private_file;
 mod process;
+mod random;
 mod remote_bridge;
 mod remote_bridge_io;
 #[cfg(test)]

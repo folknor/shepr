@@ -106,33 +106,33 @@ pub(crate) struct SwapArgs {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> Option<&'static str> {
+    pub(super) fn name(&self) -> &'static str {
         match self {
-            Self::List { .. } => Some("list"),
-            Self::Current { .. } => Some("current"),
-            Self::Get { .. } => Some("get"),
-            Self::Layout { .. } => Some("layout"),
-            Self::ProcessInfo { .. } => Some("process-info"),
-            Self::Neighbor { .. } => Some("neighbor"),
-            Self::Edges { .. } => Some("edges"),
-            Self::Focus { .. } => Some("focus"),
-            Self::Resize { .. } => Some("resize"),
-            Self::Zoom { .. } => Some("zoom"),
-            Self::Read(_) => Some("read"),
-            Self::Rename(_) => Some("rename"),
-            Self::Input { .. } => Some("input"),
-            Self::Split(_) => Some("split"),
-            Self::Swap(_) => Some("swap"),
-            Self::Move(_) => Some("move"),
-            Self::Close { .. } => Some("close"),
-            Self::SendText(_) => Some("send-text"),
-            Self::SendKeys(_) => Some("send-keys"),
-            Self::WaitOutput(_) => Some("wait-output"),
-            Self::ReportAgent(_) => Some("report-agent"),
-            Self::ReportAgentSession(_) => Some("report-agent-session"),
-            Self::ReleaseAgent(_) => Some("release-agent"),
-            Self::ReportMetadata(_) => Some("report-metadata"),
-            Self::Run { .. } => Some("run"),
+            Self::List { .. } => "list",
+            Self::Current { .. } => "current",
+            Self::Get { .. } => "get",
+            Self::Layout { .. } => "layout",
+            Self::ProcessInfo { .. } => "process-info",
+            Self::Neighbor { .. } => "neighbor",
+            Self::Edges { .. } => "edges",
+            Self::Focus { .. } => "focus",
+            Self::Resize { .. } => "resize",
+            Self::Zoom { .. } => "zoom",
+            Self::Read(_) => "read",
+            Self::Rename(_) => "rename",
+            Self::Input { .. } => "input",
+            Self::Split(_) => "split",
+            Self::Swap(_) => "swap",
+            Self::Move(_) => "move",
+            Self::Close { .. } => "close",
+            Self::SendText(_) => "send-text",
+            Self::SendKeys(_) => "send-keys",
+            Self::WaitOutput(_) => "wait-output",
+            Self::ReportAgent(_) => "report-agent",
+            Self::ReportAgentSession(_) => "report-agent-session",
+            Self::ReleaseAgent(_) => "release-agent",
+            Self::ReportMetadata(_) => "report-metadata",
+            Self::Run { .. } => "run",
         }
     }
 
@@ -255,39 +255,44 @@ pub(super) fn run_pane_command(
 ) -> super::CliResult<i32> {
     let caller = super::target::caller_pane(paths);
     match command {
-        Command::List { workspace } => print_request(
+        Command::List { workspace } => super::send_method_response(
             paths,
             "cli:pane:list",
             Method::PaneList(PaneListParams {
                 workspace_id: workspace,
             }),
+            super::MethodResponseMode::Print,
         ),
         Command::Current { selector } => match selected_pane(&selector, &caller) {
-            Ok(caller_pane_id) => print_request(
+            Ok(caller_pane_id) => super::send_method_response(
                 paths,
                 "cli:pane:current",
                 Method::PaneCurrent(PaneCurrentParams { caller_pane_id }),
+                super::MethodResponseMode::Print,
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Command::Get { pane_id } => print_request(
+        Command::Get { pane_id } => super::send_method_response(
             paths,
             "cli:pane:get",
             Method::PaneGet(PaneTarget { pane_id }),
+            super::MethodResponseMode::Print,
         ),
         Command::Layout { selector } => match selected_pane(&selector, &caller) {
-            Ok(pane_id) => print_request(
+            Ok(pane_id) => super::send_method_response(
                 paths,
                 "cli:pane:layout",
                 Method::PaneLayout(PaneLayoutParams { pane_id }),
+                super::MethodResponseMode::Print,
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::ProcessInfo { selector } => match selected_pane(&selector, &caller) {
-            Ok(pane_id) => print_request(
+            Ok(pane_id) => super::send_method_response(
                 paths,
                 "cli:pane:process_info",
                 Method::PaneProcessInfo(PaneProcessInfoParams { pane_id }),
+                super::MethodResponseMode::Print,
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
@@ -295,18 +300,20 @@ pub(super) fn run_pane_command(
             selector,
             direction,
         } => match selected_pane(&selector, &caller) {
-            Ok(pane_id) => print_request(
+            Ok(pane_id) => super::send_method_response(
                 paths,
                 "cli:pane:neighbor",
                 Method::PaneNeighbor(PaneNeighborParams { pane_id, direction }),
+                super::MethodResponseMode::Print,
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::Edges { selector } => match selected_pane(&selector, &caller) {
-            Ok(pane_id) => print_request(
+            Ok(pane_id) => super::send_method_response(
                 paths,
                 "cli:pane:edges",
                 Method::PaneEdges(PaneEdgesParams { pane_id }),
+                super::MethodResponseMode::Print,
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
@@ -369,52 +376,71 @@ pub(super) fn run_pane_command(
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::Close { pane_id } => super::runtime::pane_close(paths, pane_id),
-        Command::SendText(params) => super::send_ok_request(paths, Method::PaneSendText(params)),
-        Command::SendKeys(params) => super::send_ok_request(paths, Method::PaneSendKeys(params)),
-        Command::WaitOutput(params) => print_request(
+        Command::SendText(params) => super::send_method_response(
+            paths,
+            "cli:request",
+            Method::PaneSendText(params),
+            super::MethodResponseMode::ErrorsOnly,
+        ),
+        Command::SendKeys(params) => super::send_method_response(
+            paths,
+            "cli:request",
+            Method::PaneSendKeys(params),
+            super::MethodResponseMode::ErrorsOnly,
+        ),
+        Command::WaitOutput(params) => super::send_method_response(
             paths,
             "cli:pane:wait-output",
             Method::PaneWaitForOutput(params),
+            super::MethodResponseMode::Print,
         ),
         Command::ReportAgent(result) => match result {
-            Ok(params) => super::send_ok_request(paths, Method::PaneReportAgent(params)),
+            Ok(params) => super::send_method_response(
+                paths,
+                "cli:request",
+                Method::PaneReportAgent(params),
+                super::MethodResponseMode::ErrorsOnly,
+            ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::ReportAgentSession(result) => match result {
-            Ok(params) => super::send_ok_request(paths, Method::PaneReportAgentSession(params)),
+            Ok(params) => super::send_method_response(
+                paths,
+                "cli:request",
+                Method::PaneReportAgentSession(params),
+                super::MethodResponseMode::ErrorsOnly,
+            ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::ReleaseAgent(result) => match result {
-            Ok(params) => super::send_ok_request(paths, Method::PaneReleaseAgent(params)),
+            Ok(params) => super::send_method_response(
+                paths,
+                "cli:request",
+                Method::PaneReleaseAgent(params),
+                super::MethodResponseMode::ErrorsOnly,
+            ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::ReportMetadata(result) => match result {
-            Ok(params) => super::send_ok_request(paths, Method::PaneReportMetadata(params)),
+            Ok(params) => super::send_method_response(
+                paths,
+                "cli:request",
+                Method::PaneReportMetadata(params),
+                super::MethodResponseMode::ErrorsOnly,
+            ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Command::Run { pane_id, command } => super::send_ok_request(
+        Command::Run { pane_id, command } => super::send_method_response(
             paths,
+            "cli:request",
             Method::PaneSendInput(PaneSendInputParams {
                 pane_id,
                 text: command,
                 keys: vec!["Enter".into()],
             }),
+            super::MethodResponseMode::ErrorsOnly,
         ),
     }
-}
-
-fn print_request(
-    paths: &super::target::CliContext,
-    id: &'static str,
-    method: Method,
-) -> super::CliResult<i32> {
-    super::print_response(&super::send_request(
-        paths,
-        &Request {
-            id: id.into(),
-            method,
-        },
-    )?)
 }
 
 /// The pane a pane command acts on. One rule for every command that takes

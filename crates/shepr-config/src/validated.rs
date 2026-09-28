@@ -810,7 +810,9 @@ impl ValidatedConfig {
         }
         match resolution.values {
             Some(values) => Ok(Self::from_loaded(config, provenance, values, paths)),
-            None => Err(vec!["configuration could not be resolved".to_owned()]),
+            None => Err(vec![
+                "configuration resolution produced no values and no diagnostics".to_owned(),
+            ]),
         }
     }
 

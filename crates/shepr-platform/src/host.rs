@@ -107,6 +107,7 @@ pub fn current_process_is_detached_server_daemon() -> bool {
     let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
         return false;
     };
+    // Compare /proc/self/stat's session leader with this process's kernel PID.
     session_and_tty_from_stat(&stat)
         .is_some_and(|(session, tty_nr)| is_detached_session(std::process::id(), session, tty_nr))
 }

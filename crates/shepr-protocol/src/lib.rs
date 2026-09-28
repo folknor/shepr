@@ -29,7 +29,10 @@ pub use frame::*;
 pub use framing::*;
 pub use geometry::*;
 pub use identity::*;
-pub use ids::{PublicPaneId, PublicTabId, decode_public_number, encode_public_number};
+pub use ids::{
+    PublicChildId, PublicIdParseError, PublicPaneId, PublicTabId, decode_public_number,
+    encode_public_number,
+};
 pub use ids::{TerminalId, WorkspaceId};
 pub use input::*;
 pub use limits::*;

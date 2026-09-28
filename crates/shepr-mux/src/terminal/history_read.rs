@@ -237,9 +237,7 @@ fn push_row_text(text: &mut String, row: &ScreenTextRow, skip_spacer_head: bool)
         {
             continue;
         }
-        if cell.graphemes.is_empty()
-            || cell.graphemes.first().copied() == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER)
-        {
+        if cell.graphemes.is_empty() {
             text.push(' ');
         } else {
             text.extend(cell.graphemes.iter().map(|codepoint| {

@@ -133,6 +133,7 @@ fn log_paths_summary(dir: &Path) -> String {
 }
 
 pub fn startup(role: &'static str) {
+    // The PID is event identity for correlating each process's lifecycle rows.
     tracing::info!(
         event = "app.startup",
         subsystem = role,
@@ -449,11 +450,10 @@ impl RotatingFileMakeWriter {
     fn new(dir: &Path, file_name: &str, max_bytes: u64, retained_files: usize) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
         let path = dir.join(file_name);
-        let mut state = RotatingFileState {
+        let state = RotatingFileState {
             path,
             max_bytes,
             retained_files,
-            file: None,
             lost_reason: None,
         };
         state.open_current_file()?;
@@ -479,16 +479,33 @@ struct RotatingFileGuard {
 
 impl Write for RotatingFileGuard {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut state = self.lock_state();
-        match state.write_with_recovery(buf) {
+        let (operation, pending_reason) = {
+            let mut state = self.lock_state();
+            let pending_reason = state.lost_reason.take();
+            (state.clone(), pending_reason)
+        };
+
+        // The state mutex protects only this snapshot and recovery marker.
+        // File opens, flock, rotation and writes use the owned snapshot after
+        // the guard has been dropped.
+        let result = operation
+            .write_once(buf, pending_reason.as_deref())
+            .or_else(|_| operation.write_once(buf, pending_reason.as_deref()));
+        match result {
             Ok(written) => Ok(written),
-            Err(_) => Ok(buf.len()),
+            Err(error) => {
+                let mut state = self.lock_state();
+                if state.lost_reason.is_none() || pending_reason.is_some() {
+                    state.lost_reason = Some(pending_reason.unwrap_or_else(|| error.to_string()));
+                }
+                Ok(buf.len())
+            }
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let mut state = self.lock_state();
-        state.flush_with_recovery();
+        // Each write reaches the file directly; std::fs::File has no buffered
+        // userspace data to flush here.
         Ok(())
     }
 }
@@ -509,17 +526,14 @@ impl RotatingFileGuard {
     }
 }
 
-/// One log file that may be shared by several processes: every client appends
-/// to the same `shepr-client.log`. Nothing about the file is cached per
-/// process. Before each write the path is checked against the open file, so a
-/// rotation done by another process is noticed and followed instead of leaving
-/// this one writing to an unlinked inode, and the size limit is judged on the
-/// file's real size rather than on this process's own share of it.
+/// Configuration and recovery state for one log file shared by processes.
+/// Every write opens the current path and checks its inode, so another process
+/// can rotate without leaving this writer appending to an unlinked generation.
+#[derive(Clone)]
 struct RotatingFileState {
     path: PathBuf,
     max_bytes: u64,
     retained_files: usize,
-    file: Option<File>,
     /// The reason for an ongoing logging gap, reported once writing works
     /// again.
     lost_reason: Option<String>,
@@ -530,80 +544,53 @@ struct RotatingFileState {
 const LOG_FILE_MODE: u32 = 0o600;
 
 impl RotatingFileState {
-    /// Write one chunk, reopening the file once on failure. A failed write
-    /// never disables logging: the next event tries again, so a full disk or
-    /// a removed directory recovers once the cause is gone. The first reason
-    /// for a logging gap is written into the log when writing resumes; it is
-    /// not sent to stderr, which is the client's TUI terminal.
-    fn write_with_recovery(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let result = match self.write_once(buf) {
-            Err(_) => {
-                self.file = None;
-                self.write_once(buf)
+    /// Write one chunk without holding the shared recovery-state mutex through
+    /// filesystem calls. File-level shared/exclusive flocks coordinate writes
+    /// and rotation across processes.
+    fn write_once(&self, buf: &[u8], pending_reason: Option<&str>) -> io::Result<usize> {
+        let resumed = if let Some(reason) = pending_reason {
+            let mut message =
+                format!("shepr: file logging resumed; log lines may have been lost: {reason}\n")
+                    .into_bytes();
+            message.extend_from_slice(buf);
+            Some(message)
+        } else {
+            None
+        };
+        let write_buf = resumed.as_deref().unwrap_or(buf);
+        let incoming_len = u64::try_from(write_buf.len()).unwrap_or(u64::MAX);
+
+        loop {
+            let file = self.open_current_file()?;
+            let lock = FileLock::shared(&file)?;
+            if !self.is_current_file(&file)? {
+                drop(lock);
+                continue;
             }
-            written => written,
-        };
-        if let Err(error) = &result
-            && self.lost_reason.is_none()
-        {
-            self.lost_reason = Some(error.to_string());
-        }
-        result
-    }
-
-    fn write_once(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.rotate_if_needed(buf.len() as u64)?;
-        let file = self
-            .file
-            .as_mut()
-            .ok_or_else(|| io::Error::other("log file is not open"))?;
-        if let Some(reason) = self.lost_reason.take()
-            && let Err(write_error) = writeln!(
-                file,
-                "shepr: file logging resumed; log lines may have been lost: {reason}"
-            )
-        {
-            self.lost_reason = Some(reason);
-            return Err(write_error);
-        }
-        file.write(buf)
-    }
-
-    fn flush_with_recovery(&mut self) {
-        if let Some(file) = self.file.as_mut()
-            && file.flush().is_err()
-        {
-            // Reopened by the next write.
-            self.file = None;
+            let size = file.metadata()?.len();
+            if self.exceeds_limit(size, incoming_len) {
+                drop(lock);
+                self.rotate_if_needed(incoming_len)?;
+                continue;
+            }
+            let mut append = &file;
+            append.write_all(write_buf)?;
+            drop(lock);
+            return Ok(buf.len());
         }
     }
 
-    fn rotate_if_needed(&mut self, incoming_len: u64) -> io::Result<()> {
-        let size = self.sync_with_path()?;
-        if !self.exceeds_limit(size, incoming_len) {
+    fn rotate_if_needed(&self, incoming_len: u64) -> io::Result<()> {
+        let file = self.open_current_file()?;
+        let lock = FileLock::exclusive(&file)?;
+        if !self.is_current_file(&file)? {
             return Ok(());
         }
-
-        // Several processes can cross the limit together. Rotation happens
-        // under an exclusive lock on the current file, and whoever gets the
-        // lock second finds the path already pointing at a fresh file.
-        // This is nested under the state mutex: releasing that mutex here
-        // would let a local writer append through the descriptor being moved.
-        // The cross-process lock is only taken when a write reaches rotation.
-        let Some(file) = self.file.as_ref() else {
-            return Ok(());
-        };
-        let lock = FileLock::exclusive(file)?;
-        let rotate = match fs::metadata(&self.path) {
-            Ok(meta) => self.is_current_file(&meta) && self.exceeds_limit(meta.len(), incoming_len),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => false,
-            Err(err) => return Err(err),
-        };
-        if rotate {
+        if self.exceeds_limit(file.metadata()?.len(), incoming_len) {
             self.rotate_files()?;
         }
         drop(lock);
-        self.open_current_file()
+        Ok(())
     }
 
     fn exceeds_limit(&self, size: u64, incoming_len: u64) -> bool {
@@ -612,41 +599,29 @@ impl RotatingFileState {
         self.max_bytes != 0 && size > 0 && size.saturating_add(incoming_len) > self.max_bytes
     }
 
-    /// Make sure the open file is the one at `path` (reopening if another
-    /// process rotated or removed it) and return its current size.
-    fn sync_with_path(&mut self) -> io::Result<u64> {
-        match fs::metadata(&self.path) {
-            Ok(meta) if self.is_current_file(&meta) => return Ok(meta.len()),
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
-        }
-        self.open_current_file()?;
-        match self.file.as_ref() {
-            Some(file) => Ok(file.metadata()?.len()),
-            None => Ok(0),
-        }
-    }
-
-    fn is_current_file(&self, path_meta: &fs::Metadata) -> bool {
+    fn is_current_file(&self, file: &File) -> io::Result<bool> {
         use std::os::unix::fs::MetadataExt;
 
-        self.file
-            .as_ref()
-            .and_then(|file| file.metadata().ok())
-            .is_some_and(|open| open.dev() == path_meta.dev() && open.ino() == path_meta.ino())
+        let path_metadata = match fs::metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let file_metadata = file.metadata()?;
+        Ok(
+            file_metadata.dev() == path_metadata.dev()
+                && file_metadata.ino() == path_metadata.ino(),
+        )
     }
 
-    fn open_current_file(&mut self) -> io::Result<()> {
+    fn open_current_file(&self) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
 
-        let file = OpenOptions::new()
+        OpenOptions::new()
             .create(true)
             .append(true)
             .mode(LOG_FILE_MODE)
-            .open(&self.path)?;
-        self.file = Some(file);
-        Ok(())
+            .open(&self.path)
     }
 
     /// Move the current file out of the way (or delete it when no generations
@@ -688,19 +663,27 @@ impl RotatingFileState {
     }
 }
 
-/// An exclusive `flock(2)` on an open file, released on drop.
+/// A shared or exclusive `flock(2)` on an open file, released on drop.
 struct FileLock<'a> {
     file: &'a File,
 }
 
 impl<'a> FileLock<'a> {
     fn exclusive(file: &'a File) -> io::Result<Self> {
+        Self::acquire(file, libc::LOCK_EX)
+    }
+
+    fn shared(file: &'a File) -> io::Result<Self> {
+        Self::acquire(file, libc::LOCK_SH)
+    }
+
+    fn acquire(file: &'a File, operation: libc::c_int) -> io::Result<Self> {
         use std::os::fd::AsRawFd;
 
         loop {
             // SAFETY: flock(2) on a descriptor owned by `file`, which outlives
             // the returned guard; it touches no memory of this process.
-            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            let result = unsafe { libc::flock(file.as_raw_fd(), operation) };
             if result == 0 {
                 return Ok(Self { file });
             }
@@ -782,7 +765,6 @@ mod tests {
             path: path.clone(),
             max_bytes: 128,
             retained_files: 2,
-            file: None,
             lost_reason: None,
         };
         state.rotate_files().expect("test precondition");

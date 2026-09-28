@@ -46,6 +46,9 @@ impl WireConfig {
         }
     }
 
+    // `ValidatedConfig::deserialize` immediately converts this error through
+    // `de::Error::custom`, which erases domain types into the deserializer's
+    // error. A private error enum would not survive that boundary for callers.
     pub(super) fn into_config(self) -> Result<Config, String> {
         Ok(Config {
             theme: self.theme,

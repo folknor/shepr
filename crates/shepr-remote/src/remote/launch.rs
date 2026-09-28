@@ -24,12 +24,12 @@ pub fn run_remote(
         session_name.clone(),
         paths,
     )?;
-    let prepared_remote = prepare_remote_shepr(&remote_ssh)?;
-    ensure_remote_server_ready(operator, &remote_ssh, &prepared_remote.remote_shepr)?;
+    let remote_shepr = locate_remote_shepr(&remote_ssh)?;
+    ensure_remote_server_ready(operator, &remote_ssh, &remote_shepr)?;
 
     let bridge = SshStdioBridge::start(
         remote.target,
-        &prepared_remote.remote_shepr,
+        &remote_shepr,
         local_socket.clone(),
         &session_name,
         remote_ssh.options(),
@@ -62,7 +62,7 @@ pub fn check_saved_ssh(
     let mut ssh =
         RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
     ssh.set_session_name(session.to_owned());
-    let remote = find_installed_remote_shepr(&ssh)?;
+    let remote = locate_remote_shepr(&ssh)?;
     let status = remote_server_status(&ssh, &remote)?;
     ensure_remote_server_build(ssh.target(), &status)?;
     match status {
@@ -92,23 +92,23 @@ pub fn prepare_saved_ssh(
         session_name.to_owned(),
         paths,
     )?;
-    let prepared = prepare_remote_shepr(&ssh)?;
-    ensure_remote_server_ready(operator, &ssh, &prepared.remote_shepr)?;
+    let remote_shepr = locate_remote_shepr(&ssh)?;
+    ensure_remote_server_ready(operator, &ssh, &remote_shepr)?;
 
     // The bridge already owns daemon startup. EOF closes only this temporary attachment,
     // leaving the named server running even when no local TUI is open yet.
-    let command = prepared.remote_shepr.saved_bridge_command(session_name);
+    let command = remote_shepr.saved_bridge_command(session_name);
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         return Err(command_failed("remote server startup failed", &output));
     }
-    let status = remote_server_status(&ssh, &prepared.remote_shepr)?;
+    let status = remote_server_status(&ssh, &remote_shepr)?;
     ensure_remote_server_build(ssh.target(), &status)?;
     match status {
         RemoteServerStatus::Running {
             detached_server_daemon: true,
             ..
-        } => Ok(prepared.remote_shepr.clone()),
+        } => Ok(remote_shepr),
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "remote server is not ready for saved machines",
@@ -198,10 +198,6 @@ pub(super) fn posix_remote_output_command(command: &str) -> String {
 /// Runs a POSIX script under `/bin/sh` regardless of the remote login shell.
 pub(super) fn posix_shell_command(script: &str) -> String {
     format!("/bin/sh -c {}", shell_quote(script))
-}
-
-pub(super) struct PreparedRemoteShepr {
-    pub(super) remote_shepr: RemoteExecutable,
 }
 
 pub(crate) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale";
@@ -355,3 +351,7 @@ mod shell_command_tests {
         assert!(parse_client_status_json(&String::from_utf8_lossy(&stdout)).is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "launch_tests.rs"]
+mod launch_tests;

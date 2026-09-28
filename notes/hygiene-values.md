@@ -810,45 +810,6 @@ Fix: export the total from `teardown.rs` as `pub const PANE_TEARDOWN_BUDGET` and
 have the server derive its wait from it, with a compile-time or test assertion
 that the wait is the larger.
 
-## HYGV-046 - Client-side throttles and timeouts are unnamed, duplicated, or typed differently from their siblings
-
-**Decision (partial):** per-crate `limits` modules are adopted incrementally with
-the hygiene work (HYGV-036); the inline `Duration::from_millis(350)`, `(33)`,
-`(100)`, `Duration::from_secs(1)` and `(5)` become named constants in
-`shepr-client`'s module, and the two `_SECS: u64` constants move there as
-`Duration`s. The `attach.rs` deadline read also falls under the clock seam
-(HYGP-001). Open: the `Throttle` type and the `finish_client` teardown.
-
-Reported by the termio/client hunter.
-
-- The 350 ms double-click window is written inline as
-  `Duration::from_millis(350)` in both
-  `crates/shepr-client/src/shell/state.rs::ClientPaneClick::is_double_click_for`
-  and `shell/input/mouse.rs` (sidebar-divider double click). One user-facing
-  gesture, two unnamed copies, different files.
-- `shell/input/mouse.rs` names `SELECTION_AUTOSCROLL_INTERVAL` (30 ms) and
-  `SELECTION_REPAINT_INTERVAL` (16 ms) at the top of the file, then writes
-  `Duration::from_millis(33)` inline twice for the scrollbar-drag and split-drag
-  send throttle. Three throttles for the same class of thing at 16/30/33 ms, two
-  findable and one not. The hunter's proposed `Throttle { interval, last }` type
-  makes the interval a named construction argument.
-- `crates/shepr-client/src/lib.rs` ends `run_client_with_mode` through two paths,
-  each writing the same three teardown lines
-  (`rt.shutdown_timeout(Duration::from_millis(100))`,
-  `shepr_remote::release_ssh_resources_before_exit(Duration::from_secs(1))`,
-  `shepr_platform::logging::shutdown("client")`), with both timeouts unnamed and
-  the string `"client"` passed to `logging::startup` and `logging::shutdown` at
-  three sites. A `finish_client(rt)` function, or a guard type whose `Drop` runs
-  it, makes the omission unrepresentable.
-- `shell/state.rs` declares `ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5` and
-  `ENDPOINT_NOTICE_TIMEOUT_SECS: u64 = 10`, each wrapped in
-  `Duration::from_secs(...)` at the use site, while every sibling of the same
-  class is a `const ...: Duration`. They share values with
-  `HEARTBEAT_INTERVAL` (5 s) and `HEARTBEAT_TIMEOUT` (10 s), a coincidence a
-  reader has to check.
-- `attach.rs` writes `Instant::now() + Duration::from_secs(5)` inline for a flush
-  budget that happens to equal `WRITE_TIMEOUT`.
-
 ## HYGV-047 - Interlocks between tunables exist only in prose, including one user-visible promise
 
 Reported by the termio/client hunter, with the remote hunter's R10 as the same
@@ -889,18 +850,6 @@ Reported by the vt/pty hunter.
 For a pane over 65535 px the child's TIOCGWINSZ and its `CSI 14 t` answer already
 disagree. Fix: a `PaneGeometry::text_area_px()` in `shepr-core` that every site
 calls.
-
-## HYGV-054 - The kitty placeholder filter is spelled five times, and four of the copies cannot fire
-
-Reported by the vt/pty hunter.
-
-`shepr-vt`'s `cell_text` already classifies U+10EEEE as `Empty`, so the mux
-checks are unreachable: `helpers.rs::ghostty_cell_symbol`,
-`helpers.rs::ghostty_buffer_symbol_into`, `pane/terminal/text.rs` and
-`terminal/history_read.rs`.
-
-Fix: stop making `KITTY_UNICODE_PLACEHOLDER` public, which removes the four
-downstream spellings.
 
 ## HYGV-058 - `PANE_TERM` has one owner but `PANE_COLORTERM` lives in another crate, and a test re-spells both
 
@@ -992,54 +941,6 @@ happens to look identical.
 This is two owners rather than one: a `git_bool()` in the git module completed
 against Git's grammar, and one `env_bool()` wherever shepr env flags are
 resolved. Holdable by a text rule forbidding the bare list elsewhere.
-
-## HYGV-073 - Each agent's own config file name is spelled two to four times
-
-Reported by the agent hunter.
-
-For every target the same file name appears in `check_config_targets`, in the
-install body, in the uninstall body, and again in
-`registry.rs::hook_registration_is_current`: `"settings.json"` at nine sites,
-`"hooks.json"` at eight, `"config.toml"` at five, `"config.yaml"` at four,
-`"config.json"` at three, `"cli.json"` at five (four of them in
-`opencode_config.rs`), `"tui.json"` at four. None of it is a constant, and
-`TUI_CONFIG_NAME` is the lone counterexample.
-
-Fix: put the config file name (and the ancestor depth, HYGV-075) on the
-`IntegrationSpec` row and have install, uninstall and status read that row. The
-hunter's overall recommendation for this crate is to make `INTEGRATION_SPECS` the
-only table - carrying the config file name, the config path depth, the hooks
-root, the registration check strategy, the directory key as an enum, the asset,
-the version, the events and the timeout - which subsumes this entry and
-HYGV-074, HYGV-075, HYGV-076, HYGV-078 and HYGV-079.
-
-## HYGV-074 - The agent config directory registry is keyed by free-form strings
-
-Reported by the agent hunter.
-
-`crates/shepr-agent/src/integration/env.rs::AgentIntegrationPaths` holds a
-`HashMap<&'static str, CapturedDirectory>` populated from a literal list of twenty
-keys (`"pi_extension"`, `"claude"`, `"opencode_state"`, and so on), read back by
-`paths.directory("claude")` at forty call sites in `targets.rs` and by
-`spec.directory` in `registry.rs`. A typo or a rename produces a runtime
-`NotFound` error at install time only, on the one target exercised.
-
-Fix by type: make the key an enum (or index the array by `IntegrationTarget` plus
-a small `DirectoryRole`), and the bad spelling stops compiling.
-
-## HYGV-075 - Ancestor depths in `hook_registration_is_current` mirror the install paths by hand
-
-Reported by the agent hunter.
-
-`json_in(2, "settings.json", ...)` for Claude because the hook lives at
-`<dir>/hooks/<name>`, `json_in(1, ...)` for Codex because it lives at
-`<dir>/<name>`, `ancestor(hook_path, 2)` for Kimi. Those numbers are
-`spec.path.len() + 1` and nothing says so. Change a spec path and status quietly
-reports Outdated forever - the hook is fine, the check is looking in the wrong
-directory - with no log line.
-
-Fix: derive the depth from `spec.path.len()`, or better, keep the config path on
-the spec row and stop walking upward from the hook path.
 
 ## HYGV-076 - One ten-second hook timeout, four spellings, two units, and four bare literals
 
@@ -1224,69 +1125,6 @@ Related, and recorded by the agent hunter as data wearing a general mechanism:
 `title_activity_glyphs` is non-empty for Claude alone
 (`CLAUDE_ACTIVITY_GLYPHS`); every other agent has `""`.
 
-## HYGV-092 - `AppPolicy` has two spellings for two of its three variants, and the `persist_session` mapping is implemented twice
-
-Reported by the server hunter.
-
-`crates/shepr-server/src/app/mod.rs` defines `AppPolicy::PRODUCTION` and
-`AppPolicy::TEST` as associated consts that are literally `Self::Production` and
-`Self::Test`; the third variant, `Suspended`, has no const. The result is that
-`server/headless/lifecycle.rs` writes two naming conventions inside one
-expression:
-
-```rust
-self.app.policy = if freeze.persist_session {
-    crate::app::AppPolicy::PRODUCTION
-} else {
-    crate::app::AppPolicy::Suspended
-};
-```
-
-Repo-wide there are about sixty `AppPolicy::TEST` sites and two
-`AppPolicy::Test` sites. Deleting the consts makes the second spelling
-unrepresentable.
-
-The three lines above appear twice in `lifecycle.rs`, identically, and a third
-site writes `Suspended` directly. They agree today, so the duplication is a
-prediction rather than a fact, but the rule belongs on `HostShutdownFreeze` as
-`fn restored_policy(&self) -> AppPolicy`, after which the caller cannot spell the
-mapping.
-
-## HYGV-093 - `headless_size` has two owners and its `Rect` derivation is spelled three times
-
-Reported by the server hunter.
-
-`AppState::settings.headless_size` (from `config.headless_size()`) and
-`HeadlessServer::headless_size` (copied from the former) are two owners of one
-value. The "headless size as a `Rect`" derivation appears three times:
-`app/state.rs::pane_geometry`, `app/mod.rs`'s restore path, and
-`server/headless/client_views.rs::resize_tabs_to_headless_size`.
-
-`app/mod.rs` is the clearest case: it constructs by hand, field for field, the
-same `shepr_mux::workspace::PaneGeometry { area, pane_borders, pane_gaps,
-pane_outer_borders, pane_scrollbars }` that `AppState::pane_geometry_in` already
-owns. If a chrome field is added to `PaneGeometry`, the restore path is the site
-that will be missed.
-
-Fix: drop `HeadlessServer::headless_size` and route through `app.state`; make
-`AppSettings::headless_rect()` the only constructor.
-
-## HYGV-094 - `hostname()` is resolved twice in one `App`, with two empty-value rules
-
-Reported by the server hunter.
-
-`app/window_title.rs` uses `shepr_platform::hostname().unwrap_or_default()`;
-`app/tab_bar_status.rs` uses
-`shepr_platform::hostname().as_deref().unwrap_or_default()`. Both cache at
-configure time, neither knows about the other, so the `{hostname}` in a window
-title and the `hostname` tab-bar segment can disagree only by accident of when
-each was configured. Fix: resolve once into an `App` field.
-
-The core/platform hunter's lateral note on the same function: the `hostname()`
-buffer is 256 bytes against a `HOST_NAME_MAX` of 64, which is harmless and
-correctly handles a non-NUL-terminated truncation, and is recorded only because
-the 256 is another unnamed number.
-
 ## HYGV-095 - `client_socket_path(paths)` is recomputed four times in one function
 
 Reported by the server hunter.
@@ -1333,10 +1171,3 @@ cap and nothing notices.
 Fix: drop the parameter from the public function and keep a
 `#[cfg(any(test, feature = "test-support"))]` variant for the one test; the
 signature then makes the bad spelling unrepresentable.
-
-## HYGV-108 - `"session.json"` is spelled in server tests although the persist module owns the name
-
-`crates/shepr-mux/src/persist/io.rs` now owns the persisted file and directory
-names, but three tests in `crates/shepr-server/src/app/mod.rs` spell
-`"session.json"` themselves. Expose the name (or a path accessor) from
-`shepr_mux::persist` and use it there.

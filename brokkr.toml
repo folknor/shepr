@@ -13,6 +13,14 @@ debug = true
 [rustdoc]
 document_private_items = true
 
+[[textlint]]
+name = "persist-clock-is-injected"
+pattern = '\b(?:SystemTime|Instant)::now\s*\('
+paths = ["crates/shepr-mux/src/persist/**/*.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+message = "pass the operation time into persistence from its caller"
+
 # The clippy seals (`clippy.toml`): the environment reader, exits, bool path
 # probes, panic containment, child working directories and debug assertions.
 # Every escape is a scoped `#[expect(clippy::disallowed_methods, reason = ..)]`

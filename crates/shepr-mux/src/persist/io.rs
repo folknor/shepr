@@ -8,7 +8,7 @@ use super::snapshot::{
     SessionHistorySnapshot, SessionSnapshot, parse_history_snapshot, parse_snapshot,
 };
 
-const SESSION_FILE_NAME: &str = "session.json";
+pub(super) const SESSION_FILE_NAME: &str = "session.json";
 const SESSION_HISTORY_FILE_NAME: &str = "session-history.json";
 pub(super) const SNAPSHOT_DIRECTORY_NAME: &str = "session-snapshots";
 pub(super) const BACKUP_DIRECTORY_NAME: &str = "session-backups";

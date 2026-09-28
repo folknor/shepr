@@ -149,7 +149,7 @@ mod tests {
     fn test_app_with_workspaces(names: &[&str]) -> super::App {
         let mut app = super::App::new(
             &shepr_config::Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
             shepr_api::EventHub::default(),
         );

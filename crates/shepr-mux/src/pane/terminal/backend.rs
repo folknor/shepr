@@ -7,7 +7,7 @@ fn report_terminal_mutation_failure(operation: &'static str) {
     );
 }
 
-impl GhosttyPaneTerminal {
+impl PaneTerminal {
     pub(crate) fn new(mut terminal: shepr_vt::Terminal) -> Self {
         // Replies to anything written before the pane existed have no reader.
         let _ = terminal.take_pty_responses();
@@ -18,7 +18,7 @@ impl GhosttyPaneTerminal {
         let initial_default_foreground = Some(initial_colors.foreground);
         let initial_default_background = Some(initial_colors.background);
         Self {
-            core: Mutex::new(GhosttyPaneCore {
+            core: Mutex::new(PaneTerminalCore {
                 dirty_collection_hook: None,
                 terminal,
                 synchronized_output_epoch: 0,
@@ -162,7 +162,10 @@ impl GhosttyPaneTerminal {
             Err(shepr_vt::TerminalCorePoisoned) => {
                 // The core may be inconsistent after a panic. Fail the pane
                 // so its reader stops and the pane is reported dead.
-                error!(pane = pane_id.raw(), "ghostty core lock poisoned in reader");
+                error!(
+                    pane = pane_id.raw(),
+                    "terminal core lock poisoned in reader"
+                );
                 return ProcessBytesResult {
                     core_poisoned: true,
                     ..ProcessBytesResult::default()
@@ -234,7 +237,7 @@ impl GhosttyPaneTerminal {
     /// method takes the terminal lock briefly to store the answer. The
     /// generation check drops an answer if another OSC colour write arrived
     /// during the scan.
-    pub(super) fn resolve_default_color_owner(
+    pub(crate) fn resolve_default_color_owner(
         &self,
         pane_id: PaneId,
         shell_pid: u32,
@@ -343,13 +346,9 @@ impl GhosttyPaneTerminal {
         // front for the next read; the resize's own replies go to a slot
         // the next resize overwrites.
         let pending_responses = core.terminal.take_pty_responses();
-        // No history is replayed into the core after the resize. That was
-        // a workaround for the libghostty core losing rows on resize;
-        // alacritty reflows bottom-anchored and keeps the rows above the
-        // cursor (a shrink drops only rows below it, as Terminal.app and
-        // iTerm do), and a replay fed bytes through the child's parser,
-        // cutting into any sequence it had half-written and moving its
-        // cursor behind its back.
+        // Alacritty resizes and reflows the grid directly. Replaying history
+        // through the parser here could split a sequence the child is still
+        // writing and move its cursor behind its back.
         core.terminal.resize(geometry);
         let synchronized_output_after = core
             .terminal
@@ -360,10 +359,10 @@ impl GhosttyPaneTerminal {
         let terminal_responses = drain_terminal_responses(&mut core);
         core.terminal.restore_pty_responses(pending_responses);
 
-        ghostty_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
+        terminal_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
         if offset_from_bottom > 0 {
             let mut remaining = offset_from_bottom.min(resize_recovery_probe_lines);
-            while remaining > 0 && ghostty_visible_text(&mut core).trim().is_empty() {
+            while remaining > 0 && terminal_visible_text(&mut core).trim().is_empty() {
                 core.terminal.scroll_viewport_delta(1);
                 remaining -= 1;
             }
@@ -409,7 +408,7 @@ impl GhosttyPaneTerminal {
             report_terminal_mutation_failure("set scroll offset");
             return;
         };
-        ghostty_set_scroll_offset_from_bottom(&mut core.terminal, lines);
+        terminal_set_scroll_offset_from_bottom(&mut core.terminal, lines);
     }
 
     pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {
@@ -419,6 +418,7 @@ impl GhosttyPaneTerminal {
         Some(terminal_scroll_metrics(&core.terminal))
     }
 
+    #[cfg(test)]
     pub(crate) fn scroll_position(&self) -> Option<ScrollPosition> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         Some(ScrollPosition {
@@ -432,9 +432,8 @@ impl GhosttyPaneTerminal {
             .map(|core| core.terminal.history_origin())
     }
 
-    /// Chunked copy-mode search with absolute rows; see
-    /// [`PaneTerminal::search_text_window_absolute`].
-    pub(crate) fn search_text_window(
+    /// Chunked copy-mode search with stable absolute rows.
+    pub(crate) fn search_text_window_absolute(
         &self,
         query: &str,
         case_sensitive: bool,
@@ -506,7 +505,9 @@ impl GhosttyPaneTerminal {
         search.finish()
     }
 
-    pub(crate) fn keyboard_protocol(&self) -> Option<shepr_termio::input::KeyboardProtocol> {
+    pub(crate) fn negotiated_keyboard_protocol(
+        &self,
+    ) -> Option<shepr_termio::input::KeyboardProtocol> {
         let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             return None;
         };
@@ -845,20 +846,20 @@ impl GhosttyPaneTerminal {
 
     pub(crate) fn visible_text(&self) -> String {
         shepr_vt::lock_terminal_core(&self.core)
-            .map_or_default(|mut core| ghostty_visible_text(&mut core))
+            .map_or_default(|mut core| terminal_visible_text(&mut core))
     }
 
     pub(crate) fn visible_ansi(&self) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|core| ghostty_visible_ansi(&core).ok())
+            .and_then(|core| terminal_visible_ansi(&core).ok())
             .unwrap_or_default()
     }
 
     pub(crate) fn detection_text(&self) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| ghostty_detection_text(&mut core).ok())
+            .and_then(|mut core| terminal_detection_text(&mut core).ok())
             .unwrap_or_default()
     }
 
@@ -870,7 +871,7 @@ impl GhosttyPaneTerminal {
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| ghostty_recent_text_snapshot(&mut core, lines).ok())
+            .and_then(|mut core| terminal_recent_text_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
@@ -882,7 +883,7 @@ impl GhosttyPaneTerminal {
     pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| ghostty_recent_ansi_snapshot(&mut core, lines, false).ok())
+            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, false).ok())
             .unwrap_or_default()
     }
 
@@ -894,14 +895,14 @@ impl GhosttyPaneTerminal {
     pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| ghostty_recent_text_unwrapped_snapshot(&mut core, lines).ok())
+            .and_then(|mut core| terminal_recent_text_unwrapped_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
     pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| ghostty_recent_ansi_snapshot(&mut core, lines, true).ok())
+            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, true).ok())
             .unwrap_or_default()
     }
 
@@ -911,15 +912,18 @@ impl GhosttyPaneTerminal {
     ) -> Option<String> {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| ghostty_extract_selection(&mut core, selection))
+            .and_then(|mut core| terminal_extract_selection(&mut core, selection))
     }
 
+    /// Read primary-screen history for persistence. The inactive primary grid
+    /// is inaccessible while the alternate screen is active, so return None
+    /// rather than replacing saved history with a full-screen program frame.
     pub(crate) fn primary_history_ansi(&self) -> Option<String> {
         let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         if core.terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
             return None;
         }
-        ghostty_recent_ansi_snapshot(&mut core, usize::MAX, true)
+        terminal_recent_ansi_snapshot(&mut core, usize::MAX, true)
             .ok()
             .map(|snapshot| snapshot.text)
     }
@@ -927,7 +931,7 @@ impl GhosttyPaneTerminal {
     pub(crate) fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| ghostty_visible_hyperlinks(&mut core, area).ok())
+            .and_then(|mut core| terminal_visible_hyperlinks(&mut core, area).ok())
             .unwrap_or_default()
     }
 
@@ -944,7 +948,7 @@ impl GhosttyPaneTerminal {
         let host_theme = core.host_terminal_theme;
         let initial_default_foreground = core.initial_default_foreground;
         let initial_default_background = core.initial_default_background;
-        let GhosttyPaneCore {
+        let PaneTerminalCore {
             terminal,
             render_state,
             ..
@@ -954,17 +958,13 @@ impl GhosttyPaneTerminal {
         let cursor_shape_overridden = terminal.cursor_shape_overridden();
         let colors = render_state.colors();
         let default_bg =
-            ghostty_default_bg(colors.background, host_theme, initial_default_background);
+            terminal_default_bg(colors.background, host_theme, initial_default_background);
         let default_fg =
-            ghostty_default_fg(colors.foreground, host_theme, initial_default_foreground);
-        let resolved_fg = Some(ghostty_color(colors.foreground));
-        let resolved_bg = Some(ghostty_color(colors.background));
+            terminal_default_fg(colors.foreground, host_theme, initial_default_foreground);
+        let resolved_fg = Some(terminal_color(colors.foreground));
+        let resolved_bg = Some(terminal_color(colors.background));
         let default_palette = terminal.default_palette();
         let palette_overrides = PaletteOverrides::new(&colors.palette, &default_palette);
-        // Shepr never renders kitty graphics, but a program may still emit the
-        // unicode placeholder codepoint as literal text; always hide it so a
-        // stray private-use glyph doesn't leak into the rendered pane.
-        let hide_kitty_placeholders = true;
 
         {
             let buf = frame.buffer_mut();
@@ -975,7 +975,7 @@ impl GhosttyPaneTerminal {
                 let mut x = 0u16;
                 for cell_view in &mut cells {
                     let basic = cell_view.basic_data();
-                    let style = ghostty_cell_style(
+                    let style = terminal_cell_style(
                         &cell_view,
                         &basic,
                         default_fg,
@@ -984,12 +984,8 @@ impl GhosttyPaneTerminal {
                         resolved_bg,
                         palette_overrides.as_ref(),
                     );
-                    let symbol = ghostty_buffer_symbol_into(
-                        &cell_view,
-                        basic.wide,
-                        hide_kitty_placeholders,
-                        &mut symbol_scratch,
-                    );
+                    let symbol =
+                        terminal_buffer_symbol_into(&cell_view, basic.wide, &mut symbol_scratch);
                     let cell = &mut buf[(area.x + x, area.y + y)];
                     cell.reset();
                     cell.set_symbol(symbol);
@@ -998,7 +994,7 @@ impl GhosttyPaneTerminal {
                 }
                 while x < area.width {
                     let cell = &mut buf[(area.x + x, area.y + y)];
-                    ghostty_reset_cell(cell, default_fg, default_bg);
+                    terminal_reset_cell(cell, default_fg, default_bg);
                     x += 1;
                 }
                 y = y.saturating_add(1);
@@ -1006,7 +1002,7 @@ impl GhosttyPaneTerminal {
             while y < area.height {
                 for x in 0..area.width {
                     let cell = &mut buf[(area.x + x, area.y + y)];
-                    ghostty_reset_cell(cell, default_fg, default_bg);
+                    terminal_reset_cell(cell, default_fg, default_bg);
                 }
                 y += 1;
             }
@@ -1045,7 +1041,7 @@ impl GhosttyPaneTerminal {
                 if let Some(hook) = core.dirty_collection_hook.take() {
                     hook();
                 }
-                ghostty_collect_dirty_patch(&mut core, area_width, area_height)
+                terminal_collect_dirty_patch(&mut core, area_width, area_height)
             },
         )
     }

@@ -5,9 +5,34 @@
 use super::*;
 use crate::input_wire::WireMouseKind;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use std::time::{Duration, Instant};
 
-const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(30);
-const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Throttle {
+    interval: Duration,
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    pub(super) fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
+    pub(super) fn admit(&mut self, now: Instant) -> bool {
+        if self
+            .last
+            .is_none_or(|last| now.saturating_duration_since(last) >= self.interval)
+        {
+            self.last = Some(now);
+            true
+        } else {
+            false
+        }
+    }
+}
 
 fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_vt::ViewportRow, u16) {
     let column = column.clamp(pane.x, pane.x + pane.width.saturating_sub(1));
@@ -230,6 +255,7 @@ impl ClientShellState {
         hit: &PaneHit,
         column: u16,
         row: u16,
+        now: Instant,
         outcome: &mut ClientShellInput,
     ) {
         let metrics = self.selection_scroll_metrics(hit);
@@ -327,7 +353,7 @@ impl ClientShellState {
             max_offset_from_bottom: metrics.max_offset_from_bottom,
         });
         self.selection_autoscroll_deadline =
-            Some(std::time::Instant::now() + SELECTION_AUTOSCROLL_INTERVAL);
+            Some(now + crate::limits::SELECTION_AUTOSCROLL_INTERVAL);
     }
 
     fn scroll_in_progress_selection(
@@ -375,10 +401,12 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn request_selection_drag_repaint(&mut self, now: std::time::Instant) -> bool {
+    pub(super) fn request_selection_drag_repaint(&mut self, now: Instant) -> bool {
+        // This gate follows the last composed frame so a suppressed drag repaints at the next
+        // eligible frame deadline; it is not an input-send throttle.
         let deadline = self
             .last_composed_at
-            .map(|last| last + SELECTION_REPAINT_INTERVAL);
+            .map(|last| last + crate::limits::SELECTION_REPAINT_INTERVAL);
         self.selection_repaint_deadline = deadline.filter(|deadline| now < *deadline);
         self.selection_repaint_deadline.is_none()
     }
@@ -462,7 +490,8 @@ impl ClientShellState {
         );
         self.push_pane_scroll_offset(autoscroll.pane_id.clone(), next_offset, &mut outcome);
         self.selection_autoscroll = Some(autoscroll);
-        self.selection_autoscroll_deadline = Some(now + SELECTION_AUTOSCROLL_INTERVAL);
+        self.selection_autoscroll_deadline =
+            Some(now + crate::limits::SELECTION_AUTOSCROLL_INTERVAL);
         outcome.repaint = true;
         outcome
     }
@@ -647,7 +676,12 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+    pub(super) fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        now: Instant,
+        outcome: &mut ClientShellInput,
+    ) {
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
@@ -780,7 +814,7 @@ impl ClientShellState {
                     hit,
                     grab_row_offset,
                     last_sent_offset,
-                    last_sent_at,
+                    throttle,
                 }) => {
                     let current_hit = self
                         .hits
@@ -797,20 +831,17 @@ impl ClientShellState {
                         self.chrome_drag = None;
                         return;
                     };
-                    let now = std::time::Instant::now();
-                    let should_send = *last_sent_offset != Some(offset)
-                        && last_sent_at.is_none_or(|last| {
-                            now.duration_since(last) >= std::time::Duration::from_millis(33)
-                        });
+                    let mut next_throttle = *throttle;
+                    let should_send = *last_sent_offset != Some(offset) && next_throttle.admit(now);
                     if should_send {
                         if let Some(ClientChromeDrag::PaneScrollbar {
                             last_sent_offset,
-                            last_sent_at,
+                            throttle,
                             ..
                         }) = self.chrome_drag.as_mut()
                         {
                             *last_sent_offset = Some(offset);
-                            *last_sent_at = Some(now);
+                            *throttle = next_throttle;
                         }
                         self.push_pane_scroll_offset(current_hit.pane_id, offset, outcome);
                     }
@@ -820,12 +851,13 @@ impl ClientShellState {
                     hit,
                     tab_id,
                     grab_offset,
-                    last_sent_at,
+                    throttle,
                     ..
                 }) => {
                     let hit = hit.clone();
                     let tab_id = tab_id.clone();
                     let grab_offset = *grab_offset;
+                    let mut next_throttle = *throttle;
                     match self.pane_split_target_is_current(&hit, &tab_id) {
                         Some(true) => {}
                         Some(false) => {
@@ -835,19 +867,16 @@ impl ClientShellState {
                         None => return,
                     }
                     let ratio = Self::pane_split_ratio(&hit, grab_offset, point);
-                    let now = std::time::Instant::now();
-                    let should_send = last_sent_at.is_none_or(|last| {
-                        now.duration_since(last) >= std::time::Duration::from_millis(33)
-                    });
+                    let should_send = next_throttle.admit(now);
                     if should_send
                         && let Some(ClientChromeDrag::PaneSplit {
                             last_sent_ratio,
-                            last_sent_at,
+                            throttle,
                             ..
                         }) = self.chrome_drag.as_mut()
                     {
                         *last_sent_ratio = Some(ratio);
-                        *last_sent_at = Some(now);
+                        *throttle = next_throttle;
                     }
                     if should_send {
                         self.push_endpoint_method(
@@ -1300,10 +1329,10 @@ impl ClientShellState {
         if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
             let selection_hit = self.active_selection_pane();
             if let Some(hit) = selection_hit {
-                self.update_selection_drag(&hit, mouse.column, mouse.row, outcome);
+                self.update_selection_drag(&hit, mouse.column, mouse.row, now, outcome);
                 // Consume every motion, but do not rebuild a frame for every intermediate position.
-                outcome.repaint |= !outcome.actions.is_empty()
-                    || self.request_selection_drag_repaint(std::time::Instant::now());
+                outcome.repaint |=
+                    !outcome.actions.is_empty() || self.request_selection_drag_repaint(now);
                 return;
             }
         }
@@ -1514,9 +1543,8 @@ impl ClientShellState {
                 if super::contains(self.hits.sidebar_divider, point)
                     && !super::contains(self.hits.sidebar_toggle, point)
                 {
-                    let now = std::time::Instant::now();
                     let double_click = self.last_sidebar_divider_click.is_some_and(|last| {
-                        now.duration_since(last) <= std::time::Duration::from_millis(350)
+                        now.duration_since(last) <= crate::limits::DOUBLE_CLICK_WINDOW
                     });
                     self.last_sidebar_divider_click = Some(now);
                     if double_click {
@@ -1759,7 +1787,7 @@ impl ClientShellState {
                             hit,
                             grab_row_offset,
                             last_sent_offset: None,
-                            last_sent_at: None,
+                            throttle: Throttle::new(crate::limits::MOUSE_DRAG_SEND_INTERVAL),
                         });
                     } else if let Some(offset) = Self::pane_scrollbar_offset(&hit, mouse.row, None)
                     {
@@ -1788,7 +1816,7 @@ impl ClientShellState {
                     self.chrome_drag = Some(ClientChromeDrag::PaneSplit {
                         grab_offset: i32::from(hit.pos) - i32::from(pointer),
                         last_sent_ratio: None,
-                        last_sent_at: None,
+                        throttle: Throttle::new(crate::limits::MOUSE_DRAG_SEND_INTERVAL),
                         hit,
                         tab_id,
                     });
@@ -1815,7 +1843,7 @@ impl ClientShellState {
                             pane_id: hit.pane_id.clone(),
                             viewport_row: mouse.row.saturating_sub(hit.inner_rect.y),
                             col: mouse.column.saturating_sub(hit.inner_rect.x),
-                            at: std::time::Instant::now(),
+                            at: now,
                         };
                         if let Some(metrics) = hit.scroll {
                             if mouse.modifiers.is_empty()

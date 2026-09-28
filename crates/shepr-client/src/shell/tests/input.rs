@@ -579,6 +579,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
                 row: body.y,
                 modifiers: KeyModifiers::NONE,
             },
+            std::time::Instant::now(),
             &mut ClientShellInput::default(),
         );
     }
@@ -622,6 +623,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
             row: popup.y + popup.height / 2,
             modifiers: KeyModifiers::NONE,
         },
+        std::time::Instant::now(),
         &mut outcome,
     );
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));

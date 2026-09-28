@@ -124,16 +124,16 @@ impl CliCommand {
     pub(crate) fn subcommand_name(&self) -> Option<&'static str> {
         match self {
             Self::Status(command) => command.name(),
-            Self::Config(command) => command.name(),
-            Self::Machine(command) => command.name(),
-            Self::Server(command) => command.name(),
-            Self::Workspace(command) => command.name(),
-            Self::Tab(command) => command.name(),
-            Self::Agent(command) => command.name(),
-            Self::Pane(command) => command.name(),
-            Self::Terminal(command) => command.name(),
-            Self::Session(command) => command.name(),
-            Self::Integration(command) => command.name(),
+            Self::Config(command) => Some(command.name()),
+            Self::Machine(command) => Some(command.name()),
+            Self::Server(command) => Some(command.name()),
+            Self::Workspace(command) => Some(command.name()),
+            Self::Tab(command) => Some(command.name()),
+            Self::Agent(command) => Some(command.name()),
+            Self::Pane(command) => Some(command.name()),
+            Self::Terminal(command) => Some(command.name()),
+            Self::Session(command) => Some(command.name()),
+            Self::Integration(command) => Some(command.name()),
         }
     }
 
@@ -167,9 +167,9 @@ impl ConfigCommand {
         }
     }
 
-    fn name(self) -> Option<&'static str> {
+    fn name(self) -> &'static str {
         match self {
-            Self::Check => Some("check"),
+            Self::Check => "check",
         }
     }
 
@@ -205,10 +205,10 @@ impl TerminalCommand {
         }
     }
 
-    fn name(&self) -> Option<&'static str> {
+    fn name(&self) -> &'static str {
         match self {
-            Self::Attach { .. } => Some("attach"),
-            Self::TitleSet { .. } | Self::TitleClear => Some("title"),
+            Self::Attach { .. } => "attach",
+            Self::TitleSet { .. } | Self::TitleClear => "title",
         }
     }
 
@@ -256,11 +256,11 @@ impl SessionCommand {
         }
     }
 
-    fn name(&self) -> Option<&'static str> {
+    fn name(&self) -> &'static str {
         match self {
-            Self::List { .. } => Some("list"),
-            Self::Stop { .. } => Some("stop"),
-            Self::Delete { .. } => Some("delete"),
+            Self::List { .. } => "list",
+            Self::Stop { .. } => "stop",
+            Self::Delete { .. } => "delete",
         }
     }
 
@@ -757,6 +757,38 @@ pub(super) fn print_response(response: &serde_json::Value) -> CliResult<i32> {
     Ok(0)
 }
 
+#[derive(Clone, Copy)]
+enum MethodResponseMode {
+    Print,
+    ErrorsOnly,
+}
+
+fn send_method_response(
+    context: &target::CliContext,
+    id: &'static str,
+    method: Method,
+    mode: MethodResponseMode,
+) -> CliResult<i32> {
+    let response = send_request(
+        context,
+        &Request {
+            id: id.into(),
+            method,
+        },
+    )?;
+
+    match mode {
+        MethodResponseMode::Print => print_response(&response),
+        MethodResponseMode::ErrorsOnly => {
+            if print_response_error(&response)? {
+                Ok(1)
+            } else {
+                Ok(0)
+            }
+        }
+    }
+}
+
 fn print_response_error(response: &serde_json::Value) -> CliResult<bool> {
     if response.get("error").is_none() {
         return Ok(false);
@@ -766,22 +798,6 @@ fn print_response_error(response: &serde_json::Value) -> CliResult<bool> {
         serde_json::to_string(response).map_err(std::io::Error::other)?
     );
     Ok(true)
-}
-
-fn send_ok_request(context: &target::CliContext, method: Method) -> CliResult<i32> {
-    let response = send_request(
-        context,
-        &Request {
-            id: "cli:request".into(),
-            method,
-        },
-    )?;
-
-    if print_response_error(&response)? {
-        return Ok(1);
-    }
-
-    Ok(0)
 }
 
 fn send_request(context: &target::CliContext, request: &Request) -> CliResult<serde_json::Value> {
@@ -1259,10 +1275,13 @@ mod tests {
         let response = super::server_not_running::reported_response(&mapped)
             .expect("dead-server connect failure should carry a server_not_running response");
         assert_eq!(response.id, "cli:workspace:create");
-        assert_eq!(response.error.code, "server_not_running");
+        assert_eq!(
+            response.error.code,
+            shepr_api::error::ApiErrorCode::ServerNotRunning.as_str()
+        );
         assert!(response.error.message.contains(&socket));
 
-        // The typed error preserves the response without string matching.
+        // The API error code is checked through its canonical constant.
         assert!(super::server_not_running::was_reported(&mapped));
     }
 

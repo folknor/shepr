@@ -335,9 +335,13 @@ mod tests {
             super::super::target::CliContext::test_local(shepr_config::AppPaths::test_default());
         let value =
             serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
-        assert_eq!(value["capabilities"]["ssh_agent_registration"], false);
-        assert!(value["capabilities"].get("surface_interest").is_none());
-        assert!(value["capabilities"].get("health_check").is_none());
+        assert_eq!(
+            value["capabilities"],
+            serde_json::json!({
+                "detached_server_daemon": true,
+                "ssh_agent_registration": false,
+            })
+        );
     }
 
     #[test]

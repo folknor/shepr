@@ -8,11 +8,11 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(super) fn name(self) -> Option<&'static str> {
+    pub(super) fn name(self) -> &'static str {
         match self {
-            Self::Stop { .. } => Some("stop"),
-            Self::AgentManifests { .. } => Some("agent-manifests"),
-            Self::ReloadAgentManifests => Some("reload-agent-manifests"),
+            Self::Stop { .. } => "stop",
+            Self::AgentManifests { .. } => "agent-manifests",
+            Self::ReloadAgentManifests => "reload-agent-manifests",
         }
     }
 

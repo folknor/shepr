@@ -245,6 +245,7 @@ impl ClientState {
     /// A failed write is handled here rather than by callers: the frame is not committed, the
     /// next frame repaints in full (`repaint_pending`), and the failure is logged once per cause
     /// through `frame_write_failure` rather than once per frame.
+    /// Callers have no separate recovery action, so the write result stays owned by this state.
     pub(super) fn present_frame(&mut self, frame_data: impl Into<frame_output::ComposedFrame>) {
         if self.presentation_frozen {
             return;

@@ -32,6 +32,7 @@ impl ForwardOutcome {
 pub(super) fn forward_input(
     write_stream: &mut super::endpoint::EndpointRegistry,
     data: &[u8],
+    now: std::time::Instant,
 ) -> ForwardOutcome {
     use super::endpoint::EndpointSendOutcome;
 
@@ -55,7 +56,7 @@ pub(super) fn forward_input(
         };
     }
     let flush = |stream: &mut super::endpoint::EndpointRegistry| {
-        stream.flush_active(std::time::Instant::now() + std::time::Duration::from_secs(5))
+        stream.flush_active(now + crate::limits::ENDPOINT_WRITE_TIMEOUT)
     };
     // Other oversized input is plain bytes the server writes to the pane
     // as-is, so it can be split. The endpoint writer has a bounded queue:
@@ -574,6 +575,7 @@ mod tests {
         forward_input(
             &mut registry,
             &vec![b'x'; shepr_protocol::MAX_FRAME_SIZE + 17],
+            std::time::Instant::now(),
         );
         let sent = sent.lock().expect("test precondition");
         assert_eq!(
@@ -613,7 +615,7 @@ mod tests {
         paste.extend(vec![b'x'; shepr_protocol::MAX_INPUT_PAYLOAD]);
         paste.extend_from_slice(b"\x1b[201~");
 
-        let outcome = forward_input(&mut registry, &paste);
+        let outcome = forward_input(&mut registry, &paste, std::time::Instant::now());
         assert_eq!(
             outcome,
             ForwardOutcome::PasteRejected {
@@ -629,7 +631,10 @@ mod tests {
         assert_eq!(*sent.lock().expect("test precondition"), 0);
 
         let small = b"\x1b[200~hello\x1b[201~";
-        assert_eq!(forward_input(&mut registry, small), ForwardOutcome::Sent);
+        assert_eq!(
+            forward_input(&mut registry, small, std::time::Instant::now()),
+            ForwardOutcome::Sent
+        );
         assert_eq!(*sent.lock().expect("test precondition"), 1);
     }
 

@@ -1,3 +1,4 @@
+use super::random::unpredictable_token;
 use super::*;
 use shepr_core::socket_path::{UNIX_SOCKET_PATH_MAX, fits_unix_socket_path};
 use std::path::{Path, PathBuf};
@@ -26,11 +27,7 @@ pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathB
 
     validate_ssh_runtime_dir(runtime_dir)?;
     for _ in 0..16 {
-        let dir = runtime_dir.join(format!(
-            "shepr-ssh-{}-{:016x}",
-            std::process::id(),
-            unpredictable_token()
-        ));
+        let dir = runtime_dir.join(format!("shepr-ssh-{:016x}", unpredictable_token()?));
         match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
             Ok(()) => return Ok(dir),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -53,7 +50,7 @@ pub fn remote_bridge_endpoint_path(
     short_name: &str,
 ) -> std::io::Result<PathBuf> {
     validate_ssh_runtime_dir(runtime_dir)?;
-    let token = unpredictable_token();
+    let token = unpredictable_token()?;
     let readable_name = with_name_token(readable_name, token);
     let short_name = with_name_token(short_name, token);
     let readable = runtime_dir.join(&readable_name);
@@ -64,10 +61,22 @@ pub fn remote_bridge_endpoint_path(
     if fits_unix_socket_path(&short) {
         return Ok(short);
     }
+    let readable_len = unix_socket_path_len(&readable);
+    let short_len = unix_socket_path_len(&short);
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
-        "SSH bridge socket path exceeds the Unix socket length limit",
+        format!(
+            "SSH bridge socket paths do not fit Linux's Unix socket limit of {UNIX_SOCKET_PATH_MAX} bytes: readable path {} is {readable_len} bytes and compact path {} is {short_len} bytes; shorten XDG_RUNTIME_DIR",
+            readable.display(),
+            short.display(),
+        ),
     ))
+}
+
+fn unix_socket_path_len(path: &Path) -> usize {
+    use std::os::unix::ffi::OsStrExt;
+
+    path.as_os_str().as_bytes().len()
 }
 
 /// `name` with `.{token:016x}` inserted before its extension, or appended
@@ -77,23 +86,6 @@ pub(super) fn with_name_token(name: &str, token: u64) -> String {
         Some((stem, extension)) if !stem.is_empty() => format!("{stem}.{token:016x}.{extension}"),
         _ => format!("{name}.{token:016x}"),
     }
-}
-
-/// 64 bits another local user cannot predict: getrandom(2), or std's
-/// OS-seeded hasher keys if that fails.
-pub(super) fn unpredictable_token() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-
-    let mut bytes = [0_u8; 8];
-    // SAFETY: getrandom(2) writes at most `bytes.len()` bytes into a live
-    // stack buffer and keeps no reference to it.
-    let filled = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
-    if usize::try_from(filled).is_ok_and(|filled| filled == bytes.len()) {
-        return u64::from_ne_bytes(bytes);
-    }
-    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    hasher.write_u32(std::process::id());
-    hasher.finish()
 }
 
 /// Shared OpenSSH sockets outlive individual helpers. Keep them in the
@@ -166,7 +158,10 @@ pub fn ssh_control_path_under(
     if staging_path_len > UNIX_SOCKET_PATH_MAX {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "SSH control socket staging path exceeds the Unix socket length limit",
+            format!(
+                "SSH control socket staging path for {} is {staging_path_len} bytes; Linux's Unix socket limit is {UNIX_SOCKET_PATH_MAX} bytes, so shorten XDG_RUNTIME_DIR",
+                path.display(),
+            ),
         ));
     }
     Ok(path)
@@ -189,6 +184,9 @@ pub(super) fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
     let metadata = std::fs::symlink_metadata(dir)?;
     if !metadata.is_dir() || metadata.uid() != effective_uid() || metadata.mode() & 0o7777 != 0o700
     {
+        // Keep this unit error as io::Error's direct payload: shepr-remote
+        // downcasts it to classify launch failures and constructs the unit
+        // value in its tests. Path context needs a coordinated caller update.
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             UnsafeSshRuntimeDirectory,

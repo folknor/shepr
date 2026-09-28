@@ -56,11 +56,6 @@ pub(crate) enum AppPolicy {
 }
 
 impl AppPolicy {
-    pub(crate) const PRODUCTION: Self = Self::Production;
-
-    #[cfg(test)]
-    pub(crate) const TEST: Self = Self::Test;
-
     pub(crate) fn persists_session(self) -> bool {
         matches!(self, Self::Production)
     }
@@ -86,8 +81,10 @@ pub struct App {
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_saver: session::SessionSaver,
     tab_bar_status: tab_bar_status::TabBarStatus,
-    /// Parsed `ui.window_title` plus the hostname resolved when it was applied.
-    window_title_template: Option<(shepr_config::WindowTitleTemplate, String)>,
+    /// Host name resolved once for the title and tab bar.
+    hostname: String,
+    /// Parsed `ui.window_title`.
+    window_title_template: Option<shepr_config::WindowTitleTemplate>,
     pub(crate) persist_pane_history: bool,
     /// Pane history kept across saves (restored panes not yet running, the
     /// last primary screen of panes on the alternate screen); every history
@@ -154,6 +151,7 @@ impl App {
         let pane_teardowns = Arc::new(shepr_mux::pane::PaneTeardownTracker::default());
         let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
+        let hostname = shepr_platform::hostname().unwrap_or_default();
 
         // `agent_manifest_summaries` come from bootstrap, which builds the
         // process-wide registry before restore can start PTY detection.
@@ -184,16 +182,9 @@ impl App {
             // (what the server lays out against until a client attaches); the
             // first view computation resizes each to its split. The saved
             // host theme supplies colours until a live client reports its own.
-            let headless_cols = settings.headless_size.cols.get();
-            let headless_rows = settings.headless_size.rows.get();
-            let (restore_rows, restore_cols) = shepr_mux::workspace::PaneGeometry {
-                area: Rect::new(0, 0, headless_cols, headless_rows),
-                pane_borders: settings.pane_borders,
-                pane_gaps: settings.pane_gaps,
-                pane_outer_borders: settings.pane_outer_borders,
-                pane_scrollbars: settings.pane_scrollbars,
-            }
-            .sole_pane_size();
+            let (restore_rows, restore_cols) = settings
+                .pane_geometry_in(settings.headless_rect())
+                .sole_pane_size();
             let api_socket_path = shepr_api::socket_path(&paths);
             let restored = shepr_mux::persist::restore(
                 &snap,
@@ -211,6 +202,7 @@ impl App {
                 &render_notify,
                 &render_dirty,
                 &pane_teardowns,
+                Instant::now(),
             );
             restored_terminals = restored.terminals;
             restored_terminal_runtimes = restored.terminal_runtimes.into();
@@ -317,6 +309,7 @@ impl App {
             next_agent_resume_at: None,
             session_saver: session::SessionSaver::new(session_writer),
             tab_bar_status: tab_bar_status::TabBarStatus::default(),
+            hostname,
             window_title_template: None,
             persist_pane_history: config.experimental().pane_history,
             pane_history_carry,
@@ -436,7 +429,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             shepr_api::EventHub::default(),
         );
@@ -601,7 +594,7 @@ mod tests {
 
         let app = App::new(
             &config,
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             shepr_api::EventHub::default(),
         );
@@ -745,7 +738,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             event_hub.clone(),
         );
@@ -1572,7 +1565,7 @@ mod tests {
     #[test]
     fn session_dirty_flag_schedules_debounced_save() {
         let mut app = test_app();
-        app.policy = AppPolicy::PRODUCTION;
+        app.policy = AppPolicy::Production;
         app.state.session_dirty = true;
 
         app.sync_session_save_schedule();
@@ -1609,7 +1602,7 @@ mod tests {
     #[test]
     fn due_session_save_starts_background_writer() {
         let mut app = test_app();
-        app.policy = AppPolicy::PRODUCTION;
+        app.policy = AppPolicy::Production;
         app.state.workspaces = vec![Workspace::test_new("autosave")];
         app.state.ensure_test_terminals();
         app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
@@ -1621,7 +1614,7 @@ mod tests {
         app.save_session_now();
         assert!(
             shepr_api::session::data_dir(&app.paths)
-                .join("session.json")
+                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("stat session file")
         );
@@ -1659,7 +1652,7 @@ mod tests {
     #[test]
     fn background_session_save_reschedules_when_writer_is_busy() {
         let mut app = test_app();
-        app.policy = AppPolicy::PRODUCTION;
+        app.policy = AppPolicy::Production;
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
             release_rx.recv().expect("test releases the save thread");
@@ -1673,14 +1666,14 @@ mod tests {
         assert!(app.session_saver.session_save_deadline.is_some());
 
         release_tx.send(()).expect("test precondition");
-        app.policy = AppPolicy::TEST;
+        app.policy = AppPolicy::Test;
         app.save_session_now();
     }
 
     #[test]
     fn final_session_save_joins_background_writer_before_returning() {
         let mut app = test_app();
-        app.policy = AppPolicy::TEST;
+        app.policy = AppPolicy::Test;
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
@@ -1703,7 +1696,7 @@ mod tests {
     #[tokio::test]
     async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
         let mut app = test_app();
-        app.policy = AppPolicy::PRODUCTION;
+        app.policy = AppPolicy::Production;
         let mut workspace = Workspace::test_new("preserved");
         let first_pane = workspace.tabs()[0].root_pane;
         let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
@@ -1737,7 +1730,7 @@ mod tests {
     #[test]
     fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
         let mut app = test_app();
-        app.policy = AppPolicy::PRODUCTION;
+        app.policy = AppPolicy::Production;
         let workspace = Workspace::test_new("closed");
         let pane_id = workspace.tabs()[0].root_pane;
         app.state.workspaces = vec![workspace];
@@ -1750,9 +1743,11 @@ mod tests {
         });
         // The app still holds the data-dir lease, so the checkpoint is parsed
         // directly rather than through `persist::load`.
-        let checkpoint =
-            std::fs::read_to_string(shepr_api::session::data_dir(&app.paths).join("session.json"))
-                .expect("the pane exit writes a checkpoint");
+        let checkpoint = std::fs::read_to_string(
+            shepr_api::session::data_dir(&app.paths)
+                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
+        )
+        .expect("the pane exit writes a checkpoint");
         assert!(shepr_mux::persist::snapshot::parse_snapshot(&checkpoint).is_ok());
         assert!(
             app.session_saver.session_save_deadline.is_some(),
@@ -1774,7 +1769,7 @@ mod tests {
 
         assert!(
             !shepr_api::session::data_dir(&app.paths)
-                .join("session.json")
+                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat")
         );
@@ -1783,7 +1778,7 @@ mod tests {
     #[test]
     fn reader_panic_removes_the_pane_without_a_checkpoint() {
         let mut app = test_app();
-        app.policy = AppPolicy::PRODUCTION;
+        app.policy = AppPolicy::Production;
         let workspace = Workspace::test_new("broken");
         let pane_id = workspace.tabs()[0].root_pane;
         app.state.workspaces = vec![workspace];
@@ -1798,7 +1793,7 @@ mod tests {
         assert!(app.state.workspaces.is_empty());
         assert!(
             !shepr_api::session::data_dir(&app.paths)
-                .join("session.json")
+                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat")
         );
@@ -1808,7 +1803,7 @@ mod tests {
     fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
         for another_interrupted_exit in [false, true] {
             let mut app = test_app();
-            app.policy = AppPolicy::PRODUCTION;
+            app.policy = AppPolicy::Production;
             let workspace = Workspace::test_new("old");
             let pane_id = workspace.tabs()[0].root_pane;
             app.state.workspaces = vec![workspace];

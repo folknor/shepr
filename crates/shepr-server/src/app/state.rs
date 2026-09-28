@@ -138,6 +138,25 @@ impl AppSettings {
             palette: config.palette().clone(),
         }
     }
+
+    pub(crate) fn headless_rect(&self) -> Rect {
+        Rect::new(
+            0,
+            0,
+            self.headless_size.cols.get(),
+            self.headless_size.rows.get(),
+        )
+    }
+
+    pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::PaneGeometry {
+        shepr_mux::workspace::PaneGeometry {
+            area,
+            pane_borders: self.pane_borders,
+            pane_gaps: self.pane_gaps,
+            pane_outer_borders: self.pane_outer_borders,
+            pane_scrollbars: self.pane_scrollbars,
+        }
+    }
 }
 
 impl AppState {
@@ -197,12 +216,7 @@ impl AppState {
     /// (at startup, or when no client has ever attached).
     pub(crate) fn pane_geometry(&self) -> shepr_mux::workspace::PaneGeometry {
         let area = if self.view.terminal_area.is_empty() {
-            Rect::new(
-                0,
-                0,
-                self.settings.headless_size.cols.get(),
-                self.settings.headless_size.rows.get(),
-            )
+            self.settings.headless_rect()
         } else {
             self.view.terminal_area
         };
@@ -211,13 +225,7 @@ impl AppState {
 
     /// The configured pane chrome applied to a tab laid out in `area`.
     pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::PaneGeometry {
-        shepr_mux::workspace::PaneGeometry {
-            area,
-            pane_borders: self.settings.pane_borders,
-            pane_gaps: self.settings.pane_gaps,
-            pane_outer_borders: self.settings.pane_outer_borders,
-            pane_scrollbars: self.settings.pane_scrollbars,
-        }
+        self.settings.pane_geometry_in(area)
     }
 
     /// The live runtime of `pane_id` in workspace `ws_idx`: the pane's

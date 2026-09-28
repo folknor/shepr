@@ -282,7 +282,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             event_hub.clone(),
         );
@@ -344,7 +344,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             event_hub.clone(),
         );
@@ -409,7 +409,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             event_hub.clone(),
         );
@@ -458,7 +458,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            crate::app::AppPolicy::TEST,
+            crate::app::AppPolicy::Test,
             api_rx,
             event_hub,
         );

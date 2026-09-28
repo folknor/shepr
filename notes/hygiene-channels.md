@@ -91,12 +91,6 @@ return one outcome shape formatted in one place.)
   running at ...; run `X` to start or attach it"). All three answer "what should
   the operator type next", and the two-sentence structure ("Stopping exits pane
   processes") appears in two of them with different wording.
-- `shepr-config`'s `ConfigDiagnostic::Display` is `f.write_str(self.message())`;
-  the strings are built at about 40 call sites with ad-hoc prefixes ("config
-  read error: {err}", "config parse error: {err}", "config provenance error:
-  {error}", "config path error: {error}", "session selection error: {error}",
-  "application paths could not be resolved", "state directory error: {error}").
-  The prefix is the variant name restated in prose, at every site, by hand.
 - `shepr-mux/src/persist/restore.rs` builds two operator-facing restore failure
   strings at the failure site ("Saved directory is unavailable. Restore the
   directory and restart this session." and "Could not start the saved shell:
@@ -117,9 +111,7 @@ return one outcome shape formatted in one place.)
 
 Enforcement named: have each install return a
 `Vec<(InstalledArtifact, PathBuf)>` and format once (agent); one guidance
-builder taking a target descriptor (CLI - "not lintable"); move the prefix into
-`Display` keyed on the variant (config), which also makes the variant
-load-bearing; make `restore_error` a typed enum
+builder taking a target descriptor (CLI - "not lintable"); make `restore_error` a typed enum
 (`RestoreFailure::DirectoryUnavailable { path }` / `ShellStartFailed { err }`)
 and put the wording in whatever owns presentation - a `String` field invites
 ad-hoc text, an enum does not; one `fn paste_rejected_notice(size, max)`; one
@@ -347,17 +339,10 @@ line anywhere (see also HYGC-029).
 fails to go out, the client waits for a reply that can never come and falls back
 to `DEFAULT_CELL_WIDTH_PX`/`DEFAULT_CELL_HEIGHT_PX` (8x16) with no line logged;
 pixel-accurate mouse and resize reporting silently degrade to a guess.
-`restore_terminal_state` discards `host_modes.restore`'s error with `let _ =` and
-only reports `ratatui::try_restore`'s, so a failure to pop the kitty keyboard
-stack - the single most user-visible restore failure - is invisible.
 
 `shepr-protocol`/`shepr-config`: the swallowed remote `ValidatedConfig` decode in
 `shepr-client/src/shell/endpoints.rs` leaves a `None` as its only trace. (The
 protocol/config hunter filed that swallow itself as a live defect.)
-Separately, `config check` classifies every diagnostic into a `ConfigDiagnostic`
-variant and then nothing ever reads the variant, so the classification never
-reaches any channel (the dead-classification half of that belongs to the
-dead-code sibling document).
 
 ## HYGC-016 - An unrecognised hook source or agent label silently downgrades a pane, and nothing is logged
 
@@ -401,12 +386,9 @@ finding is filed.
   the reason away. The reasons are never logged or counted, so a fallback storm
   is invisible. The same macro pattern appears in `retained_surface.rs`.
 
-Also recorded from the same scope: a poisoned core is logged twice under
-different names - `"ghostty core lock poisoned in reader"` in mux
-`pane/terminal/backend.rs`, and again by the actor as "terminal core is broken
-... closing the pane". The ghostty backend no longer exists, so the first line
-names a component that is not present (the naming half of that is in the stale
-claims sibling document).
+Also recorded from the same scope: a poisoned core is logged twice, once by the
+mux reader in `pane/terminal/backend.rs` and again by the actor as "terminal
+core is broken ... closing the pane".
 
 Enforcement named: make the `fallback!` macro record the reason; a counter or
 rate-limited log for the inbox drops.
@@ -417,17 +399,11 @@ Gathered from six scopes.
 
 `shepr-platform`:
 
-- `ssh_paths.rs` "SSH bridge socket path exceeds the Unix socket length limit" -
-  no path, no length, no limit. The operator's only fix is to shorten
-  `XDG_RUNTIME_DIR`, which the message never mentions. The control-socket site
-  has the same shape.
 - `UnsafeSshRuntimeDirectory`'s `Display` names the three requirements but not
   the directory that failed them, and `validate_shared_ssh_dir` has the path in
-  hand.
-- `ipc.rs` "lock must be a regular file owned by this user" - no path, no uid.
-- `ssh_agent.rs` "SSH agent must be an absolute, user-owned socket" - no path,
-  and it covers three distinct rejections (relative, self-referential, not a
-  user-owned socket) with one string.
+  hand. Adding the path means changing the unit value that
+  `shepr-remote/src/remote/saved.rs` downcasts and that its tests construct, so
+  it needs one fixer holding both crates.
 
 `shepr-config`/`shepr-protocol`:
 
@@ -435,12 +411,6 @@ Gathered from six scopes.
   remaining" - no host, no endpoint, no session.
 - `FramingError::SurfaceDecode(String)` and `CodecError::Message(String)` flow to
   the client with no pane, boot id or revision attached.
-- `ConfigDiagnostic::Validation("configuration values could not be resolved")`
-  in `model.rs::into_validated` - the final refusal on the launch path, naming
-  nothing at all. It fires when `resolution.values` is `None` while
-  `diagnostics` is empty, i.e. exactly the case where nothing else explained the
-  failure. `resolve_paths_from_env`'s `Err(vec!["application paths could not be
-  resolved".to_string()])` is the same shape on the same path.
 
 `shepr-server`: the API not-found errors now go through shared helpers in
 `app/api_helpers.rs` that own the code and name the identifier. Open: the two
@@ -469,7 +439,8 @@ banning the bare literals; either use or delete the `_context` parameter.
 ## HYGC-023 - Stringly-typed errors, and classification by `ErrorKind`, shed the category
 
 - `shepr-remote`: every validation and IO failure in `machine/catalog.rs`,
-  `target.rs`, `profile_id.rs` and `executable.rs` is a `String`.
+  `target.rs` and `profile_id.rs` is a `String` (`executable.rs` now returns a
+  typed `RemoteExecutableError`).
   `src/cli/machine.rs` then wraps them with `std::io::Error::other(error)` and
   sometimes prefixes them ("remote prepared, but machine was not saved:
   {error}"). Nothing downstream can branch on why the catalog was rejected -
@@ -489,10 +460,6 @@ banning the bare literals; either use or delete the `_context` parameter.
   no way to refuse. Given the project's "any config problem fails the launch"
   posture, an override that does not compile arguably ought to fail
   `shepr config check` rather than warn at runtime.
-- `shepr-agent`: `RemoteExecutable::needs_shell_quoting` exists only to produce a
-  diagnostic for a path `parse` already rejected, re-running the same predicate
-  from outside, so the rejection reason is computed twice by two functions that
-  must agree. (Reported in the remote scope; same shape.)
 - `shepr-mux`: `AppEvent::TabBarCommandFinished` carries
   `Result<Option<String>, String>` across an internal channel. The subject
   (which command, which segment's configured argv) is not in the error, only in
@@ -500,16 +467,12 @@ banning the bare literals; either use or delete the `_context` parameter.
   neither is attached. The rest of `AppEvent` is fully typed.
   `TerminalState::restore_error: Option<String>` is the same shape (see
   HYGC-005).
-- `shepr-config`: `into_config`'s error type is `Result<Config, String>` for a
-  case that cannot occur - a stringly-typed error on the config decode path,
-  which is where the context loss in HYGC-022 comes from.
 
 Enforcement named: typed errors - `CatalogError` mirroring
 `SshFailureDiagnostic`'s design; `print_saved_ssh_error_hint` taking `&SshFailureDiagnostic` rather than
 `&io::Error`, so the typed value must be threaded; a typed
 `ManifestOverrideError` plus a `config check` path that loads overrides; a typed
-error carrying the segment's configured command; structured error types instead
-of `String` payloads in `shepr-config`.
+error carrying the segment's configured command.
 
 ## HYGC-024 - Multi-line error strings, and a renderer that mangles them
 
@@ -661,19 +624,3 @@ leaves production crates' `test-support` features for dev-only crates, held by
   `assert!`s once, so if anything ever enables `test-support` in a non-test build
   a panicking API is exported from a library that otherwise bans `unwrap`. (The
   feature-unification half of that is filed with the test findings.)
-
-## HYGC-035 - Presentation and restore results discarded in the client
-
-- `shepr-client/src/state.rs`: `pub fn present_frame(&mut self, ...) { let _ =
-  self.try_present_frame(...); }`. `try_present_frame`'s doc says callers who
-  care about presentation-sensitive work use the return value, and
-  `present_frame` is the wrapper that makes not caring the default.
-  `present_frozen_chrome` and `present_chrome` both go through it, so every
-  chrome path (machine statuses, diagnostics, overlays, the machine list) drops
-  presentation failure. `repaint_pending` is set inside on failure, so it is not
-  lost entirely, but no caller learns. Enforcement named: partly - deleting
-  `present_frame` and making callers handle the `bool` is a type-level fix;
-  whether each caller then does the right thing is review.
-- `shepr-client/src/terminal_setup.rs::restore_terminal_state` discards
-  `host_modes.restore`'s error with `let _ =` and reports only
-  `ratatui::try_restore`'s (also listed under HYGC-014).

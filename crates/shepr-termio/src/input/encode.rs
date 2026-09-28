@@ -44,8 +44,8 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
     // A release event only produces bytes when the pane protocol reports event
     // types (Kitty REPORT_EVENT_TYPES). Otherwise the child expects a single
     // legacy byte per keystroke, so re-emitting it on release would double keys
-    // like Enter/Backspace. The Ghostty wrapper can route release events through
-    // this fallback, so guard the fallback encoder too.
+    // like Enter/Backspace. Release events can reach this fallback encoder,
+    // so it must enforce the same event-type gate.
     if key.kind == crossterm::event::KeyEventKind::Release && !protocol.reports_event_types() {
         return Vec::new();
     }

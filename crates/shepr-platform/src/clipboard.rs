@@ -4,7 +4,7 @@
 
 use super::*;
 use std::{
-    io::{Read, Write},
+    io::Write,
     os::fd::AsRawFd,
     process::Stdio,
     time::{Duration, Instant},
@@ -136,23 +136,6 @@ pub(super) fn read_clipboard_text_commands(session: ClipboardSession) -> Vec<Cli
     commands
 }
 
-/// A reader that fails with `TimedOut` instead of blocking past `deadline`.
-struct DeadlineReader<R> {
-    inner: R,
-    deadline: Instant,
-}
-
-impl<R: Read + AsRawFd> Read for DeadlineReader<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        let timed_out = || std::io::Error::from(std::io::ErrorKind::TimedOut);
-        let wait_ms = poll_timeout_until(self.deadline).ok_or_else(timed_out)?;
-        if !poll_fd_readable(self.inner.as_raw_fd(), wait_ms)? {
-            return Err(timed_out());
-        }
-        self.inner.read(buffer)
-    }
-}
-
 /// Stop a helper that failed or ran out of time.
 ///
 /// The clipboard request has already failed by the time this runs, so the
@@ -242,10 +225,7 @@ pub(super) fn read_clipboard_text_with_command(
         kill_and_reap(&mut child);
         return None;
     };
-    let stdout = DeadlineReader {
-        inner: stdout,
-        deadline,
-    };
+    let stdout = super::child_io::DeadlineReader::new(stdout, deadline);
     let bytes = match read_limited_reader(stdout, MAX_CLIPBOARD_TEXT_BYTES) {
         Ok(LimitedRead::Complete(bytes)) => Some(bytes),
         Ok(LimitedRead::Empty) => None,

@@ -1,8 +1,5 @@
 #[path = "remote/args.rs"]
 mod args;
-#[cfg(test)]
-#[path = "remote/attach.rs"]
-mod attach;
 #[path = "remote/bridge.rs"]
 mod bridge;
 #[path = "remote/discovery.rs"]
@@ -44,7 +41,7 @@ pub use server_lifecycle::{Confirmation, Operator};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SshFailure {
+enum SshFailure {
     Authentication,
     HostKey,
     Link,
@@ -71,11 +68,11 @@ enum SshFailureOrigin {
 }
 
 impl SshFailure {
-    pub fn requires_authentication(self) -> bool {
+    fn requires_authentication(self) -> bool {
         self == Self::Authentication
     }
 
-    pub fn needs_attention(self) -> bool {
+    fn needs_attention(self) -> bool {
         matches!(
             self,
             Self::Authentication | Self::HostKey | Self::Compatibility
@@ -133,10 +130,6 @@ impl SshFailureDiagnostic {
             origin: SshFailureOrigin::SshOutput(exit_code),
             message,
         }
-    }
-
-    pub fn failure(&self) -> SshFailure {
-        self.failure
     }
 
     /// Adds display context while retaining this diagnostic's structured class.

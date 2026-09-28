@@ -90,31 +90,6 @@ deadlines and could take a clock. `shepr-client`'s `endpoint/health.rs` and
 `shepr-mux`'s `terminal/state/**` and `pane/process_probe.rs` are named as the
 in-repo models that already thread `now` and need no sleeps.
 
-## HYGG-006 - A persist test fabricates a file mtime a day in the future to walk past a gate
-
-Residue. The snapshot-preservation logic in `shepr-mux/src/persist/writer.rs`
-takes `now` and the mtime fabrication is gone. Open:
-
-- The public `save` and `clear` entry points still read `SystemTime::now()`
-  (each with a boundary comment); moving the read out means
-  `shepr-server/src/app/session.rs` passes `now` in.
-- `persist/restore.rs` has a runtime clock read of its own.
-- The textlint holding it is not wired. Proposed by the fixer:
-
-```toml
-[[textlint]]
-name = "persist-snapshot-clock-is-injected"
-pattern = '\b(?:SystemTime|Instant)::now\s*\('
-paths = ["crates/shepr-mux/src/persist/writer.rs"]
-region = "code"
-allow_marker = "persist-clock-boundary-ok"
-allow_marker_above = 2
-message = "pass now into snapshot preservation logic; clock reads need an explicit boundary exception"
-```
-
-Once `save`/`clear` take `now`, widen `paths` to `src/persist/` and drop the
-allow marker.
-
 ## HYGG-010 - Tests that take their inputs from the developer's directory layout
 
 **Decision (partial):** `snapshot_tests.rs`'s raw `std::env::var("HOME")` is
@@ -281,31 +256,6 @@ history is empty cannot distinguish "no events were emitted" from "the lock is
 poisoned" - a test that can pass for the wrong reason. Enforcement named: delete
 `events_after` and have tests use `events_after_checked(..).expect(..)`.
 
-## HYGG-035 - `status_exposes_only_dynamic_server_capabilities` asserts the absence of fields no type has
-
-`src/cli/status.rs`:
-`assert!(value["capabilities"].get("surface_interest").is_none())` and
-`..get("health_check").is_none()`. `ServerCapabilitiesJson` has exactly two
-fields, so both assertions are true for any possible value of the struct - they
-cannot fail. They read as a guard against re-adding removed capabilities, but
-nothing connects them to that intent; the real guard is the struct definition.
-
-## HYGG-041 - `attach.rs` is a 1112-line test file named after a subject it does not contain
-
-`shepr-remote/src/lib.rs` declares
-`#[cfg(test)] #[path = "remote/attach.rs"] mod attach;`. There is no attach
-code; the file is `mod tests { ... }` holding tests for the bridge, the managed
-ssh config, the teardown registry, the process pipes, path sanitising, the
-output framing, the reattach command and remote discovery. Anyone looking for
-attach logic reads a test file; anyone changing `bridge.rs` does not think to
-look in `attach.rs`. The project's own convention is that unit tests live next
-to the code, and `discovery_tests.rs` in the same directory already shows the
-correct naming, so the crate contradicts itself.
-
-Enforcement named: a brokkr rule that a `#[path]`-included module file matching
-`*_tests.rs` is allowed and anything else must be non-test, or simply that
-`mod X` where `X.rs` contains only `mod tests` is an error.
-
 ## HYGG-053 - `IsolatedEnv` guarantees isolation from a list it does not own
 
 **Decision:** piece 1 (the `shepr-core` environment registry, after broadarrow's
@@ -358,19 +308,6 @@ prefix, so the fail-open string test goes.
 `shepr-test-support`:
 `key.to_str().is_some_and(|k| k.starts_with("SHEPR_"))`. Not reachable in
 practice, but it is the fail-open shape.
-
-## HYGG-061 - `hook_registration_is_current` fails open for five targets and the coupling is invisible
-
-`shepr-agent/src/integration/registry.rs`:
-`Target::Pi | Omp | Kilo | Grok | Opencode => true` is documented for Pi, Omp
-and Kilo (directory-loaded plugins) and for Grok and Opencode (checked by their
-own helpers earlier in `integration_status_at`). The coupling is invisible from
-either site: if the Grok special case above it were deleted, this `true` would
-report a broken Grok install as Current with nothing noticing.
-
-Enforcement named: make the spec row carry a `RegistrationCheck` variant
-(`SelfRegistering | Json { file, root, depth } | Custom(fn)`) so the match is
-exhaustive over data rather than over a target list.
 
 ## HYGG-067 - Claim: "Wire types must not use `skip_serializing_if`, `flatten`, `untagged` or tagged enums"
 
@@ -444,17 +381,6 @@ strftime compile (`parse_tab_bar_datetime_format`), the window-title template
 parse and the keybind parse. The `shepr-server` hunter verified the same for its
 scope and reports no finding there.
 
-## HYGG-072 - `server_not_running`'s test helpers string-match the code their own comment says they do not
-
-`src/cli/server_not_running.rs`. `was_reported` / `reported_response` are
-`#[cfg(test)]` helpers that `matches!` on `response.error.code ==
-"server_not_running"`, while the doc comment at the call site in `src/cli.rs`'s
-test says "The typed error preserves the response without string matching." If
-the code is renamed, both helpers become silent no-ops and the test
-`maps_dead_server_connect_failure_to_friendly_error` fails loudly - so this one
-fails closed, which the hunter calls fine. **The claim in the comment is what is
-false.**
-
 ## HYGG-075 - `run_on_machine`'s comment names an exclusion a different file enforces
 
 `src/cli/target.rs::validate_machine_command`'s comment says `--machine`
@@ -462,29 +388,6 @@ excludes "no local file evaluation (`agent explain --file`)". That is enforced b
 `agent::Command::is_api_command` (`Self::Explain(args) => args.file.is_none()`)
 in a different file, and nothing ties the comment to it. True today, and the
 existing test covers the `--file` case, so the hunter marks this one held.
-
-## HYGG-076 - `machine_mutation_commands_only_expose_add_and_remove` is a blocklist of three strings
-
-`shepr-remote`:
-
-```rust
-for command in ["rename", "enable", "disable"] { assert!(spec.try_get_matches_from(...).is_err()) }
-```
-
-This is the only enforcement of `AGENTS.md`'s "Saved machines are add/remove
-only" claim at the CLI surface. It checks that three specific historical
-subcommand names are absent, so adding `machine update`, `machine set-label`,
-`machine edit` or `machine relabel` passes. The test reads as an invariant and
-is a blocklist. The hunter marks it as not holding the claim it is named for.
-
-Enforcement named: assert the *set* of `machine` subcommands equals
-`{list, status, reconnect, add, remove}` - clap can enumerate them via
-`command.get_subcommands()`. Cheap, and turns a fail-open name check into a
-closed set. Related and better, recorded so it is not re-hunted:
-`EndpointCatalog::apply_profile_delta` *does* enforce add/remove structurally -
-"updating saved endpoint {id} is not supported" - at the storage layer. So the
-claim is enforced where it matters and guarded by a name list where it is
-exposed; the hunter asks for that to be said at both sites.
 
 ## HYGG-077 - `REMOTE_MISE_SHIM_SUFFIX` is a fail-open name guard
 
@@ -777,40 +680,6 @@ session-dependent: a named session listens on
 restating a list the code generates. Fix named: delete the names from the
 comment.
 
-## HYGG-113 - Four module docs in the terminal core cite a dependency and a directory that are not there
-
-**Decision (partial):** the root `Cargo.toml` citation of `research/alacritty`
-(and `shepr-mux`'s `pane/osc.rs` citation of `research/vte/src/lib.rs`, the same
-shape) is reworded to point at the pinned `alacritty_terminal` and `vte` sources
-in the cargo registry, as `AGENTS.md` already does. Open: the other three
-bullets and the Ghostty naming.
-
-- `shepr-vt/src/format.rs`'s module doc says the VT output is replayed "after
-  some resizes"; `shepr-mux`'s `backend.rs::resize` says that replay was
-  removed.
-- `shepr-vt/src/lib.rs`'s doc for `DEFAULT_FOREGROUND` says it matches "what the
-  libghostty-vt render state reported". That backend is gone.
-- The root `Cargo.toml` comment cites a "reference checkout in
-  `research/alacritty`". No `research/` directory exists.
-- `shepr-mux/src/pane/terminal/backend.rs` says a live workaround exists because
-  "the libghostty core loses rows on resize" - the stated reason for a workaround
-  in live code cites a dependency that is not present, so nobody can now check
-  whether `alacritty_terminal` has that behaviour and the workaround is
-  unfalsifiable. `backend.rs` also emits an operator-facing log line naming a
-  component that does not exist: `error!(pane = ..., "ghostty core lock poisoned
-  in reader")`.
-
-All marked stale today. The `shepr-mux` hunter adds that roughly 200 production
-references to Ghostty naming remain (`GhosttyPaneTerminal`, `GhosttyPaneCore`,
-`PaneTerminal { ghostty }`, about forty `ghostty_*` free functions) and proposes
-the cheapest enforcement in its report: a `brokkr.toml` text rule forbidding
-`ghostty`/`Ghostty` outside a comment that explains a historical decision, or
-forbidding it outright after a rename - the same mechanism the gremlin scan
-already uses. The two workaround comments need a human to decide whether the
-workaround is still needed against the real emulator, which cannot be answered
-by reading; `AGENTS.md` already directs the reader to the pinned
-`alacritty_terminal` source in the cargo registry.
-
 ## HYGG-116 - Claim: alacritty types never leak out of `shepr-vt`
 
 The dependency rule enforces this at crate level, and the hunter found no
@@ -833,30 +702,15 @@ end with `collect_damage()` (or `bump_full_damage`). Callers do this by hand:
 `write`, `flush`, `mode_set`, `resize`, the scroll methods. Enforcement named,
 structurally: call `collect_damage` inside `with_handler`.
 
-## HYGG-124 - `HostModes::apply_mouse` records the restore flag only when a parameter that means something else is true
+## HYGG-126 - The `skip_after` test marker is anchored to column 0
 
-`shepr-client`/`shepr-termio`. `apply_mouse` records
-`RESTORE_MOUSE_CAPTURE` only when called with `reassert == true`. Both setup
-paths do pass `true`, so it holds today - but the flag that decides whether
-mouse capture gets turned off at exit is set by a parameter that means
-"re-send even if unchanged". A future caller with `reassert: false` that enables
-capture leaves the user's terminal in mouse mode after shepr exits.
-
-The surrounding structure is what makes it unverifiable: `HostModes` guards
-`HostModesState` behind a `Mutex` and `restore_state` behind an `AtomicU8`, with
-a comment explaining that the panic hook must restore without taking a lock the
-panicking thread may hold - deliberate and sound for the panic case - but it
-means the restore intent and the mode state are kept consistent only by each
-setter remembering to call a recorder before and after its write, and
-`set_keyboard_enhancement_flags`, `set_direct_keyboard_protocol` and
-`set_modify_other_keys` each do that pairing slightly differently (the first
-records `false` for modify-other-keys on success unconditionally; the second and
-third record the computed value). Whether those three agree is not checkable
-from the types. The hunter says it is not mechanically enforceable and the
-lock-free restore path is worth keeping; the honest statement is that the
-recorder pairing is a convention maintained by three call sites, and a single
-`set_keyboard(...)` entry point that computes the flags itself would reduce it
-to one.
+Every `skip_after = '^#\[cfg\(test\)\]'` textlint (the persist clock rule, the
+library print rule) releases only a top-level `#[cfg(test)]`. A test-only
+helper inside a production `impl` is indented, so it is flagged rather than
+skipped. That errs safe, but it pushed one fixer into rewriting test helpers to
+dodge the rule, which changed what the tests exercised. Either allow leading
+whitespace in the pattern and teach `scripts/check_skip_after_scopes.py` the
+same, or state at the rules that test helpers belong in `mod tests`.
 
 ## HYGG-125 - The schema macro builds `MethodTraits` twice, and its test pins a count
 

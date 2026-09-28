@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::{App, SESSION_SAVE_DEBOUNCE};
 #[cfg(test)]
@@ -471,9 +471,10 @@ impl App {
         now: Instant,
     ) {
         let writer = self.session_saver.session_writer.clone();
+        let saved_at = SystemTime::now();
         match std::thread::Builder::new()
             .name("shepr-session-save".into())
-            .spawn(move || run_session_save_job(job, &writer))
+            .spawn(move || run_session_save_job(job, &writer, saved_at))
         {
             Ok(thread) => {
                 self.session_saver.session_save_thread = Some(thread);
@@ -516,6 +517,7 @@ impl App {
         let result = run_session_save_job(
             self.capture_session_save_job(),
             &self.session_saver.session_writer,
+            SystemTime::now(),
         );
         self.session_saver.pane_exit_checkpoint_pending = false;
         let saved = self.record_session_save_result(result, Instant::now());
@@ -686,8 +688,11 @@ impl App {
 
         let job = self.capture_session_save_job();
         let writer = self.session_saver.session_writer.clone();
+        let saved_at = SystemTime::now();
         let result =
-            match tokio::task::spawn_blocking(move || run_session_save_job(job, &writer)).await {
+            match tokio::task::spawn_blocking(move || run_session_save_job(job, &writer, saved_at))
+                .await
+            {
                 Ok(result) => result,
                 Err(err) => Err(std::io::Error::other(format!(
                     "session save worker failed: {err}"
@@ -715,7 +720,11 @@ impl App {
     }
 }
 
-fn run_session_save_job(job: SessionSaveJob, writer: &SessionWriterHandle) -> std::io::Result<()> {
+fn run_session_save_job(
+    job: SessionSaveJob,
+    writer: &SessionWriterHandle,
+    now: SystemTime,
+) -> std::io::Result<()> {
     // Formatting pane history is the expensive part of a save; it happens
     // here, before the writer is locked.
     let job = match job {
@@ -727,8 +736,8 @@ fn run_session_save_job(job: SessionSaveJob, writer: &SessionWriterHandle) -> st
     };
     let mut writer = writer.lock();
     match job {
-        None => writer.clear(),
-        Some((snapshot, history)) => writer.save(&snapshot, history.as_ref()),
+        None => writer.clear(now),
+        Some((snapshot, history)) => writer.save(&snapshot, history.as_ref(), now),
     }
 }
 
@@ -740,7 +749,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         App::new(
             &shepr_config::Config::default(),
-            super::super::AppPolicy::TEST,
+            super::super::AppPolicy::Test,
             api_rx,
             shepr_api::EventHub::default(),
         )
@@ -749,7 +758,7 @@ mod tests {
     #[test]
     fn repeated_pane_exit_checkpoint_failures_release_the_held_exit() {
         let mut app = test_app();
-        app.policy = super::super::AppPolicy::PRODUCTION;
+        app.policy = super::super::AppPolicy::Production;
         app.session_saver.pane_exit_checkpoint_requested = true;
         app.session_saver.pane_exit_checkpoint_generation = 1;
         let purpose = SessionSavePurpose::Checkpoint {
@@ -790,6 +799,6 @@ mod tests {
             !app.pane_exit_checkpoint_settled(),
             "a save that succeeds again restores pre-exit checkpoints"
         );
-        app.policy = super::super::AppPolicy::TEST;
+        app.policy = super::super::AppPolicy::Test;
     }
 }

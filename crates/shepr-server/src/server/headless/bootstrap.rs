@@ -157,7 +157,7 @@ pub fn run_server(
             config,
             paths,
             lease,
-            app::AppPolicy::PRODUCTION,
+            app::AppPolicy::Production,
             api_rx,
             event_hub,
             agent_manifest_summaries,

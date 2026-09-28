@@ -12,7 +12,6 @@ use shepr_protocol::ClientMessage;
 const MAX_QUEUED_BATCHES: usize = 256;
 const MAX_BATCH_BYTES: usize = 64 * 1024;
 const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
-const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Default)]
@@ -226,7 +225,7 @@ fn write_frame(
     mut frame: &[u8],
     stopped: &AtomicBool,
 ) -> io::Result<()> {
-    let deadline = Instant::now() + WRITE_TIMEOUT;
+    let deadline = Instant::now() + crate::limits::ENDPOINT_WRITE_TIMEOUT;
     while !frame.is_empty() && !stopped.load(Ordering::Acquire) {
         let chunk = frame;
         match writer.write(chunk) {

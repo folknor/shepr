@@ -36,15 +36,15 @@ pub(crate) struct ReportMetadataArgs {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> Option<&'static str> {
+    pub(super) fn name(&self) -> &'static str {
         match self {
-            Self::List => Some("list"),
-            Self::Create(_) => Some("create"),
-            Self::Get { .. } => Some("get"),
-            Self::Focus { .. } => Some("focus"),
-            Self::Rename { .. } => Some("rename"),
-            Self::ReportMetadata(_) => Some("report-metadata"),
-            Self::Close { .. } => Some("close"),
+            Self::List => "list",
+            Self::Create(_) => "create",
+            Self::Get { .. } => "get",
+            Self::Focus { .. } => "focus",
+            Self::Rename { .. } => "rename",
+            Self::ReportMetadata(_) => "report-metadata",
+            Self::Close { .. } => "close",
         }
     }
 
@@ -119,7 +119,12 @@ pub(super) fn run_workspace_command(
             },
         ),
         Command::ReportMetadata(args) => match report_metadata_params(args) {
-            Ok(params) => super::send_ok_request(paths, Method::WorkspaceReportMetadata(params)),
+            Ok(params) => super::send_method_response(
+                paths,
+                "cli:request",
+                Method::WorkspaceReportMetadata(params),
+                super::MethodResponseMode::ErrorsOnly,
+            ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::Close { workspace_id } => {

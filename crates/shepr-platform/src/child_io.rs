@@ -1,4 +1,8 @@
-use std::{io::Read, os::fd::RawFd, time::Instant};
+use std::{
+    io::{self, Read},
+    os::fd::{AsRawFd, RawFd},
+    time::Instant,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildExitReason {
@@ -76,6 +80,32 @@ pub(super) fn poll_fd(fd: RawFd, events: libc::c_short, timeout_ms: i32) -> std:
 
 pub fn poll_fd_readable(fd: RawFd, timeout_ms: i32) -> std::io::Result<bool> {
     poll_fd(fd, libc::POLLIN, timeout_ms)
+}
+
+/// A reader that waits for fd readiness only until one overall deadline.
+///
+/// The wrapped read happens only after `poll(2)` reports the fd ready, so a
+/// blocking stream cannot restart an idle timeout after each successful byte.
+pub(super) struct DeadlineReader<R> {
+    inner: R,
+    deadline: Instant,
+}
+
+impl<R> DeadlineReader<R> {
+    pub(super) fn new(inner: R, deadline: Instant) -> Self {
+        Self { inner, deadline }
+    }
+}
+
+impl<R: Read + AsRawFd> Read for DeadlineReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let wait_ms = poll_timeout_until(self.deadline)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
+        if !poll_fd_readable(self.inner.as_raw_fd(), wait_ms)? {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        self.inner.read(buffer)
+    }
 }
 
 /// Milliseconds left until `deadline` as a poll timeout, at least 1 so a

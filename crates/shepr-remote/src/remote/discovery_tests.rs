@@ -416,3 +416,105 @@ fn exhausted_discovery_names_a_path_rejected_for_shell_quoting() {
         "a relative path is not a quoting rejection"
     );
 }
+
+#[test]
+fn remote_path_discovery_uses_path_binary() {
+    let remote_shepr =
+        remote_executable_from_path_discovery("/usr/bin/shepr\n").expect("path binary");
+
+    assert_eq!(
+        remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME),
+        format!(
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
+        )
+    );
+}
+
+#[test]
+fn remote_path_discovery_ignores_binaries_that_need_quoting() {
+    // The bridge script must reach the login shell as one quoted word
+    // with no quote inside, so a path needing quotes cannot be used.
+    for discovered in ["/opt/shepr bin/shepr\n", "/opt/shepr's/bin/shepr\n"] {
+        assert!(
+            remote_executable_from_path_discovery(discovered).is_none(),
+            "{discovered:?}"
+        );
+    }
+}
+
+#[test]
+fn remote_path_discovery_reads_multiple_absolute_paths() {
+    let candidates = remote_executables_from_path_discovery(
+        "/usr/bin/shepr\nbin/shepr\n /opt/shepr-bin/shepr\n",
+    );
+
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].as_str(), "/usr/bin/shepr");
+    assert_eq!(candidates[1].as_str(), "/opt/shepr-bin/shepr");
+}
+
+#[test]
+fn remote_path_discovery_ignores_mise_shims() {
+    let candidates = remote_executables_from_path_discovery(
+        "/home/can/.local/share/mise/shims/shepr\n/home/can/.local/share/mise/installs/shepr/0.7.1/bin/shepr\n",
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].as_str(),
+        "/home/can/.local/share/mise/installs/shepr/0.7.1/bin/shepr"
+    );
+}
+
+#[test]
+fn remote_path_discovery_only_accepts_cacheable_executables() {
+    let too_long = format!("/{}/shepr", "a".repeat(4090));
+    let output = format!("/opt/shepr\u{1}\n{too_long}\n/usr/bin/shepr\n");
+    let candidates = remote_executables_from_path_discovery(&output);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].as_str(), "/usr/bin/shepr");
+}
+
+#[test]
+fn known_remote_binary_candidate_script_includes_cargo_and_local_bin() {
+    let script = known_remote_binary_candidate_script();
+
+    assert!(script.contains("emit \"$home/.cargo/bin/shepr\""));
+    assert!(script.contains("emit \"$home/.local/bin/shepr\""));
+}
+
+#[test]
+fn api_forwarding_check_runs_the_candidate_for_the_session() {
+    let remote_shepr =
+        remote_executable_from_path_discovery("/home/u/.cargo/bin/shepr\n").expect("path");
+
+    assert_eq!(
+        remote_shepr.api_bridge_check_command("agents"),
+        "test -x /home/u/.cargo/bin/shepr && /home/u/.cargo/bin/shepr status client --json && /home/u/.cargo/bin/shepr --session agents remote-api-bridge --check </dev/null"
+    );
+}
+
+#[test]
+fn remote_path_discovery_ignores_relative_paths() {
+    let remote_shepr = remote_executable_from_path_discovery("bin/shepr\n");
+
+    assert!(remote_shepr.is_none());
+}
+
+#[test]
+fn remote_path_discovery_ignores_empty_output() {
+    let remote_shepr = remote_executable_from_path_discovery("\n");
+
+    assert!(remote_shepr.is_none());
+}
+
+#[test]
+fn parse_client_status_json_reads_last_json_record() {
+    let status = parse_client_status_json(
+        "wrapper output\n{\"version\":\"0.8.0\",\"build_id\":\"0123456789abcdef\"}\n{\"wrapper\":true}\n",
+    )
+    .expect("test precondition");
+    assert_eq!(status.version.as_deref(), Some("0.8.0"));
+    assert_eq!(status.build_id.as_deref(), Some("0123456789abcdef"));
+}

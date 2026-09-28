@@ -35,8 +35,8 @@ const MIN_CLIENT_ROWS: u16 = 1;
 /// Total time a client gets to deliver its complete handshake frame.
 ///
 /// This is one deadline across every read of the hello, not a per-read idle
-/// timeout: `shepr_platform::ipc::DeadlineReader` re-arms the socket receive timeout
-/// with only the time left before each read, so a peer trickling bytes cannot
+/// timeout: `shepr_platform::ipc::DeadlineReader` polls for readiness with only
+/// the time left before each read, so a peer trickling bytes cannot
 /// hold the handshake thread open. Set to 4 seconds (rather than 5) so the
 /// connection is closed within 5 seconds even with OS timer slack, thread
 /// scheduling, and cleanup overhead.

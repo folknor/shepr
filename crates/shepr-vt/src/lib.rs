@@ -125,11 +125,11 @@ impl ColorScheme {
 // emit this codepoint as literal text; keep filtering it out of copied,
 // history and rendered text so stray placeholder glyphs don't leak into
 // user-visible output.
-pub const KITTY_UNICODE_PLACEHOLDER: u32 = 0x10EEEE;
+pub(crate) const KITTY_UNICODE_PLACEHOLDER: u32 = 0x10EEEE;
 
-/// Default colours reported while the program and host have set none. They
-/// match what the libghostty-vt render state reported, which the pane layer
-/// compares against to decide whether a default colour is "unchanged".
+/// Fallback colours used until the program or host sets its own defaults.
+/// The pane layer compares these with the initial render colours to detect
+/// later default-colour overrides.
 const DEFAULT_FOREGROUND: RgbColor = RgbColor {
     r: 0xff,
     g: 0xff,

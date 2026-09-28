@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::machine::RemoteExecutableError;
 use serde::Deserialize;
 use std::io;
 use std::process::Output;
@@ -46,7 +47,7 @@ pub(super) trait DiscoverySteps {
 #[derive(Clone, Debug)]
 pub(super) struct RejectedShellUnsafeCandidate {
     path: String,
-    reason: String,
+    reason: RemoteExecutableError,
 }
 
 pub(super) struct SshDiscovery<'a> {
@@ -264,17 +265,7 @@ impl DiscoveryProgress {
 #[path = "discovery_tests.rs"]
 mod discovery_tests;
 
-pub(super) fn prepare_remote_shepr(ssh: &RemoteSsh) -> io::Result<PreparedRemoteShepr> {
-    Ok(PreparedRemoteShepr {
-        remote_shepr: locate_remote_shepr(ssh)?,
-    })
-}
-
-pub(super) fn find_installed_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteExecutable> {
-    locate_remote_shepr(ssh)
-}
-
-/// `find_installed_remote_shepr`, resuming from and recording into `progress`.
+/// Continue status-probe discovery, resuming from and recording into `progress`.
 pub(crate) fn resume_installed_remote_shepr_discovery(
     ssh: &RemoteSsh,
     progress: &mut DiscoveryProgress,
@@ -397,11 +388,8 @@ fn remote_executable_from_path_recording_rejection(
     let path = path.trim();
     match RemoteExecutable::parse(path.to_owned()) {
         Ok(executable) => Some(executable),
-        Err(reason) => {
-            if rejected_candidate.is_none()
-                && path.starts_with('/')
-                && RemoteExecutable::needs_shell_quoting(path)
-            {
+        Err(reason @ RemoteExecutableError::NeedsShellQuoting) => {
+            if rejected_candidate.is_none() {
                 *rejected_candidate = Some(RejectedShellUnsafeCandidate {
                     path: path.to_owned(),
                     reason,
@@ -409,6 +397,7 @@ fn remote_executable_from_path_recording_rejection(
             }
             None
         }
+        Err(_) => None,
     }
 }
 

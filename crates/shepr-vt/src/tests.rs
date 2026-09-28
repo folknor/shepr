@@ -1409,9 +1409,9 @@ fn visited_rows_match_the_owned_text_rows() {
             .iter()
             .enumerate()
             .map(|(x, cell)| {
-                let text = if cell.graphemes.is_empty()
-                    || cell.graphemes.first() == Some(&KITTY_UNICODE_PLACEHOLDER)
-                {
+                // The owned rows already blank the kitty placeholder; see
+                // `kitty_unicode_placeholder_is_blank_in_reads_and_rendering`.
+                let text = if cell.graphemes.is_empty() {
                     " ".to_owned()
                 } else {
                     cell.graphemes

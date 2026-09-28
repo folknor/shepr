@@ -8,10 +8,6 @@ use super::*;
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
 pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
-const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
-/// How long an endpoint notice card stays up before it hides itself. A click on the card hides
-/// it sooner; the timeout is what dismisses it when `ui.mouse_capture` is off.
-const ENDPOINT_NOTICE_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientShellKeybindingSource {
@@ -174,13 +170,13 @@ pub(super) enum ClientChromeDrag {
         tab_id: shepr_protocol::PublicTabId,
         grab_offset: i32,
         last_sent_ratio: Option<f32>,
-        last_sent_at: Option<std::time::Instant>,
+        throttle: super::mouse::Throttle,
     },
     PaneScrollbar {
         hit: PaneHit,
         grab_row_offset: u16,
         last_sent_offset: Option<usize>,
-        last_sent_at: Option<std::time::Instant>,
+        throttle: super::mouse::Throttle,
     },
 }
 
@@ -516,7 +512,7 @@ pub(super) struct ClientPaneClick {
 impl ClientPaneClick {
     pub(super) fn is_double_click_for(&self, next: &Self) -> bool {
         self.pane_id == next.pane_id
-            && next.at.duration_since(self.at) <= std::time::Duration::from_millis(350)
+            && next.at.duration_since(self.at) <= crate::limits::DOUBLE_CLICK_WINDOW
             && self.viewport_row.abs_diff(next.viewport_row) <= 1
             && self.col.abs_diff(next.col) <= 1
     }
@@ -1265,9 +1261,8 @@ impl ClientShellState {
     /// message gets a fresh deadline instead of inheriting the previous one.
     pub(super) fn set_endpoint_error(&mut self, message: impl Into<String>) {
         self.endpoint_error = Some(message.into());
-        self.endpoint_error_deadline = Some(
-            std::time::Instant::now() + std::time::Duration::from_secs(ENDPOINT_ERROR_TIMEOUT_SECS),
-        );
+        self.endpoint_error_deadline =
+            Some(std::time::Instant::now() + crate::limits::ENDPOINT_ERROR_TIMEOUT);
     }
 
     pub(crate) fn tick_endpoint_error(&mut self, now: std::time::Instant) -> bool {
@@ -1300,7 +1295,7 @@ impl ClientShellState {
             return;
         }
         let started = (notice.key.clone(), notice.body.clone());
-        let deadline = now + std::time::Duration::from_secs(ENDPOINT_NOTICE_TIMEOUT_SECS);
+        let deadline = now + crate::limits::ENDPOINT_NOTICE_TIMEOUT;
         self.endpoint_notice_deadline = Some((started.0, started.1, deadline));
     }
 
@@ -1327,7 +1322,7 @@ impl ClientShellState {
     }
 
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {
-        let default = std::time::Duration::from_millis(100);
+        let default = crate::limits::MAX_CLIENT_TIMER_DELAY;
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)

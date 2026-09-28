@@ -535,9 +535,10 @@ fn resolve_paths_from_env(
                 },
             })
         }
-        _ if diagnostics.is_empty() => {
-            Err(vec!["application paths could not be resolved".to_string()])
-        }
+        _ if diagnostics.is_empty() => Err(vec![format!(
+            "session `{}` paths could not be resolved; no path-specific error was reported",
+            session_id.display_name()
+        )]),
         _ => Err(diagnostics),
     }
 }
@@ -622,9 +623,7 @@ impl Config {
                     Ok(provenance) => provenance,
                     Err(error) => {
                         return default_loaded_config(
-                            vec![ConfigDiagnostic::Provenance(format!(
-                                "config provenance error: {error}"
-                            ))],
+                            vec![ConfigDiagnostic::Provenance(error)],
                             paths,
                         );
                     }
@@ -658,10 +657,7 @@ impl Config {
                     unavailable_new_cwd: None,
                 }
             }
-            Err(err) => default_loaded_config(
-                vec![ConfigDiagnostic::Read(format!("config read error: {err}"))],
-                paths,
-            ),
+            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(err.to_string())], paths),
         }
     }
 
@@ -676,9 +672,7 @@ impl Config {
                                 Ok(provenance) => provenance,
                                 Err(error) => {
                                     let mut loaded = default_loaded_config(
-                                        vec![ConfigDiagnostic::Provenance(format!(
-                                            "config provenance error: {error}"
-                                        ))],
+                                        vec![ConfigDiagnostic::Provenance(error)],
                                         paths,
                                     );
                                     loaded.unavailable_new_cwd =
@@ -732,9 +726,7 @@ impl Config {
                     }
                     Err(err) => {
                         let mut loaded = default_loaded_config(
-                            vec![ConfigDiagnostic::Parse(format!(
-                                "config parse error: {err}"
-                            ))],
+                            vec![ConfigDiagnostic::Parse(err.to_string())],
                             paths,
                         );
                         loaded.unavailable_new_cwd = configured_new_cwd_for_check(&document);
@@ -745,12 +737,9 @@ impl Config {
             // Broken TOML has no typed document to project independent config
             // checks from; keep the parser diagnostic instead of interpreting
             // fragments of malformed source text.
-            Err(err) => default_loaded_config(
-                vec![ConfigDiagnostic::Parse(format!(
-                    "config parse error: {err}"
-                ))],
-                paths,
-            ),
+            Err(err) => {
+                default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())], paths)
+            }
         }
     }
 }
@@ -848,7 +837,7 @@ fn unknown_top_level_section_diagnostic(key: &str, value: &toml::Value) -> Optio
         return None;
     };
 
-    Some(format!("unknown config section {header}"))
+    Some(format!("section {header}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -903,7 +892,7 @@ fn unknown_config_key_diagnostics(mut paths: Vec<Vec<ConfigKeyPathSegment>>) -> 
     paths.dedup();
     paths
         .into_iter()
-        .map(|path| format!("unknown config key {}", format_config_key_path(&path)))
+        .map(|path| format!("key {}", format_config_key_path(&path)))
         .collect()
 }
 
@@ -959,7 +948,7 @@ mod tests {
             startup
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.message().contains("config read error"))
+                .any(|diagnostic| diagnostic.to_string().contains("config read error"))
         );
     }
 
@@ -997,7 +986,7 @@ mod tests {
             assert!(
                 errors
                     .iter()
-                    .any(|diagnostic| diagnostic.message().contains(message)),
+                    .any(|diagnostic| diagnostic.to_string().contains(message)),
                 "expected {message:?} in {errors:?}"
             );
         }
@@ -1041,7 +1030,7 @@ tab_bar_right = [
         let messages = report
             .diagnostics
             .iter()
-            .map(ConfigDiagnostic::message)
+            .map(ToString::to_string)
             .collect::<Vec<_>>();
         for expected in [
             "theme.name",
@@ -1079,7 +1068,7 @@ tab_bar_right = [
         let messages = report
             .diagnostics
             .iter()
-            .map(ConfigDiagnostic::message)
+            .map(ToString::to_string)
             .collect::<Vec<_>>();
         assert_eq!(messages.len(), 2, "{messages:?}");
         assert!(
@@ -1168,7 +1157,7 @@ tab_bar_right = [
             report
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.message().contains("config parse error")),
+                .any(|diagnostic| diagnostic.to_string().contains("config parse error")),
             "missing parse diagnostic: {:?}",
             report.diagnostics
         );

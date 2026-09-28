@@ -10,11 +10,11 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(super) fn name(&self) -> Option<&'static str> {
+    pub(super) fn name(&self) -> &'static str {
         match self {
-            Self::Install { .. } => Some("install"),
-            Self::Uninstall { .. } => Some("uninstall"),
-            Self::Status { .. } => Some("status"),
+            Self::Install { .. } => "install",
+            Self::Uninstall { .. } => "uninstall",
+            Self::Status { .. } => "status",
         }
     }
 

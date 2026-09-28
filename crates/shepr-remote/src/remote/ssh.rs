@@ -801,3 +801,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ssh_tests.rs"]
+mod ssh_tests;

@@ -98,9 +98,31 @@ const MASTRACODE_HOOK_TIMEOUT_MS: u64 = 10_000;
 const MASTRACODE_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
     crate::agent::Agent::Mastracode.integration_hook_events();
 const GROK_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
-const GROK_HOOK_CONFIG_INSTALL_NAME: &str = "shepr.json";
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 const GROK_INTEGRATION_VERSION: u32 = 2;
+
+// Each agent's own config files, named once. The `IntegrationSpec` rows list
+// them for the registration check, and install and uninstall join the same
+// constants, so the three can never spell a file differently.
+const CLAUDE_SETTINGS_NAME: &str = "settings.json";
+const CODEX_HOOKS_NAME: &str = "hooks.json";
+const CODEX_CONFIG_NAME: &str = "config.toml";
+const COPILOT_SETTINGS_NAME: &str = "settings.json";
+const DEVIN_CONFIG_NAME: &str = "config.json";
+const DROID_SETTINGS_NAME: &str = "settings.json";
+const KIMI_CONFIG_NAME: &str = "config.toml";
+const OPENCODE_TUI_CONFIG_NAME: &str = "tui.jsonc";
+const OPENCODE_LEGACY_TUI_CONFIG_NAME: &str = "tui.json";
+const OPENCODE_CLI_CONFIG_NAME: &str = "cli.json";
+const QODERCLI_SETTINGS_NAME: &str = "settings.json";
+const QWEN_SETTINGS_NAME: &str = "settings.json";
+const LETTA_SETTINGS_NAME: &str = "settings.json";
+const CURSOR_HOOKS_NAME: &str = "hooks.json";
+const MASTRACODE_HOOKS_NAME: &str = "hooks.json";
+const ANTIGRAVITY_CLI_HOOKS_NAME: &str = "hooks.json";
+/// Lives in Grok's `hooks` directory beside the hook script, not in the
+/// agent's config directory like the other names here.
+const GROK_HOOK_CONFIG_NAME: &str = "shepr.json";
 
 // Keep the public result as strings until version warnings are typed at their
 // source and carried through the action layer. Parsing the prefix here would

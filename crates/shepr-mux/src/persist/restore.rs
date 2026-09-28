@@ -37,6 +37,7 @@ struct PaneRestoreStartup<'a> {
 
 struct RestoreRuntimeContext<'a> {
     scrollback_limit_bytes: usize,
+    now: std::time::Instant,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     shell_config: crate::pane::PaneShellConfig<'a>,
     api_socket_path: &'a std::path::Path,
@@ -118,6 +119,7 @@ pub fn restore(
     render_notify: &Arc<Notify>,
     render_dirty: &Arc<RenderSignal>,
     pane_teardowns: &Arc<crate::pane::PaneTeardownTracker>,
+    now: std::time::Instant,
 ) -> RestoredSession {
     let history = history.filter(|history| {
         let matches = history.layout_fingerprint.is_some()
@@ -146,6 +148,7 @@ pub fn restore(
         let workspace_id = restored_workspace_id(ws_snap.id.as_deref(), &saved_ids, &mut used_ids);
         let runtime_context = RestoreRuntimeContext {
             scrollback_limit_bytes,
+            now,
             host_theme,
             shell_config,
             api_socket_path,
@@ -396,6 +399,7 @@ fn restore_workspace(
 fn restored_terminal(
     pane: &super::snapshot::PaneSnapshot,
     start: RestoredPaneStart,
+    now: std::time::Instant,
 ) -> TerminalState {
     let mut terminal = TerminalState::new(TerminalId::alloc(), pane.cwd.clone());
     if let Some(label) = pane.label.clone() {
@@ -446,7 +450,7 @@ fn restored_terminal(
                     AgentState::Idle,
                     false,
                     false,
-                    std::time::Instant::now(),
+                    now,
                 );
             }
         }
@@ -546,7 +550,11 @@ fn restore_tab(
             )),
         };
         if let Some(reason) = cwd_unavailable {
-            let terminal = restored_terminal(saved_pane, RestoredPaneStart::Unavailable(reason));
+            let terminal = restored_terminal(
+                saved_pane,
+                RestoredPaneStart::Unavailable(reason),
+                runtime_context.now,
+            );
             runtime_context
                 .history_carry
                 .carry_restored(&terminal.id, saved_history);
@@ -586,7 +594,11 @@ fn restore_tab(
             launch_env = launch_env.with_pane_id(pane_id);
         }
         if let Some(plan) = restore_plan {
-            let terminal = restored_terminal(saved_pane, RestoredPaneStart::PendingResume(plan));
+            let terminal = restored_terminal(
+                saved_pane,
+                RestoredPaneStart::PendingResume(plan),
+                runtime_context.now,
+            );
             // Native resume owns what this pane shows once it runs, so the
             // saved screen is not replayed. Until a runtime exists, though,
             // saves must keep writing it: the resume waits for the event loop
@@ -631,6 +643,7 @@ fn restore_tab(
                     RestoredPaneStart::Running {
                         duplicate_agent_session,
                     },
+                    runtime_context.now,
                 );
                 panes.insert(
                     *id,
@@ -654,6 +667,7 @@ fn restore_tab(
                     RestoredPaneStart::Unavailable(format!(
                         "Could not start the saved shell: {e}. Fix the shell configuration and restart this session."
                     )),
+                    runtime_context.now,
                 );
                 runtime_context
                     .history_carry
@@ -964,6 +978,10 @@ mod tests {
 
     use super::*;
 
+    fn test_restore_now() -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
     /// A non-empty API socket path for restored test panes; nothing listens on
     /// it, and a pane only exports it as SHEPR_SOCKET_PATH.
     const TEST_API_SOCKET: &str = "/run/user/1000/shepr-test.sock";
@@ -1085,6 +1103,7 @@ mod tests {
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
             &Arc::default(),
+            test_restore_now(),
         );
         let tab = &workspaces[0].tabs()[0];
         assert_eq!(tab.layout.pane_ids(), vec![tab.root_pane]);
@@ -1166,6 +1185,7 @@ mod tests {
                 &Arc::new(Notify::new()),
                 &Arc::new(RenderSignal::new()),
                 &Arc::default(),
+                test_restore_now(),
             );
             let case =
                 format!("resume={resume} missing_cwd={missing_cwd} missing_shell={missing_shell}");
@@ -1336,6 +1356,7 @@ mod tests {
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
             &Arc::default(),
+            test_restore_now(),
         );
         assert!(restored.terminal_runtimes.is_empty());
         restored
@@ -1859,6 +1880,7 @@ mod tests {
                 &Arc::new(Notify::new()),
                 &Arc::new(RenderSignal::new()),
                 &Arc::default(),
+                test_restore_now(),
             );
             let runtimes = crate::pane::PaneRuntimeRegistry::from(runtimes);
             let captured = crate::persist::capture(
@@ -1974,6 +1996,7 @@ mod tests {
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
             &Arc::default(),
+            test_restore_now(),
         );
 
         let terminal = terminals
@@ -2066,6 +2089,7 @@ mod tests {
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
             &Arc::default(),
+            test_restore_now(),
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
@@ -2284,6 +2308,7 @@ mod tests {
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
             &Arc::default(),
+            test_restore_now(),
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
@@ -2360,6 +2385,7 @@ mod tests {
             &Arc::new(Notify::new()),
             &Arc::new(RenderSignal::new()),
             &Arc::default(),
+            test_restore_now(),
         );
 
         let terminal = terminals
@@ -2405,6 +2431,7 @@ mod tests {
             &render_notify,
             &render_dirty,
             &Arc::default(),
+            test_restore_now(),
         );
         let runtime = runtimes
             .values()
@@ -2444,6 +2471,7 @@ mod tests {
             &render_notify,
             &render_dirty,
             &Arc::default(),
+            test_restore_now(),
         );
         let runtime = runtimes
             .values()
@@ -2492,6 +2520,7 @@ mod tests {
                 &Arc::new(Notify::new()),
                 &Arc::new(RenderSignal::new()),
                 &Arc::default(),
+                test_restore_now(),
             );
             let runtime = runtimes.values().next().expect("test precondition");
             assert!(

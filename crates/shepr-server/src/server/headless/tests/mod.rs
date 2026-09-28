@@ -114,7 +114,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
 fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> HeadlessServer {
     let config = shepr_config::Config::default();
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::TEST, api_rx, event_hub);
+    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test, api_rx, event_hub);
 
     app.state.settings.default_shell = crate::app::exiting_test_command().into();
     // The server removes its socket when dropped.
@@ -130,7 +130,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let (agent_manifest_reload_tx, agent_manifest_reload_rx) = mpsc::unbounded_channel();
     let stop_requested = Arc::new(AtomicBool::new(false));
-    let headless_size = app.state.settings.headless_size;
+    let effective_size = app.state.settings.headless_size;
     let mut resolved_config = Vec::new();
     shepr_protocol::codec::encode_into(
         &mut resolved_config,
@@ -160,8 +160,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         agent_manifest_reload_rx,
         immediate_pty_sources_dirty: true,
         host_input_modes_dirty: true,
-        headless_size,
-        effective_size: headless_size,
+        effective_size,
         lifecycle: ShutdownLifecycle::new(stop_requested),
         host_shutdown_monitor: None,
         server_event_rx,
@@ -237,20 +236,23 @@ fn default_headless_size_is_effective_without_clients() {
     let server = test_headless_server();
 
     assert_eq!(
-        server.headless_size,
+        server.app.state.settings.headless_size,
         shepr_core::geometry::GridSize::clamped(
             shepr_config::DEFAULT_HEADLESS_COLS,
             shepr_config::DEFAULT_HEADLESS_ROWS
         )
     );
-    assert_eq!(server.effective_size, server.headless_size);
+    assert_eq!(
+        server.effective_size,
+        server.app.state.settings.headless_size
+    );
 }
 
 #[tokio::test]
 async fn last_shell_disconnect_restores_headless_pane_size() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
-    server.headless_size = shepr_core::geometry::GridSize::clamped(72, 18);
+    server.app.state.settings.headless_size = shepr_core::geometry::GridSize::clamped(72, 18);
     let (_control, _render) = connect_test_shell(&mut server, 7, 112, 36);
     let client_size = server.app.test_runtime(pane_id).current_size();
 
@@ -264,17 +266,15 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
         &server.app.state,
         &server.app.terminal_runtimes,
         Some(target),
-        ratatui::layout::Rect::new(
-            0,
-            0,
-            server.headless_size.cols.get(),
-            server.headless_size.rows.get(),
-        ),
+        server.app.state.settings.headless_rect(),
     );
     let pane = layout.pane_infos.first().expect("test pane geometry");
     let headless_pane_size = (pane.inner_rect.height, pane.inner_rect.width);
 
-    assert_eq!(server.effective_size, server.headless_size);
+    assert_eq!(
+        server.effective_size,
+        server.app.state.settings.headless_size
+    );
     assert_ne!(client_size, headless_pane_size);
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),

@@ -8,13 +8,13 @@ pub(super) struct CoreEffects {
     pub(super) terminal_responses: Vec<Bytes>,
     /// The child set a default colour: the program that did it is to be
     /// looked up once the terminal, content and reply-order locks are released
-    /// ([`GhosttyPaneTerminal::resolve_default_color_owner`]).
+    /// ([`PaneTerminal::resolve_default_color_owner`]).
     pub(super) default_color_owner_pending: bool,
 }
 
 /// Collects every effect the core has queued, whichever write or flush
 /// produced it, and keeps the default-colour owner bookkeeping in step.
-pub(super) fn collect_core_effects(core: &mut GhosttyPaneCore) -> CoreEffects {
+pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
     let terminal_responses = drain_terminal_responses(core);
     let terminal_title_changed = core
         .agent_osc_state
@@ -61,9 +61,9 @@ pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool 
 /// reports whether the child just set an override whose owner still has to
 /// be looked up. The lookup scans `/proc`, so the caller does it after
 /// releasing the terminal, content and reply-order locks
-/// ([`GhosttyPaneTerminal::resolve_default_color_owner`]); `shell_pid` 0 (no
+/// ([`PaneTerminal::resolve_default_color_owner`]); `shell_pid` 0 (no
 /// child yet) is handled there.
-pub(super) fn note_default_color_change(core: &mut GhosttyPaneCore) -> bool {
+pub(super) fn note_default_color_change(core: &mut PaneTerminalCore) -> bool {
     let set = core.terminal.take_default_color_set();
     if set {
         core.default_color_generation = core.default_color_generation.wrapping_add(1);
@@ -77,7 +77,7 @@ pub(super) fn note_default_color_change(core: &mut GhosttyPaneCore) -> bool {
 
 /// Collects the core's queued replies, answering OSC colour queries from the
 /// host theme where the pane owns the answer.
-pub(super) fn drain_terminal_responses(core: &mut GhosttyPaneCore) -> Vec<Bytes> {
+pub(super) fn drain_terminal_responses(core: &mut PaneTerminalCore) -> Vec<Bytes> {
     let responses = core.terminal.take_pty_responses();
     let mut replies = Vec::with_capacity(responses.len());
     for response in responses {
@@ -110,8 +110,8 @@ pub(super) fn color_query_response(query: &shepr_vt::ColorQuery) -> Option<Bytes
     Some(osc_rgb_response(&command, color.r, color.g, color.b))
 }
 
-pub(super) fn current_cursor_state(core: &mut GhosttyPaneCore) -> Option<TerminalCursorState> {
-    let GhosttyPaneCore {
+pub(super) fn current_cursor_state(core: &mut PaneTerminalCore) -> Option<TerminalCursorState> {
+    let PaneTerminalCore {
         terminal,
         render_state,
         ..
@@ -142,8 +142,8 @@ pub(super) fn cursor_state_from_render_state(
 
 pub(super) type VisibleHyperlinks = Vec<((u16, u16), String, String)>;
 
-pub(super) fn ghostty_collect_dirty_patch(
-    core: &mut GhosttyPaneCore,
+pub(super) fn terminal_collect_dirty_patch(
+    core: &mut PaneTerminalCore,
     area_width: u16,
     area_height: u16,
 ) -> TerminalDirtyPatchOutcome {
@@ -161,7 +161,7 @@ pub(super) fn ghostty_collect_dirty_patch(
     let host_theme = core.host_terminal_theme;
     let initial_default_foreground = core.initial_default_foreground;
     let initial_default_background = core.initial_default_background;
-    let GhosttyPaneCore {
+    let PaneTerminalCore {
         terminal,
         render_state,
         ..
@@ -174,16 +174,12 @@ pub(super) fn ghostty_collect_dirty_patch(
     }
 
     let colors = render_state.colors();
-    let default_bg = ghostty_default_bg(colors.background, host_theme, initial_default_background);
-    let default_fg = ghostty_default_fg(colors.foreground, host_theme, initial_default_foreground);
-    let resolved_fg = Some(ghostty_color(colors.foreground));
-    let resolved_bg = Some(ghostty_color(colors.background));
+    let default_bg = terminal_default_bg(colors.background, host_theme, initial_default_background);
+    let default_fg = terminal_default_fg(colors.foreground, host_theme, initial_default_foreground);
+    let resolved_fg = Some(terminal_color(colors.foreground));
+    let resolved_bg = Some(terminal_color(colors.background));
     let default_palette = terminal.default_palette();
     let palette_overrides = PaletteOverrides::new(&colors.palette, &default_palette);
-    // Shepr never renders kitty graphics, but a program may still emit the
-    // unicode placeholder codepoint as literal text; always hide it so a
-    // stray private-use glyph doesn't leak into the rendered pane.
-    let hide_kitty_placeholders = true;
 
     let mut symbol_scratch = String::new();
     let mut patch_rows = Vec::new();
@@ -199,7 +195,7 @@ pub(super) fn ghostty_collect_dirty_patch(
             if basic.has_hyperlink {
                 fallback!("hyperlink_present");
             }
-            let style = ghostty_cell_style(
+            let style = terminal_cell_style(
                 &cell_view,
                 &basic,
                 default_fg,
@@ -208,13 +204,8 @@ pub(super) fn ghostty_collect_dirty_patch(
                 resolved_bg,
                 palette_overrides.as_ref(),
             );
-            let symbol = ghostty_buffer_symbol_into(
-                &cell_view,
-                basic.wide,
-                hide_kitty_placeholders,
-                &mut symbol_scratch,
-            )
-            .to_owned();
+            let symbol =
+                terminal_buffer_symbol_into(&cell_view, basic.wide, &mut symbol_scratch).to_owned();
             patch_cells.push(cell_data_from_style(symbol, style));
             x = x.saturating_add(1);
         }
@@ -250,11 +241,11 @@ pub(super) fn ghostty_collect_dirty_patch(
     }));
 }
 
-pub(super) fn ghostty_visible_hyperlinks(
-    core: &mut GhosttyPaneCore,
+pub(super) fn terminal_visible_hyperlinks(
+    core: &mut PaneTerminalCore,
     area: Rect,
 ) -> Result<VisibleHyperlinks, shepr_vt::Error> {
-    let GhosttyPaneCore {
+    let PaneTerminalCore {
         terminal,
         render_state,
         ..
@@ -269,15 +260,15 @@ pub(super) fn ghostty_visible_hyperlinks(
             if cells.has_hyperlink()
                 && let Some(uri) = terminal.viewport_hyperlink_uri(x, ViewportRow(y))?
             {
-                links.push(((area.x + x, area.y + y), ghostty_cell_symbol(&cells), uri));
+                links.push(((area.x + x, area.y + y), terminal_cell_symbol(&cells), uri));
             }
         }
     }
     Ok(links)
 }
 
-pub(super) fn ghostty_visible_text(core: &mut GhosttyPaneCore) -> String {
-    let GhosttyPaneCore {
+pub(super) fn terminal_visible_text(core: &mut PaneTerminalCore) -> String {
+    let PaneTerminalCore {
         terminal,
         render_state,
         ..
@@ -285,13 +276,13 @@ pub(super) fn ghostty_visible_text(core: &mut GhosttyPaneCore) -> String {
     render_state.update(terminal);
     let mut lines: Vec<_> = render_state
         .iter_rows()
-        .map(|row| ghostty_line_from_cells(row.cells()))
+        .map(|row| terminal_line_from_cells(row.cells()))
         .collect();
     trim_trailing_blank_rows(&mut lines);
     lines_to_text(&lines)
 }
 
-pub(super) fn ghostty_visible_ansi(core: &GhosttyPaneCore) -> Result<String, shepr_vt::Error> {
+pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, shepr_vt::Error> {
     let rows = core.terminal.rows();
     let cols = core.terminal.cols();
     if rows == 0 || cols == 0 {
@@ -309,36 +300,36 @@ pub(super) fn ghostty_visible_ansi(core: &GhosttyPaneCore) -> Result<String, she
 /// agent redrawing from the top, alacritty has pushed the previous frame into
 /// history; reading a screen's worth of rows ending at the last content row
 /// would hand the detector that stale frame (an old "proceed?" blocker, say).
-pub(super) fn ghostty_detection_text(
-    core: &mut GhosttyPaneCore,
+pub(super) fn terminal_detection_text(
+    core: &mut PaneTerminalCore,
 ) -> Result<String, shepr_vt::Error> {
     let terminal = &core.terminal;
     let screen_rows = usize::from(terminal.rows()).max(1);
-    let Some((start, end, _)) = ghostty_recent_read_range(terminal, screen_rows)? else {
+    let Some((start, end, _)) = terminal_recent_read_range(terminal, screen_rows)? else {
         return Ok(String::new());
     };
     let screen_start = terminal.total_rows().saturating_sub(screen_rows);
-    ghostty_text_rows(terminal, start.max(screen_start), end, screen_rows)
+    terminal_text_rows(terminal, start.max(screen_start), end, screen_rows)
 }
 
-pub(super) fn ghostty_recent_text_snapshot(
-    core: &mut GhosttyPaneCore,
+pub(super) fn terminal_recent_text_snapshot(
+    core: &mut PaneTerminalCore,
     lines: usize,
 ) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
     let terminal = &core.terminal;
-    let Some((start, end, _)) = ghostty_recent_read_range(terminal, lines)? else {
+    let Some((start, end, _)) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(TerminalReadSnapshot::default());
     };
-    let text = ghostty_text_rows(terminal, start, end, lines)?;
+    let text = terminal_text_rows(terminal, start, end, lines)?;
     Ok(finish_recent_snapshot(text, start))
 }
 
-pub(super) fn ghostty_recent_text_unwrapped_snapshot(
-    core: &mut GhosttyPaneCore,
+pub(super) fn terminal_recent_text_unwrapped_snapshot(
+    core: &mut PaneTerminalCore,
     lines: usize,
 ) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
     let terminal = &core.terminal;
-    let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
+    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(TerminalReadSnapshot::default());
     };
     let text = terminal.read_text_screen(
@@ -349,13 +340,13 @@ pub(super) fn ghostty_recent_text_unwrapped_snapshot(
     Ok(finish_recent_snapshot(text, start))
 }
 
-pub(super) fn ghostty_recent_ansi_snapshot(
-    core: &mut GhosttyPaneCore,
+pub(super) fn terminal_recent_ansi_snapshot(
+    core: &mut PaneTerminalCore,
     lines: usize,
     unwrap: bool,
 ) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
     let terminal = &core.terminal;
-    let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
+    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(TerminalReadSnapshot::default());
     };
     let text = terminal.read_ansi_screen(
@@ -377,7 +368,7 @@ pub(super) fn finish_recent_snapshot(text: String, start: usize) -> TerminalRead
     }
 }
 
-pub(super) fn ghostty_text_rows(
+pub(super) fn terminal_text_rows(
     terminal: &shepr_vt::Terminal,
     start: usize,
     end: usize,
@@ -387,7 +378,7 @@ pub(super) fn ghostty_text_rows(
     let mut scratch = String::new();
     for y in start..=end {
         let mut row = String::new();
-        ghostty_screen_row_into(terminal, ScreenRow(y), &mut scratch, &mut row);
+        terminal_screen_row_into(terminal, ScreenRow(y), &mut scratch, &mut row);
         rows.push(row);
     }
     trim_trailing_blank_rows(&mut rows);
@@ -399,7 +390,7 @@ pub(super) fn ghostty_text_rows(
 /// the primary history (alacritty offers no access to the inactive grid).
 /// History persistence must not take that for history; it reads through
 /// [`PaneTerminal::primary_history_ansi`], which says so instead.
-pub(super) fn ghostty_recent_read_range(
+pub(super) fn terminal_recent_read_range(
     terminal: &shepr_vt::Terminal,
     lines: usize,
 ) -> Result<Option<(usize, usize, u16)>, shepr_vt::Error> {
@@ -427,7 +418,7 @@ pub(super) fn ghostty_recent_read_range(
     let mut scratch = String::new();
     let mut text = String::new();
     for row in (viewport_start..total_rows).rev() {
-        ghostty_screen_row_into(terminal, ScreenRow(row), &mut scratch, &mut text);
+        terminal_screen_row_into(terminal, ScreenRow(row), &mut scratch, &mut text);
         if !text.trim().is_empty() {
             last_content_row = Some(row);
             break;
@@ -451,7 +442,7 @@ pub(super) fn terminal_scroll_metrics(terminal: &shepr_vt::Terminal) -> ScrollMe
     }
 }
 
-pub(super) fn ghostty_set_scroll_offset_from_bottom(
+pub(super) fn terminal_set_scroll_offset_from_bottom(
     terminal: &mut shepr_vt::Terminal,
     offset_from_bottom: usize,
 ) {
@@ -465,8 +456,8 @@ pub(super) fn ghostty_set_scroll_offset_from_bottom(
     }
 }
 
-pub(super) fn ghostty_extract_selection<P>(
-    core: &mut GhosttyPaneCore,
+pub(super) fn terminal_extract_selection<P>(
+    core: &mut PaneTerminalCore,
     selection: &shepr_vt::selection::Selection<P>,
 ) -> Option<String> {
     let (start, end) = selection.ordered_rows();
@@ -486,7 +477,7 @@ pub(super) fn ghostty_extract_selection<P>(
 /// Writes screen row `y`'s plain text into `line`, trailing blanks trimmed
 /// (empty for a row that is not retained). Straight from the grid, with no
 /// per-cell copies: this runs per detection tick for every agent pane.
-pub(super) fn ghostty_screen_row_into(
+pub(super) fn terminal_screen_row_into(
     terminal: &shepr_vt::Terminal,
     y: ScreenRow,
     scratch: &mut String,
@@ -501,31 +492,28 @@ pub(super) fn ghostty_screen_row_into(
     line.truncate(line.trim_end().len());
 }
 
-pub(super) fn ghostty_line_from_cells<'a>(
+pub(super) fn terminal_line_from_cells<'a>(
     cells: impl Iterator<Item = shepr_vt::CellView<'a>>,
 ) -> String {
     let mut line = String::new();
     for cell in cells {
-        line.push_str(&ghostty_cell_symbol(&cell));
+        line.push_str(&terminal_cell_symbol(&cell));
     }
     line.trim_end().to_string()
 }
 
-pub(super) fn ghostty_cell_symbol(cells: &shepr_vt::CellView<'_>) -> String {
+pub(super) fn terminal_cell_symbol(cells: &shepr_vt::CellView<'_>) -> String {
     if cells.wide() == shepr_vt::CellWide::SpacerTail {
         return String::new();
     }
     let text = cells.grapheme_text();
-    if text.chars().next().map(u32::from) == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER) {
-        return " ".to_string();
-    }
     if text.is_empty() {
         return " ".to_string();
     }
     text
 }
 
-pub(super) fn ghostty_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'static str {
+pub(super) fn terminal_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'static str {
     match wide {
         shepr_vt::CellWide::Wide => "  ",
         shepr_vt::CellWide::SpacerTail => "",
@@ -534,7 +522,7 @@ pub(super) fn ghostty_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'stat
 }
 
 #[cfg(test)]
-pub(super) fn ghostty_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -> String {
+pub(super) fn terminal_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -> String {
     let expected_width = match wide {
         shepr_vt::CellWide::Wide => 2,
         shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => 1,
@@ -555,13 +543,12 @@ pub(super) fn ghostty_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::Cell
         return symbol.to_string();
     }
 
-    ghostty_blank_symbol_for_width(wide).to_string()
+    terminal_blank_symbol_for_width(wide).to_string()
 }
 
-pub(super) fn ghostty_buffer_symbol_into<'a>(
+pub(super) fn terminal_buffer_symbol_into<'a>(
     cells: &shepr_vt::CellView<'_>,
     wide: shepr_vt::CellWide,
-    hide_kitty_placeholders: bool,
     symbol_scratch: &'a mut String,
 ) -> &'a str {
     symbol_scratch.clear();
@@ -570,10 +557,7 @@ pub(super) fn ghostty_buffer_symbol_into<'a>(
         shepr_vt::CellWide::SpacerHead => symbol_scratch.push(' '),
         shepr_vt::CellWide::Narrow | shepr_vt::CellWide::Wide => {
             cells.grapheme_text_into(symbol_scratch);
-            let hidden_kitty_placeholder = hide_kitty_placeholders
-                && symbol_scratch.chars().next().map(u32::from)
-                    == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER);
-            if hidden_kitty_placeholder || symbol_scratch.is_empty() {
+            if symbol_scratch.is_empty() {
                 symbol_scratch.clear();
                 symbol_scratch.push(' ');
             }
@@ -594,13 +578,13 @@ pub(super) fn ghostty_buffer_symbol_into<'a>(
             && shepr_vt::is_halfwidth_katakana_voiced_grapheme(symbol_scratch))
     {
         symbol_scratch.clear();
-        symbol_scratch.push_str(ghostty_blank_symbol_for_width(wide));
+        symbol_scratch.push_str(terminal_blank_symbol_for_width(wide));
     }
 
     symbol_scratch.as_str()
 }
 
-pub(super) fn ghostty_reset_cell(
+pub(super) fn terminal_reset_cell(
     cell: &mut ratatui::buffer::Cell,
     default_fg: Option<Color>,
     default_bg: Option<Color>,
@@ -618,7 +602,7 @@ pub(super) fn ghostty_reset_cell(
 pub(super) fn blank_cell_data(default_fg: Option<Color>, default_bg: Option<Color>) -> CellData {
     cell_data_from_style(
         " ".to_string(),
-        ghostty_default_style(default_fg, default_bg),
+        terminal_default_style(default_fg, default_bg),
     )
 }
 
@@ -633,7 +617,10 @@ pub(super) fn cell_data_from_style(symbol: String, style: Style) -> CellData {
     }
 }
 
-pub(super) fn ghostty_default_style(default_fg: Option<Color>, default_bg: Option<Color>) -> Style {
+pub(super) fn terminal_default_style(
+    default_fg: Option<Color>,
+    default_bg: Option<Color>,
+) -> Style {
     let mut style = Style::default();
     if let Some(fg) = default_fg {
         style = style.fg(fg);
@@ -644,7 +631,7 @@ pub(super) fn ghostty_default_style(default_fg: Option<Color>, default_bg: Optio
     style
 }
 
-pub(super) fn ghostty_cell_style(
+pub(super) fn terminal_cell_style(
     cells: &shepr_vt::CellView<'_>,
     basic: &shepr_vt::CellBasicData,
     default_fg: Option<Color>,
@@ -656,14 +643,14 @@ pub(super) fn ghostty_cell_style(
     let mut fg = basic
         .style
         .fg_color
-        .map(|color| ghostty_cell_color(color, palette_overrides))
-        .or_else(|| cells.fg_color().map(ghostty_color))
+        .map(|color| terminal_cell_color(color, palette_overrides))
+        .or_else(|| cells.fg_color().map(terminal_color))
         .or(default_fg);
     let mut bg = basic
         .style
         .bg_color
-        .map(|color| ghostty_cell_color(color, palette_overrides))
-        .or_else(|| cells.bg_color().map(ghostty_color))
+        .map(|color| terminal_cell_color(color, palette_overrides))
+        .or_else(|| cells.bg_color().map(terminal_color))
         .or(default_bg);
     if basic.style.invisible {
         fg = bg.or(default_bg);
@@ -683,11 +670,11 @@ pub(super) fn ghostty_cell_style(
         std::mem::swap(&mut fg, &mut bg);
     }
 
-    let mut style = ghostty_default_style(fg, bg);
+    let mut style = terminal_default_style(fg, bg);
     if let Some(underline_color) = basic
         .style
         .underline_color
-        .map(|color| ghostty_cell_color(color, palette_overrides))
+        .map(|color| terminal_cell_color(color, palette_overrides))
     {
         style = style.underline_color(underline_color);
     }
@@ -718,7 +705,7 @@ pub(super) fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
     Bytes::from(format!("\x1b]{command};rgb:{r:04x}/{g:04x}/{b:04x}\x1b\\"))
 }
 
-pub(super) fn ghostty_default_fg(
+pub(super) fn terminal_default_fg(
     color: shepr_vt::RgbColor,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     initial_default_foreground: Option<shepr_vt::RgbColor>,
@@ -727,16 +714,16 @@ pub(super) fn ghostty_default_fg(
         if host_foreground == color {
             None
         } else {
-            Some(ghostty_color(color))
+            Some(terminal_color(color))
         }
     } else if initial_default_foreground.is_some_and(|initial| initial != color) {
-        Some(ghostty_color(color))
+        Some(terminal_color(color))
     } else {
         None
     }
 }
 
-pub(super) fn ghostty_default_bg(
+pub(super) fn terminal_default_bg(
     color: shepr_vt::RgbColor,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     initial_default_background: Option<shepr_vt::RgbColor>,
@@ -745,10 +732,10 @@ pub(super) fn ghostty_default_bg(
         if host_background == color {
             None
         } else {
-            Some(ghostty_color(color))
+            Some(terminal_color(color))
         }
     } else if initial_default_background.is_some_and(|initial| initial != color) {
-        Some(ghostty_color(color))
+        Some(terminal_color(color))
     } else {
         None
     }
@@ -781,22 +768,22 @@ impl PaletteOverrides {
     }
 }
 
-pub(super) fn ghostty_cell_color(
+pub(super) fn terminal_cell_color(
     color: shepr_vt::CellColor,
     palette_overrides: Option<&PaletteOverrides>,
 ) -> Color {
     match color {
         shepr_vt::CellColor::Palette(index) => {
             match palette_overrides.and_then(|overrides| overrides.get(index)) {
-                Some(color) => ghostty_color(color),
+                Some(color) => terminal_color(color),
                 None => Color::Indexed(index),
             }
         }
-        shepr_vt::CellColor::Rgb(color) => ghostty_color(color),
+        shepr_vt::CellColor::Rgb(color) => terminal_color(color),
     }
 }
 
-pub(super) fn ghostty_color(color: shepr_vt::RgbColor) -> Color {
+pub(super) fn terminal_color(color: shepr_vt::RgbColor) -> Color {
     Color::Rgb(color.r, color.g, color.b)
 }
 
@@ -825,7 +812,7 @@ pub(super) fn recent_text_from_rows(rows: &[String], lines: usize) -> String {
     }
 }
 
-pub(super) fn should_probe_host_terminal_theme_restore(core: &GhosttyPaneCore) -> bool {
+pub(super) fn should_probe_host_terminal_theme_restore(core: &PaneTerminalCore) -> bool {
     if core.transient_default_color_owner_pgid.is_none() || core.host_terminal_theme.is_empty() {
         return false;
     }

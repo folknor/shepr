@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use interprocess::ConnectWaitMode;
 use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 
+use super::random::unpredictable_token;
+
 const PROBE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
@@ -65,6 +67,36 @@ fn usable_socket(path: &Path) -> bool {
         // The API is user-private; do not redirect that user's panes to another user's agent.
         metadata.file_type().is_socket() && metadata.uid() == super::effective_uid()
     })
+}
+
+fn validate_agent_socket(path: &Path) -> io::Result<()> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cannot inspect SSH agent socket {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("SSH agent path {} is not a Unix socket", path.display()),
+        ));
+    }
+    let expected_uid = super::effective_uid();
+    if metadata.uid() != expected_uid {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "SSH agent socket {} is owned by uid {}, expected uid {expected_uid}",
+                path.display(),
+                metadata.uid(),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn live_socket(path: &Path) -> bool {
@@ -120,24 +152,35 @@ impl SshAgentRegistry {
     }
 
     pub fn register(&self, path: PathBuf) -> io::Result<SshAgentLease> {
-        if !path.is_absolute() || !usable_socket(&path) {
+        if !path.is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "SSH agent must be an absolute, user-owned socket",
+                format!("SSH agent socket path must be absolute: {}", path.display()),
             ));
         }
+        let is_published_address = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("SSH agent registry poisoned"))?
+            .path
+            == path;
+        if is_published_address {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "SSH agent path {} is shepr's own published agent address",
+                    path.display(),
+                ),
+            ));
+        }
+        validate_agent_socket(&path)?;
         let id = {
             let mut state = self
                 .0
                 .state
                 .lock()
                 .map_err(|_| io::Error::other("SSH agent registry poisoned"))?;
-            if path == state.path {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "SSH agent must be an absolute, user-owned socket",
-                ));
-            }
             let id = state.next_id;
             state.next_id += 1;
             state.agents.push((id, path));
@@ -184,6 +227,8 @@ impl SharedState {
 
             // This private snapshot may probe sockets and update the published
             // symlink while the shared state lock remains available to leases.
+            // The publisher lock is needed to order symlink swaps; socket probes
+            // use a zero-timeout connect and never wait for an agent accept.
             candidate.publish()?;
 
             let mut state = self
@@ -246,7 +291,7 @@ impl PublicationSnapshot {
         }
         let temporary = self
             .path
-            .with_extension(format!("{}.new", std::process::id()));
+            .with_extension(format!("{:016x}.new", unpredictable_token()?));
         // A hard kill can leave this unpublished link in the private runtime
         // directory; it cannot redirect panes or replace the stable address.
         symlink(target, &temporary)?;
@@ -385,8 +430,13 @@ mod tests {
             fs::read_link(&stable).expect("the published path is a link"),
             stable.with_extension("unavailable")
         );
-        let temporary = stable.with_extension(format!("{}.new", std::process::id()));
-        assert!(fs::symlink_metadata(&temporary).is_err());
+        assert_eq!(
+            fs::read_dir(&directory)
+                .expect("the publication leaves its directory readable")
+                .count(),
+            1,
+            "publication removes the random temporary link",
+        );
     }
 
     #[test]

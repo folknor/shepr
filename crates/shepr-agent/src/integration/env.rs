@@ -18,55 +18,77 @@ struct DirectoryError {
 
 type CapturedDirectory = Result<PathBuf, DirectoryError>;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum DirectoryKey {
+    PiExtension,
+    OmpExtension,
+    Claude,
+    Codex,
+    Copilot,
+    Devin,
+    Droid,
+    Kimi,
+    Opencode,
+    OpencodeState,
+    Kilo,
+    Qodercli,
+    Qwen,
+    Letta,
+    Cursor,
+    Mastracode,
+    AntigravityCli,
+    Grok,
+}
+
 /// Agent-owned config locations resolved at the integration command boundary.
 /// Install and status code receives this value and never consults the process
 /// environment while it is choosing files to read or write.
 #[derive(Clone, Debug)]
 pub struct AgentIntegrationPaths {
-    directories: HashMap<&'static str, CapturedDirectory>,
+    directories: HashMap<DirectoryKey, CapturedDirectory>,
 }
 
 impl AgentIntegrationPaths {
     pub fn resolve() -> Self {
         let directories = [
-            ("pi_extension", pi_extension_dir()),
-            ("omp_extension", omp_extension_dir()),
-            ("claude", claude_dir()),
-            ("codex", codex_dir()),
-            ("copilot", copilot_dir()),
-            ("devin", devin_dir()),
-            ("droid", droid_dir()),
-            ("kimi", kimi_dir()),
-            ("opencode", opencode_dir()),
-            ("opencode_state", opencode_state_dir()),
-            ("kilo", kilo_dir()),
-            ("qodercli", qodercli_dir()),
-            ("qwen", qwen_dir()),
-            ("letta", letta_dir()),
-            ("cursor", cursor_dir()),
-            ("mastracode", mastracode_dir()),
-            ("antigravity_cli", antigravity_cli_dir()),
-            ("grok", grok_dir()),
+            (DirectoryKey::PiExtension, pi_extension_dir()),
+            (DirectoryKey::OmpExtension, omp_extension_dir()),
+            (DirectoryKey::Claude, claude_dir()),
+            (DirectoryKey::Codex, codex_dir()),
+            (DirectoryKey::Copilot, copilot_dir()),
+            (DirectoryKey::Devin, devin_dir()),
+            (DirectoryKey::Droid, droid_dir()),
+            (DirectoryKey::Kimi, kimi_dir()),
+            (DirectoryKey::Opencode, opencode_dir()),
+            (DirectoryKey::OpencodeState, opencode_state_dir()),
+            (DirectoryKey::Kilo, kilo_dir()),
+            (DirectoryKey::Qodercli, qodercli_dir()),
+            (DirectoryKey::Qwen, qwen_dir()),
+            (DirectoryKey::Letta, letta_dir()),
+            (DirectoryKey::Cursor, cursor_dir()),
+            (DirectoryKey::Mastracode, mastracode_dir()),
+            (DirectoryKey::AntigravityCli, antigravity_cli_dir()),
+            (DirectoryKey::Grok, grok_dir()),
         ]
         .into_iter()
-        .map(|(name, result)| {
+        .map(|(key, result)| {
             let result = result.map_err(|error| DirectoryError {
                 kind: error.kind(),
                 message: error.to_string(),
             });
-            (name, result)
+            (key, result)
         })
         .collect();
         Self { directories }
     }
 
-    pub(crate) fn directory(&self, name: &'static str) -> io::Result<PathBuf> {
-        match self.directories.get(name) {
+    pub(crate) fn directory(&self, key: DirectoryKey) -> io::Result<PathBuf> {
+        match self.directories.get(&key) {
             Some(Ok(path)) => Ok(path.clone()),
             Some(Err(error)) => Err(io::Error::new(error.kind, error.message.clone())),
             None => Err(io::Error::new(
                 ErrorKind::NotFound,
-                format!("integration directory {name} was not resolved"),
+                format!("integration directory {key:?} was not resolved"),
             )),
         }
     }
