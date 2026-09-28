@@ -12,6 +12,7 @@ serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 shepr-agent = { path = "../shepr-agent" }
 shepr-core = { path = "../shepr-core" }
+shepr-platform = { path = "../shepr-platform" }
 time = { workspace = true }
 toml = { workspace = true }
 

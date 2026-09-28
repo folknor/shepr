@@ -56,7 +56,10 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         .app
         .public_pane_id(0, source)
         .expect("test precondition");
-    let destination_id = server.app.public_workspace_id(1);
+    let destination_id = server
+        .app
+        .public_workspace_id(1)
+        .expect("test precondition");
     let (control_rx, render_rx) = connect_test_shell(&mut server, 9, 80, 23);
     let mut render_rx = PaneSurfaceReceiver::new(render_rx);
     let initial = client_shell_snapshot(&control_rx);

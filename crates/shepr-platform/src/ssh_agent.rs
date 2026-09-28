@@ -247,6 +247,8 @@ impl PublicationSnapshot {
         let temporary = self
             .path
             .with_extension(format!("{}.new", std::process::id()));
+        // A hard kill can leave this unpublished link in the private runtime
+        // directory; it cannot redirect panes or replace the stable address.
         symlink(target, &temporary)?;
         let metadata = match fs::symlink_metadata(&temporary) {
             Ok(metadata) => metadata,

@@ -601,7 +601,13 @@ impl App {
         let previous_pane_id = self
             .public_pane_id(source_ws_idx, source_pane_id)
             .unwrap_or_else(|| pane_id.clone());
-        let previous_workspace_id = self.public_workspace_id(source_ws_idx);
+        let Some(previous_workspace_id) = self.public_workspace_id(source_ws_idx) else {
+            return failure(
+                id,
+                shepr_api::error::ApiErrorCode::PaneNotFound,
+                "source pane not found",
+            );
+        };
         let Some(previous_tab_id) = self.public_tab_id(source_ws_idx, source_tab_idx) else {
             return failure(
                 id,
@@ -783,7 +789,14 @@ impl App {
                             format!("workspace {workspace_id} not found"),
                         );
                     };
-                    self.public_workspace_id(ws_idx)
+                    let Some(target_workspace_id) = self.public_workspace_id(ws_idx) else {
+                        return failure(
+                            id,
+                            shepr_api::error::ApiErrorCode::WorkspaceNotFound,
+                            format!("workspace {workspace_id} not found"),
+                        );
+                    };
+                    target_workspace_id
                 } else {
                     previous_workspace_id.clone()
                 };

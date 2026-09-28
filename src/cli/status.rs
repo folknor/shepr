@@ -69,14 +69,14 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
 
     if json {
         print_json(&FullStatusJson {
-            client: client_status_json(paths),
+            local_client: client_status_json(paths),
             server: server_status_json(paths, &server),
             update: update_status_json(&server),
         })?;
         return Ok(0);
     }
 
-    println!("client:");
+    println!("local client:");
     println!("  version: {}", shepr_protocol::build_version());
     println!("  build_id: {}", shepr_protocol::BUILD_ID);
     println!();
@@ -174,7 +174,7 @@ fn restart_needed_label(server: &ServerRuntimeStatus) -> &'static str {
 
 #[derive(Serialize)]
 struct FullStatusJson {
-    client: ClientStatusJson,
+    local_client: ClientStatusJson,
     server: ServerStatusJson,
     update: UpdateStatusJson,
 }

@@ -17,18 +17,10 @@ use shepr_core::shell::ExecutableStatus as CandidateStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Program {
-    /// An interactive pane shell. A nonempty selection is strict; an empty
-    /// selection uses inherited `SHELL` with `/bin/sh` fallback.
-    Shell { login: bool, configured: bool },
+    /// The interactive pane shell selected and resolved during config loading.
+    Shell { login: bool, program: OsString },
     /// Explicit argv; `argv[0]` is resolved against the command's `PATH`.
     Argv(Vec<OsString>),
-}
-
-#[derive(Clone, Copy)]
-enum ShellResolutionPolicy {
-    PaneProgram,
-    PaneProgramFallback,
-    ChildEnvironment,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,14 +36,13 @@ impl PtyCommand {
         Self::with_program(Program::Argv(vec![program.as_ref().to_owned()]))
     }
 
-    /// Run the configured shell, or the environment/default shell, in pane mode.
+    /// Run the shell selected and resolved while the server loaded its config.
     pub fn interactive_shell(default_shell: &str, login: bool) -> Self {
-        let default_shell = default_shell.trim();
-        let configured = !default_shell.is_empty();
-        let mut command = Self::with_program(Program::Shell { login, configured });
-        if configured {
-            command.env(ChildEnv::Shell, default_shell);
-        }
+        let mut command = Self::with_program(Program::Shell {
+            login,
+            program: default_shell.trim().into(),
+        });
+        command.env(ChildEnv::Shell, default_shell.trim());
         command
     }
 
@@ -130,13 +121,8 @@ impl PtyCommand {
             }
         };
         let (mut cmd, shell) = match &self.program {
-            Program::Shell { login, configured } => {
-                let policy = if *configured {
-                    ShellResolutionPolicy::PaneProgram
-                } else {
-                    ShellResolutionPolicy::PaneProgramFallback
-                };
-                let shell = self.resolve_shell(&dir, policy)?;
+            Program::Shell { login, program } => {
+                let shell = self.search_path(program, &dir)?;
                 let mut cmd = command_in(&shell, &dir);
                 if *login {
                     let basename = Path::new(&shell).file_name().unwrap_or(shell.as_os_str());
@@ -147,7 +133,7 @@ impl PtyCommand {
                 (cmd, shell)
             }
             Program::Argv(argv) => {
-                let shell = self.resolve_shell(&dir, ShellResolutionPolicy::ChildEnvironment)?;
+                let shell = self.resolve_shell(&dir)?;
                 let Some((program, args)) = argv.split_first() else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -168,39 +154,13 @@ impl PtyCommand {
         Ok(cmd)
     }
 
-    /// Resolve `$SHELL` once for this launch. An unconfigured pane shell falls
-    /// back to `/bin/sh` when inherited `SHELL` is empty or unusable; configured
-    /// pane paths are rejected when unusable. Other child commands fall back
-    /// to passwd, then `/bin/sh`.
-    fn resolve_shell(&self, cwd: &OsStr, policy: ShellResolutionPolicy) -> io::Result<OsString> {
+    /// Resolve the child environment's `$SHELL`, falling back to passwd and
+    /// then `/bin/sh` when the inherited value cannot be used.
+    fn resolve_shell(&self, cwd: &OsStr) -> io::Result<OsString> {
         let inherited = self.get_env(ChildEnv::Shell).and_then(trimmed_shell);
-        let candidate = inherited.clone().unwrap_or_else(|| match policy {
-            ShellResolutionPolicy::PaneProgram | ShellResolutionPolicy::PaneProgramFallback => {
-                OsString::from("/bin/sh")
-            }
-            ShellResolutionPolicy::ChildEnvironment => passwd_shell(),
-        });
+        let candidate = inherited.clone().unwrap_or_else(passwd_shell);
         match self.search_path(&candidate, cwd) {
             Ok(resolved) => Ok(resolved),
-            Err(err)
-                if matches!(policy, ShellResolutionPolicy::PaneProgramFallback)
-                    && inherited.is_some() =>
-            {
-                tracing::warn!(
-                    shell = %candidate.to_string_lossy(),
-                    err = %err,
-                    "SHELL is not executable; falling back to /bin/sh"
-                );
-                self.search_path(OsStr::new("/bin/sh"), cwd)
-            }
-            Err(err)
-                if matches!(
-                    policy,
-                    ShellResolutionPolicy::PaneProgram | ShellResolutionPolicy::PaneProgramFallback
-                ) =>
-            {
-                Err(err)
-            }
             Err(_) if inherited.is_none() => Ok(OsString::from("/bin/sh")),
             Err(err) => {
                 if let Some(shell) = inherited {
@@ -405,7 +365,7 @@ mod tests {
         let directory = scratch.join("directory");
         std::fs::create_dir(&directory).expect("test precondition");
         let executable = scratch.join("executable");
-        // Never run: classification reads only the mode bits.
+        // Never run: classification checks access without executing the file.
         std::fs::write(&executable, "content").expect("test precondition");
         let not_executable = scratch.join("not-executable");
         std::fs::write(&not_executable, "content").expect("test precondition");
@@ -478,11 +438,23 @@ mod tests {
         assert_eq!(
             shell,
             Some(
-                cmd.resolve_shell(&cmd.home_dir(), ShellResolutionPolicy::ChildEnvironment)
+                cmd.resolve_shell(&cmd.home_dir())
                     .expect("test precondition")
             )
         );
         assert_ne!(shell, Some(OsString::from("/__shepr_missing_shell__")));
+    }
+
+    #[test]
+    fn pane_shell_uses_its_resolved_program_without_environment_fallback() {
+        let mut cmd = PtyCommand::interactive_shell("/__shepr_missing_shell__", false);
+        cmd.env(ChildEnv::Shell, fixture::path_str());
+
+        let err = cmd
+            .to_std_command()
+            .expect_err("the selected pane shell must fail instead of using inherited SHELL");
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

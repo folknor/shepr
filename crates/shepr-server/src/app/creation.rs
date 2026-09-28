@@ -187,7 +187,7 @@ impl App {
         let agg_state = tab.aggregate_state(&self.state.terminals);
         Some(shepr_api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
-            workspace_id: self.public_workspace_id(ws_idx),
+            workspace_id: self.public_workspace_id(ws_idx)?,
             number: tab.number,
             label: ws.tab_display_name(tab_idx)?,
             focused: self.state.active_index() == Some(ws_idx) && ws.active_tab == tab_idx,
@@ -299,7 +299,7 @@ impl App {
         Some(shepr_api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
-            workspace_id: self.public_workspace_id(ws_idx),
+            workspace_id: self.public_workspace_id(ws_idx)?,
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
             cwd: tab
@@ -335,7 +335,7 @@ impl App {
         let runtime =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
-        Some((runtime, self.public_workspace_id(ws_idx)))
+        Some((runtime, self.public_workspace_id(ws_idx)?))
     }
 
     pub(super) fn lookup_runtime_sender(
@@ -354,7 +354,7 @@ impl App {
         let ws = self.state.workspaces.get(index)?;
         let agg_state = ws.aggregate_state(&self.state.terminals);
         Some(shepr_api::schema::WorkspaceInfo {
-            workspace_id: self.public_workspace_id(index),
+            workspace_id: self.public_workspace_id(index)?,
             number: index + 1,
             label: ws.display_name(),
             focused: self.state.active_index() == Some(index),

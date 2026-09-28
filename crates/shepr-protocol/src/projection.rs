@@ -19,31 +19,11 @@ pub struct ClientShellSnapshot {
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_tab_id: Option<PublicTabId>,
     pub focused_pane_id: Option<PublicPaneId>,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub tab_bar_right: Vec<ClientShellTabStatusSegment>,
     pub tab_bar_right_separator: String,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub workspaces: Vec<ClientShellWorkspace>,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub tabs: Vec<ClientShellTab>,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub panes: Vec<ClientShellPane>,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub agents: Vec<ClientShellAgent>,
 }
 
@@ -63,10 +43,6 @@ pub struct ClientShellWorkspace {
     pub custom_label: bool,
     pub branch: Option<String>,
     pub git_ahead_behind: Option<(usize, usize)>,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
     pub agent_status: AgentStatus,
@@ -109,10 +85,6 @@ pub struct ClientShellAgent {
     pub terminal_title_stripped: Option<String>,
     pub agent_status: AgentStatus,
     pub state_change_seq: u64,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
 }

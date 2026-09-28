@@ -344,9 +344,11 @@ pub(super) fn git_ref_storage_is_reftable(
 /// Whether `core.bare` resolves to true for this Git directory. Unlike the
 /// repository format keys, Git's effective `core.bare` (what `git rev-parse
 /// --is-bare-repository` reports from inside a Git directory) comes from the
-/// whole config chain: the user's global files, then the repository's config,
-/// each with its includes, the last value winning. So a bare repository whose
-/// `core.bare = true` sits in an included file or in `~/.gitconfig` is still
+/// whole config chain: the system config, the global config files, then the
+/// repository's config, each with its includes, the last value winning.
+/// `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM` and `GIT_CONFIG_GLOBAL` select
+/// the same system and global sources Git uses. So a bare repository whose
+/// `core.bare = true` sits in an included file or in a global config is still
 /// bare here. The value takes Git's boolean grammar; a malformed one, which
 /// Git refuses to run on, reads as not bare. One deliberate difference: Git
 /// treats a Git directory it discovers as bare when `core.bare` is unset,

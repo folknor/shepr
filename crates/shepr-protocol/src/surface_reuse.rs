@@ -51,29 +51,16 @@ impl From<super::surface_delta::SurfaceDeltaError> for SurfaceDecodeError {
 }
 
 pub fn message(last: &PaneSurfaceFrame, surface: &mut PaneSurfaceFrame) -> Option<ServerMessage> {
-    if !Baseline::new(
+    let baseline = Baseline::new(
         &last.boot_id,
         last.projection_revision,
         last.surface_revision,
-    )
-    .accepts(
-        &surface.boot_id,
-        last.surface_revision,
-        surface.surface_revision,
-        last.projection_revision,
-        surface.projection_revision,
-    ) {
+    );
+    if !baseline.accepts_surface(surface) {
         return None;
     }
-    let message = ServerMessage::SurfaceUpdate(super::SurfaceUpdate {
-        boot_id: surface.boot_id.clone(),
-        base_projection_revision: last.projection_revision,
-        base_surface_revision: last.surface_revision,
-        surface_revision: surface.surface_revision,
-        projection_revision: surface.projection_revision,
-        meta: Some(super::surface::SurfaceMeta::from(&*surface)),
-        spans: Vec::new(),
-    });
+    let update = baseline.update(surface, Vec::new());
+    let message = ServerMessage::SurfaceUpdate(update);
     // A failed compact encoding must fall back to a full surface.
     match super::codec::encoded_len(&message) {
         Ok(size) => super::frame_payload_fits(size).then_some(message),
@@ -130,6 +117,33 @@ impl<'a> Baseline<'a> {
         }
         base_projection_revision == self.projection_revision
             && projection_revision >= self.projection_revision
+    }
+
+    pub(crate) fn accepts_surface(&self, surface: &PaneSurfaceFrame) -> bool {
+        self.accepts(
+            &surface.boot_id,
+            self.surface_revision,
+            surface.surface_revision,
+            self.projection_revision,
+            surface.projection_revision,
+        )
+    }
+
+    /// Builds an update after `accepts_surface` has accepted the new surface.
+    pub(crate) fn update(
+        &self,
+        surface: &PaneSurfaceFrame,
+        spans: Vec<super::PaneSurfacePatchRow>,
+    ) -> super::SurfaceUpdate {
+        super::SurfaceUpdate {
+            boot_id: surface.boot_id.clone(),
+            base_projection_revision: self.projection_revision,
+            base_surface_revision: self.surface_revision,
+            surface_revision: surface.surface_revision,
+            projection_revision: surface.projection_revision,
+            meta: Some(super::surface::SurfaceMeta::from(surface)),
+            spans,
+        }
     }
 }
 

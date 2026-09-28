@@ -1548,7 +1548,10 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
             .expect("projected pane")
     };
     let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
-    let workspace_id = server.app.public_workspace_id(0);
+    let workspace_id = server
+        .app
+        .public_workspace_id(0)
+        .expect("test precondition");
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let mut previous = client_shell_snapshot(&control).revision;
     server.render_and_stream();
@@ -2623,7 +2626,10 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         .app
         .public_pane_id(0, second_pane)
         .expect("test precondition");
-    let workspace_id = server.app.public_workspace_id(0);
+    let workspace_id = server
+        .app
+        .public_workspace_id(0)
+        .expect("test precondition");
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 61);
     let (second_control, _) = connect_matching_test_shell(&mut server, 62);
@@ -3127,7 +3133,10 @@ async fn public_background_tab_create_preserves_client_locations() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let workspace_id = server.app.public_workspace_id(0);
+    let workspace_id = server
+        .app
+        .public_workspace_id(0)
+        .expect("test precondition");
     let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
     let second_tab_id = server
         .app
@@ -3181,8 +3190,14 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let first_workspace_id = server.app.public_workspace_id(0);
-    let second_workspace_id = server.app.public_workspace_id(1);
+    let first_workspace_id = server
+        .app
+        .public_workspace_id(0)
+        .expect("test precondition");
+    let second_workspace_id = server
+        .app
+        .public_workspace_id(1)
+        .expect("test precondition");
     let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
     let second_tab_id = server
         .app
@@ -3259,7 +3274,10 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let first_workspace_id = server.app.public_workspace_id(0);
+    let first_workspace_id = server
+        .app
+        .public_workspace_id(0)
+        .expect("test precondition");
     let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
     let first_pane_id = server
         .app
@@ -3276,7 +3294,13 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     let diverged = client_shell_snapshot(&control_rx);
     assert_eq!(
         diverged.focused_workspace_id.as_deref(),
-        Some(server.app.public_workspace_id(1).as_str())
+        Some(
+            server
+                .app
+                .public_workspace_id(1)
+                .expect("test precondition")
+                .as_str()
+        )
     );
     let diverged_surface = recv_pane_surface(&mut render_rx, "diverged surface");
     assert!(frame_text(&diverged_surface.frame).contains("SECOND_WORKSPACE"));

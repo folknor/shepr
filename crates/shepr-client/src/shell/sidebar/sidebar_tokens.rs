@@ -21,17 +21,19 @@ use shepr_config::theme::Palette;
 pub(super) struct SectionSplit(f32);
 
 impl SectionSplit {
-    pub(super) const DEFAULT: Self = Self(0.5);
+    const MIN: f32 = shepr_core::layout::MIN_SPLIT_RATIO;
+    const MAX: f32 = shepr_core::layout::MAX_SPLIT_RATIO;
+    pub(super) const DEFAULT: Self = Self(shepr_core::layout::EVEN_SPLIT);
 
     pub(super) fn new(value: f32) -> Option<Self> {
-        (value.is_finite() && (0.1..=0.9).contains(&value)).then_some(Self(value))
+        (value.is_finite() && (Self::MIN..=Self::MAX).contains(&value)).then_some(Self(value))
     }
 
     pub(super) fn from_drag(value: f32) -> Self {
         Self(if value.is_finite() {
-            value.clamp(0.1, 0.9)
+            value.clamp(Self::MIN, Self::MAX)
         } else {
-            0.5
+            Self::DEFAULT.get()
         })
     }
 
@@ -43,8 +45,11 @@ impl SectionSplit {
 impl<'de> serde::Deserialize<'de> for SectionSplit {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(value)
-            .ok_or_else(|| serde::de::Error::custom("sidebar split must be between 0.1 and 0.9"))
+        let min = Self::MIN;
+        let max = Self::MAX;
+        Self::new(value).ok_or_else(|| {
+            serde::de::Error::custom(format!("sidebar split must be between {min} and {max}"))
+        })
     }
 }
 
@@ -91,7 +96,7 @@ fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "split_ratio is clamped to 0.1..=0.9, so the scaled height is non-negative and stays within the source u16 range"
+        reason = "split_ratio is clamped to its bounds, so the scaled height is non-negative and stays within the source u16 range"
     )]
     let workspace_height = ((total_height as f32) * split_ratio.get()).round() as u16;
     let workspace_height = workspace_height.clamp(3, total_height.saturating_sub(3));
@@ -135,11 +140,15 @@ mod split_tests {
 
     #[test]
     fn section_split_validates_saved_values_and_drag_bounds() {
-        assert!(SectionSplit::new(0.09).is_none());
+        assert!(SectionSplit::new(SectionSplit::MIN - f32::EPSILON).is_none());
         assert!(SectionSplit::new(f32::INFINITY).is_none());
-        assert!(serde_json::from_str::<SectionSplit>("0.95").is_err());
-        assert_eq!(SectionSplit::from_drag(1.0).get(), 0.9);
-        assert_eq!(SectionSplit::from_drag(f32::NAN).get(), 0.5);
+        let invalid_value = SectionSplit::MAX + f32::EPSILON;
+        assert!(serde_json::from_str::<SectionSplit>(&invalid_value.to_string()).is_err());
+        assert_eq!(
+            SectionSplit::from_drag(SectionSplit::MAX + 1.0).get(),
+            SectionSplit::MAX
+        );
+        assert_eq!(SectionSplit::from_drag(f32::NAN), SectionSplit::DEFAULT);
     }
 }
 

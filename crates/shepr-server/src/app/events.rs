@@ -104,11 +104,12 @@ impl App {
         if let AppEvent::PaneDied { pane_id, .. } = &ev
             && let Some(plan) = &pane_removal_plan
             && let Some(public_pane_id) = self.public_pane_id(plan.workspace_index, *pane_id)
+            && let Some(workspace_id) = self.public_workspace_id(plan.workspace_index)
         {
             self.emit_event(shepr_api::schema::EventEnvelope {
                 data: shepr_api::schema::EventData::PaneExited {
                     pane_id: public_pane_id,
-                    workspace_id: self.public_workspace_id(plan.workspace_index),
+                    workspace_id,
                 },
             });
         }
@@ -319,7 +320,9 @@ impl App {
         else {
             return Vec::new();
         };
-        let workspace_id = self.public_workspace_id(ws_idx);
+        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
+            return Vec::new();
+        };
         let mut events: Vec<_> = tab
             .layout
             .pane_ids()
@@ -354,12 +357,15 @@ impl App {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return Vec::new();
         };
+        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
+            return Vec::new();
+        };
         let mut events: Vec<_> = (0..ws.tabs().len())
             .flat_map(|tab_idx| self.tab_close_events(ws_idx, tab_idx))
             .collect();
         events.push(EventEnvelope {
             data: EventData::WorkspaceClosed {
-                workspace_id: self.public_workspace_id(ws_idx),
+                workspace_id,
                 workspace: self.workspace_info(ws_idx),
             },
         });
@@ -417,9 +423,12 @@ impl App {
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
     ) {
+        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
+            return;
+        };
         self.emit_event(shepr_api::schema::EventEnvelope {
             data: shepr_api::schema::EventData::WorkspaceFocused {
-                workspace_id: self.public_workspace_id(ws_idx),
+                workspace_id: workspace_id.clone(),
             },
         });
         if let Some(tab_id) = self
@@ -431,7 +440,7 @@ impl App {
             self.emit_event(shepr_api::schema::EventEnvelope {
                 data: shepr_api::schema::EventData::TabFocused {
                     tab_id,
-                    workspace_id: self.public_workspace_id(ws_idx),
+                    workspace_id: workspace_id.clone(),
                 },
             });
         }
@@ -439,7 +448,7 @@ impl App {
             self.emit_event(shepr_api::schema::EventEnvelope {
                 data: shepr_api::schema::EventData::PaneFocused {
                     pane_id: public_pane_id,
-                    workspace_id: self.public_workspace_id(ws_idx),
+                    workspace_id,
                 },
             });
         }

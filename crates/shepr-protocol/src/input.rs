@@ -50,6 +50,26 @@ pub enum ClientKeyKind {
     Release,
 }
 
+impl ClientKeyKind {
+    /// Converts this wire key kind to the host terminal event kind.
+    pub fn to_host(self) -> ratatui::crossterm::event::KeyEventKind {
+        match self {
+            Self::Press => ratatui::crossterm::event::KeyEventKind::Press,
+            Self::Repeat => ratatui::crossterm::event::KeyEventKind::Repeat,
+            Self::Release => ratatui::crossterm::event::KeyEventKind::Release,
+        }
+    }
+
+    /// Converts a host terminal event kind to its wire representation.
+    pub fn from_host(kind: ratatui::crossterm::event::KeyEventKind) -> Self {
+        match kind {
+            ratatui::crossterm::event::KeyEventKind::Press => Self::Press,
+            ratatui::crossterm::event::KeyEventKind::Repeat => Self::Repeat,
+            ratatui::crossterm::event::KeyEventKind::Release => Self::Release,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[expect(
     variant_size_differences,
@@ -76,11 +96,84 @@ pub enum ClientKeyCode {
     Null,
 }
 
+impl ClientKeyCode {
+    /// Converts this wire key code to the host terminal key code.
+    pub fn to_host(&self) -> ratatui::crossterm::event::KeyCode {
+        use ratatui::crossterm::event::KeyCode;
+        match self {
+            Self::Backspace => KeyCode::Backspace,
+            Self::Enter => KeyCode::Enter,
+            Self::Left => KeyCode::Left,
+            Self::Right => KeyCode::Right,
+            Self::Up => KeyCode::Up,
+            Self::Down => KeyCode::Down,
+            Self::Home => KeyCode::Home,
+            Self::End => KeyCode::End,
+            Self::PageUp => KeyCode::PageUp,
+            Self::PageDown => KeyCode::PageDown,
+            Self::Tab => KeyCode::Tab,
+            Self::BackTab => KeyCode::BackTab,
+            Self::Delete => KeyCode::Delete,
+            Self::Insert => KeyCode::Insert,
+            Self::Esc => KeyCode::Esc,
+            Self::Char(ch) => KeyCode::Char(*ch),
+            Self::F(n) => KeyCode::F(*n),
+            Self::Null => KeyCode::Null,
+        }
+    }
+
+    /// Converts a host terminal key code when the wire model represents it.
+    pub fn from_host(code: ratatui::crossterm::event::KeyCode) -> Option<Self> {
+        use ratatui::crossterm::event::KeyCode;
+        Some(match code {
+            KeyCode::Backspace => Self::Backspace,
+            KeyCode::Enter => Self::Enter,
+            KeyCode::Left => Self::Left,
+            KeyCode::Right => Self::Right,
+            KeyCode::Up => Self::Up,
+            KeyCode::Down => Self::Down,
+            KeyCode::Home => Self::Home,
+            KeyCode::End => Self::End,
+            KeyCode::PageUp => Self::PageUp,
+            KeyCode::PageDown => Self::PageDown,
+            KeyCode::Tab => Self::Tab,
+            KeyCode::BackTab => Self::BackTab,
+            KeyCode::Delete => Self::Delete,
+            KeyCode::Insert => Self::Insert,
+            KeyCode::Esc => Self::Esc,
+            KeyCode::Char(ch) => Self::Char(ch),
+            KeyCode::F(n) => Self::F(n),
+            KeyCode::Null => Self::Null,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ClientMouseButton {
     Left,
     Right,
     Middle,
+}
+
+impl ClientMouseButton {
+    /// Converts this wire mouse button to the host terminal button.
+    pub fn to_host(self) -> ratatui::crossterm::event::MouseButton {
+        match self {
+            Self::Left => ratatui::crossterm::event::MouseButton::Left,
+            Self::Right => ratatui::crossterm::event::MouseButton::Right,
+            Self::Middle => ratatui::crossterm::event::MouseButton::Middle,
+        }
+    }
+
+    /// Converts a host terminal mouse button to its wire representation.
+    pub fn from_host(button: ratatui::crossterm::event::MouseButton) -> Self {
+        match button {
+            ratatui::crossterm::event::MouseButton::Left => Self::Left,
+            ratatui::crossterm::event::MouseButton::Right => Self::Right,
+            ratatui::crossterm::event::MouseButton::Middle => Self::Middle,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +186,38 @@ pub enum ClientMouseKind {
     ScrollDown,
     ScrollLeft,
     ScrollRight,
+}
+
+impl ClientMouseKind {
+    /// Converts this wire mouse kind to the host terminal event kind.
+    pub fn to_host(self) -> ratatui::crossterm::event::MouseEventKind {
+        use ratatui::crossterm::event::MouseEventKind;
+        match self {
+            Self::Down(button) => MouseEventKind::Down(button.to_host()),
+            Self::Up(button) => MouseEventKind::Up(button.to_host()),
+            Self::Drag(button) => MouseEventKind::Drag(button.to_host()),
+            Self::Moved => MouseEventKind::Moved,
+            Self::ScrollUp => MouseEventKind::ScrollUp,
+            Self::ScrollDown => MouseEventKind::ScrollDown,
+            Self::ScrollLeft => MouseEventKind::ScrollLeft,
+            Self::ScrollRight => MouseEventKind::ScrollRight,
+        }
+    }
+
+    /// Converts a host terminal mouse kind to its wire representation.
+    pub fn from_host(kind: ratatui::crossterm::event::MouseEventKind) -> Self {
+        use ratatui::crossterm::event::MouseEventKind;
+        match kind {
+            MouseEventKind::Down(button) => Self::Down(ClientMouseButton::from_host(button)),
+            MouseEventKind::Up(button) => Self::Up(ClientMouseButton::from_host(button)),
+            MouseEventKind::Drag(button) => Self::Drag(ClientMouseButton::from_host(button)),
+            MouseEventKind::Moved => Self::Moved,
+            MouseEventKind::ScrollUp => Self::ScrollUp,
+            MouseEventKind::ScrollDown => Self::ScrollDown,
+            MouseEventKind::ScrollLeft => Self::ScrollLeft,
+            MouseEventKind::ScrollRight => Self::ScrollRight,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +267,16 @@ impl WireModifiers {
 
     pub const fn bits(self) -> u8 {
         self.0
+    }
+
+    /// Converts to host modifiers while preserving bits unknown to this build.
+    pub fn to_host(self) -> ratatui::crossterm::event::KeyModifiers {
+        ratatui::crossterm::event::KeyModifiers::from_bits_retain(self.bits())
+    }
+
+    /// Converts host modifiers while preserving bits unknown to this build.
+    pub fn from_host(modifiers: ratatui::crossterm::event::KeyModifiers) -> Self {
+        Self::from_bits_retain(modifiers.bits())
     }
 }
 
@@ -282,10 +417,6 @@ pub enum ClientMessage {
     /// Deliver client-classified semantic input directly to a stable pane target.
     ClientShellPaneInput {
         pane_id: PublicPaneId,
-        #[serde(
-            serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-            deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-        )]
         events: Vec<ClientPaneInputEvent>,
     },
 
@@ -367,4 +498,103 @@ pub enum AttachScrollSource {
         )]
         input: Vec<u8>,
     },
+}
+
+#[cfg(test)]
+mod host_mapping_tests {
+    use super::*;
+    use ratatui::crossterm::event::{
+        KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    };
+
+    #[test]
+    fn every_wire_key_code_round_trips_through_the_host_model() {
+        let codes = [
+            ClientKeyCode::Backspace,
+            ClientKeyCode::Enter,
+            ClientKeyCode::Left,
+            ClientKeyCode::Right,
+            ClientKeyCode::Up,
+            ClientKeyCode::Down,
+            ClientKeyCode::Home,
+            ClientKeyCode::End,
+            ClientKeyCode::PageUp,
+            ClientKeyCode::PageDown,
+            ClientKeyCode::Tab,
+            ClientKeyCode::BackTab,
+            ClientKeyCode::Delete,
+            ClientKeyCode::Insert,
+            ClientKeyCode::Esc,
+            ClientKeyCode::Char('x'),
+            ClientKeyCode::F(12),
+            ClientKeyCode::Null,
+        ];
+        for code in codes {
+            assert_eq!(ClientKeyCode::from_host(code.to_host()), Some(code.clone()));
+        }
+        assert_eq!(ClientKeyCode::from_host(KeyCode::CapsLock), None);
+    }
+
+    #[test]
+    fn key_kinds_mouse_kinds_and_buttons_round_trip_through_the_host_model() {
+        for kind in [
+            KeyEventKind::Press,
+            KeyEventKind::Repeat,
+            KeyEventKind::Release,
+        ] {
+            assert_eq!(ClientKeyKind::from_host(kind).to_host(), kind);
+        }
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            assert_eq!(ClientMouseButton::from_host(button).to_host(), button);
+            for kind in [
+                MouseEventKind::Down(button),
+                MouseEventKind::Up(button),
+                MouseEventKind::Drag(button),
+            ] {
+                assert_eq!(ClientMouseKind::from_host(kind).to_host(), kind);
+            }
+        }
+        for kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::ScrollUp,
+            MouseEventKind::ScrollDown,
+            MouseEventKind::ScrollLeft,
+            MouseEventKind::ScrollRight,
+        ] {
+            assert_eq!(ClientMouseKind::from_host(kind).to_host(), kind);
+        }
+    }
+
+    /// Named wire bits match crossterm's, and bits this build does not name
+    /// survive both directions.
+    #[test]
+    fn modifiers_keep_named_and_unknown_bits_in_both_directions() {
+        for (wire, host) in [
+            (WireModifiers::SHIFT, KeyModifiers::SHIFT),
+            (WireModifiers::CONTROL, KeyModifiers::CONTROL),
+            (WireModifiers::ALT, KeyModifiers::ALT),
+            (WireModifiers::SUPER, KeyModifiers::SUPER),
+            (WireModifiers::HYPER, KeyModifiers::HYPER),
+            (WireModifiers::META, KeyModifiers::META),
+        ] {
+            assert_eq!(wire.to_host(), host);
+            assert_eq!(WireModifiers::from_host(host), wire);
+        }
+        let unknown = WireModifiers::from_bits_retain(0b1100_0001);
+        assert_eq!(WireModifiers::from_host(unknown.to_host()), unknown);
+    }
+
+    #[test]
+    fn text_bytes_charges_repeated_generated_text_and_pastes() {
+        let key = ClientPaneInputEvent::Key {
+            code: ClientKeyCode::Char('a'),
+            modifiers: WireModifiers::NONE,
+            kind: ClientKeyKind::Press,
+            repeat_count: 3,
+            shifted_codepoint: None,
+            generated_text: Some("ab".into()),
+        };
+        assert_eq!(key.text_bytes(), 6);
+        assert_eq!(ClientPaneInputEvent::Paste("hello".into()).text_bytes(), 5);
+    }
 }

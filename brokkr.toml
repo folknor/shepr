@@ -283,6 +283,15 @@ paths = ["crates/**", "src/**", "build.rs", "Cargo.toml", "clippy.toml", "LLM.md
 allow_marker = "doc-conventions-ok"
 message = "a durable file may not send its reader into the notes folder, which carries no truth guarantee; carry the context here"
 
+# The codec already caps every collection at MAX_COLLECTION_ITEMS, so a
+# bounded-vec annotation at that cap repeats the default. No `region`: the
+# annotation sits inside a serde attribute's string literal.
+[[textlint]]
+name = "no-default-cap-bounded-vec"
+pattern = 'bounded_vec::<\{\s*(?:codec::)?MAX_COLLECTION_ITEMS\s*\}'
+paths = ["crates/shepr-protocol/src/**/*.rs"]
+message = "the codec caps every collection at MAX_COLLECTION_ITEMS already; annotate bounded_vec only with a tighter cap"
+
 # Every internal event the headless server handles goes through the one method
 # that also forwards clipboard writes to the foreground client.
 [[textlint]]
@@ -470,7 +479,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-config-layer"
 from = "shepr-config"
-allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-agent", "shepr-core", "time", "toml"]
+allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-agent", "shepr-core", "shepr-platform", "time", "toml"]
 kinds = ["normal"]
 
 [[dependency_rule]]

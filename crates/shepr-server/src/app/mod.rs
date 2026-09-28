@@ -38,7 +38,7 @@ const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 
 use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(test)]
 use shepr_config::Config;
@@ -167,12 +167,10 @@ impl App {
         let restored_host_theme = snapshot
             .as_ref()
             .map_or_default(|snapshot| snapshot.host_theme.to_theme());
-        let session_writer = Arc::new(std::sync::Mutex::new(
-            shepr_mux::persist::SessionWriter::new(
-                lease,
-                policy.persists_session() && snapshot.is_none(),
-            ),
-        ));
+        // Whether the first save must copy the on-disk session into
+        // `session-backups` before replacing it: the file either could not be
+        // loaded, or restore dropped saved tabs that are still only in it.
+        let mut protect_unloaded = policy.persists_session() && snapshot.is_none();
         let (workspaces, active, selected) = if let Some(snap) = snapshot {
             let history = config
                 .experimental()
@@ -213,16 +211,32 @@ impl App {
             restored_terminals = restored.terminals;
             restored_terminal_runtimes = restored.terminal_runtimes.into();
             pane_history_carry = restored.history_carry;
+            if restored.dropped_tabs > 0 {
+                protect_unloaded = true;
+                warn!(
+                    dropped_tabs = restored.dropped_tabs,
+                    "session restore dropped saved tabs; the saved session is backed up to session-backups before the first save"
+                );
+            }
+            let outcome = if restored.dropped_tabs > 0 {
+                "partial"
+            } else if restored.workspaces.is_empty() {
+                "empty"
+            } else {
+                "ok"
+            };
+            shepr_platform::logging::session_restored(restored.workspaces.len(), outcome);
             if restored.workspaces.is_empty() {
-                shepr_platform::logging::session_restored(0, "empty");
                 (Vec::new(), None, 0)
             } else {
-                shepr_platform::logging::session_restored(restored.workspaces.len(), "ok");
                 (restored.workspaces, restored.active, restored.selected)
             }
         } else {
             (Vec::new(), None, 0)
         };
+        let session_writer = Arc::new(std::sync::Mutex::new(
+            shepr_mux::persist::SessionWriter::new(lease, protect_unloaded),
+        ));
 
         info!(
             pane_scrollback_limit_bytes = settings.pane_scrollback_limit_bytes,

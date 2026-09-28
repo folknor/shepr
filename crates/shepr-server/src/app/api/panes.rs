@@ -389,7 +389,9 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
             return Err(ApiError::pane_not_found(target.pane_id.clone()));
         };
-        let workspace_id = self.public_workspace_id(ws_idx);
+        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
+            return Err(ApiError::pane_not_found(target.pane_id.clone()));
+        };
         let Some(plan) = self.state.prepare_pane_removal(ws_idx, pane_id) else {
             return Err(ApiError::pane_not_found(target.pane_id.clone()));
         };
@@ -562,7 +564,7 @@ impl App {
             .collect();
 
         Some(PaneLayoutSnapshot {
-            workspace_id: self.public_workspace_id(ws_idx),
+            workspace_id: self.public_workspace_id(ws_idx)?,
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             zoomed: tab.zoomed,
             area: pane_layout_rect(area),

@@ -957,25 +957,16 @@ forbidding `1024 * 1024` outside that module.
 
 ## HYGV-043 - The clipboard byte caps have two unrelated owners, and one is restated as a magic number in its own test
 
-**Decision (partial):** per-crate `limits` modules are adopted incrementally with
-the hygiene work (HYGV-036); a numeric `const` declared inside a function body is
-a violation of the `numeric-consts-live-in-limits` textlint, so
-`MAX_CLIPBOARD_TEXT_BYTES` leaves the function when `shepr-platform` gets its
-module. Open: the test's magic number and one owner for the pair.
+The platform half is resolved: `MAX_CLIPBOARD_TEXT_BYTES` is at module scope in
+`crates/shepr-platform/src/clipboard.rs` and its test derives the oversize input
+from it. The two caps stay separate on purpose: the 1 MiB platform cap bounds
+host clipboard reads, the 192 KiB `shepr-vt` cap bounds terminal-originated OSC
+52 stores, opposite directions.
 
-Reported by the vt/pty and core/platform hunters.
-
-`shepr-vt`'s `MAX_CLIPBOARD_BYTES` silently drops OSC 52 payloads over 192 KiB,
-with no log. `crates/shepr-platform/src/clipboard.rs` uses a separate 1 MiB cap
-for reads. The two caps have unrelated owners for one user-visible behaviour.
-
-The platform cap is additionally declared inside a function body
-(`const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024`) while its test asserts
-the limit with `yes x | head -c 1048578`. Change the constant and the test still
-passes while testing nothing in particular.
-
-Enforcement: hoist the const to module scope and have the test compute
-`MAX_CLIPBOARD_TEXT_BYTES + 2`; decide one owner for the pair, or state why two.
+Open: `shepr-vt`'s `MAX_CLIPBOARD_BYTES` drops an OSC 52 payload over 192 KiB
+with no log line, so a copy from a pane that silently does nothing cannot be
+diagnosed. A rate-limited log with the byte count (never the content) is the
+fix.
 
 ## HYGV-044 - Retry counts and poll intervals are invented per site inside one crate
 
@@ -1077,60 +1068,6 @@ Enforcement, cheap and absent: `const _: () = assert!(...)` for
 `ATTEMPT_BUDGET < MAX_RETRY_DELAY`, `HEARTBEAT_INTERVAL < HEARTBEAT_TIMEOUT` and
 `IO_POLL_INTERVAL < WRITE_TIMEOUT`, plus a test asserting the CLI's reconnect
 message quotes `MAX_RETRY_DELAY` rather than a literal `30`.
-
-## HYGV-048 - The split-ratio bounds and defaults are magic numbers at five sites, and the policy has two public names
-
-Reported by the core/platform and termio/client hunters.
-
-`crates/shepr-core/src/layout.rs` exports both `SplitRatio::clamped(f32)` and the
-free function `valid_split_ratio(f32) -> SplitRatio`, whose entire body is
-`SplitRatio::clamped(ratio)`. Both are used externally (`clamped` from about
-thirty-six sites, `valid_split_ratio` from
-`crates/shepr-mux/src/persist/restore.rs` and three internal layout sites), so a
-future change to the policy has two doors. Fix: delete `valid_split_ratio`; the
-compiler enforces the rest.
-
-The bounds themselves are unnamed at five sites in the same file: the
-`(0.1..=0.9)` range check, the `clamp(0.1, 0.9)`, the NaN default `0.5`,
-`split_focused`'s hardcoded `0.5`, and the missing-ratio default `0.5`. A test
-re-spells `0.1`, `0.9` and `0.05` again. Nothing names "minimum pane share" or
-"even split".
-
-The same shape recurs in the client:
-`crates/shepr-client/src/shell/sidebar/sidebar_tokens.rs`'s `SectionSplit` has
-`DEFAULT: Self(0.5)`, `new()` validating `(0.1..=0.9)`, `from_drag()` clamping to
-`0.1, 0.9` with a second literal `0.5` for a non-finite value, and a
-`Deserialize` error message restating the range in prose - five copies of four
-numbers.
-
-Enforcement: `const MIN_SPLIT_RATIO` / `MAX_SPLIT_RATIO` / `EVEN_SPLIT` (and
-`MIN`/`MAX` on `SectionSplit`) referenced by every check, clamp, fallback and
-error message, plus a test asserting `SplitRatio::clamped(MIN - eps).get() == MIN`
-so the const and the clamp stay in step.
-
-## HYGV-049 - `SplitRatio`'s validating constructor exists only in test builds
-
-Reported by the core/platform hunter.
-
-`crates/shepr-core/src/layout.rs` gates `fn new(value: f32) -> Option<Self>`
-behind `#[cfg(test)]`. Production has only `clamped`, which never refuses, so the
-test `split_ratio_rejects_values_outside_layout_bounds` exercises a constructor
-no shipped code path can call, and the restore path in
-`crates/shepr-mux/src/persist/restore.rs` silently clamps a corrupt saved ratio
-rather than refusing the layout. Given "no wire compatibility obligations" and
-"validated once at launch", the hunter reads a stored ratio outside `0.1..=0.9`
-as a refusal of the session file rather than a clamp.
-
-Fix: make `new` non-test and have the restore path return `InvalidSavedLayout`,
-which `from_saved` already models.
-
-The mux hunter's related observation: `parse_snapshot` is `pub` and returns a
-`SessionSnapshot` whose types encode none of the validation
-(`ratio: f32`, `active: Option<usize>`, `selected: usize`, `active_tab: usize`,
-`focused: Option<u32>`, `root_pane: Option<u32>`, `cwd: PathBuf`), and two
-consumers already parse it without going through restore. Carrying
-`shepr_core::layout::SplitRatio` and validated cwd and index types in the
-snapshot struct itself would make restore's sanitizing unnecessary.
 
 ## HYGV-050 - Minimum grid size is clamped at three layers with three different minimums
 
@@ -1698,13 +1635,6 @@ Reported by the core/platform, protocol/config, remote and server hunters.
   `collect_validated_ids` rejects `0`. Fix: `PaneId::from_raw -> Option<PaneId>`
   is a compiler-enforced signature change; removing the global needs an allocator
   value threaded through `Workspace`, which is the larger and better fix.
-- `crates/shepr-protocol/src/ids.rs`: `TerminalId::alloc()` reads
-  `SystemTime::now()` and a `static AtomicU64` (`Ordering::Relaxed`) directly, so
-  a test cannot pin either and any test asserting on terminal ids must accept
-  whatever it gets. Uniqueness rests on the clock being monotonic across the
-  process or the counter never wrapping, and `duration_since(UNIX_EPOCH)` falls
-  back to `.unwrap_or(0)` on a before-epoch clock, at which point ids become
-  `term_<counter>` only.
 - `crates/shepr-remote/src/machine/profile_id.rs::ProfileId::generate` reads
   `SystemTime::now()`, `std::process::id()` and a private `AtomicU64`, hashing
   `"{pid}:{nanos}:{seq}"` with `sha2` and truncating to 16 bytes, while

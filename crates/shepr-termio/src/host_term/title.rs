@@ -1,3 +1,7 @@
+//! Clipboard bytes may contain credentials or other private text. Keep them
+//! out of logs and error messages; diagnostics may carry only byte counts and
+//! error kinds.
+
 use std::io::{self, Write};
 
 /// Writes `OSC 0` to set the host terminal's window title; `None` resets it to
@@ -57,8 +61,10 @@ fn native_clipboard_write_succeeded(bytes: &[u8]) -> bool {
 
 fn write_osc52<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {
     let sequence = osc52_sequence(bytes);
-    writer.write_all(sequence.as_bytes())?;
-    writer.flush()
+    writer
+        .write_all(sequence.as_bytes())
+        .and_then(|()| writer.flush())
+        .map_err(|error| io::Error::from(error.kind()))
 }
 
 #[cfg(test)]

@@ -44,6 +44,7 @@ pub(super) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
     "timed out waiting for app response; the request may still run, so its outcome is unknown";
 pub(super) const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const BUSY_REQUEST_ID_TIMEOUT: Duration = Duration::from_millis(500);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
 /// Bounds API worker threads and request-owned stream state such as subscriptions.
@@ -205,6 +206,7 @@ fn start_server_inner(
     // as EMFILE/ENFILE (one fd and thread per subscription, plus PTYs) or
     // ECONNABORTED are therefore logged and retried with a bounded backoff.
     let connection_running = Arc::clone(&running);
+    let busy_refuser = spawn_busy_refuser();
     let thread = spawn_listener_thread(listener, listener_running, move |stream| {
         // Dropping the stream closes the refused connection; that is not an
         // accept failure, so it does not feed the backoff.
@@ -220,7 +222,7 @@ fn start_server_inner(
             }
         }
         let Some(admission) = ConnectionAdmission::try_acquire(&connection_admission) else {
-            reject_busy_connection(stream);
+            hand_off_busy_connection(busy_refuser.as_ref(), stream);
             return Ok(());
         };
         let api_tx = api_tx.clone();
@@ -261,9 +263,83 @@ fn start_server_inner(
     })
 }
 
+/// Reads the bounded initial request line so server errors can preserve its ID.
+fn request_id_from_line(line: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct RequestId {
+        id: String,
+    }
+
+    if line.starts_with('{') {
+        serde_json::from_str::<RequestId>(line).map_or_default(|request| request.id)
+    } else {
+        String::new()
+    }
+}
+
+/// Connections over the limit waiting for the refuser thread. Beyond this a
+/// refusal is sent at once without the caller's request ID.
+const BUSY_REFUSAL_QUEUE: usize = 16;
+
+/// Starts the one thread that answers connections over the limit, so reading
+/// their request IDs never holds up the accept loop. The thread ends when the
+/// returned sender (owned by the listener) is dropped. `None` when the thread
+/// could not be spawned; refusals then carry no request ID.
+fn spawn_busy_refuser() -> Option<std::sync::mpsc::SyncSender<LocalStream>> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<LocalStream>(BUSY_REFUSAL_QUEUE);
+    let spawned = std::thread::Builder::new()
+        .name("shepr-api-busy".into())
+        .spawn(move || {
+            for stream in rx {
+                reject_busy_connection(stream);
+            }
+        });
+    match spawned {
+        Ok(_) => Some(tx),
+        Err(err) => {
+            warn!(err = %err, "api busy refuser thread unavailable; refusals carry no request id");
+            None
+        }
+    }
+}
+
+/// Called on the accept loop for a connection over the limit: queue it for
+/// the refuser thread, or refuse it at once when that queue is full.
+fn hand_off_busy_connection(
+    refuser: Option<&std::sync::mpsc::SyncSender<LocalStream>>,
+    stream: LocalStream,
+) {
+    let Some(refuser) = refuser else {
+        send_busy_refusal(stream, "");
+        return;
+    };
+    match refuser.try_send(stream) {
+        Ok(()) => {}
+        Err(
+            std::sync::mpsc::TrySendError::Full(stream)
+            | std::sync::mpsc::TrySendError::Disconnected(stream),
+        ) => send_busy_refusal(stream, ""),
+    }
+}
+
+/// Refuses a connection over the limit, echoing the caller's request ID when
+/// its request line arrives within a short bound. Runs on the refuser thread.
 fn reject_busy_connection(mut stream: LocalStream) {
+    let deadline = Instant::now() + BUSY_REQUEST_ID_TIMEOUT;
+    let request_id = match read_request_line_until(&mut stream, deadline) {
+        Ok(Some(line)) => request_id_from_line(line.trim()),
+        Ok(None) => String::new(),
+        Err(error) => {
+            debug!(%error, "could not read api request id for connection limit refusal");
+            String::new()
+        }
+    };
+    send_busy_refusal(stream, &request_id);
+}
+
+fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
     let response = error_response_json(
-        "",
+        request_id,
         crate::error::ApiErrorCode::EndpointBusy,
         format!("API server is at its limit of {MAX_ACTIVE_CONNECTIONS} active connections"),
     );
@@ -382,15 +458,7 @@ fn handle_connection_with_stop(
         Err(request_error) => {
             // Recover correlation without relaxing typed request validation or accepting
             // ambiguous duplicate IDs. Invalid JSON and non-string IDs stay uncorrelated.
-            #[derive(serde::Deserialize)]
-            struct RequestId {
-                id: String,
-            }
-            let id = if line.starts_with('{') {
-                serde_json::from_str::<RequestId>(line).map_or_default(|request| request.id)
-            } else {
-                String::new()
-            };
+            let id = request_id_from_line(line);
             let response = ErrorResponse {
                 id,
                 error: crate::error::ApiError::new(
@@ -1176,13 +1244,52 @@ mod tests {
     #[test]
     fn a_full_connection_limit_sends_endpoint_busy() {
         let (mut client, server) = local_stream_pair("connection-limit-refusal");
+        client
+            .write_all(br#"{"id":"busy-request","method":"ping","params":{}}"#)
+            .expect("write busy request");
+        client
+            .write_all(b"\n")
+            .expect("terminate busy request line");
         reject_busy_connection(server);
+
+        let response: ErrorResponse =
+            serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
+        assert_eq!(response.id, "busy-request");
+        assert_eq!(response.error.code, "endpoint_busy");
+        assert!(response.error.message.contains("64 active connections"));
+    }
+
+    /// The accept loop never waits for a refused caller's request line: with
+    /// the refuser's queue full the refusal goes out at once, without an ID.
+    #[test]
+    fn a_full_refusal_queue_refuses_at_once_without_reading() {
+        let (mut client, server) = local_stream_pair("connection-limit-queue-full");
+        let (refuser, _queue) = std::sync::mpsc::sync_channel::<LocalStream>(0);
+
+        let started = Instant::now();
+        hand_off_busy_connection(Some(&refuser), server);
+        assert!(started.elapsed() < BUSY_REQUEST_ID_TIMEOUT);
 
         let response: ErrorResponse =
             serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
         assert_eq!(response.id, "");
         assert_eq!(response.error.code, "endpoint_busy");
-        assert!(response.error.message.contains("64 active connections"));
+    }
+
+    /// A queued refusal is answered by the refuser thread with the caller's ID.
+    #[test]
+    fn the_busy_refuser_thread_echoes_the_request_id() {
+        let (mut client, server) = local_stream_pair("connection-limit-refuser-thread");
+        let refuser = spawn_busy_refuser().expect("spawn refuser");
+        hand_off_busy_connection(Some(&refuser), server);
+        client
+            .write_all(b"{\"id\":\"queued-request\",\"method\":\"ping\",\"params\":{}}\n")
+            .expect("write busy request");
+
+        let response: ErrorResponse =
+            serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
+        assert_eq!(response.id, "queued-request");
+        assert_eq!(response.error.code, "endpoint_busy");
     }
 
     #[test]

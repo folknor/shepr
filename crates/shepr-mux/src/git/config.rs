@@ -185,13 +185,32 @@ fn read_config_with_user_paths_and_errors(
     )
 }
 
+/// The system and global config files in Git's read order. The two location
+/// variables replace their corresponding defaults, `GIT_CONFIG_GLOBAL`
+/// replaces both default global files, and `GIT_CONFIG_NOSYSTEM` omits the
+/// system file when Git's boolean grammar reads it as true.
 pub(super) fn git_user_config_paths() -> Vec<PathBuf> {
-    // Git also reads /etc/gitconfig and honors GIT_CONFIG_GLOBAL,
-    // GIT_CONFIG_SYSTEM and GIT_CONFIG_NOSYSTEM. Those override names must
-    // enter shepr_core::env before this reader can honor them; reading them
-    // directly here would bypass its closed environment API. This function
-    // therefore reads the default XDG and HOME global files only.
     let mut paths = Vec::new();
+    let no_system = shepr_core::env::read_text(shepr_core::env::EnvVar::GitConfigNoSystem)
+        .ok()
+        .flatten()
+        .and_then(|value| git_config_bool(&value))
+        .unwrap_or(false);
+    if !no_system {
+        let system_path = shepr_core::env::read_path(shepr_core::env::EnvVar::GitConfigSystem)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| PathBuf::from("/etc/gitconfig"));
+        paths.push(system_path);
+    }
+    if let Some(global_path) = shepr_core::env::read_path(shepr_core::env::EnvVar::GitConfigGlobal)
+        .ok()
+        .flatten()
+    {
+        paths.push(global_path);
+        return paths;
+    }
+
     let home = shepr_core::pathutil::home_dir().ok();
     // This reads Git's user config, not a Shepr location. A refused
     // `XDG_CONFIG_HOME` (relative, padded, non-UTF-8) already failed shepr's
@@ -339,6 +358,7 @@ mod xdg_path_tests {
 
     #[test]
     fn git_user_config_ignores_empty_and_relative_xdg_home() {
+        // The isolated environment turns the system level off.
         let env = IsolatedEnv::new();
         let expected = vec![
             env.home().join(".config/git/config"),
@@ -363,6 +383,35 @@ mod xdg_path_tests {
         env.remove("XDG_CONFIG_HOME");
         env.set("HOME", "relative/home");
         assert!(git_user_config_paths().is_empty());
+    }
+
+    #[test]
+    fn git_config_environment_paths_follow_git_scope_order() {
+        let env = IsolatedEnv::new();
+        env.remove(shepr_core::env::EnvVar::GitConfigNoSystem);
+        let system = env.path().join("system.gitconfig");
+        let global = env.path().join("global.gitconfig");
+        assert_eq!(
+            git_user_config_paths(),
+            vec![
+                PathBuf::from("/etc/gitconfig"),
+                env.home().join(".config/git/config"),
+                env.home().join(".gitconfig"),
+            ]
+        );
+
+        env.set(shepr_core::env::EnvVar::GitConfigSystem, &system);
+        env.set(shepr_core::env::EnvVar::GitConfigGlobal, &global);
+        assert_eq!(
+            git_user_config_paths(),
+            vec![system.clone(), global.clone()]
+        );
+
+        env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "yes");
+        assert_eq!(git_user_config_paths(), vec![global.clone()]);
+
+        env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "false");
+        assert_eq!(git_user_config_paths(), vec![system, global]);
     }
 }
 

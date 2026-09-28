@@ -198,6 +198,15 @@ env_vocabulary! {
         /// directories repository discovery does not ascend into. shepr's own
         /// discovery honours it as Git does; Git children read it themselves.
         GitCeilingDirectories => "GIT_CEILING_DIRECTORIES",
+        /// `GIT_CONFIG_GLOBAL`: replace both default global config files with
+        /// this one file, as Git does.
+        GitConfigGlobal => "GIT_CONFIG_GLOBAL",
+        /// `GIT_CONFIG_SYSTEM`: replace Git's system config file, normally
+        /// `/etc/gitconfig`.
+        GitConfigSystem => "GIT_CONFIG_SYSTEM",
+        /// `GIT_CONFIG_NOSYSTEM`: Git's boolean setting that skips the system
+        /// config file when true. Kept as text for Git's full boolean grammar.
+        GitConfigNoSystem => "GIT_CONFIG_NOSYSTEM",
     }
 }
 
@@ -318,7 +327,8 @@ impl EnvVar {
             | Self::SheprRemoteKeybindings
             | Self::SheprLog
             | Self::TermProgram
-            | Self::GitCeilingDirectories => EnvKind::Text,
+            | Self::GitCeilingDirectories
+            | Self::GitConfigNoSystem => EnvKind::Text,
             Self::SheprSession => EnvKind::Selector,
             Self::SheprConfigPath
             | Self::SshAuthSock
@@ -332,7 +342,9 @@ impl EnvVar {
             | Self::QwenHome
             | Self::CursorConfigDir
             | Self::AntigravityCliConfigDir
-            | Self::GrokHome => EnvKind::Path,
+            | Self::GrokHome
+            | Self::GitConfigGlobal
+            | Self::GitConfigSystem => EnvKind::Path,
             Self::Home | Self::XdgConfigHome | Self::XdgStateHome | Self::XdgRuntimeDir => {
                 EnvKind::AbsolutePath
             }
@@ -765,6 +777,9 @@ mod tests {
                 "GIT_CEILING_DIRECTORIES",
                 Text,
             ),
+            (EnvVar::GitConfigGlobal, "GIT_CONFIG_GLOBAL", Path),
+            (EnvVar::GitConfigSystem, "GIT_CONFIG_SYSTEM", Path),
+            (EnvVar::GitConfigNoSystem, "GIT_CONFIG_NOSYSTEM", Text),
         ];
         assert_eq!(
             table.iter().map(|(var, _, _)| *var).collect::<Vec<_>>(),

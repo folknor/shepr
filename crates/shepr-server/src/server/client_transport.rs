@@ -5,7 +5,6 @@
 //! `HeadlessServer`.
 
 use crate::server::ClientId;
-use crate::server::input_wire::WirePaneInput;
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

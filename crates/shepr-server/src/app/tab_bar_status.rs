@@ -44,10 +44,12 @@ impl App {
 
         let mut cwd = None;
         if let Some(ws_idx) = self.state.active_index() {
-            env.push((
-                ChildEnv::SheprActiveWorkspaceId.name().to_string(),
-                self.public_workspace_id(ws_idx),
-            ));
+            if let Some(workspace_id) = self.public_workspace_id(ws_idx) {
+                env.push((
+                    ChildEnv::SheprActiveWorkspaceId.name().to_string(),
+                    workspace_id,
+                ));
+            }
             if let Some(workspace) = self.state.workspaces.get(ws_idx) {
                 let tab_idx = workspace.active_tab_index();
                 if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {

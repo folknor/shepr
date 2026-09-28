@@ -320,7 +320,7 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs().get(tab_idx)?;
         Some(LayoutDescription {
-            workspace_id: self.public_workspace_id(ws_idx),
+            workspace_id: self.public_workspace_id(ws_idx)?,
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             zoomed: tab.zoomed,
             focused_pane_id: self.public_pane_id(ws_idx, tab.layout.focused())?,
@@ -693,7 +693,10 @@ mod tests {
         let ResponseResult::LayoutExport { layout } = success.result else {
             panic!("expected layout export response");
         };
-        assert_eq!(layout.workspace_id, app.public_workspace_id(0));
+        assert_eq!(
+            layout.workspace_id,
+            app.public_workspace_id(0).expect("test precondition")
+        );
         assert_eq!(
             layout.focused_pane_id,
             app.public_pane_id(0, root).expect("test precondition")
@@ -919,7 +922,7 @@ mod tests {
         let response = app.handle_layout_apply(
             "req".into(),
             &LayoutApplyParams {
-                workspace_id: Some(app.public_workspace_id(0)),
+                workspace_id: Some(app.public_workspace_id(0).expect("test precondition")),
                 tab_id: None,
                 tab_label: Some("bad".into()),
                 focus: false,

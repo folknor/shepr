@@ -565,18 +565,12 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   `app/api/panes/reports.rs` both use `saturating_add(1)`. Already diverged at
   `u64::MAX`; neither is obviously right, which is the point - nobody chose. Fix:
   make the field private behind one `fn bump_revision(&mut self)`.
-- `shepr-core` / `shepr-mux` restore path: `SplitRatio::clamped` never refuses
-  and the validating `new` exists only under `#[cfg(test)]`, so
-  `persist/restore.rs` silently clamps a corrupt saved ratio instead of refusing
-  the layout, while `from_saved` already models an `InvalidSavedLayout`.
-  Separately `parse_snapshot` is `pub` and returns a `SessionSnapshot` whose
-  types encode no validation (`ratio: f32`, `active: Option<usize>`,
-  `selected: usize`, `active_tab: usize`, `focused: Option<u32>`,
-  `root_pane: Option<u32>`, `cwd: PathBuf`), and two consumers
-  (`preserve_snapshot_history`, `prepare_snapshot_history`) already parse it
-  without going through restore's sanitising. They only read
-  `version` / `workspaces.len()` / `layout_fingerprint` today, so the harm is
-  that the next consumer gets unvalidated data by default.
+- `shepr-mux` restore path: `parse_snapshot` is `pub` and returns a
+  `SessionSnapshot` whose types encode no validation (`ratio: f32`,
+  `active: Option<usize>`, `selected: usize`, `active_tab: usize`,
+  `focused: Option<u32>`, `root_pane: Option<u32>`, `cwd: PathBuf`). Its one
+  production caller (`persist/io.rs::load`) feeds restore, which validates, so
+  the harm is only that a future consumer gets unvalidated data by default.
 - `shepr-pty` / `shepr-config`: `to_std_command` quietly substitutes home for a
   bad cwd (warn only) while the API validates `new_cwd` upstream - two policies
   for one value.
@@ -671,35 +665,6 @@ parser-driven mutation must use `with_handler`" and every mutation must end with
 `flush`, `mode_set`, `resize` and the scroll methods. Suggested: call
 `collect_damage` inside `with_handler`.
 
-## HYGP-023 - `input_wire` is one conversion layer written twice, with the shared half duplicated verbatim and opposite policies for unrecognised bits
-
-From `shepr-server`: `server/input_wire.rs` and
-`shepr-client/src/input_wire.rs` have the same file name, the same trait names
-(`WireKeyKind`, `WireKeyCode`, `WireMouseButton`, `WireMouseKind`,
-`WirePaneInput`) and mirror-image directions. Two concrete problems:
-
-- `text_bytes` is byte-identical in both copies, doc comment included, and it is
-  the function that computes the `MAX_INPUT_PAYLOAD` budget. The client uses it
-  to decide what to batch; the server uses it to decide what to reject. If the
-  copies drift the client sends batches the server refuses, or under-fills and
-  loses throughput. Two writers of one accounting rule who have never been
-  introduced.
-- Opposite policies for unrecognised bits: the client does
-  `WireModifiers::from_bits_retain(modifiers.bits())`, the server does
-  `KeyModifiers::from_bits_truncate(modifiers.bits())`. One preserves unknown
-  bits, the other drops them silently. Equivalent today only because both
-  bitflag sets cover the same bits. Meanwhile `render.rs` uses
-  `KittyKeyboardFlags::from_bits_retain` for a value going the other way, so the
-  crate holds both policies for wire bitflags.
-
-Neither crate depends on the other, but both depend on `shepr-protocol`, which
-owns `ClientPaneInputEvent`, `WireModifiers` and `MAX_INPUT_PAYLOAD`. The hunter
-calls this one module in the wrong crate, twice, with no forced duplication, and
-names it the second-largest structural move in that scope: move both directions
-into `shepr-protocol` (or `shepr-termio`, also a dependency of both) as inherent
-impls on the wire types, with `text_bytes` a method on `ClientPaneInputEvent`
-next to the constant it charges against.
-
 ## HYGP-024 - "An unknown reported cell size means the default" is implemented at five sites in the hottest function in the server
 
 From `shepr-server`: `server/headless/render.rs` (three sites, all inside
@@ -741,13 +706,6 @@ which only records when `reassert` is true).
 Not mechanically enforceable. The hunter's honest statement: the recorder pairing
 is a convention maintained by three call sites, and a single `set_keyboard(..)`
 entry point that computes the flags itself would reduce it to one.
-
-## HYGP-029 - Two sibling modules build the same wire message with the same guard, separately
-
-From `shepr-protocol`: `surface_reuse::message` and `surface_delta::message` both
-check `Baseline::accepts` with the same five arguments and then build the same
-six-field `SurfaceUpdate`, differing only in whether `spans` is empty.
-Enforcement named: one constructor taking the spans - a type-level fix.
 
 ## HYGP-030 - Secrets and personal data reaching logs, diagnostics and world-visible names
 
@@ -1067,12 +1025,6 @@ not run. After deletion the `#[cfg]`-free code has one identity and
 Each of these is a second name or a second hop for one thing; the evidence given
 for each is the hunter's.
 
-- `shepr-core` `layout.rs`: the free function `valid_split_ratio(f32) ->
-  SplitRatio` whose entire body is `SplitRatio::clamped(ratio)`. Both are used
-  externally (`clamped` from 36 sites, `valid_split_ratio` from
-  `shepr-mux/src/persist/restore.rs` and three internal layout sites), so one
-  policy has two doors. Delete `valid_split_ratio`; the compiler enforces the
-  rest. (Filed by that hunter under one-value-one-owner.)
 - `shepr-platform` `logging.rs::help_log_paths_summary(dir) -> String` is
   `log_paths_summary(dir)`. One external caller (`src/cli.rs`); the private
   `log_paths_summary` exists only so the test can call it under a different name.
@@ -1223,9 +1175,14 @@ for each is the hunter's.
 
 ## HYGP-045 - Branches and checks that cannot run
 
-- `shepr-pty` `command.rs`: `PtyCommand`'s `PaneProgramFallback` shell policy
-  is unreachable in production now that config always hands the pane builder a
-  resolved absolute shell.
+- `shepr-client/src/input_wire.rs` and `shepr-server/src/server/input_wire.rs`
+  keep one-line forwarding helpers (`WireMouseKind`, `WireMouseButton`,
+  `wire_modifiers`, `host_modifiers`) over the protocol wire-type methods the
+  conversion moved to; callers can use the protocol methods directly.
+- `shepr-pty/src/command.rs` keeps its own `access_ok` beside
+  `shepr_platform::has_execute_access`, because the layering keeps
+  `shepr-pty` off `shepr-platform`; worth a comment naming the twin, or moving
+  the helper below both.
 
 - `shepr-agent` `integration/`: every hook installer strips entries carrying
   shepr's command from the event before writing the canonical one, so the
@@ -1418,23 +1375,6 @@ being a bare `u32` so every consumer has to remember to check it. Fix: a newtype
 whose `Deserialize` rejects the wrong version, so `SessionSnapshot` cannot exist
 with a bad version and the four checks collapse to zero.
 
-## HYGP-056 - Nine `serde` attribute pairs that restate the default they claim to tighten
-
-From `shepr-protocol` `projection.rs` (7 fields) and adjacent types: `Vec` fields
-carry
-`#[serde(serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>", deserialize_with = "..")]`
-while the codec's own `serialize_seq` / `read_collection_len` already enforce
-`MAX_COLLECTION_ITEMS` on every sequence unconditionally in both directions.
-What tells the hunter they are dead: the caps are numerically identical and the
-codec applies its cap unconditionally. Eighteen lines of attribute doing nothing,
-contradicting `serialize_bounded_vec`'s own doc comment ("lets wire fields state
-a *tighter* rule"), and teaching the reader that a `Vec` field without the
-annotation is unbounded. The remaining annotations (`MAX_SURFACE_PANES`,
-`MAX_SURFACE_SPLITS`, `MAX_SURFACE_HYPERLINKS`, `MAX_SURFACE_CELLS`,
-`MAX_SURFACE_PATCH_SPANS`, `MAX_SURFACE_SPLIT_PATH`, `MAX_SURFACE_DIMENSION`)
-are all genuinely tighter. Enforcement named: a text rule banning
-`serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }` specifically.
-
 ## HYGP-057 - Modules and items sitting in a crate that does not use them
 
 - `shepr-protocol/src/scroll.rs` is not wire code: `ScrollMetrics` derives no
@@ -1459,8 +1399,7 @@ are all genuinely tighter. Enforcement named: a text rule banning
   problem; noted because the module boundary buys nothing there.
 - Related, filed in the sibling documents but pointed at from here because the
   fix is a move: `shepr-platform/src/logging.rs` holds 25 domain event functions
-  named after concepts that crate knows nothing about, and `server/input_wire.rs`
-  belongs in `shepr-protocol` (HYGP-023).
+  named after concepts that crate knows nothing about.
 
 ## HYGP-058 - Dependencies that production code does not use
 

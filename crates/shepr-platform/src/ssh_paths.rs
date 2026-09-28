@@ -17,7 +17,10 @@ pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths 
 
 /// Create an ephemeral SSH config directory under the validated XDG runtime
 /// directory. Each directory gets a random name so concurrent saved-machine
-/// bridges do not share a small per-process allocation limit.
+/// bridges do not share a small per-process allocation limit. Callers remove
+/// it when done; the managed SSH owner also registers normal process-exit
+/// cleanup. A hard kill can leave a private, disposable config directory, so
+/// creation does not scan the shared runtime directory for stale names.
 pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
 

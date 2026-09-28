@@ -7,6 +7,7 @@ mod child_io;
 mod client_stream;
 mod clipboard;
 mod config_file;
+mod executable;
 pub mod git;
 mod host;
 pub mod ipc;
@@ -28,6 +29,7 @@ pub use child_io::{ChildExitReason, classify_child_exit, poll_fd_readable, read_
 pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_client_stream};
 pub use clipboard::{read_clipboard_text, write_clipboard};
 pub use config_file::{config_file_link_count, create_config_temporary, write_config_temporary};
+pub use executable::has_execute_access;
 pub use host::{
     begin_cli_output, child_command, current_process_is_detached_server_daemon,
     detach_server_daemon_command, hostname, launch_executable, local_datetime,

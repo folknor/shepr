@@ -60,6 +60,52 @@ fn global_core_bare_applies_unless_the_repository_config_overrides_it() {
     assert_eq!(git_repo_root(&overridden.join("refs")), None);
 }
 
+/// Git's system file precedes global config. Its environment overrides select
+/// one system file, suppress both default global files when a global override
+/// is set, and allow `GIT_CONFIG_NOSYSTEM` to skip the system level.
+#[test]
+fn git_config_environment_files_follow_git_scope_precedence() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    env.remove(shepr_core::env::EnvVar::GitConfigNoSystem);
+    let system = env.path().join("system.gitconfig");
+    let global = env.path().join("global.gitconfig");
+    env.set(shepr_core::env::EnvVar::GitConfigSystem, &system);
+    env.set(shepr_core::env::EnvVar::GitConfigGlobal, &global);
+
+    let bare = bare_layout("git-config-environment-scopes", "[core]\n");
+    std::fs::write(env.home().join(".gitconfig"), "[core]\n\tbare = true\n")
+        .expect("test precondition");
+    std::fs::write(&system, "[core]\n").expect("test precondition");
+    std::fs::write(&global, "[core]\n").expect("test precondition");
+    assert_eq!(
+        git_repo_root(&bare.join("refs")),
+        None,
+        "GIT_CONFIG_GLOBAL replaces the default ~/.gitconfig"
+    );
+
+    std::fs::write(&system, "[core]\n\tbare = true\n").expect("test precondition");
+    std::fs::write(&global, "[core]\n\tbare = false\n").expect("test precondition");
+    assert_eq!(
+        git_repo_root(&bare.join("refs")),
+        None,
+        "global config follows and overrides system config"
+    );
+
+    std::fs::write(&global, "[core]\n").expect("test precondition");
+    env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "yes");
+    assert_eq!(
+        git_repo_root(&bare.join("refs")),
+        None,
+        "GIT_CONFIG_NOSYSTEM skips the selected system file"
+    );
+
+    env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "false");
+    assert_eq!(git_repo_root(&bare.join("refs")), Some(bare.clone()));
+
+    std::fs::write(bare.join("config"), "[core]\n\tbare = false\n").expect("test precondition");
+    assert_eq!(git_repo_root(&bare.join("refs")), None);
+}
+
 /// `core.bare` takes Git's boolean grammar, each spelling checked against
 /// `git rev-parse --is-bare-repository`. Git refuses to run on a malformed
 /// value such as `maybe`; discovery reads it as not bare.

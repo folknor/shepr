@@ -1,4 +1,8 @@
-use std::{fmt, ops::Deref};
+use std::{
+    fmt,
+    ops::Deref,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 /// Identifies one server process lifetime in shell and surface messages.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -6,14 +10,28 @@ use std::{fmt, ops::Deref};
 pub struct BootId(String);
 
 impl BootId {
+    /// Builds the boot identity for this server process.
+    pub fn for_this_process() -> Self {
+        let since_epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => Ok(duration),
+            Err(error) => Err(error.duration()),
+        };
+        Self::from_process_clock(std::process::id(), since_epoch)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
-}
 
-impl From<String> for BootId {
-    fn from(value: String) -> Self {
-        Self(value)
+    fn from_process_clock(process_id: u32, since_epoch: Result<Duration, Duration>) -> Self {
+        let time = match since_epoch {
+            Ok(duration) => duration.as_nanos().to_string(),
+            Err(duration) => {
+                let nanos = duration.as_nanos();
+                format!("before-{nanos}")
+            }
+        };
+        Self(format!("{process_id}-{time}"))
     }
 }
 
@@ -64,6 +82,30 @@ impl PartialEq<String> for BootId {
 impl PartialEq<BootId> for String {
     fn eq(&self, other: &BootId) -> bool {
         self == other.as_str()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::BootId;
+
+    #[test]
+    fn process_clock_before_epoch_keeps_its_offset() {
+        let boot_id = BootId::from_process_clock(17, Err(Duration::from_nanos(23)));
+
+        assert_eq!(boot_id.as_str(), "17-before-23");
+    }
+
+    #[test]
+    fn process_clock_at_epoch_is_distinct_from_before_epoch() {
+        let before_epoch = BootId::from_process_clock(17, Err(Duration::ZERO));
+        let at_epoch = BootId::from_process_clock(17, Ok(Duration::ZERO));
+
+        assert_eq!(before_epoch.as_str(), "17-before-0");
+        assert_eq!(at_epoch.as_str(), "17-0");
+        assert_ne!(before_epoch, at_epoch);
     }
 }
 

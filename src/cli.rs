@@ -650,6 +650,7 @@ fn run_terminal_command(
                 Some(config) => config,
                 None => load_validated_config(context)?,
             };
+            crate::init_client_logging(context)?;
             finish_client(shepr_client::run_terminal_attach(
                 &config,
                 context,

@@ -20,8 +20,9 @@
 //!   (`shepr_core::env::EnvVar`), so a variable added there is isolated with
 //!   no change here, then points `HOME` and `XDG_RUNTIME_DIR` at scratch and
 //!   sets `GIT_CEILING_DIRECTORIES` to [`scratch_base`], so a scratch
-//!   directory is never discovered as part of the enclosing checkout. It
-//!   also clears every other inherited `SHEPR_*` variable except
+//!   directory is never discovered as part of the enclosing checkout, and
+//!   sets `GIT_CONFIG_NOSYSTEM` so the host's system Git config is never
+//!   read. It also clears every other inherited `SHEPR_*` variable except
 //!   [`SCRATCH_DIR_ENV`], and the XDG base directories shepr does not read but
 //!   the tools tests spawn do. Nothing under test can reach the user's real
 //!   config, state or agent directories, or the live shepr server a test run
@@ -610,8 +611,8 @@ impl IsolatedEnv {
     }
 
     /// Clears everything a test must not inherit, points `HOME` and
-    /// `XDG_RUNTIME_DIR` at this guard's scratch directories, and puts a Git
-    /// ceiling at the scratch base.
+    /// `XDG_RUNTIME_DIR` at this guard's scratch directories, puts a Git
+    /// ceiling at the scratch base and turns off Git's system config.
     fn isolate(&self) {
         for var in EnvVar::ALL {
             self.remove(var);
@@ -641,6 +642,10 @@ impl IsolatedEnv {
         // scratch directory that is not a repository would be discovered as
         // part of the checkout, by shepr's discovery and by Git alike.
         self.set(EnvVar::GitCeilingDirectories, scratch_base());
+        // The host's system Git config (`/etc/gitconfig`) is outside the
+        // scratch tree; neither shepr's discovery nor a spawned Git may read
+        // it. A test of the system level removes this again.
+        self.set(EnvVar::GitConfigNoSystem, "1");
     }
 
     fn runtime_dir(&self) -> PathBuf {
@@ -971,6 +976,7 @@ mod tests {
                 EnvVar::GitCeilingDirectories => {
                     assert_eq!(env.get(var), Some(scratch_base().as_os_str().to_owned()));
                 }
+                EnvVar::GitConfigNoSystem => assert_eq!(env.get(var), Some(OsString::from("1"))),
                 _ => assert_eq!(env.get(var), None, "{var} leaked into an isolated test"),
             }
         }

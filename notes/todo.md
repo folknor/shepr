@@ -25,6 +25,11 @@ so they wait for a decision rather than a fixer.
   qwen, qodercli and letta exec `shepr pane report-agent-session`. Moving every
   asset to the CLI keeps socket framing in Rust only. A rewrite of every shipped
   asset rather than a defect fix.
+- **A visible notice for a partially restored session.** A tab or workspace
+  dropped during restore leaves only a server log line and a backup of the
+  original `session.json`; pane-level restore errors draw inside the pane, but
+  there is no session-level warning channel from server to client to say a tab
+  was dropped.
 - **Remote checkout root for the new-workspace label.** For a remote endpoint,
   ask the remote server for the cwd's checkout root instead of skipping the Git
   lookup. Needs a new API method.

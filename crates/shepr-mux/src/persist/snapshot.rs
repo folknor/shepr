@@ -137,7 +137,28 @@ pub struct WorkspaceHistorySnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct TabHistorySnapshot {
+    #[serde(serialize_with = "serialize_history_panes")]
     pub panes: HashMap<u32, PaneHistorySnapshot>,
+}
+
+/// JSON object fields follow pane ID order so the same captured history has
+/// the same bytes, regardless of each `HashMap`'s randomized iteration order.
+fn serialize_history_panes<S>(
+    panes: &HashMap<u32, PaneHistorySnapshot>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+
+    let mut entries: Vec<_> = panes.iter().collect();
+    entries.sort_unstable_by_key(|entry| *entry.0);
+    let mut map = serializer.serialize_map(Some(entries.len()))?;
+    for (pane_id, pane) in entries {
+        map.serialize_entry(pane_id, pane)?;
+    }
+    map.end()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -721,6 +742,32 @@ mod tests {
     struct Holder {
         #[serde(with = "super::path_bytes")]
         path: PathBuf,
+    }
+
+    #[test]
+    fn history_panes_serialize_in_numeric_id_order() {
+        let snapshot = super::TabHistorySnapshot {
+            panes: HashMap::from([
+                (
+                    12,
+                    super::PaneHistorySnapshot {
+                        ansi: "twelve".into(),
+                    },
+                ),
+                (2, super::PaneHistorySnapshot { ansi: "two".into() }),
+                (
+                    9,
+                    super::PaneHistorySnapshot {
+                        ansi: "nine".into(),
+                    },
+                ),
+            ]),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&snapshot).expect("serialize"),
+            r#"{"panes":{"2":{"ansi":"two"},"9":{"ansi":"nine"},"12":{"ansi":"twelve"}}}"#
+        );
     }
 
     #[test]

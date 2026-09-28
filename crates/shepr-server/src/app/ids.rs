@@ -12,20 +12,13 @@ impl App {
             .find_map(|(ws_idx, ws)| ws.pane_state(pane_id).map(|pane| (ws_idx, pane)))
     }
 
-    /// Public id of the workspace at `ws_idx`. Callers pass an index they just
-    /// resolved; a stale one is a caller bug, reported and answered with an
-    /// empty id rather than a panic that would take the server down.
-    pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> String {
-        match self.state.workspaces.get(ws_idx) {
-            Some(ws) => ws.id.to_string(),
-            None => {
-                tracing::warn!(
-                    ws_idx,
-                    "public workspace id requested for a missing workspace"
-                );
-                String::new()
-            }
-        }
+    /// Public id of the workspace at `ws_idx`, or `None` when that index no
+    /// longer names a workspace.
+    pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> Option<String> {
+        self.state
+            .workspaces
+            .get(ws_idx)
+            .map(|ws| ws.id.to_string())
     }
 
     pub(crate) fn public_tab_id(&self, ws_idx: usize, tab_idx: usize) -> Option<String> {
@@ -178,6 +171,13 @@ mod tests {
         assert_eq!(app.parse_tab_id(&tab_id), Some((1, 0)));
         let pane_id = app.public_pane_id(1, second).expect("public pane id");
         assert_eq!(app.parse_pane_id(&pane_id), Some((1, second)));
+    }
+
+    #[test]
+    fn public_workspace_id_returns_none_for_a_missing_workspace() {
+        let app = test_app_with_workspaces(&["a"]);
+
+        assert_eq!(app.public_workspace_id(1), None);
     }
 
     #[test]

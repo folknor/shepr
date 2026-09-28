@@ -114,6 +114,12 @@ pub const SERVER_LOG_FILE: &str = "shepr-server.log";
 /// The log every client process appends to.
 pub const CLIENT_LOG_FILE: &str = "shepr-client.log";
 
+/// Installs the process-wide client file logger from the binary launch path.
+/// The client library reuses this subscriber and does not install one itself.
+pub fn init_client_file_logging(dir: &Path, config: FileLoggingConfig) -> io::Result<()> {
+    init_file_logging_with_config(dir, CLIENT_LOG_FILE, config)
+}
+
 /// The log files `--help` names: the only two any process writes.
 pub fn help_log_paths_summary(dir: &Path) -> String {
     log_paths_summary(dir)

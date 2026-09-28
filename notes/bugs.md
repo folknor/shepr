@@ -56,31 +56,6 @@ and require the existing `active_tab()` / `active_tab_mut()` which return
 never after a production mutation, so the `Deref` panic plus those opt-in calls
 are the whole enforcement today.
 
-## BUG-008 - A pane can freeze silently with the child still alive
-
-`ReaderExit::Closed` in `crates/shepr-pty/src/actor.rs` covers EOF but also poll
-failure and wake-pipe drain failure, both logged at `debug!`. The mux ignores
-`Closed` because it expects the child watcher to report. When the loop ends for
-one of those two reasons nobody reads the PTY: the child blocks on a full PTY,
-nothing is reported, and the only trace is a debug line.
-
-Fix suggested: a third `ReaderExit` variant (for example `Failed(io::Error)`) the
-owner must handle.
-
-## BUG-012 - Poisoned-lock paths fabricate values and silently drop writes
-
-- `synchronized_output_state` returns `(true, 0)` on a poisoned core - a made-up
-  value rather than an error (`crates/shepr-vt`, reported from the vt/pty scope).
-- `PaneTerminal::seed_history_ansi` returns `()` and silently does nothing when
-  the core lock is poisoned, so restored scrollback is lost with no line
-  anywhere.
-- `GhosttyPaneTerminal::resize`, `scroll_up`, `scroll_down`, `scroll_reset` and
-  `set_scroll_offset_from_bottom` use `if let Ok(mut core) =
-  lock_terminal_core(...)` and drop the operation on a poisoned lock. The doc
-  comment on `GhosttyPaneTerminal::core` justifies this policy for readers
-  ("readers answer empty or default values rather than error"); it says nothing
-  about writers, and a dropped resize is not a stale read.
-
 ## BUG-016 - The three bun test files never run
 
 **Decision:** deferred; tracked by the "Resolve typescript question" item in
@@ -96,44 +71,6 @@ directory and mutate `process.env` globally. `notes/todo.md` has an open item
 ("Resolve typescript question"), so this is known.
 
 Fix suggested: wire a bun step into `brokkr check` or delete the files.
-
-## BUG-048 - Discarded cleanup failures leak private directories and temporary files
-
-`crates/shepr-platform/src/ipc.rs::bind_via_private_staging` leaks a 0700 staging
-directory per failed `remove_dir` (`let _ =`, no log, one per bind attempt, in
-the XDG runtime directory); `ipc.rs` also discards the `remove_file` after a
-failed restrict. `ssh_paths.rs::create_remote_ssh_config_dir` creates
-`shepr-ssh-<pid>-<token>` directories and never removes them, with the doc
-calling them "ephemeral" and the caller responsible; nothing sweeps stale ones
-from a killed process. `ssh_agent.rs` discards the `remove_file` of the temporary
-symlink and of the published path on drop, and if `symlink` succeeds and the
-process dies before `rename` the temporary stays. `logging.rs`'s
-`set_permissions` failure when tightening a world-readable log is also discarded -
-the one place where failing quietly means the log stays readable by others.
-
-Fix suggested: make the `let _ =` sites explicit, and a startup sweep keyed on
-"own uid, no live pid".
-
-## BUG-062 - Identity strings collapse to a constant on a before-epoch clock
-
-- `crates/shepr-server/src/server/headless.rs`: `client_shell_boot_id:
-  format!("{}-{}", std::process::id(),
-  SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())`.
-  `unwrap_or_default()` means a clock before the epoch collapses every boot id to
-  `pid-0`, silently defeating the stale-boot rejection it exists for. The format
-  for the whole boot-generation mechanism (compared in `client_commands.rs`,
-  `client_transport.rs`, `surface_reuse.rs` and four places in `shepr-client`)
-  lives in a `format!` inside a struct literal, because `shepr_protocol::BootId`
-  is a newtype over `String` with `From<String>` and no owning constructor.
-- `crates/shepr-protocol/src/ids.rs`: `TerminalId::alloc()` combines a
-  process-global `AtomicU64` (`Relaxed`) with `SystemTime::now()`, and
-  `duration_since(UNIX_EPOCH)` falls back to `.unwrap_or(0)`, at which point ids
-  become `term_<counter>` only. Uniqueness rests on the clock being monotonic
-  across the process or the counter never wrapping.
-
-Fixes suggested: `BootId::for_this_process()` in `shepr-protocol` with
-`From<String>` restricted to deserialization; own the terminal id counter in a
-struct passed to callers.
 
 ## BUG-073 - Tests that skip themselves when run as root and report success
 
@@ -232,39 +169,6 @@ constants with no injection point; `SshAgentLease::refresh_at(now)`,
 `EndpointCatalogWatch::poll(now)` and `shepr-mux`'s `terminal/state` are cited as
 the pattern that works.
 
-## BUG-010 - Launch validation of the configured shell checks mode bits, not access
-
-The shell is now resolved at launch through `shepr-core/src/shell.rs`: config
-rejects an invalid configured shell, an unusable or unrecognised inherited
-`$SHELL` falls back to `/bin/sh`, and the resolved path travels to the pane
-builder. Open: config validation checks executable mode bits, while the PTY
-checks `access(2)` before exec, so a shell on a `noexec` mount passes launch
-validation and still fails every spawn. Exact access validation at launch needs
-a platform helper reachable from `shepr-config`, which means a dependency-rule
-change in `brokkr.toml`.
-
-## BUG-025 - The CLI process installs no tracing subscriber before the launch dispatch
-
-`auto_detect_launch` has three info log sites (`"auto-detect launch starting"`,
-`"server already running, attaching as client"`, `"no server running, spawning
-server daemon"`) that run before the client callback installs the file logger,
-so they reach no subscriber. Installing a logger early in `main` would make the
-client's own later `try_init` fail, so the fix is to change the client logger
-startup contract (`crates/shepr-client/src/lib.rs` and
-`crates/shepr-platform/src/logging.rs`) so `main` installs once and the client
-reuses it. A comment in `src/autodetect.rs` records the conflict.
-
-## BUG-054 - `public_workspace_id` answers an invalid index with an empty string
-
-`crates/shepr-server/src/app/ids.rs` warns and returns an empty `String` for a
-missing index, and the `""` flows into public ids and API responses as a
-valid-looking value. The sibling `public_tab_id` and `public_pane_id` return
-`Option<String>`. Changing the return type touches about 50 call sites across
-12 files in `shepr-server` (`app/events.rs`, `creation.rs`, `tab_bar_status.rs`,
-`api/workspaces.rs`, `api/tabs.rs`, `api/panes.rs`, `api/panes/geometry.rs`,
-`api.rs`, `api/layouts.rs`, and tests under `api/panes/tests.rs` and
-`server/headless/tests/`), so it needs a fixer with the whole crate in scope.
-
 ## BUG-059 - Two `#[cfg(test)]` shortcuts make every agent-hosting assertion unfalsifiable
 
 `crates/shepr-server/src/app/agents.rs`: under `#[cfg(test)]`,
@@ -277,16 +181,6 @@ the shortcut: the OpenCode prompt, Copilot prompt and Pi key tests in
 `app/api/agents.rs`, and the agent-start retry test in `app/mod.rs`. Production
 call sites: two in `app/api/agents.rs`.
 
-## BUG-064 - Shepr's git config reader ignores git's config-location variables
-
-`crates/shepr-mux/src/git/config.rs::git_user_config_paths` reads only the XDG
-and `~/.gitconfig` global files, while the `git` subprocesses honour
-`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM` and read
-`/etc/gitconfig`, so the two paths can report different upstreams and a
-different `core.bare` for one repository. Honouring them needs registry entries
-in `crates/shepr-core/src/env.rs` first (raw environment reads are sealed). A
-comment at the reader records this.
-
 ## BUG-067 - A process-global teardown counter couples two servers in one process
 
 `crates/shepr-mux/src/pane/teardown.rs` still counts in-flight pane teardowns in
@@ -297,49 +191,50 @@ instead of saturating silently. Open: a server-owned tracker, which needs
 `crates/shepr-mux/src/pane/runtime.rs` to hand it to teardown work and
 `crates/shepr-server/src/server/headless.rs`'s shutdown to wait on it.
 
-## BUG-087 - A queued manifest reload can install before the previous reload's summaries apply
+## BUG-008 - A pane can freeze silently with the child still alive
 
-`crates/shepr-server/src/server/headless/api_dispatcher.rs`: completing a
-manifest reload starts the next queued reload before applying the completed
-one's summaries. If the next worker installs its registry first, detection
-briefly runs the newer rules while the server's reload summaries still describe
-the older ones.
+`crates/shepr-pty/src/actor.rs`: a hard poll failure and a wake-pipe drain
+failure each log at `debug` and leave the IO loop, and the common exit reports
+them as `Closed`. The mux ignores `Closed` and waits for the child watcher, so
+with the child still alive nobody reads the PTY, the child blocks on a full
+PTY, and the only trace is a debug line. `EINTR` is already retried. The fix
+needs a distinct reason in `crates/shepr-platform/src/child_io.rs`'s
+`ChildExitReason` (mapping these to an existing reason would misstate the
+checkpoint policy), handled by the runtime. A comment at the actor records
+this.
 
-## BUG-088 - The API's busy refusal carries an empty request id
+## BUG-064 - Git command-scope config variables are not modelled
 
-`crates/shepr-api/src/server.rs` refuses a connection over the admission cap
-with an `endpoint_busy` response sent before the request is read, so the
-response's `id` is empty. shepr's own client does not check it, but the
-response does not correlate with the request that was refused.
+The file reader now honours `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`,
+`GIT_CONFIG_NOSYSTEM` and `/etc/gitconfig` as git does. Open: git's
+command-scope config (`GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_n` and
+`GIT_CONFIG_VALUE_n`) overrides file values and is inherited by shepr's git
+subprocesses but not modelled by `crates/shepr-mux/src/git/config.rs`, so the
+two paths can still disagree when it is set. It is a dynamic variable family, so
+the environment registry and `IsolatedEnv` need a way to cover it.
 
-## BUG-090 - `status` over `--machine` reports the local client's version as the client
+## BUG-095 - A relative Git override path silently falls back to the default files
 
-Now that `status` overview may run against a saved machine, its "client"
-section still prints the local binary's version and build, beside the remote
-server's. Read over `--machine`, that reads as the remote host's client.
-Either label it as the local client or omit the section for a remote target.
+`crates/shepr-mux/src/git/config.rs::git_user_config_paths` discards errors
+from reading `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`. The registry refuses a
+relative value, so a relative override silently falls back to the default
+global and system files, where git itself would use the given path. The two
+readers then disagree about which config applies.
 
-## BUG-091 - The timer's deferred cwd publish can race the reader's
+## BUG-096 - A tab dropped late in restore may already have started shells and queued history
 
-The synchronized-output timeout task runs its deferred effects, including the
-OSC 7 cwd publish, on a blocking thread, while the PTY reader publishes on the
-actor thread, so an older cwd can land after a newer one. The same race existed
-before the reply-lock work; it is recorded now that the effects are explicit
-values that could carry an ordering.
+`crates/shepr-mux/src/persist/restore.rs::restore_tab`: a tab rejected late (all
+panes pruned, or refused by `from_saved`) may already have queued
+`history_carry` entries or started shells for panes that are then discarded.
+The invalid-ratio rejection returns before any of that; the later rejections do
+not. Also untested: the server wiring in `crates/shepr-server/src/app/mod.rs`
+that turns a nonzero `dropped_tabs` into a backup of the original session file
+on the first save (the `with_paths` construction path).
 
-## BUG-092 - The unchanged-history skip rarely fires for tabs with several panes
+## BUG-094 - Two stale or misleading clipboard statements in the client
 
-`crates/shepr-mux/src/persist/snapshot.rs`: `TabHistorySnapshot::panes` is a
-`HashMap` rebuilt on every save, and each new map iterates in its own random
-order, so identical history serialises to different bytes and a different
-digest. The writer's skip-unchanged check therefore misses, and
-`session-history.json` is rewritten and fsynced on every save for any tab with
-more than one pane. A `BTreeMap` (or sorted serialisation) makes the bytes
-deterministic.
-
-## BUG-093 - `config check` stops at a shell error and hides a bad `new_cwd`
-
-`crates/shepr-config/src/validated.rs`: `ValidatedTerminalConfig::parse`
-returns at the first shell error, so a problem with `terminal.new_cwd` is only
-reported after the shell is fixed. `config check` exists to list every problem
-at once.
+- `crates/shepr-client/src/shell/input/input.rs` says the platform clipboard
+  reader has no timeout; it applies a two-second helper deadline.
+- `crates/shepr-client/src/lib.rs` logs `data.len()` for a server-forwarded
+  clipboard payload as if it were the clipboard size; it is the base64-encoded
+  length, not the decoded byte count.

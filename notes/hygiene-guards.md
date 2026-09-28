@@ -703,8 +703,6 @@ for the claim.
 - XDG path variables get four empty/relative rules and `XDG_CONFIG_HOME` falls
   back silently: HYGV-008.
 - `SHEPR_DEBUG_OSC_EVIDENCE` is read per pane and documented nowhere: HYGV-013.
-- `terminal.default_shell` is validated per spawn rather than at launch:
-  BUG-010.
 - A manifest override that does not compile only warns: HYGC-023.
 - Sidebar chrome preferences discover an unwritable state dir mid-session:
   HYGV-104.

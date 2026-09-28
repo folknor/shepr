@@ -290,11 +290,6 @@ impl super::HeadlessServer {
             return false;
         }
         let answered = std::mem::take(&mut self.running_agent_manifest_reload);
-        if !self.queued_agent_manifest_reloads.is_empty() {
-            self.running_agent_manifest_reload =
-                std::mem::take(&mut self.queued_agent_manifest_reloads);
-            self.start_agent_manifest_reload();
-        }
 
         if self.lifecycle.stop_requested(self.app.state.should_quit) {
             self.initiate_shutdown();
@@ -334,6 +329,13 @@ impl super::HeadlessServer {
                 msg.request.method.traits().name,
                 response.clone(),
             );
+        }
+        // Apply this run's summaries before a queued worker can install a newer
+        // registry. Both changes are observed by detection on the event loop.
+        if !self.queued_agent_manifest_reloads.is_empty() {
+            self.running_agent_manifest_reload =
+                std::mem::take(&mut self.queued_agent_manifest_reloads);
+            self.start_agent_manifest_reload();
         }
         changed
     }
@@ -669,6 +671,18 @@ mod tests {
         assert!(
             second_rx.try_recv().is_err(),
             "the queued request is answered by the reload started after the first"
+        );
+        // The queued request's worker starts only once the first run's
+        // summaries are applied and answered, under a fresh token.
+        assert_eq!(server.agent_manifest_reload_token, 2);
+        assert!(server.queued_agent_manifest_reloads.is_empty());
+        assert_eq!(
+            server
+                .running_agent_manifest_reload
+                .iter()
+                .map(|msg| msg.request.id.as_str())
+                .collect::<Vec<_>>(),
+            ["second"]
         );
 
         let completion = next_reload_completion(&mut server).await;

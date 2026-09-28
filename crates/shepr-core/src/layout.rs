@@ -7,21 +7,29 @@ use ratatui::layout::{Direction, Rect};
 
 use crate::geometry::SplitBranch;
 
+/// Smallest permitted first-child share of a layout split.
+pub const MIN_SPLIT_RATIO: f32 = 0.1;
+/// Largest permitted first-child share of a layout split.
+pub const MAX_SPLIT_RATIO: f32 = 0.9;
+/// First-child share used when a split has no explicit ratio.
+pub const EVEN_SPLIT: f32 = 0.5;
+
 /// First-child share of a BSP split.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitRatio(f32);
 
 impl SplitRatio {
-    #[cfg(test)]
-    fn new(value: f32) -> Option<Self> {
-        (value.is_finite() && (0.1..=0.9).contains(&value)).then_some(Self(value))
+    /// Accept a finite ratio within the layout bounds.
+    pub fn new(value: f32) -> Option<Self> {
+        (value.is_finite() && (MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO).contains(&value))
+            .then_some(Self(value))
     }
 
     pub fn clamped(value: f32) -> Self {
         Self(if value.is_finite() {
-            value.clamp(0.1, 0.9)
+            value.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO)
         } else {
-            0.5
+            EVEN_SPLIT
         })
     }
 
@@ -134,7 +142,7 @@ pub struct TileLayout {
     prev_focus: Option<PaneId>,
 }
 
-/// A malformed tree passed to [`TileLayout::from_saved`].
+/// A saved layout defect rejected before it becomes a live [`TileLayout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidSavedLayout {
     /// A leaf uses ID 0, which layout edits reserve as an internal placeholder.
@@ -143,6 +151,8 @@ pub enum InvalidSavedLayout {
     DuplicatePaneId(PaneId),
     /// The focused pane is not present among the leaves.
     FocusNotFound(PaneId),
+    /// A saved split ratio is non-finite or outside the permitted bounds.
+    InvalidSplitRatio,
 }
 
 impl TileLayout {
@@ -203,7 +213,7 @@ impl TileLayout {
     /// Split the focused pane. Returns the new pane's id. This helper is used
     /// by tests; production prepares a cloned layout before starting a runtime.
     pub fn split_focused(&mut self, direction: Direction) -> PaneId {
-        self.split_focused_with_ratio(direction, 0.5)
+        self.split_focused_with_ratio(direction, EVEN_SPLIT)
     }
 
     /// Split the focused pane with a custom first-child ratio.
@@ -220,7 +230,7 @@ impl TileLayout {
         let new_id = PaneId::alloc();
         let placeholder = PaneId::from_raw(0);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
-        self.root = split_at(old, target, direction, new_id, valid_split_ratio(ratio));
+        self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
         self.set_focus(new_id);
         new_id
     }
@@ -240,7 +250,7 @@ impl TileLayout {
         let new_id = PaneId::alloc();
         let placeholder = PaneId::from_raw(0);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
-        self.root = split_at(old, target, direction, new_id, valid_split_ratio(ratio));
+        self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
         Some(new_id)
     }
 
@@ -265,7 +275,7 @@ impl TileLayout {
 
         let placeholder = PaneId::from_raw(0);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
-        self.root = split_at(old, target, direction, moved, valid_split_ratio(ratio));
+        self.root = split_at(old, target, direction, moved, SplitRatio::clamped(ratio));
         if focus {
             self.set_focus(moved);
         }
@@ -375,7 +385,7 @@ impl TileLayout {
 
         if let Some(split) = best {
             let path = split.path.clone();
-            let current_ratio = get_ratio_at(&self.root, &path).map_or(0.5, SplitRatio::get);
+            let current_ratio = get_ratio_at(&self.root, &path).map_or(EVEN_SPLIT, SplitRatio::get);
             let adj = if grows { delta } else { -delta };
             self.set_ratio_at(&path, current_ratio + adj);
         }
@@ -725,10 +735,6 @@ fn split_at(
     }
 }
 
-pub fn valid_split_ratio(ratio: f32) -> SplitRatio {
-    SplitRatio::clamped(ratio)
-}
-
 fn remove_pane(node: Node, target: PaneId) -> Option<Node> {
     match node {
         Node::Pane(id) if id == target => None,
@@ -851,11 +857,21 @@ mod tests {
 
     #[test]
     fn split_ratio_rejects_values_outside_layout_bounds() {
-        assert_eq!(SplitRatio::new(0.1).map(SplitRatio::get), Some(0.1));
-        assert_eq!(SplitRatio::new(0.9).map(SplitRatio::get), Some(0.9));
-        assert!(SplitRatio::new(0.05).is_none());
+        assert_eq!(
+            SplitRatio::new(MIN_SPLIT_RATIO).map(SplitRatio::get),
+            Some(MIN_SPLIT_RATIO)
+        );
+        assert_eq!(
+            SplitRatio::new(MAX_SPLIT_RATIO).map(SplitRatio::get),
+            Some(MAX_SPLIT_RATIO)
+        );
+        assert!(SplitRatio::new(MIN_SPLIT_RATIO - f32::EPSILON).is_none());
         assert!(SplitRatio::new(f32::NAN).is_none());
-        assert_eq!(SplitRatio::clamped(f32::NAN).get(), 0.5);
+        assert_eq!(
+            SplitRatio::clamped(MIN_SPLIT_RATIO - f32::EPSILON).get(),
+            MIN_SPLIT_RATIO
+        );
+        assert_eq!(SplitRatio::clamped(f32::NAN).get(), EVEN_SPLIT);
     }
 
     fn pane(id: u32) -> PaneId {

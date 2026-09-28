@@ -127,6 +127,9 @@ impl App {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
         };
+        let Some(workspace_id) = self.public_workspace_id(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
         let Some(ws) = self.state.workspaces.get_mut(index) else {
             return workspace_not_found(id, &params.workspace_id);
         };
@@ -135,7 +138,7 @@ impl App {
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
             data: EventData::WorkspaceRenamed {
-                workspace_id: self.public_workspace_id(index),
+                workspace_id,
                 label: params.label,
             },
         });
@@ -165,7 +168,9 @@ impl App {
             );
         }
 
-        let workspace_id = self.public_workspace_id(index);
+        let Some(workspace_id) = self.public_workspace_id(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
         let insert_index = params.insert_index;
         let moved = self.state.move_workspace(index, insert_index);
         let workspaces = self.workspace_list_info();
@@ -478,7 +483,7 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .cwd = source_cwd.clone();
-        let source_workspace_id = app.public_workspace_id(1);
+        let source_workspace_id = app.public_workspace_id(1).expect("test precondition");
 
         let response = app.handle_workspace_create(
             "req".into(),
@@ -554,7 +559,7 @@ mod tests {
             event_hub.clone(),
         );
         app.state.workspaces = vec![Workspace::test_new("one")];
-        let workspace_id = app.public_workspace_id(0);
+        let workspace_id = app.public_workspace_id(0).expect("test precondition");
 
         for (tokens, expected) in [
             (
@@ -614,7 +619,7 @@ mod tests {
             event_hub.clone(),
         );
         app.state.workspaces = vec![Workspace::test_new("one")];
-        let workspace_id = app.public_workspace_id(0);
+        let workspace_id = app.public_workspace_id(0).expect("test precondition");
         let response = app.handle_workspace_report_metadata(
             "req".into(),
             WorkspaceReportMetadataParams {
@@ -680,7 +685,7 @@ mod tests {
         ];
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
-        let moved_id = app.public_workspace_id(0);
+        let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         let response = app.handle_workspace_move(
             "req".into(),
@@ -726,9 +731,9 @@ mod tests {
             Workspace::test_new("parent"),
             Workspace::test_new("tail"),
         ];
-        let parent_id = app.public_workspace_id(2);
-        let child_id = app.public_workspace_id(0);
-        let tail_id = app.public_workspace_id(3);
+        let parent_id = app.public_workspace_id(2).expect("test precondition");
+        let child_id = app.public_workspace_id(0).expect("test precondition");
+        let tail_id = app.public_workspace_id(3).expect("test precondition");
 
         let response = app.handle_workspace_move_block(
             "req".into(),
@@ -784,7 +789,7 @@ mod tests {
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
-        let workspace_id = app.public_workspace_id(0);
+        let workspace_id = app.public_workspace_id(0).expect("test precondition");
         let pane_ids = app.state.workspaces[0]
             .tabs()
             .iter()
@@ -840,7 +845,7 @@ mod tests {
             event_hub.clone(),
         );
         app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
-        let moved_id = app.public_workspace_id(0);
+        let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         let response = app.handle_workspace_move(
             "req".into(),

@@ -363,33 +363,6 @@ variant and then nothing ever reads the variant, so the classification never
 reaches any channel (the dead-classification half of that belongs to the
 dead-code sibling document).
 
-## HYGC-015 - A total clipboard failure is logged nowhere, at either end
-
-`shepr-platform/src/clipboard.rs::write_clipboard` returns `bool`. Every helper
-failing produces no log line at any level, from either `shepr-platform` or the
-`shepr-termio/src/host_term/title.rs` caller, which just falls through to OSC 52
-and then `let _ = stdout.write_all(...)`. `read_clipboard_text` returns
-`Option<String>` with the same silence. So "copy did nothing" is undiagnosable;
-the two `tracing::warn!`s in the module are about reaping the wl-copy child, not
-about the user's copy failing.
-
-Related note kept from the same scope: `remote_bridge.rs` and
-`remote_bridge_io.rs` both carry an explicit module-level rule ("input content
-must stay out of logs and error messages here; byte counts and error kinds
-only") and honour it. No equivalent note exists on the clipboard path, which
-handles the same class of content (the user's selection, potentially a token
-pasted between panes) and spawns it through an argv-visible helper process.
-Nothing leaks today because no clipboard log line exists at all - which means
-the first person to add one is the person who will leak it.
-
-Also in scope: `shepr-vt`'s `MAX_CLIPBOARD_BYTES` silently drops OSC 52 payloads
-over 192 KiB with no log.
-
-Enforcement named: a capturing subscriber can assert a log line once the module
-emits one; the shape change (`bool` -> `Result<(), ClipboardError>`) is
-compiler-enforced at the call site. A module-level comment on `clipboard.rs`
-matching the bridge's is the whole fix for the content-in-logs half.
-
 ## HYGC-016 - An unrecognised hook source or agent label silently downgrades a pane, and nothing is logged
 
 Reported by the agent and mux hunters as the same fact from both ends.

@@ -108,8 +108,6 @@ impl App {
                 let tab_idx = outcome.tab_index;
                 self.terminal_runtimes.insert(terminal_id, runtime);
                 if let Some(label) = label {
-                    let workspace_id = self.public_workspace_id(ws_idx);
-                    let tab_id = self.public_tab_id(ws_idx, tab_idx);
                     if let Some(tab) = self
                         .state
                         .workspaces
@@ -117,10 +115,12 @@ impl App {
                         .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
                     {
                         tab.set_custom_name(label);
-                        // A missing stable id must not be reconstructed from the tab's position.
-                        if let Some(tab_id) = tab_id {
-                            shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
-                        }
+                    }
+                    if let (Some(workspace_id), Some(tab_id)) = (
+                        self.public_workspace_id(ws_idx),
+                        self.public_tab_id(ws_idx, tab_idx),
+                    ) {
+                        shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
                     }
                 }
                 self.schedule_session_save();
@@ -153,6 +153,9 @@ impl App {
         let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
             return tab_not_found(id, &params.tab_id);
         };
+        let Some(public_workspace_id) = self.public_workspace_id(ws_idx) else {
+            return tab_not_found(id, &params.tab_id);
+        };
         let Some(workspace_id) = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
             return tab_not_found(id, &params.tab_id);
         };
@@ -170,7 +173,7 @@ impl App {
         self.emit_event(EventEnvelope {
             data: EventData::TabRenamed {
                 tab_id: tab_id.clone(),
-                workspace_id: self.public_workspace_id(ws_idx),
+                workspace_id: public_workspace_id,
                 label: params.label,
             },
         });
@@ -199,7 +202,9 @@ impl App {
         let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
             return tab_not_found(id, &params.tab_id);
         };
-        let workspace_id = self.public_workspace_id(ws_idx);
+        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
+            return tab_not_found(id, &params.tab_id);
+        };
         let insert_index = params.insert_index;
         let moved = self
             .state
@@ -302,7 +307,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
-        let workspace_id = app.public_workspace_id(0);
+        let workspace_id = app.public_workspace_id(0).expect("test precondition");
         let root_pane = app.state.workspaces[0].tabs()[0].root_pane;
         let pane_id = app.public_pane_id(0, root_pane).expect("test precondition");
 
@@ -467,7 +472,7 @@ mod tests {
                     insert_index: 3,
                     tabs,
                 } if tab_id == &moved_id
-                    && workspace_id == &app.public_workspace_id(0)
+                    && workspace_id == &app.public_workspace_id(0).expect("test precondition")
                     && tabs[2].tab_id == moved_id
             )
         }));

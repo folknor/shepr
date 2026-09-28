@@ -36,6 +36,26 @@ pub const fn frame_payload_fits(size: usize) -> bool {
 /// before sending so an oversized paste never has to cross the wire.
 pub const MAX_INPUT_PAYLOAD: usize = 1024 * 1024;
 
+impl crate::ClientPaneInputEvent {
+    /// Text bytes this event delivers to the pane, as charged against
+    /// `MAX_INPUT_PAYLOAD`: paste or committed text, or a key's generated text
+    /// times its repeat count. Mouse events carry no text.
+    pub fn text_bytes(&self) -> usize {
+        match self {
+            Self::Key {
+                repeat_count,
+                generated_text,
+                ..
+            } => generated_text.as_ref().map_or(0, |text| {
+                text.len()
+                    .saturating_mul(usize::from((*repeat_count).max(1)))
+            }),
+            Self::TextCommit(text) | Self::Paste(text) => text.len(),
+            Self::Mouse { .. } => 0,
+        }
+    }
+}
+
 /// Encoded bytes budgeted per cell of a full pane surface or terminal redraw.
 ///
 /// A typical cell with RGB foreground and background, style flags, underline

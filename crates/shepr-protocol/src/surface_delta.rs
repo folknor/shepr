@@ -2,7 +2,6 @@
 
 use serde::Serialize;
 
-use super::surface::SurfaceMeta;
 use super::{
     CellData, MAX_SURFACE_HYPERLINKS, MAX_SURFACE_PANES, MAX_SURFACE_PATCH_SPANS,
     MAX_SURFACE_SPLIT_PATH, MAX_SURFACE_SPLITS, PaneSurfaceFrame, PaneSurfacePatchRow,
@@ -138,13 +137,8 @@ pub fn message(
         last.projection_revision,
         last.surface_revision,
     );
-    if !baseline.accepts(
-        &surface.boot_id,
-        last.surface_revision,
-        surface.surface_revision,
-        last.projection_revision,
-        surface.projection_revision,
-    ) || last.frame.width != surface.frame.width
+    if !baseline.accepts_surface(surface)
+        || last.frame.width != surface.frame.width
         || last.frame.height != surface.frame.height
         || last.frame.cells.len() != expected_cells
         || !metadata_fits(surface)
@@ -165,22 +159,15 @@ pub fn message(
         else {
             return Ok(None);
         };
-        let update = super::SurfaceUpdate {
-            boot_id: surface.boot_id.clone(),
-            base_projection_revision: last.projection_revision,
-            base_surface_revision: last.surface_revision,
-            surface_revision: surface.surface_revision,
-            projection_revision: surface.projection_revision,
-            meta: Some(SurfaceMeta::from(&*surface)),
-            spans: rows
-                .into_iter()
-                .map(|row| PaneSurfacePatchRow {
-                    x: row.x,
-                    y: row.y,
-                    cells: row.cells.to_vec(),
-                })
-                .collect(),
-        };
+        let spans = rows
+            .into_iter()
+            .map(|row| PaneSurfacePatchRow {
+                x: row.x,
+                y: row.y,
+                cells: row.cells.to_vec(),
+            })
+            .collect();
+        let update = baseline.update(surface, spans);
         let message = ServerMessage::SurfaceUpdate(update);
         let size = encoded_size(&message)?;
         Ok((super::frame_payload_fits(size) && size < full_size).then_some(message))

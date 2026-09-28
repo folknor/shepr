@@ -27,13 +27,8 @@ pub(crate) fn auto_detect_launch<T>(
         &shepr_config::ValidatedConfig,
         &shepr_config::AppPaths,
         shepr_remote::machine::EndpointCatalog,
-        shepr_platform::logging::FileLoggingConfig,
     ) -> T,
 ) -> io::Result<T> {
-    // The detached server's stderr is redirected, so validate the filter
-    // before startup and pass it through to avoid reading it again in-client.
-    let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
-
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
     shepr_platform::terminal_grid_size().map_err(|err| {
@@ -43,8 +38,6 @@ pub(crate) fn auto_detect_launch<T>(
         )
     })?;
     let socket_path = paths.server_address().client_socket().to_path_buf();
-    // The client callback installs the global file subscriber after this
-    // startup probe; initializing it here would make its later try_init fail.
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
     // The running server is checked whether or not saved machines are
@@ -72,12 +65,12 @@ pub(crate) fn auto_detect_launch<T>(
         if !endpoint_catalog.has_ssh() {
             return Err(error);
         }
-        // No tracing subscriber is installed in this process yet, so a log
-        // line here would reach no one.
+        // Keep the full refusal visible even though the client will remain open
+        // for saved machines; the endpoint state omits this startup detail.
         crate::cli::print_notice(&local_startup_notice(&error));
     }
 
-    Ok(run_client(config, paths, endpoint_catalog, logging_config))
+    Ok(run_client(config, paths, endpoint_catalog))
 }
 
 /// What the operator is told when Local fails to start or is refused while

@@ -150,12 +150,12 @@ fn launch() -> CliResult<i32> {
     match &invocation.launch {
         cli::Launch::ApiBridge { check } => {
             let paths = resolve_bridge_paths(requested_session.clone())?;
-            init_bridge_logging(&paths)?;
+            init_client_logging(&paths)?;
             return finish_bridge(shepr_remote::run_remote_api_bridge(*check, &paths)?);
         }
         cli::Launch::ClientBridge => {
             let paths = resolve_bridge_paths(requested_session.clone())?;
-            init_bridge_logging(&paths)?;
+            init_client_logging(&paths)?;
             return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
         }
         _ => {}
@@ -180,6 +180,7 @@ fn launch() -> CliResult<i32> {
         }
         cli::Launch::Client => {
             refuse_if_nested_disabled(&loaded_config)?;
+            init_client_logging(paths)?;
             return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
         }
         cli::Launch::Tui { .. } => {}
@@ -209,6 +210,7 @@ fn launch() -> CliResult<i32> {
     refuse_if_nested_disabled(&loaded_config)?;
 
     let endpoint_catalog = load_launch_endpoint_catalog(paths)?;
+    init_client_logging(paths)?;
     let client = autodetect::auto_detect_launch(
         endpoint_catalog,
         &loaded_config,
@@ -247,15 +249,16 @@ fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32>
     }
 }
 
-/// A bridge runs in its own process, so it installs the client file logger
-/// before its idle watchdog can log. It writes to the host's client log, never
-/// stdout, which carries the relayed stream. A log file that cannot be opened
-/// is reported on stderr, which ssh hands back to the local client.
-fn init_bridge_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
+/// Installs the process-wide client logger before client or bridge code logs.
+/// Every path into `shepr_client` (the TUI launch, `--client`, and the
+/// terminal and agent attach commands) and both bridges call it once; the
+/// client library installs none of its own. Bridges write to the host's
+/// client log, never stdout, which carries the relayed stream. A log file
+/// that cannot be opened is reported on stderr.
+fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
-    shepr_platform::logging::init_file_logging_with_config(
+    shepr_platform::logging::init_client_file_logging(
         &shepr_api::session::data_dir(paths),
-        shepr_platform::logging::CLIENT_LOG_FILE,
         logging_config,
     )
 }

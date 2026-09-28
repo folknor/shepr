@@ -1,7 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PUBLIC_ID_ALPHABET: &[u8; 32] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
 
@@ -386,22 +386,48 @@ static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 
 impl TerminalId {
     pub fn alloc() -> Self {
-        let micros = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_micros());
-        let counter = NEXT_TERMINAL_ID.fetch_add(1, Ordering::Relaxed);
-        Self(format!("term_{micros:x}{counter:x}"))
+        let since_epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => Ok(duration),
+            Err(error) => Err(error.duration()),
+        };
+        // One allocation per terminal never exhausts a u64; wrapping would
+        // repeat an earlier id, so exhaustion is refused rather than wrapped.
+        let counter =
+            match NEXT_TERMINAL_ID.try_update(Ordering::Relaxed, Ordering::Relaxed, |counter| {
+                counter.checked_add(1)
+            }) {
+                Ok(counter) => counter,
+                Err(_) => panic!("terminal id allocation counter exhausted"),
+            };
+        Self::from_clock_and_counter(since_epoch, counter)
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Builds fixed IDs for tests in dependent crates. Those crates build this
+    /// library as a normal dependency, where its own `cfg(test)` does not apply.
     pub fn test_new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
+
+    fn from_clock_and_counter(since_epoch: Result<Duration, Duration>, counter: u64) -> Self {
+        let micros = match since_epoch {
+            Ok(duration) => duration.as_micros().to_string(),
+            Err(duration) => {
+                let micros = duration.as_micros();
+                format!("before_{micros}")
+            }
+        };
+        Self(format!("term_{micros}_{counter:x}"))
+    }
 }
 
+// The client carries its owned CLI attach target as a TerminalId, and protocol
+// and server tests also construct fixed wire IDs. Removing this conversion
+// needs a parsing boundary and test updates outside the protocol crate. The
+// rule against pane-derived IDs therefore remains a caller convention.
 impl From<String> for TerminalId {
     fn from(id: String) -> Self {
         Self(id)
@@ -411,5 +437,32 @@ impl From<String> for TerminalId {
 impl fmt::Display for TerminalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod terminal_id_tests {
+    use std::time::Duration;
+
+    use super::TerminalId;
+
+    #[test]
+    fn terminal_id_clock_encoding_distinguishes_before_epoch_from_epoch() {
+        let before_epoch = TerminalId::from_clock_and_counter(Err(Duration::from_micros(7)), 1);
+        let at_epoch = TerminalId::from_clock_and_counter(Ok(Duration::ZERO), 2);
+
+        assert_eq!(before_epoch.as_str(), "term_before_7_1");
+        assert_eq!(at_epoch.as_str(), "term_0_2");
+        assert_ne!(before_epoch, at_epoch);
+    }
+
+    #[test]
+    fn terminal_id_clock_and_counter_fields_have_unambiguous_boundaries() {
+        let first = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(1)), 0x11);
+        let second = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(0x11)), 1);
+
+        assert_eq!(first.as_str(), "term_1_11");
+        assert_eq!(second.as_str(), "term_17_1");
+        assert_ne!(first, second);
     }
 }

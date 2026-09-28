@@ -458,6 +458,7 @@ fn agent_attach(
             hints: Vec::new(),
         });
     };
+    crate::init_client_logging(paths)?;
     super::finish_client(shepr_client::run_terminal_attach(
         &config,
         paths,

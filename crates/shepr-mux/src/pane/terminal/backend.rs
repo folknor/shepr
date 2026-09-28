@@ -1,5 +1,12 @@
 use super::*;
 
+fn report_terminal_mutation_failure(operation: &'static str) {
+    tracing::error!(
+        operation = operation,
+        "terminal core lock poisoned; mutation was not applied"
+    );
+}
+
 impl GhosttyPaneTerminal {
     pub(crate) fn new(mut terminal: shepr_vt::Terminal) -> Self {
         // Replies to anything written before the pane existed have no reader.
@@ -288,7 +295,11 @@ impl GhosttyPaneTerminal {
         if ansi.is_empty() {
             return;
         }
+        // Production calls happen during pane construction, before this fresh
+        // core is shared with runtime tasks. Keep a diagnostic if that
+        // invariant ever changes and restored history cannot be seeded.
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            report_terminal_mutation_failure("history seed");
             return;
         };
         core.terminal.write(ansi.as_bytes());
@@ -306,69 +317,76 @@ impl GhosttyPaneTerminal {
 
     pub(crate) fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
         let rows = geometry.rows();
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            let synchronized_output_before =
-                core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
-            let offset_from_bottom = core.terminal.scrollbar();
-            let offset_from_bottom = offset_from_bottom
-                .total
-                .saturating_sub(offset_from_bottom.offset + offset_from_bottom.len);
-            let resize_recovery_probe_lines = usize::from(rows)
-                .saturating_mul(8)
-                .max(DEFAULT_DETECTION_ROWS);
-
-            // Replies already queued by an earlier core operation stay at the
-            // front for the next read; the resize's own replies go to a slot
-            // the next resize overwrites.
-            let pending_responses = core.terminal.take_pty_responses();
-            // No history is replayed into the core after the resize. That was
-            // a workaround for the libghostty core losing rows on resize;
-            // alacritty reflows bottom-anchored and keeps the rows above the
-            // cursor (a shrink drops only rows below it, as Terminal.app and
-            // iTerm do), and a replay fed bytes through the child's parser,
-            // cutting into any sequence it had half-written and moving its
-            // cursor behind its back.
-            core.terminal.resize(geometry);
-            let synchronized_output_after =
-                core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
-            if synchronized_output_after != synchronized_output_before {
-                core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
+        let mut core = match shepr_vt::lock_terminal_core(&self.core) {
+            Ok(core) => core,
+            Err(_) => {
+                report_terminal_mutation_failure("resize");
+                return Vec::new();
             }
-            let terminal_responses = drain_terminal_responses(&mut core);
-            core.terminal.restore_pty_responses(pending_responses);
+        };
+        let synchronized_output_before = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
+        let offset_from_bottom = core.terminal.scrollbar();
+        let offset_from_bottom = offset_from_bottom
+            .total
+            .saturating_sub(offset_from_bottom.offset + offset_from_bottom.len);
+        let resize_recovery_probe_lines = usize::from(rows)
+            .saturating_mul(8)
+            .max(DEFAULT_DETECTION_ROWS);
 
-            ghostty_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
-            if offset_from_bottom > 0 {
-                let mut remaining = offset_from_bottom.min(resize_recovery_probe_lines);
-                while remaining > 0 && ghostty_visible_text(&mut core).trim().is_empty() {
-                    core.terminal.scroll_viewport_delta(1);
-                    remaining -= 1;
-                }
-            }
-            terminal_responses
-        } else {
-            Vec::new()
+        // Replies already queued by an earlier core operation stay at the
+        // front for the next read; the resize's own replies go to a slot
+        // the next resize overwrites.
+        let pending_responses = core.terminal.take_pty_responses();
+        // No history is replayed into the core after the resize. That was
+        // a workaround for the libghostty core losing rows on resize;
+        // alacritty reflows bottom-anchored and keeps the rows above the
+        // cursor (a shrink drops only rows below it, as Terminal.app and
+        // iTerm do), and a replay fed bytes through the child's parser,
+        // cutting into any sequence it had half-written and moving its
+        // cursor behind its back.
+        core.terminal.resize(geometry);
+        let synchronized_output_after = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
+        if synchronized_output_after != synchronized_output_before {
+            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
+        let terminal_responses = drain_terminal_responses(&mut core);
+        core.terminal.restore_pty_responses(pending_responses);
+
+        ghostty_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
+        if offset_from_bottom > 0 {
+            let mut remaining = offset_from_bottom.min(resize_recovery_probe_lines);
+            while remaining > 0 && ghostty_visible_text(&mut core).trim().is_empty() {
+                core.terminal.scroll_viewport_delta(1);
+                remaining -= 1;
+            }
+        }
+        terminal_responses
     }
 
     pub(crate) fn scroll_up(&self, lines: usize) {
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            let lines = isize::try_from(lines).unwrap_or(isize::MAX);
-            core.terminal.scroll_viewport_delta(-lines);
-        }
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            report_terminal_mutation_failure("scroll up");
+            return;
+        };
+        let lines = isize::try_from(lines).unwrap_or(isize::MAX);
+        core.terminal.scroll_viewport_delta(-lines);
     }
 
     pub(crate) fn scroll_down(&self, lines: usize) {
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            let lines = isize::try_from(lines).unwrap_or(isize::MAX);
-            core.terminal.scroll_viewport_delta(lines);
-        }
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            report_terminal_mutation_failure("scroll down");
+            return;
+        };
+        let lines = isize::try_from(lines).unwrap_or(isize::MAX);
+        core.terminal.scroll_viewport_delta(lines);
     }
 
     pub(crate) fn scroll_reset(&self) {
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            core.terminal.scroll_viewport_bottom();
-        }
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            report_terminal_mutation_failure("scroll reset");
+            return;
+        };
+        core.terminal.scroll_viewport_bottom();
     }
 
     pub(crate) fn clear_screen(&self) -> Result<(), PaneClearError> {
@@ -379,9 +397,11 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn set_scroll_offset_from_bottom(&self, lines: usize) {
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            ghostty_set_scroll_offset_from_bottom(&mut core.terminal, lines);
-        }
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            report_terminal_mutation_failure("set scroll offset");
+            return;
+        };
+        ghostty_set_scroll_offset_from_bottom(&mut core.terminal, lines);
     }
 
     pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {
@@ -615,6 +635,10 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
+        // A poisoned core is removed by the PTY actor shortly. Until then the
+        // render callers defer whenever this flag is true, so this fallback
+        // epoch is never compared; changing the result to an error also
+        // requires changing the server render callers.
         shepr_vt::lock_terminal_core(&self.core).map_or((true, 0), |core| {
             (
                 core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT),

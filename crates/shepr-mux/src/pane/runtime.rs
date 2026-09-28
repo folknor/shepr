@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
@@ -380,6 +380,7 @@ struct PaneReadEffects {
     detection_content_seq: Arc<AtomicU64>,
     child_liveness: Arc<ChildLiveness>,
     sync_timeout_render: SyncTimeoutRender,
+    deferred_effect_order: Arc<DeferredEffectOrder>,
     /// The PTY actor's handle, set once the actor exists; the timer queues
     /// the replies of a flushed frame through it.
     timer_writer: std::sync::OnceLock<PtyIoActorHandle>,
@@ -390,19 +391,106 @@ struct PaneReadEffects {
 /// default-colour owner and the readlink behind an OSC 7 report. They run
 /// with no terminal, content or reply-order lock held.
 struct DeferredEffects {
+    ticket: DeferredEffectTicket,
     shell_pid: u32,
     default_color_generation: Option<u64>,
     reported_cwd: Option<std::path::PathBuf>,
+}
+
+/// Serializes the blocking effects produced by ordered terminal writes. The
+/// reply-order lock assigns tickets; this gate waits for earlier effects to
+/// finish after that lock has been released. Only a write with deferred
+/// effects takes a ticket, so the common read never touches it.
+#[derive(Default)]
+struct DeferredEffectOrder {
+    state: Mutex<DeferredEffectOrderState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct DeferredEffectOrderState {
+    next_reserved: u64,
+    next_to_apply: u64,
+    /// Tickets finished out of turn: dropped without being applied (a panic
+    /// or early return between reservation and application). The sequence
+    /// skips them once every earlier ticket has finished.
+    finished_early: std::collections::BTreeSet<u64>,
+}
+
+impl DeferredEffectOrderState {
+    fn finish(&mut self, seq: u64) {
+        if seq != self.next_to_apply {
+            self.finished_early.insert(seq);
+            return;
+        }
+        self.next_to_apply = self.next_to_apply.wrapping_add(1);
+        while self.finished_early.remove(&self.next_to_apply) {
+            self.next_to_apply = self.next_to_apply.wrapping_add(1);
+        }
+    }
+}
+
+/// One reserved place in the deferred-effect order. Dropping it finishes
+/// that place, whether its effect ran, panicked or was never started, so a
+/// lost ticket can never block later effects.
+struct DeferredEffectTicket {
+    order: Arc<DeferredEffectOrder>,
+    seq: u64,
+}
+
+impl Drop for DeferredEffectTicket {
+    fn drop(&mut self) {
+        let mut state = shepr_vt::lock_auxiliary(&self.order.state);
+        state.finish(self.seq);
+        drop(state);
+        self.order.ready.notify_all();
+    }
+}
+
+impl DeferredEffectOrder {
+    /// Called while the terminal reply-order lock is held.
+    fn reserve(self: &Arc<Self>) -> DeferredEffectTicket {
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let seq = state.next_reserved;
+        state.next_reserved = state.next_reserved.wrapping_add(1);
+        DeferredEffectTicket {
+            order: Arc::clone(self),
+            seq,
+        }
+    }
+}
+
+impl DeferredEffectTicket {
+    /// Runs the effect after every earlier ticket has finished, then
+    /// finishes this one (also when the effect panics).
+    fn apply(self, effect: impl FnOnce()) {
+        let mut state = shepr_vt::lock_auxiliary(&self.order.state);
+        while state.next_to_apply != self.seq {
+            state = match self.order.ready.wait(state) {
+                Ok(state) => state,
+                Err(poisoned) => shepr_vt::recover_auxiliary_poison(poisoned),
+            };
+        }
+        drop(state);
+        effect();
+    }
+}
+
+fn has_deferred_effects(result: &ProcessBytesResult) -> bool {
+    result.default_color_owner_pending || result.reported_cwd.is_some()
 }
 
 impl PaneReadEffects {
     /// Applies the effects that never block (render and title requests,
     /// clipboard writes) and returns the ones that may, if any. A read with
     /// nothing to defer, the common case, allocates nothing for them.
+    /// `ticket` is the write's place in the deferred-effect order, reserved
+    /// under the reply-order lock exactly when `has_deferred_effects` held.
     fn apply_immediate(
         &self,
         shell_pid: u32,
         result: ProcessBytesResult,
+        ticket: Option<DeferredEffectTicket>,
     ) -> Option<DeferredEffects> {
         let pane_id = self.pane_id;
         let title_requested =
@@ -420,31 +508,41 @@ impl PaneReadEffects {
                 );
             }
         }
-        (result.default_color_owner_pending || result.reported_cwd.is_some()).then(|| {
-            DeferredEffects {
-                shell_pid,
-                default_color_generation: result
-                    .default_color_owner_pending
-                    .then_some(result.default_color_generation),
-                reported_cwd: result.reported_cwd,
-            }
+        ticket.map(|ticket| DeferredEffects {
+            ticket,
+            shell_pid,
+            default_color_generation: result
+                .default_color_owner_pending
+                .then_some(result.default_color_generation),
+            reported_cwd: result.reported_cwd,
         })
     }
 
+    /// Reserves the write's place in the deferred-effect order when it has
+    /// deferred effects. Called under the reply-order lock.
+    fn reserve_deferred(&self, result: &ProcessBytesResult) -> Option<DeferredEffectTicket> {
+        has_deferred_effects(result).then(|| self.deferred_effect_order.reserve())
+    }
+
     fn apply_deferred(&self, deferred: DeferredEffects) {
-        if let Some(generation) = deferred.default_color_generation {
-            self.terminal
-                .resolve_default_color_owner(self.pane_id, deferred.shell_pid, generation);
-        }
-        if let Some(cwd) = deferred.reported_cwd {
-            publish_reported_cwd(
-                self.pane_id,
-                deferred.shell_pid,
-                cwd,
-                &self.reported_cwd,
-                &self.events,
-            );
-        }
+        deferred.ticket.apply(|| {
+            if let Some(generation) = deferred.default_color_generation {
+                self.terminal.resolve_default_color_owner(
+                    self.pane_id,
+                    deferred.shell_pid,
+                    generation,
+                );
+            }
+            if let Some(cwd) = deferred.reported_cwd {
+                publish_reported_cwd(
+                    self.pane_id,
+                    deferred.shell_pid,
+                    cwd,
+                    &self.reported_cwd,
+                    &self.events,
+                );
+            }
+        });
     }
 
     /// Makes sure a task will flush the synchronized update this read began
@@ -480,12 +578,14 @@ impl PaneReadEffects {
     /// lock held.
     fn flush_expired_synchronized_output(&self) {
         let mut tick_result = None;
+        let mut deferred_ticket = None;
         let mut tick = || {
             let content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
             self.content_seq.fetch_add(1, Ordering::AcqRel);
             let mut result = self.terminal.tick(std::time::Instant::now());
             self.content_seq.fetch_add(1, Ordering::Release);
             drop(content_write_guard);
+            deferred_ticket = self.reserve_deferred(&result);
             let replies = std::mem::take(&mut result.terminal_responses);
             tick_result = Some(result);
             replies
@@ -511,7 +611,7 @@ impl PaneReadEffects {
             self.detection_content_seq.fetch_add(1, Ordering::AcqRel);
         }
         let shell_pid = self.child_liveness.pid();
-        if let Some(deferred) = self.apply_immediate(shell_pid, result) {
+        if let Some(deferred) = self.apply_immediate(shell_pid, result, deferred_ticket) {
             self.apply_deferred(deferred);
         }
     }
@@ -730,6 +830,7 @@ impl PaneRuntime {
                 detection_content_seq: Arc::clone(&detection_content_seq),
                 child_liveness: Arc::clone(&child_liveness),
                 sync_timeout_render: SyncTimeoutRender::default(),
+                deferred_effect_order: Arc::default(),
                 timer_writer: std::sync::OnceLock::new(),
                 rt: tokio::runtime::Handle::current(),
             });
@@ -755,12 +856,13 @@ impl PaneRuntime {
                     };
                 }
                 observe_detection_content_change(bytes, &read_effects.detection_content_seq);
+                let deferred_ticket = read_effects.reserve_deferred(&result);
                 let terminal_responses = std::mem::take(&mut result.terminal_responses);
                 if let Some(delay) = result.render_delay {
                     read_effects.arm_sync_timeout(delay);
                 }
                 let after_response_order: Option<Box<dyn FnOnce() + Send>> = read_effects
-                    .apply_immediate(shell_pid, result)
+                    .apply_immediate(shell_pid, result, deferred_ticket)
                     .map(|deferred| {
                         let effects = Arc::clone(&read_effects);
                         let run: Box<dyn FnOnce() + Send> =
@@ -2337,6 +2439,7 @@ mod tests {
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             sync_timeout_render: SyncTimeoutRender::default(),
+            deferred_effect_order: Arc::default(),
             timer_writer: std::sync::OnceLock::new(),
             rt: tokio::runtime::Handle::current(),
         });
@@ -2354,6 +2457,75 @@ mod tests {
         assert_eq!(effects.content_seq.load(Ordering::Acquire), 2);
         assert_eq!(effects.detection_content_seq.load(Ordering::Acquire), 1);
         assert!(effects.render_dirty.is_pending());
+    }
+
+    /// A later write's deferred effect waits for an earlier one reserved
+    /// before it, even when the later one is applied first.
+    #[test]
+    fn deferred_effects_apply_in_reservation_order() {
+        let order = Arc::new(DeferredEffectOrder::default());
+        let first = order.reserve();
+        let second = order.reserve();
+        let applied = Arc::new(Mutex::new(Vec::new()));
+
+        let later = {
+            let applied = Arc::clone(&applied);
+            std::thread::spawn(move || {
+                second.apply(|| applied.lock().expect("test lock").push(2));
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            applied.lock().expect("test lock").is_empty(),
+            "the second effect ran before the first"
+        );
+        first.apply(|| applied.lock().expect("test lock").push(1));
+        later.join().expect("second effect thread");
+
+        assert_eq!(*applied.lock().expect("test lock"), [1, 2]);
+    }
+
+    /// A ticket dropped without running (a panic or early return between
+    /// reservation and application) never blocks the effects after it,
+    /// whether it is dropped before or after they wait.
+    #[test]
+    fn a_dropped_deferred_ticket_does_not_block_later_effects() {
+        let order = Arc::new(DeferredEffectOrder::default());
+        let lost = order.reserve();
+        let next = order.reserve();
+        drop(lost);
+        let ran = Cell::new(false);
+        next.apply(|| ran.set(true));
+        assert!(ran.get());
+
+        let lost = order.reserve();
+        let waiting = order.reserve();
+        let after = order.reserve();
+        let waiter = std::thread::spawn(move || waiting.apply(|| {}));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(lost);
+        waiter.join().expect("waiting effect thread");
+        let ran = Cell::new(false);
+        after.apply(|| ran.set(true));
+        assert!(ran.get());
+    }
+
+    /// Dropping a later ticket out of turn is recorded and skipped once the
+    /// earlier ones finish.
+    #[test]
+    fn a_ticket_dropped_out_of_turn_is_skipped_later() {
+        let order = Arc::new(DeferredEffectOrder::default());
+        let first = order.reserve();
+        let skipped = order.reserve();
+        let third = order.reserve();
+        drop(skipped);
+        first.apply(|| {});
+        let ran = Cell::new(false);
+        third.apply(|| ran.set(true));
+        assert!(ran.get());
+        let state = shepr_vt::lock_auxiliary(&order.state);
+        assert_eq!(state.next_to_apply, 3);
+        assert!(state.finished_early.is_empty());
     }
 
     #[test]
@@ -2425,7 +2597,8 @@ mod tests {
     fn pane_shell_spawn_resolves_a_bare_name_on_the_child_path() {
         let bin = crate::test_support::ScratchDir::new("bin");
         let shell = bin.join("fake-shell");
-        // Never run: resolution reads only the mode bits.
+        // Never run: resolution asks access(2) whether it could execute the
+        // file, without executing it.
         std::fs::write(&shell, "content").expect("test precondition");
         {
             use std::os::unix::fs::PermissionsExt;

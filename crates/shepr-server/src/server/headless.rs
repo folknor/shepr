@@ -21,7 +21,7 @@ use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
@@ -284,15 +284,7 @@ impl HeadlessServer {
             client_socket_path: client_path,
             client_socket_identity,
             clients: ClientRegistry::default(),
-            client_shell_boot_id: format!(
-                "{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            )
-            .into(),
+            client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
             resolved_config,
             shell_session_cache: None,
             shell_session_generation: 0,
@@ -936,11 +928,10 @@ impl HeadlessServer {
     /// Resolves a direct-attach terminal id string to the live `TerminalId`.
     ///
     /// Still a scan over the session's terminals (tens, not thousands): the
-    /// terminal map is keyed by `TerminalId`, which has no `Borrow<str>` and no
-    /// public constructor from a string, so a hashed lookup by `&str` is not
-    /// available from here. The scan compares borrowed strings; it used to
-    /// allocate a `to_string()` per terminal on every attach keystroke, mouse
-    /// event and render.
+    /// terminal map is keyed by `TerminalId`, which does not implement
+    /// `Borrow<str>`, so a hashed lookup by `&str` is not available from here.
+    /// The scan compares borrowed strings and avoids allocating a `to_string()`
+    /// per terminal on every attach keystroke, mouse event and render.
     #[cfg(test)]
     fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&shepr_protocol::TerminalId> {
         self.app

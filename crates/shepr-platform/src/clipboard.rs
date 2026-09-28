@@ -1,3 +1,7 @@
+//! Clipboard data may contain credentials or other private text. Never put it
+//! in logs or error messages; diagnostics on this path may include byte counts
+//! and error kinds only.
+
 use super::*;
 use std::{
     io::{Read, Write},
@@ -27,6 +31,11 @@ fn clipboard_helper_dir() -> &'static std::path::Path {
     std::path::Path::new("/")
 }
 
+/// Maximum bytes read from a host clipboard helper for a paste. This bounds
+/// host-initiated reads; the terminal emulator separately bounds terminal-
+/// originated OSC 52 stores, which travel in the opposite direction.
+pub(super) const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
+
 pub fn write_clipboard(bytes: &[u8]) -> bool {
     write_clipboard_with(&clipboard_commands(ClipboardSession::from_env()), bytes)
 }
@@ -39,6 +48,11 @@ pub(super) fn write_clipboard_with(commands: &[ClipboardCommand], bytes: &[u8]) 
 }
 
 pub fn read_clipboard_text() -> Option<String> {
+    // Modal paste treats no clipboard text as no insertion. This best-effort
+    // API folds an empty selection, no display backend and helper failure
+    // together, so warning on `None` would report expected empty/no-display
+    // cases as errors. Distinguishing them needs an outcome the client caller
+    // can handle.
     let deadline = Instant::now() + CLIPBOARD_HELPER_TIMEOUT;
     read_clipboard_text_commands(ClipboardSession::from_env())
         .iter()
@@ -149,10 +163,18 @@ fn kill_and_reap(child: &mut std::process::Child) {
     // `kill` succeeds on a helper that already exited but is not yet reaped,
     // so an error here means the signal did not reach it.
     if let Err(err) = child.kill() {
-        tracing::warn!(pid, %err, "failed to kill clipboard helper");
+        tracing::warn!(
+            pid,
+            error_kind = ?err.kind(),
+            "failed to kill clipboard helper"
+        );
     }
     if let Err(err) = child.wait() {
-        tracing::warn!(pid, %err, "failed to reap clipboard helper");
+        tracing::warn!(
+            pid,
+            error_kind = ?err.kind(),
+            "failed to reap clipboard helper"
+        );
     }
 }
 
@@ -208,8 +230,6 @@ pub(super) fn read_clipboard_text_with_command(
     command: &ClipboardCommand,
     deadline: Instant,
 ) -> Option<String> {
-    const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
-
     let mut child = child_command(command.program, clipboard_helper_dir())
         .args(command.args)
         .stdin(Stdio::null())
@@ -314,12 +334,20 @@ fn detach_clipboard_owner(child: std::process::Child) -> bool {
                 Err(poisoned) => poisoned.into_inner().wait(),
             };
             if let Err(err) = wait_result {
-                tracing::warn!(pid, %err, "failed to reap clipboard selection owner");
+                tracing::warn!(
+                    pid,
+                    error_kind = ?err.kind(),
+                    "failed to reap clipboard selection owner"
+                );
             }
         });
 
     if let Err(err) = reaper {
-        tracing::warn!(pid, %err, "failed to start clipboard owner reaper");
+        tracing::warn!(
+            pid,
+            error_kind = ?err.kind(),
+            "failed to start clipboard owner reaper"
+        );
         let mut child = match child.lock() {
             Ok(child) => child,
             Err(poisoned) => poisoned.into_inner(),

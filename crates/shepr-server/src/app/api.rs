@@ -607,7 +607,7 @@ mod tests {
         let second_root = app.state.workspaces[0].tabs()[1].root_pane;
         let first_tab = app.public_tab_id(0, 0).expect("test precondition");
         let second_tab = app.public_tab_id(0, 1).expect("test precondition");
-        let workspace_id = app.public_workspace_id(0);
+        let workspace_id = app.public_workspace_id(0).expect("test precondition");
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: first_root,

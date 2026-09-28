@@ -11,6 +11,9 @@
 //!   binary to print once the terminal is restored)
 //! - Handles server unreachable (clear error screen, not blank/hang)
 //! - Forwards OSC 52 clipboard writes from server to its own stdout
+//!
+//! The binary launcher installs process-wide file logging before calling the
+//! client; client startup reuses that subscriber instead of installing one.
 
 mod attach;
 mod clipboard_forwarding;
@@ -122,16 +125,16 @@ fn run_client_with_mode(
     mode: ClientLaunchMode,
     log_message: &'static str,
 ) -> Result<ClientExit, ClientRunError> {
-    run_client_with_launch_state(config, paths, mode, log_message, None, None)
+    run_client_with_launch_state(config, paths, mode, log_message, None)
 }
 
 /// Runs the local shell client with startup settings already loaded by the
-/// launch coordinator, so preflight and the client use the same values.
+/// launch coordinator. The binary launcher installs the process-wide file
+/// logger before calling this function.
 pub fn run_client_with_launch_config(
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
     endpoint_catalog: endpoint::EndpointCatalog,
-    logging_config: shepr_platform::logging::FileLoggingConfig,
 ) -> Result<ClientExit, ClientRunError> {
     run_client_with_launch_state(
         config,
@@ -139,7 +142,6 @@ pub fn run_client_with_launch_config(
         ClientLaunchMode::Shell,
         "connecting to server",
         Some(endpoint_catalog),
-        Some(logging_config),
     )
 }
 
@@ -149,7 +151,6 @@ fn run_client_with_launch_state(
     mode: ClientLaunchMode,
     log_message: &'static str,
     initial_catalog: Option<endpoint::EndpointCatalog>,
-    initial_logging_config: Option<shepr_platform::logging::FileLoggingConfig>,
 ) -> Result<ClientExit, ClientRunError> {
     let (attach_request, attach_escape) = match mode {
         ClientLaunchMode::Shell => (None, None),
@@ -159,19 +160,6 @@ fn run_client_with_launch_state(
             escape,
         } => (Some((terminal_id, takeover)), Some(escape)),
     };
-    let data_dir = shepr_api::session::data_dir(paths);
-    match initial_logging_config {
-        Some(logging_config) => shepr_platform::logging::init_file_logging_with_config(
-            &data_dir,
-            shepr_platform::logging::CLIENT_LOG_FILE,
-            logging_config,
-        )?,
-        None => shepr_platform::logging::init_file_logging(
-            &data_dir,
-            shepr_platform::logging::CLIENT_LOG_FILE,
-        )?,
-    }
-
     let client_rendered_shell = attach_request.is_none();
     let socket_path = paths.server_address().client_socket().to_path_buf();
     let error_context = ClientErrorContext::new(

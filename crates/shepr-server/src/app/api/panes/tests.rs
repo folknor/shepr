@@ -1116,7 +1116,10 @@ fn api_pane_swap_explicit_cross_workspace_preserves_target_id() {
     assert_eq!(swap.reason, Some(PaneSwapReason::CrossTab));
     assert_eq!(swap.source_pane_id, source_public);
     assert_eq!(swap.target_pane_id, Some(target_public));
-    assert_eq!(swap.layout.workspace_id, app.public_workspace_id(0));
+    assert_eq!(
+        swap.layout.workspace_id,
+        app.public_workspace_id(0).expect("test precondition")
+    );
 }
 
 #[test]
@@ -1187,8 +1190,8 @@ fn api_pane_move_to_existing_tab_across_workspace_reassigns_public_pane_id() {
         .expect("test precondition")
         .set_detected_state(Some(Agent::Pi), AgentState::Idle);
     let previous_pane_id = app.public_pane_id(0, source).expect("test precondition");
-    let previous_workspace_id = app.public_workspace_id(0);
-    let target_workspace_id = app.public_workspace_id(1);
+    let previous_workspace_id = app.public_workspace_id(0).expect("test precondition");
+    let target_workspace_id = app.public_workspace_id(1).expect("test precondition");
     let target_tab_id = app.public_tab_id(1, 0).expect("test precondition");
     let target_pane_id = app.public_pane_id(1, target).expect("test precondition");
 
@@ -1248,8 +1251,8 @@ fn api_pane_move_target_tab_id_survives_source_workspace_removal() {
         .clone();
     let target = app.state.workspaces[1].tabs()[0].root_pane;
     seed_terminal_states(&mut app);
-    let source_workspace_id = app.public_workspace_id(0);
-    let target_workspace_id = app.public_workspace_id(1);
+    let source_workspace_id = app.public_workspace_id(0).expect("test precondition");
+    let target_workspace_id = app.public_workspace_id(1).expect("test precondition");
     let target_tab_id = app.public_tab_id(1, 0).expect("test precondition");
     let source_public = app.public_pane_id(0, source).expect("test precondition");
     let target_public = app.public_pane_id(1, target).expect("test precondition");
@@ -1409,7 +1412,7 @@ fn api_pane_move_to_new_workspace_closes_empty_source_workspace() {
         .clone();
     seed_terminal_states(&mut app);
     let source_public = app.public_pane_id(0, source).expect("test precondition");
-    let source_workspace = app.public_workspace_id(0);
+    let source_workspace = app.public_workspace_id(0).expect("test precondition");
 
     let response = app.handle_pane_move(
         "req".into(),
@@ -1613,7 +1616,7 @@ fn api_pane_move_recovery_restores_removed_source_workspace() {
         .terminal_id(source)
         .expect("test precondition")
         .clone();
-    let previous_workspace_id = app.public_workspace_id(0);
+    let previous_workspace_id = app.public_workspace_id(0).expect("test precondition");
     let context = PaneMoveRecoveryContext {
         source_ws_idx: 0,
         previous_workspace_id: previous_workspace_id.clone(),

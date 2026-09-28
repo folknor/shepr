@@ -350,6 +350,9 @@ fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindErro
     for _ in 0..STAGING_ATTEMPTS {
         // A compact random name keeps staging usable for socket paths near
         // the socket path limit.
+        // A hard kill can leave this private directory behind. Its name has
+        // no PID to distinguish an abandoned bind from a live one, and adding
+        // one would make staging unavailable for more socket paths.
         let staging_name = format!(".s{:016x}", super::ssh_paths::unpredictable_token());
         let staging_dir = parent.join(staging_name);
         // A name somebody else already created is never used: the directory

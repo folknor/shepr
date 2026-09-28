@@ -682,6 +682,10 @@ impl PtyIoActorRunner {
 
         self.close_inbox();
         if let Some(on_reader_exit) = self.on_reader_exit.take() {
+            // `Closed` lets the mux defer pane removal to the child watcher.
+            // Poll and wake-pipe failures can leave the child alive, but they
+            // need a distinct child-exit reason before they can be reported
+            // here without misclassifying checkpoint policy.
             on_reader_exit(if self.read_callback_panicked {
                 ReaderExit::Panicked
             } else {

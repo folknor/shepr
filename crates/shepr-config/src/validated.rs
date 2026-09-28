@@ -1,7 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::ffi::OsStr;
 use std::fmt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -321,16 +320,29 @@ impl ValidatedTerminalConfig {
         paths: &AppPaths,
         cwd_check: CwdCheck,
         shell_check: ShellCheck,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Vec<String>> {
         let default_shell = match shell_check {
-            ShellCheck::AtLaunch => resolve_default_shell(&config.default_shell, paths)?,
-            ShellCheck::Received => config.default_shell.clone(),
+            ShellCheck::AtLaunch => resolve_default_shell(&config.default_shell, paths),
+            ShellCheck::Received => Ok(config.default_shell.clone()),
         };
-        Ok(Self {
-            default_shell,
-            login_shell: config.login_shell,
-            new_cwd: Self::parse_new_cwd(&config.new_cwd, paths, cwd_check)?,
-        })
+        let new_cwd = Self::parse_new_cwd(&config.new_cwd, paths, cwd_check);
+        match (default_shell, new_cwd) {
+            (Ok(default_shell), Ok(new_cwd)) => Ok(Self {
+                default_shell,
+                login_shell: config.login_shell,
+                new_cwd,
+            }),
+            (default_shell, new_cwd) => {
+                let mut errors = Vec::new();
+                if let Err(error) = default_shell {
+                    errors.push(error);
+                }
+                if let Err(error) = new_cwd {
+                    errors.push(error);
+                }
+                Err(errors)
+            }
+        }
     }
 
     pub(crate) fn parse_new_cwd(
@@ -452,8 +464,8 @@ fn resolve_recognized_shell(
     path: Option<&OsStr>,
     cwd: &Path,
 ) -> Result<PathBuf, String> {
-    // Config has no platform-process dependency; the PTY applies access(2)
-    // again before exec in case ACL or mount policy differs from mode bits.
+    // Match the PTY's access(2) check so noexec mounts and access policy are
+    // part of validation before the server starts.
     let resolved =
         shepr_core::shell::resolve_executable(
             candidate,
@@ -461,7 +473,7 @@ fn resolve_recognized_shell(
             cwd,
             |path| match std::fs::metadata(path) {
                 Ok(metadata) if metadata.is_dir() => shepr_core::shell::ExecutableStatus::Directory,
-                Ok(metadata) if metadata.permissions().mode() & 0o111 != 0 => {
+                Ok(_) if shepr_platform::has_execute_access(path) => {
                     shepr_core::shell::ExecutableStatus::Executable
                 }
                 Ok(_) => shepr_core::shell::ExecutableStatus::NotExecutable,
@@ -645,8 +657,8 @@ impl ConfigResolution {
             ));
         }
         let mut path_diagnostics = Vec::new();
-        if let Err(error) = &terminal {
-            path_diagnostics.push(error.clone());
+        if let Err(errors) = &terminal {
+            path_diagnostics.extend(errors.iter().cloned());
         }
 
         let values = if diagnostics.is_empty() && path_diagnostics.is_empty() {
@@ -1061,14 +1073,52 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
     }
 
     #[test]
+    fn validation_reports_shell_and_new_cwd_errors_together() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-multiple-path-errors");
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let mut config = Config::default();
+        config.terminal.default_shell = scratch.join("missing/zsh").to_string_lossy().into_owned();
+        config.terminal.new_cwd = NewTerminalCwdConfig::Path("missing-cwd".to_owned());
+
+        let errors =
+            ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(&config), paths)
+                .expect_err("both invalid terminal paths should be reported");
+
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("terminal.default_shell")),
+            "shell error missing from {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("terminal.new_cwd")),
+            "new cwd error missing from {errors:?}"
+        );
+    }
+
+    #[test]
     fn launch_rejects_a_configured_shell_that_is_missing_or_unrecognised() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-shell");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
         let not_a_shell = shepr_test_support::fixture::stand_in(scratch.path(), "not-a-shell", &[]);
+        let non_executable_shell = scratch.join("zsh");
+        std::fs::write(&non_executable_shell, "not launched").expect("test precondition");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &non_executable_shell,
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .expect("test precondition");
+        }
 
         for (shell, expected) in [
             (scratch.join("missing/zsh"), "terminal.default_shell"),
+            (non_executable_shell, "is not executable"),
             (not_a_shell, "does not recognize"),
         ] {
             let mut config = Config::default();

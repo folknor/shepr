@@ -12,7 +12,7 @@ use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalState;
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
-use shepr_core::layout::{Node, PaneId, TileLayout};
+use shepr_core::layout::{InvalidSavedLayout, Node, PaneId, SplitRatio, TileLayout};
 use shepr_protocol::TerminalId;
 
 use super::snapshot::{
@@ -66,6 +66,10 @@ pub struct RestoredSession {
     /// Saved history of the panes that came back without a runtime. Every
     /// later history capture of this session must be given it.
     pub history_carry: HistoryCarry,
+    /// Saved tabs restore dropped (invalid layout, or no pane survived). The
+    /// first save of this session overwrites the file those tabs are still
+    /// in, so a nonzero count tells the caller to back the file up first.
+    pub dropped_tabs: usize,
 }
 
 /// How a restored pane comes back. Every saved field is carried forward the
@@ -131,6 +135,7 @@ pub fn restore(
         .filter_map(|ws| ws.id.as_deref())
         .collect();
     let mut used_ids = HashSet::new();
+    let mut dropped_tabs = 0;
     for (idx, ws_snap) in snapshot.workspaces.iter().enumerate() {
         let workspace_id = restored_workspace_id(ws_snap.id.as_deref(), &saved_ids, &mut used_ids);
         let runtime_context = RestoreRuntimeContext {
@@ -152,6 +157,7 @@ pub fn restore(
             cols,
             &runtime_context,
             &mut resumed_agent_sessions,
+            &mut dropped_tabs,
         );
         if let Some((workspace, restored_terminals, restored_runtimes)) = restored {
             for terminal in restored_terminals {
@@ -176,6 +182,7 @@ pub fn restore(
         active,
         selected,
         history_carry,
+        dropped_tabs,
     }
 }
 
@@ -279,6 +286,7 @@ fn restore_workspace(
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
+    dropped_tabs: &mut usize,
 ) -> Option<RestoredWorkspace> {
     let mut tabs = Vec::new();
     // Where each saved tab ended up, `None` for a dropped one.
@@ -324,6 +332,7 @@ fn restore_workspace(
         );
         let Some((mut tab, restored_terminals, restored_runtimes, reverse_id_map)) = restored_tab
         else {
+            *dropped_tabs += 1;
             restored_tab_index.push(None);
             continue;
         };
@@ -461,7 +470,23 @@ fn restore_tab(
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
     public_pane_ids_by_old_raw: &HashMap<u32, String>,
 ) -> Option<RestoredTab> {
-    let (node, id_map) = restore_node_remapped(&snap.layout);
+    // An invalid saved split ratio drops this one tab, like every other
+    // per-tab restore defect below, rather than refusing the whole session
+    // (which would lose every healthy tab for one bad number) or clamping it
+    // (which silently repairs a corrupt file). The tab is not lost on disk:
+    // a nonzero `RestoredSession::dropped_tabs` makes the first save back the
+    // original file up before overwriting it.
+    let (node, id_map) = match restore_node_remapped(&snap.layout) {
+        Ok(restored) => restored,
+        Err(error) => {
+            error!(
+                tab = ?snap.custom_name,
+                ?error,
+                "saved tab layout is invalid; dropping tab"
+            );
+            return None;
+        }
+    };
     let reverse_id_map: HashMap<PaneId, u32> = id_map
         .iter()
         .map(|(&old_id, &new_id)| (new_id, old_id))
@@ -812,22 +837,28 @@ pub(super) fn resolve_restored_pane(
         .or_else(|| pane_ids.first().copied())
 }
 
-/// Restore a layout tree, remapping every pane ID to a fresh globally unique one.
-/// Returns the new tree and a map of old_raw_id → new PaneId.
+/// Restore a layout tree, validating split ratios and remapping pane IDs.
+/// Returns the new tree and a map of old_raw_id → new PaneId, or the saved
+/// layout defect that prevented restoration.
 ///
-/// The session file is plain JSON and may be hand-edited or damaged, so the
-/// tree is sanitized the way live layout edits are: split ratios go through
-/// the same clamp as live splits and resizes, and a saved pane ID that appears
-/// more than once maps only its first leaf. Later copies get a fresh ID with
+/// The session file is plain JSON and may be hand-edited or damaged.
+/// Invalid split ratios reject the saved layout rather than being clamped.
+/// A saved pane ID that appears more than once maps only its first leaf.
+/// Later copies get a fresh ID with
 /// no saved pane behind it, and `restore_tab` drops such leaves instead of
 /// inventing a pane for them.
-pub(super) fn restore_node_remapped(snap: &LayoutSnapshot) -> (Node, HashMap<u32, PaneId>) {
+pub(super) fn restore_node_remapped(
+    snap: &LayoutSnapshot,
+) -> Result<(Node, HashMap<u32, PaneId>), InvalidSavedLayout> {
     let mut id_map = HashMap::new();
-    let node = remap_inner(snap, &mut id_map);
-    (node, id_map)
+    let node = remap_inner(snap, &mut id_map)?;
+    Ok((node, id_map))
 }
 
-fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node {
+fn remap_inner(
+    snap: &LayoutSnapshot,
+    id_map: &mut HashMap<u32, PaneId>,
+) -> Result<Node, InvalidSavedLayout> {
     match snap {
         LayoutSnapshot::Pane(old_id) => {
             let new_id = PaneId::alloc();
@@ -839,7 +870,7 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
             } else {
                 id_map.insert(*old_id, new_id);
             }
-            Node::Pane(new_id)
+            Ok(Node::Pane(new_id))
         }
         LayoutSnapshot::Split {
             direction,
@@ -847,18 +878,19 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
             first,
             second,
         } => {
-            let first_node = remap_inner(first, id_map);
-            let second_node = remap_inner(second, id_map);
+            let ratio = SplitRatio::new(*ratio).ok_or(InvalidSavedLayout::InvalidSplitRatio)?;
+            let first_node = remap_inner(first, id_map)?;
+            let second_node = remap_inner(second, id_map)?;
             let dir = match direction {
                 DirectionSnapshot::Horizontal => Direction::Horizontal,
                 DirectionSnapshot::Vertical => Direction::Vertical,
             };
-            Node::Split {
+            Ok(Node::Split {
                 direction: dir,
-                ratio: shepr_core::layout::valid_split_ratio(*ratio),
+                ratio,
                 first: Box::new(first_node),
                 second: Box::new(second_node),
-            }
+            })
         }
     }
 }
@@ -955,7 +987,7 @@ mod tests {
         };
 
         let snap = super::super::snapshot::capture_node(&node);
-        let (restored, id_map) = restore_node_remapped(&snap);
+        let (restored, id_map) = restore_node_remapped(&snap).expect("valid snapshot ratios");
 
         assert_eq!(id_map.len(), 3);
         let ids = collect_pane_ids(&restored);
@@ -965,25 +997,34 @@ mod tests {
     }
 
     #[test]
-    fn restored_split_ratios_are_clamped_like_live_splits() {
-        for (saved, expected) in [
-            (f32::NAN, 0.5),
-            (f32::INFINITY, 0.5),
-            (5.0, 0.9),
-            (-1.0, 0.1),
-        ] {
+    fn restored_split_ratios_reject_invalid_saved_values() {
+        for saved in [f32::NAN, f32::INFINITY, 5.0, -1.0] {
             let snap = LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
                 ratio: saved,
                 first: Box::new(LayoutSnapshot::Pane(0)),
                 second: Box::new(LayoutSnapshot::Pane(1)),
             };
-            let (node, _) = restore_node_remapped(&snap);
-            let Node::Split { ratio, .. } = node else {
-                panic!("expected split");
-            };
-            assert_eq!(ratio.get(), expected, "saved ratio {saved}");
+            assert!(
+                matches!(
+                    restore_node_remapped(&snap),
+                    Err(InvalidSavedLayout::InvalidSplitRatio)
+                ),
+                "saved ratio {saved}"
+            );
         }
+
+        let snap = LayoutSnapshot::Split {
+            direction: DirectionSnapshot::Horizontal,
+            ratio: 0.5,
+            first: Box::new(LayoutSnapshot::Pane(0)),
+            second: Box::new(LayoutSnapshot::Pane(1)),
+        };
+        let (node, _) = restore_node_remapped(&snap).expect("valid saved ratio");
+        let Node::Split { ratio, .. } = node else {
+            panic!("expected split");
+        };
+        assert_eq!(ratio.get(), 0.5);
     }
 
     #[test]
@@ -994,7 +1035,7 @@ mod tests {
             first: Box::new(LayoutSnapshot::Pane(4)),
             second: Box::new(LayoutSnapshot::Pane(4)),
         };
-        let (node, id_map) = restore_node_remapped(&snap);
+        let (node, id_map) = restore_node_remapped(&snap).expect("valid snapshot ratios");
         let ids = collect_pane_ids(&node);
         assert_eq!(ids.len(), 2);
         assert_eq!(id_map.len(), 1);
@@ -1287,6 +1328,64 @@ mod tests {
         );
         assert!(restored.terminal_runtimes.is_empty());
         restored
+    }
+
+    /// An invalid saved ratio drops only its own tab: the rest of the session
+    /// restores, the saved active tab still resolves, and the drop is counted
+    /// so the caller backs the saved file up before the first save.
+    #[test]
+    fn restore_drops_only_the_tab_with_an_invalid_split_ratio() {
+        let invalid_tab = |name: &str, ratio: f32| {
+            tab_snapshot(
+                name,
+                LayoutSnapshot::Split {
+                    direction: DirectionSnapshot::Horizontal,
+                    ratio,
+                    first: Box::new(LayoutSnapshot::Pane(1)),
+                    second: Box::new(LayoutSnapshot::Pane(2)),
+                },
+                &[1, 2],
+            )
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
+            workspaces: vec![
+                workspace_snapshot(
+                    Some("w1"),
+                    "invalid layout",
+                    vec![invalid_tab("out of range", 1.0)],
+                    0,
+                ),
+                workspace_snapshot(
+                    Some("w2"),
+                    "mixed",
+                    vec![
+                        tab_snapshot("healthy", LayoutSnapshot::Pane(3), &[3]),
+                        invalid_tab("not finite", f32::NAN),
+                    ],
+                    1,
+                ),
+            ],
+            active: Some(1),
+            selected: 1,
+        };
+
+        let restored = restore_runtimeless(&snapshot);
+
+        assert_eq!(restored.dropped_tabs, 2);
+        assert_eq!(restored.workspaces.len(), 1);
+        let workspace = &restored.workspaces[0];
+        assert_eq!(workspace.custom_name.as_deref(), Some("mixed"));
+        let tab_names: Vec<_> = workspace
+            .tabs()
+            .iter()
+            .map(|tab| tab.custom_name.as_deref())
+            .collect();
+        assert_eq!(tab_names, vec![Some("healthy")]);
+        assert_eq!(workspace.active_tab, 0);
+        assert_eq!(restored.active, Some(0));
+        assert_eq!(restored.terminals.len(), 1);
     }
 
     #[test]
