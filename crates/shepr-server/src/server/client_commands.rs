@@ -5,51 +5,16 @@ use std::sync::mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use shepr_api::schema::Method;
+use shepr_protocol::MAX_ENDPOINT_RESPONSE_CHUNK_BYTES;
 
 use super::client_transport::ServerEvent;
 
 pub(crate) const MAX_ENDPOINT_COMMAND_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_ENDPOINT_BOOT_ID_BYTES: usize = 128;
 pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
-// The wire field cap; a larger chunk would fail to encode.
-const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = shepr_protocol::MAX_ENDPOINT_RESPONSE_CHUNK_BYTES;
-
-const CLIENT_SHELL_METHODS: &[&str] = &[
-    "client_shell.surface.set",
-    "layout.set_split_ratio",
-    "pane.clear",
-    "pane.close",
-    "pane.copy_motion",
-    "pane.copy_search",
-    "pane.focus",
-    "pane.focus_direction",
-    "pane.input.set",
-    "pane.rename",
-    "pane.resize",
-    "pane.scroll",
-    "pane.selection.read",
-    "pane.split",
-    "pane.swap",
-    "pane.zoom",
-    "tab.close",
-    "tab.create",
-    "tab.focus",
-    "tab.move",
-    "tab.rename",
-    "workspace.close",
-    "workspace.create",
-    "workspace.focus",
-    "workspace.move",
-    "workspace.move_block",
-    "workspace.rename",
-];
-
-pub(crate) fn supports_client_shell_method_name(method: &str) -> bool {
-    CLIENT_SHELL_METHODS.contains(&method)
-}
 
 pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
-    supports_client_shell_method_name(method.traits().name)
+    method.traits().client_shell
 }
 
 pub(crate) fn error_response(
@@ -128,8 +93,11 @@ pub(crate) fn spawn_response_waiter(
                     .ok();
                 return;
             }
-            let chunk_count = response.len().div_ceil(ENDPOINT_RESPONSE_CHUNK_BYTES);
-            for (index, chunk) in response.chunks(ENDPOINT_RESPONSE_CHUNK_BYTES).enumerate() {
+            let chunk_count = response.len().div_ceil(MAX_ENDPOINT_RESPONSE_CHUNK_BYTES);
+            for (index, chunk) in response
+                .chunks(MAX_ENDPOINT_RESPONSE_CHUNK_BYTES)
+                .enumerate()
+            {
                 if server_event_tx
                     .blocking_send(ServerEvent::ClientShellEndpointResponseChunkReady {
                         client_id,
@@ -150,32 +118,6 @@ pub(crate) fn spawn_response_waiter(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn advertised_client_shell_methods_are_sorted_and_unique() {
-        assert!(
-            CLIENT_SHELL_METHODS
-                .windows(2)
-                .all(|pair| pair[0] < pair[1])
-        );
-    }
-
-    #[test]
-    fn advertised_client_shell_methods_all_exist() {
-        // Every advertised name must be a real `Method`; a stripped feature
-        // must not leave names behind that the lane would claim to support.
-        for name in CLIENT_SHELL_METHODS {
-            // Params may be rejected (they are empty here); only the method
-            // tag itself has to be known.
-            let method = serde_json::json!({ "method": name, "params": {} });
-            if let Err(error) = serde_json::from_value::<Method>(method) {
-                assert!(
-                    !error.to_string().contains("unknown variant"),
-                    "{name} is advertised but is not an API method: {error}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn client_shell_lane_excludes_api_front_door_and_lifecycle_methods() {
@@ -220,7 +162,7 @@ mod tests {
             event_tx,
         )
         .expect("test precondition");
-        let response = "x".repeat(ENDPOINT_RESPONSE_CHUNK_BYTES + 17);
+        let response = "x".repeat(MAX_ENDPOINT_RESPONSE_CHUNK_BYTES + 17);
         response_tx
             .send(Err(shepr_api::error::ApiError::new(
                 shepr_api::error::ApiErrorCode::InternalError,

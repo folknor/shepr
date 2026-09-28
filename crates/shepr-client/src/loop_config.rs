@@ -6,7 +6,6 @@ pub(super) struct ClientSettings {
     mouse_scroll_lines: u16,
     redraw_on_focus_gained: bool,
     host_cursor: shepr_config::HostCursorModeConfig,
-    pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
     mouse_capture_active: bool,
     manage_ssh_config: bool,
@@ -18,15 +17,11 @@ impl ClientSettings {
         launch_mode: &super::ClientLaunchMode,
     ) -> Self {
         let ui = config.ui();
-        let (pixel_geometry_enabled, pixel_geometry_fallback) = match launch_mode {
-            super::ClientLaunchMode::Shell => (true, true),
-            super::ClientLaunchMode::Attach { .. } => (true, false),
-        };
+        let pixel_geometry_fallback = matches!(launch_mode, super::ClientLaunchMode::Shell);
         Self {
             mouse_scroll_lines: ui.mouse_scroll_lines.get(),
             redraw_on_focus_gained: ui.redraw_on_focus_gained,
             host_cursor: ui.host_cursor,
-            pixel_geometry_enabled,
             pixel_geometry_fallback,
             mouse_capture_active: ui.mouse_capture,
             manage_ssh_config: config.remote().manage_ssh_config,
@@ -48,10 +43,6 @@ impl ClientSettings {
 
     pub(super) fn host_cursor(&self) -> shepr_config::HostCursorModeConfig {
         self.host_cursor
-    }
-
-    pub(super) fn pixel_geometry_enabled(&self) -> bool {
-        self.pixel_geometry_enabled
     }
 
     pub(super) fn pixel_geometry_fallback(&self) -> bool {
@@ -86,7 +77,6 @@ mod tests {
     fn settings_resolve_geometry_for_the_launch_mode() {
         let config = shepr_config::ValidatedConfig::test_default();
         let shell = ClientSettings::resolve(&config, &super::super::ClientLaunchMode::Shell);
-        assert!(shell.pixel_geometry_enabled());
         assert!(shell.pixel_geometry_fallback());
 
         let attach = ClientSettings::resolve(
@@ -97,7 +87,6 @@ mod tests {
                 escape: super::super::AttachEscapeState::default(),
             },
         );
-        assert!(attach.pixel_geometry_enabled());
         assert!(!attach.pixel_geometry_fallback());
     }
 }

@@ -757,9 +757,10 @@ mod tests {
     #[test]
     fn help_names_only_the_logs_that_are_written() {
         let summary = log_paths_summary(Path::new("/data"));
-        assert!(summary.starts_with("/data/shepr-server.log"), "{summary}");
-        assert!(summary.contains(CLIENT_LOG_FILE), "{summary}");
-        assert!(!summary.contains("/shepr.log"), "{summary}");
+        assert_eq!(
+            summary,
+            "/data/shepr-server.log (and shepr-client.log beside it)"
+        );
     }
 
     #[test]

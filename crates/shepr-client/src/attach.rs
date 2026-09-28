@@ -553,11 +553,18 @@ mod tests {
                 }
                 Ok(())
             }
+
+            fn disconnect(&mut self) {}
+
             fn flush(&mut self, _deadline: std::time::Instant) -> std::io::Result<()> {
                 if let Ok(mut sent) = self.0.lock() {
                     sent.flushes += 1;
                 }
                 Ok(())
+            }
+
+            fn take_error(&mut self) -> Option<std::io::Error> {
+                None
             }
         }
 
@@ -587,8 +594,15 @@ mod tests {
                 }
                 Ok(())
             }
+
+            fn disconnect(&mut self) {}
+
             fn flush(&mut self, _deadline: std::time::Instant) -> std::io::Result<()> {
                 Ok(())
+            }
+
+            fn take_error(&mut self) -> Option<std::io::Error> {
+                None
             }
         }
 

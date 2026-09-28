@@ -970,7 +970,7 @@ impl PaneRuntime {
             let pidfd = child_liveness
                 .leader()
                 .and_then(|leader| match leader.try_clone_pidfd() {
-                    Ok(pidfd) => pidfd,
+                    Ok(pidfd) => Some(pidfd),
                     Err(err) => {
                         tracing::debug!(
                             pane = pane_id.raw(),
@@ -2735,7 +2735,7 @@ mod tests {
         let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
         let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
         terminal
-            .mode_set(shepr_vt::MODE_FOCUS_EVENT, true)
+            .mode_set(shepr_vt::DecMode::FocusEvents, true)
             .expect("test precondition");
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));

@@ -318,6 +318,7 @@ mod tests {
         // A saved-machine handshake (endpoint shell, surface off) would otherwise wait the
         // full remote read timeout for a peer that never answers.
         let started = std::time::Instant::now();
+        let deadline = started + Duration::from_millis(200);
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
@@ -325,15 +326,13 @@ mod tests {
             Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
             false,
-            Some(started + Duration::from_millis(200)),
+            Some(deadline),
         )
         .expect_err("a silent peer never welcomes");
         let elapsed = started.elapsed();
         drop(server);
-        assert!(
-            elapsed < REMOTE_HANDSHAKE_READ_TIMEOUT / 4,
-            "deadline ignored: {elapsed:?}"
-        );
+        let maximum_elapsed = deadline.saturating_duration_since(started) + Duration::from_secs(1);
+        assert!(elapsed < maximum_elapsed, "deadline ignored: {elapsed:?}");
         match error {
             ClientError::ConnectionLost(error) => {
                 assert_eq!(error.kind(), io::ErrorKind::TimedOut);

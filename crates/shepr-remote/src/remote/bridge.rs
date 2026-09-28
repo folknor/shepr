@@ -746,9 +746,6 @@ pub(super) fn local_forward_socket_path(
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable_name, &short_name)
 }
 
-#[cfg(test)]
-pub(super) use shepr_core::socket_path::fits_unix_socket_path;
-
 pub(super) fn short_socket_hash(target: &str, session: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};

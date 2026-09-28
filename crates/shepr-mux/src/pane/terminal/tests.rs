@@ -116,8 +116,10 @@ fn text_row(
 ) -> shepr_vt::ScreenTextRow {
     shepr_vt::ScreenTextRow {
         cells: cells.into_iter().collect(),
-        soft_wrapped,
-        wrap_continuation: false,
+        wrap: shepr_vt::RowWrap {
+            soft_wrapped,
+            wrap_continuation: false,
+        },
     }
 }
 
@@ -1326,7 +1328,7 @@ fn ghostty_char_keys_still_use_shepr_encoding() {
 fn ghostty_key_encoding_honors_application_cursor_mode() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal
-        .mode_set(shepr_vt::MODE_APPLICATION_CURSOR_KEYS, true)
+        .mode_set(shepr_vt::DecMode::ApplicationCursorKeys, true)
         .expect("test precondition");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -2260,7 +2262,9 @@ fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() 
 #[test]
 fn resize_returns_in_band_size_report_response() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
-    terminal.mode_set(2048, true).expect("test precondition");
+    terminal
+        .mode_set(shepr_vt::DecMode::InBandResize, true)
+        .expect("test precondition");
     let pane = GhosttyPaneTerminal::new(terminal);
 
     let responses = pane.resize(shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18));

@@ -414,7 +414,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-vt-layer"
 from = "shepr-vt"
-allow = ["alacritty_terminal", "serde", "shepr-core", "unicode-width"]
+allow = ["alacritty_terminal", "serde", "shepr-core", "unicode-width", "vte"]
 kinds = ["normal"]
 
 [[dependency_rule]]

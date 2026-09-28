@@ -233,13 +233,16 @@ mod tests {
 
     #[test]
     fn every_minimum_agent_version_parses() {
-        let target = crate::agent::IntegrationTarget::Kimi;
-        let requirement = agent_version_requirement(target).expect("test precondition");
-        assert!(
-            extract_version_triple(requirement.min_version).is_some(),
-            "{}",
-            requirement.min_version
-        );
+        for target in crate::agent::IntegrationTarget::all() {
+            if let Some(requirement) = agent_version_requirement(target) {
+                assert!(
+                    extract_version_triple(requirement.min_version).is_some(),
+                    "{}: {}",
+                    target.label(),
+                    requirement.min_version
+                );
+            }
+        }
     }
 
     #[test]

@@ -58,17 +58,7 @@ impl Serialize for RightClickPassthroughModifierConfig {
     where
         S: serde::Serializer,
     {
-        let value = match self.0 {
-            None => "off",
-            Some(modifiers)
-                if modifiers.contains(KeyModifiers::CONTROL)
-                    && modifiers.contains(KeyModifiers::ALT) =>
-            {
-                "ctrl+alt"
-            }
-            Some(modifiers) if modifiers.contains(KeyModifiers::CONTROL) => "ctrl",
-            Some(_) => "alt",
-        };
+        let value = self.0.map_or("off", canonical_right_click_modifier);
         serializer.serialize_str(value)
     }
 }
@@ -85,48 +75,83 @@ impl<'de> Deserialize<'de> for RightClickPassthroughModifierConfig {
     }
 }
 
-const RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES: &str = "right_click_passthrough_modifier must be empty, off, none, disabled, ctrl/control, alt/option/meta, or ctrl+alt";
+const RIGHT_CLICK_MODIFIER_ALIASES: &[(&str, Option<KeyModifiers>)] = &[
+    ("", None),
+    ("off", None),
+    ("none", None),
+    ("disabled", None),
+    ("ctrl", Some(KeyModifiers::CONTROL)),
+    ("control", Some(KeyModifiers::CONTROL)),
+    ("alt", Some(KeyModifiers::ALT)),
+    ("option", Some(KeyModifiers::ALT)),
+    // Terminal mouse reports encode Meta in Alt, so this alias resolves to Alt.
+    ("meta", Some(KeyModifiers::ALT)),
+    (
+        "ctrl+alt",
+        Some(KeyModifiers::CONTROL.union(KeyModifiers::ALT)),
+    ),
+];
+
+fn canonical_right_click_modifier(modifiers: KeyModifiers) -> &'static str {
+    RIGHT_CLICK_MODIFIER_ALIASES
+        .iter()
+        .find_map(|(alias, value)| (*value == Some(modifiers)).then_some(*alias))
+        .unwrap_or("off")
+}
+
+fn right_click_modifier_values_error() -> String {
+    let values = RIGHT_CLICK_MODIFIER_ALIASES
+        .iter()
+        .map(|(alias, _)| if alias.is_empty() { "empty" } else { *alias })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("right_click_passthrough_modifier must be one of: {values}")
+}
 
 fn parse_right_click_passthrough_modifier(value: &str) -> Result<Option<KeyModifiers>, String> {
     let trimmed = value.trim();
-    if trimmed.is_empty()
-        || trimmed.eq_ignore_ascii_case("off")
-        || trimmed.eq_ignore_ascii_case("none")
-        || trimmed.eq_ignore_ascii_case("disabled")
+    if let Some((_, modifiers)) = RIGHT_CLICK_MODIFIER_ALIASES
+        .iter()
+        .find(|(alias, modifiers)| modifiers.is_none() && alias.eq_ignore_ascii_case(trimmed))
     {
-        return Ok(None);
+        return Ok(*modifiers);
     }
 
     let mut modifiers = KeyModifiers::empty();
     for token in trimmed.split('+') {
         let token = token.trim().to_ascii_lowercase();
-        let modifier = match token.as_str() {
-            "ctrl" | "control" => KeyModifiers::CONTROL,
-            // "meta" means Alt, as in keybindings: SGR mouse reports carry
-            // Meta in the Alt bit, so crossterm's META flag never appears on
-            // a mouse event and a META mapping could never match.
-            "alt" | "option" | "meta" => KeyModifiers::ALT,
-            // A mouse report's button byte has bits for shift, alt and ctrl
-            // only, so a super or hyper requirement could never be met.
-            "cmd" | "command" | "super" | "hyper" => {
-                return Err(format!(
-                    "right_click_passthrough_modifier cannot use {token:?}: terminal mouse reports only carry ctrl and alt"
-                ));
+        let modifier = RIGHT_CLICK_MODIFIER_ALIASES
+            .iter()
+            .find_map(|(alias, value)| {
+                (value.is_some() && !alias.contains('+') && alias.eq_ignore_ascii_case(&token))
+                    .then_some(*value)
+                    .flatten()
+            });
+        let Some(modifier) = modifier else {
+            match token.as_str() {
+                // A mouse report's button byte has bits for shift, alt and ctrl
+                // only, so a super or hyper requirement could never be met.
+                "cmd" | "command" | "super" | "hyper" => {
+                    return Err(format!(
+                        "right_click_passthrough_modifier cannot use {token:?}: terminal mouse reports only carry ctrl and alt"
+                    ));
+                }
+                // Shift is left out on purpose: terminals commonly reserve
+                // Shift+mouse for their own selection.
+                "shift" => {
+                    return Err(format!(
+                        "{}; shift is unsupported",
+                        right_click_modifier_values_error()
+                    ));
+                }
+                _ => return Err(right_click_modifier_values_error()),
             }
-            // Shift is left out on purpose: terminals commonly reserve
-            // Shift+mouse for their own selection.
-            "shift" => {
-                return Err(format!(
-                    "{RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES}; shift is unsupported"
-                ));
-            }
-            _ => return Err(RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES.to_owned()),
         };
         modifiers |= modifier;
     }
 
     if modifiers.is_empty() {
-        Err(RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES.to_owned())
+        Err(right_click_modifier_values_error())
     } else {
         Ok(Some(modifiers))
     }
@@ -1029,6 +1054,28 @@ right_click_passthrough_modifier = "{value}"
                 Some(expected),
                 "value {value:?} should parse"
             );
+        }
+    }
+
+    /// Every alias parses to its table value, serializes to a canonical alias
+    /// with that same value, and is named in the error message.
+    #[test]
+    fn right_click_modifier_aliases_round_trip() {
+        let error = right_click_modifier_values_error();
+        for (alias, value) in RIGHT_CLICK_MODIFIER_ALIASES {
+            let parsed = parse_right_click_passthrough_modifier(alias).expect("alias parses");
+            assert_eq!(parsed, *value, "alias {alias:?}");
+            let serialized = serde_json::to_value(RightClickPassthroughModifierConfig(parsed))
+                .expect("serializes");
+            let canonical = serialized.as_str().expect("a string");
+            assert_eq!(
+                parse_right_click_passthrough_modifier(canonical).expect("canonical parses"),
+                *value,
+                "alias {alias:?} serialized as {canonical:?}"
+            );
+            if !alias.is_empty() {
+                assert!(error.contains(alias), "{error} omits {alias:?}");
+            }
         }
     }
 

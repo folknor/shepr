@@ -66,6 +66,7 @@ mod tests {
     #[test]
     fn remote_executable_accepts_only_cacheable_absolute_paths() {
         for (path, valid) in [
+            ("/usr/bin/shepr", true),
             ("/home/a b/shepr", false),
             ("$HOME/.local/bin/shepr", false),
             ("/home/user/.local/share/mise/shims/shepr", false),

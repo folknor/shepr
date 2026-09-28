@@ -462,48 +462,27 @@ fn config_metadata_preserves_a_different_source_owner() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn proc_stat_yields_state_and_start_time() {
-    // Fields 3..=22 of stat(5); starttime (22) is 987654.
-    let stat = "42 (a (b) c) S 1 42 42 0 -1 4194560 10 0 0 0 1 2 0 0 20 0 1 0 987654 1000 20";
-    assert_eq!(state_and_start_time_from_stat(stat), Some(('S', 987_654)));
-    assert_eq!(state_and_start_time_from_stat("42 (x) Z 1 42"), None);
-}
-
-/// Open handles either way: through a pidfd, and through the start-time
-/// fallback used when the kernel has no pidfds.
-fn both_handle_kinds(pid: u32) -> [ProcessHandle; 2] {
-    let pidfd = ProcessHandle::open(pid).expect("pidfd_open on a live child");
-    assert!(pidfd.pidfd().is_some(), "this kernel has pidfds");
-    let fallback = ProcessHandle::open_by_start_time(pid).expect("stat of a live child");
-    assert!(fallback.pidfd().is_none());
-    [pidfd, fallback]
-}
-
-#[test]
 fn process_handle_follows_one_process_through_exit_and_reap() {
-    for kind in 0..2 {
-        let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
-            .spawn()
-            .expect("spawn sleep");
-        let handles = both_handle_kinds(child.id());
-        let handle = &handles[kind];
-        assert_eq!(handle.pid(), child.id());
-        assert!(handle.is_unreaped());
-        assert!(!handle.has_exited());
+    let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
+        .spawn()
+        .expect("spawn sleep");
+    let handle = ProcessHandle::open(child.id()).expect("pidfd_open on a live child");
+    assert_eq!(handle.pid(), child.id());
+    assert!(handle.is_unreaped());
+    assert!(!handle.has_exited());
 
-        assert!(handle.signal(Signal::Kill));
-        assert!(wait_for_process_exits(&[handle], Duration::from_secs(5)));
-        // A zombie has exited but still holds its pid.
-        assert!(handle.has_exited());
-        assert!(handle.is_unreaped());
+    assert!(handle.signal(Signal::Kill));
+    assert!(wait_for_process_exits(&[&handle], Duration::from_secs(5)));
+    // A zombie has exited but still holds its pid.
+    assert!(handle.has_exited());
+    assert!(handle.is_unreaped());
 
-        child.wait().expect("reap sleep");
-        assert!(!handle.is_unreaped(), "handle kind {kind}");
-        assert!(
-            !handle.signal(Signal::Kill),
-            "a reaped process's handle must not signal anything (kind {kind})"
-        );
-    }
+    child.wait().expect("reap sleep");
+    assert!(!handle.is_unreaped());
+    assert!(
+        !handle.signal(Signal::Kill),
+        "a reaped process's handle must not signal anything"
+    );
 }
 
 #[test]
@@ -511,12 +490,11 @@ fn wait_for_process_exits_times_out_on_a_live_process() {
     let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
         .spawn()
         .expect("spawn sleep");
-    for handle in &both_handle_kinds(child.id()) {
-        assert!(!wait_for_process_exits(
-            &[handle],
-            Duration::from_millis(30)
-        ));
-    }
+    let handle = ProcessHandle::open(child.id()).expect("pidfd_open on a live child");
+    assert!(!wait_for_process_exits(
+        &[&handle],
+        Duration::from_millis(30)
+    ));
     child.kill().expect("kill sleep");
     child.wait().expect("reap sleep");
 }
@@ -546,50 +524,58 @@ fn spawn_session_with_background_job() -> std::process::Child {
 
 #[test]
 fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
-    // Once through pidfds, once through the start-time fallback a kernel
-    // without pidfds gets: background jobs must be reached either way.
-    let openers: [fn(u32) -> Option<ProcessHandle>; 2] =
-        [ProcessHandle::open, ProcessHandle::open_by_start_time];
-    for open in openers {
-        let mut child = spawn_session_with_background_job();
-        let leader = child.id();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let members = loop {
-            let members = session_member_handles_with(leader, || false, open);
-            if !members.is_empty() || Instant::now() >= deadline {
-                break members;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-
-        assert!(
-            members.iter().all(|member| member.pid() != leader),
-            "the leader is not a member handle"
-        );
-        assert_eq!(members.len(), 1, "the background sleep is the only member");
-        for member in &members {
-            assert!(member.signal(Signal::Kill));
+    let mut child = spawn_session_with_background_job();
+    let leader = child.id();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let members = loop {
+        let members = session_member_handles(leader, || false);
+        if !members.is_empty() || Instant::now() >= deadline {
+            break members;
         }
-        child.kill().expect("kill session leader");
-        child.wait().expect("reap session leader");
-        let handles: Vec<&ProcessHandle> = members.iter().collect();
-        assert!(wait_for_process_exits(&handles, Duration::from_secs(5)));
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert!(
+        members.iter().all(|member| member.pid() != leader),
+        "the leader is not a member handle"
+    );
+    assert_eq!(members.len(), 1, "the background sleep is the only member");
+    for member in &members {
+        assert!(member.signal(Signal::Kill));
     }
+    child.kill().expect("kill session leader");
+    child.wait().expect("reap session leader");
+    let handles: Vec<&ProcessHandle> = members.iter().collect();
+    assert!(wait_for_process_exits(&handles, Duration::from_secs(5)));
 }
 
 #[test]
 fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
     let mut child = spawn_session_with_background_job();
     let leader = child.id();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let members = loop {
+        let members = session_member_handles(leader, || false);
+        if !members.is_empty() || Instant::now() >= deadline {
+            break members;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(members.len(), 1, "background sleep must be running");
     // The leader is alive, so from the point of view of a caller that has
     // already reaped its own leader, pid `leader` belongs to someone else.
     assert!(session_member_handles(leader, || true).is_empty());
     child.kill().expect("kill session leader");
     child.wait().expect("reap session leader");
     // Clean up the background sleep, which outlives the leader.
-    for member in session_member_handles(leader, || false) {
-        member.signal(Signal::Kill);
+    for member in &members {
+        assert!(
+            member.signal(Signal::Kill),
+            "kill background session member"
+        );
     }
+    let handles: Vec<&ProcessHandle> = members.iter().collect();
+    assert!(wait_for_process_exits(&handles, Duration::from_secs(5)));
 }
 
 #[test]

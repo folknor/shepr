@@ -18,6 +18,24 @@ pub enum UnderlineStyle {
     Dashed,
 }
 
+impl UnderlineStyle {
+    pub(super) fn from_flags(flags: Flags) -> Self {
+        if flags.contains(Flags::UNDERLINE) {
+            Self::Single
+        } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+            Self::Double
+        } else if flags.contains(Flags::UNDERCURL) {
+            Self::Curly
+        } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+            Self::Dotted
+        } else if flags.contains(Flags::DASHED_UNDERLINE) {
+            Self::Dashed
+        } else {
+            Self::None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CellStyle {
     pub fg_color: Option<CellColor>,
@@ -72,18 +90,40 @@ pub struct RowWrap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenTextRow {
     pub cells: Vec<ScreenTextCell>,
-    // Kept flat for current snapshot constructors and readers; RowWrap owns
-    // the shared calculation used to populate these two values.
-    pub soft_wrapped: bool,
-    pub wrap_continuation: bool,
+    pub wrap: RowWrap,
 }
 
-pub(super) fn is_halfwidth_voiced_mark(codepoint: u32) -> bool {
+pub(super) fn is_halfwidth_voiced_mark_codepoint(codepoint: u32) -> bool {
     matches!(codepoint, 0xff9e | 0xff9f)
 }
 
+/// U+FF9E/U+FF9F on their own. unicode-width measures them as zero-width, but
+/// the terminal core gives them a cell (as wcwidth does).
+pub fn is_halfwidth_katakana_voiced_mark(symbol: &str) -> bool {
+    let mut characters = symbol.chars();
+    let Some(mark) = characters.next() else {
+        return false;
+    };
+    characters.next().is_none() && is_halfwidth_voiced_mark_codepoint(u32::from(mark))
+}
+
+/// A halfwidth katakana letter followed by its voiced mark: two columns in the
+/// terminal core, although unicode-width measures the pair as one.
+pub fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
+    let mut characters = symbol.chars();
+    let Some(base) = characters.next() else {
+        return false;
+    };
+    let Some(mark) = characters.next() else {
+        return false;
+    };
+    characters.next().is_none()
+        && ('\u{ff66}'..='\u{ff9d}').contains(&base)
+        && is_halfwidth_voiced_mark_codepoint(u32::from(mark))
+}
+
 pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
-    if is_halfwidth_voiced_mark(codepoint) {
+    if is_halfwidth_voiced_mark_codepoint(codepoint) {
         return 1;
     }
     match char::from_u32(codepoint) {
@@ -220,7 +260,8 @@ fn cell_color(color: Color) -> Option<CellColor> {
     match color {
         Color::Named(named) => {
             let index = named as usize;
-            (index < 16).then(|| CellColor::Palette(u8::try_from(index).unwrap_or(u8::MAX)))
+            (index < super::color::NAMED_COLOR_COUNT)
+                .then(|| CellColor::Palette(u8::try_from(index).unwrap_or(u8::MAX)))
         }
         Color::Indexed(index) => Some(CellColor::Palette(index)),
         Color::Spec(rgb) => Some(CellColor::Rgb(rgb.into())),
@@ -236,19 +277,6 @@ fn resolve_cell_color(color: CellColor, colors: &RenderColors) -> RgbColor {
 
 pub(super) fn cell_style(cell: &Cell) -> CellStyle {
     let flags = cell.flags;
-    let underline = if flags.contains(Flags::UNDERLINE) {
-        UnderlineStyle::Single
-    } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
-        UnderlineStyle::Double
-    } else if flags.contains(Flags::UNDERCURL) {
-        UnderlineStyle::Curly
-    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
-        UnderlineStyle::Dotted
-    } else if flags.contains(Flags::DASHED_UNDERLINE) {
-        UnderlineStyle::Dashed
-    } else {
-        UnderlineStyle::None
-    };
     CellStyle {
         fg_color: cell_color(cell.fg),
         bg_color: cell_color(cell.bg),
@@ -259,7 +287,7 @@ pub(super) fn cell_style(cell: &Cell) -> CellStyle {
         inverse: flags.contains(Flags::INVERSE),
         invisible: flags.contains(Flags::HIDDEN),
         strikethrough: flags.contains(Flags::STRIKEOUT),
-        underline,
+        underline: UnderlineStyle::from_flags(flags),
     }
 }
 

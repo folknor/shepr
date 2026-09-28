@@ -46,6 +46,9 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
 unicode-segmentation = "1.13.1"
 unicode-width = "0.2"
+# `shepr-vt/src/handler.rs` implements this trait explicitly, so pin the API
+# version that implementation is checked against.
+vte = { version = "=0.15.0", default-features = false, features = ["ansi", "std"] }
 # logind's delay inhibitor lets the server save before host shutdown kills panes.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 

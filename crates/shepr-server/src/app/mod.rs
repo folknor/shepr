@@ -163,10 +163,9 @@ impl App {
         let mut restored_terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
         let mut pane_history_carry = shepr_mux::persist::HistoryCarry::default();
         let paths = paths.clone();
-        let session_data_dir = shepr_api::session::data_dir(&paths);
         let snapshot = policy
             .persists_session()
-            .then(|| shepr_mux::persist::load(&session_data_dir))
+            .then(|| shepr_mux::persist::load(&lease))
             .flatten();
         let restored_host_theme = snapshot
             .as_ref()
@@ -179,7 +178,7 @@ impl App {
             let history = config
                 .experimental()
                 .pane_history
-                .then(|| shepr_mux::persist::load_history(&session_data_dir))
+                .then(|| shepr_mux::persist::load_history(&lease))
                 .flatten();
             // No view exists yet, so restored panes start at the headless size
             // (what the server lays out against until a client attaches); the
@@ -1726,8 +1725,11 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        let snapshot = shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths))
-            .expect("checkpointed session should survive");
+        let lease =
+            shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&app.paths))
+                .expect("test lease");
+        let snapshot =
+            shepr_mux::persist::load(&lease).expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
     }
@@ -1746,7 +1748,12 @@ mod tests {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
-        assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_some());
+        // The app still holds the data-dir lease, so the checkpoint is parsed
+        // directly rather than through `persist::load`.
+        let checkpoint =
+            std::fs::read_to_string(shepr_api::session::data_dir(&app.paths).join("session.json"))
+                .expect("the pane exit writes a checkpoint");
+        assert!(shepr_mux::persist::snapshot::parse_snapshot(&checkpoint).is_ok());
         assert!(
             app.session_saver.session_save_deadline.is_some(),
             "the pane exit schedules the normal autosave"
@@ -1765,7 +1772,12 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_none());
+        assert!(
+            !shepr_api::session::data_dir(&app.paths)
+                .join("session.json")
+                .try_exists()
+                .expect("test stat")
+        );
     }
 
     #[test]
@@ -1784,7 +1796,12 @@ mod tests {
         });
 
         assert!(app.state.workspaces.is_empty());
-        assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_none());
+        assert!(
+            !shepr_api::session::data_dir(&app.paths)
+                .join("session.json")
+                .try_exists()
+                .expect("test stat")
+        );
     }
 
     #[test]
@@ -1815,8 +1832,11 @@ mod tests {
             app.save_session_before_teardown();
             app.retire_session_writer();
 
-            let snapshot = shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths))
-                .expect("newer session should be saved");
+            let lease = shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(
+                &app.paths,
+            ))
+            .expect("test lease");
+            let snapshot = shepr_mux::persist::load(&lease).expect("newer session should be saved");
             assert_eq!(snapshot.workspaces.len(), 1);
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
         }

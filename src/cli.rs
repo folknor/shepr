@@ -88,17 +88,17 @@ pub(crate) enum CliCommand {
 impl CliCommand {
     fn from_matches(name: &str, matches: &ArgMatches) -> Option<Self> {
         Some(match name {
-            "status" => Self::Status(status::parse(matches)),
-            "config" => Self::Config(ConfigCommand::parse(matches)),
-            "machine" => Self::Machine(machine::parse(matches)),
-            "server" => Self::Server(server::parse(matches)),
-            "workspace" => Self::Workspace(workspace::parse(matches)),
-            "tab" => Self::Tab(tab::parse(matches)),
-            "agent" => Self::Agent(agent::parse(matches)),
-            "pane" => Self::Pane(pane::parse(matches)),
-            "terminal" => Self::Terminal(TerminalCommand::parse(matches)),
-            "session" => Self::Session(SessionCommand::parse(matches)),
-            "integration" => Self::Integration(integration::parse(matches)),
+            "status" => Self::Status(status::parse(matches)?),
+            "config" => Self::Config(ConfigCommand::parse(matches)?),
+            "machine" => Self::Machine(machine::parse(matches)?),
+            "server" => Self::Server(server::parse(matches)?),
+            "workspace" => Self::Workspace(workspace::parse(matches)?),
+            "tab" => Self::Tab(tab::parse(matches)?),
+            "agent" => Self::Agent(agent::parse(matches)?),
+            "pane" => Self::Pane(pane::parse(matches)?),
+            "terminal" => Self::Terminal(TerminalCommand::parse(matches)?),
+            "session" => Self::Session(SessionCommand::parse(matches)?),
+            "integration" => Self::Integration(integration::parse(matches)?),
             _ => return None,
         })
     }
@@ -157,27 +157,25 @@ impl CliCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigCommand {
     Check,
-    Invalid,
 }
 
 impl ConfigCommand {
-    fn parse(matches: &ArgMatches) -> Self {
+    fn parse(matches: &ArgMatches) -> Option<Self> {
         match matches.subcommand_name() {
-            Some("check") => Self::Check,
-            _ => Self::Invalid,
+            Some("check") => Some(Self::Check),
+            _ => None,
         }
     }
 
     fn name(self) -> Option<&'static str> {
         match self {
             Self::Check => Some("check"),
-            Self::Invalid => None,
         }
     }
 
     fn can_run_on_machine(self) -> bool {
         match self {
-            Self::Check | Self::Invalid => false,
+            Self::Check => false,
         }
     }
 }
@@ -187,24 +185,23 @@ pub(crate) enum TerminalCommand {
     Attach { terminal_id: String, takeover: bool },
     TitleSet { title: String },
     TitleClear,
-    Invalid,
 }
 
 impl TerminalCommand {
-    fn parse(matches: &ArgMatches) -> Self {
+    fn parse(matches: &ArgMatches) -> Option<Self> {
         match matches.subcommand() {
-            Some(("attach", command)) => Self::Attach {
-                terminal_id: matches::required(command, "terminal_id"),
+            Some(("attach", command)) => Some(Self::Attach {
+                terminal_id: matches::required(command, "terminal_id")?,
                 takeover: matches::flag(command, "takeover"),
-            },
+            }),
             Some(("title", title)) => match title.subcommand() {
-                Some(("set", command)) => Self::TitleSet {
-                    title: matches::required(command, "title"),
-                },
-                Some(("clear", _)) => Self::TitleClear,
-                _ => Self::Invalid,
+                Some(("set", command)) => Some(Self::TitleSet {
+                    title: matches::required(command, "title")?,
+                }),
+                Some(("clear", _)) => Some(Self::TitleClear),
+                _ => None,
             },
-            _ => Self::Invalid,
+            _ => None,
         }
     }
 
@@ -212,14 +209,13 @@ impl TerminalCommand {
         match self {
             Self::Attach { .. } => Some("attach"),
             Self::TitleSet { .. } | Self::TitleClear => Some("title"),
-            Self::Invalid => None,
         }
     }
 
     fn can_run_on_machine(&self) -> bool {
         match self {
             Self::TitleSet { .. } | Self::TitleClear => true,
-            Self::Attach { .. } | Self::Invalid => false,
+            Self::Attach { .. } => false,
         }
     }
 }
@@ -238,26 +234,25 @@ pub(crate) enum SessionCommand {
         name: String,
         json: bool,
     },
-    Invalid,
 }
 
 impl SessionCommand {
-    fn parse(matches: &ArgMatches) -> Self {
+    fn parse(matches: &ArgMatches) -> Option<Self> {
         match matches.subcommand() {
-            Some(("list", command)) => Self::List {
+            Some(("list", command)) => Some(Self::List {
                 json: matches::flag(command, "json"),
-            },
-            Some(("stop", command)) => Self::Stop {
-                name: matches::required(command, "name"),
+            }),
+            Some(("stop", command)) => Some(Self::Stop {
+                name: matches::required(command, "name")?,
                 json: matches::flag(command, "json"),
                 force: matches::flag(command, "force"),
-            },
-            Some(("delete", command)) => Self::Delete {
-                name: matches::required(command, "name"),
+            }),
+            Some(("delete", command)) => Some(Self::Delete {
+                name: matches::required(command, "name")?,
                 json: matches::flag(command, "json"),
-            },
+            }),
             // `session attach` is a launch mode and is handled above.
-            _ => Self::Invalid,
+            _ => None,
         }
     }
 
@@ -266,13 +261,12 @@ impl SessionCommand {
             Self::List { .. } => Some("list"),
             Self::Stop { .. } => Some("stop"),
             Self::Delete { .. } => Some("delete"),
-            Self::Invalid => None,
         }
     }
 
     fn can_run_on_machine(&self) -> bool {
         match self {
-            Self::List { .. } | Self::Stop { .. } | Self::Delete { .. } | Self::Invalid => false,
+            Self::List { .. } | Self::Stop { .. } | Self::Delete { .. } => false,
         }
     }
 }
@@ -320,13 +314,12 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                 }
                 Some((name, matches)) => match CliCommand::from_matches(name, matches) {
                     Some(command) => Launch::Cli(Box::new(command)),
-                    // `every_cli_spec_root_has_typed_parser` keeps parser
-                    // coverage aligned with the spec; retain a clear release
-                    // mode error if the invariant is ever broken at runtime.
+                    // The CLI spec and typed parsers are checked together in
+                    // tests; retain a clear error in release builds if they diverge.
                     None => {
                         shepr_platform::begin_cli_output();
                         eprintln!(
-                            "error: command '{name}' has no typed parser; run with --help for usage"
+                            "error: command '{name}' does not match a typed parser; run with --help for usage"
                         );
                         return Err(2);
                     }
@@ -490,7 +483,6 @@ fn dispatch_with_config(
     match command {
         CliCommand::Status(command) => status::run_status_command(*command, context),
         CliCommand::Config(ConfigCommand::Check) => Ok(config_check_from_paths(context)),
-        CliCommand::Config(ConfigCommand::Invalid) => Ok(missing_subcommand()),
         CliCommand::Machine(command) => machine::run_machine_command(command.clone(), context),
         CliCommand::Server(command) => server::run_server_command(*command, context),
         CliCommand::Workspace(command) => {
@@ -525,14 +517,6 @@ fn resolve_machine_app_paths() -> CliResult<shepr_config::AppPaths> {
             diagnostics.join("\n  ")
         )))
     })
-}
-
-/// The spec makes every command group require a subcommand, so this only
-/// runs if a handler and the spec disagree about the subcommand names.
-pub(super) fn missing_subcommand() -> i32 {
-    let error = CliError::Usage("missing or unknown subcommand".into());
-    error.print();
-    error.exit_code()
 }
 
 /// A usage error found after clap accepted the arguments (a combination the
@@ -686,7 +670,6 @@ fn run_terminal_command(
                 method: Method::ClientWindowTitleClear(EmptyParams::default()),
             },
         )?),
-        TerminalCommand::Invalid => Ok(missing_subcommand()),
     }
 }
 
@@ -695,7 +678,6 @@ fn run_session_command(command: SessionCommand, paths: &target::CliContext) -> C
         SessionCommand::List { json } => session_list(paths, json),
         SessionCommand::Stop { name, json, force } => session_stop(&name, json, force, paths),
         SessionCommand::Delete { name, json } => session_delete(&name, json, paths),
-        SessionCommand::Invalid => Ok(missing_subcommand()),
     }
 }
 
@@ -1177,7 +1159,10 @@ mod tests {
     fn session_name_accepts_option_terminator() {
         for name in ["-h", "--json"] {
             let stop = command_matches(&["session", "stop", "--", name]);
-            assert_eq!(super::matches::required(&stop, "name"), name);
+            assert_eq!(
+                super::matches::required(&stop, "name").as_deref(),
+                Some(name)
+            );
             assert!(!super::matches::flag(&stop, "json"));
         }
     }

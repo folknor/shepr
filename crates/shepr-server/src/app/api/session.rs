@@ -5,13 +5,10 @@ use shepr_api::schema::{ResponseResult, SessionSnapshot};
 use super::responses::success;
 
 impl App {
-    pub(super) fn handle_session_snapshot(&mut self, id: String) -> ApiResult {
-        success(
-            id,
-            ResponseResult::SessionSnapshot {
-                snapshot: Box::new(self.session_snapshot()),
-            },
-        )
+    pub(super) fn handle_session_snapshot(&mut self) -> ApiResult {
+        success(ResponseResult::SessionSnapshot {
+            snapshot: Box::new(self.session_snapshot()),
+        })
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {

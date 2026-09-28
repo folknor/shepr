@@ -68,8 +68,7 @@ use terminal_setup::{
 #[cfg(test)]
 use terminal_setup::{
     HostModes, effective_mouse_capture, effective_sgr_pixel_mouse,
-    should_enable_host_color_scheme_reports, write_host_color_scheme_report_mode,
-    write_terminal_restore_postlude,
+    write_host_color_scheme_report_mode, write_terminal_restore_postlude,
 };
 
 use attach::AttachEscapeState;
@@ -176,7 +175,6 @@ fn run_client_with_launch_state(
     });
     let mouse_capture = settings.mouse_capture_active();
     let pixel_geometry_fallback = settings.pixel_geometry_fallback();
-    let pixel_geometry_enabled = settings.pixel_geometry_enabled();
     let mut loop_config = ClientLoopConfig {
         role,
         settings,
@@ -218,7 +216,7 @@ fn run_client_with_launch_state(
     };
 
     // Get the terminal geometry before handshake (before raw mode).
-    let geometry = initial_terminal_geometry(pixel_geometry_enabled, pixel_geometry_fallback)?;
+    let geometry = initial_terminal_geometry(pixel_geometry_fallback)?;
     let (cols, rows) = (geometry.cols(), geometry.rows());
 
     let shell_surface_size = loop_config.shell_config.as_ref().map(|shell| {
@@ -437,8 +435,8 @@ async fn run_client_loop(
     let will_query_host_terminal_theme = !state.mode.is_escape_attach();
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
-    let will_query_host_cell_size = !state.mode.is_escape_attach()
-        && host_cell_size_query_required(state.settings.pixel_geometry_enabled());
+    let will_query_host_cell_size =
+        !state.mode.is_escape_attach() && host_cell_size_query_required();
     let stdin_quit = Arc::clone(&should_quit);
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
@@ -470,7 +468,6 @@ async fn run_client_loop(
     let resize_quit = Arc::clone(&should_quit);
     let resize_tx = event_tx.clone();
     let resize_cell_size = Arc::clone(&reported_cell_size);
-    let pixel_geometry_enabled = state.settings.pixel_geometry_enabled();
     let pixel_geometry_fallback = state.settings.pixel_geometry_fallback();
     std::thread::spawn(move || {
         resize_poll_loop(
@@ -482,7 +479,6 @@ async fn run_client_loop(
                 initial_cell_height_px,
                 initial_pixel_geometry_exact,
             ),
-            pixel_geometry_enabled,
             pixel_geometry_fallback,
             &resize_cell_size,
             &resize_quit,

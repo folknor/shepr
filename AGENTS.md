@@ -94,15 +94,19 @@ so only crates above those can take it.
 | instead of | run |
 |---|---|
 | `cargo build` / `cargo clippy` / `cargo test` | `brokkr check` (gremlins + clippy + tests, the gate) |
-| `cargo test <name>` | `brokkr test <name>` |
+| `cargo test -p <pkg> <name>` | `brokkr test -p <pkg> <name>` |
 | `cargo run -- <args>` | `brokkr run -- <args>` |
 | `cargo fmt` | `brokkr fmt` |
 | `cargo install --path .` | `brokkr install` |
 
 - `brokkr check` is the gate; run it before every commit.
-- `brokkr test <name>` is a substring filter over unit and integration tests.
-  It builds the dev profile here (`brokkr.toml`'s `[test] debug = true`;
-  `--release` for release), and so does `brokkr check`'s test phase.
+- `brokkr test -p <pkg> <name>` is a substring filter over one package's unit
+  and integration tests; this is a workspace with no default package, so `-p`
+  is required (`-p shepr` for the root binary). It builds the dev profile
+  here (`brokkr.toml`'s `[test] debug = true`; `--release` for release), and
+  so does `brokkr check`'s test phase. Unlike `brokkr check`, it always
+  passes `--include-ignored`, so a filter that matches an ignored test
+  (root-only, or a re-exec entry point) runs it too.
 - `brokkr man` lists the bundled docs (`man check`, `man config`, `man run`,
   ...). Read those rather than guessing at flags.
 - Never run two brokkr/cargo invocations at once.

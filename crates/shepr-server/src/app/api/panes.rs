@@ -39,7 +39,7 @@ mod geometry;
 mod reports;
 
 impl App {
-    pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> ApiResult {
+    pub(super) fn handle_pane_split(&mut self, params: PaneSplitParams) -> ApiResult {
         let pane_target = match params.target_pane_id.as_deref() {
             Some(pane_id) => match self.parse_pane_id(pane_id) {
                 Some(target) => Some(target),
@@ -142,7 +142,7 @@ impl App {
         };
         let (target_tab_idx, new_pane) = match split_result {
             Some(Ok(result)) => result,
-            Some(Err(err)) => return failure(id, ApiErrorCode::PaneSplitFailed, err.to_string()),
+            Some(Err(err)) => return failure(ApiErrorCode::PaneSplitFailed, err.to_string()),
             None => {
                 return Err(pane_not_found(
                     target_pane_public_id
@@ -173,7 +173,6 @@ impl App {
         ) else {
             drop(runtime);
             return failure(
-                id,
                 ApiErrorCode::PaneSplitFailed,
                 "split target is no longer available",
             );
@@ -181,28 +180,24 @@ impl App {
         self.terminal_runtimes.insert(terminal_id, runtime);
         self.schedule_session_save();
         let Some(pane) = self.pane_info(outcome.workspace_index, outcome.pane_id) else {
-            return failure(id, ApiErrorCode::PaneSplitFailed, "new pane is unavailable");
+            return failure(ApiErrorCode::PaneSplitFailed, "new pane is unavailable");
         };
         self.emit_event(EventEnvelope {
             data: EventData::PaneCreated { pane: pane.clone() },
         });
         self.emit_layout_updated_event(outcome.workspace_index, outcome.tab_index);
 
-        success(id, ResponseResult::PaneInfo { pane })
+        success(ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_list(&mut self, id: String, params: &PaneListParams) -> ApiResult {
+    pub(super) fn handle_pane_list(&mut self, params: &PaneListParams) -> ApiResult {
         match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
-            Ok(panes) => success(id, ResponseResult::PaneList { panes }),
+            Ok(panes) => success(ResponseResult::PaneList { panes }),
             Err(error) => Err(error),
         }
     }
 
-    pub(super) fn handle_pane_current(
-        &mut self,
-        id: String,
-        params: &PaneCurrentParams,
-    ) -> ApiResult {
+    pub(super) fn handle_pane_current(&mut self, params: &PaneCurrentParams) -> ApiResult {
         let target = match params.caller_pane_id.as_deref() {
             Some(caller_pane_id) => self.parse_pane_id(caller_pane_id),
             None => self.resolve_optional_pane(None),
@@ -218,10 +213,10 @@ impl App {
             ));
         };
 
-        success(id, ResponseResult::PaneCurrent { pane })
+        success(ResponseResult::PaneCurrent { pane })
     }
 
-    pub(super) fn handle_pane_get(&mut self, id: String, target: &PaneTarget) -> ApiResult {
+    pub(super) fn handle_pane_get(&mut self, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
@@ -229,10 +224,10 @@ impl App {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
 
-        success(id, ResponseResult::PaneInfo { pane })
+        success(ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_focus(&mut self, id: String, target: &PaneTarget) -> ApiResult {
+    pub(super) fn handle_pane_focus(&mut self, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
@@ -246,14 +241,10 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
-        success(id, ResponseResult::PaneInfo { pane })
+        success(ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_input_set(
-        &mut self,
-        id: String,
-        params: &PaneInputSetParams,
-    ) -> ApiResult {
+    pub(super) fn handle_pane_input_set(&mut self, params: &PaneInputSetParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -269,10 +260,10 @@ impl App {
             params.right_click,
             shepr_api::schema::PaneRightClickTarget::Pane
         );
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_pane_rename(&mut self, id: String, params: PaneRenameParams) -> ApiResult {
+    pub(super) fn handle_pane_rename(&mut self, params: PaneRenameParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -302,10 +293,10 @@ impl App {
             data: EventData::PaneUpdated { pane: pane.clone() },
         });
 
-        success(id, ResponseResult::PaneInfo { pane })
+        success(ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_read(&mut self, id: String, params: &PaneReadParams) -> ApiResult {
+    pub(super) fn handle_pane_read(&mut self, params: &PaneReadParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -339,28 +330,21 @@ impl App {
             return Err(tab_for_pane_not_found(&params.pane_id));
         };
 
-        success(
-            id,
-            ResponseResult::PaneRead {
-                read: PaneReadResult {
-                    pane_id: public_pane_id,
-                    workspace_id,
-                    tab_id,
-                    source: params.source,
-                    format,
-                    text: snapshot.text,
-                    revision,
-                    truncated: snapshot.truncated,
-                },
+        success(ResponseResult::PaneRead {
+            read: PaneReadResult {
+                pane_id: public_pane_id,
+                workspace_id,
+                tab_id,
+                source: params.source,
+                format,
+                text: snapshot.text,
+                revision,
+                truncated: snapshot.truncated,
             },
-        )
+        })
     }
 
-    pub(super) fn handle_pane_send_text(
-        &mut self,
-        id: String,
-        params: PaneSendTextParams,
-    ) -> ApiResult {
+    pub(super) fn handle_pane_send_text(&mut self, params: PaneSendTextParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -368,17 +352,13 @@ impl App {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
         if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
-            return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
+            return failure(ApiErrorCode::PaneSendFailed, err.to_string());
         }
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_pane_send_input(
-        &mut self,
-        id: String,
-        params: &PaneSendInputParams,
-    ) -> ApiResult {
+    pub(super) fn handle_pane_send_input(&mut self, params: &PaneSendInputParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -388,15 +368,15 @@ impl App {
         let bytes =
             super::super::api_helpers::encode_api_input(runtime, &params.text, &params.keys)?;
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
+            return failure(ApiErrorCode::PaneSendFailed, err.to_string());
         }
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_pane_close(&mut self, id: String, target: &PaneTarget) -> ApiResult {
+    pub(super) fn handle_pane_close(&mut self, target: &PaneTarget) -> ApiResult {
         match self.close_pane(target) {
-            Ok(()) => success(id, ResponseResult::Ok {}),
+            Ok(()) => success(ResponseResult::Ok {}),
             Err(error) => Err(error),
         }
     }
@@ -450,11 +430,7 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn handle_pane_send_keys(
-        &mut self,
-        id: String,
-        params: &PaneSendKeysParams,
-    ) -> ApiResult {
+    pub(super) fn handle_pane_send_keys(&mut self, params: &PaneSendKeysParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -467,10 +443,10 @@ impl App {
         // chord sequence in the pane.
         let bytes: Vec<u8> = encoded_keys.into_iter().flatten().collect();
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
+            return failure(ApiErrorCode::PaneSendFailed, err.to_string());
         }
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 }
 
@@ -639,7 +615,6 @@ struct PaneMoveRecoveryContext {
 }
 
 fn encode_unchanged_pane_move(
-    id: String,
     reason: PaneMoveReason,
     previous_pane_id: String,
     previous_workspace_id: String,
@@ -649,26 +624,23 @@ fn encode_unchanged_pane_move(
     target_layout: PaneLayoutSnapshot,
 ) -> ApiResult {
     let focused_pane_id = target_layout.focused_pane_id.clone();
-    success(
-        id,
-        ResponseResult::PaneMove {
-            move_result: PaneMoveResult {
-                changed: false,
-                reason: Some(reason),
-                previous_pane_id,
-                previous_workspace_id,
-                previous_tab_id,
-                pane: Box::new(pane),
-                source_layout: source_layout.map(Box::new),
-                target_layout: Box::new(target_layout),
-                created_workspace: None,
-                created_tab: None,
-                closed_workspace_id: None,
-                closed_tab_id: None,
-                focused_pane_id,
-            },
+    success(ResponseResult::PaneMove {
+        move_result: PaneMoveResult {
+            changed: false,
+            reason: Some(reason),
+            previous_pane_id,
+            previous_workspace_id,
+            previous_tab_id,
+            pane: Box::new(pane),
+            source_layout: source_layout.map(Box::new),
+            target_layout: Box::new(target_layout),
+            created_workspace: None,
+            created_tab: None,
+            closed_workspace_id: None,
+            closed_tab_id: None,
+            focused_pane_id,
         },
-    )
+    })
 }
 
 fn split_direction_to_layout(
@@ -707,12 +679,8 @@ fn split_path_id(idx: usize, path: &[shepr_core::geometry::SplitBranch]) -> Stri
     format!("split_{idx}_{path}")
 }
 
-fn invalid_agent(id: String) -> ApiResult {
-    failure(
-        id,
-        ApiErrorCode::InvalidAgent,
-        "agent label must not be empty",
-    )
+fn invalid_agent() -> ApiResult {
+    failure(ApiErrorCode::InvalidAgent, "agent label must not be empty")
 }
 
 #[cfg(test)]

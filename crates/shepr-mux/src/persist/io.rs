@@ -3,16 +3,30 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
+use super::lock::DataDirLease;
 use super::snapshot::{
     SessionHistorySnapshot, SessionSnapshot, parse_history_snapshot, parse_snapshot,
 };
 
+const SESSION_FILE_NAME: &str = "session.json";
+const SESSION_HISTORY_FILE_NAME: &str = "session-history.json";
+pub(super) const SNAPSHOT_DIRECTORY_NAME: &str = "session-snapshots";
+pub(super) const BACKUP_DIRECTORY_NAME: &str = "session-backups";
+
 pub(super) fn session_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("session.json")
+    data_dir.join(SESSION_FILE_NAME)
 }
 
-fn session_history_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("session-history.json")
+pub(super) fn session_history_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(SESSION_HISTORY_FILE_NAME)
+}
+
+pub(super) fn snapshot_directory(path: &Path) -> PathBuf {
+    path.with_file_name(SNAPSHOT_DIRECTORY_NAME)
+}
+
+pub(super) fn backup_directory(path: &Path) -> PathBuf {
+    path.with_file_name(BACKUP_DIRECTORY_NAME)
 }
 
 // Bound restore input and files this build writes. Saves trim the oldest
@@ -440,10 +454,12 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Reads the saved layout for restore. The server acquires a DataDirLease
-/// before calling this, so native agent sessions cannot be restored twice.
-pub fn load(data_dir: &Path) -> Option<SessionSnapshot> {
-    let path = session_path(data_dir);
+/// Reads the saved layout while the caller owns the data directory.
+pub fn load(lease: &DataDirLease) -> Option<SessionSnapshot> {
+    if !lease.is_active() {
+        return None;
+    }
+    let path = session_path(lease.directory());
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -473,8 +489,11 @@ pub fn load(data_dir: &Path) -> Option<SessionSnapshot> {
     }
 }
 
-pub fn load_history(data_dir: &Path) -> Option<SessionHistorySnapshot> {
-    let path = session_history_path(data_dir);
+pub fn load_history(lease: &DataDirLease) -> Option<SessionHistorySnapshot> {
+    if !lease.is_active() {
+        return None;
+    }
+    let path = session_history_path(lease.directory());
     let content = match read_history_file(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
@@ -509,7 +528,7 @@ mod tests {
 
     fn temp_session_paths(name: &str) -> (PathBuf, PathBuf) {
         let session = temp_session_path(name);
-        let history = session.with_file_name("session-history.json");
+        let history = session_history_path(containing_directory(&session));
         (session, history)
     }
 
@@ -521,6 +540,17 @@ mod tests {
             active: None,
             selected: 0,
         }
+    }
+
+    #[test]
+    fn released_lease_cannot_load_session_files() {
+        let scratch = crate::test_support::ScratchDir::new("released-session-lease");
+        let mut lease = DataDirLease::acquire(&scratch).expect("lease");
+        save_to_path(&session_path(lease.directory()), &empty_snapshot()).expect("save");
+        assert!(load(&lease).is_some());
+        lease.release();
+        assert!(load(&lease).is_none());
+        assert!(load_history(&lease).is_none());
     }
 
     /// The history limit is inclusive, and a refusal is an `InvalidData`

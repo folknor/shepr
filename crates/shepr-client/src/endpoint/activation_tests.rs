@@ -36,6 +36,16 @@ impl super::super::EndpointTransport for FakeTransport {
             Ok(())
         }
     }
+
+    fn disconnect(&mut self) {}
+
+    fn flush(&mut self, _deadline: std::time::Instant) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn take_error(&mut self) -> Option<std::io::Error> {
+        None
+    }
 }
 
 fn test_snapshot(boot_id: &str, revision: u64) -> shepr_protocol::ClientShellSnapshot {
@@ -1471,12 +1481,15 @@ fn target_loss_at_activation_deadline_restores_source_before_timeout() {
         Instant::now(),
     )
     .expect("test precondition");
-    activation.receive_response(
-        &ClientEndpointId::Local,
-        1,
-        "client-shell-surface:30:off",
-        &surface_success("client-shell-surface:30:off", false, 1),
-        &mut endpoints,
+    assert_eq!(
+        activation.receive_response(
+            &ClientEndpointId::Local,
+            1,
+            "client-shell-surface:30:off",
+            &surface_success("client-shell-surface:30:off", false, 1),
+            &mut endpoints,
+        ),
+        SurfaceActivationProgress::Pending
     );
     let now = Instant::now();
     activation.deadline = now;

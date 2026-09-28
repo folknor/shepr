@@ -984,7 +984,7 @@ impl<T: Clone + Send + Sync + 'static> TypedValueParser for Choice<T> {
 
 #[cfg(test)]
 mod tests {
-    use clap::{Arg, Command};
+    use clap::{Arg, ArgAction, Command};
 
     fn command_path<'a>(cmd: &'a Command, path: &[&str]) -> &'a Command {
         let mut current = cmd;
@@ -1040,6 +1040,111 @@ mod tests {
         }
     }
 
+    fn collect_leaf_subcommand_paths(
+        cmd: &Command,
+        path: &mut Vec<String>,
+        paths: &mut Vec<Vec<String>>,
+    ) {
+        for subcommand in cmd.get_subcommands() {
+            path.push(subcommand.get_name().to_string());
+            if subcommand.get_subcommands().next().is_none() {
+                paths.push(path.clone());
+            } else {
+                collect_leaf_subcommand_paths(subcommand, path, paths);
+            }
+            path.pop();
+        }
+    }
+
+    fn sample_value(arg: &Arg) -> String {
+        arg.get_value_parser()
+            .possible_values()
+            .into_iter()
+            .flatten()
+            .next()
+            .map_or_else(
+                || match arg.get_id().as_str() {
+                    "token" => "KEY=VALUE".to_string(),
+                    "clear-token" => "KEY".to_string(),
+                    "ssh-target" => "user@example.test".to_string(),
+                    _ => "value".to_string(),
+                },
+                |value| value.get_name().to_string(),
+            )
+    }
+
+    fn append_argument(cmd: &Command, id: &str, args: &mut Vec<String>) {
+        let arg = cmd
+            .get_arguments()
+            .find(|arg| arg.get_id().as_str() == id)
+            .unwrap_or_else(|| panic!("missing argument {id}"));
+        if matches!(
+            arg.get_action(),
+            ArgAction::SetTrue | ArgAction::SetFalse | ArgAction::Count
+        ) {
+            if let Some(long) = arg.get_long() {
+                args.push(format!("--{long}"));
+            } else if let Some(short) = arg.get_short() {
+                args.push(format!("-{short}"));
+            }
+            return;
+        }
+
+        let value = sample_value(arg);
+        if let Some(long) = arg.get_long() {
+            args.push(format!("--{long}"));
+            args.push(value);
+        } else if let Some(short) = arg.get_short() {
+            args.push(format!("-{short}"));
+            args.push(value);
+        } else {
+            args.push(value);
+        }
+    }
+
+    fn append_required_arguments(cmd: &Command, args: &mut Vec<String>) {
+        let mut selected = Vec::new();
+        for arg in cmd.get_arguments().filter(|arg| arg.is_required_set()) {
+            let id = arg.get_id().as_str().to_string();
+            append_argument(cmd, &id, args);
+            selected.push(id);
+        }
+        for group in cmd.get_groups().filter(|group| group.is_required_set()) {
+            if group.get_args().any(|id| {
+                selected
+                    .iter()
+                    .any(|selected| selected.as_str() == id.as_str())
+            }) {
+                continue;
+            }
+            if let Some(id) = group.get_args().next() {
+                append_argument(cmd, id.as_str(), args);
+                selected.push(id.as_str().to_string());
+            }
+        }
+    }
+
+    fn sample_leaf_invocation(spec: &Command, path: &[String]) -> Vec<String> {
+        let mut args = vec!["shepr".to_string()];
+        append_required_arguments(spec, &mut args);
+        let mut current = spec;
+        for name in path {
+            let subcommand = current
+                .get_subcommands()
+                .find(|subcommand| subcommand.get_name() == name.as_str())
+                .unwrap_or_else(|| panic!("missing command path segment {name}"));
+            args.push(name.clone());
+            append_required_arguments(subcommand, &mut args);
+            current = subcommand;
+        }
+        // `agent explain` accepts either a target or a local file and requires
+        // one through a conditional argument rule rather than an ArgGroup.
+        if path.iter().map(String::as_str).eq(["agent", "explain"]) {
+            args.push("target".to_string());
+        }
+        args
+    }
+
     fn assert_command_descriptions(cmd: &Command, path: &mut Vec<String>) {
         if !path.is_empty() {
             assert!(
@@ -1086,6 +1191,45 @@ mod tests {
     #[test]
     fn spec_passes_clap_invariants() {
         super::command().debug_assert();
+    }
+
+    #[test]
+    fn every_cli_spec_leaf_parses_to_a_typed_command() {
+        // Every leaf must reach a typed variant. The variant's `--machine`
+        // policy is then an exhaustive `can_run_on_machine` match, so the
+        // compiler, not this test, makes a new variant decide it.
+        let spec = super::command();
+        let mut paths = Vec::new();
+        collect_leaf_subcommand_paths(&spec, &mut Vec::new(), &mut paths);
+        let launch_only = ["client", "remote-api-bridge", "remote-client-bridge"];
+        let mut classified = 0;
+
+        for path in paths {
+            if launch_only.contains(&path[0].as_str())
+                || path.iter().map(String::as_str).eq(["session", "attach"])
+            {
+                continue;
+            }
+            let argv = sample_leaf_invocation(&spec, &path);
+            let matches = spec
+                .clone()
+                .try_get_matches_from(&argv)
+                .unwrap_or_else(|error| panic!("{} should parse: {error}", path.join(" ")));
+            let Some((name, command_matches)) = matches.subcommand() else {
+                panic!("{} did not parse as a CLI command", path.join(" "));
+            };
+            let command = super::super::CliCommand::from_matches(name, command_matches)
+                .unwrap_or_else(|| panic!("{} has no typed command", path.join(" ")));
+            assert_eq!(command.name(), name, "{}", path.join(" "));
+            assert!(
+                command.subcommand_name().is_some(),
+                "{} has no typed subcommand name",
+                path.join(" ")
+            );
+            classified += 1;
+        }
+
+        assert!(classified > 0, "the spec has no classified CLI leaves");
     }
 
     #[test]

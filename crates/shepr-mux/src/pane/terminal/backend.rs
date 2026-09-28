@@ -71,7 +71,7 @@ impl GhosttyPaneTerminal {
             (previous, color_scheme),
             (Some(previous), Some(current)) if previous != current
         );
-        if !transitioned || !core.terminal.mode_get(shepr_vt::MODE_COLOR_SCHEME_REPORT) {
+        if !transitioned || !core.terminal.mode_get(shepr_vt::DecMode::ColorSchemeReport) {
             return None;
         }
         appearance.map(|appearance| Bytes::from_static(appearance.report()))
@@ -186,12 +186,16 @@ impl GhosttyPaneTerminal {
         if core.terminal.tick(now) {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
-        let synchronized_output_before = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
+        let synchronized_output_before = core
+            .terminal
+            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
         core.terminal.write(bytes);
         let effects = collect_core_effects(&mut core);
         let default_color_generation = core.default_color_generation;
 
-        let synchronized_output = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
+        let synchronized_output = core
+            .terminal
+            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
         if synchronized_output != synchronized_output_before {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
@@ -324,7 +328,9 @@ impl GhosttyPaneTerminal {
                 return Vec::new();
             }
         };
-        let synchronized_output_before = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
+        let synchronized_output_before = core
+            .terminal
+            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
         let offset_from_bottom = core.terminal.scrollbar();
         let offset_from_bottom = offset_from_bottom
             .total
@@ -345,7 +351,9 @@ impl GhosttyPaneTerminal {
         // cutting into any sequence it had half-written and moving its
         // cursor behind its back.
         core.terminal.resize(geometry);
-        let synchronized_output_after = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
+        let synchronized_output_after = core
+            .terminal
+            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
         if synchronized_output_after != synchronized_output_before {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
@@ -508,11 +516,11 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn bracketed_paste_enabled(&self) -> bool {
-        self.mode_enabled(shepr_vt::MODE_BRACKETED_PASTE)
+        self.mode_enabled(shepr_vt::DecMode::BracketedPaste)
     }
 
     pub(crate) fn focus_reporting_enabled(&self) -> bool {
-        self.mode_enabled(shepr_vt::MODE_FOCUS_EVENT)
+        self.mode_enabled(shepr_vt::DecMode::FocusEvents)
     }
 
     pub(crate) fn mouse_reporting_enabled(&self) -> bool {
@@ -526,10 +534,10 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn sgr_pixel_mouse_enabled(&self) -> bool {
-        self.mode_enabled(shepr_vt::MODE_MOUSE_SGR_PIXELS)
+        self.mode_enabled(shepr_vt::DecMode::MouseSgrPixels)
     }
 
-    fn mode_enabled(&self, mode: u16) -> bool {
+    fn mode_enabled(&self, mode: shepr_vt::DecMode) -> bool {
         shepr_vt::lock_terminal_core(&self.core).is_ok_and(|core| core.terminal.mode_get(mode))
     }
 
@@ -539,8 +547,8 @@ impl GhosttyPaneTerminal {
         let mouse_reporting = core.terminal.mouse_tracking_enabled();
         let application_cursor = core
             .terminal
-            .mode_get(shepr_vt::MODE_APPLICATION_CURSOR_KEYS);
-        let bracketed_paste = core.terminal.mode_get(shepr_vt::MODE_BRACKETED_PASTE);
+            .mode_get(shepr_vt::DecMode::ApplicationCursorKeys);
+        let bracketed_paste = core.terminal.mode_get(shepr_vt::DecMode::BracketedPaste);
         Some(!alternate_screen && !mouse_reporting && (!application_cursor || bracketed_paste))
     }
 
@@ -559,22 +567,22 @@ impl GhosttyPaneTerminal {
         let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
         let application_cursor = core
             .terminal
-            .mode_get(shepr_vt::MODE_APPLICATION_CURSOR_KEYS);
-        let bracketed_paste = core.terminal.mode_get(shepr_vt::MODE_BRACKETED_PASTE);
-        let focus_reporting = core.terminal.mode_get(shepr_vt::MODE_FOCUS_EVENT);
-        let mouse_sgr = core.terminal.mode_get(shepr_vt::MODE_MOUSE_SGR);
-        let mouse_utf8 = core.terminal.mode_get(shepr_vt::MODE_MOUSE_UTF8);
-        let mouse_sgr_pixels = core.terminal.mode_get(shepr_vt::MODE_MOUSE_SGR_PIXELS);
+            .mode_get(shepr_vt::DecMode::ApplicationCursorKeys);
+        let bracketed_paste = core.terminal.mode_get(shepr_vt::DecMode::BracketedPaste);
+        let focus_reporting = core.terminal.mode_get(shepr_vt::DecMode::FocusEvents);
+        let mouse_sgr = core.terminal.mode_get(shepr_vt::DecMode::MouseSgr);
+        let mouse_utf8 = core.terminal.mode_get(shepr_vt::DecMode::MouseUtf8);
+        let mouse_sgr_pixels = core.terminal.mode_get(shepr_vt::DecMode::MouseSgrPixels);
         let mouse_alternate_scroll = core
             .terminal
-            .mode_get(shepr_vt::MODE_MOUSE_ALTERNATE_SCROLL);
-        let mouse_protocol_mode = if core.terminal.mode_get(MODE_MOUSE_ANY_MOTION) {
+            .mode_get(shepr_vt::DecMode::MouseAlternateScroll);
+        let mouse_protocol_mode = if core.terminal.mode_get(shepr_vt::DecMode::MouseAnyMotion) {
             shepr_termio::input::MouseProtocolMode::AnyMotion
-        } else if core.terminal.mode_get(MODE_MOUSE_BUTTON_MOTION) {
+        } else if core.terminal.mode_get(shepr_vt::DecMode::MouseButtonMotion) {
             shepr_termio::input::MouseProtocolMode::ButtonMotion
-        } else if core.terminal.mode_get(MODE_MOUSE_PRESS_RELEASE) {
+        } else if core.terminal.mode_get(shepr_vt::DecMode::MousePressRelease) {
             shepr_termio::input::MouseProtocolMode::PressRelease
-        } else if core.terminal.mode_get(MODE_MOUSE_X10) {
+        } else if core.terminal.mode_get(shepr_vt::DecMode::X10Mouse) {
             shepr_termio::input::MouseProtocolMode::Press
         } else {
             shepr_termio::input::MouseProtocolMode::None
@@ -598,7 +606,7 @@ impl GhosttyPaneTerminal {
             mouse_alternate_scroll,
             modify_other_keys: core.terminal.modify_other_keys_level()
                 == shepr_vt::ModifyOtherKeysLevel::All,
-            color_scheme_reporting: core.terminal.mode_get(shepr_vt::MODE_COLOR_SCHEME_REPORT),
+            color_scheme_reporting: core.terminal.mode_get(shepr_vt::DecMode::ColorSchemeReport),
         })
     }
 
@@ -609,11 +617,8 @@ impl GhosttyPaneTerminal {
         let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
         let mouse_alternate_scroll = core
             .terminal
-            .mode_get(shepr_vt::MODE_MOUSE_ALTERNATE_SCROLL);
-        let mouse_reporting = core.terminal.mode_get(MODE_MOUSE_ANY_MOTION)
-            || core.terminal.mode_get(MODE_MOUSE_BUTTON_MOTION)
-            || core.terminal.mode_get(MODE_MOUSE_PRESS_RELEASE)
-            || core.terminal.mode_get(MODE_MOUSE_X10);
+            .mode_get(shepr_vt::DecMode::MouseAlternateScroll);
+        let mouse_reporting = core.terminal.mouse_tracking_enabled();
         Some(if mouse_reporting {
             crate::pane::WheelRouting::MouseReport
         } else if alternate_screen && mouse_alternate_scroll {
@@ -631,7 +636,10 @@ impl GhosttyPaneTerminal {
     pub(crate) fn synchronized_output_active(&self) -> bool {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .is_some_and(|core| core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT))
+            .is_some_and(|core| {
+                core.terminal
+                    .mode_get(shepr_vt::DecMode::SynchronizedOutput)
+            })
     }
 
     pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
@@ -641,7 +649,8 @@ impl GhosttyPaneTerminal {
         // requires changing the server render callers.
         shepr_vt::lock_terminal_core(&self.core).map_or((true, 0), |core| {
             (
-                core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT),
+                core.terminal
+                    .mode_get(shepr_vt::DecMode::SynchronizedOutput),
                 core.synchronized_output_epoch,
             )
         })
@@ -681,7 +690,7 @@ impl GhosttyPaneTerminal {
                 modify_other_keys: core.terminal.modify_other_keys_level().as_u8(),
                 application_cursor: core
                     .terminal
-                    .mode_get(shepr_vt::MODE_APPLICATION_CURSOR_KEYS),
+                    .mode_get(shepr_vt::DecMode::ApplicationCursorKeys),
             }
         }) else {
             return shepr_termio::input::encode_terminal_key(key, protocol);
@@ -744,26 +753,26 @@ impl GhosttyPaneTerminal {
     ) -> Option<Vec<u8>> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         let terminal = &core.terminal;
-        let mode_enabled = |mode: u16| terminal.mode_get(mode);
-        let mode = if mode_enabled(MODE_MOUSE_ANY_MOTION) {
+        let mode_enabled = |mode: shepr_vt::DecMode| terminal.mode_get(mode);
+        let mode = if mode_enabled(shepr_vt::DecMode::MouseAnyMotion) {
             shepr_termio::input::MouseProtocolMode::AnyMotion
-        } else if mode_enabled(MODE_MOUSE_BUTTON_MOTION) {
+        } else if mode_enabled(shepr_vt::DecMode::MouseButtonMotion) {
             shepr_termio::input::MouseProtocolMode::ButtonMotion
-        } else if mode_enabled(MODE_MOUSE_PRESS_RELEASE) {
+        } else if mode_enabled(shepr_vt::DecMode::MousePressRelease) {
             shepr_termio::input::MouseProtocolMode::PressRelease
-        } else if mode_enabled(MODE_MOUSE_X10) {
+        } else if mode_enabled(shepr_vt::DecMode::X10Mouse) {
             shepr_termio::input::MouseProtocolMode::Press
         } else {
             return None;
         };
-        let cell_encoding = if mode_enabled(shepr_vt::MODE_MOUSE_SGR) {
+        let cell_encoding = if mode_enabled(shepr_vt::DecMode::MouseSgr) {
             shepr_termio::input::MouseProtocolEncoding::Sgr
-        } else if mode_enabled(shepr_vt::MODE_MOUSE_UTF8) {
+        } else if mode_enabled(shepr_vt::DecMode::MouseUtf8) {
             shepr_termio::input::MouseProtocolEncoding::Utf8
         } else {
             shepr_termio::input::MouseProtocolEncoding::Default
         };
-        let sgr_pixels = mode_enabled(shepr_vt::MODE_MOUSE_SGR_PIXELS);
+        let sgr_pixels = mode_enabled(shepr_vt::DecMode::MouseSgrPixels);
         // Reports are 1-based. Pixel positions already arrive 1-based; cell
         // positions are shifted here. Under SGR-pixels (mode 1016) a cell
         // position is mapped to the top-left pixel of that cell using the same
@@ -926,7 +935,10 @@ impl GhosttyPaneTerminal {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return;
         };
-        if core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT) {
+        if core
+            .terminal
+            .mode_get(shepr_vt::DecMode::SynchronizedOutput)
+        {
             return;
         }
         let host_theme = core.host_terminal_theme;
@@ -1024,7 +1036,10 @@ impl GhosttyPaneTerminal {
         shepr_vt::lock_terminal_core(&self.core).map_or(
             TerminalDirtyPatchOutcome::Fallback,
             |mut core| {
-                if core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT) {
+                if core
+                    .terminal
+                    .mode_get(shepr_vt::DecMode::SynchronizedOutput)
+                {
                     return TerminalDirtyPatchOutcome::Fallback;
                 }
                 if let Some(hook) = core.dirty_collection_hook.take() {

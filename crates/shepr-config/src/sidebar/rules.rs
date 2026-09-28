@@ -120,54 +120,44 @@ impl TryFrom<RawRule> for SidebarTokenRule {
     type Error = String;
 
     fn try_from(raw: RawRule) -> Result<Self, Self::Error> {
-        let count = [
-            raw.equals.is_some(),
-            raw.contains.is_some(),
-            raw.starts_with.is_some(),
-            raw.gt.is_some(),
-            raw.lt.is_some(),
-        ]
-        .into_iter()
-        .filter(|present| *present)
-        .count();
-        if count != 1 {
-            return Err(
-                "sidebar rule requires exactly one of equals, contains, starts_with, gt, lt".into(),
-            );
-        }
-        let condition = if let Some(value) = raw.equals {
-            Condition::Equals(value)
-        } else if let Some(value) = raw.contains {
-            Condition::Contains(value)
-        } else if let Some(value) = raw.starts_with {
-            Condition::StartsWith(value)
-        } else {
-            let (value, greater) = match (raw.gt, raw.lt) {
-                (Some(value), _) => (value, true),
-                (_, Some(value)) => (value, false),
-                _ => unreachable!("validated condition count"),
-            };
+        let RawRule {
+            equals,
+            contains,
+            starts_with,
+            gt,
+            lt,
+            ignore_case,
+            fg,
+            bold,
+            dim,
+            hide,
+        } = raw;
+        let condition = match (equals, contains, starts_with, gt, lt) {
+            (Some(value), None, None, None, None) => Condition::Equals(value),
+            (None, Some(value), None, None, None) => Condition::Contains(value),
+            (None, None, Some(value), None, None) => Condition::StartsWith(value),
+            (None, None, None, Some(value), None) => Condition::GreaterThan(value),
+            (None, None, None, None, Some(value)) => Condition::LessThan(value),
+            _ => {
+                return Err(
+                    "sidebar rule requires exactly one of equals, contains, starts_with, gt, lt"
+                        .into(),
+                );
+            }
+        };
+        if let Condition::GreaterThan(value) | Condition::LessThan(value) = &condition {
             if !value.is_finite() {
                 return Err("sidebar numeric rule threshold must be finite".into());
             }
-            if raw.ignore_case.is_some() {
+            if ignore_case.is_some() {
                 return Err("ignore_case applies only to sidebar text conditions".into());
             }
-            if greater {
-                Condition::GreaterThan(value)
-            } else {
-                Condition::LessThan(value)
-            }
-        };
+        }
         Ok(Self {
             condition,
-            ignore_case: raw.ignore_case.unwrap_or(false),
-            hide: raw.hide,
-            style: SidebarTokenStyle {
-                fg: raw.fg,
-                bold: raw.bold,
-                dim: raw.dim,
-            },
+            ignore_case: ignore_case.unwrap_or(false),
+            hide,
+            style: SidebarTokenStyle { fg, bold, dim },
         })
     }
 }

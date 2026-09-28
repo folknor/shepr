@@ -48,7 +48,6 @@ pub(crate) enum Command {
     Attach { target: String, takeover: bool },
     Start(AgentStartArgs),
     Explain(ExplainArgs),
-    Invalid,
 }
 
 #[derive(Clone)]
@@ -83,7 +82,6 @@ impl Command {
             Self::Attach { .. } => Some("attach"),
             Self::Start(_) => Some("start"),
             Self::Explain(_) => Some("explain"),
-            Self::Invalid => None,
         }
     }
 
@@ -99,54 +97,54 @@ impl Command {
             | Self::Wait(_)
             | Self::Start(_) => true,
             Self::Explain(args) => args.file.is_none(),
-            Self::Attach { .. } | Self::Invalid => false,
+            Self::Attach { .. } => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &ArgMatches) -> Command {
+pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("list", _)) => Command::List,
-        Some(("get", command)) => Command::Get {
-            target: required(command, "target"),
-        },
-        Some(("read", command)) => Command::Read(read_params(command)),
-        Some(("send-keys", command)) => Command::SendKeys(AgentSendKeysParams {
-            target: required(command, "target"),
+        Some(("list", _)) => Some(Command::List),
+        Some(("get", command)) => Some(Command::Get {
+            target: required(command, "target")?,
+        }),
+        Some(("read", command)) => Some(Command::Read(read_params(command)?)),
+        Some(("send-keys", command)) => Some(Command::SendKeys(AgentSendKeysParams {
+            target: required(command, "target")?,
             keys: values::<String>(command, "key"),
-        }),
-        Some(("prompt", command)) => Command::Prompt(prompt_params(command)),
-        Some(("rename", command)) => Command::Rename(AgentRenameParams {
-            target: required(command, "target"),
+        })),
+        Some(("prompt", command)) => Some(Command::Prompt(prompt_params(command)?)),
+        Some(("rename", command)) => Some(Command::Rename(AgentRenameParams {
+            target: required(command, "target")?,
             name: string(command, "name"),
+        })),
+        Some(("focus", command)) => Some(Command::Focus {
+            target: required(command, "target")?,
         }),
-        Some(("focus", command)) => Command::Focus {
-            target: required(command, "target"),
-        },
-        Some(("wait", command)) => Command::Wait(AgentWaitParams {
-            target: required(command, "target"),
+        Some(("wait", command)) => Some(Command::Wait(AgentWaitParams {
+            target: required(command, "target")?,
             until: values::<AgentStatus>(command, "until"),
             timeout_ms: value::<u64>(command, "timeout"),
-        }),
-        Some(("attach", command)) => Command::Attach {
-            target: required(command, "target"),
+        })),
+        Some(("attach", command)) => Some(Command::Attach {
+            target: required(command, "target")?,
             takeover: flag(command, "takeover"),
-        },
-        Some(("start", command)) => Command::Start(AgentStartArgs {
-            name: required(command, "name"),
-            kind: required(command, "kind"),
-            pane_id: required(command, "pane"),
+        }),
+        Some(("start", command)) => Some(Command::Start(AgentStartArgs {
+            name: required(command, "name")?,
+            kind: required(command, "kind")?,
+            pane_id: required(command, "pane")?,
             timeout_ms: value::<u64>(command, "timeout"),
             agent_args: values::<String>(command, "agent_args"),
-        }),
-        Some(("explain", command)) => Command::Explain(ExplainArgs {
+        })),
+        Some(("explain", command)) => Some(Command::Explain(ExplainArgs {
             target: string(command, "target"),
             file: string(command, "file"),
             agent: string(command, "agent"),
             json: flag(command, "json") || string(command, "format").as_deref() == Some("json"),
             verbose: flag(command, "verbose"),
-        }),
-        _ => Command::Invalid,
+        })),
+        _ => None,
     }
 }
 
@@ -167,13 +165,14 @@ pub(super) fn run_agent_command(
         Command::Attach { target, takeover } => agent_attach(&target, takeover, config, paths),
         Command::Start(args) => agent_start(paths, args),
         Command::Explain(args) => agent_explain(paths, args),
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
 fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super::CliResult<i32> {
     let explain = if let Some(path) = args.file {
-        let agent_label = args.agent.unwrap_or_default();
+        let agent_label = args.agent.ok_or_else(|| {
+            super::CliError::Usage("agent explain --file requires --agent".into())
+        })?;
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
@@ -194,13 +193,14 @@ fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super:
             ),
         )
     } else {
+        let target = args.target.ok_or_else(|| {
+            super::CliError::Usage("agent explain requires TARGET unless --file is used".into())
+        })?;
         let response = super::send_request(
             paths,
             &Request {
                 id: "cli:agent:explain".into(),
-                method: Method::AgentExplain(AgentTarget {
-                    target: args.target.unwrap_or_default(),
-                }),
+                method: Method::AgentExplain(AgentTarget { target }),
             },
         )?;
         if response.get("error").is_some() {
@@ -763,17 +763,17 @@ fn agent_rename(
     )?)
 }
 
-fn prompt_params(matches: &ArgMatches) -> AgentPromptParams {
+fn prompt_params(matches: &ArgMatches) -> Option<AgentPromptParams> {
     // `--until` and `--timeout` require `--wait` in the spec.
-    AgentPromptParams {
-        target: required(matches, "target"),
-        text: required(matches, "text"),
+    Some(AgentPromptParams {
+        target: required(matches, "target")?,
+        text: required(matches, "text")?,
         wait: flag(matches, "wait").then(|| AgentPromptWaitOptions {
             until: values::<AgentStatus>(matches, "until"),
             timeout_ms: value::<u64>(matches, "timeout"),
             submission_deadline: None,
         }),
-    }
+    })
 }
 
 fn agent_prompt(
@@ -803,7 +803,7 @@ fn agent_send_keys(
     )?)
 }
 
-fn read_params(matches: &ArgMatches) -> AgentReadParams {
+fn read_params(matches: &ArgMatches) -> Option<AgentReadParams> {
     // `--ansi` conflicts with `--format` in the spec; either selects ANSI, and
     // an ANSI read of an agent keeps its escapes.
     let format = if flag(matches, "ansi") {
@@ -811,13 +811,13 @@ fn read_params(matches: &ArgMatches) -> AgentReadParams {
     } else {
         value::<ReadFormat>(matches, "format").unwrap_or(ReadFormat::Text)
     };
-    AgentReadParams {
-        target: required(matches, "target"),
+    Some(AgentReadParams {
+        target: required(matches, "target")?,
         source: value::<ReadSource>(matches, "source").unwrap_or(ReadSource::Recent),
         lines: value::<u32>(matches, "lines"),
         format,
         strip_ansi: format != ReadFormat::Ansi,
-    }
+    })
 }
 
 fn agent_read(paths: &super::target::CliContext, params: AgentReadParams) -> super::CliResult<i32> {
@@ -837,7 +837,7 @@ mod parse_tests {
     use shepr_api::schema::{AgentStatus, ReadFormat, ReadSource};
 
     fn command(args: &[&str]) -> super::Command {
-        super::parse(&group_matches(args))
+        super::parse(&group_matches(args)).expect("test precondition")
     }
 
     #[test]

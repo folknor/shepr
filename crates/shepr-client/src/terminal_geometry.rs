@@ -114,17 +114,12 @@ pub(super) fn bounded_cell_geometry(
 }
 
 pub(super) fn current_terminal_geometry_with(
-    pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
     reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<(u32, u32)>,
     exact_geometry: Option<(u16, u16, u32, u32)>,
     terminal_grid_size: impl FnOnce() -> io::Result<(u16, u16)>,
 ) -> io::Result<TerminalGeometry> {
-    if !pixel_geometry_enabled {
-        let (cols, rows) = terminal_grid_size()?;
-        return Ok(TerminalGeometry::new(cols, rows, 0, 0, false));
-    }
     if let Some((cols, rows, cell_width_px, cell_height_px)) = exact_geometry {
         return Ok(TerminalGeometry::new(
             cols,
@@ -153,13 +148,11 @@ pub(super) fn current_terminal_geometry_with(
 }
 
 fn current_terminal_geometry(
-    pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
     reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<(u32, u32)>,
 ) -> io::Result<TerminalGeometry> {
     current_terminal_geometry_with(
-        pixel_geometry_enabled,
         pixel_geometry_fallback,
         reported_cell_size,
         last_cell_size,
@@ -171,15 +164,9 @@ fn current_terminal_geometry(
 /// Reads terminal geometry before the handshake. Pixel input and direct graphics
 /// are eligible only when one ioctl supplied a coherent exact geometry snapshot.
 pub(super) fn initial_terminal_geometry(
-    pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
 ) -> io::Result<TerminalGeometry> {
-    current_terminal_geometry(
-        pixel_geometry_enabled,
-        pixel_geometry_fallback,
-        &AtomicCellSize::new(),
-        None,
-    )
+    current_terminal_geometry(pixel_geometry_fallback, &AtomicCellSize::new(), None)
 }
 
 pub(super) fn resize_report_required(
@@ -198,7 +185,6 @@ pub(super) fn resize_report_required(
 pub(super) fn resize_poll_loop(
     resize_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     initial: TerminalGeometry,
-    pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
     reported_cell_size: &AtomicCellSize,
     should_quit: &Arc<AtomicBool>,
@@ -209,7 +195,6 @@ pub(super) fn resize_poll_loop(
         std::thread::sleep(Duration::from_millis(100));
         let signalled = shepr_platform::take_terminal_resize_signal();
         let new_size = match current_terminal_geometry(
-            pixel_geometry_enabled,
             pixel_geometry_fallback,
             reported_cell_size,
             Some((last_size.cell_width(), last_size.cell_height())),
@@ -290,8 +275,8 @@ pub(super) fn query_host_cell_size() {
     }
 }
 
-pub(super) fn host_cell_size_query_required(pixel_geometry_enabled: bool) -> bool {
-    pixel_geometry_enabled && ioctl_terminal_geometry().is_none()
+pub(super) fn host_cell_size_query_required() -> bool {
+    ioctl_terminal_geometry().is_none()
 }
 
 pub(super) fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Result<()> {

@@ -1,15 +1,11 @@
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 use shepr_api::schema::ResponseResult;
 
-pub(crate) fn success(_id: String, result: ResponseResult) -> ApiResult {
+pub(crate) fn success(result: ResponseResult) -> ApiResult {
     Ok(result)
 }
 
-pub(crate) fn failure(
-    _id: String,
-    code: impl Into<ApiErrorCode>,
-    message: impl Into<String>,
-) -> ApiResult {
+pub(crate) fn failure(code: impl Into<ApiErrorCode>, message: impl Into<String>) -> ApiResult {
     Err(ApiError::new(code.into(), message))
 }
 
@@ -19,12 +15,9 @@ mod tests {
 
     #[test]
     fn response_builders_keep_typed_payloads() {
+        assert_eq!(success(ResponseResult::Ok {}), Ok(ResponseResult::Ok {}));
         assert_eq!(
-            success("ok".into(), ResponseResult::Ok {}),
-            Ok(ResponseResult::Ok {})
-        );
-        assert_eq!(
-            failure("bad".into(), ApiErrorCode::InvalidRequest, "bad request"),
+            failure(ApiErrorCode::InvalidRequest, "bad request"),
             Err(ApiError::new(ApiErrorCode::InvalidRequest, "bad request")),
         );
     }

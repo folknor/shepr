@@ -85,6 +85,16 @@ impl EndpointTransport for CapturingEndpointTransport {
         sent.push(message.clone());
         Ok(())
     }
+
+    fn disconnect(&mut self) {}
+
+    fn flush(&mut self, _deadline: Instant) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn take_error(&mut self) -> Option<std::io::Error> {
+        None
+    }
 }
 
 fn lifecycle_resize() -> shepr_protocol::ClientMessage {
@@ -470,13 +480,33 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
 
     target_sent.lock().expect("test precondition").clear();
     let mut returning = begin_activation(&shell, &mut endpoints, &ClientEndpointId::Local, 42);
+    let returning_messages = std::mem::take(&mut *target_sent.lock().expect("test precondition"));
+    let returning_release_request_id = returning_messages
+        .iter()
+        .find_map(|message| match message {
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } => {
+                let request = serde_json::from_str::<api::schema::Request>(request)
+                    .expect("test precondition");
+                matches!(
+                    request.method,
+                    api::schema::Method::ClientShellSurfaceSet(
+                        api::schema::ClientShellSurfaceSetParams { active: false }
+                    )
+                )
+                .then_some(request.id)
+            }
+            _ => None,
+        })
+        .expect("client remote-off request");
     headless_tests::dispatch_lifecycle_messages(
         &mut target_server,
         target_client_id,
-        std::mem::take(&mut *target_sent.lock().expect("test precondition")),
+        returning_messages,
     );
     let returning_activation_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
     loop {
+        // Earlier responses from the first handoff may still be queued; only
+        // the answer to this activation's release request counts.
         if let ServerMessage::ClientShellEndpointResponseChunk {
             boot_id,
             request_id,
@@ -486,14 +516,21 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             &target_control,
             returning_activation_deadline,
             "returning activation acknowledgement",
-        ) {
-            returning.receive_response_for_boot(
-                &target_id,
-                TARGET_GENERATION,
-                &boot_id,
-                &request_id,
-                &data,
-                &mut endpoints,
+        ) && request_id == returning_release_request_id
+        {
+            // Returning to Local releases the remote best-effort and goes
+            // straight to activating Local, so Local never waits on this
+            // remote acknowledgement: the activation reports it as stale.
+            assert_eq!(
+                returning.receive_response_for_boot(
+                    &target_id,
+                    TARGET_GENERATION,
+                    &boot_id,
+                    &request_id,
+                    &data,
+                    &mut endpoints,
+                ),
+                SurfaceActivationProgress::Stale
             );
             break;
         }

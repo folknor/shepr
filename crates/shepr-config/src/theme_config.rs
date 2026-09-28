@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::theme::{ParsedThemeColors, THEME_NAMES, canonical_theme_name};
+use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES, canonical_theme_name};
 
 /// Theme configuration: pick a built-in or override individual tokens.
 ///
 /// ```toml
 /// [theme]
-/// name = "tokyo-night"  # built-in: catppuccin, terminal, dracula, nord, etc.
+/// name = "tokyo-night"  # built-in theme name
 ///
 /// [theme.custom]        # override individual tokens on top of the base
 /// accent = "#f5c2e7"
@@ -15,7 +15,7 @@ use crate::theme::{ParsedThemeColors, THEME_NAMES, canonical_theme_name};
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ThemeConfig {
-    /// Built-in theme name. Default: "catppuccin".
+    /// Built-in theme name. The default is the first built-in theme.
     pub name: Option<String>,
     /// Custom overrides - applied on top of the selected base theme.
     pub custom: Option<CustomThemeColors>,
@@ -96,7 +96,7 @@ pub(crate) fn resolve_palette(
     ui_accent_is_explicit: bool,
 ) -> Result<crate::theme::Palette, Vec<String>> {
     let mut diagnostics = Vec::new();
-    let name = config.theme.name.as_deref().unwrap_or("catppuccin");
+    let name = config.theme.name.as_deref().unwrap_or(DEFAULT_THEME);
     let canonical = canonical_theme_name(name).or_else(|| {
         diagnostics.push(format!(
             "unknown theme name theme.name = {name:?}; valid themes: {}",

@@ -20,36 +20,18 @@ fn signal_number(signal: Signal) -> libc::c_int {
     }
 }
 
-/// How often exits are rechecked for handles that have no pidfd to poll.
-const START_TIME_EXIT_RECHECK: Duration = Duration::from_millis(10);
-
 /// A handle on one specific process. A signal sent through it reaches that
 /// process or nobody; a plain `kill(pid)` can land on an unrelated process
 /// the kernel later gave the same pid.
 #[derive(Debug)]
 pub struct ProcessHandle {
     pid: u32,
-    identity: ProcessIdentity,
-}
-
-#[derive(Debug)]
-enum ProcessIdentity {
-    /// A pidfd: signals go through the kernel's own handle on the process.
-    Pidfd(std::os::fd::OwnedFd),
-    /// The fallback when no pidfd could be opened (a kernel before 5.3, or
-    /// fd exhaustion): the process's start time, in clock ticks since boot,
-    /// from `/proc/<pid>/stat`. A pid and a start time name one process; a
-    /// reused pid belongs to a process that started later. The identity is
-    /// rechecked right before each `kill(2)`. What that leaves open is the
-    /// process exiting, being reaped and its pid going round the whole pid
-    /// space to a new process between the recheck and the kill, a window of
-    /// a few syscalls.
-    StartTime(u64),
+    pidfd: std::os::fd::OwnedFd,
 }
 
 impl ProcessHandle {
-    /// Open a handle on the process that holds `pid` right now. `None` when
-    /// no such process exists.
+    /// Open a handle on the process that holds `pid` right now. Returns
+    /// `None` if it is absent or a pidfd cannot be opened; the latter is logged.
     pub fn open(pid: u32) -> Option<Self> {
         use std::os::fd::FromRawFd;
 
@@ -62,90 +44,50 @@ impl ProcessHandle {
             return match error.raw_os_error() {
                 // No such process, or `pid` names a thread, not a process.
                 Some(libc::ESRCH | libc::EINVAL) => None,
+                // A pid alone is not a safe process identity. In particular,
+                // fd exhaustion must refuse the handle instead of signalling
+                // through a pid that may have been reused.
                 _ => {
-                    tracing::debug!(pid, %error, "no pidfd; identifying the process by start time");
-                    Self::open_by_start_time(pid)
+                    tracing::error!(pid, %error, "could not open pidfd; refusing process handle");
+                    None
                 }
             };
         }
         let fd = RawFd::try_from(fd).ok()?;
         // SAFETY: `fd` was just returned by pidfd_open and nothing else owns it.
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        Some(Self {
-            pid,
-            identity: ProcessIdentity::Pidfd(fd),
-        })
-    }
-
-    /// A handle without a pidfd, identifying the process by its start time.
-    pub(super) fn open_by_start_time(pid: u32) -> Option<Self> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let (_, start_time) = state_and_start_time_from_stat(&stat)?;
-        Some(Self {
-            pid,
-            identity: ProcessIdentity::StartTime(start_time),
-        })
+        Some(Self { pid, pidfd: fd })
     }
 
     pub fn pid(&self) -> u32 {
         self.pid
     }
 
-    /// Duplicate the pidfd for readiness polling, if this handle has one.
+    /// Duplicate the pidfd for readiness polling.
     /// The returned descriptor has its own lifetime and can be registered
     /// with an async poller without exposing or transferring this handle's fd.
-    pub fn try_clone_pidfd(&self) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
-        let ProcessIdentity::Pidfd(fd) = &self.identity else {
-            return Ok(None);
-        };
+    pub fn try_clone_pidfd(&self) -> std::io::Result<std::os::fd::OwnedFd> {
         // `OwnedFd::try_clone` duplicates with F_DUPFD_CLOEXEC.
-        fd.try_clone().map(Some)
+        self.pidfd.try_clone()
     }
 
-    pub(super) fn pidfd(&self) -> Option<RawFd> {
-        match &self.identity {
-            ProcessIdentity::Pidfd(fd) => Some(fd.as_raw_fd()),
-            ProcessIdentity::StartTime(_) => None,
-        }
-    }
-
-    /// For a start-time handle: this process's state letter while it still
-    /// holds its pid (a zombie included), `None` once it has been reaped.
-    pub(super) fn state_by_start_time(&self, start_time: u64) -> Option<char> {
-        let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.pid)).ok()?;
-        let (state, current) = state_and_start_time_from_stat(&stat)?;
-        (current == start_time).then_some(state)
+    pub(super) fn pidfd(&self) -> RawFd {
+        self.pidfd.as_raw_fd()
     }
 
     pub(super) fn send(&self, signal: libc::c_int) -> bool {
-        match &self.identity {
-            ProcessIdentity::Pidfd(fd) => {
-                // SAFETY: pidfd_send_signal(2) with a null siginfo and no flags
-                // only reads the fd, which `self` keeps open for the call.
-                let result = unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        fd.as_raw_fd(),
-                        signal,
-                        std::ptr::null::<libc::siginfo_t>(),
-                        0_u32,
-                    )
-                };
-                result == 0
-            }
-            ProcessIdentity::StartTime(start_time) => {
-                if self.state_by_start_time(*start_time).is_none() {
-                    return false;
-                }
-                let Ok(pid) = libc::pid_t::try_from(self.pid) else {
-                    return false;
-                };
-                // SAFETY: kill(2) touches no memory of this process. The pid
-                // was just confirmed to still be this process; see
-                // `ProcessIdentity::StartTime` for the window left.
-                unsafe { libc::kill(pid, signal) == 0 }
-            }
-        }
+        // SAFETY: pidfd_send_signal(2) with a null siginfo and no flags
+        // only reads the fd, which `self` keeps open for the call.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0_u32,
+            )
+        };
+        result == 0
     }
 
     /// Send `signal` to this process. False once it has been reaped.
@@ -157,66 +99,40 @@ impl ProcessHandle {
     /// has reaped yet. While this is true the pid cannot be reused, and
     /// neither can a process-group or session id equal to it.
     pub fn is_unreaped(&self) -> bool {
-        match &self.identity {
-            ProcessIdentity::Pidfd(fd) => {
-                // SAFETY: pidfd_send_signal(2) with signal zero and a null
-                // siginfo only probes the process identified by this live fd.
-                let result = unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        fd.as_raw_fd(),
-                        0,
-                        std::ptr::null::<libc::siginfo_t>(),
-                        0_u32,
-                    )
-                };
-                if result == 0 {
-                    return true;
-                }
-                // EPERM means the pidfd still names a live process that this
-                // uid cannot signal. Only ESRCH proves the process was reaped.
-                pidfd_probe_error_means_unreaped(&std::io::Error::last_os_error())
-            }
-            ProcessIdentity::StartTime(start_time) => {
-                self.state_by_start_time(*start_time).is_some()
-            }
+        // SAFETY: pidfd_send_signal(2) with signal zero and a null
+        // siginfo only probes the process identified by this live fd.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                0,
+                std::ptr::null::<libc::siginfo_t>(),
+                0_u32,
+            )
+        };
+        if result == 0 {
+            return true;
         }
+        // EPERM means the pidfd still names a live process that this
+        // uid cannot signal. Only ESRCH proves the process was reaped.
+        pidfd_probe_error_means_unreaped(&std::io::Error::last_os_error())
     }
 
     /// Whether the process has exited. A zombie counts as exited.
     pub fn has_exited(&self) -> bool {
-        match &self.identity {
-            ProcessIdentity::Pidfd(fd) => {
-                let mut descriptor = libc::pollfd {
-                    fd: fd.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: one pollfd that lives on this stack frame; zero timeout.
-                let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
-                ready > 0 && descriptor.revents & (libc::POLLIN | libc::POLLHUP) != 0
-            }
-            ProcessIdentity::StartTime(start_time) => !matches!(
-                self.state_by_start_time(*start_time),
-                Some(state) if !matches!(state, 'Z' | 'X' | 'x')
-            ),
-        }
+        let mut descriptor = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd that lives on this stack frame; zero timeout.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
+        ready > 0 && descriptor.revents & (libc::POLLIN | libc::POLLHUP) != 0
     }
 }
 
 fn pidfd_probe_error_means_unreaped(error: &std::io::Error) -> bool {
     error.raw_os_error() != Some(libc::ESRCH)
-}
-
-/// The state letter and start time (clock ticks since boot) from a
-/// `/proc/<pid>/stat` line. The command name is skipped by its last `)`.
-pub(super) fn state_and_start_time_from_stat(stat: &str) -> Option<(char, u64)> {
-    let rest = stat.get(stat.rfind(')')? + 2..)?;
-    let mut fields = rest.split_whitespace();
-    let state = fields.next()?.chars().next()?;
-    // starttime is field 22 of stat(5); `state` was field 3.
-    let start_time = fields.nth(18)?.parse().ok()?;
-    Some((state, start_time))
 }
 
 /// Wait until every handle's process has exited, or `timeout` passes.
@@ -232,31 +148,24 @@ pub fn wait_for_process_exits(handles: &[&ProcessHandle], timeout: Duration) -> 
         if pending.is_empty() {
             return true;
         }
-        let Some(mut wait_ms) = poll_timeout_until(deadline) else {
+        let Some(wait_ms) = poll_timeout_until(deadline) else {
             return false;
         };
         let mut descriptors: Vec<libc::pollfd> = pending
             .iter()
-            .filter_map(|handle| handle.pidfd())
-            .map(|fd| libc::pollfd {
-                fd,
+            .map(|handle| libc::pollfd {
+                fd: handle.pidfd(),
                 events: libc::POLLIN,
                 revents: 0,
             })
             .collect();
-        if descriptors.len() < pending.len() {
-            // Handles without a pidfd have nothing to poll: recheck them soon.
-            let recheck_ms = i32::try_from(START_TIME_EXIT_RECHECK.as_millis()).unwrap_or(10);
-            wait_ms = wait_ms.min(recheck_ms);
-        }
         let count = libc::nfds_t::try_from(descriptors.len()).unwrap_or(libc::nfds_t::MAX);
         // SAFETY: `descriptors` holds `count` initialised pollfds and outlives
-        // the call (with none, poll only sleeps); the fds are kept open by
-        // `handles`.
+        // the call; the fds are kept open by `handles`.
         let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), count, wait_ms) };
         if ready < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-            // A failing poll must not turn this into a busy loop.
-            std::thread::sleep(START_TIME_EXIT_RECHECK);
+            tracing::error!(error = %std::io::Error::last_os_error(), "could not poll process pidfds");
+            return false;
         }
     }
 }
@@ -285,14 +194,6 @@ pub fn session_member_handles(
     session_id: u32,
     leader_reaped: impl Fn() -> bool,
 ) -> Vec<ProcessHandle> {
-    session_member_handles_with(session_id, leader_reaped, ProcessHandle::open)
-}
-
-pub(super) fn session_member_handles_with(
-    session_id: u32,
-    leader_reaped: impl Fn() -> bool,
-    open: impl Fn(u32) -> Option<ProcessHandle>,
-) -> Vec<ProcessHandle> {
     let Ok(wanted) = i32::try_from(session_id) else {
         return Vec::new();
     };
@@ -307,7 +208,7 @@ pub(super) fn session_member_handles_with(
         if pid == session_id || process_session_id(pid) != Some(wanted) {
             continue;
         }
-        let Some(handle) = open(pid) else {
+        let Some(handle) = ProcessHandle::open(pid) else {
             continue;
         };
         if process_session_id(pid) == Some(wanted) && handle.is_unreaped() {
@@ -439,10 +340,7 @@ mod reap_tests {
             .spawn()
             .expect("test precondition");
         let handle = ProcessHandle::open(child.id()).expect("child is alive");
-        let pidfd = handle
-            .try_clone_pidfd()
-            .expect("pidfd duplicates")
-            .expect("kernel supports pidfds");
+        let pidfd = handle.try_clone_pidfd().expect("pidfd duplicates");
         (reap_pidfd(pidfd.as_fd()).expect("waitid reaps"), child)
     }
 

@@ -91,3 +91,12 @@ The invalid-ratio rejection returns before any of that; the later rejections do
 not. Also untested: the server wiring in `crates/shepr-server/src/app/mod.rs`
 that turns a nonzero `dropped_tabs` into a backup of the original session file
 on the first save (the `with_paths` construction path).
+
+## BUG-099 - A layout that cannot be fingerprinted is no longer preserved as a snapshot
+
+`crates/shepr-mux/src/persist/writer.rs`: when the snapshot-preservation paths
+were collapsed into one decision, the case where `layout_fingerprint` returns
+`None` (a fingerprint serialization failure) changed from "preserve" to "skip".
+Only reachable on a serialization failure. Decide which is right; if a layout
+that cannot be fingerprinted should still be preserved, restore that and pin it
+with a test.

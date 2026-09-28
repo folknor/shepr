@@ -73,7 +73,7 @@ use clipboard::{
 #[cfg(test)]
 use host::{is_detached_session, resolve_launch_executable};
 #[cfg(test)]
-use process::{process_exists, session_member_handles_with, state_and_start_time_from_stat};
+use process::process_exists;
 #[cfg(test)]
 use remote_bridge_io::forward_remote_bridge_stdio_with_timeout;
 #[cfg(test)]

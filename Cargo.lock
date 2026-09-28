@@ -1556,6 +1556,7 @@ dependencies = [
  "serde",
  "shepr-core",
  "unicode-width",
+ "vte",
 ]
 
 [[package]]

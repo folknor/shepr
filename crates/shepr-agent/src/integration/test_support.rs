@@ -22,7 +22,6 @@ impl StatPath for Path {
     }
 }
 
-pub(super) fn symlink_file(target: &Path, link: &Path) -> bool {
+pub(super) fn symlink_file(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).expect("create symlink");
-    true
 }

@@ -2,9 +2,10 @@
 # Place this file at ~/.config/shepr/config.toml
 
 [theme]
-# Built-in themes: catppuccin, terminal, tokyo-night, dracula, nord,
-#                  gruvbox, one-dark, solarized, kanagawa, rose-pine,
-#                  vesper
+# Built-in themes: catppuccin, catppuccin-latte, terminal, tokyo-night,
+#                  tokyo-night-day, dracula, nord, gruvbox, gruvbox-light,
+#                  one-dark, one-light, solarized, solarized-light, kanagawa,
+#                  kanagawa-lotus, rose-pine, rose-pine-dawn, vesper
 # name = "catppuccin"
 
 # Override individual color tokens on top of the base theme.
@@ -152,9 +153,9 @@
 # host_cursor = "native"
 
 # Optional modifier that forwards right-click hold/drag gestures to pane apps instead of opening Shepr's pane menu.
-# Empty/off disables this. Shift is intentionally unsupported because terminals commonly reserve Shift+mouse.
-# Terminal mouse reports only carry ctrl and alt ("option" and "meta" are aliases for alt),
-# so use "ctrl", "alt" or "ctrl+alt".
+# Empty or an off value disables this. Shift is intentionally unsupported
+# because terminals commonly reserve Shift+mouse.
+# Terminal mouse reports use only ctrl and alt, with keybinding aliases accepted.
 # right_click_passthrough_modifier = ""
 
 # Force a full redraw when the outer terminal regains focus.

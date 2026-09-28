@@ -71,6 +71,8 @@ impl ConfigProvenance {
         config: &Config,
         document: Option<&toml::Value>,
     ) -> Result<Self, String> {
+        // SidebarTokenRule serializes through RawRule, whose optional fields remain
+        // present as null so provenance can enumerate absent rule settings.
         let encoded = serde_json::to_value(config)
             .map_err(|error| format!("cannot enumerate resolved config values: {error}"))?;
         let mut config_paths = Vec::new();

@@ -432,7 +432,10 @@ mod tests {
             let Some(("prompt", prompt)) = agent.subcommand() else {
                 panic!("agent prompt did not parse");
             };
-            assert_eq!(super::super::matches::required(prompt, "text"), "--machine");
+            assert_eq!(
+                super::super::matches::required(prompt, "text").as_deref(),
+                Some("--machine")
+            );
         }
 
         let matches =

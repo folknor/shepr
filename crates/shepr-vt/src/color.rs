@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const NAMED_COLOR_COUNT: usize = 16;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct RgbColor {
     pub r: u8,
@@ -40,7 +42,7 @@ impl From<RgbColor> for Rgb {
 
 /// The built-in 256-colour palette used until the host theme overrides it.
 pub fn default_palette() -> [RgbColor; 256] {
-    const NAMED: [(u8, u8, u8); 16] = [
+    const NAMED: [(u8, u8, u8); NAMED_COLOR_COUNT] = [
         (0x1d, 0x1f, 0x21),
         (0xcc, 0x66, 0x66),
         (0xb5, 0xbd, 0x68),
@@ -70,7 +72,7 @@ pub fn default_palette() -> [RgbColor; 256] {
             u8::try_from(value * 40 + 55).unwrap_or(u8::MAX)
         }
     };
-    for (offset, slot) in palette[16..232].iter_mut().enumerate() {
+    for (offset, slot) in palette[NAMED_COLOR_COUNT..232].iter_mut().enumerate() {
         *slot = RgbColor {
             r: cube(offset / 36),
             g: cube((offset / 6) % 6),

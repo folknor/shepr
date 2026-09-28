@@ -8,13 +8,12 @@ pub(crate) enum Command {
     Overview { json: bool },
     Server { json: bool },
     Client { json: bool },
-    Invalid,
 }
 
 impl Command {
     pub(super) fn name(self) -> Option<&'static str> {
         match self {
-            Self::Overview { .. } | Self::Invalid => None,
+            Self::Overview { .. } => None,
             Self::Server { .. } => Some("server"),
             Self::Client { .. } => Some("client"),
         }
@@ -23,22 +22,22 @@ impl Command {
     pub(super) fn can_run_on_machine(self) -> bool {
         match self {
             Self::Overview { .. } | Self::Server { .. } => true,
-            Self::Client { .. } | Self::Invalid => false,
+            Self::Client { .. } => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     let root_json = super::matches::flag(matches, "json");
     match matches.subcommand() {
-        None => Command::Overview { json: root_json },
-        Some(("server", scope)) => Command::Server {
+        None => Some(Command::Overview { json: root_json }),
+        Some(("server", scope)) => Some(Command::Server {
             json: root_json || super::matches::flag(scope, "json"),
-        },
-        Some(("client", scope)) => Command::Client {
+        }),
+        Some(("client", scope)) => Some(Command::Client {
             json: root_json || super::matches::flag(scope, "json"),
-        },
-        Some(_) => Command::Invalid,
+        }),
+        Some(_) => None,
     }
 }
 
@@ -53,7 +52,6 @@ pub(super) fn run_status_command(
             print_client_status(json, paths)?;
             Ok(0)
         }
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 

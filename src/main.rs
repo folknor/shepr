@@ -384,12 +384,6 @@ mod tests {
     }
 
     #[test]
-    fn random_nested_message_comes_from_known_set() {
-        let message = random_nested_message();
-        assert!(NESTED_SHEPR_MESSAGES.contains(&message));
-    }
-
-    #[test]
     fn nested_message_strings_no_longer_repeat_shepr_prefix() {
         assert!(
             NESTED_SHEPR_MESSAGES

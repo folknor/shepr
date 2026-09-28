@@ -45,6 +45,10 @@ impl DataDirLease {
         &self.directory
     }
 
+    pub(super) fn is_active(&self) -> bool {
+        self.file.is_some()
+    }
+
     pub fn release(&mut self) {
         self.file.take();
     }

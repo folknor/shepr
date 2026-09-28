@@ -53,7 +53,7 @@ fn resize_signal_reports_even_when_polled_size_is_unchanged() {
 #[test]
 fn unavailable_terminal_grid_is_not_fabricated() {
     let reported_cell_size = AtomicCellSize::new();
-    let err = current_terminal_geometry_with(false, false, &reported_cell_size, None, None, || {
+    let err = current_terminal_geometry_with(false, &reported_cell_size, None, None, || {
         Err(io::Error::new(
             io::ErrorKind::NotConnected,
             "terminal is gone",
@@ -67,15 +67,11 @@ fn unavailable_terminal_grid_is_not_fabricated() {
 #[test]
 fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
     let reported_cell_size = AtomicCellSize::new();
-    let geometry = current_terminal_geometry_with(
-        true,
-        true,
-        &reported_cell_size,
-        Some((9, 18)),
-        None,
-        || Ok((80, 24)),
-    )
-    .expect("grid geometry remains valid without pixel dimensions");
+    let geometry =
+        current_terminal_geometry_with(true, &reported_cell_size, Some((9, 18)), None, || {
+            Ok((80, 24))
+        })
+        .expect("grid geometry remains valid without pixel dimensions");
 
     assert_eq!(
         geometry,
@@ -273,12 +269,6 @@ fn reported_cell_size_is_taken_from_host_cell_size_events() {
         super::terminal_geometry::reported_cell_size_from_events(&events),
         Some((9, 18))
     );
-}
-
-#[test]
-fn color_scheme_reports_are_enabled_only_for_full_clients() {
-    assert!(should_enable_host_color_scheme_reports(true));
-    assert!(!should_enable_host_color_scheme_reports(false));
 }
 
 #[test]

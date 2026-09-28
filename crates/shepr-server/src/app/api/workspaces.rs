@@ -14,20 +14,13 @@ use super::super::api_helpers::{
 use super::responses::{failure, success};
 
 impl App {
-    pub(super) fn handle_workspace_list(&mut self, id: String) -> ApiResult {
-        success(
-            id,
-            ResponseResult::WorkspaceList {
-                workspaces: self.workspace_list_info(),
-            },
-        )
+    pub(super) fn handle_workspace_list(&mut self) -> ApiResult {
+        success(ResponseResult::WorkspaceList {
+            workspaces: self.workspace_list_info(),
+        })
     }
 
-    pub(super) fn handle_workspace_get(
-        &mut self,
-        id: String,
-        target: &WorkspaceTarget,
-    ) -> ApiResult {
+    pub(super) fn handle_workspace_get(&mut self, target: &WorkspaceTarget) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return Err(workspace_not_found(&target.workspace_id));
         };
@@ -35,14 +28,10 @@ impl App {
             return Err(workspace_not_found(&target.workspace_id));
         };
 
-        success(id, ResponseResult::WorkspaceInfo { workspace })
+        success(ResponseResult::WorkspaceInfo { workspace })
     }
 
-    pub(super) fn handle_workspace_create(
-        &mut self,
-        id: String,
-        params: WorkspaceCreateParams,
-    ) -> ApiResult {
+    pub(super) fn handle_workspace_create(&mut self, params: WorkspaceCreateParams) -> ApiResult {
         let source_context = if params.cwd.is_some() {
             None
         } else {
@@ -90,23 +79,18 @@ impl App {
                 }
                 self.emit_workspace_open_events(index);
                 match self.workspace_created_result(index) {
-                    Some(result) => success(id, result),
+                    Some(result) => success(result),
                     None => failure(
-                        id,
                         ApiErrorCode::WorkspaceCreateFailed,
                         "new workspace is unavailable",
                     ),
                 }
             }
-            Err(err) => failure(id, ApiErrorCode::WorkspaceCreateFailed, err.to_string()),
+            Err(err) => failure(ApiErrorCode::WorkspaceCreateFailed, err.to_string()),
         }
     }
 
-    pub(super) fn handle_workspace_focus(
-        &mut self,
-        id: String,
-        target: &WorkspaceTarget,
-    ) -> ApiResult {
+    pub(super) fn handle_workspace_focus(&mut self, target: &WorkspaceTarget) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return Err(workspace_not_found(&target.workspace_id));
         };
@@ -118,14 +102,10 @@ impl App {
             return Err(workspace_not_found(&target.workspace_id));
         };
 
-        success(id, ResponseResult::WorkspaceInfo { workspace })
+        success(ResponseResult::WorkspaceInfo { workspace })
     }
 
-    pub(super) fn handle_workspace_rename(
-        &mut self,
-        id: String,
-        params: WorkspaceRenameParams,
-    ) -> ApiResult {
+    pub(super) fn handle_workspace_rename(&mut self, params: WorkspaceRenameParams) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return Err(workspace_not_found(&params.workspace_id));
         };
@@ -148,14 +128,10 @@ impl App {
             return Err(workspace_not_found(&params.workspace_id));
         };
 
-        success(id, ResponseResult::WorkspaceInfo { workspace })
+        success(ResponseResult::WorkspaceInfo { workspace })
     }
 
-    pub(super) fn handle_workspace_move(
-        &mut self,
-        id: String,
-        params: &WorkspaceMoveParams,
-    ) -> ApiResult {
+    pub(super) fn handle_workspace_move(&mut self, params: &WorkspaceMoveParams) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return Err(workspace_not_found(&params.workspace_id));
         };
@@ -164,7 +140,6 @@ impl App {
         }
         if params.insert_index > self.state.workspaces.len() {
             return failure(
-                id,
                 ApiErrorCode::WorkspaceMoveFailed,
                 format!("insert_index {} is out of bounds", params.insert_index),
             );
@@ -186,17 +161,15 @@ impl App {
             });
         }
 
-        success(id, ResponseResult::WorkspaceList { workspaces })
+        success(ResponseResult::WorkspaceList { workspaces })
     }
 
     pub(super) fn handle_workspace_move_block(
         &mut self,
-        id: String,
         params: WorkspaceMoveBlockParams,
     ) -> ApiResult {
         if params.workspace_ids.is_empty() {
             return failure(
-                id,
                 ApiErrorCode::WorkspaceMoveBlockFailed,
                 "workspace_ids must not be empty",
             );
@@ -213,7 +186,6 @@ impl App {
             };
             if !seen_ids.insert(workspace.id.to_string()) {
                 return failure(
-                    id,
                     ApiErrorCode::WorkspaceMoveBlockFailed,
                     format!("workspace {requested_id} appears more than once"),
                 );
@@ -231,7 +203,6 @@ impl App {
                 };
                 if seen_ids.contains(workspace.id.as_str()) {
                     return failure(
-                        id,
                         ApiErrorCode::WorkspaceMoveBlockFailed,
                         "before_workspace_id must not be part of workspace_ids",
                     );
@@ -255,12 +226,11 @@ impl App {
             });
         }
 
-        success(id, ResponseResult::WorkspaceList { workspaces })
+        success(ResponseResult::WorkspaceList { workspaces })
     }
 
     pub(super) fn handle_workspace_report_metadata(
         &mut self,
-        id: String,
         params: WorkspaceReportMetadataParams,
     ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
@@ -268,15 +238,15 @@ impl App {
         };
         let source = match normalize_metadata_source(&params.source) {
             Ok(source) => source,
-            Err(message) => return failure(id, ApiErrorCode::InvalidMetadataSource, message),
+            Err(message) => return failure(ApiErrorCode::InvalidMetadataSource, message),
         };
         let ttl = match normalize_metadata_ttl(params.ttl_ms) {
             Ok(ttl) => ttl,
-            Err(message) => return failure(id, ApiErrorCode::InvalidMetadataTtl, message),
+            Err(message) => return failure(ApiErrorCode::InvalidMetadataTtl, message),
         };
         let tokens = match super::super::api_helpers::normalize_metadata_tokens(params.tokens) {
             Ok(tokens) => tokens,
-            Err(message) => return failure(id, ApiErrorCode::InvalidMetadataToken, message),
+            Err(message) => return failure(ApiErrorCode::InvalidMetadataToken, message),
         };
         let Some(workspace) = self.state.workspaces.get_mut(index) else {
             return Err(workspace_not_found(&params.workspace_id));
@@ -288,13 +258,12 @@ impl App {
             params.seq,
             now,
         ) {
-            return success(id, ResponseResult::Ok {});
+            return success(ResponseResult::Ok {});
         }
         if workspace.metadata_tokens.key_count_after_patch(&tokens)
             > super::super::api_helpers::MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
         {
             return failure(
-                id,
                 ApiErrorCode::MetadataTokenLimit,
                 format!(
                     "workspace metadata may contain at most {} tokens",
@@ -309,10 +278,9 @@ impl App {
             now,
         ) {
             Ok(true) => {}
-            Ok(false) => return success(id, ResponseResult::Ok {}),
+            Ok(false) => return success(ResponseResult::Ok {}),
             Err(()) => {
                 return failure(
-                    id,
                     ApiErrorCode::MetadataSequenceSourceLimit,
                     format!(
                         "workspace metadata may track at most {} sequenced sources",
@@ -326,14 +294,10 @@ impl App {
             self.sync_agent_metadata_deadline();
             self.emit_workspace_token_updated(index);
         }
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_workspace_close(
-        &mut self,
-        id: String,
-        params: &WorkspaceCloseParams,
-    ) -> ApiResult {
+    pub(super) fn handle_workspace_close(&mut self, params: &WorkspaceCloseParams) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return Err(workspace_not_found(&params.workspace_id));
         };
@@ -345,7 +309,7 @@ impl App {
         self.shutdown_detached_terminal_runtimes();
         self.emit_events(close_events);
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
     fn workspace_list_info(&self) -> Vec<shepr_api::schema::WorkspaceInfo> {
@@ -385,16 +349,13 @@ mod tests {
         app.state.ensure_test_terminals();
 
         // Second tab becomes the focused pane, away from tab 1's root pane.
-        let response = app.handle_tab_create(
-            "tab".into(),
-            shepr_api::schema::TabCreateParams {
-                workspace_id: None,
-                cwd: None,
-                focus: true,
-                label: None,
-                env: Default::default(),
-            },
-        );
+        let response = app.handle_tab_create(shepr_api::schema::TabCreateParams {
+            workspace_id: None,
+            cwd: None,
+            focus: true,
+            label: None,
+            env: Default::default(),
+        });
         let _: SuccessResponse = crate::test_support::test_success(&response);
         // Drop runtimes so cwd resolution deterministically uses cached state.
         shutdown_test_runtimes(&mut app);
@@ -415,16 +376,13 @@ mod tests {
             .expect("test precondition")
             .cwd = focused_cwd.clone();
 
-        let response = app.handle_workspace_create(
-            "req".into(),
-            WorkspaceCreateParams {
-                source_workspace_id: None,
-                cwd: None,
-                focus: false,
-                label: None,
-                env: Default::default(),
-            },
-        );
+        let response = app.handle_workspace_create(WorkspaceCreateParams {
+            source_workspace_id: None,
+            cwd: None,
+            focus: false,
+            label: None,
+            env: Default::default(),
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(
@@ -477,16 +435,13 @@ mod tests {
             .cwd = source_cwd.clone();
         let source_workspace_id = app.public_workspace_id(1).expect("test precondition");
 
-        let response = app.handle_workspace_create(
-            "req".into(),
-            WorkspaceCreateParams {
-                source_workspace_id: Some(source_workspace_id),
-                cwd: None,
-                focus: false,
-                label: None,
-                env: Default::default(),
-            },
-        );
+        let response = app.handle_workspace_create(WorkspaceCreateParams {
+            source_workspace_id: Some(source_workspace_id),
+            cwd: None,
+            focus: false,
+            label: None,
+            env: Default::default(),
+        });
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(
             success.result,
@@ -501,29 +456,23 @@ mod tests {
             std::fs::canonicalize(&source_cwd).unwrap_or_else(|_| source_cwd.clone())
         );
 
-        let invalid = app.handle_workspace_create(
-            "invalid".into(),
-            WorkspaceCreateParams {
-                source_workspace_id: Some("w_999".into()),
-                cwd: None,
-                focus: false,
-                label: None,
-                env: Default::default(),
-            },
-        );
+        let invalid = app.handle_workspace_create(WorkspaceCreateParams {
+            source_workspace_id: Some("w_999".into()),
+            cwd: None,
+            focus: false,
+            label: None,
+            env: Default::default(),
+        });
         let error: ErrorResponse = crate::test_support::test_error(&invalid);
         assert_eq!(error.error.code, "workspace_not_found");
 
-        let captured = app.handle_workspace_create(
-            "captured".into(),
-            WorkspaceCreateParams {
-                source_workspace_id: Some("w_999".into()),
-                cwd: Some(source_cwd.display().to_string()),
-                focus: false,
-                label: None,
-                env: Default::default(),
-            },
-        );
+        let captured = app.handle_workspace_create(WorkspaceCreateParams {
+            source_workspace_id: Some("w_999".into()),
+            cwd: Some(source_cwd.display().to_string()),
+            focus: false,
+            label: None,
+            env: Default::default(),
+        });
         let success: SuccessResponse = crate::test_support::test_success(&captured);
         assert!(matches!(
             success.result,
@@ -612,19 +561,13 @@ mod tests {
         );
         app.state.workspaces = vec![Workspace::test_new("one")];
         let workspace_id = app.public_workspace_id(0).expect("test precondition");
-        let response = app.handle_workspace_report_metadata(
-            "req".into(),
-            WorkspaceReportMetadataParams {
-                workspace_id,
-                source: "user:test".into(),
-                tokens: std::collections::HashMap::from([(
-                    "summary".into(),
-                    Some("temporary".into()),
-                )]),
-                seq: None,
-                ttl_ms: Some(1),
-            },
-        );
+        let response = app.handle_workspace_report_metadata(WorkspaceReportMetadataParams {
+            workspace_id,
+            source: "user:test".into(),
+            tokens: std::collections::HashMap::from([("summary".into(), Some("temporary".into()))]),
+            seq: None,
+            ttl_ms: Some(1),
+        });
         let _: SuccessResponse = crate::test_support::test_success(&response);
         let deadline = app.agent_metadata_deadline.expect("token deadline");
 
@@ -679,13 +622,10 @@ mod tests {
         app.state.set_selected_index(Some(0));
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
-        let response = app.handle_workspace_move(
-            "req".into(),
-            &WorkspaceMoveParams {
-                workspace_id: moved_id.clone(),
-                insert_index: 3,
-            },
-        );
+        let response = app.handle_workspace_move(&WorkspaceMoveParams {
+            workspace_id: moved_id.clone(),
+            insert_index: 3,
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
@@ -727,13 +667,10 @@ mod tests {
         let child_id = app.public_workspace_id(0).expect("test precondition");
         let tail_id = app.public_workspace_id(3).expect("test precondition");
 
-        let response = app.handle_workspace_move_block(
-            "req".into(),
-            WorkspaceMoveBlockParams {
-                workspace_ids: vec![parent_id.clone(), child_id.clone()],
-                before_workspace_id: Some(tail_id.clone()),
-            },
-        );
+        let response = app.handle_workspace_move_block(WorkspaceMoveBlockParams {
+            workspace_ids: vec![parent_id.clone(), child_id.clone()],
+            before_workspace_id: Some(tail_id.clone()),
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
@@ -795,12 +732,9 @@ mod tests {
             app.public_tab_id(0, 1).expect("test precondition"),
         ];
 
-        let response = app.handle_workspace_close(
-            "req".into(),
-            &WorkspaceCloseParams {
-                workspace_id: workspace_id.clone(),
-            },
-        );
+        let response = app.handle_workspace_close(&WorkspaceCloseParams {
+            workspace_id: workspace_id.clone(),
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
@@ -839,13 +773,10 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
-        let response = app.handle_workspace_move(
-            "req".into(),
-            &WorkspaceMoveParams {
-                workspace_id: moved_id.clone(),
-                insert_index: 1,
-            },
-        );
+        let response = app.handle_workspace_move(&WorkspaceMoveParams {
+            workspace_id: moved_id.clone(),
+            insert_index: 1,
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {

@@ -16,7 +16,6 @@ pub(crate) enum Command {
     Rename { workspace_id: String, label: String },
     ReportMetadata(ReportMetadataArgs),
     Close { workspace_id: String },
-    Invalid,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,7 +45,6 @@ impl Command {
             Self::Rename { .. } => Some("rename"),
             Self::ReportMetadata(_) => Some("report-metadata"),
             Self::Close { .. } => Some("close"),
-            Self::Invalid => None,
         }
     }
 
@@ -59,43 +57,42 @@ impl Command {
             | Self::Rename { .. }
             | Self::ReportMetadata(_)
             | Self::Close { .. } => true,
-            Self::Invalid => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("list", _)) => Command::List,
-        Some(("create", command)) => Command::Create(CreateArgs {
+        Some(("list", _)) => Some(Command::List),
+        Some(("create", command)) => Some(Command::Create(CreateArgs {
             cwd: string(command, "cwd"),
             focus: flag(command, "focus"),
             label: string(command, "label"),
             env: values::<(String, String)>(command, "env")
                 .into_iter()
                 .collect(),
+        })),
+        Some(("get", command)) => Some(Command::Get {
+            workspace_id: required(command, "workspace_id")?,
         }),
-        Some(("get", command)) => Command::Get {
-            workspace_id: required(command, "workspace_id"),
-        },
-        Some(("focus", command)) => Command::Focus {
-            workspace_id: required(command, "workspace_id"),
-        },
-        Some(("rename", command)) => Command::Rename {
-            workspace_id: required(command, "workspace_id"),
+        Some(("focus", command)) => Some(Command::Focus {
+            workspace_id: required(command, "workspace_id")?,
+        }),
+        Some(("rename", command)) => Some(Command::Rename {
+            workspace_id: required(command, "workspace_id")?,
             label: words(command, "label"),
-        },
-        Some(("report-metadata", command)) => Command::ReportMetadata(ReportMetadataArgs {
-            workspace_id: required(command, "workspace_id"),
-            source: required(command, "source"),
+        }),
+        Some(("report-metadata", command)) => Some(Command::ReportMetadata(ReportMetadataArgs {
+            workspace_id: required(command, "workspace_id")?,
+            source: required(command, "source")?,
             tokens: super::matches::metadata_tokens(command),
             seq: value(command, "seq"),
             ttl_ms: value(command, "ttl-ms"),
+        })),
+        Some(("close", command)) => Some(Command::Close {
+            workspace_id: required(command, "workspace_id")?,
         }),
-        Some(("close", command)) => Command::Close {
-            workspace_id: required(command, "workspace_id"),
-        },
-        _ => Command::Invalid,
+        _ => None,
     }
 }
 
@@ -128,7 +125,6 @@ pub(super) fn run_workspace_command(
         Command::Close { workspace_id } => {
             super::runtime::workspace_close(paths, WorkspaceCloseParams { workspace_id })
         }
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -182,7 +178,7 @@ mod tests {
     use super::super::tests::group_matches;
 
     fn command(args: &[&str]) -> super::Command {
-        super::parse(&group_matches(args))
+        super::parse(&group_matches(args)).expect("test precondition")
     }
 
     fn create_args(args: &[&str]) -> super::CreateArgs {

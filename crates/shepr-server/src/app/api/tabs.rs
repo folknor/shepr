@@ -13,7 +13,7 @@ use super::super::api_helpers::{active_workspace_not_found, tab_not_found, works
 use super::responses::{failure, success};
 
 impl App {
-    pub(super) fn handle_tab_list(&mut self, id: String, params: TabListParams) -> ApiResult {
+    pub(super) fn handle_tab_list(&mut self, params: TabListParams) -> ApiResult {
         let tabs = if let Some(workspace_id) = params.workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
                 return Err(workspace_not_found(&workspace_id));
@@ -34,10 +34,10 @@ impl App {
             tabs
         };
 
-        success(id, ResponseResult::TabList { tabs })
+        success(ResponseResult::TabList { tabs })
     }
 
-    pub(super) fn handle_tab_get(&mut self, id: String, target: &TabTarget) -> ApiResult {
+    pub(super) fn handle_tab_get(&mut self, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return Err(tab_not_found(&target.tab_id));
         };
@@ -45,10 +45,10 @@ impl App {
             return Err(tab_not_found(&target.tab_id));
         };
 
-        success(id, ResponseResult::TabInfo { tab })
+        success(ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_create(&mut self, id: String, params: TabCreateParams) -> ApiResult {
+    pub(super) fn handle_tab_create(&mut self, params: TabCreateParams) -> ApiResult {
         let TabCreateParams {
             workspace_id,
             cwd,
@@ -104,7 +104,7 @@ impl App {
                 let Some(outcome) = self.state.commit_tab_creation(ws_idx, tab, terminal, focus)
                 else {
                     drop(runtime);
-                    return failure(id, ApiErrorCode::TabCreateFailed, "workspace disappeared");
+                    return failure(ApiErrorCode::TabCreateFailed, "workspace disappeared");
                 };
                 let tab_idx = outcome.tab_index;
                 self.terminal_runtimes.insert(terminal_id, runtime);
@@ -127,15 +127,15 @@ impl App {
                 self.schedule_session_save();
                 self.emit_tab_created_events(ws_idx, tab_idx);
                 match self.tab_created_result(ws_idx, tab_idx) {
-                    Some(result) => success(id, result),
-                    None => failure(id, ApiErrorCode::TabCreateFailed, "new tab is unavailable"),
+                    Some(result) => success(result),
+                    None => failure(ApiErrorCode::TabCreateFailed, "new tab is unavailable"),
                 }
             }
-            Err(err) => failure(id, ApiErrorCode::TabCreateFailed, err.to_string()),
+            Err(err) => failure(ApiErrorCode::TabCreateFailed, err.to_string()),
         }
     }
 
-    pub(super) fn handle_tab_focus(&mut self, id: String, target: &TabTarget) -> ApiResult {
+    pub(super) fn handle_tab_focus(&mut self, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return Err(tab_not_found(&target.tab_id));
         };
@@ -144,10 +144,10 @@ impl App {
             return Err(tab_not_found(&target.tab_id));
         };
 
-        success(id, ResponseResult::TabInfo { tab })
+        success(ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_rename(&mut self, id: String, params: TabRenameParams) -> ApiResult {
+    pub(super) fn handle_tab_rename(&mut self, params: TabRenameParams) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return Err(tab_not_found(&params.tab_id));
         };
@@ -182,10 +182,10 @@ impl App {
             return Err(tab_not_found(&params.tab_id));
         };
 
-        success(id, ResponseResult::TabInfo { tab })
+        success(ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_move(&mut self, id: String, params: &TabMoveParams) -> ApiResult {
+    pub(super) fn handle_tab_move(&mut self, params: &TabMoveParams) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return Err(tab_not_found(&params.tab_id));
         };
@@ -194,7 +194,6 @@ impl App {
         };
         if params.insert_index > ws.tabs().len() {
             return failure(
-                id,
                 ApiErrorCode::TabMoveFailed,
                 format!("insert_index {} is out of bounds", params.insert_index),
             );
@@ -226,10 +225,10 @@ impl App {
             });
         }
 
-        success(id, ResponseResult::TabList { tabs })
+        success(ResponseResult::TabList { tabs })
     }
 
-    pub(super) fn handle_tab_close(&mut self, id: String, target: &TabTarget) -> ApiResult {
+    pub(super) fn handle_tab_close(&mut self, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return Err(tab_not_found(&target.tab_id));
         };
@@ -248,7 +247,6 @@ impl App {
             crate::app::actions::TabRemovalCommit::Removed(_)
         ) {
             return failure(
-                id,
                 ApiErrorCode::TabCloseFailed,
                 format!("tab {} could not be closed", target.tab_id),
             );
@@ -257,7 +255,7 @@ impl App {
         self.schedule_session_save();
         self.emit_events(close_events);
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
     fn tab_list_info(&self, ws_idx: usize) -> Vec<shepr_api::schema::TabInfo> {
@@ -296,12 +294,9 @@ mod tests {
         let root_pane = app.state.workspaces[0].tabs()[0].root_pane;
         let pane_id = app.public_pane_id(0, root_pane).expect("test precondition");
 
-        let response = app.handle_tab_close(
-            "req".into(),
-            &TabTarget {
-                tab_id: tab_id.clone(),
-            },
-        );
+        let response = app.handle_tab_close(&TabTarget {
+            tab_id: tab_id.clone(),
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
@@ -373,12 +368,9 @@ mod tests {
         ];
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
 
-        let response = app.handle_tab_close(
-            "req".into(),
-            &TabTarget {
-                tab_id: tab_id.clone(),
-            },
-        );
+        let response = app.handle_tab_close(&TabTarget {
+            tab_id: tab_id.clone(),
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
@@ -430,13 +422,10 @@ mod tests {
         let moved_root = app.state.workspaces[0].tabs()[0].root_pane;
         let moved_id = app.public_tab_id(0, 0).expect("test precondition");
 
-        let response = app.handle_tab_move(
-            "req".into(),
-            &TabMoveParams {
-                tab_id: moved_id.clone(),
-                insert_index: 3,
-            },
-        );
+        let response = app.handle_tab_move(&TabMoveParams {
+            tab_id: moved_id.clone(),
+            insert_index: 3,
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::TabList { tabs } = success.result else {
@@ -493,16 +482,13 @@ mod tests {
             .expect("test precondition")
             .cwd = cached_cwd.clone();
 
-        let response = app.handle_tab_create(
-            "req".into(),
-            TabCreateParams {
-                workspace_id: None,
-                cwd: None,
-                focus: false,
-                label: None,
-                env: Default::default(),
-            },
-        );
+        let response = app.handle_tab_create(TabCreateParams {
+            workspace_id: None,
+            cwd: None,
+            focus: false,
+            label: None,
+            env: Default::default(),
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(success.result, ResponseResult::TabCreated { .. }));

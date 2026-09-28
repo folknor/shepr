@@ -13,7 +13,6 @@ pub(crate) enum Command {
     Reconnect { machine: String },
     Add(AddArgs),
     Remove { machine: String },
-    Invalid,
 }
 
 impl Command {
@@ -24,7 +23,6 @@ impl Command {
             Self::Reconnect { .. } => Some("reconnect"),
             Self::Add(_) => Some("add"),
             Self::Remove { .. } => Some("remove"),
-            Self::Invalid => None,
         }
     }
 
@@ -34,29 +32,28 @@ impl Command {
             | Self::Status { .. }
             | Self::Reconnect { .. }
             | Self::Add(_)
-            | Self::Remove { .. }
-            | Self::Invalid => false,
+            | Self::Remove { .. } => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &ArgMatches) -> Command {
+pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("list", command)) => Command::List {
+        Some(("list", command)) => Some(Command::List {
             json: flag(command, "json"),
-        },
-        Some(("status", command)) => Command::Status {
+        }),
+        Some(("status", command)) => Some(Command::Status {
             machine: string(command, "machine"),
             json: flag(command, "json"),
-        },
-        Some(("reconnect", command)) => Command::Reconnect {
-            machine: required(command, "machine"),
-        },
-        Some(("add", command)) => Command::Add(add_args(command)),
-        Some(("remove", command)) => Command::Remove {
-            machine: required(command, "machine"),
-        },
-        _ => Command::Invalid,
+        }),
+        Some(("reconnect", command)) => Some(Command::Reconnect {
+            machine: required(command, "machine")?,
+        }),
+        Some(("add", command)) => Some(Command::Add(add_args(command)?)),
+        Some(("remove", command)) => Some(Command::Remove {
+            machine: required(command, "machine")?,
+        }),
+        _ => None,
     }
 }
 
@@ -82,7 +79,6 @@ pub(super) fn run_machine_command(
         Command::Reconnect { machine } => reconnect(paths, &machine, saved_ssh_settings(paths)?),
         Command::Add(args) => add(paths, args, saved_ssh_settings(paths)?),
         Command::Remove { machine } => remove(paths, &machine),
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -226,13 +222,13 @@ pub(crate) struct AddArgs {
     session: String,
 }
 
-fn add_args(matches: &ArgMatches) -> AddArgs {
-    AddArgs {
-        target: required(matches, "ssh-target"),
-        label: required(matches, "label"),
+fn add_args(matches: &ArgMatches) -> Option<AddArgs> {
+    Some(AddArgs {
+        target: required(matches, "ssh-target")?,
+        label: required(matches, "label")?,
         session: string(matches, "remote-session")
             .unwrap_or_else(|| shepr_config::DEFAULT_SESSION_NAME.to_owned()),
-    }
+    })
 }
 
 fn add(
@@ -370,7 +366,7 @@ mod tests {
         let Some(("add", add)) = machine.subcommand() else {
             panic!("machine add did not parse");
         };
-        Ok(add_args(add))
+        Ok(add_args(add).expect("test precondition"))
     }
 
     #[test]

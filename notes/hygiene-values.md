@@ -420,8 +420,8 @@ budget without depending on the platform crate. Also decided: the managed SSH
 config writer (`crates/shepr-remote/src/remote/ssh.rs::write_managed_ssh_config`)
 takes its control directory as an input rather than computing one internally,
 so its tests can pass a short path instead of one that cannot fit `sun_path`
-under a deep checkout. Open: the `ipc.rs` prose, the `platform/src/tests.rs`
-literals and the `bridge.rs` shim.
+under a deep checkout. Open: the `ipc.rs` prose and the `platform/src/tests.rs`
+literals.
 
 Reported by the core/platform and remote hunters.
 
@@ -434,12 +434,6 @@ The test-support copy is a forced duplication: that crate's dependency allowlist
 is `["libc"]`, so it cannot read the platform constant, and the restriction is
 right. What keeps them in step: nothing. Since it is prose, the cheapest answer
 is prose that cannot drift ("must fit in `sun_path`", without the number).
-
-Related, from the remote hunter as fact: `crates/shepr-remote/src/remote/bridge.rs`
-defines a private `fits_unix_socket_path` shim over
-`shepr_platform::fits_unix_socket_path`, a public function from a crate
-`shepr-remote` already depends on directly, used by `attach.rs` at three sites -
-which makes the socket limit look like it has two owners.
 
 ## HYGV-027 - The client state subdirectory is spelled at three sites, two ways
 
@@ -455,28 +449,6 @@ Fix: a `shepr_config::AppPaths::client_state_dir()` accessor, like the existing
 `server_address()` / `session_id()`. Enforcement: a text rule forbidding the
 literal `"client"` as a path component outside that accessor, or the accessor
 plus review.
-
-## HYGV-028 - The persisted session filenames have two owners each
-
-Reported by the mux hunter.
-
-`crates/shepr-mux/src/persist/io.rs` defines a private
-`session_history_path(data_dir)`. `persist/writer.rs` never calls it: it derives
-the path itself at three sites with
-`self.path.with_file_name("session-history.json")`. So the writer and the loader
-each spell the filename.
-
-Worse for `"session-snapshots"`: five production spellings in `writer.rs`, and
-one of them is load-bearing as a behavioural guard - `preserve_existing_in`
-selects between "pruning failure is fatal" and "pruning failure is a warning" by
-comparing `directory_name == "session-snapshots"`. Rename the directory at the
-other four sites and forget this one and snapshot pruning failures silently
-become warnings, with the directory growing without bound and nothing saying so.
-
-Fix: consts in `io.rs`, `writer.rs` calling `io::` accessors, and the guard
-replaced by a `PrunePolicy { Fatal, Warn }` passed alongside `keep`, which makes
-the string comparison disappear entirely. Holdable by a text rule once the
-literals are gone.
 
 ## HYGV-032 - `"shepr"` as a program name has two resolution rules, plus an independent remote-install location list
 
@@ -502,40 +474,6 @@ install` decides where the binary actually lands. Where we install and where we
 look are independent lists across the brokkr/shepr boundary. Best available: a
 comment at each site naming the other, and a test that the script's paths are a
 superset of `brokkr install`'s destination if brokkr exposes it.
-
-## HYGV-033 - The profile-id truncation length is duplicated, beside a different constant of the same value
-
-Reported by the remote hunter.
-
-`crates/shepr-remote/src/machine/saved.rs` slices
-`&profile_id.as_str()[..16]` in `saved_bridge_path` and again in
-`SavedSshApiBridge::start` for the short socket name, while `profile_id.rs` owns
-`PROFILE_ID_BYTES = 16` - a different 16 (bytes, not hex chars), so the two are
-easy to confuse. Both slicing sites also panic on a shorter id; `parse`
-guarantees 32 today, so the invariant is maintained by a constructor and relied
-on by slicing two modules away.
-
-Fix: `ProfileId::short() -> &str` on the type that owns the invariant, which
-removes the indexing and the panic together.
-
-## HYGV-034 - `BRIDGE_SOCKET_PERMISSION_MODE` duplicates `PRIVATE_SOCKET_MODE`, and a test uses it for an unrelated file
-
-Reported by the remote hunter, as fact.
-
-`crates/shepr-remote/src/remote/bridge.rs` defines
-`BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600`;
-`crates/shepr-platform/src/ipc.rs` defines a private
-`PRIVATE_SOCKET_MODE: u32 = 0o600`. Worse, the `attach.rs` test
-`managed_ssh_config_includes_user_config_then_fallback` asserts the ssh config
-file's mode against `BRIDGE_SOCKET_PERMISSION_MODE` with the message "keepalive
-config must be user-only", so two unrelated policies now share one constant and
-changing the bridge socket mode breaks an ssh-config test. The bridge's extra
-`restrict_socket_permissions(0o600)` is itself redundant:
-`bind_private_local_listener` already ends owner-only.
-
-Fix: export `PRIVATE_SOCKET_MODE` from `shepr-platform`, delete the bridge copy,
-and have the config test assert `0o600` or a `PRIVATE_FILE_MODE` owned by the
-private-file module.
 
 ## HYGV-035 - `/bin/sh` and the shell-resolution rules are spelled across several sites
 
@@ -588,7 +526,7 @@ The inventories, by scope:
   `DEFAULT_MAX_LOG_BYTES` (5 MiB), `DEFAULT_RETAINED_LOG_FILES` (1),
   `LOG_FILE_MODE`, `PRIVATE_SOCKET_MODE`, `STAGING_ATTEMPTS`,
   `UNIX_SOCKET_PATH_MAX`, `IDLE_TIMEOUT` (60 s), `PROBE_INTERVAL` (1 s, ssh
-  agent), `START_TIME_EXIT_RECHECK` (10 ms), the logind backoff ceiling (60 s),
+  agent), the logind backoff ceiling (60 s),
   and an unnamed 100 ms in `wait_client_stream_readable`.
 - **shepr-vt / shepr-pty**: `ACTOR_IDLE_POLL_MS`, the inbox byte and item caps
   and the resize retry constants at the top of `actor.rs`; `MAX_DRAIN_CHUNKS =
@@ -844,8 +782,7 @@ policy, which is a sibling document; what is here is the duplicated values).
 
 Within `shepr-platform` alone: `STAGING_ATTEMPTS = 4` in `ipc.rs` versus a bare
 `for _ in 0..16` in `ssh_paths.rs` for the same "random name collided, try again"
-policy; `POLL_INTERVAL = 5ms` declared twice in `clipboard.rs`;
-`START_TIME_EXIT_RECHECK = 10ms` in `process.rs`; a hardcoded `100` ms in
+policy; `POLL_INTERVAL = 5ms` declared twice in `clipboard.rs`; a hardcoded `100` ms in
 `client_stream.rs::wait_client_stream_readable`; and a `16 * 1024` copy buffer in
 `remote_bridge_io.rs` against `8192` in `child_io.rs::read_limited_reader`.
 
@@ -953,38 +890,6 @@ For a pane over 65535 px the child's TIOCGWINSZ and its `CSI 14 t` answer alread
 disagree. Fix: a `PaneGeometry::text_area_px()` in `shepr-core` that every site
 calls.
 
-## HYGV-052 - DEC mode numbers have three owners
-
-Reported by the vt/pty hunter.
-
-- `pub const MODE_*` in `crates/shepr-vt/src/lib.rs`.
-- Literal numbers in the `MODES` table in `shepr-vt`'s `modes.rs`: 1004, 1005,
-  1006, 1007, 1016, 2004 and 2031 are literals even though constants exist.
-- Private `MODE_MOUSE_X10` / `PRESS_RELEASE` / `BUTTON_MOTION` / `ANY_MOTION`
-  (9, 1000, 1002, 1003) in `crates/shepr-mux/src/pane/terminal.rs`.
-
-The mux also ORs those four modes itself (in `backend.rs` and `wheel_routing`)
-although `Terminal::mouse_tracking_enabled()` already computes the same thing and
-is used two methods earlier in the same file.
-
-Fix by type: a `DecMode` enum with `number()`, used for both the table and the
-API, and `mode_get(DecMode)` instead of `u16`.
-
-## HYGV-053 - The halfwidth katakana voiced-mark rule has three owners
-
-Reported by the vt/pty hunter.
-
-- `crates/shepr-vt/src/cell.rs::is_halfwidth_voiced_mark`.
-- `crates/shepr-mux/src/pane/terminal/helpers.rs`:
-  `is_halfwidth_katakana_voiced_mark` and `..._grapheme`.
-- A verbatim copy of `is_halfwidth_katakana_voiced_grapheme` in
-  `crates/shepr-termio/src/blit.rs`.
-
-The mux copy exists because `ghostty_buffer_symbol_into` measures with raw
-`unicode_width` instead of `shepr_vt::unicode_text_width` and then patches around
-the difference. Fix: export the predicate from `shepr-vt`. Enforcement: a text
-rule banning the U+FF9E / U+FF9F spelling outside `shepr-vt` is feasible.
-
 ## HYGV-054 - The kitty placeholder filter is spelled five times, and four of the copies cannot fire
 
 Reported by the vt/pty hunter.
@@ -996,24 +901,6 @@ checks are unreachable: `helpers.rs::ghostty_cell_symbol`,
 
 Fix: stop making `KITTY_UNICODE_PLACEHOLDER` public, which removes the four
 downstream spellings.
-
-## HYGV-055 - Underline flags, named-colour thresholds and one string terminator are duplicated inside `shepr-vt`
-
-Reported by the vt/pty hunter.
-
-The underline ladder appears in both `cell.rs::cell_style` and
-`format.rs::push_sgr`. The "named index >= 16 means default" rule appears in both
-`cell_color` and `push_color`. `"\x1b]8;;\x1b\\"` appears twice in `format.rs`.
-
-Fix: one `UnderlineStyle::from_flags` and one SGR table.
-
-## HYGV-056 - `ScreenTextRow` carries the wrap fields flat beside a type that already holds them
-
-Reported by the vt/pty hunter.
-
-`ScreenTextRow` carries `soft_wrapped` and `wrap_continuation` as flat fields
-next to a `RowWrap` type with the same two fields; the comment admits it. Fix by
-type: embed `RowWrap`.
 
 ## HYGV-058 - `PANE_TERM` has one owner but `PANE_COLORTERM` lives in another crate, and a test re-spells both
 
@@ -1056,46 +943,6 @@ to one table. The hunter also notes `default.toml` ships exactly one active
 certainly an editing slip, holdable by a test that every non-blank,
 non-`[section]` line starts with `#`.
 
-## HYGV-066 - The built-in theme list has diverged, and theme names are spelled three times in code
-
-Reported by the protocol/config hunter, as fact.
-
-`crates/shepr-config/src/theme.rs`'s `THEME_NAMES` holds 18 themes;
-`default.toml`'s comment lists 11. Every light variant
-(`catppuccin-latte`, `tokyo-night-day`, `gruvbox-light`, `one-light`,
-`solarized-light`, `kanagawa-lotus`, `rose-pine-dawn`) is implemented, accepted
-by `canonical_theme_name`, named in the error message for an unknown theme, and
-absent from the printed default config.
-
-In code the names are spelled three times (`THEME_NAMES`,
-`canonical_theme_name`'s match, `Palette::from_name`'s match) plus 18 constructor
-functions. `built_in_theme_names_resolve` covers
-`THEME_NAMES -> canonical -> from_name` in one direction only, so a palette
-implemented but missing from `THEME_NAMES` is undetected - which is exactly the
-failure mode that produced the divergence.
-
-The default theme name `"catppuccin"` is a bare literal in
-`theme_config.rs::resolve_palette`, restated in `default.toml`'s comment and in
-`THEME_NAMES[0]`; a `DEFAULT_THEME` const referenced from all three fixes that.
-
-Enforcement: assert every `THEME_NAMES` entry appears in `DEFAULT_CONFIG` (same
-shape as the keybinding test), and one table used in both directions for the
-name-to-palette mapping.
-
-## HYGV-067 - `right_click_passthrough_modifier`'s accepted-value set is spelled five times, and one copy is narrower
-
-Reported by the protocol/config hunter.
-
-The parser in `crates/shepr-config/src/model.rs`; the hand-written error-message
-constant `RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES`, which restates the alias list
-by hand; the `Serialize` impl, which emits a narrower set
-(`off` / `ctrl` / `alt` / `ctrl+alt`); `WireRightClickModifier` in `wire.rs`; and
-`default.toml`'s comment.
-
-Enforcement: a table of `(&str alias, Option<KeyModifiers>)` that the parser, the
-serialiser and the error message all read, with a round-trip test over the table
-as the whole check.
-
 ## HYGV-068 - What an empty string means is invented per config key, and one default is a sentinel that is never applied
 
 Reported by the protocol/config hunter.
@@ -1116,17 +963,6 @@ is a sentinel whose only live requirement is that it parses as a colour, and
 Not mechanically enforceable. The fix is a type: `Option<NonEmpty<String>>` or a
 small `ConfigOverride<T>` that spells "unset" once, at which point the rule is in
 one place and the sentinel becomes unrepresentable.
-
-## HYGV-070 - Server-local aliases for protocol constants read as independent knobs
-
-Reported by the protocol/config hunter.
-
-`crates/shepr-server/src/server/client_transport.rs` defines
-`MAX_CLIENT_SHELL_DIMENSION`, `MAX_CLIENT_SHELL_CELLS` and
-`MAX_CLIENT_CELL_SIZE_PX`, and `client_commands.rs` defines
-`ENDPOINT_RESPONSE_CHUNK_BYTES`, each a direct `= shepr_protocol::MAX_*`. They
-are correct, but someone tuning one will edit the alias and find it does nothing
-independent. Fix: delete the aliases and use the protocol constants directly.
 
 ## HYGV-072 - Three boolean-from-string parsers, no owner, and one is an incomplete implementation of an external grammar
 
@@ -1242,21 +1078,6 @@ Enforcement: a test that round-trips each generated remote command string throug
 `cli::spec::command().try_get_matches_from`, so the parser proves the producer.
 The only current check is byte-for-byte golden strings in `attach.rs`, which pin
 the producer to itself and say nothing about the parser.
-
-## HYGV-078 - The asset version parity test carries a hand-written list
-
-**Decision (partial):** Hermes support is removed entirely, so the
-`plugin.yaml` version and name findings go with it. The hand-written parity
-list (the two opencode TUI assets) remains open.
-
-Reported by the agent hunter.
-
-`bundled_integration_asset_versions_match_expected_versions` enumerates its
-`(name, asset, version)` triples by hand and omits `OPENCODE_TUI_PLUGIN_ASSET`
-and `OPENCODE_V2_TUI_PLUGIN_ASSET`. A new target added without extending the
-list is silently uncovered, and `registry::integration_asset(target)` already
-exists, so iterating `INTEGRATION_SPECS` would make the test exhaustive by
-construction.
 
 ## HYGV-079 - Claude's hook event and action are re-spelled six times, beside a descriptor that already declares them
 
@@ -1512,3 +1333,10 @@ cap and nothing notices.
 Fix: drop the parameter from the public function and keep a
 `#[cfg(any(test, feature = "test-support"))]` variant for the one test; the
 signature then makes the bad spelling unrepresentable.
+
+## HYGV-108 - `"session.json"` is spelled in server tests although the persist module owns the name
+
+`crates/shepr-mux/src/persist/io.rs` now owns the persisted file and directory
+names, but three tests in `crates/shepr-server/src/app/mod.rs` spell
+`"session.json"` themselves. Expose the name (or a path accessor) from
+`shepr_mux::persist` and use it there.

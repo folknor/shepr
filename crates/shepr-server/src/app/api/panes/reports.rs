@@ -3,14 +3,13 @@ use super::*;
 impl App {
     pub(crate) fn handle_pane_report_agent(
         &mut self,
-        id: String,
         params: PaneReportAgentParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
-            return invalid_agent(id);
+            return invalid_agent();
         };
         self.handle_internal_event(shepr_mux::events::AppEvent::HookStateReported {
             pane_id,
@@ -27,19 +26,18 @@ impl App {
             seq: params.seq,
         });
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_report_agent_session(
         &mut self,
-        id: String,
         params: PaneReportAgentSessionParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
-            return invalid_agent(id);
+            return invalid_agent();
         };
         self.handle_internal_event(shepr_mux::events::AppEvent::AgentSessionReported {
             pane_id,
@@ -57,12 +55,11 @@ impl App {
             ),
         });
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_report_metadata(
         &mut self,
-        id: String,
         params: PaneReportMetadataParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
@@ -71,7 +68,7 @@ impl App {
         let agent_label = match params.agent.as_deref() {
             Some(agent) => match normalize_reported_agent_label(agent) {
                 Some(agent_label) => Some(agent_label),
-                None => return invalid_agent(id),
+                None => return invalid_agent(),
             },
             None => None,
         };
@@ -79,7 +76,6 @@ impl App {
             Ok(source) => source,
             Err(message) => {
                 return failure(
-                    id,
                     shepr_api::error::ApiErrorCode::InvalidMetadataSource,
                     message,
                 );
@@ -94,7 +90,6 @@ impl App {
                 Ok(tokens) => Some(tokens),
                 Err(message) => {
                     return failure(
-                        id,
                         shepr_api::error::ApiErrorCode::InvalidMetadataToken,
                         message,
                     );
@@ -104,11 +99,7 @@ impl App {
         let ttl = match normalize_metadata_ttl(params.ttl_ms) {
             Ok(ttl) => ttl,
             Err(message) => {
-                return failure(
-                    id,
-                    shepr_api::error::ApiErrorCode::InvalidMetadataTtl,
-                    message,
-                );
+                return failure(shepr_api::error::ApiErrorCode::InvalidMetadataTtl, message);
             }
         };
         let title = normalize_presentation_text(params.title);
@@ -118,7 +109,6 @@ impl App {
                 Ok(applies_to_source) => Some(applies_to_source),
                 Err(message) => {
                     return failure(
-                        id,
                         shepr_api::error::ApiErrorCode::InvalidMetadataSource,
                         message,
                     );
@@ -130,7 +120,6 @@ impl App {
             || raw_display_agent_set && params.clear_display_agent
         {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::InvalidMetadataRequest,
                 "cannot set and clear the same metadata field",
             );
@@ -142,7 +131,6 @@ impl App {
             && !params.clear_display_agent
         {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::InvalidMetadataRequest,
                 "missing metadata field to set or clear",
             );
@@ -168,10 +156,10 @@ impl App {
             agent_label.as_deref(),
             applies_to_source.as_deref(),
         ) {
-            return success(id, ResponseResult::Ok {});
+            return success(ResponseResult::Ok {});
         }
         if !terminal.metadata_report_sequence_is_fresh(&source, params.seq) {
-            return success(id, ResponseResult::Ok {});
+            return success(ResponseResult::Ok {});
         }
         let metadata_agent = shepr_mux::terminal::TerminalState::metadata_report_agent(
             &source,
@@ -183,7 +171,6 @@ impl App {
                 > MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
         {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::MetadataTokenLimit,
                 format!(
                     "pane metadata may contain at most {MAX_METADATA_TOKEN_KEYS_PER_RESOURCE} tokens"
@@ -193,10 +180,9 @@ impl App {
         match terminal.accept_metadata_report(&source, params.seq, tokens.is_some(), metadata_agent)
         {
             Ok(true) => {}
-            Ok(false) => return success(id, ResponseResult::Ok {}),
+            Ok(false) => return success(ResponseResult::Ok {}),
             Err(()) => {
                 return failure(
-                    id,
                     shepr_api::error::ApiErrorCode::MetadataSequenceSourceLimit,
                     format!(
                         "pane metadata may track at most {} sequenced sources",
@@ -234,12 +220,11 @@ impl App {
             self.emit_pane_updated(ws_idx, pane_id);
         }
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_clear_agent_authority(
         &mut self,
-        id: String,
         params: PaneClearAgentAuthorityParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
@@ -251,19 +236,18 @@ impl App {
             seq: params.seq,
         });
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_release_agent(
         &mut self,
-        id: String,
         params: PaneReleaseAgentParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
-            return invalid_agent(id);
+            return invalid_agent();
         };
         self.handle_internal_event(shepr_mux::events::AppEvent::HookAgentReleased {
             pane_id,
@@ -273,6 +257,6 @@ impl App {
             seq: params.seq,
         });
 
-        success(id, ResponseResult::Ok {})
+        success(ResponseResult::Ok {})
     }
 }

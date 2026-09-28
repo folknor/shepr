@@ -1,6 +1,22 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::*;
+
+#[test]
+fn method_names_and_traits_share_unique_schema_entries() {
+    let mut names = HashSet::new();
+    let mut client_shell_methods = 0;
+
+    for name in Method::ALL_NAMES {
+        assert!(names.insert(*name), "duplicate method name: {name}");
+        let traits = Method::traits_for_name(name).expect("declared method name");
+        assert_eq!(traits.name, *name);
+        client_shell_methods += usize::from(traits.client_shell);
+    }
+
+    assert_eq!(client_shell_methods, 27);
+    assert!(Method::traits_for_name("plugin.future").is_none());
+}
 
 #[test]
 fn request_uses_dot_method_names() {

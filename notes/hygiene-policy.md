@@ -70,9 +70,10 @@ handed in, so behaviour that depends on time is untestable without sleeping.
   probe interval, a 500 ms connect timeout and a 10 ms read poll, so
   `registration_retries_when_the_api_is_initially_missing` polls against a
   5 second wall-clock deadline.
-- `shepr-mux`: `SystemTime::now()` at four sites in `persist/writer.rs`, with no
-  seam, so the 15-minute snapshot gate can only be tested by setting a file's
-  mtime a day into the future (`writer.rs` test). `Instant::now()` twice in
+- `shepr-mux`: `persist/writer.rs`'s preservation logic now takes `now`, but the
+  public `save` and `clear` entry points still read `SystemTime::now()` because
+  their caller (`shepr-server/src/app/session.rs`) does not pass one, and
+  `persist/restore.rs` has a runtime clock read of its own. `Instant::now()` twice in
   `git/status.rs::git_status_snapshot_for_cwd_with_demand`, and the two reads
   measure the retry deadline from after the subprocess ran and the cache check
   from before. `src/terminal/state/**` and `src/pane/process_probe.rs` thread
@@ -219,8 +220,8 @@ a name after the dot). Open: every site.
   cap 60 s, reset while a shutdown is pending), `ssh_paths.rs` (16 immediate
   retries, no delay), `ipc.rs` (`STAGING_ATTEMPTS = 4`, immediate),
   `clipboard.rs::wait_child_until` (fixed 5 ms poll to a deadline),
-  `process.rs::wait_for_process_exits` (poll with a 10 ms recheck floor and a
-  10 ms sleep on poll failure).
+  `process.rs::wait_for_process_exits` (poll with a 10 ms sleep on poll
+  failure).
 - Across crates: `shepr-client/src/endpoint/supervisor.rs` owns
   `INITIAL_RETRY_DELAY`, `MAX_RETRY_DELAY`, `ATTENTION_RETRY_DELAY`,
   `ATTEMPT_BUDGET` and an exponential `retry_delay(attempt)` - the one properly
@@ -817,36 +818,6 @@ an identity that is supposed to come from one place.
   so in a comment ("a shepr-level override only (primarily a test seam); the grok
   CLI does not honor it") - a production environment variable whose only purpose
   is testing, which the injected-environment fix in HYGP-002 would remove.
-- `shepr-agent` `test_support.rs::symlink_file` returns `true`
-  unconditionally after `expect("create symlink")`, so call sites doing
-  `assert!(symlink_file(..))` assert nothing.
-- `shepr-client` `should_enable_host_color_scheme_reports(enable_client_protocols:
-  bool) -> bool` returns its argument and is `#[cfg(test)]`-imported alongside
-  real helpers; any test asserting on it asserts `x == x`. The hunter's note: the
-  function exists so a rule could live there and today holds no rule - delete it
-  and inline the boolean, or give it the rule it was created to hold.
-  (Also listed as dead code in HYGP-041.)
-
-## HYGP-034 - Snapshot-preservation policy is implemented three times in one file
-
-From `shepr-mux` `src/persist/writer.rs`: `preserve_snapshot_history(path)` and
-`prepare_snapshot_history(path)` both list `recovery_files`, tolerate `NotFound`,
-read the newest copy's mtime, compare its age against `SNAPSHOT_INTERVAL`, read
-and parse `session.json`, check `version != SNAPSHOT_VERSION ||
-workspaces.is_empty()`, compute `layout_fingerprint`, compare it against the
-newest copy's, and call `preserve_existing_in(path, "session-snapshots",
-SNAPSHOT_LIMIT)`. They differ only in what they return and whether the
-fingerprint is handed back. The second one's outcome is then re-checked a third
-time in `finish_snapshot_history`, which repeats the version and emptiness checks
-and the fingerprint comparison inline. One policy, three partial
-implementations, each with its own error handling and its own `tracing::warn!`
-wording.
-
-Enforcement: collapse to one function returning a decision value the caller acts
-on. Holdable only by a reviewer, but the duplication is large enough to be
-obvious once named.
-
----
 
 ## HYGP-035 - The Ghostty naming layer, and the `PaneTerminal` hop that only renames
 
@@ -953,32 +924,6 @@ Delete the feature, the function (`process.rs::signal_processes`) and the
 `features = ["test-support"]` entry in `shepr-server/Cargo.toml`. Full context in
 HYGP-031; recorded separately because the deletion is self-contained.
 
-## HYGP-038 - `ProcessIdentity::StartTime`: a compatibility path for a kernel nobody runs
-
-From `shepr-platform`. What tells the hunter it is dead: `ProcessHandle::open`
-uses it only when `pidfd_open` fails with something other than `ESRCH`/`EINVAL`,
-i.e. `ENOSYS` (kernel older than 5.3, September 2019) or fd exhaustion;
-`ProcessHandle::open_by_start_time` is `pub(super)` with no non-test caller; the
-two tests that exercise the branch assert `pidfd.pidfd().is_some(), "this kernel
-has pidfds"` in the same breath, and `both_handle_kinds` / `openers` exist only
-to double every process test; shepr is Linux-only, `rust-version = "1.99"`, and
-has never been deployed.
-
-What it costs: roughly a third of `process.rs` - a second identity enum arm,
-`state_and_start_time_from_stat`, `state_by_start_time`, a `/proc` read before
-every signal, a `has_exited` implementation with different semantics, the
-`START_TIME_EXIT_RECHECK` tunable and its poll-floor logic in
-`wait_for_process_exits` - plus a documented pid-reuse race the pidfd path does
-not have (a race no test reaches and no assertion guards), plus twice the test
-matrix in two tests.
-
-Recommendation: delete it. `ProcessHandle::open` returns `None` (or an error
-naming fd exhaustion) when `pidfd_open` fails; fd exhaustion is a "refuse and say
-so" case, not a "silently degrade to a racy identity" case. Cost of being wrong:
-shepr stops managing pane process groups on pre-5.3 kernels, which the owner does
-not run. After deletion the `#[cfg]`-free code has one identity and
-`wait_for_process_exits` loses its "handles without a pidfd" branch entirely.
-
 ## HYGP-041 - One-line pass-through wrappers, aliases and identity functions
 
 Each of these is a second name or a second hop for one thing; the evidence given
@@ -988,10 +933,6 @@ for each is the hunter's.
   `log_paths_summary(dir)`. One external caller (`src/cli.rs`); the private
   `log_paths_summary` exists only so the test can call it under a different name.
   Two names, one body, one caller. Make one of them public.
-- `shepr-remote` `bridge.rs::fits_unix_socket_path` is a private shim over
-  `shepr_platform::fits_unix_socket_path`, a public function from a crate
-  `shepr-remote` already depends on directly, used by `attach.rs` at three sites.
-  It makes the socket limit look like it has two owners. Delete it.
 - `shepr-remote` discovery: `locate_remote_shepr`, `prepare_remote_shepr` (wraps
   it in a one-field `PreparedRemoteShepr`) and `find_installed_remote_shepr`
   (body identical to `locate_remote_shepr`) are the same call. Evidence: the
@@ -1021,8 +962,7 @@ for each is the hunter's.
   lines holding two functions, one of which (`shell_single_quote`) is imported
   separately by `targets.rs` to build the Grok command that bypasses the other;
   merging it into the module that owns hook command construction removes a file.
-- `shepr-client`: `should_enable_host_color_scheme_reports` returns its argument
-  (also HYGP-033); `frame_output::write_composed_frame` is
+- `shepr-client`: `frame_output::write_composed_frame` is
   `writer.write_all(encoded)` with one caller, and its companion `ComposedFrame`
   is a newtype over `FrameData` with a `From` and a `Deref` whose own doc says
   "Shepr no longer forwards pane images to the outer terminal, so this is a thin
@@ -1108,18 +1048,6 @@ for each is the hunter's.
 
 ## HYGP-044 - Parameters that are threaded and then discarded
 
-- `shepr-server` `app/api/responses.rs`: `success(_id: String, result:
-  ResponseResult)` and `failure(_id: String, ..)` both ignore `_id`, at roughly
-  220 call sites across `app/api/*` (geometry 61, workspaces 33, panes 28,
-  layouts 26, agents 21, tabs 19, reports 17, copy 14, plus tests). Every site
-  threads an id, usually a `String` cloned or moved specifically to be dropped,
-  and reads to a newcomer as though response correlation happens here - it does
-  not; correlation is `shepr_api::error::encode_result(id, result)` at the
-  dispatcher. Evidence: the parameters are `_`-prefixed and unread in
-  one-expression bodies, `ApiResult` has no id field, and the dispatcher supplies
-  the id separately. The hunter calls this the single largest volume of dead
-  plumbing in that scope; deleting the parameter makes the compiler find all 220
-  sites and the dead clones with them.
 - `shepr-vt`/`shepr-mux`: `_shell_pid` in `process_pty_bytes`, and `_pane_id` /
   `_shell_pid` in `flush_expired_synchronized_output` - threaded from the runtime
   and ignored. One test's whole setup exists to supply a real pid to the first of
@@ -1140,9 +1068,6 @@ for each is the hunter's.
   `restore.rs` test and the adversarial-identity helper in `workspace.rs` index
   `tabs[active_tab_index()]` where `active_tab()` would do.
 
-- `shepr-client` `loop_config.rs`: `ClientSettings::pixel_geometry_enabled` is
-  true in every launch mode since settings resolve in one step, so the field
-  is dead state; its three readers are in `shepr-client/src/lib.rs`.
 - `shepr-remote` `machine/executable.rs`: the comment on `needs_shell_quoting`
   describes a refactor boundary rather than the code; it goes when HYGP-060's
   typed rejection reason lands.
@@ -1174,20 +1099,6 @@ for each is the hunter's.
   `ghostty_buffer_symbol_into`), `pane/terminal/text.rs` and
   `terminal/history_read.rs` are unreachable. Suggested: stop making
   `KITTY_UNICODE_PLACEHOLDER` public.
-- Root binary: ten `Invalid` variants (`ConfigCommand::Invalid`,
-  `TerminalCommand::Invalid`, and eight more) are unreachable by construction per
-  their own comments - each group's spec sets `.subcommand_required(true)`, so
-  `missing_subcommand()` is documented as running "only if a handler and the spec
-  disagree". Ten variants, ten `""` names, ten dispatch arms and one
-  `missing_subcommand` exist to model a state the parser prevents. (The `""`
-  names collide with `Command::Overview`'s, which produces the malformed refusal
-  message the sibling documents cover.) Fix: have each `parse` return
-  `Option<Command>` / `Result` and let `CliCommand::from_matches` propagate; the
-  `Invalid` variants and the `""` names disappear together. The hunter calls this
-  the single largest mechanical simplification available in `src/cli/`.
-  (Command names are `Option` now and machine eligibility is an exhaustive
-  match; the variants remain. One of them lives in `src/cli/integration.rs`,
-  so the fixer needs all of `src/cli/`.)
 
 ## HYGP-046 - Dead trait impls and duplicate flag constants the compiler will not flag
 
@@ -1300,21 +1211,6 @@ calls this the compatibility-path case: each arm should carry the version or dat
 it was observed, and re-checking belongs with the existing "monitor upstream
 changes" work item.
 
-## HYGP-055 - `SNAPSHOT_VERSION` is checked four times and the version field carries no type
-
-From `shepr-mux` `src/persist/snapshot.rs`: `pub const SNAPSHOT_VERSION: u32 = 1`
-with `parse_snapshot` and `parse_history_snapshot` rejecting anything else, and
-`preserve_snapshot_history`, `prepare_snapshot_history` and
-`finish_snapshot_history` each re-checking it (HYGP-034).
-
-The hunter's distinction, worth keeping in the entry: unlike the other items in
-their question-8 list this is a forward guard, not a backward compatibility path
-- its job is to refuse a file from a future build, which is worth keeping. What
-is not worth keeping is the same check written four times and the `version` field
-being a bare `u32` so every consumer has to remember to check it. Fix: a newtype
-whose `Deserialize` rejects the wrong version, so `SessionSnapshot` cannot exist
-with a bad version and the four checks collapse to zero.
-
 ## HYGP-057 - Modules and items sitting in a crate that does not use them
 
 - `shepr-protocol/src/scroll.rs` is not wire code: `ScrollMetrics` derives no
@@ -1396,9 +1292,18 @@ with a bad version and the four checks collapse to zero.
   `discovery.rs`, and delete `needs_shell_quoting`. The typed error needs a
   re-export from `crates/shepr-remote/src/machine.rs` as well.
 
-## HYGP-061 - Vestigial section banners and a stray import in `shepr-server`
+## HYGP-062 - `modes::lookup(DecMode)` returns `Option` for a table that holds every variant
 
-`server/headless.rs` has a `// Constants` banner containing no constants (only
-`struct ListenerFd`), a `// Loop event enum` banner that is fine, and a
-`#[cfg(test)] use std::fs;` sitting among the crate-level imports of a 2222-line
-file. No mechanical hold; listed because it is free.
+`crates/shepr-vt/src/modes.rs`: now that modes are a `DecMode` enum and the
+`MODES` table has a row for every variant, `lookup` cannot miss, so the
+"unsupported DEC private mode" branch in `mode_set` is unreachable. Make the
+lookup total (a `match` on `DecMode`, or a table indexed by the variant) and
+delete the branch.
+
+## HYGP-063 - CLI command `name()` methods return `Option` that can no longer be `None`
+
+With the unreachable `Invalid` command variants gone from the root binary,
+`ConfigCommand::name`, `TerminalCommand::name`, `SessionCommand::name` and the
+server command's `name` still return `Option<&str>` though every variant has a
+name. Return `&'static str` and drop the `None` handling at the callers
+(`src/cli/`).

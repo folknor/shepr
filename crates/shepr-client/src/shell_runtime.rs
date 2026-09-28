@@ -958,6 +958,16 @@ mod tests {
         fn send(&mut self, _message: &ClientMessage) -> io::Result<()> {
             Ok(())
         }
+
+        fn disconnect(&mut self) {}
+
+        fn flush(&mut self, _deadline: std::time::Instant) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn take_error(&mut self) -> Option<io::Error> {
+            None
+        }
     }
 
     fn snapshot(boot_id: &str) -> Box<shepr_protocol::ClientShellSnapshot> {

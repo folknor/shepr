@@ -1,48 +1,48 @@
 use ratatui::style::Color;
 
-pub const THEME_NAMES: &[&str] = &[
-    "catppuccin",
-    "catppuccin-latte",
-    "terminal",
-    "tokyo-night",
-    "tokyo-night-day",
-    "dracula",
-    "nord",
-    "gruvbox",
-    "gruvbox-light",
-    "one-dark",
-    "one-light",
-    "solarized",
-    "solarized-light",
-    "kanagawa",
-    "kanagawa-lotus",
-    "rose-pine",
-    "rose-pine-dawn",
-    "vesper",
-];
+macro_rules! define_builtin_themes {
+    ($( $name:literal => $constructor:ident [ $($alias:literal),* $(,)? ] ),+ $(,)?) => {
+        pub const THEME_NAMES: &[&str] = &[$($name),+];
+        pub const DEFAULT_THEME: &str = THEME_NAMES[0];
 
-pub(crate) fn canonical_theme_name(name: &str) -> Option<&'static str> {
-    match name.to_lowercase().replace([' ', '_'], "-").as_str() {
-        "catppuccin" | "catppuccin-mocha" => Some("catppuccin"),
-        "catppuccin-latte" | "latte" | "light" => Some("catppuccin-latte"),
-        "terminal" => Some("terminal"),
-        "tokyo-night" | "tokyonight" => Some("tokyo-night"),
-        "tokyo-night-day" | "tokyo-day" | "tokyonight-day" => Some("tokyo-night-day"),
-        "dracula" => Some("dracula"),
-        "nord" => Some("nord"),
-        "gruvbox" | "gruvbox-dark" => Some("gruvbox"),
-        "gruvbox-light" => Some("gruvbox-light"),
-        "one-dark" | "onedark" => Some("one-dark"),
-        "one-light" | "onelight" => Some("one-light"),
-        "solarized" | "solarized-dark" => Some("solarized"),
-        "solarized-light" => Some("solarized-light"),
-        "kanagawa" => Some("kanagawa"),
-        "kanagawa-lotus" | "lotus" => Some("kanagawa-lotus"),
-        "rose-pine" | "rosepine" => Some("rose-pine"),
-        "rose-pine-dawn" | "rosepine-dawn" | "dawn" => Some("rose-pine-dawn"),
-        "vesper" => Some("vesper"),
-        _ => None,
-    }
+        pub(crate) fn canonical_theme_name(name: &str) -> Option<&'static str> {
+            match name.to_lowercase().replace([' ', '_'], "-").as_str() {
+                $($name $(| $alias)* => Some($name),)+
+                _ => None,
+            }
+        }
+
+        impl Palette {
+            /// Resolve a theme by name. Returns None for unknown names.
+            pub fn from_name(name: &str) -> Option<Self> {
+                match canonical_theme_name(name)? {
+                    $($name => Some(Self::$constructor()),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+define_builtin_themes! {
+    "catppuccin" => catppuccin ["catppuccin-mocha"],
+    "catppuccin-latte" => catppuccin_latte ["latte", "light"],
+    "terminal" => terminal [],
+    "tokyo-night" => tokyo_night ["tokyonight"],
+    "tokyo-night-day" => tokyo_night_day ["tokyo-day", "tokyonight-day"],
+    "dracula" => dracula [],
+    "nord" => nord [],
+    "gruvbox" => gruvbox ["gruvbox-dark"],
+    "gruvbox-light" => gruvbox_light [],
+    "one-dark" => one_dark ["onedark"],
+    "one-light" => one_light ["onelight"],
+    "solarized" => solarized ["solarized-dark"],
+    "solarized-light" => solarized_light [],
+    "kanagawa" => kanagawa [],
+    "kanagawa-lotus" => kanagawa_lotus ["lotus"],
+    "rose-pine" => rose_pine ["rosepine"],
+    "rose-pine-dawn" => rose_pine_dawn ["rosepine-dawn", "dawn"],
+    "vesper" => vesper [],
 }
 
 #[derive(Debug, Default)]
@@ -118,7 +118,7 @@ impl Default for Palette {
 }
 
 impl Palette {
-    /// Catppuccin Mocha - the default.
+    /// Catppuccin Mocha palette.
     pub fn catppuccin() -> Self {
         Self {
             accent: Color::Rgb(137, 180, 250), // blue
@@ -565,31 +565,6 @@ impl Palette {
             blue: Color::Rgb(176, 176, 176),
             teal: Color::Rgb(102, 221, 204),
             peach: Color::Rgb(255, 199, 153),
-        }
-    }
-
-    /// Resolve a theme by name. Returns None for unknown names.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match canonical_theme_name(name)? {
-            "catppuccin" => Some(Self::catppuccin()),
-            "catppuccin-latte" => Some(Self::catppuccin_latte()),
-            "terminal" => Some(Self::terminal()),
-            "tokyo-night" => Some(Self::tokyo_night()),
-            "tokyo-night-day" => Some(Self::tokyo_night_day()),
-            "dracula" => Some(Self::dracula()),
-            "nord" => Some(Self::nord()),
-            "gruvbox" => Some(Self::gruvbox()),
-            "gruvbox-light" => Some(Self::gruvbox_light()),
-            "one-dark" => Some(Self::one_dark()),
-            "one-light" => Some(Self::one_light()),
-            "solarized" => Some(Self::solarized()),
-            "solarized-light" => Some(Self::solarized_light()),
-            "kanagawa" => Some(Self::kanagawa()),
-            "kanagawa-lotus" => Some(Self::kanagawa_lotus()),
-            "rose-pine" => Some(Self::rose_pine()),
-            "rose-pine-dawn" => Some(Self::rose_pine_dawn()),
-            "vesper" => Some(Self::vesper()),
-            _ => None,
         }
     }
 

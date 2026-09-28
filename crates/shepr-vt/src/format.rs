@@ -12,9 +12,18 @@ use std::fmt::Write as _;
 use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::vte::ansi::{Color, NamedColor};
+use vte::ansi::{Color, NamedColor};
 
-use super::{CellText, cell_text};
+use super::{CellText, UnderlineStyle, cell_text};
+
+const OSC8_CLOSE_SEQUENCE: &str = "\x1b]8;;\x1b\\";
+const UNDERLINE_SGR: &[(UnderlineStyle, &str)] = &[
+    (UnderlineStyle::Single, ";4"),
+    (UnderlineStyle::Double, ";4:2"),
+    (UnderlineStyle::Curly, ";4:3"),
+    (UnderlineStyle::Dotted, ";4:4"),
+    (UnderlineStyle::Dashed, ";4:5"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Format {
@@ -80,7 +89,7 @@ impl VtState {
             self.style = StyleKey::DEFAULT;
         }
         if self.link.take().is_some() {
-            out.push_str("\x1b]8;;\x1b\\");
+            out.push_str(OSC8_CLOSE_SEQUENCE);
         }
     }
 }
@@ -204,7 +213,7 @@ fn emit_line(
             };
             if !same_link {
                 if vt.link.is_some() {
-                    out.push_str("\x1b]8;;\x1b\\");
+                    out.push_str(OSC8_CLOSE_SEQUENCE);
                 }
                 if let Some(link) = &link {
                     // vte splits OSC 8 parameters on ';', then splits fields
@@ -271,16 +280,12 @@ fn push_sgr(out: &mut String, style: &StyleKey) {
     if flags.contains(Flags::ITALIC) {
         out.push_str(";3");
     }
-    if flags.contains(Flags::UNDERLINE) {
-        out.push_str(";4");
-    } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
-        out.push_str(";4:2");
-    } else if flags.contains(Flags::UNDERCURL) {
-        out.push_str(";4:3");
-    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
-        out.push_str(";4:4");
-    } else if flags.contains(Flags::DASHED_UNDERLINE) {
-        out.push_str(";4:5");
+    let underline = UnderlineStyle::from_flags(flags);
+    if let Some(sgr) = UNDERLINE_SGR
+        .iter()
+        .find_map(|(style, sgr)| (*style == underline).then_some(*sgr))
+    {
+        out.push_str(sgr);
     }
     if flags.contains(Flags::INVERSE) {
         out.push_str(";7");
@@ -310,7 +315,7 @@ fn push_color(out: &mut String, color: Color, slot: ColorSlot) {
     match color {
         Color::Named(named) => {
             let index = named as usize;
-            if index >= 16 {
+            if index >= super::color::NAMED_COLOR_COUNT {
                 // Foreground/Background and the renderer-only dim/bright
                 // variants all mean "default" here.
                 return;

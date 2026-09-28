@@ -7,7 +7,6 @@ pub(crate) enum Command {
     Install { target: String },
     Uninstall { target: String },
     Status { outdated_only: bool },
-    Invalid,
 }
 
 impl Command {
@@ -16,31 +15,28 @@ impl Command {
             Self::Install { .. } => Some("install"),
             Self::Uninstall { .. } => Some("uninstall"),
             Self::Status { .. } => Some("status"),
-            Self::Invalid => None,
         }
     }
 
     pub(super) fn can_run_on_machine(&self) -> bool {
         match self {
-            Self::Install { .. } | Self::Uninstall { .. } | Self::Status { .. } | Self::Invalid => {
-                false
-            }
+            Self::Install { .. } | Self::Uninstall { .. } | Self::Status { .. } => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("install", command)) => Command::Install {
-            target: matches::required(command, "target"),
-        },
-        Some(("uninstall", command)) => Command::Uninstall {
-            target: matches::required(command, "target"),
-        },
-        Some(("status", command)) => Command::Status {
+        Some(("install", command)) => Some(Command::Install {
+            target: matches::required(command, "target")?,
+        }),
+        Some(("uninstall", command)) => Some(Command::Uninstall {
+            target: matches::required(command, "target")?,
+        }),
+        Some(("status", command)) => Some(Command::Status {
             outdated_only: matches::flag(command, "outdated-only"),
-        },
-        _ => Command::Invalid,
+        }),
+        _ => None,
     }
 }
 
@@ -59,7 +55,6 @@ pub(super) fn run_integration_command(
         Command::Status { outdated_only } => {
             Ok(integration_status(&integration_paths, outdated_only))
         }
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -204,7 +199,7 @@ mod tests {
     fn status_reads_the_outdated_only_flag() {
         let status = crate::cli::tests::group_matches(&["integration", "status"]);
         assert_eq!(
-            super::parse(&status),
+            super::parse(&status).expect("test precondition"),
             Command::Status {
                 outdated_only: false
             }
@@ -212,7 +207,7 @@ mod tests {
         let status =
             crate::cli::tests::group_matches(&["integration", "status", "--outdated-only"]);
         assert_eq!(
-            super::parse(&status),
+            super::parse(&status).expect("test precondition"),
             Command::Status {
                 outdated_only: true
             }

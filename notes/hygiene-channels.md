@@ -168,10 +168,7 @@ Six scopes reported this.
 - `shepr-platform`: `api_request_failed` is `warn!` while `pane_exit_failed` and
   `session_save_failed`/`session_clear_failed` are `error!`, though all four are
   "an operation the user asked for did not complete".
-  `bind_private_local_listener`'s fallback to an insecure-window bind is `warn!`
-  while `ProcessHandle::open`'s fallback to the racy start-time identity is
-  `debug!` - the core/platform hunter's reading is that the second is the more
-  consequential degradation and the quieter line. `shutdown.rs` logs the loss of
+  `shutdown.rs` logs the loss of
   the logind connection while a shutdown is pending (`err`, `retry_seconds`) at
   `debug!`, below the default `shepr=info` filter, in the case where the session
   may not be saved.
@@ -624,12 +621,6 @@ structurally cannot.
   API responses as a valid-looking value, and a `""` workspace id in a response
   is indistinguishable from a real one to the client. The sibling functions
   `public_tab_id` and `public_pane_id` return `Option<String>`.
-- `src/cli/matches.rs::required` returns `String::default()` when the spec and
-  the handler disagree. Deliberate and documented ("clap has already rejected
-  argv without it"), and the non-panicking choice is right, but the failure mode
-  is an empty-string pane id or agent target sent to the server, which surfaces
-  as `pane_not_found: pane  not found` rather than as a CLI bug.
-  `src/cli/pane.rs` compounds it with `selected_pane(..)?.unwrap_or_default()`.
 - `shepr-server/src/server/headless.rs`'s client-shell boot id is
   `format!("{}-{}", std::process::id(), SystemTime::now()...as_nanos())` with
   `unwrap_or_default()`, so a clock before the epoch collapses every boot id to
@@ -637,9 +628,7 @@ structurally cannot.
 - `shepr-vt`'s `synchronized_output_state` returning `(true, 0)` on a poisoned
   core (HYGC-029) is the same shape.
 
-Enforcement named: return `Option<String>` like the siblings; extending
-`every_cli_spec_root_has_typed_parser` to required arguments per subcommand would
-make the `matches::required` fallback unreachable in fact as well as in intent;
+Enforcement named: return `Option<String>` like the siblings;
 `BootId::for_this_process()` in `shepr-protocol` with `From<String>` restricted
 to deserialization.
 
@@ -661,18 +650,6 @@ leaves production crates' `test-support` features for dev-only crates, held by
   `Deref`/`DerefMut` impls, make `active_tab` private, and require
   `active_tab()` / `active_tab_mut()`, which already exist and return `Option` -
   that turns an abort into a refusal and makes the invariant structural.
-- `shepr-remote`: `&profile_id.as_str()[..16]` at two sites
-  (`saved_bridge_path` and `SavedSshApiBridge::start`) panics if a `ProfileId` is
-  ever shorter than 16 bytes. `ProfileId::parse` guarantees 32 today, so this is
-  reachable only through the struct-literal path used in tests - but it is an
-  invariant maintained by a constructor and relied on by slicing two modules
-  away. Enforcement named: `ProfileId::short()`.
-- `shepr-config/src/sidebar/rules.rs` has an `unreachable!("validated condition
-  count")` in production code. It is genuinely unreachable (the `count != 1`
-  check above it guarantees `gt` or `lt` is `Some`), but the guarantee is a
-  counted boolean array five lines up rather than a type. Enforcement named:
-  build the `Condition` in the same match that counts, so the impossible case is
-  not representable.
 - `shepr-agent`: `Agent::descriptor` indexes an array with `&AGENTS[self as
   usize]` in a `const fn`, relying on `#[repr(usize)]` and on declaration order
   matching the array. This is a panic on mis-ordering, not on caller input, and

@@ -237,11 +237,9 @@ fn symlink_chains_and_dangling_targets_preserve_links() {
     let target = other.join("preferences");
     let intermediate = other.join("link");
     let entry = dir.0.join("config");
-    if !symlink_file(&target, &intermediate) {
-        return;
-    }
+    symlink_file(&target, &intermediate);
     let relative_target = Path::new("other").join("link");
-    assert!(symlink_file(&relative_target, &entry));
+    symlink_file(&relative_target, &entry);
     let original_intermediate = fs::read_link(&intermediate).expect("test precondition");
     assert_eq!(
         fs::metadata(&entry).expect_err("test precondition").kind(),
@@ -275,7 +273,7 @@ fn symlink_chains_and_dangling_targets_preserve_links() {
     );
 
     let cycle = dir.0.join("cycle");
-    assert!(symlink_file(Path::new("cycle"), &cycle));
+    symlink_file(Path::new("cycle"), &cycle);
     assert!(write_config(&cycle, b"must not replace the link").is_err());
     assert_eq!(
         fs::read_link(&cycle).expect("test precondition"),

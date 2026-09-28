@@ -92,36 +92,28 @@ in-repo models that already thread `now` and need no sleeps.
 
 ## HYGG-006 - A persist test fabricates a file mtime a day in the future to walk past a gate
 
-**Decision (partial):** the clock seam is adopted incrementally as part of the
-hygiene work (HYGP-001 in `notes/hygiene-policy.md`), and the enforcement named
-below - `now` as a parameter, held by a text rule scoped to `src/persist/` - is
-exactly its shape. Open: doing it for `persist`.
+Residue. The snapshot-preservation logic in `shepr-mux/src/persist/writer.rs`
+takes `now` and the mtime fabrication is gone. Open:
 
-`shepr-mux/src/persist/writer.rs` reaches `SystemTime::now()` directly at four
-sites (`preserve_snapshot_history`, `prepare_snapshot_history`,
-`preserve_existing_in` twice), so the 15-minute snapshot gate cannot be tested
-except by lying about file mtimes - which the test does:
-`.set_modified(SystemTime::now() + Duration::from_secs(86400))`. The hunter's
-reading: a test that sets a file's mtime a day in the future to get past a gate
-is a report that the gate has no seam. By contrast `src/terminal/state/**` and
-`src/pane/process_probe.rs` thread `now: Instant` through every entry point, so
-the crate already knows the pattern and `persist` does not.
+- The public `save` and `clear` entry points still read `SystemTime::now()`
+  (each with a boundary comment); moving the read out means
+  `shepr-server/src/app/session.rs` passes `now` in.
+- `persist/restore.rs` has a runtime clock read of its own.
+- The textlint holding it is not wired. Proposed by the fixer:
 
-Enforcement rule named: take `now: SystemTime` as a parameter the way the state
-layer takes `now: Instant`, delete the mtime fabrication, and hold it with a
-text rule against `SystemTime::now()` / `Instant::now()` in `src/persist/`.
+```toml
+[[textlint]]
+name = "persist-snapshot-clock-is-injected"
+pattern = '\b(?:SystemTime|Instant)::now\s*\('
+paths = ["crates/shepr-mux/src/persist/writer.rs"]
+region = "code"
+allow_marker = "persist-clock-boundary-ok"
+allow_marker_above = 2
+message = "pass now into snapshot preservation logic; clock reads need an explicit boundary exception"
+```
 
-## HYGG-008 - `bridge_child` is a `#[test]` that returns immediately and passes
-
-`shepr-platform/src/remote_bridge_tests.rs`: if `SHEPR_BRIDGE_TEST_SOCKET` is
-unset it `return`s. It is a subprocess entry point re-entered through
-`current_exe --exact remote_bridge_tests::bridge_child`, not a test, and in
-every normal run it appears in the pass list having executed four lines. The
-hunter accepts the pattern as necessary - there is no other way to get a child
-process running crate-private code - but says it should be named so nobody reads
-it as coverage, and the guard should `panic!` when the variable is absent unless
-the harness can be told to skip it. The same file hardcodes libtest CLI flags
-(`--exact`, `--nocapture`), which couples the crate's tests to the harness.
+Once `save`/`clear` take `now`, widen `paths` to `src/persist/` and drop the
+allow marker.
 
 ## HYGG-010 - Tests that take their inputs from the developer's directory layout
 
@@ -253,28 +245,13 @@ and `PANE_COLORTERM` directly instead of the hard-coded
 scrub list verbatim, so a key added to production is not tested. Enforcement
 named: export the list and iterate it.
 
-## HYGG-021 - Four small `shepr-platform` assertions that cannot fail, or that hide a failure
+## HYGG-021 - A geometry size assertion that cannot fail
 
-**Decision (partial):** the `Path::exists` seal is adopted from broadarrow
-(`clippy.toml`; `try_exists` or a match on `NotFound`), and it reaches test code,
-so the fourth bullet's `!stable.exists()` gets rewritten. `try_exists` follows
-the link too, so the pair still needs the comment saying the symlink is meant to
-dangle. Open: the first three bullets.
-
-- `logging.rs`: `assert!(!summary.contains("/shepr.log"))` - the asserted string
-  is built by a `format!` that cannot produce it.
-- `geometry.rs`: `assert!(size_of::<PaneGeometry>() <= size_of::<(u16, u16,
-  u32, u32)>())` asserts a property of the compiler's layout choices, not of
-  this code; it passes for any plausible field arrangement.
-- `tests.rs::session_members_are_withheld_...` calls
-  `member.signal(Signal::Kill)` and drops the `bool` in cleanup, so a failure to
-  clean up the background `sleep 30` is invisible and the process leaks past the
-  test.
-- `ssh_agent.rs` asserts both `!stable.exists()` and
-  `symlink_metadata(&stable).is_ok()` - correct and deliberate (a dangling
-  symlink), but reads as a contradiction without the comment it does not have.
-
-Enforcement: review only, per the hunter.
+`shepr-core/src/geometry.rs` (the entry originally placed it in
+`shepr-platform`): `assert!(size_of::<PaneGeometry>() <= size_of::<(u16, u16,
+u32, u32)>())` asserts a property of the compiler's layout choices, not of this
+code; it passes for any plausible field arrangement. Delete it, or state what
+size bound actually matters and why. Review only.
 
 ## HYGG-023 - The only codec exercise of `ValidatedConfig` covers the empty case of every interesting field
 
@@ -292,70 +269,6 @@ Enforcement named: one test in `shepr-client` (or a maximal fixture in
 `shepr-test-support`) that round-trips a config exercising every `wire.rs`
 variant and asserts equality. The hunter calls this the single highest-value
 missing test in that scope, and the data half of HYGG-067.
-
-## HYGG-027 - `every_minimum_agent_version_parses` asserts over a single hard-coded target
-
-`shepr-agent`. It takes `IntegrationTarget::Kimi`, calls
-`agent_version_requirement`, and checks the requirement parses. Since Kimi is
-the only target with a requirement the test cannot fail for any other target and
-will not start covering a second one when it is added.
-`agent_version_requirement_only_set_for_kimi` beside it pins the "only Kimi"
-fact, so the pair is coherent, but the parse test should iterate
-`IntegrationTarget::all()`.
-
-## HYGG-028 - Two agent-table tests have the pinning length assertion and two next to them do not
-
-`every_agent_has_a_canonical_interactive_executable` restates a 24-entry literal
-list of `(Agent, executable)` copied from `AGENTS`, and
-`assert_eq!(expected.len(), Agent::all().len())` forces it to be extended, so it
-is a real pin - a deliberate second copy that catches accidental edits. The
-hunter says keep it. It is recorded here because `identify_known_agents` and
-`parse_known_agent_labels` beside it are the same shape *without* the length
-assertion, so they can silently stop covering new agents.
-
-Related positive, recorded so it is not re-hunted:
-`agent/mod.rs::descriptors_are_the_domain_source_for_agent_views` pins the
-`#[repr(usize)]` index into `AGENTS`, and
-`manifest/tests.rs::all_bundled_manifests_parse_validate_and_compile` pins
-`AgentDescriptor::screen_manifest` against what the registry actually loads -
-both are the right kind of enforcement and the hunter marks the second a
-non-finding with an answer: the test is the enforcement, keep it. The residual
-note is that `BUNDLED_MANIFESTS` is a third list keyed by label string
-(`("agy", include_str!("manifests/antigravity.toml"))`), so a label rename
-breaks the join - and the existing test catches that.
-
-## HYGG-029 - `test_support.rs::symlink_file` returns `true` unconditionally
-
-`shepr-agent`. The helper `expect("create symlink")`s and then returns `true`,
-so the return value cannot be false; call sites presumably
-`assert!(symlink_file(...))`, which asserts nothing.
-
-## HYGG-032 - One `netside_tests.rs` assertion discards the result it exists to check
-
-`returning.receive_response(&target_id, 7, &request_id, &data, &mut endpoints);`
-is a bare statement, while every other `receive_response` call in the test is
-wrapped in `assert_eq!` against a `SurfaceActivationProgress`. The
-returning-activation half of the test therefore asserts nothing about the
-response it just fed in, and reads as coverage.
-
-## HYGG-033 - `machine_commands_reject_real_local_commands` enumerates commands by hand
-
-`src/cli/target.rs` lists 12 denied and 8 allowed invocations. It is a good test
-of the ones listed; nothing makes a newly added subcommand appear in either
-list. `every_cli_spec_root_has_typed_parser`, which does cross-check the spec
-against the sample list and is named as the excellent enforceable example, only
-covers command *groups*, not subcommands.
-
-Enforcement named: walk the spec's full subcommand tree
-(`collect_subcommand_paths` already exists in `src/cli/spec.rs`'s tests) and
-assert every leaf has an explicit machine-allowed classification, turning an
-enumeration into a rule. The same walk would make `matches::required`'s
-`String::default()` fallback unreachable in fact as well as in intent
-(HYGG-074). Machine eligibility is now an exhaustive match per command group,
-so a new typed variant must be classified; the leaf walk itself is still open,
-and with HYGG-074 and the HYGP-045 `Invalid` variants it needs a fixer holding
-all of `src/cli/` including `integration.rs` (47 `matches::required` call
-sites, two of them there).
 
 ## HYGG-034 - `EventHub::events_after` cannot report what its production sibling reports
 
@@ -377,26 +290,6 @@ fields, so both assertions are true for any possible value of the struct - they
 cannot fail. They read as a guard against re-adding removed capabilities, but
 nothing connects them to that intent; the real guard is the struct definition.
 
-## HYGG-036 - `random_nested_message_comes_from_known_set` asserts a tautology
-
-`src/main.rs`. `random_nested_message()` returns `NESTED_SHEPR_MESSAGES[index]`
-where `index` is `% len`, and the test asserts the result is in
-`NESTED_SHEPR_MESSAGES`. The neighbouring
-`nested_message_strings_no_longer_repeat_shepr_prefix` can fail and is a real,
-if tiny, guard.
-
-## HYGG-039 - `remote_executable_accepts_only_cacheable_absolute_paths` has no accepting case
-
-`shepr-remote`. Every row of the table has `valid == false`
-(`"/home/a b/shepr"`, `"$HOME/.local/bin/shepr"`, `".../mise/shims/shepr"`,
-`"/bin/shepr\nmalformed"`), so `RemoteExecutable::parse` could `return Err(...)`
-unconditionally and the test would pass, despite its name claiming it checks
-what is accepted. A valid path is exercised incidentally elsewhere (the
-`ssh_metadata.rs` tests and `attach.rs`), so the behaviour is covered - but not
-by the test named for it, and the `valid` column is dead weight that reads as if
-both directions were covered. Fix named: add `("/usr/bin/shepr", true)` and
-friends.
-
 ## HYGG-041 - `attach.rs` is a 1112-line test file named after a subject it does not contain
 
 `shepr-remote/src/lib.rs` declares
@@ -412,64 +305,6 @@ correct naming, so the crate contradicts itself.
 Enforcement named: a brokkr rule that a `#[path]`-included module file matching
 `*_tests.rs` is allowed and anything else must be non-test, or simply that
 `mod X` where `X.rs` contains only `mod tests` is an error.
-
-## HYGG-045 - `advertised_client_shell_methods_all_exist` cannot fail for most breakages
-
-`shepr-server/src/server/client_commands.rs`:
-
-```rust
-let method = serde_json::json!({ "method": name, "params": {} });
-if let Err(error) = serde_json::from_value::<Method>(method) {
-    assert!(!error.to_string().contains("unknown variant"), ...);
-}
-```
-
-The test passes whenever the error message does not contain the exact substring
-`"unknown variant"`. Serde changing its wording, a `#[serde(tag)]` change, or a
-params error arriving before the tag is resolved all turn this into a no-op that
-still reads as coverage of the 26-entry method list - and it is the only thing
-holding that list to the schema (HYGG-095).
-
-Enforcement named: have `shepr-api` expose the set of method names
-(`Method::ALL_NAMES` or an iterator over the schema table) and assert
-`CLIENT_SHELL_METHODS` is a subset by set membership, with no string matching.
-
-## HYGG-046 - The `clamp_terminal_size` tests assert against the constant they are testing
-
-`shepr-server/src/server/client_transport.rs`:
-`assert_eq!(clamp_terminal_size(MIN_CLIENT_COLS, MIN_CLIENT_ROWS),
-(MIN_CLIENT_COLS, MIN_CLIENT_ROWS))`. Both sides come from the same constant, so
-the assertion holds for any value as long as the clamp uses it as its lower
-bound; it cannot detect a wrong minimum. The neighbouring
-`assert!(cols >= MIN_CLIENT_COLS && rows >= MIN_CLIENT_ROWS)` is near-vacuous
-with `MIN_* = 1`: a `u16` fails it only at zero. Fix named: assert the literal
-`(1, 1)` and add a case asserting `clamp_terminal_size(0, 0) == (1, 1)`, which
-is the behaviour actually at stake.
-
-## HYGG-049 - `an_attempt_deadline_caps_a_silent_peer_below_the_read_timeout` asserts against a quarter of a 60-second constant
-
-`shepr-client/src/handshake.rs`. The test sets a 200 ms deadline and asserts
-`elapsed < REMOTE_HANDSHAKE_READ_TIMEOUT / 4`, i.e. under 15 seconds, so a
-regression that made the deadline 10 seconds late passes. The assertion should
-be against the deadline it set, not a fraction of the value it is trying to
-prove is not used. It also binds two real sockets and a thread, so it is
-environment-coupled in the mild sense.
-
-## HYGG-050 - `should_enable_host_color_scheme_reports` is an identity function re-exported for tests
-
-`shepr-client`:
-
-```rust
-pub(super) fn should_enable_host_color_scheme_reports(enable_client_protocols: bool) -> bool {
-    enable_client_protocols
-}
-```
-
-It is `#[cfg(test)]`-imported in `lib.rs` alongside real helpers, so any test
-asserting on it asserts `x == x` - both sides come from the same place. The
-function exists so a rule *could* live there; today it holds no rule. A test
-cannot enforce this; only deletion, or giving it the rule it was created to
-hold.
 
 ## HYGG-053 - `IsolatedEnv` guarantees isolation from a list it does not own
 
@@ -536,17 +371,6 @@ report a broken Grok install as Current with nothing noticing.
 Enforcement named: make the spec row carry a `RegistrationCheck` variant
 (`SelfRegistering | Json { file, root, depth } | Custom(fn)`) so the match is
 exhaustive over data rather than over a target list.
-
-## HYGG-066 - `ConfigProvenance::from_config` drops provenance keys silently for any `skip_serializing_if` field
-
-`shepr-config/src/validated.rs` enumerates config keys by
-`serde_json::to_value(config)` and walking the tree, so any
-`skip_serializing_if` in a config type drops keys - and `RawRule` has ten of
-them today, so sidebar-rule fields that are `None` never appear in
-`config check`'s enumeration. The completeness of the provenance surface depends
-on an attribute nobody audits. Enforcement named: the codec text rule of
-HYGG-067, extended to `shepr-config`'s TOML-facing types with the `RawRule`
-exemption spelled out and justified in a comment.
 
 ## HYGG-067 - Claim: "Wire types must not use `skip_serializing_if`, `flatten`, `untagged` or tagged enums"
 
@@ -630,20 +454,6 @@ the code is renamed, both helpers become silent no-ops and the test
 `maps_dead_server_connect_failure_to_friendly_error` fails loudly - so this one
 fails closed, which the hunter calls fine. **The claim in the comment is what is
 false.**
-
-## HYGG-074 - `matches::required` returns `String::default()` when the spec and the handler disagree, and a comment claims a test would catch it
-
-`src/cli/matches.rs`. The fallback is deliberate and documented ("clap has
-already rejected argv without it"), and the hunter agrees the non-panicking
-choice is right. But the failure mode is an empty-string pane id or agent target
-sent to the server, which surfaces as `pane_not_found: pane  not found` rather
-than as a CLI bug, and `src/cli/pane.rs` compounds it with
-`selected_pane(..)?.unwrap_or_default()`. Separately, a comment in the same file
-says a spec/handler mismatch "shows up as a missing value in tests" - **no test
-asserts that.** Enforcement named: extend
-`every_cli_spec_root_has_typed_parser` to required arguments per subcommand via
-the spec tree walk of HYGG-033, which makes the fallback unreachable in fact as
-well as in intent.
 
 ## HYGG-075 - `run_on_machine`'s comment names an exclusion a different file enforces
 
@@ -886,30 +696,6 @@ feeds the buffered frame through the parser and mutates the grid), but files it
 as a live defect, so a fix pass should expect that entry in the bug document
 rather than here.
 
-## HYGG-095 - `CLIENT_SHELL_METHODS` is a hand-maintained list of 26 method-name strings matched against generated names
-
-`shepr-server/src/server/client_commands.rs`. `supports_client_shell_method`
-compares `method.traits().name` - generated in `shepr-api`'s schema - against a
-literal list in this crate. Rename or retire a method in the schema and the
-entry here becomes a dead string: the method silently stops being reachable over
-the client-shell lane (`client_transport.rs` and `endpoint_requests.rs` both
-refuse it), and nothing reports the mismatch. The only test guarding it is
-HYGG-045, which cannot fail reliably. The hunter states it is checkable and that
-it could not rule out the list being stale today without enumerating the schema.
-
-Enforcement named: a `client_shell: bool` in the schema's own `MethodTraits`,
-which already carries `mutates_ui` and `name` - then the list disappears and a
-new method must declare its lane. Failing that, the set-membership test in both
-directions.
-
-A related unheld prediction from the `shepr-api` hunter: every method's wire
-name is spelled twice, once in `#[serde(rename)]` and once in `traits().name` -
-72 methods, 144 string literals. All 72 pairs were compared mechanically and
-agree today, but a single mismatch would silently mislabel every log line, every
-`api_method_name` caller, and the `api_response_outcome` classification for that
-method, with nothing failing. The test named: serialize each `Method` variant and
-assert `json["method"] == traits().name`.
-
 ## HYGG-099 - Most workspace invariants are enforced only by opt-in test calls
 
 **Partly resolved:** the non-empty tab list and the in-range focused tab are now
@@ -944,54 +730,6 @@ a `Deref` impl, with `active_tab` public and `tabs_mut()` handing out
 range and the next `ws.panes` aborts the server) is filed by the hunter under
 errors, so a sibling document may carry it too.
 
-## HYGG-100 - `io::load` and `load_history` claim a lease they do not require
-
-`shepr-mux/src/persist/io.rs`: "Reads the saved layout for restore. The server
-acquires a DataDirLease before calling this, so native agent sessions cannot be
-restored twice", and "Removing it is safe because only one server writes a data
-directory: `SessionWriter` owns the directory lease before any write."
-`SessionWriter::new(lease, ...)` does take the lease by value, so that half is
-enforced by the type. `load(data_dir: &Path)` and
-`load_history(data_dir: &Path)` are `pub`, take a bare path and enforce nothing;
-the claim is true today only because the one caller happens to do it.
-
-Enforcement named, trivially: `load(lease: &DataDirLease)`. The claim then holds
-by signature, the comment can be deleted, and `lock::LOCK_FILE_NAME` stops
-needing to be reachable.
-
-## HYGG-102 - Fifteen hook-authority guards key on `(source, agent_label)` strings that arrive from shipped shell scripts, with nothing keeping the two sides in step
-
-Reported from `shepr-mux` and `shepr-agent`.
-`shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label)` is
-`AgentSource::from_pair(source, agent_label).and_then(|s| s.agent()).is_some_and(...)`,
-so an unrecognised pair yields `false`. `shepr-mux` calls it, or the sibling
-`session_identity_only_integration`, at ten sites across
-`terminal/state/hooks.rs`, `lifecycle.rs` and `sessions.rs`, and calls
-`from_pair` directly at five more.
-
-Both strings originate in the hook assets shipped into other agents' config
-directories (`crates/shepr-agent/src/integration/assets/*/shepr-agent-state.sh`
-and friends), which must carry the literals - the deployment constraint is real.
-What is missing is anything keeping them in step: rename or typo a `source` in
-one asset and every one of the fifteen guards downgrades that agent from
-hook-authoritative to screen-detected, silently, with no log line at any site.
-The failure mode is "the sidebar became less accurate", which is exactly the
-kind of regression nobody bisects. `shepr-agent` adds the same point from the
-producing side: `assets/claude/...sh` has `source = "shepr:claude"`, kimi has
-`_SOURCE = "shepr:kimi"`, with the agent label
-duplicated next to it, while the owner is
-`AgentDescriptor::integration_source`; a typo makes the report arrive as
-`AgentSource::Custom`, which silently loses `full_lifecycle_hook_authority` and
-`session_identity_only_integration`. Only two assertions exist anywhere today
-(for qwen and for letta), both incidental.
-
-Enforcement named by both hunters: a test that iterates `INTEGRATION_SPECS` and
-asserts each asset's text contains its target's `integration_source` and
-canonical label - `shepr-agent` calls it "the single highest-value mechanical
-check in the crate" and "the cheapest mechanical win"; `shepr-mux` pairs it with
-the `SHEPR_*` asset-literal test and says together they are the whole mechanical
-answer to the forced duplication. Neither test exists.
-
 ## HYGG-103 - The same shape one level down: `SHEPR_*` names spelled as literals in shipped assets with no membership test
 
 **Decision (partial):** piece 1 (the `shepr-core` environment registry, after
@@ -1016,19 +754,6 @@ test that walks `crates/shepr-agent/src/integration/assets/**` extracting
 `SHEPR_[A-Z_]+` and asserts set membership. The `shepr-mux` hunter says that
 last test is the only thing that can ever keep the deployment-forced copies
 honest, and it does not exist.
-
-## HYGG-104 - The asset version parity test carries a hand-written list
-
-**Decision (partial):** Hermes support is removed entirely, so the Hermes
-manifest and plugin-name findings go with it. The hand-written list remains
-open.
-
-`shepr-agent`'s `bundled_integration_asset_versions_match_expected_versions`
-enumerates its `(name, asset, version)` triples by hand and omits
-`OPENCODE_TUI_PLUGIN_ASSET` and `OPENCODE_V2_TUI_PLUGIN_ASSET`. A new target
-added without extending the list is silently uncovered.
-`registry::integration_asset(target)` already exists, so iterating
-`INTEGRATION_SPECS` would make the test exhaustive by construction.
 
 ## HYGG-111 - `manifest.rs`'s module doc enumerates region names, matcher keys, gate keys and limits in prose
 
@@ -1086,16 +811,6 @@ workaround is still needed against the real emulator, which cannot be answered
 by reading; `AGENTS.md` already directs the reader to the pinned
 `alacritty_terminal` source in the cargo registry.
 
-## HYGG-115 - `handler.rs` claims every `Handler` method is listed explicitly, and vte is not pinned
-
-`shepr-vt`. The hunter checked the impl against vte 0.15.0: it is complete
-today. Two things could break the claim silently - vte is not pinned (only
-`alacritty_terminal` is `=0.26.0`, and vte arrives transitively at `^0.15`), so
-a `cargo update` can move it; and a new defaulted trait method would be silently
-a no-op. Enforcement named: `#[warn(clippy::missing_trait_methods)]` on that
-impl makes the claim mechanical. Separately, pinning vte with `=` would need
-`vte` added to the `shepr-vt` allowlist in `brokkr.toml`.
-
 ## HYGG-116 - Claim: alacritty types never leak out of `shepr-vt`
 
 The dependency rule enforces this at crate level, and the hunter found no
@@ -1117,24 +832,6 @@ Enforcement named: give each reply its own order.
 end with `collect_damage()` (or `bump_full_damage`). Callers do this by hand:
 `write`, `flush`, `mode_set`, `resize`, the scroll methods. Enforcement named,
 structurally: call `collect_damage` inside `with_handler`.
-
-## HYGG-119 - `EndpointTransport`'s default method bodies fail open
-
-`shepr-client`:
-
-```rust
-fn disconnect(&mut self) {}
-fn flush(&mut self, _deadline: Instant) -> io::Result<()> { Ok(()) }
-fn take_error(&mut self) -> Option<io::Error> { None }
-```
-
-A transport that forgets `flush` reports every flush as succeeding; one that
-forgets `take_error` reports itself permanently healthy to the registry, which
-is exactly the signal `local_failure_policy` and the supervisor act on. Three
-defaults, three silent no-ops keyed on a name the implementor did not write.
-There are few implementors, so the defaults save almost nothing. Enforcement
-named: remove the defaults, so the compiler requires each implementor to state
-its answer.
 
 ## HYGG-124 - `HostModes::apply_mouse` records the restore flag only when a parameter that means something else is true
 
@@ -1160,3 +857,13 @@ lock-free restore path is worth keeping; the honest statement is that the
 recorder pairing is a convention maintained by three call sites, and a single
 `set_keyboard(...)` entry point that computes the flags itself would reduce it
 to one.
+
+## HYGG-125 - The schema macro builds `MethodTraits` twice, and its test pins a count
+
+`crates/shepr-api/src/schema.rs`: the method macro now spells each wire name
+once, but `traits()` and `traits_for_name()` each construct `MethodTraits`, so
+the flags (including the client-shell lane) are generated at two sites that
+must agree. The schema test asserts that 27 methods are classified for the
+client-shell lane - a count, not the set - so swapping one method in and another
+out passes. Have `traits_for_name` resolve the name to a variant and reuse
+`traits()`, and assert the lane as a named set.

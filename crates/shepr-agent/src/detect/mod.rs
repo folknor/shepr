@@ -663,6 +663,10 @@ mod tests {
 
     #[test]
     fn identify_known_agents() {
+        for agent in Agent::all() {
+            assert_eq!(identify_agent(agent.executable()), Some(agent));
+        }
+
         assert_eq!(identify_agent("pi"), Some(Agent::Pi));
         assert_eq!(identify_agent("claude"), Some(Agent::Claude));
         assert_eq!(identify_agent("claude-code"), Some(Agent::Claude));
@@ -710,6 +714,7 @@ mod tests {
 
     #[test]
     fn parse_known_agent_labels() {
+        // Canonical labels are covered for every agent by the round-trip test below.
         assert_eq!(parse_agent_label("pi"), Some(Agent::Pi));
         assert_eq!(parse_agent_label("claude"), Some(Agent::Claude));
         assert_eq!(parse_agent_label("cursor-agent"), Some(Agent::Cursor));

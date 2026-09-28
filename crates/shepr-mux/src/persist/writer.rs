@@ -41,17 +41,28 @@ struct WrittenHistory {
     file: HistoryFileStamp,
 }
 
+/// What snapshot history needs around one write of the session file.
+#[derive(Clone, Copy)]
 enum SnapshotHistoryPlan {
-    /// The previous on-disk layout was just preserved, or the snapshot gate
-    /// is closed until the next interval.
+    /// Nothing to preserve: the newest copy is inside the snapshot interval,
+    /// or both layouts already match it.
     Skip,
-    /// The previous on-disk layout already matches the latest recovery copy,
-    /// or there was no usable prior session. Compare the new saved layout to
-    /// the fingerprint read before the write.
-    CompareCurrent { latest_fingerprint: Option<String> },
-    /// The pre-write inspection failed; retry once after the new session is
-    /// committed, as the old two-step flow did.
+    /// The layout on disk differs from the newest copy: preserve it now.
+    PreserveBeforeWrite,
+    /// Only the replacement layout differs from the newest copy: preserve it
+    /// once it is committed.
+    PreserveAfterWrite,
+    /// The decision could not be made before the write; make it again after.
     RetryAfterWrite,
+}
+
+/// What a failure to prune older recovery copies means for the copy just made.
+#[derive(Clone, Copy)]
+enum PrunePolicy {
+    /// Remove the new copy and fail, so the directory cannot grow unbounded.
+    Fatal,
+    /// Keep the new copy and log the failure.
+    Warn,
 }
 
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
@@ -94,15 +105,15 @@ impl SessionWriter {
         }
     }
 
-    fn preserve_unloaded(&mut self) -> io::Result<()> {
-        if self.protect_unloaded && preserve_existing(&self.path)? {
+    fn preserve_unloaded(&mut self, now: SystemTime) -> io::Result<()> {
+        if self.protect_unloaded && preserve_existing(&self.path, now)? {
             self.protect_unloaded = false;
         }
         Ok(())
     }
 
-    fn preserve_snapshot_history(&self) {
-        if let Err(err) = preserve_snapshot_history(&self.path) {
+    fn preserve_snapshot_history(&self, now: SystemTime) {
+        if let Err(err) = preserve_snapshot_after_write(&self.path, now) {
             tracing::warn!(
                 event = "persist.snapshot", outcome = "error", path = %self.path.display(),
                 err = %err, "failed to preserve session snapshot"
@@ -117,15 +128,27 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
     ) -> io::Result<()> {
+        // The clock boundary: everything below receives this one value.
+        // persist-clock-boundary-ok
+        self.save_at(snapshot, history, SystemTime::now())
+    }
+
+    /// Saves with the supplied clock value for recovery cadence and naming.
+    fn save_at(
+        &mut self,
+        snapshot: &SessionSnapshot,
+        history: Option<&SessionHistorySnapshot>,
+        now: SystemTime,
+    ) -> io::Result<()> {
         if !self.may_write() {
             return Ok(());
         }
         let mut snapshot_history_plan = SnapshotHistoryPlan::RetryAfterWrite;
-        let result = self.preserve_unloaded().and_then(|()| {
-            snapshot_history_plan = self.prepare_snapshot_history();
+        let result = self.preserve_unloaded(now).and_then(|()| {
+            snapshot_history_plan = self.prepare_snapshot_history(snapshot, now);
             super::io::save_to_path(&self.path, snapshot)
         });
-        self.finish_save_with_snapshot_plan(result, snapshot, history, snapshot_history_plan)
+        self.finish_save_with_snapshot_plan(result, snapshot, history, snapshot_history_plan, now)
     }
 
     #[cfg(test)]
@@ -140,6 +163,7 @@ impl SessionWriter {
             snapshot,
             history,
             SnapshotHistoryPlan::RetryAfterWrite,
+            UNIX_EPOCH,
         )
     }
 
@@ -149,6 +173,7 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
         snapshot_history_plan: SnapshotHistoryPlan,
+        now: SystemTime,
     ) -> io::Result<()> {
         let mut failure = None;
         match result {
@@ -172,8 +197,9 @@ impl SessionWriter {
         }
         // Optional history failure must not reclassify our committed layout as unloaded.
         self.protect_unloaded = false;
-        self.finish_snapshot_history(snapshot, snapshot_history_plan);
-        let history_path = self.path.with_file_name("session-history.json");
+        self.finish_snapshot_history(snapshot_history_plan, now);
+        let history_path =
+            super::io::session_history_path(super::io::containing_directory(&self.path));
         if let Err(err) = self.save_history(&history_path, history) {
             self.written_history = None;
             shepr_platform::logging::session_save_failed(&history_path, &err.to_string());
@@ -187,8 +213,27 @@ impl SessionWriter {
         failure.map_or(Ok(()), Err)
     }
 
-    fn prepare_snapshot_history(&self) -> SnapshotHistoryPlan {
-        match prepare_snapshot_history(&self.path) {
+    fn prepare_snapshot_history(
+        &self,
+        replacement: &SessionSnapshot,
+        now: SystemTime,
+    ) -> SnapshotHistoryPlan {
+        match snapshot_history_decision(&self.path, Some(replacement), now) {
+            Ok(SnapshotHistoryPlan::PreserveBeforeWrite) => {
+                match preserve_existing_in(
+                    &self.path,
+                    &super::io::snapshot_directory(&self.path),
+                    SNAPSHOT_LIMIT,
+                    PrunePolicy::Fatal,
+                    now,
+                ) {
+                    Ok(_) => SnapshotHistoryPlan::Skip,
+                    Err(err) => {
+                        tracing::warn!(event = "persist.snapshot", outcome = "error", path = %self.path.display(), err = %err, "failed to preserve session snapshot");
+                        SnapshotHistoryPlan::RetryAfterWrite
+                    }
+                }
+            }
             Ok(plan) => plan,
             Err(err) => {
                 tracing::warn!(
@@ -200,30 +245,12 @@ impl SessionWriter {
         }
     }
 
-    fn finish_snapshot_history(&self, snapshot: &SessionSnapshot, plan: SnapshotHistoryPlan) {
+    fn finish_snapshot_history(&self, plan: SnapshotHistoryPlan, now: SystemTime) {
         match plan {
-            SnapshotHistoryPlan::Skip => {}
-            SnapshotHistoryPlan::CompareCurrent { latest_fingerprint } => {
-                if snapshot.version != super::snapshot::SNAPSHOT_VERSION
-                    || snapshot.workspaces.is_empty()
-                {
-                    return;
-                }
-                if super::snapshot::layout_fingerprint(snapshot)
-                    .is_some_and(|fingerprint| latest_fingerprint.as_ref() == Some(&fingerprint))
-                {
-                    return;
-                }
-                if let Err(err) =
-                    preserve_existing_in(&self.path, "session-snapshots", SNAPSHOT_LIMIT)
-                {
-                    tracing::warn!(
-                        event = "persist.snapshot", outcome = "error", path = %self.path.display(),
-                        err = %err, "failed to preserve session snapshot"
-                    );
-                }
+            SnapshotHistoryPlan::Skip | SnapshotHistoryPlan::PreserveBeforeWrite => {}
+            SnapshotHistoryPlan::PreserveAfterWrite | SnapshotHistoryPlan::RetryAfterWrite => {
+                self.preserve_snapshot_history(now);
             }
-            SnapshotHistoryPlan::RetryAfterWrite => self.preserve_snapshot_history(),
         }
     }
 
@@ -286,16 +313,20 @@ impl SessionWriter {
         if !self.may_write() {
             return Ok(());
         }
+        // The clock boundary: everything below receives this one value.
+        // persist-clock-boundary-ok
+        let now = SystemTime::now();
         self.written_history = None;
-        let result = self.preserve_unloaded().and_then(|()| {
-            self.preserve_snapshot_history();
+        let result = self.preserve_unloaded(now).and_then(|()| {
+            self.preserve_snapshot_history(now);
             super::io::clear_path(&self.path)
         });
         if let Err(err) = result {
             shepr_platform::logging::session_clear_failed(&self.path, &err.to_string());
             return Err(err);
         }
-        let history_path = self.path.with_file_name("session-history.json");
+        let history_path =
+            super::io::session_history_path(super::io::containing_directory(&self.path));
         if let Err(err) = super::io::clear_path(&history_path) {
             shepr_platform::logging::session_clear_failed(&history_path, &err.to_string());
             return Err(err);
@@ -313,71 +344,31 @@ fn recovery_filename(timestamp: u128, process_id: u32, sequence: usize) -> Strin
     format!("session-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-{process_id}-{sequence}.json")
 }
 
-fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
-    let directory = path.with_file_name("session-snapshots");
+/// Decides which layout needs preserving before the caller replaces the file.
+/// The newest recovery copy controls both cadence and layout deduplication.
+fn snapshot_history_decision(
+    path: &Path,
+    replacement: Option<&SessionSnapshot>,
+    now: SystemTime,
+) -> io::Result<SnapshotHistoryPlan> {
+    let directory = super::io::snapshot_directory(path);
     let existing = match recovery_files(&directory) {
         Ok(files) => files,
         Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(err) => return Err(err),
     };
-    if let Some((_, latest)) = existing.last() {
+    let latest = existing.last().map(|(_, path)| path);
+    if let Some(latest) = latest {
         let modified = std::fs::metadata(latest)?.modified()?;
-        if SystemTime::now()
-            .duration_since(modified)
-            .is_ok_and(|age| age < SNAPSHOT_INTERVAL)
-        {
-            return Ok(());
-        }
-    }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    let Ok(snapshot) = serde_json::from_slice::<SessionSnapshot>(&bytes) else {
-        return Ok(());
-    };
-    if snapshot.version != super::snapshot::SNAPSHOT_VERSION || snapshot.workspaces.is_empty() {
-        return Ok(());
-    }
-    if let Some((_, latest)) = existing.last() {
-        let previous_bytes = std::fs::read(latest)?;
-        if let Ok(previous) = serde_json::from_slice::<SessionSnapshot>(&previous_bytes)
-            && super::snapshot::layout_fingerprint(&snapshot).is_some_and(|fingerprint| {
-                super::snapshot::layout_fingerprint(&previous).as_ref() == Some(&fingerprint)
-            })
-        {
-            return Ok(());
-        }
-    }
-    preserve_existing_in(path, "session-snapshots", SNAPSHOT_LIMIT)?;
-    Ok(())
-}
-
-/// Inspects the session and latest recovery copy before the primary session is
-/// replaced. A changed previous layout is copied immediately; when it already
-/// matches the latest copy, the returned fingerprint lets the caller decide
-/// whether to preserve the newly committed layout without parsing either file
-/// again.
-fn prepare_snapshot_history(path: &Path) -> io::Result<SnapshotHistoryPlan> {
-    let directory = path.with_file_name("session-snapshots");
-    let existing = match recovery_files(&directory) {
-        Ok(files) => files,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(err) => return Err(err),
-    };
-    if let Some((_, latest)) = existing.last() {
-        let modified = std::fs::metadata(latest)?.modified()?;
-        if SystemTime::now()
+        if now
             .duration_since(modified)
             .is_ok_and(|age| age < SNAPSHOT_INTERVAL)
         {
             return Ok(SnapshotHistoryPlan::Skip);
         }
     }
-
-    let latest_fingerprint = match existing.last() {
-        Some((_, latest)) => {
+    let latest_fingerprint = match latest {
+        Some(latest) => {
             let bytes = std::fs::read(latest)?;
             serde_json::from_slice::<SessionSnapshot>(&bytes)
                 .ok()
@@ -385,34 +376,64 @@ fn prepare_snapshot_history(path: &Path) -> io::Result<SnapshotHistoryPlan> {
         }
         None => None,
     };
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
-        }
+    let previous = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<SessionSnapshot>(&bytes).ok(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
-    let Ok(snapshot) = serde_json::from_slice::<SessionSnapshot>(&bytes) else {
-        return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
-    };
-    if snapshot.version != super::snapshot::SNAPSHOT_VERSION || snapshot.workspaces.is_empty() {
-        return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
-    }
-    if super::snapshot::layout_fingerprint(&snapshot)
-        .is_some_and(|fingerprint| latest_fingerprint.as_ref() == Some(&fingerprint))
+    if previous
+        .as_ref()
+        .is_some_and(|snapshot| layout_differs_from_latest(snapshot, latest_fingerprint.as_ref()))
     {
-        return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
+        return Ok(SnapshotHistoryPlan::PreserveBeforeWrite);
     }
-
-    preserve_existing_in(path, "session-snapshots", SNAPSHOT_LIMIT)?;
+    if replacement
+        .is_some_and(|snapshot| layout_differs_from_latest(snapshot, latest_fingerprint.as_ref()))
+    {
+        return Ok(SnapshotHistoryPlan::PreserveAfterWrite);
+    }
     Ok(SnapshotHistoryPlan::Skip)
 }
 
-fn preserve_existing(path: &Path) -> io::Result<bool> {
-    preserve_existing_in(path, "session-backups", 3)
+fn layout_differs_from_latest(snapshot: &SessionSnapshot, latest: Option<&String>) -> bool {
+    !snapshot.workspaces.is_empty()
+        && super::snapshot::layout_fingerprint(snapshot)
+            .is_some_and(|fingerprint| latest != Some(&fingerprint))
 }
 
-fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::Result<bool> {
+fn preserve_snapshot_after_write(path: &Path, now: SystemTime) -> io::Result<()> {
+    if matches!(
+        snapshot_history_decision(path, None, now)?,
+        SnapshotHistoryPlan::PreserveBeforeWrite
+    ) {
+        preserve_existing_in(
+            path,
+            &super::io::snapshot_directory(path),
+            SNAPSHOT_LIMIT,
+            PrunePolicy::Fatal,
+            now,
+        )?;
+    }
+    Ok(())
+}
+
+fn preserve_existing(path: &Path, now: SystemTime) -> io::Result<bool> {
+    preserve_existing_in(
+        path,
+        &super::io::backup_directory(path),
+        3,
+        PrunePolicy::Warn,
+        now,
+    )
+}
+
+fn preserve_existing_in(
+    path: &Path,
+    directory: &Path,
+    keep: usize,
+    prune_policy: PrunePolicy,
+    now: SystemTime,
+) -> io::Result<bool> {
     let mut source = match File::open(path) {
         Ok(file) => file,
         // Recheck on the next mutation until a fresh session is actually saved.
@@ -422,21 +443,20 @@ fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::R
     if !source.metadata()?.is_file() {
         return Err(io::Error::other("session path is not a regular file"));
     }
-    let directory = path.with_file_name(directory_name);
-    std::fs::create_dir_all(&directory)?;
-    let older = recovery_files(&directory)?;
-    let now = SystemTime::now()
+    std::fs::create_dir_all(directory)?;
+    let older = recovery_files(directory)?;
+    let timestamp_now = now
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     // Keep creation order even when the wall clock moves backwards.
     let timestamp = match older.last() {
-        Some((previous, _)) => now.max(
+        Some((previous, _)) => timestamp_now.max(
             previous
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("session recovery sequence exhausted"))?,
         ),
-        None => now,
+        None => timestamp_now,
     };
     for sequence in 0..128 {
         let backup = directory.join(recovery_filename(timestamp, std::process::id(), sequence));
@@ -446,15 +466,12 @@ fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::R
             Err(err) => return Err(err),
         }
         tracing::info!(
-            event = "persist.backup",
-            subsystem = "persist",
-            outcome = "ok",
-            path = %path.display(),
-            backup_path = %backup.display(),
+            event = "persist.backup", subsystem = "persist", outcome = "ok",
+            path = %path.display(), backup_path = %backup.display(),
             "preserved session recovery copy"
         );
         if let Err(err) = prune_backups(&older, keep) {
-            if directory_name == "session-snapshots" {
+            if matches!(prune_policy, PrunePolicy::Fatal) {
                 std::fs::remove_file(&backup)?;
                 return Err(err);
             }
@@ -577,7 +594,7 @@ mod tests {
     }
 
     fn backups(writer: &SessionWriter) -> Vec<Vec<u8>> {
-        let directory = writer.path.with_file_name("session-backups");
+        let directory = super::super::io::backup_directory(&writer.path);
         if !directory.try_exists().expect("test stat") {
             return Vec::new();
         }
@@ -593,7 +610,8 @@ mod tests {
     }
 
     fn snapshots(writer: &SessionWriter) -> Vec<(u128, PathBuf)> {
-        recovery_files(&writer.path.with_file_name("session-snapshots")).expect("test precondition")
+        recovery_files(&super::super::io::snapshot_directory(&writer.path))
+            .expect("test precondition")
     }
 
     #[test]
@@ -634,7 +652,7 @@ mod tests {
     #[test]
     fn snapshot_history_is_bounded_and_does_not_rotate_identical_layouts() {
         let mut writer = writer(false);
-        let directory = writer.path.with_file_name("session-snapshots");
+        let directory = super::super::io::snapshot_directory(&writer.path);
         std::fs::create_dir(&directory).expect("test precondition");
         let manual = directory.join("my-layout.json");
         std::fs::write(&manual, b"manual").expect("test precondition");
@@ -689,16 +707,9 @@ mod tests {
     fn snapshot_cadence_recovers_after_clock_rollback_and_restart() {
         let mut writer = writer(false);
         writer.save(&snapshot(), None).expect("save");
-        let file = snapshots(&writer).pop().expect("test precondition").1;
-        File::options()
-            .write(true)
-            .open(&file)
-            .expect("test precondition")
-            .set_times(
-                std::fs::FileTimes::new()
-                    .set_modified(SystemTime::now() + std::time::Duration::from_secs(86400)),
-            )
-            .expect("test precondition");
+        // A clock rolled back a day: the newest copy's mtime is then in the
+        // future, and must not hold off preservation. persist-clock-boundary-ok
+        let rolled_back = SystemTime::now() - std::time::Duration::from_secs(86400);
         let mut changed = snapshot();
         let tab = &mut changed.workspaces[0].tabs[0];
         let pane = tab.panes.remove(&0).expect("test precondition");
@@ -706,7 +717,7 @@ mod tests {
         tab.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
         tab.focused = Some(1);
         tab.root_pane = Some(1);
-        writer.save(&changed, None).expect("save");
+        writer.save_at(&changed, None, rolled_back).expect("save");
         assert_eq!(snapshots(&writer).len(), 2);
         let path = writer.path.clone();
         drop(writer);
@@ -722,6 +733,38 @@ mod tests {
             2,
             "new mtime restores cadence across restart"
         );
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn snapshot_interval_uses_supplied_clock() {
+        let mut writer = writer(false);
+        writer.save(&snapshot(), None).expect("initial save");
+        let latest = snapshots(&writer).pop().expect("initial snapshot").1;
+        let modified = std::fs::metadata(latest)
+            .expect("snapshot metadata")
+            .modified()
+            .expect("snapshot mtime");
+        let mut changed = snapshot();
+        let tab = &mut changed.workspaces[0].tabs[0];
+        let pane = tab.panes.remove(&0).expect("test precondition");
+        tab.panes.insert(1, pane);
+        tab.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
+        tab.focused = Some(1);
+        tab.root_pane = Some(1);
+        writer
+            .save_at(
+                &changed,
+                None,
+                modified + SNAPSHOT_INTERVAL - std::time::Duration::from_nanos(1),
+            )
+            .expect("save inside interval");
+        assert_eq!(snapshots(&writer).len(), 1);
+        writer
+            .save_at(&changed, None, modified + SNAPSHOT_INTERVAL)
+            .expect("save at interval");
+        assert_eq!(snapshots(&writer).len(), 2);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -744,8 +787,11 @@ mod tests {
     #[test]
     fn snapshot_failure_does_not_block_primary_save_and_clear() {
         let mut writer = writer(false);
-        std::fs::write(writer.path.with_file_name("session-snapshots"), b"blocked")
-            .expect("test precondition");
+        std::fs::write(
+            super::super::io::snapshot_directory(&writer.path),
+            b"blocked",
+        )
+        .expect("test precondition");
         writer.save(&snapshot(), None).expect("save");
         assert!(writer.path.try_exists().expect("test stat"));
         writer.clear().expect("clear");
@@ -779,9 +825,11 @@ mod tests {
         let original = b"invalid utf8 \xff";
         let mut writer = writer(true);
         std::fs::write(&writer.path, original).expect("test precondition");
-        let history_path = writer.path.with_file_name("session-history.json");
+        let history_path = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
         std::fs::write(&history_path, b"history").expect("test precondition");
-        let directory = writer.path.with_file_name("session-backups");
+        let directory = super::super::io::backup_directory(&writer.path);
         std::fs::write(&directory, b"blocks recovery").expect("test precondition");
         writer
             .save(&snapshot(), None)
@@ -813,10 +861,12 @@ mod tests {
     #[test]
     fn optional_history_failure_is_reported_after_layout_saves() {
         let mut writer = writer(true);
-        let history = writer.path.with_file_name("session-history.json");
+        let history = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
         std::fs::create_dir(&history).expect("test precondition");
         std::fs::write(
-            writer.path.with_file_name("session-backups"),
+            super::super::io::backup_directory(&writer.path),
             b"unavailable",
         )
         .expect("test precondition");
@@ -847,7 +897,9 @@ mod tests {
             workspaces: Vec::new(),
         };
         let mut writer = writer(true);
-        let history_path = writer.path.with_file_name("session-history.json");
+        let history_path = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
         // The layout rename happened; only the directory sync after it failed.
         super::super::io::save_to_path(&writer.path, &snapshot()).expect("test precondition");
         assert!(
@@ -949,7 +1001,9 @@ mod tests {
             workspaces: Vec::new(),
         };
         let mut writer = writer(false);
-        let history_path = writer.path.with_file_name("session-history.json");
+        let history_path = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
         writer
             .save(&snapshot(), Some(&history("one")))
             .expect("save");
@@ -998,7 +1052,9 @@ mod tests {
             workspaces: Vec::new(),
         };
         let mut writer = writer(false);
-        let history_path = writer.path.with_file_name("session-history.json");
+        let history_path = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
         writer.save(&snapshot(), Some(&history())).expect("save");
         let expected = std::fs::read(&history_path).expect("test precondition");
 
@@ -1025,7 +1081,7 @@ mod tests {
     #[test]
     fn pruning_leaves_user_named_recovery_files_alone() {
         let mut writer = writer(true);
-        let directory = writer.path.with_file_name("session-backups");
+        let directory = super::super::io::backup_directory(&writer.path);
         std::fs::create_dir(&directory).expect("test precondition");
         let manual = directory.join("session-000-manual.json");
         std::fs::write(&manual, b"manual recovery copy").expect("test precondition");
@@ -1127,7 +1183,7 @@ mod tests {
     #[test]
     fn stale_recovery_temporary_is_removed_before_reusing_its_name() {
         let writer = writer(true);
-        let directory = writer.path.with_file_name("session-backups");
+        let directory = super::super::io::backup_directory(&writer.path);
         std::fs::create_dir(&directory).expect("test precondition");
         let backup = directory.join(recovery_filename(123, 42, 0));
         let pending = backup.with_extension("pending");
@@ -1147,13 +1203,9 @@ mod tests {
     #[test]
     fn recovery_order_survives_clock_rollback() {
         let mut writer = writer(true);
-        let directory = writer.path.with_file_name("session-backups");
+        let directory = super::super::io::backup_directory(&writer.path);
         std::fs::create_dir(&directory).expect("test precondition");
-        let future = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("test precondition")
-            .as_nanos()
-            + 1_000_000_000_000_000;
+        let future = 1_000_000_000_000_000_000_000u128;
         for i in 0..2u8 {
             std::fs::write(
                 directory.join(format!("session-{:039}-1-0.json", future + u128::from(i))),
@@ -1207,7 +1259,7 @@ mod tests {
             assert!(target.try_exists().expect("test stat"));
             if late_target {
                 assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
-                let backup = std::fs::read_dir(writer.path.with_file_name("session-backups"))
+                let backup = std::fs::read_dir(super::super::io::backup_directory(&writer.path))
                     .expect("test precondition")
                     .next()
                     .expect("test precondition")

@@ -32,11 +32,6 @@ use super::osc::{
 const DEFAULT_DETECTION_ROWS: usize = 24;
 /// Slack after a synchronized update's deadline before the follow-up render.
 const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
-const MODE_MOUSE_X10: u16 = 9;
-const MODE_MOUSE_PRESS_RELEASE: u16 = 1000;
-const MODE_MOUSE_BUTTON_MOTION: u16 = 1002;
-const MODE_MOUSE_ANY_MOTION: u16 = 1003;
-
 /// Scroll metrics together with the row origin read under one terminal lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScrollPosition {

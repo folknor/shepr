@@ -9,8 +9,26 @@ use crate::workspace::Workspace;
 use shepr_core::layout::Node;
 use shepr_protocol::TerminalId;
 
-/// Current snapshot format version. Files with any other version are ignored.
-pub const SNAPSHOT_VERSION: u32 = 1;
+/// Current snapshot format version. Deserialization rejects every other value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct SnapshotVersion(u32);
+
+pub const SNAPSHOT_VERSION: SnapshotVersion = SnapshotVersion(1);
+
+impl<'de> Deserialize<'de> for SnapshotVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = u32::deserialize(deserializer)?;
+        if value == SNAPSHOT_VERSION.0 {
+            Ok(SNAPSHOT_VERSION)
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "snapshot version {value} is not supported (expected {})",
+                SNAPSHOT_VERSION.0
+            )))
+        }
+    }
+}
 
 /// Paths stay readable when they are UTF-8. Linux paths with arbitrary bytes
 /// use a JSON byte sequence so one pane cannot make the whole save fail.
@@ -80,7 +98,7 @@ mod path_bytes {
 #[derive(Serialize, Deserialize)]
 pub struct SessionSnapshot {
     /// Format version - used to detect incompatible changes.
-    pub version: u32,
+    pub version: SnapshotVersion,
     #[serde(default)]
     pub host_theme: SavedHostTheme,
     pub workspaces: Vec<WorkspaceSnapshot>,
@@ -124,7 +142,7 @@ impl SavedHostTheme {
 #[derive(Serialize, Deserialize)]
 pub struct SessionHistorySnapshot {
     /// Format version follows the matching session snapshot version.
-    pub version: u32,
+    pub version: SnapshotVersion,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout_fingerprint: Option<String>,
     pub workspaces: Vec<WorkspaceHistorySnapshot>,
@@ -705,26 +723,11 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
 }
 
 pub fn parse_snapshot(content: &str) -> Result<SessionSnapshot, String> {
-    let snapshot = serde_json::from_str::<SessionSnapshot>(content).map_err(|e| e.to_string())?;
-    if snapshot.version != SNAPSHOT_VERSION {
-        return Err(format!(
-            "snapshot version {} is not supported (expected {SNAPSHOT_VERSION})",
-            snapshot.version
-        ));
-    }
-    Ok(snapshot)
+    serde_json::from_str(content).map_err(|e| e.to_string())
 }
 
 pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnapshot, String> {
-    let snapshot =
-        serde_json::from_str::<SessionHistorySnapshot>(content).map_err(|e| e.to_string())?;
-    if snapshot.version != SNAPSHOT_VERSION {
-        return Err(format!(
-            "history snapshot version {} is not supported (expected {SNAPSHOT_VERSION})",
-            snapshot.version
-        ));
-    }
-    Ok(snapshot)
+    serde_json::from_str(content).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -742,6 +745,17 @@ mod tests {
     struct Holder {
         #[serde(with = "super::path_bytes")]
         path: PathBuf,
+    }
+
+    #[test]
+    fn snapshot_types_reject_wrong_version_during_deserialization() {
+        for json in [
+            r#"{"version":2,"workspaces":[],"active":null,"selected":0}"#,
+            r#"{"version":2,"workspaces":[]}"#,
+        ] {
+            assert!(serde_json::from_str::<super::SessionSnapshot>(json).is_err());
+            assert!(serde_json::from_str::<super::SessionHistorySnapshot>(json).is_err());
+        }
     }
 
     #[test]

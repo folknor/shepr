@@ -77,7 +77,6 @@ pub(crate) enum Command {
         pane_id: String,
         command: String,
     },
-    Invalid,
 }
 
 #[derive(Clone)]
@@ -134,7 +133,6 @@ impl Command {
             Self::ReleaseAgent(_) => Some("release-agent"),
             Self::ReportMetadata(_) => Some("report-metadata"),
             Self::Run { .. } => Some("run"),
-            Self::Invalid => None,
         }
     }
 
@@ -165,88 +163,89 @@ impl Command {
             | Self::ReleaseAgent(_)
             | Self::ReportMetadata(_)
             | Self::Run { .. } => true,
-            Self::Invalid => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &ArgMatches) -> Command {
+pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("list", command)) => Command::List {
+        Some(("list", command)) => Some(Command::List {
             workspace: string(command, "workspace"),
-        },
-        Some(("current", command)) => Command::Current {
+        }),
+        Some(("current", command)) => Some(Command::Current {
             selector: selector(command),
-        },
-        Some(("get", command)) => Command::Get {
-            pane_id: required(command, "pane_id"),
-        },
-        Some(("layout", command)) => Command::Layout {
+        }),
+        Some(("get", command)) => Some(Command::Get {
+            pane_id: required(command, "pane_id")?,
+        }),
+        Some(("layout", command)) => Some(Command::Layout {
             selector: selector(command),
-        },
-        Some(("process-info", command)) => Command::ProcessInfo {
+        }),
+        Some(("process-info", command)) => Some(Command::ProcessInfo {
             selector: selector(command),
-        },
-        Some(("neighbor", command)) => Command::Neighbor {
+        }),
+        Some(("neighbor", command)) => Some(Command::Neighbor {
             selector: selector(command),
-            direction: direction(command),
-        },
-        Some(("edges", command)) => Command::Edges {
+            direction: direction(command)?,
+        }),
+        Some(("edges", command)) => Some(Command::Edges {
             selector: selector(command),
-        },
-        Some(("focus", command)) => Command::Focus {
+        }),
+        Some(("focus", command)) => Some(Command::Focus {
             selector: selector(command),
-            direction: direction(command),
-        },
-        Some(("resize", command)) => Command::Resize {
+            direction: direction(command)?,
+        }),
+        Some(("resize", command)) => Some(Command::Resize {
             selector: selector(command),
-            direction: direction(command),
+            direction: direction(command)?,
             amount: value::<f32>(command, "amount"),
-        },
+        }),
         Some(("zoom", command)) => {
             let (selector, on, off) = zoom_args(command);
-            Command::Zoom { selector, on, off }
+            Some(Command::Zoom { selector, on, off })
         }
-        Some(("read", command)) => Command::Read(read_params(command)),
-        Some(("rename", command)) => Command::Rename(PaneRenameParams {
-            pane_id: required(command, "pane_id"),
+        Some(("read", command)) => Some(Command::Read(read_params(command)?)),
+        Some(("rename", command)) => Some(Command::Rename(PaneRenameParams {
+            pane_id: required(command, "pane_id")?,
             label: (!flag(command, "clear")).then(|| words(command, "label")),
-        }),
+        })),
         Some(("input", command)) => {
-            let (selector, right_click) = input_args(command);
-            Command::Input {
+            let (selector, right_click) = input_args(command)?;
+            Some(Command::Input {
                 selector,
                 right_click,
-            }
+            })
         }
-        Some(("split", command)) => Command::Split(split_args(command)),
-        Some(("swap", command)) => Command::Swap(swap_args(command)),
-        Some(("move", command)) => Command::Move(move_params(command)),
-        Some(("close", command)) => Command::Close {
-            pane_id: required(command, "pane_id"),
-        },
-        Some(("send-text", command)) => Command::SendText(PaneSendTextParams {
-            pane_id: required(command, "pane_id"),
+        Some(("split", command)) => Some(Command::Split(split_args(command)?)),
+        Some(("swap", command)) => Some(Command::Swap(swap_args(command))),
+        Some(("move", command)) => Some(Command::Move(move_params(command))),
+        Some(("close", command)) => Some(Command::Close {
+            pane_id: required(command, "pane_id")?,
+        }),
+        Some(("send-text", command)) => Some(Command::SendText(PaneSendTextParams {
+            pane_id: required(command, "pane_id")?,
             text: words(command, "text"),
-        }),
-        Some(("send-keys", command)) => Command::SendKeys(PaneSendKeysParams {
-            pane_id: required(command, "pane_id"),
+        })),
+        Some(("send-keys", command)) => Some(Command::SendKeys(PaneSendKeysParams {
+            pane_id: required(command, "pane_id")?,
             keys: values::<String>(command, "key"),
-        }),
-        Some(("wait-output", command)) => Command::WaitOutput(wait_output_params(command)),
-        Some(("report-agent", command)) => Command::ReportAgent(report_agent_params(command)),
-        Some(("report-agent-session", command)) => {
-            Command::ReportAgentSession(report_agent_session_params(command))
+        })),
+        Some(("wait-output", command)) => Some(Command::WaitOutput(wait_output_params(command)?)),
+        Some(("report-agent", command)) => Some(Command::ReportAgent(report_agent_params(command))),
+        Some(("report-agent-session", command)) => Some(Command::ReportAgentSession(
+            report_agent_session_params(command),
+        )),
+        Some(("release-agent", command)) => {
+            Some(Command::ReleaseAgent(release_agent_params(command)))
         }
-        Some(("release-agent", command)) => Command::ReleaseAgent(release_agent_params(command)),
         Some(("report-metadata", command)) => {
-            Command::ReportMetadata(report_metadata_params(command))
+            Some(Command::ReportMetadata(report_metadata_params(command)))
         }
-        Some(("run", command)) => Command::Run {
-            pane_id: required(command, "pane_id"),
+        Some(("run", command)) => Some(Command::Run {
+            pane_id: required(command, "pane_id")?,
             command: words(command, "command"),
-        },
-        _ => Command::Invalid,
+        }),
+        _ => None,
     }
 }
 
@@ -401,7 +400,6 @@ pub(super) fn run_pane_command(
                 keys: vec!["Enter".into()],
             }),
         ),
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -438,10 +436,10 @@ fn selector(matches: &ArgMatches) -> PaneSelectorArgs {
     }
 }
 
-fn split_args(matches: &ArgMatches) -> SplitArgs {
-    SplitArgs {
+fn split_args(matches: &ArgMatches) -> Option<SplitArgs> {
+    Some(SplitArgs {
         selector: selector(matches),
-        direction: value::<SplitDirection>(matches, "direction").unwrap_or(SplitDirection::Right),
+        direction: value::<SplitDirection>(matches, "direction")?,
         ratio: value::<f32>(matches, "ratio"),
         cwd: string(matches, "cwd"),
         focus: flag(matches, "focus"),
@@ -450,7 +448,7 @@ fn split_args(matches: &ArgMatches) -> SplitArgs {
         env: values::<(String, String)>(matches, "env")
             .into_iter()
             .collect(),
-    }
+    })
 }
 
 fn swap_args(matches: &ArgMatches) -> SwapArgs {
@@ -466,12 +464,11 @@ fn zoom_args(matches: &ArgMatches) -> (PaneSelectorArgs, bool, bool) {
     (selector(matches), flag(matches, "on"), flag(matches, "off"))
 }
 
-fn input_args(matches: &ArgMatches) -> (PaneSelectorArgs, PaneRightClickTarget) {
-    (
+fn input_args(matches: &ArgMatches) -> Option<(PaneSelectorArgs, PaneRightClickTarget)> {
+    Some((
         selector(matches),
-        value::<PaneRightClickTarget>(matches, "right-click")
-            .unwrap_or(PaneRightClickTarget::Shepr),
-    )
+        value::<PaneRightClickTarget>(matches, "right-click")?,
+    ))
 }
 
 fn selected_pane(
@@ -491,9 +488,8 @@ fn explicit_pane(selector: &PaneSelectorArgs) -> Option<String> {
     selector.pane_id.clone().or_else(|| selector.pane.clone())
 }
 
-fn direction(matches: &ArgMatches) -> PaneDirection {
-    // Required by the spec for every command that calls this.
-    value::<PaneDirection>(matches, "direction").unwrap_or(PaneDirection::Right)
+fn direction(matches: &ArgMatches) -> Option<PaneDirection> {
+    value::<PaneDirection>(matches, "direction")
 }
 
 fn zoom_params(
@@ -515,7 +511,7 @@ fn zoom_params(
     })
 }
 
-fn read_params(matches: &ArgMatches) -> PaneReadParams {
+fn read_params(matches: &ArgMatches) -> Option<PaneReadParams> {
     // `--ansi` and `--format ansi` keep escapes through the ANSI renderer.
     // There is no `--raw`: no raw PTY byte history exists to return, so it
     // could only ever repeat `--ansi`.
@@ -524,15 +520,15 @@ fn read_params(matches: &ArgMatches) -> PaneReadParams {
     } else {
         value::<ReadFormat>(matches, "format").unwrap_or(ReadFormat::Text)
     };
-    PaneReadParams {
-        pane_id: required(matches, "pane_id"),
+    Some(PaneReadParams {
+        pane_id: required(matches, "pane_id")?,
         source: value::<ReadSource>(matches, "source").unwrap_or(ReadSource::Recent),
         lines: value::<u32>(matches, "lines"),
         format,
         // Same params as `agent read`: an ANSI read keeps its escapes.
         strip_ansi: format != ReadFormat::Ansi,
         intent: shepr_api::schema::ReadIntent::Interactive,
-    }
+    })
 }
 
 fn input_params(
@@ -642,35 +638,35 @@ fn move_params(matches: &ArgMatches) -> Result<PaneMoveParams, String> {
     };
 
     Ok(PaneMoveParams {
-        pane_id: required(matches, "pane_id"),
+        pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
         destination,
         focus: !flag(matches, "no-focus"),
     })
 }
 
-fn wait_output_params(matches: &ArgMatches) -> PaneWaitForOutputParams {
+fn wait_output_params(matches: &ArgMatches) -> Option<PaneWaitForOutputParams> {
     // The spec requires exactly one of `--match` and `--regex`.
     let matcher = match string(matches, "regex") {
         Some(value) => OutputMatch::Regex { value },
         None => OutputMatch::Substring {
-            value: required(matches, "match"),
+            value: required(matches, "match")?,
         },
     };
-    PaneWaitForOutputParams {
-        pane_id: required(matches, "pane_id"),
+    Some(PaneWaitForOutputParams {
+        pane_id: required(matches, "pane_id")?,
         source: value::<ReadSource>(matches, "source").unwrap_or(ReadSource::Recent),
         lines: value::<u32>(matches, "lines"),
         r#match: matcher,
         timeout_ms: value::<u64>(matches, "timeout"),
         strip_ansi: !flag(matches, "raw"),
-    }
+    })
 }
 
 fn report_agent_params(matches: &ArgMatches) -> Result<PaneReportAgentParams, String> {
     Ok(PaneReportAgentParams {
-        pane_id: required(matches, "pane_id"),
+        pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
         source: report_source(matches).ok_or("missing required --source")?,
-        agent: required(matches, "agent"),
+        agent: required(matches, "agent").ok_or("missing required agent")?,
         state: value::<PaneAgentState>(matches, "state").ok_or("missing required --state")?,
         message: string(matches, "message"),
         seq: value::<u64>(matches, "seq"),
@@ -683,9 +679,9 @@ fn report_agent_session_params(
     matches: &ArgMatches,
 ) -> Result<PaneReportAgentSessionParams, String> {
     Ok(PaneReportAgentSessionParams {
-        pane_id: required(matches, "pane_id"),
+        pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
         source: report_source(matches).ok_or("missing required --source")?,
-        agent: required(matches, "agent"),
+        agent: required(matches, "agent").ok_or("missing required agent")?,
         seq: value::<u64>(matches, "seq"),
         agent_session_id: string(matches, "agent-session-id"),
         agent_session_path: string(matches, "agent-session-path"),
@@ -695,9 +691,9 @@ fn report_agent_session_params(
 
 fn release_agent_params(matches: &ArgMatches) -> Result<PaneReleaseAgentParams, String> {
     Ok(PaneReleaseAgentParams {
-        pane_id: required(matches, "pane_id"),
+        pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
         source: report_source(matches).ok_or("missing required --source")?,
-        agent: required(matches, "agent"),
+        agent: required(matches, "agent").ok_or("missing required agent")?,
         seq: value::<u64>(matches, "seq"),
     })
 }
@@ -714,7 +710,7 @@ fn report_metadata_params(matches: &ArgMatches) -> Result<PaneReportMetadataPara
         return Err("missing value for --applies-to-source".into());
     }
     Ok(PaneReportMetadataParams {
-        pane_id: required(matches, "pane_id"),
+        pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
         source,
         agent: string(matches, "agent"),
         applies_to_source,
@@ -760,7 +756,11 @@ mod tests {
         caller: &CallerPane,
         paths: &super::super::target::CliContext,
     ) -> Result<PaneSplitParams, String> {
-        super::split_params(super::split_args(matches), caller, paths)
+        super::split_params(
+            super::split_args(matches).expect("test precondition"),
+            caller,
+            paths,
+        )
     }
 
     fn swap_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneSwapParams, String> {
@@ -771,7 +771,7 @@ mod tests {
         matches: &ArgMatches,
         caller: &CallerPane,
     ) -> Result<PaneInputSetParams, String> {
-        let (selector, right_click) = super::input_args(matches);
+        let (selector, right_click) = super::input_args(matches).expect("test precondition");
         super::input_params(&selector, right_click, caller)
     }
 
@@ -1221,7 +1221,7 @@ mod tests {
     #[test]
     fn directional_commands_read_direction_and_amount() {
         let neighbor = pane(&["neighbor", "--direction", "down", "--current"]);
-        assert_eq!(direction(&neighbor), PaneDirection::Down);
+        assert_eq!(direction(&neighbor), Some(PaneDirection::Down));
 
         let resize = pane(&[
             "resize",
@@ -1236,7 +1236,7 @@ mod tests {
             selected_pane(&resize, &known("w1:p2")),
             Ok(Some("issue-2".into()))
         );
-        assert_eq!(direction(&resize), PaneDirection::Left);
+        assert_eq!(direction(&resize), Some(PaneDirection::Left));
         assert_eq!(value::<f32>(&resize, "amount"), Some(0.125));
 
         assert!(rejected(&["focus"]));
@@ -1245,7 +1245,7 @@ mod tests {
 
     #[test]
     fn read_defaults_with_bare_pane_id() {
-        let params = read_params(&pane(&["read", "issue-1"]));
+        let params = read_params(&pane(&["read", "issue-1"])).expect("test precondition");
 
         assert_eq!(params.pane_id, "issue-1");
         assert_eq!(params.source, ReadSource::Recent);
@@ -1258,14 +1258,16 @@ mod tests {
     fn read_accepts_space_separated_and_reordered_equals_options() {
         let params = read_params(&pane(&[
             "read", "issue-1", "--source", "visible", "--lines", "5", "--ansi",
-        ]));
+        ]))
+        .expect("test precondition");
         assert_eq!(params.pane_id, "issue-1");
         assert_eq!(params.source, ReadSource::Visible);
         assert_eq!(params.lines, Some(5));
         assert_eq!(params.format, ReadFormat::Ansi);
         assert!(!params.strip_ansi);
 
-        let params = read_params(&pane(&["read", "--source=visible", "--lines=5", "issue-1"]));
+        let params = read_params(&pane(&["read", "--source=visible", "--lines=5", "issue-1"]))
+            .expect("test precondition");
         assert_eq!(params.pane_id, "issue-1");
         assert_eq!(params.source, ReadSource::Visible);
         assert_eq!(params.lines, Some(5));
@@ -1285,7 +1287,8 @@ mod tests {
             "ready",
             "--timeout",
             "5000",
-        ]));
+        ]))
+        .expect("test precondition");
 
         assert_eq!(params.pane_id, "issue-1");
         assert_eq!(
@@ -1306,7 +1309,8 @@ mod tests {
             "--match=a=b",
             "--timeout=100",
             "issue-1",
-        ]));
+        ]))
+        .expect("test precondition");
         assert_eq!(params.pane_id, "issue-1");
         assert_eq!(
             params.r#match,
@@ -1316,7 +1320,8 @@ mod tests {
         );
         assert_eq!(params.timeout_ms, Some(100));
 
-        let params = wait_output_params(&pane(&["wait-output", "issue-1", "--regex", "-{3} done"]));
+        let params = wait_output_params(&pane(&["wait-output", "issue-1", "--regex", "-{3} done"]))
+            .expect("test precondition");
         assert_eq!(
             params.r#match,
             OutputMatch::Regex {

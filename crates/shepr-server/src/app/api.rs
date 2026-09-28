@@ -87,7 +87,6 @@ impl App {
                     "api request routed to the app by mistake"
                 );
                 return responses::failure(
-                    request.id,
                     ApiErrorCode::InternalError,
                     format!("{method_name} is not handled by the app"),
                 );
@@ -101,107 +100,107 @@ impl App {
                     .map(agent_manifest_info)
                     .collect(),
             },
-            Method::SessionSnapshot(_) => return self.handle_session_snapshot(request.id),
-            Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
-            Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, &target),
+            Method::SessionSnapshot(_) => return self.handle_session_snapshot(),
+            Method::WorkspaceList(_) => return self.handle_workspace_list(),
+            Method::WorkspaceGet(target) => return self.handle_workspace_get(&target),
             Method::WorkspaceCreate(params) => {
-                return self.handle_workspace_create(request.id, params);
+                return self.handle_workspace_create(params);
             }
             Method::WorkspaceFocus(target) => {
-                return self.handle_workspace_focus(request.id, &target);
+                return self.handle_workspace_focus(&target);
             }
             Method::WorkspaceRename(params) => {
-                return self.handle_workspace_rename(request.id, params);
+                return self.handle_workspace_rename(params);
             }
             Method::WorkspaceMove(params) => {
-                return self.handle_workspace_move(request.id, &params);
+                return self.handle_workspace_move(&params);
             }
             Method::WorkspaceMoveBlock(params) => {
-                return self.handle_workspace_move_block(request.id, params);
+                return self.handle_workspace_move_block(params);
             }
             Method::WorkspaceReportMetadata(params) => {
-                return self.handle_workspace_report_metadata(request.id, params);
+                return self.handle_workspace_report_metadata(params);
             }
             Method::WorkspaceClose(target) => {
-                return self.handle_workspace_close(request.id, &target);
+                return self.handle_workspace_close(&target);
             }
-            Method::TabList(params) => return self.handle_tab_list(request.id, params),
-            Method::TabGet(target) => return self.handle_tab_get(request.id, &target),
-            Method::TabCreate(params) => return self.handle_tab_create(request.id, params),
-            Method::TabFocus(target) => return self.handle_tab_focus(request.id, &target),
-            Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
-            Method::TabMove(params) => return self.handle_tab_move(request.id, &params),
-            Method::TabClose(target) => return self.handle_tab_close(request.id, &target),
-            Method::AgentList(_) => return self.handle_agent_list(request.id),
-            Method::AgentGet(target) => return self.handle_agent_get(request.id, &target),
-            Method::AgentFocus(target) => return self.handle_agent_focus(request.id, &target),
-            Method::AgentRename(params) => return self.handle_agent_rename(request.id, params),
-            Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
-            Method::AgentRead(params) => return self.handle_agent_read(request.id, &params),
-            Method::AgentExplain(target) => return self.handle_agent_explain(request.id, &target),
+            Method::TabList(params) => return self.handle_tab_list(params),
+            Method::TabGet(target) => return self.handle_tab_get(&target),
+            Method::TabCreate(params) => return self.handle_tab_create(params),
+            Method::TabFocus(target) => return self.handle_tab_focus(&target),
+            Method::TabRename(params) => return self.handle_tab_rename(params),
+            Method::TabMove(params) => return self.handle_tab_move(&params),
+            Method::TabClose(target) => return self.handle_tab_close(&target),
+            Method::AgentList(_) => return self.handle_agent_list(),
+            Method::AgentGet(target) => return self.handle_agent_get(&target),
+            Method::AgentFocus(target) => return self.handle_agent_focus(&target),
+            Method::AgentRename(params) => return self.handle_agent_rename(params),
+            Method::AgentStart(params) => return self.handle_agent_start(params),
+            Method::AgentRead(params) => return self.handle_agent_read(&params),
+            Method::AgentExplain(target) => return self.handle_agent_explain(&target),
             Method::AgentSendKeys(params) => {
-                return self.handle_agent_send_keys(request.id, &params);
+                return self.handle_agent_send_keys(&params);
             }
-            Method::PaneSplit(params) => return self.handle_pane_split(request.id, params),
-            Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
-            Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
-            Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, &params),
-            Method::PaneLayout(params) => return self.handle_pane_layout(request.id, &params),
+            Method::PaneSplit(params) => return self.handle_pane_split(params),
+            Method::PaneSwap(params) => return self.handle_pane_swap(params),
+            Method::PaneMove(params) => return self.handle_pane_move(params),
+            Method::PaneZoom(params) => return self.handle_pane_zoom(&params),
+            Method::PaneLayout(params) => return self.handle_pane_layout(&params),
             Method::PaneProcessInfo(params) => {
-                return self.handle_pane_process_info(request.id, &params);
+                return self.handle_pane_process_info(&params);
             }
             Method::LayoutExport(params) => {
-                return self.handle_layout_export(request.id, &params);
+                return self.handle_layout_export(&params);
             }
-            Method::LayoutApply(params) => return self.handle_layout_apply(request.id, &params),
+            Method::LayoutApply(params) => return self.handle_layout_apply(&params),
             Method::LayoutSetSplitRatio(params) => {
-                return self.handle_layout_set_split_ratio(request.id, params);
+                return self.handle_layout_set_split_ratio(params);
             }
-            Method::PaneNeighbor(params) => return self.handle_pane_neighbor(request.id, &params),
-            Method::PaneEdges(params) => return self.handle_pane_edges(request.id, &params),
+            Method::PaneNeighbor(params) => return self.handle_pane_neighbor(&params),
+            Method::PaneEdges(params) => return self.handle_pane_edges(&params),
             Method::PaneFocusDirection(params) => {
-                return self.handle_pane_focus_direction(request.id, &params);
+                return self.handle_pane_focus_direction(&params);
             }
-            Method::PaneResize(params) => return self.handle_pane_resize(request.id, &params),
-            Method::PaneScroll(params) => return self.handle_pane_scroll(request.id, &params),
-            Method::PaneClear(target) => return self.handle_pane_clear(request.id, &target),
+            Method::PaneResize(params) => return self.handle_pane_resize(&params),
+            Method::PaneScroll(params) => return self.handle_pane_scroll(&params),
+            Method::PaneClear(target) => return self.handle_pane_clear(&target),
             Method::PaneSelectionRead(params) => {
-                return self.handle_pane_selection_read(request.id, params);
+                return self.handle_pane_selection_read(params);
             }
             Method::PaneCopyMotion(params) => {
-                return self.handle_pane_copy_motion(request.id, params);
+                return self.handle_pane_copy_motion(params);
             }
             Method::PaneCopySearch(params) => {
-                return self.handle_pane_copy_search(request.id, params);
+                return self.handle_pane_copy_search(params);
             }
-            Method::PaneList(params) => return self.handle_pane_list(request.id, &params),
-            Method::PaneCurrent(params) => return self.handle_pane_current(request.id, &params),
-            Method::PaneGet(target) => return self.handle_pane_get(request.id, &target),
-            Method::PaneFocus(target) => return self.handle_pane_focus(request.id, &target),
-            Method::PaneInputSet(params) => return self.handle_pane_input_set(request.id, &params),
-            Method::PaneRename(params) => return self.handle_pane_rename(request.id, params),
-            Method::PaneRead(params) => return self.handle_pane_read(request.id, &params),
+            Method::PaneList(params) => return self.handle_pane_list(&params),
+            Method::PaneCurrent(params) => return self.handle_pane_current(&params),
+            Method::PaneGet(target) => return self.handle_pane_get(&target),
+            Method::PaneFocus(target) => return self.handle_pane_focus(&target),
+            Method::PaneInputSet(params) => return self.handle_pane_input_set(&params),
+            Method::PaneRename(params) => return self.handle_pane_rename(params),
+            Method::PaneRead(params) => return self.handle_pane_read(&params),
             Method::PaneReportAgent(params) => {
-                return self.handle_pane_report_agent(request.id, params);
+                return self.handle_pane_report_agent(params);
             }
             Method::PaneReportAgentSession(params) => {
-                return self.handle_pane_report_agent_session(request.id, params);
+                return self.handle_pane_report_agent_session(params);
             }
             Method::PaneReportMetadata(params) => {
-                return self.handle_pane_report_metadata(request.id, params);
+                return self.handle_pane_report_metadata(params);
             }
             Method::PaneClearAgentAuthority(params) => {
-                return self.handle_pane_clear_agent_authority(request.id, params);
+                return self.handle_pane_clear_agent_authority(params);
             }
             Method::PaneReleaseAgent(params) => {
-                return self.handle_pane_release_agent(request.id, params);
+                return self.handle_pane_release_agent(params);
             }
-            Method::PaneSendText(params) => return self.handle_pane_send_text(request.id, params),
+            Method::PaneSendText(params) => return self.handle_pane_send_text(params),
             Method::PaneSendInput(params) => {
-                return self.handle_pane_send_input(request.id, &params);
+                return self.handle_pane_send_input(&params);
             }
-            Method::PaneClose(target) => return self.handle_pane_close(request.id, &target),
-            Method::PaneSendKeys(params) => return self.handle_pane_send_keys(request.id, &params),
+            Method::PaneClose(target) => return self.handle_pane_close(&target),
+            Method::PaneSendKeys(params) => return self.handle_pane_send_keys(&params),
         };
 
         Ok(response)

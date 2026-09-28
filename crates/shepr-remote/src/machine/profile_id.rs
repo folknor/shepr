@@ -4,6 +4,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 
 const PROFILE_ID_BYTES: usize = 16;
+/// Hex characters `ProfileId::short` keeps. A character count, unlike
+/// `PROFILE_ID_BYTES`, which counts the bytes the full hex id encodes.
+const SHORT_ID_HEX_CHARS: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
@@ -46,6 +49,12 @@ impl ProfileId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The leading hex characters of this id, for names that must stay short
+    /// (socket paths). `parse` and `generate` guarantee the id is longer.
+    pub fn short(&self) -> &str {
+        &self.0[..SHORT_ID_HEX_CHARS]
+    }
 }
 
 impl<'de> Deserialize<'de> for ProfileId {
@@ -78,6 +87,8 @@ mod tests {
             first
         );
         assert_eq!(first.as_str().len(), 32);
+        let known = ProfileId::parse("0123456789abcdef0123456789abcdef").expect("valid id");
+        assert_eq!(known.short(), "0123456789abcdef");
     }
 
     #[test]

@@ -12,7 +12,6 @@ pub(crate) enum Command {
     Focus { tab_id: String },
     Rename { tab_id: String, label: String },
     Close { tab_id: String },
-    Invalid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +32,6 @@ impl Command {
             Self::Focus { .. } => Some("focus"),
             Self::Rename { .. } => Some("rename"),
             Self::Close { .. } => Some("close"),
-            Self::Invalid => None,
         }
     }
 
@@ -45,17 +43,16 @@ impl Command {
             | Self::Focus { .. }
             | Self::Rename { .. }
             | Self::Close { .. } => true,
-            Self::Invalid => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("list", command)) => Command::List {
+        Some(("list", command)) => Some(Command::List {
             workspace: string(command, "workspace"),
-        },
-        Some(("create", command)) => Command::Create(CreateArgs {
+        }),
+        Some(("create", command)) => Some(Command::Create(CreateArgs {
             workspace: string(command, "workspace"),
             cwd: string(command, "cwd"),
             focus: flag(command, "focus"),
@@ -63,21 +60,21 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
             env: values::<(String, String)>(command, "env")
                 .into_iter()
                 .collect(),
+        })),
+        Some(("get", command)) => Some(Command::Get {
+            tab_id: required(command, "tab_id")?,
         }),
-        Some(("get", command)) => Command::Get {
-            tab_id: required(command, "tab_id"),
-        },
-        Some(("focus", command)) => Command::Focus {
-            tab_id: required(command, "tab_id"),
-        },
-        Some(("rename", command)) => Command::Rename {
-            tab_id: required(command, "tab_id"),
+        Some(("focus", command)) => Some(Command::Focus {
+            tab_id: required(command, "tab_id")?,
+        }),
+        Some(("rename", command)) => Some(Command::Rename {
+            tab_id: required(command, "tab_id")?,
             label: words(command, "label"),
-        },
-        Some(("close", command)) => Command::Close {
-            tab_id: required(command, "tab_id"),
-        },
-        _ => Command::Invalid,
+        }),
+        Some(("close", command)) => Some(Command::Close {
+            tab_id: required(command, "tab_id")?,
+        }),
+        _ => None,
     }
 }
 
@@ -102,7 +99,6 @@ pub(super) fn run_tab_command(
             super::runtime::tab_rename(paths, TabRenameParams { tab_id, label })
         }
         Command::Close { tab_id } => super::runtime::tab_close(paths, tab_id),
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -135,7 +131,9 @@ mod tests {
     use super::super::tests::group_matches;
 
     fn create_args(args: &[&str]) -> super::CreateArgs {
-        let super::Command::Create(args) = super::parse(&group_matches(args)) else {
+        let super::Command::Create(args) =
+            super::parse(&group_matches(args)).expect("test precondition")
+        else {
             panic!("expected tab create");
         };
         args

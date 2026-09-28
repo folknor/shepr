@@ -1,11 +1,7 @@
 use super::*;
 
 impl App {
-    pub(crate) fn handle_pane_clear(
-        &mut self,
-        id: String,
-        target: &PaneTarget,
-    ) -> shepr_api::error::ApiResult {
+    pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
@@ -16,14 +12,13 @@ impl App {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
         match runtime.clear_screen() {
-            Ok(()) => success(id, ResponseResult::Ok {}),
-            Err(err) => failure(id, shepr_api::error::ApiErrorCode::PaneClearFailed, err),
+            Ok(()) => success(ResponseResult::Ok {}),
+            Err(err) => failure(shepr_api::error::ApiErrorCode::PaneClearFailed, err),
         }
     }
 
     pub(crate) fn handle_pane_scroll(
         &mut self,
-        id: String,
         params: &PaneScrollParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
@@ -41,7 +36,7 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
-        success(id, ResponseResult::PaneInfo { pane })
+        success(ResponseResult::PaneInfo { pane })
     }
 
     pub(crate) fn pane_selection_text(
@@ -89,24 +84,19 @@ impl App {
 
     pub(crate) fn handle_pane_selection_read(
         &mut self,
-        id: String,
         params: PaneSelectionReadParams,
     ) -> shepr_api::error::ApiResult {
         match self.pane_selection_text(&params) {
-            Ok(text) => success(
-                id,
-                ResponseResult::PaneSelection {
-                    pane_id: params.pane_id,
-                    text,
-                },
-            ),
+            Ok(text) => success(ResponseResult::PaneSelection {
+                pane_id: params.pane_id,
+                text,
+            }),
             Err(error) => Err(error),
         }
     }
 
     pub(crate) fn handle_pane_copy_motion(
         &mut self,
-        id: String,
         params: PaneCopyMotionParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
@@ -124,7 +114,6 @@ impl App {
             .is_some_and(|revision| revision != before || !before.is_multiple_of(2))
         {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
@@ -145,7 +134,6 @@ impl App {
                 );
                 let Some(text) = runtime.extract_selection(&selection) else {
                     return failure(
-                        id,
                         shepr_api::error::ApiErrorCode::CopyMotionUnavailable,
                         "terminal row is unavailable",
                     );
@@ -168,7 +156,6 @@ impl App {
             | PaneCopyMotion::NextBigWordEnd => {
                 let Some(motion) = terminal_word_motion(params.motion) else {
                     return failure(
-                        id,
                         shepr_api::error::ApiErrorCode::CopyMotionUnavailable,
                         "copy motion is not a word motion",
                     );
@@ -203,27 +190,22 @@ impl App {
         let after = runtime.content_seq();
         if params.content_revision.is_some() && after != before {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
         }
-        success(
-            id,
-            ResponseResult::PaneCopyMotion {
-                pane_id: params.pane_id,
-                cursor: shepr_api::schema::PaneTextPoint {
-                    row: target.row,
-                    col: target.col,
-                },
-                content_revision: after,
+        success(ResponseResult::PaneCopyMotion {
+            pane_id: params.pane_id,
+            cursor: shepr_api::schema::PaneTextPoint {
+                row: target.row,
+                col: target.col,
             },
-        )
+            content_revision: after,
+        })
     }
 
     pub(crate) fn handle_pane_copy_search(
         &mut self,
-        id: String,
         params: PaneCopySearchParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
@@ -239,7 +221,6 @@ impl App {
         const MAX_RETURNED_MATCHES: usize = 1024;
         if params.query.len() > MAX_QUERY_BYTES {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::QueryTooLarge,
                 "copy search query is too large",
             );
@@ -247,7 +228,6 @@ impl App {
         let before = runtime.content_seq();
         if before != params.content_revision || !before.is_multiple_of(2) {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
@@ -283,7 +263,6 @@ impl App {
         let after = runtime.content_seq();
         if after != before || !after.is_multiple_of(2) {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::StaleContent,
                 "pane content changed",
             );
@@ -302,18 +281,15 @@ impl App {
                 },
             })
             .collect();
-        success(
-            id,
-            ResponseResult::PaneCopySearch {
-                pane_id: params.pane_id,
-                content_revision: after,
-                matches,
-                total: u64::try_from(result.total).unwrap_or(u64::MAX),
-                current: result.current.and_then(|index| u32::try_from(index).ok()),
-                current_global: result
-                    .current_global
-                    .and_then(|index| u64::try_from(index).ok()),
-            },
-        )
+        success(ResponseResult::PaneCopySearch {
+            pane_id: params.pane_id,
+            content_revision: after,
+            matches,
+            total: u64::try_from(result.total).unwrap_or(u64::MAX),
+            current: result.current.and_then(|index| u32::try_from(index).ok()),
+            current_global: result
+                .current_global
+                .and_then(|index| u64::try_from(index).ok()),
+        })
     }
 }

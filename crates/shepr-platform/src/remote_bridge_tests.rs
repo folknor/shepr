@@ -8,11 +8,14 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_millis(300);
 
 #[test]
+#[ignore = "subprocess entry point, exercised by the bridge tests"]
 #[expect(
     clippy::disallowed_methods,
     reason = "SHEPR_BRIDGE_TEST_SOCKET is this test's own re-exec harness probe, not a shepr setting"
 )]
-fn bridge_child() {
+fn bridge_subprocess_entry_point() {
+    // `brokkr test` passes `--include-ignored`, which runs this entry point
+    // directly with no parent. Only the re-exec sets the socket variable.
     let Some(path) = std::env::var_os("SHEPR_BRIDGE_TEST_SOCKET") else {
         return;
     };
@@ -53,8 +56,12 @@ impl Bridge {
         );
         command
             .args([
+                // This entry point must run inside the test binary to reach
+                // crate-private bridge code. libtest selection and uncaptured
+                // stdout are required for its stdio protocol.
                 "--exact",
-                "remote_bridge_tests::bridge_child",
+                "remote_bridge_tests::bridge_subprocess_entry_point",
+                "--ignored",
                 "--nocapture",
             ])
             .env("SHEPR_BRIDGE_TEST_SOCKET", &path)

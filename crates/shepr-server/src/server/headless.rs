@@ -77,8 +77,6 @@ use crate::server::client_transport::ClientWriter;
 use shepr_protocol::MAX_FRAME_SIZE;
 #[cfg(test)]
 use shepr_protocol::RenderEncoding;
-#[cfg(test)]
-use std::fs;
 
 // ---------------------------------------------------------------------------
 // Loop event enum for the headless server event loop
@@ -128,10 +126,6 @@ impl AttachInputDelivery {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 struct ListenerFd(RawFd);
 

@@ -17,26 +17,18 @@ const MAX_LAYOUT_PANES: usize = 24;
 const MAX_LAYOUT_DEPTH: usize = 16;
 
 impl App {
-    pub(super) fn handle_layout_export(
-        &mut self,
-        id: String,
-        params: &LayoutExportParams,
-    ) -> ApiResult {
+    pub(super) fn handle_layout_export(&mut self, params: &LayoutExportParams) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.resolve_layout_export_target(params) else {
-            return failure(id, ApiErrorCode::LayoutNotFound, "layout target not found");
+            return failure(ApiErrorCode::LayoutNotFound, "layout target not found");
         };
         let Some(layout) = self.layout_description(ws_idx, tab_idx) else {
-            return failure(id, ApiErrorCode::LayoutNotFound, "layout unavailable");
+            return failure(ApiErrorCode::LayoutNotFound, "layout unavailable");
         };
 
-        success(id, ResponseResult::LayoutExport { layout })
+        success(ResponseResult::LayoutExport { layout })
     }
 
-    pub(super) fn handle_layout_apply(
-        &mut self,
-        id: String,
-        params: &LayoutApplyParams,
-    ) -> ApiResult {
+    pub(super) fn handle_layout_apply(&mut self, params: &LayoutApplyParams) -> ApiResult {
         let replace_target = match params.tab_id.as_deref() {
             Some(tab_id) => match self.parse_tab_id(tab_id) {
                 Some(target) => Some(target),
@@ -48,7 +40,6 @@ impl App {
         };
         if replace_target.is_some() && params.workspace_id.is_some() {
             return failure(
-                id,
                 ApiErrorCode::InvalidTarget,
                 "use either tab_id or workspace_id, not both",
             );
@@ -67,10 +58,10 @@ impl App {
             return Err(active_workspace_not_found());
         };
         if let Err(message) = validate_layout_tree(&params.root) {
-            return failure(id, ApiErrorCode::InvalidLayout, message);
+            return failure(ApiErrorCode::InvalidLayout, message);
         }
         if let Err(message) = validate_layout_launches(&params.root) {
-            return failure(id, ApiErrorCode::InvalidLayout, message);
+            return failure(ApiErrorCode::InvalidLayout, message);
         }
 
         let replacement_label = params.tab_label.clone().or_else(|| {
@@ -103,7 +94,7 @@ impl App {
         let extra_env = super::env::normalize_launch_env(root_leaf.env.clone())?;
         let command = match layout_command(root_leaf) {
             Ok(command) => command,
-            Err(message) => return failure(id, ApiErrorCode::InvalidLayout, message),
+            Err(message) => return failure(ApiErrorCode::InvalidLayout, message),
         };
 
         let spawn = self.pane_spawn_handles();
@@ -149,7 +140,7 @@ impl App {
 
         let (mut tab, terminal, runtime) = match created {
             Ok(result) => result,
-            Err(err) => return failure(id, ApiErrorCode::LayoutApplyFailed, err.to_string()),
+            Err(err) => return failure(ApiErrorCode::LayoutApplyFailed, err.to_string()),
         };
         let new_root_pane = tab.root_pane;
         let root_terminal_id = terminal.id.clone();
@@ -179,7 +170,7 @@ impl App {
         };
         if let Err(message) = stage_layout_node(&mut tab, new_root_pane, &params.root, &mut staging)
         {
-            return failure(id, ApiErrorCode::LayoutApplyFailed, message);
+            return failure(ApiErrorCode::LayoutApplyFailed, message);
         }
         if let Some(label) = replacement_label {
             tab.set_custom_name(label);
@@ -194,7 +185,7 @@ impl App {
             // `ws_idx` was resolved from current state above. This synchronous
             // handler holds `&mut self` through commit, so no code here can
             // remove that workspace before this defensive check.
-            return failure(id, ApiErrorCode::LayoutApplyFailed, "workspace not found");
+            return failure(ApiErrorCode::LayoutApplyFailed, "workspace not found");
         };
         for (terminal_id, runtime) in runtimes {
             self.terminal_runtimes.insert(terminal_id, runtime);
@@ -245,28 +236,23 @@ impl App {
         self.emit_layout_updated_event(ws_idx, new_tab_idx);
 
         let Some(layout) = self.layout_description(ws_idx, new_tab_idx) else {
-            return failure(
-                id,
-                ApiErrorCode::LayoutApplyFailed,
-                "new layout unavailable",
-            );
+            return failure(ApiErrorCode::LayoutApplyFailed, "new layout unavailable");
         };
-        success(id, ResponseResult::LayoutApply { layout })
+        success(ResponseResult::LayoutApply { layout })
     }
 
     pub(super) fn handle_layout_set_split_ratio(
         &mut self,
-        id: String,
         params: LayoutSetSplitRatioParams,
     ) -> ApiResult {
         if !params.ratio.is_finite() {
-            return failure(id, ApiErrorCode::InvalidRatio, "ratio must be finite");
+            return failure(ApiErrorCode::InvalidRatio, "ratio must be finite");
         }
         let Some((ws_idx, tab_idx)) = self.resolve_layout_export_target(&LayoutExportParams {
             tab_id: params.tab_id,
             pane_id: params.pane_id,
         }) else {
-            return failure(id, ApiErrorCode::LayoutNotFound, "layout target not found");
+            return failure(ApiErrorCode::LayoutNotFound, "layout target not found");
         };
 
         let path = params
@@ -282,15 +268,15 @@ impl App {
             .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
             .is_some_and(|tab| tab.layout.set_ratio_at(&path, params.ratio));
         if !changed {
-            return failure(id, ApiErrorCode::SplitNotFound, "split path not found");
+            return failure(ApiErrorCode::SplitNotFound, "split path not found");
         }
 
         self.schedule_session_save();
         let Some(layout) = self.layout_description(ws_idx, tab_idx) else {
-            return failure(id, ApiErrorCode::LayoutNotFound, "layout unavailable");
+            return failure(ApiErrorCode::LayoutNotFound, "layout unavailable");
         };
         self.emit_layout_updated_event(ws_idx, tab_idx);
-        success(id, ResponseResult::LayoutSplitRatioSet { layout })
+        success(ResponseResult::LayoutSplitRatioSet { layout })
     }
 
     fn resolve_layout_export_target(&self, params: &LayoutExportParams) -> Option<(usize, usize)> {
@@ -679,13 +665,10 @@ mod tests {
             .expect("test precondition")
             .set_manual_label("tests".into());
 
-        let response = app.handle_layout_export(
-            "req".into(),
-            &LayoutExportParams {
-                tab_id: None,
-                pane_id: None,
-            },
-        );
+        let response = app.handle_layout_export(&LayoutExportParams {
+            tab_id: None,
+            pane_id: None,
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::LayoutExport { layout } = success.result else {
@@ -725,15 +708,12 @@ mod tests {
         let mut app = app_with_workspace();
         app.state.workspaces[0].test_split(Direction::Horizontal);
 
-        let response = app.handle_layout_set_split_ratio(
-            "req".into(),
-            LayoutSetSplitRatioParams {
-                tab_id: None,
-                pane_id: None,
-                path: vec![],
-                ratio: 0.72,
-            },
-        );
+        let response = app.handle_layout_set_split_ratio(LayoutSetSplitRatioParams {
+            tab_id: None,
+            pane_id: None,
+            path: vec![],
+            ratio: 0.72,
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::LayoutSplitRatioSet { layout } = success.result else {
@@ -755,15 +735,12 @@ mod tests {
     fn layout_set_split_ratio_rejects_missing_split() {
         let mut app = app_with_workspace();
 
-        let response = app.handle_layout_set_split_ratio(
-            "req".into(),
-            LayoutSetSplitRatioParams {
-                tab_id: None,
-                pane_id: None,
-                path: vec![],
-                ratio: 0.72,
-            },
-        );
+        let response = app.handle_layout_set_split_ratio(LayoutSetSplitRatioParams {
+            tab_id: None,
+            pane_id: None,
+            path: vec![],
+            ratio: 0.72,
+        });
 
         let error: ErrorResponse = crate::test_support::test_error(&response);
         assert_eq!(error.error.code, "split_not_found");
@@ -778,36 +755,33 @@ mod tests {
             .public_pane_id(0, original_root)
             .expect("test precondition");
 
-        let response = app.handle_layout_apply(
-            "req".into(),
-            &LayoutApplyParams {
-                workspace_id: None,
-                tab_id: Some(original_tab_id.clone()),
-                tab_label: Some("dev".into()),
-                focus: true,
-                root: LayoutNode::Split {
-                    direction: SplitDirection::Right,
-                    ratio: 0.7,
-                    first: Box::new(LayoutNode::Pane {
-                        pane: LayoutPane {
-                            label: Some("editor".into()),
-                            ..Default::default()
-                        },
-                    }),
-                    second: Box::new(LayoutNode::Pane {
-                        pane: LayoutPane {
-                            label: Some("tests".into()),
-                            command: Some(vec![exiting_test_command().into()]),
-                            env: std::collections::HashMap::from([(
-                                "SHEPR_ROLE".into(),
-                                "tests".into(),
-                            )]),
-                            ..Default::default()
-                        },
-                    }),
-                },
+        let response = app.handle_layout_apply(&LayoutApplyParams {
+            workspace_id: None,
+            tab_id: Some(original_tab_id.clone()),
+            tab_label: Some("dev".into()),
+            focus: true,
+            root: LayoutNode::Split {
+                direction: SplitDirection::Right,
+                ratio: 0.7,
+                first: Box::new(LayoutNode::Pane {
+                    pane: LayoutPane {
+                        label: Some("editor".into()),
+                        ..Default::default()
+                    },
+                }),
+                second: Box::new(LayoutNode::Pane {
+                    pane: LayoutPane {
+                        label: Some("tests".into()),
+                        command: Some(vec![exiting_test_command().into()]),
+                        env: std::collections::HashMap::from([(
+                            "SHEPR_ROLE".into(),
+                            "tests".into(),
+                        )]),
+                        ..Default::default()
+                    },
+                }),
             },
-        );
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         let ResponseResult::LayoutApply { layout } = success.result else {
@@ -880,18 +854,15 @@ mod tests {
             .expect("test precondition")
             .cwd = cached_cwd.clone();
 
-        let response = app.handle_layout_apply(
-            "req".into(),
-            &LayoutApplyParams {
-                workspace_id: None,
-                tab_id: None,
-                tab_label: Some("cached".into()),
-                focus: false,
-                root: LayoutNode::Pane {
-                    pane: LayoutPane::default(),
-                },
+        let response = app.handle_layout_apply(&LayoutApplyParams {
+            workspace_id: None,
+            tab_id: None,
+            tab_label: Some("cached".into()),
+            focus: false,
+            root: LayoutNode::Pane {
+                pane: LayoutPane::default(),
             },
-        );
+        });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
@@ -917,31 +888,28 @@ mod tests {
         let mut app = app_with_workspace();
         let original_tab_count = app.state.workspaces[0].tabs().len();
 
-        let response = app.handle_layout_apply(
-            "req".into(),
-            &LayoutApplyParams {
-                workspace_id: Some(app.public_workspace_id(0).expect("test precondition")),
-                tab_id: None,
-                tab_label: Some("bad".into()),
-                focus: false,
-                root: LayoutNode::Split {
-                    direction: SplitDirection::Right,
-                    ratio: 0.5,
-                    first: Box::new(LayoutNode::Pane {
-                        pane: LayoutPane {
-                            label: Some("editor".into()),
-                            ..Default::default()
-                        },
-                    }),
-                    second: Box::new(LayoutNode::Pane {
-                        pane: LayoutPane {
-                            command: Some(Vec::new()),
-                            ..Default::default()
-                        },
-                    }),
-                },
+        let response = app.handle_layout_apply(&LayoutApplyParams {
+            workspace_id: Some(app.public_workspace_id(0).expect("test precondition")),
+            tab_id: None,
+            tab_label: Some("bad".into()),
+            focus: false,
+            root: LayoutNode::Split {
+                direction: SplitDirection::Right,
+                ratio: 0.5,
+                first: Box::new(LayoutNode::Pane {
+                    pane: LayoutPane {
+                        label: Some("editor".into()),
+                        ..Default::default()
+                    },
+                }),
+                second: Box::new(LayoutNode::Pane {
+                    pane: LayoutPane {
+                        command: Some(Vec::new()),
+                        ..Default::default()
+                    },
+                }),
             },
-        );
+        });
 
         let error: ErrorResponse = crate::test_support::test_error(&response);
         assert_eq!(error.error.code, "invalid_layout");

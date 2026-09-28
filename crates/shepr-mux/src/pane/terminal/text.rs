@@ -199,7 +199,7 @@ impl RetainedTextBuffer {
             for (col, cell) in (0u16..).zip(&screen_row.cells) {
                 builder.push_cell(row, col, cell.wide, &terminal_cell_text(&cell.graphemes));
             }
-            if builder.end_row(screen_row.soft_wrapped) {
+            if builder.end_row(screen_row.wrap.soft_wrapped) {
                 lines.push(std::mem::take(&mut builder.line));
             }
         }

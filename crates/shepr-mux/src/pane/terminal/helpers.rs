@@ -548,33 +548,14 @@ pub(super) fn ghostty_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::Cell
     if wide == shepr_vt::CellWide::Narrow && actual_width == 2 {
         return symbol.to_string();
     }
-    if wide == shepr_vt::CellWide::Narrow && is_halfwidth_katakana_voiced_mark(symbol) {
+    if wide == shepr_vt::CellWide::Narrow && shepr_vt::is_halfwidth_katakana_voiced_mark(symbol) {
         return symbol.to_string();
     }
-    if wide == shepr_vt::CellWide::Wide && is_halfwidth_katakana_voiced_grapheme(symbol) {
+    if wide == shepr_vt::CellWide::Wide && shepr_vt::is_halfwidth_katakana_voiced_grapheme(symbol) {
         return symbol.to_string();
     }
 
     ghostty_blank_symbol_for_width(wide).to_string()
-}
-
-/// U+FF9E/U+FF9F on their own. unicode-width measures them as zero-width, but
-/// the terminal core gives them a cell (as wcwidth does), so they are kept.
-pub(super) fn is_halfwidth_katakana_voiced_mark(symbol: &str) -> bool {
-    matches!(symbol, "\u{ff9e}" | "\u{ff9f}")
-}
-
-pub(super) fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    let Some(base) = chars.next() else {
-        return false;
-    };
-    let Some(mark) = chars.next() else {
-        return false;
-    };
-    chars.next().is_none()
-        && ('\u{ff66}'..='\u{ff9d}').contains(&base)
-        && matches!(mark, '\u{ff9e}' | '\u{ff9f}')
 }
 
 pub(super) fn ghostty_buffer_symbol_into<'a>(
@@ -608,9 +589,9 @@ pub(super) fn ghostty_buffer_symbol_into<'a>(
     if actual_width != expected_width
         && !(wide == shepr_vt::CellWide::Narrow && actual_width == 2)
         && !(wide == shepr_vt::CellWide::Narrow
-            && is_halfwidth_katakana_voiced_mark(symbol_scratch))
+            && shepr_vt::is_halfwidth_katakana_voiced_mark(symbol_scratch))
         && !(wide == shepr_vt::CellWide::Wide
-            && is_halfwidth_katakana_voiced_grapheme(symbol_scratch))
+            && shepr_vt::is_halfwidth_katakana_voiced_grapheme(symbol_scratch))
     {
         symbol_scratch.clear();
         symbol_scratch.push_str(ghostty_blank_symbol_for_width(wide));

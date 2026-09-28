@@ -9,6 +9,7 @@ alacritty_terminal = { workspace = true }
 serde = { workspace = true }
 shepr-core = { path = "../shepr-core" }
 unicode-width = { workspace = true }
+vte = { workspace = true }
 
 [lints]
 workspace = true

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_core::socket_path::fits_unix_socket_path;
 
     /// Paths whose root doubles as the XDG runtime directory the managed
     /// config directories are created in.

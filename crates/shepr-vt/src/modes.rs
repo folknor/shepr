@@ -1,5 +1,5 @@
-//! The DEC private modes the terminal core knows, in one table: the number,
-//! a name, how the live state is read, and how a write is routed.
+//! The DEC private modes the terminal core knows, in one table: the typed
+//! mode, its name, how the live state is read, and how a write is routed.
 //!
 //! Modes alacritty implements are written through vte's `NamedPrivateMode`
 //! and read from `TermMode` (or the cursor style for 12). Modes alacritty
@@ -18,9 +18,64 @@
 //! locking on the parsing path.
 
 use alacritty_terminal::term::TermMode;
-use alacritty_terminal::vte::ansi::NamedPrivateMode;
+use vte::ansi::NamedPrivateMode;
 
 use super::ExtraModes;
+
+/// A DEC private mode supported by the terminal adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecMode {
+    ApplicationCursorKeys,
+    ColumnMode,
+    Origin,
+    LineWrap,
+    X10Mouse,
+    CursorBlink,
+    ShowCursor,
+    MousePressRelease,
+    MouseButtonMotion,
+    MouseAnyMotion,
+    FocusEvents,
+    MouseUtf8,
+    MouseSgr,
+    MouseAlternateScroll,
+    MouseSgrPixels,
+    UrgencyHints,
+    AlternateScreen,
+    BracketedPaste,
+    SynchronizedOutput,
+    ColorSchemeReport,
+    InBandResize,
+}
+
+impl DecMode {
+    /// The DEC private mode number used in escape sequences.
+    pub const fn number(self) -> u16 {
+        match self {
+            Self::ApplicationCursorKeys => 1,
+            Self::ColumnMode => 3,
+            Self::Origin => 6,
+            Self::LineWrap => 7,
+            Self::X10Mouse => 9,
+            Self::CursorBlink => 12,
+            Self::ShowCursor => 25,
+            Self::MousePressRelease => 1000,
+            Self::MouseButtonMotion => 1002,
+            Self::MouseAnyMotion => 1003,
+            Self::FocusEvents => 1004,
+            Self::MouseUtf8 => 1005,
+            Self::MouseSgr => 1006,
+            Self::MouseAlternateScroll => 1007,
+            Self::MouseSgrPixels => 1016,
+            Self::UrgencyHints => 1042,
+            Self::AlternateScreen => 1049,
+            Self::BracketedPaste => 2004,
+            Self::SynchronizedOutput => 2026,
+            Self::ColorSchemeReport => 2031,
+            Self::InBandResize => 2048,
+        }
+    }
+}
 
 /// A mode alacritty does not model, stored in [`ExtraModes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +131,7 @@ pub(super) enum Setter {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ModeSpec {
-    pub(super) number: u16,
+    pub(super) mode: DecMode,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "documents the table; read by tests")
@@ -86,135 +141,161 @@ pub(super) struct ModeSpec {
     pub(super) set: Setter,
 }
 
-const fn vte(number: u16, name: &'static str, mode: TermMode, named: NamedPrivateMode) -> ModeSpec {
+const fn vte(
+    mode: DecMode,
+    name: &'static str,
+    term_mode: TermMode,
+    named: NamedPrivateMode,
+) -> ModeSpec {
     ModeSpec {
-        number,
+        mode,
         name,
-        get: Getter::Term(mode),
+        get: Getter::Term(term_mode),
         set: Setter::Vte(named),
     }
 }
 
-const fn extra(number: u16, name: &'static str, mode: ExtraMode) -> ModeSpec {
+const fn extra(mode: DecMode, name: &'static str, extra: ExtraMode) -> ModeSpec {
     ModeSpec {
-        number,
+        mode,
         name,
-        get: Getter::Extra(mode),
-        set: Setter::Extra(mode),
+        get: Getter::Extra(extra),
+        set: Setter::Extra(extra),
     }
 }
 
 pub(super) const MODES: &[ModeSpec] = &[
     vte(
-        1,
+        DecMode::ApplicationCursorKeys,
         "application cursor keys",
         TermMode::APP_CURSOR,
         NamedPrivateMode::CursorKeys,
     ),
     ModeSpec {
-        number: 3,
+        mode: DecMode::ColumnMode,
         name: "column mode",
         get: Getter::Unsupported,
         set: Setter::Vte(NamedPrivateMode::ColumnMode),
     },
-    vte(6, "origin", TermMode::ORIGIN, NamedPrivateMode::Origin),
     vte(
-        7,
+        DecMode::Origin,
+        "origin",
+        TermMode::ORIGIN,
+        NamedPrivateMode::Origin,
+    ),
+    vte(
+        DecMode::LineWrap,
         "line wrap",
         TermMode::LINE_WRAP,
         NamedPrivateMode::LineWrap,
     ),
-    extra(9, "x10 mouse", ExtraMode::X10Mouse),
+    extra(DecMode::X10Mouse, "x10 mouse", ExtraMode::X10Mouse),
     ModeSpec {
-        number: super::MODE_CURSOR_BLINK,
+        mode: DecMode::CursorBlink,
         name: "cursor blink",
         get: Getter::CursorBlink,
         set: Setter::Vte(NamedPrivateMode::BlinkingCursor),
     },
     vte(
-        25,
+        DecMode::ShowCursor,
         "show cursor",
         TermMode::SHOW_CURSOR,
         NamedPrivateMode::ShowCursor,
     ),
     vte(
-        1000,
+        DecMode::MousePressRelease,
         "mouse clicks",
         TermMode::MOUSE_REPORT_CLICK,
         NamedPrivateMode::ReportMouseClicks,
     ),
     vte(
-        1002,
+        DecMode::MouseButtonMotion,
         "mouse drag",
         TermMode::MOUSE_DRAG,
         NamedPrivateMode::ReportCellMouseMotion,
     ),
     vte(
-        1003,
+        DecMode::MouseAnyMotion,
         "mouse motion",
         TermMode::MOUSE_MOTION,
         NamedPrivateMode::ReportAllMouseMotion,
     ),
     vte(
-        1004,
+        DecMode::FocusEvents,
         "focus events",
         TermMode::FOCUS_IN_OUT,
         NamedPrivateMode::ReportFocusInOut,
     ),
     vte(
-        1005,
+        DecMode::MouseUtf8,
         "utf-8 mouse",
         TermMode::UTF8_MOUSE,
         NamedPrivateMode::Utf8Mouse,
     ),
     vte(
-        1006,
+        DecMode::MouseSgr,
         "sgr mouse",
         TermMode::SGR_MOUSE,
         NamedPrivateMode::SgrMouse,
     ),
     vte(
-        1007,
+        DecMode::MouseAlternateScroll,
         "alternate scroll",
         TermMode::ALTERNATE_SCROLL,
         NamedPrivateMode::AlternateScroll,
     ),
-    extra(1016, "sgr pixel mouse", ExtraMode::SgrPixelsMouse),
+    extra(
+        DecMode::MouseSgrPixels,
+        "sgr pixel mouse",
+        ExtraMode::SgrPixelsMouse,
+    ),
     vte(
-        super::MODE_URGENCY_HINTS,
+        DecMode::UrgencyHints,
         "urgency hints",
         TermMode::URGENCY_HINTS,
         NamedPrivateMode::UrgencyHints,
     ),
     vte(
-        1049,
+        DecMode::AlternateScreen,
         "alternate screen",
         TermMode::ALT_SCREEN,
         NamedPrivateMode::SwapScreenAndSetRestoreCursor,
     ),
     vte(
-        2004,
+        DecMode::BracketedPaste,
         "bracketed paste",
         TermMode::BRACKETED_PASTE,
         NamedPrivateMode::BracketedPaste,
     ),
     ModeSpec {
-        number: super::MODE_SYNCHRONIZED_OUTPUT,
+        mode: DecMode::SynchronizedOutput,
         name: "synchronized output",
         get: Getter::SynchronizedOutput,
         set: Setter::Vte(NamedPrivateMode::SyncUpdate),
     },
-    extra(2031, "color scheme report", ExtraMode::ColorSchemeReport),
-    extra(2048, "in-band resize", ExtraMode::InBandResize),
+    extra(
+        DecMode::ColorSchemeReport,
+        "color scheme report",
+        ExtraMode::ColorSchemeReport,
+    ),
+    extra(
+        DecMode::InBandResize,
+        "in-band resize",
+        ExtraMode::InBandResize,
+    ),
 ];
 
-pub(super) fn lookup(number: u16) -> Option<&'static ModeSpec> {
-    MODES.iter().find(|spec| spec.number == number)
+pub(super) fn lookup(mode: DecMode) -> Option<&'static ModeSpec> {
+    MODES.iter().find(|spec| spec.mode == mode)
+}
+
+pub(super) fn lookup_number(number: u16) -> Option<&'static ModeSpec> {
+    MODES.iter().find(|spec| spec.mode.number() == number)
 }
 
 /// The adapter-stored mode for a number vte passed through as unknown.
 pub(super) fn extra_mode(number: u16) -> Option<ExtraMode> {
-    match lookup(number)?.set {
+    match lookup_number(number)?.set {
         Setter::Extra(mode) => Some(mode),
         Setter::Vte(_) => None,
     }
@@ -229,19 +310,19 @@ mod tests {
         for (index, spec) in MODES.iter().enumerate() {
             assert!(!spec.name.is_empty());
             assert!(
-                MODES[index + 1..]
-                    .iter()
-                    .all(|other| other.number != spec.number),
+                MODES[index + 1..].iter().all(|other| {
+                    other.mode != spec.mode && other.mode.number() != spec.mode.number()
+                }),
                 "duplicate mode {}",
-                spec.number
+                spec.mode.number()
             );
         }
     }
 
     #[test]
     fn alternate_screen_aliases_are_unsupported() {
-        assert!(lookup(47).is_none());
-        assert!(lookup(1047).is_none());
-        assert!(lookup(1049).is_some());
+        assert!(lookup_number(47).is_none());
+        assert!(lookup_number(1047).is_none());
+        assert!(lookup_number(1049).is_some());
     }
 }

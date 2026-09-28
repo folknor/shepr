@@ -48,11 +48,13 @@ pub use cell::RenderColors;
 #[cfg(test)]
 use cell::cell_style;
 pub use cell::{
-    CellBasicData, CellColor, CellView, CellWide, UnderlineStyle, unicode_codepoint_width,
-    unicode_text_width,
+    CellBasicData, CellColor, CellView, CellWide, UnderlineStyle,
+    is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
+    unicode_codepoint_width, unicode_text_width,
 };
 use cell::{CellText, cell_graphemes, cell_text, cell_text_into, cell_wide};
 pub use cell::{RowWrap, ScreenTextCell, ScreenTextRow, unicode_display_units};
+pub use modes::DecMode;
 pub const PANE_TERM: &str = "xterm-256color";
 
 pub use color::{ColorQuery, ColorQueryTarget, DefaultColor, RgbColor, default_palette};
@@ -75,8 +77,8 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb};
 use unicode_width::UnicodeWidthChar;
+use vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb};
 
 pub use coords::Point;
 pub use coords::{AbsRow, ScreenRow, ViewportRow};
@@ -117,18 +119,6 @@ impl ColorScheme {
         }
     }
 }
-
-pub const MODE_APPLICATION_CURSOR_KEYS: u16 = 1;
-pub const MODE_CURSOR_BLINK: u16 = 12;
-pub const MODE_FOCUS_EVENT: u16 = 1004;
-pub const MODE_MOUSE_UTF8: u16 = 1005;
-pub const MODE_MOUSE_SGR: u16 = 1006;
-pub const MODE_MOUSE_ALTERNATE_SCROLL: u16 = 1007;
-pub const MODE_MOUSE_SGR_PIXELS: u16 = 1016;
-pub const MODE_URGENCY_HINTS: u16 = 1042;
-pub const MODE_BRACKETED_PASTE: u16 = 2004;
-pub const MODE_SYNCHRONIZED_OUTPUT: u16 = 2026;
-pub const MODE_COLOR_SCHEME_REPORT: u16 = 2031;
 
 // Unicode private-use codepoint used by the kitty graphics unicode-placeholder
 // convention. Shepr does not render kitty graphics, but programs may still
@@ -735,7 +725,7 @@ impl Terminal {
 
     /// The live value of a DEC private mode; `false` for modes the table in
     /// `modes.rs` does not list or reports as unsupported.
-    pub fn mode_get(&self, mode: u16) -> bool {
+    pub fn mode_get(&self, mode: DecMode) -> bool {
         let Some(spec) = modes::lookup(mode) else {
             return false;
         };
@@ -753,11 +743,11 @@ impl Terminal {
     /// the parser, so a sequence the child has half-written is not disturbed
     /// and a synchronized update does not defer it. Mode 2026 is refused: it
     /// is parser state, not terminal state.
-    pub fn mode_set(&mut self, mode: u16, value: bool) -> Result<(), Error> {
+    pub fn mode_set(&mut self, mode: DecMode, value: bool) -> Result<(), Error> {
         if modes::lookup(mode).is_none() {
             return Err(Error("unsupported DEC private mode"));
         }
-        if mode == MODE_SYNCHRONIZED_OUTPUT {
+        if mode == DecMode::SynchronizedOutput {
             return Err(Error("synchronized output is driven by the parser"));
         }
         let private_mode = handler::private_mode(mode);

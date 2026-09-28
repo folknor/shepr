@@ -53,9 +53,6 @@ pub(super) fn setup_terminal_with_capabilities(
         host_modes: host_modes.clone(),
         restored: false,
     };
-    let host_color_scheme_reports =
-        should_enable_host_color_scheme_reports(enable_client_protocols);
-
     let (host_escape_disambiguation_active, buffered_host_input) = if enable_client_protocols {
         host_modes.set_keyboard_enhancement_flags(
             &mut io::stdout(),
@@ -65,9 +62,7 @@ pub(super) fn setup_terminal_with_capabilities(
         host_modes.apply_mouse(true, false, true)?;
         host_modes.enable_bracketed_paste(&mut io::stdout())?;
         host_modes.enable_focus_change(&mut io::stdout())?;
-        if host_color_scheme_reports {
-            host_modes.enable_color_scheme_reports(&mut io::stdout())?;
-        }
+        host_modes.enable_color_scheme_reports(&mut io::stdout())?;
         (active, buffered_input)
     } else {
         // Keep color-scheme reports out of the attached PTY's input. Direct
@@ -87,10 +82,6 @@ pub(super) fn setup_terminal_with_capabilities(
     terminal_guard.host_escape_disambiguation_active = host_escape_disambiguation_active;
     terminal_guard.buffered_host_input = buffered_host_input;
     Ok(terminal_guard)
-}
-
-pub(super) fn should_enable_host_color_scheme_reports(enable_client_protocols: bool) -> bool {
-    enable_client_protocols
 }
 
 /// Guard that restores the terminal when dropped.

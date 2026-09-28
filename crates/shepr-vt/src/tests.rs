@@ -103,31 +103,33 @@ fn terminal_reports_pty_responses_and_pwd_changes() {
 #[test]
 fn modes_and_kitty_flags_follow_terminal_state() {
     let mut terminal = Terminal::new(80, 24, 0);
-    terminal.mode_set(1, true).expect("test precondition");
+    terminal
+        .mode_set(DecMode::ApplicationCursorKeys, true)
+        .expect("test precondition");
     terminal.write(b"\x1b[>1u\x1b[?1000h\x1b[?1006h");
     terminal.write(b"\x1b[?12h\x1b[?1042h");
 
-    assert!(terminal.mode_get(1));
-    assert!(terminal.mode_get(MODE_CURSOR_BLINK));
-    assert!(terminal.mode_get(MODE_URGENCY_HINTS));
+    assert!(terminal.mode_get(DecMode::ApplicationCursorKeys));
+    assert!(terminal.mode_get(DecMode::CursorBlink));
+    assert!(terminal.mode_get(DecMode::UrgencyHints));
     assert_eq!(terminal.kitty_keyboard_flags(), 1);
     assert!(terminal.mouse_tracking_enabled());
-    assert!(terminal.mode_get(1000));
-    assert!(terminal.mode_get(1006));
+    assert!(terminal.mode_get(DecMode::MousePressRelease));
+    assert!(terminal.mode_get(DecMode::MouseSgr));
 
     // X10 replaces the other tracking modes; enabling 1003 cancels X10 again.
     terminal.write(b"\x1b[?9h");
-    assert!(terminal.mode_get(9));
-    assert!(!terminal.mode_get(1000));
+    assert!(terminal.mode_get(DecMode::X10Mouse));
+    assert!(!terminal.mode_get(DecMode::MousePressRelease));
     assert!(terminal.mouse_tracking_enabled());
     terminal.write(b"\x1b[?1003h");
-    assert!(!terminal.mode_get(9));
-    assert!(terminal.mode_get(1003));
+    assert!(!terminal.mode_get(DecMode::X10Mouse));
+    assert!(terminal.mode_get(DecMode::MouseAnyMotion));
 
     terminal.write(b"\x1b[<u");
     terminal.write(b"\x1b[?12l\x1b[?1042l");
-    assert!(!terminal.mode_get(MODE_CURSOR_BLINK));
-    assert!(!terminal.mode_get(MODE_URGENCY_HINTS));
+    assert!(!terminal.mode_get(DecMode::CursorBlink));
+    assert!(!terminal.mode_get(DecMode::UrgencyHints));
     assert_eq!(terminal.kitty_keyboard_flags(), 0);
 }
 
@@ -135,11 +137,11 @@ fn modes_and_kitty_flags_follow_terminal_state() {
 fn adapter_modes_answer_decrqm_and_reset_on_ris() {
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b[?1005h\x1b[?1016h");
-    assert!(!terminal.mode_get(MODE_MOUSE_UTF8));
-    assert!(terminal.mode_get(MODE_MOUSE_SGR_PIXELS));
+    assert!(!terminal.mode_get(DecMode::MouseUtf8));
+    assert!(terminal.mode_get(DecMode::MouseSgrPixels));
     terminal.write(b"\x1b[?1005h");
-    assert!(terminal.mode_get(MODE_MOUSE_UTF8));
-    assert!(!terminal.mode_get(MODE_MOUSE_SGR_PIXELS));
+    assert!(terminal.mode_get(DecMode::MouseUtf8));
+    assert!(!terminal.mode_get(DecMode::MouseSgrPixels));
 
     terminal.write(b"\x1b[?1016h\x1b[?1016$p\x1b[?2031$p\x1b[?1004$p");
     assert_eq!(
@@ -152,8 +154,8 @@ fn adapter_modes_answer_decrqm_and_reset_on_ris() {
     );
 
     terminal.write(b"\x1b[?2031h\x1bc");
-    assert!(!terminal.mode_get(MODE_COLOR_SCHEME_REPORT));
-    assert!(!terminal.mode_get(MODE_MOUSE_SGR_PIXELS));
+    assert!(!terminal.mode_get(DecMode::ColorSchemeReport));
+    assert!(!terminal.mode_get(DecMode::MouseSgrPixels));
 }
 
 #[test]
@@ -249,8 +251,8 @@ fn adapter_modes_and_replies_keep_byte_order_inside_synchronized_updates() {
     // X10 set after 1000 replaces it, even when both arrive inside a frame.
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b[?2026h\x1b[?1000h\x1b[?9h\x1b[?2026l");
-    assert!(terminal.mode_get(9));
-    assert!(!terminal.mode_get(1000));
+    assert!(terminal.mode_get(DecMode::X10Mouse));
+    assert!(!terminal.mode_get(DecMode::MousePressRelease));
 
     // DECRQM reports the state at its own position in the frame.
     let mut terminal = Terminal::new(20, 3, 0);
@@ -263,8 +265,8 @@ fn adapter_modes_and_replies_keep_byte_order_inside_synchronized_updates() {
     // RIS inside a frame resets adapter modes set before it, not after it.
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b[?2026h\x1b[?2031h\x1bc\x1b[?1016h\x1b[?2026l");
-    assert!(!terminal.mode_get(MODE_COLOR_SCHEME_REPORT));
-    assert!(terminal.mode_get(MODE_MOUSE_SGR_PIXELS));
+    assert!(!terminal.mode_get(DecMode::ColorSchemeReport));
+    assert!(terminal.mode_get(DecMode::MouseSgrPixels));
 
     // The in-band resize report follows a DSR requested earlier in the frame,
     // and nothing is answered before ESU.
@@ -309,7 +311,7 @@ fn in_band_resize_reports_on_enable_and_resize() {
 fn synchronized_output_buffers_until_end_or_timeout() {
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b[?2026hhidden");
-    assert!(terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT));
+    assert!(terminal.mode_get(DecMode::SynchronizedOutput));
     let initial_deadline = terminal
         .synchronized_output_deadline()
         .expect("test precondition");
@@ -322,7 +324,7 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     );
 
     terminal.write(b"\x1b[?2026l");
-    assert!(!terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT));
+    assert!(!terminal.mode_get(DecMode::SynchronizedOutput));
     assert_eq!(
         terminal
             .read_text_viewport(vp(0, 0), vp(19, 0), false)
@@ -335,7 +337,7 @@ fn synchronized_output_buffers_until_end_or_timeout() {
         .synchronized_output_deadline()
         .expect("test precondition");
     assert!(terminal.tick(deadline + std::time::Duration::from_millis(1)));
-    assert!(!terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT));
+    assert!(!terminal.mode_get(DecMode::SynchronizedOutput));
     assert!(
         terminal
             .read_text_viewport(vp(0, 0), vp(19, 0), false)
@@ -712,10 +714,9 @@ fn scanner_modify_other_keys_change_waits_for_the_synchronized_frame() {
 }
 
 #[test]
-fn mode_set_rejects_modes_missing_from_the_table() {
-    let mut terminal = Terminal::new(8, 2, 0);
-    assert!(terminal.mode_set(47, true).is_err());
-    assert!(terminal.mode_set(65_000, true).is_err());
+fn unlisted_dec_modes_are_absent_from_number_lookup() {
+    assert!(modes::lookup_number(47).is_none());
+    assert!(modes::lookup_number(65_000).is_none());
 }
 
 /// The pinned alacritty evicts from the title stack when the keyboard-mode
@@ -819,7 +820,7 @@ fn halfwidth_voiced_marks_take_their_own_cell() {
     let mut terminal = Terminal::new(2, 2, 0);
     terminal.write("ab\u{ff9f}".as_bytes());
     let rows = terminal.screen_text_rows();
-    assert!(rows[0].soft_wrapped);
+    assert!(rows[0].wrap.soft_wrapped);
     assert_eq!(rows[1].cells[0].graphemes, vec![0xff9f]);
 }
 
@@ -831,11 +832,11 @@ fn screen_text_rows_preserve_wrap_and_grapheme_cells() {
     let rows = terminal.screen_text_rows();
 
     assert_eq!(rows.len(), 3);
-    assert!(rows[0].soft_wrapped);
-    assert!(!rows[0].wrap_continuation);
-    assert!(!rows[1].soft_wrapped);
-    assert!(rows[1].wrap_continuation);
-    assert!(!rows[2].wrap_continuation);
+    assert!(rows[0].wrap.soft_wrapped);
+    assert!(!rows[0].wrap.wrap_continuation);
+    assert!(!rows[1].wrap.soft_wrapped);
+    assert!(rows[1].wrap.wrap_continuation);
+    assert!(!rows[2].wrap.wrap_continuation);
     assert_eq!(rows[2].cells[0].wide, CellWide::Wide);
     assert_eq!(rows[2].cells[0].graphemes, vec!['界' as u32]);
     assert_eq!(rows[2].cells[1].wide, CellWide::SpacerTail);
@@ -1128,7 +1129,7 @@ fn decrqm_2026_reports_an_active_synchronized_update() {
         ]
     );
     assert!(
-        !terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT),
+        !terminal.mode_get(DecMode::SynchronizedOutput),
         "the parser agrees the update ended"
     );
 }
@@ -1138,9 +1139,9 @@ fn resetting_any_tracking_mode_ends_x10_mouse() {
     for mode in [1000u16, 1002, 1003] {
         let mut terminal = Terminal::new(20, 3, 0);
         terminal.write(b"\x1b[?9h");
-        assert!(terminal.mode_get(9));
+        assert!(terminal.mode_get(DecMode::X10Mouse));
         terminal.write(format!("\x1b[?{mode}l").as_bytes());
-        assert!(!terminal.mode_get(9), "mode {mode}");
+        assert!(!terminal.mode_get(DecMode::X10Mouse), "mode {mode}");
         assert!(!terminal.mouse_tracking_enabled(), "mode {mode}");
     }
 }
@@ -1228,17 +1229,21 @@ fn mode_set_does_not_disturb_a_partial_child_sequence() {
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b[3");
     terminal
-        .mode_set(MODE_BRACKETED_PASTE, true)
+        .mode_set(DecMode::BracketedPaste, true)
         .expect("test precondition");
     terminal.write(b"1mred");
-    assert!(terminal.mode_get(MODE_BRACKETED_PASTE));
+    assert!(terminal.mode_get(DecMode::BracketedPaste));
     assert_eq!(
         terminal
             .read_text_viewport(vp(0, 0), vp(19, 0), false)
             .expect("test precondition"),
         "red"
     );
-    assert!(terminal.mode_set(MODE_SYNCHRONIZED_OUTPUT, true).is_err());
+    assert!(
+        terminal
+            .mode_set(DecMode::SynchronizedOutput, true)
+            .is_err()
+    );
 }
 
 /// Writes lines `"{i:06}"` for `i` in `lines`, `per_write` lines per write.
@@ -1396,7 +1401,7 @@ fn visited_rows_match_the_owned_text_rows() {
             .expect("row is retained");
         assert_eq!(
             (wrap.soft_wrapped, wrap.wrap_continuation),
-            (row.soft_wrapped, row.wrap_continuation),
+            (row.wrap.soft_wrapped, row.wrap.wrap_continuation),
             "row {y}"
         );
         let expected: Vec<_> = row

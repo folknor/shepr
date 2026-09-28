@@ -112,11 +112,7 @@ impl Terminal {
                 })
                 .collect();
             let wrap = self.row_wrap(line);
-            rows.push(ScreenTextRow {
-                cells,
-                soft_wrapped: wrap.soft_wrapped,
-                wrap_continuation: wrap.wrap_continuation,
-            });
+            rows.push(ScreenTextRow { cells, wrap });
         }
         rows
     }

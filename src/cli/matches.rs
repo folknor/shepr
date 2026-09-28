@@ -1,7 +1,7 @@
 //! Typed reads from the `ArgMatches` that `spec.rs` produces. Presence
 //! (`required`) and value types (value parsers) are enforced by the spec; these
-//! helpers use clap's non-panicking lookups so a spec/handler mismatch shows up
-//! as a missing value in tests rather than a panic in production.
+//! helpers use clap's non-panicking lookups so a spec/handler mismatch is
+//! rejected rather than turned into a valid-looking empty value.
 
 use clap::ArgMatches;
 
@@ -14,9 +14,9 @@ pub(super) fn string(matches: &ArgMatches, id: &str) -> Option<String> {
 }
 
 /// A value the spec marks as required; clap has already rejected argv
-/// without it.
-pub(super) fn required(matches: &ArgMatches, id: &str) -> String {
-    string(matches, id).unwrap_or_default()
+/// without it. `None` means the typed handler and spec disagree.
+pub(super) fn required(matches: &ArgMatches, id: &str) -> Option<String> {
+    string(matches, id)
 }
 
 pub(super) fn flag(matches: &ArgMatches, id: &str) -> bool {
@@ -111,7 +111,8 @@ pub(super) fn report_source(matches: &ArgMatches) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_cwd;
+    use super::{required, resolve_cwd};
+    use clap::Command;
     use std::path::Path;
 
     fn caller() -> &'static Path {
@@ -120,6 +121,14 @@ mod tests {
 
     fn home() -> &'static Path {
         Path::new("/home/me")
+    }
+
+    #[test]
+    fn missing_required_match_is_not_fabricated_as_an_empty_value() {
+        let matches = Command::new("test")
+            .try_get_matches_from(["test"])
+            .expect("test precondition");
+        assert_eq!(required(&matches, "missing"), None);
     }
 
     #[test]

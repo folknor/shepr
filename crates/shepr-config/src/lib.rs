@@ -111,6 +111,25 @@ mod tests {
         }
     }
 
+    /// The template names every built-in theme, and its commented `name`
+    /// setting is the real default.
+    #[test]
+    fn default_template_lists_every_theme_and_the_default() {
+        let words: Vec<&str> = DEFAULT_CONFIG
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .collect();
+        for name in theme::THEME_NAMES {
+            assert!(words.contains(name), "default.toml does not list {name}");
+        }
+        let default_line = format!("# name = \"{}\"", theme::DEFAULT_THEME);
+        assert!(
+            DEFAULT_CONFIG
+                .lines()
+                .any(|line| line.trim() == default_line),
+            "default.toml must show {default_line}"
+        );
+    }
+
     /// The commented `[keys]` settings in the template, uncommented, are
     /// exactly the built-in keymap: every field is listed and every listed
     /// value is the real default.

@@ -16,7 +16,7 @@ pub fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'st
 #[derive(Clone, Copy)]
 struct IntegrationSpec {
     target: Target,
-    asset: &'static str,
+    assets: &'static [&'static str],
     directory: &'static str,
     path: &'static [&'static str],
     version: u32,
@@ -32,7 +32,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "pi",
         install: super::targets::install_pi,
         uninstall: super::targets::uninstall_pi,
-        asset: super::PI_EXTENSION_ASSET,
+        assets: &[super::PI_EXTENSION_ASSET],
         directory: "pi_extension",
         path: &[super::PI_EXTENSION_INSTALL_NAME],
         version: super::PI_INTEGRATION_VERSION,
@@ -43,7 +43,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "omp",
         install: super::targets::install_omp,
         uninstall: super::targets::uninstall_omp,
-        asset: super::OMP_EXTENSION_ASSET,
+        assets: &[super::OMP_EXTENSION_ASSET],
         directory: "omp_extension",
         path: &[super::OMP_EXTENSION_INSTALL_NAME],
         version: super::OMP_INTEGRATION_VERSION,
@@ -54,7 +54,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "claude",
         install: super::targets::install_claude,
         uninstall: super::targets::uninstall_claude,
-        asset: super::CLAUDE_HOOK_ASSET,
+        assets: &[super::CLAUDE_HOOK_ASSET],
         directory: "claude",
         path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
         version: super::CLAUDE_INTEGRATION_VERSION,
@@ -65,7 +65,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "codex",
         install: super::targets::install_codex,
         uninstall: super::targets::uninstall_codex,
-        asset: super::CODEX_HOOK_ASSET,
+        assets: &[super::CODEX_HOOK_ASSET],
         directory: "codex",
         path: &[super::CODEX_HOOK_INSTALL_NAME],
         version: super::CODEX_INTEGRATION_VERSION,
@@ -76,7 +76,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "copilot",
         install: super::targets::install_copilot,
         uninstall: super::targets::uninstall_copilot,
-        asset: super::COPILOT_HOOK_ASSET,
+        assets: &[super::COPILOT_HOOK_ASSET],
         directory: "copilot",
         path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
         version: super::COPILOT_INTEGRATION_VERSION,
@@ -87,7 +87,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "devin",
         install: super::targets::install_devin,
         uninstall: super::targets::uninstall_devin,
-        asset: super::DEVIN_HOOK_ASSET,
+        assets: &[super::DEVIN_HOOK_ASSET],
         directory: "devin",
         path: &[super::DEVIN_HOOK_INSTALL_NAME],
         version: super::DEVIN_INTEGRATION_VERSION,
@@ -98,7 +98,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "droid",
         install: super::targets::install_droid,
         uninstall: super::targets::uninstall_droid,
-        asset: super::DROID_HOOK_ASSET,
+        assets: &[super::DROID_HOOK_ASSET],
         directory: "droid",
         path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
         version: super::DROID_INTEGRATION_VERSION,
@@ -109,7 +109,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "kimi",
         install: super::targets::install_kimi,
         uninstall: super::targets::uninstall_kimi,
-        asset: super::KIMI_HOOK_ASSET,
+        assets: &[super::KIMI_HOOK_ASSET],
         directory: "kimi",
         path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
         version: super::KIMI_INTEGRATION_VERSION,
@@ -120,7 +120,11 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "opencode",
         install: super::targets::install_opencode,
         uninstall: super::targets::uninstall_opencode,
-        asset: super::OPENCODE_PLUGIN_ASSET,
+        assets: &[
+            super::OPENCODE_PLUGIN_ASSET,
+            super::OPENCODE_TUI_PLUGIN_ASSET,
+            super::OPENCODE_V2_TUI_PLUGIN_ASSET,
+        ],
         directory: "opencode",
         path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
         version: super::OPENCODE_INTEGRATION_VERSION,
@@ -131,7 +135,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "kilo",
         install: super::targets::install_kilo,
         uninstall: super::targets::uninstall_kilo,
-        asset: super::KILO_PLUGIN_ASSET,
+        assets: &[super::KILO_PLUGIN_ASSET],
         directory: "kilo",
         path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
         version: super::KILO_INTEGRATION_VERSION,
@@ -142,7 +146,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "qodercli",
         install: super::targets::install_qodercli,
         uninstall: super::targets::uninstall_qodercli,
-        asset: super::QODERCLI_HOOK_ASSET,
+        assets: &[super::QODERCLI_HOOK_ASSET],
         directory: "qodercli",
         path: &["hooks", super::QODERCLI_HOOK_INSTALL_NAME],
         version: super::QODERCLI_INTEGRATION_VERSION,
@@ -153,7 +157,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "qwen",
         install: super::targets::install_qwen,
         uninstall: super::targets::uninstall_qwen,
-        asset: super::QWEN_HOOK_ASSET,
+        assets: &[super::QWEN_HOOK_ASSET],
         directory: "qwen",
         path: &["hooks", super::QWEN_HOOK_INSTALL_NAME],
         version: super::QWEN_INTEGRATION_VERSION,
@@ -164,7 +168,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "cursor",
         install: super::targets::install_cursor,
         uninstall: super::targets::uninstall_cursor,
-        asset: super::CURSOR_HOOK_ASSET,
+        assets: &[super::CURSOR_HOOK_ASSET],
         directory: "cursor",
         path: &[super::CURSOR_HOOK_INSTALL_NAME],
         version: super::CURSOR_INTEGRATION_VERSION,
@@ -175,7 +179,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "mastracode",
         install: super::targets::install_mastracode,
         uninstall: super::targets::uninstall_mastracode,
-        asset: super::MASTRACODE_HOOK_ASSET,
+        assets: &[super::MASTRACODE_HOOK_ASSET],
         directory: "mastracode",
         path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
         version: super::MASTRACODE_INTEGRATION_VERSION,
@@ -186,7 +190,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "antigravity-cli",
         install: super::targets::install_antigravity_cli,
         uninstall: super::targets::uninstall_antigravity_cli,
-        asset: super::ANTIGRAVITY_CLI_HOOK_ASSET,
+        assets: &[super::ANTIGRAVITY_CLI_HOOK_ASSET],
         directory: "antigravity_cli",
         path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
         version: super::ANTIGRAVITY_CLI_INTEGRATION_VERSION,
@@ -197,7 +201,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "grok",
         install: super::targets::install_grok,
         uninstall: super::targets::uninstall_grok,
-        asset: super::GROK_HOOK_ASSET,
+        assets: &[super::GROK_HOOK_ASSET],
         directory: "grok",
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
         version: super::GROK_INTEGRATION_VERSION,
@@ -208,7 +212,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         action_label: "letta",
         install: super::targets::install_letta,
         uninstall: super::targets::uninstall_letta,
-        asset: super::LETTA_HOOK_ASSET,
+        assets: &[super::LETTA_HOOK_ASSET],
         directory: "letta",
         path: &["hooks", super::LETTA_HOOK_INSTALL_NAME],
         version: super::LETTA_INTEGRATION_VERSION,
@@ -252,7 +256,7 @@ pub(crate) fn integration_asset(target: crate::agent::IntegrationTarget) -> Opti
         .iter()
         .copied()
         .find(|spec| spec.target == target)
-        .map(|spec| spec.asset)
+        .and_then(|spec| spec.assets.first().copied())
 }
 
 fn integration_hook_events(
@@ -824,6 +828,53 @@ mod registration_tests {
             integration_target_label(IntegrationTarget::AntigravityCli),
             crate::agent::Agent::Antigravity.label()
         );
+    }
+
+    #[test]
+    fn bundled_integration_assets_match_expected_versions() {
+        for spec in INTEGRATION_SPECS {
+            assert!(
+                !spec.assets.is_empty(),
+                "{} must register its bundled assets",
+                spec.target.label()
+            );
+            for (index, asset) in spec.assets.iter().enumerate() {
+                assert_eq!(
+                    parse_integration_version(asset),
+                    Some(spec.version),
+                    "{} bundled asset {index} must match its integration version",
+                    spec.target.label()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_integration_assets_report_the_descriptor_identity() {
+        for spec in INTEGRATION_SPECS {
+            let agent = spec.target.agent();
+            let source = agent
+                .integration_source()
+                .expect("integration targets must have a source");
+            for (index, asset) in spec.assets.iter().enumerate() {
+                // OpenCode V2 re-exports the TUI reporter, so its identity lives in that asset.
+                if spec.target == Target::Opencode
+                    && *asset == super::super::OPENCODE_V2_TUI_PLUGIN_ASSET
+                {
+                    continue;
+                }
+                assert!(
+                    asset.contains(source),
+                    "{} bundled asset {index} must report source {source:?}",
+                    agent.label()
+                );
+                assert!(
+                    asset.contains(agent.label()),
+                    "{} bundled asset {index} must report its canonical label",
+                    agent.label()
+                );
+            }
+        }
     }
 
     #[test]

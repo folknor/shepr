@@ -9,15 +9,11 @@ use shepr_protocol::ClientMessage;
 pub trait EndpointTransport: Send {
     fn send(&mut self, message: &ClientMessage) -> io::Result<()>;
 
-    fn disconnect(&mut self) {}
+    fn disconnect(&mut self);
 
-    fn flush(&mut self, _deadline: Instant) -> io::Result<()> {
-        Ok(())
-    }
+    fn flush(&mut self, deadline: Instant) -> io::Result<()>;
 
-    fn take_error(&mut self) -> Option<io::Error> {
-        None
-    }
+    fn take_error(&mut self) -> Option<io::Error>;
 }
 
 pub(crate) struct EndpointConnection {
@@ -370,6 +366,16 @@ mod tests {
                 .map_err(|_| io::Error::other("test precondition: lock poisoned"))?
                 .push(message.clone());
             Ok(())
+        }
+
+        fn disconnect(&mut self) {}
+
+        fn flush(&mut self, _deadline: Instant) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn take_error(&mut self) -> Option<io::Error> {
+            None
         }
     }
 

@@ -34,6 +34,16 @@ impl crate::endpoint::EndpointTransport for TestTransport {
             Ok(())
         }
     }
+
+    fn disconnect(&mut self) {}
+
+    fn flush(&mut self, _deadline: std::time::Instant) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn take_error(&mut self) -> Option<std::io::Error> {
+        None
+    }
 }
 
 #[test]

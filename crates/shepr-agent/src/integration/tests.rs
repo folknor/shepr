@@ -2042,51 +2042,6 @@ fn install_kilo_errors_when_config_dir_missing() {
 }
 
 #[test]
-fn bundled_integration_asset_versions_match_expected_versions() {
-    for (name, asset, expected_version) in [
-        ("pi", PI_EXTENSION_ASSET, PI_INTEGRATION_VERSION),
-        ("omp", OMP_EXTENSION_ASSET, OMP_INTEGRATION_VERSION),
-        ("claude", CLAUDE_HOOK_ASSET, CLAUDE_INTEGRATION_VERSION),
-        ("codex", CODEX_HOOK_ASSET, CODEX_INTEGRATION_VERSION),
-        ("kimi", KIMI_HOOK_ASSET, KIMI_INTEGRATION_VERSION),
-        ("copilot", COPILOT_HOOK_ASSET, COPILOT_INTEGRATION_VERSION),
-        ("devin", DEVIN_HOOK_ASSET, DEVIN_INTEGRATION_VERSION),
-        ("droid", DROID_HOOK_ASSET, DROID_INTEGRATION_VERSION),
-        (
-            "opencode",
-            OPENCODE_PLUGIN_ASSET,
-            OPENCODE_INTEGRATION_VERSION,
-        ),
-        ("kilo", KILO_PLUGIN_ASSET, KILO_INTEGRATION_VERSION),
-        (
-            "qodercli",
-            QODERCLI_HOOK_ASSET,
-            QODERCLI_INTEGRATION_VERSION,
-        ),
-        ("cursor", CURSOR_HOOK_ASSET, CURSOR_INTEGRATION_VERSION),
-        (
-            "antigravity_cli",
-            ANTIGRAVITY_CLI_HOOK_ASSET,
-            ANTIGRAVITY_CLI_INTEGRATION_VERSION,
-        ),
-        (
-            "mastracode",
-            MASTRACODE_HOOK_ASSET,
-            MASTRACODE_INTEGRATION_VERSION,
-        ),
-        ("grok", GROK_HOOK_ASSET, GROK_INTEGRATION_VERSION),
-        ("qwen", QWEN_HOOK_ASSET, QWEN_INTEGRATION_VERSION),
-        ("letta", LETTA_HOOK_ASSET, LETTA_INTEGRATION_VERSION),
-    ] {
-        assert_eq!(
-            parse_integration_version(asset),
-            Some(expected_version),
-            "{name} asset version must match its integration version constant"
-        );
-    }
-}
-
-#[test]
 fn process_owned_integration_assets_do_not_report_release() {
     for (name, asset) in [
         ("pi", PI_EXTENSION_ASSET),

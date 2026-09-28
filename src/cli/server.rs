@@ -5,7 +5,6 @@ pub(crate) enum Command {
     Stop { force: bool },
     AgentManifests { json: bool },
     ReloadAgentManifests,
-    Invalid,
 }
 
 impl Command {
@@ -14,28 +13,26 @@ impl Command {
             Self::Stop { .. } => Some("stop"),
             Self::AgentManifests { .. } => Some("agent-manifests"),
             Self::ReloadAgentManifests => Some("reload-agent-manifests"),
-            Self::Invalid => None,
         }
     }
 
     pub(super) fn can_run_on_machine(self) -> bool {
         match self {
             Self::Stop { .. } | Self::AgentManifests { .. } | Self::ReloadAgentManifests => true,
-            Self::Invalid => false,
         }
     }
 }
 
-pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("stop", command)) => Command::Stop {
+        Some(("stop", command)) => Some(Command::Stop {
             force: super::matches::flag(command, "force"),
-        },
-        Some(("agent-manifests", command)) => Command::AgentManifests {
+        }),
+        Some(("agent-manifests", command)) => Some(Command::AgentManifests {
             json: super::matches::flag(command, "json"),
-        },
-        Some(("reload-agent-manifests", _)) => Command::ReloadAgentManifests,
-        _ => Command::Invalid,
+        }),
+        Some(("reload-agent-manifests", _)) => Some(Command::ReloadAgentManifests),
+        _ => None,
     }
 }
 
@@ -47,7 +44,6 @@ pub(super) fn run_server_command(
         Command::Stop { force } => server_stop(paths, force),
         Command::AgentManifests { json } => server_agent_manifests(paths, json),
         Command::ReloadAgentManifests => server_reload_agent_manifests(paths),
-        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 

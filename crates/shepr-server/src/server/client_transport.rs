@@ -51,15 +51,10 @@ const MAX_HANDSHAKE_FRAME: usize = 64 * 1024;
 /// receive its shutdown frame.
 const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
-// Geometry limits for every client size the server accepts: the shell hello
-// and `ClientShellResize`, and the direct-attach `TerminalHello` and `Resize`.
-// The cell limit is what one frame can carry (see `MAX_SURFACE_CELLS`), not
-// an arbitrary safety number: a grid past it renders frames that can never
-// be sent.
-const MAX_CLIENT_SHELL_DIMENSION: u16 = shepr_protocol::MAX_SURFACE_DIMENSION;
-const MAX_CLIENT_SHELL_CELLS: usize = shepr_protocol::MAX_SURFACE_CELLS;
-const MAX_CLIENT_CELL_SIZE_PX: u32 = shepr_protocol::MAX_CELL_SIZE_PX;
-
+/// Why a client shell's geometry is refused, if it is. The limits are the
+/// protocol's own, shared with `clamp_terminal_size`: the cell limit is what
+/// one frame can carry (see `MAX_SURFACE_CELLS`), not an arbitrary safety
+/// number, since a grid past it renders frames that can never be sent.
 fn client_shell_geometry_error(
     surface_size: shepr_protocol::ClientSurfaceSize,
     cell_width_px: u32,
@@ -68,13 +63,16 @@ fn client_shell_geometry_error(
     if surface_size.cols == 0 || surface_size.rows == 0 {
         return Some("client shell requires a non-empty pane surface");
     }
-    if surface_size.cols > MAX_CLIENT_SHELL_DIMENSION
-        || surface_size.rows > MAX_CLIENT_SHELL_DIMENSION
-        || usize::from(surface_size.cols) * usize::from(surface_size.rows) > MAX_CLIENT_SHELL_CELLS
+    if surface_size.cols > shepr_protocol::MAX_SURFACE_DIMENSION
+        || surface_size.rows > shepr_protocol::MAX_SURFACE_DIMENSION
+        || usize::from(surface_size.cols) * usize::from(surface_size.rows)
+            > shepr_protocol::MAX_SURFACE_CELLS
     {
         return Some("client shell pane surface is larger than one frame can carry");
     }
-    if cell_width_px > MAX_CLIENT_CELL_SIZE_PX || cell_height_px > MAX_CLIENT_CELL_SIZE_PX {
+    if cell_width_px > shepr_protocol::MAX_CELL_SIZE_PX
+        || cell_height_px > shepr_protocol::MAX_CELL_SIZE_PX
+    {
         return Some("client shell cell pixel size exceeds the safe geometry limit");
     }
     None
@@ -157,7 +155,9 @@ fn send_client_disconnected(server_event_tx: &mpsc::Sender<ServerEvent>, client_
 
 fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointRequest> {
     let head = serde_json::from_str::<EndpointRequestHead>(request)?;
-    if !crate::server::client_commands::supports_client_shell_method_name(&head.method) {
+    let client_shell_method = shepr_api::schema::Method::traits_for_name(&head.method)
+        .is_some_and(|traits| traits.client_shell);
+    if !client_shell_method {
         return Ok(DecodedEndpointRequest::Error {
             request_id: head.id,
             code: "unsupported_method",
@@ -652,12 +652,12 @@ pub(crate) enum ServerEvent {
 }
 
 /// Clamp client-reported terminal dimensions into the accepted range: at
-/// least the minimum viable size, at most `MAX_CLIENT_SHELL_DIMENSION` per
-/// side and `MAX_CLIENT_SHELL_CELLS` in total (rows give way first).
+/// least the minimum viable size, at most `MAX_SURFACE_DIMENSION` per side and
+/// `MAX_SURFACE_CELLS` in total (rows give way first).
 pub(crate) fn clamp_terminal_size(cols: u16, rows: u16) -> (u16, u16) {
-    let cols = cols.clamp(MIN_CLIENT_COLS, MAX_CLIENT_SHELL_DIMENSION);
-    let rows = rows.clamp(MIN_CLIENT_ROWS, MAX_CLIENT_SHELL_DIMENSION);
-    let max_rows = MAX_CLIENT_SHELL_CELLS / usize::from(cols);
+    let cols = cols.clamp(MIN_CLIENT_COLS, shepr_protocol::MAX_SURFACE_DIMENSION);
+    let rows = rows.clamp(MIN_CLIENT_ROWS, shepr_protocol::MAX_SURFACE_DIMENSION);
+    let max_rows = shepr_protocol::MAX_SURFACE_CELLS / usize::from(cols);
     let rows = u16::try_from(max_rows).map_or(rows, |max_rows| rows.min(max_rows.max(1)));
     (cols, rows)
 }
@@ -1623,10 +1623,7 @@ mod tests {
 
     #[test]
     fn clamp_terminal_size_zero_zero() {
-        assert_eq!(
-            clamp_terminal_size(0, 0),
-            (MIN_CLIENT_COLS, MIN_CLIENT_ROWS)
-        );
+        assert_eq!(clamp_terminal_size(0, 0), (1, 1));
     }
 
     #[test]
@@ -1645,28 +1642,26 @@ mod tests {
     }
 
     #[test]
-    fn clamp_terminal_size_exact_minimum() {
-        assert_eq!(
-            clamp_terminal_size(MIN_CLIENT_COLS, MIN_CLIENT_ROWS),
-            (MIN_CLIENT_COLS, MIN_CLIENT_ROWS)
-        );
-    }
-
-    #[test]
     fn clamp_terminal_size_bounds_the_grid_to_one_frame() {
         assert_eq!(
             clamp_terminal_size(u16::MAX, u16::MAX),
             (
-                MAX_CLIENT_SHELL_DIMENSION,
-                u16::try_from(MAX_CLIENT_SHELL_CELLS / usize::from(MAX_CLIENT_SHELL_DIMENSION))
-                    .expect("test precondition"),
+                shepr_protocol::MAX_SURFACE_DIMENSION,
+                u16::try_from(
+                    shepr_protocol::MAX_SURFACE_CELLS
+                        / usize::from(shepr_protocol::MAX_SURFACE_DIMENSION)
+                )
+                .expect("test precondition"),
             )
         );
         for (cols, rows) in [(u16::MAX, 1), (1, u16::MAX), (1000, 1000), (512, 256)] {
             let (cols, rows) = clamp_terminal_size(cols, rows);
             assert!(cols >= MIN_CLIENT_COLS && rows >= MIN_CLIENT_ROWS);
-            assert!(cols <= MAX_CLIENT_SHELL_DIMENSION && rows <= MAX_CLIENT_SHELL_DIMENSION);
-            assert!(usize::from(cols) * usize::from(rows) <= MAX_CLIENT_SHELL_CELLS);
+            assert!(
+                cols <= shepr_protocol::MAX_SURFACE_DIMENSION
+                    && rows <= shepr_protocol::MAX_SURFACE_DIMENSION
+            );
+            assert!(usize::from(cols) * usize::from(rows) <= shepr_protocol::MAX_SURFACE_CELLS);
         }
         // Full width is kept; rows give way.
         assert_eq!(clamp_terminal_size(1000, 1000).0, 1000);
@@ -1720,8 +1715,8 @@ mod tests {
                 writer,
                 ..
             } => {
-                assert!(usize::from(cols) * usize::from(rows) <= MAX_CLIENT_SHELL_CELLS);
-                assert!(cols <= MAX_CLIENT_SHELL_DIMENSION);
+                assert!(usize::from(cols) * usize::from(rows) <= shepr_protocol::MAX_SURFACE_CELLS);
+                assert!(cols <= shepr_protocol::MAX_SURFACE_DIMENSION);
                 assert_eq!(cell_width_px, 0);
                 assert!(!pixel_mouse);
                 drop(writer);
@@ -1767,7 +1762,7 @@ mod tests {
                 pixel_mouse,
                 ..
             } => {
-                assert!(usize::from(cols) * usize::from(rows) <= MAX_CLIENT_SHELL_CELLS);
+                assert!(usize::from(cols) * usize::from(rows) <= shepr_protocol::MAX_SURFACE_CELLS);
                 assert!(pixel_mouse);
             }
             other => panic!("expected ClientResize, got {other:?}"),
@@ -1850,8 +1845,8 @@ mod tests {
         assert!(
             client_shell_geometry_error(
                 shepr_protocol::ClientSurfaceSize {
-                    cols: MAX_CLIENT_SHELL_DIMENSION,
-                    rows: MAX_CLIENT_SHELL_DIMENSION,
+                    cols: shepr_protocol::MAX_SURFACE_DIMENSION,
+                    rows: shepr_protocol::MAX_SURFACE_DIMENSION,
                 },
                 8,
                 16,
@@ -1861,7 +1856,7 @@ mod tests {
         assert!(
             client_shell_geometry_error(
                 shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-                MAX_CLIENT_CELL_SIZE_PX + 1,
+                shepr_protocol::MAX_CELL_SIZE_PX + 1,
                 16,
             )
             .is_some()
@@ -2120,8 +2115,8 @@ mod tests {
             &mut client_stream,
             &ClientMessage::ClientShellResize {
                 geometry: shepr_protocol::TerminalGeometry::new(
-                    MAX_CLIENT_SHELL_DIMENSION,
-                    MAX_CLIENT_SHELL_DIMENSION,
+                    shepr_protocol::MAX_SURFACE_DIMENSION,
+                    shepr_protocol::MAX_SURFACE_DIMENSION,
                     8,
                     16,
                     false,

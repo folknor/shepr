@@ -60,13 +60,14 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Column;
 use alacritty_terminal::term::{Term, TermMode, color};
-use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
-use alacritty_terminal::vte::ansi::{
+use vte::ansi::cursor_icon::CursorIcon;
+use vte::ansi::{
     Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
     KeyboardModesApplyBehavior, LineClearMode, Mode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
     PrivateMode, Rgb, ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
 };
 
+use super::DecMode;
 use super::ExtraModes;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
@@ -74,10 +75,10 @@ use super::rows::RowOrigin;
 /// The vte private mode a write of `mode` goes through, from the mode table
 /// (`PrivateMode::new` is private to vte). Adapter-stored and unlisted modes
 /// stay `Unknown`, exactly as vte's parser would deliver them.
-pub(super) fn private_mode(mode: u16) -> PrivateMode {
+pub(super) fn private_mode(mode: DecMode) -> PrivateMode {
     match modes::lookup(mode).map(|spec| spec.set) {
         Some(modes::Setter::Vte(named)) => PrivateMode::Named(named),
-        _ => PrivateMode::Unknown(mode),
+        _ => PrivateMode::Unknown(mode.number()),
     }
 }
 
@@ -216,6 +217,7 @@ impl<T: EventListener> CoreHandler<'_, T> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: EventListener> Handler for CoreHandler<'_, T> {
     fn set_title(&mut self, title: Option<String>) {
         Handler::set_title(self.term, title);
@@ -234,7 +236,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn input(&mut self, c: char) {
-        if super::cell::is_halfwidth_voiced_mark(u32::from(c)) {
+        if super::cell::is_halfwidth_voiced_mark_codepoint(u32::from(c)) {
             self.input_halfwidth_voiced_mark(c);
         } else {
             Handler::input(self.term, c);

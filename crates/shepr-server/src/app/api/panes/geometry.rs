@@ -3,7 +3,6 @@ use super::*;
 impl App {
     pub(crate) fn handle_pane_layout(
         &mut self,
-        id: String,
         params: &PaneLayoutParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
@@ -18,18 +17,16 @@ impl App {
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
 
-        success(id, ResponseResult::PaneLayout { layout })
+        success(ResponseResult::PaneLayout { layout })
     }
 
     pub(crate) fn handle_pane_process_info(
         &mut self,
-        id: String,
         params: &PaneProcessInfoParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
@@ -62,22 +59,18 @@ impl App {
                 .collect()
         });
 
-        success(
-            id,
-            ResponseResult::PaneProcessInfo {
-                process_info: PaneProcessInfo {
-                    pane_id: public_pane_id,
-                    shell_pid,
-                    foreground_process_group_id,
-                    foreground_processes,
-                },
+        success(ResponseResult::PaneProcessInfo {
+            process_info: PaneProcessInfo {
+                pane_id: public_pane_id,
+                shell_pid,
+                foreground_process_group_id,
+                foreground_processes,
             },
-        )
+        })
     }
 
     pub(crate) fn handle_pane_neighbor(
         &mut self,
-        id: String,
         params: &PaneNeighborParams,
     ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
@@ -100,28 +93,23 @@ impl App {
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
 
-        success(
-            id,
-            ResponseResult::PaneNeighbor {
-                neighbor: PaneNeighborResult {
-                    pane_id: source_public_id,
-                    direction: params.direction,
-                    neighbor_pane_id,
-                    layout,
-                },
+        success(ResponseResult::PaneNeighbor {
+            neighbor: PaneNeighborResult {
+                pane_id: source_public_id,
+                direction: params.direction,
+                neighbor_pane_id,
+                layout,
             },
-        )
+        })
     }
 
     pub(crate) fn handle_pane_edges(
         &mut self,
-        id: String,
         params: &PaneEdgesParams,
     ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
@@ -143,7 +131,6 @@ impl App {
             .and_then(|ws| ws.tabs().get(tab_idx))
         else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
@@ -166,30 +153,25 @@ impl App {
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
 
-        success(
-            id,
-            ResponseResult::PaneEdges {
-                edges: PaneEdgesResult {
-                    pane_id: pane_public_id,
-                    left: info.rect.x <= area.x,
-                    right: info.rect.x + info.rect.width >= area.x + area.width,
-                    up: info.rect.y <= area.y,
-                    down: info.rect.y + info.rect.height >= area.y + area.height,
-                    layout,
-                },
+        success(ResponseResult::PaneEdges {
+            edges: PaneEdgesResult {
+                pane_id: pane_public_id,
+                left: info.rect.x <= area.x,
+                right: info.rect.x + info.rect.width >= area.x + area.width,
+                up: info.rect.y <= area.y,
+                down: info.rect.y + info.rect.height >= area.y + area.height,
+                layout,
             },
-        )
+        })
     }
 
     pub(crate) fn handle_pane_focus_direction(
         &mut self,
-        id: String,
         params: &PaneFocusDirectionParams,
     ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
@@ -228,29 +210,24 @@ impl App {
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
         };
 
-        success(
-            id,
-            ResponseResult::PaneFocusDirection {
-                focus: PaneFocusDirectionResult {
-                    changed: target.is_some(),
-                    reason,
-                    source_pane_id: source_public_id,
-                    focused_pane_id,
-                    layout,
-                },
+        success(ResponseResult::PaneFocusDirection {
+            focus: PaneFocusDirectionResult {
+                changed: target.is_some(),
+                reason,
+                source_pane_id: source_public_id,
+                focused_pane_id,
+                layout,
             },
-        )
+        })
     }
 
     pub(crate) fn handle_pane_resize(
         &mut self,
-        id: String,
         params: &PaneResizeParams,
     ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
@@ -289,7 +266,6 @@ impl App {
 
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
@@ -299,23 +275,19 @@ impl App {
             self.emit_layout_updated_snapshot(layout.clone());
         }
 
-        success(
-            id,
-            ResponseResult::PaneResize {
-                resize: PaneResizeResult {
-                    changed,
-                    reason: (!changed).then_some(PaneResizeReason::Unchanged),
-                    pane_id: pane_public_id,
-                    focused_pane_id,
-                    layout,
-                },
+        success(ResponseResult::PaneResize {
+            resize: PaneResizeResult {
+                changed,
+                reason: (!changed).then_some(PaneResizeReason::Unchanged),
+                pane_id: pane_public_id,
+                focused_pane_id,
+                layout,
             },
-        )
+        })
     }
 
     pub(crate) fn handle_pane_swap(
         &mut self,
-        id: String,
         params: PaneSwapParams,
     ) -> shepr_api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
@@ -324,7 +296,6 @@ impl App {
         let explicit = params.source_pane_id.is_some() || params.target_pane_id.is_some();
         if directional == explicit {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::InvalidPaneSwap,
                 "provide either direction with optional pane_id, or source_pane_id and target_pane_id",
             );
@@ -361,14 +332,12 @@ impl App {
         } else {
             let Some(source_raw) = params.source_pane_id.as_deref() else {
                 return failure(
-                    id,
                     shepr_api::error::ApiErrorCode::InvalidPaneSwap,
                     "missing source_pane_id",
                 );
             };
             let Some(target_raw) = params.target_pane_id.as_deref() else {
                 return failure(
-                    id,
                     shepr_api::error::ApiErrorCode::InvalidPaneSwap,
                     "missing target_pane_id",
                 );
@@ -395,7 +364,6 @@ impl App {
                 });
             let Some((ws_idx, tab_idx)) = response_context else {
                 return failure(
-                    id,
                     shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                     "pane layout unavailable",
                 );
@@ -480,7 +448,6 @@ impl App {
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
@@ -490,24 +457,20 @@ impl App {
             self.emit_layout_updated_snapshot(layout.clone());
         }
 
-        success(
-            id,
-            ResponseResult::PaneSwap {
-                swap: PaneSwapResult {
-                    changed,
-                    reason,
-                    source_pane_id: source_public_id,
-                    target_pane_id: target_public_id,
-                    focused_pane_id,
-                    layout,
-                },
+        success(ResponseResult::PaneSwap {
+            swap: PaneSwapResult {
+                changed,
+                reason,
+                source_pane_id: source_public_id,
+                target_pane_id: target_public_id,
+                focused_pane_id,
+                layout,
             },
-        )
+        })
     }
 
     pub(crate) fn handle_pane_move(
         &mut self,
-        id: String,
         params: PaneMoveParams,
     ) -> shepr_api::error::ApiResult {
         let PaneMoveParams {
@@ -556,7 +519,6 @@ impl App {
         if source_tab_zoomed {
             let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx) else {
                 return failure(
-                    id,
                     shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                     "pane layout unavailable",
                 );
@@ -565,7 +527,6 @@ impl App {
                 return Err(pane_not_found(Some(&pane_id)));
             };
             return encode_unchanged_pane_move(
-                id,
                 PaneMoveReason::ZoomedTab,
                 previous_pane_id,
                 previous_workspace_id,
@@ -599,7 +560,6 @@ impl App {
                     let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
                     else {
                         return failure(
-                            id,
                             shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
@@ -608,7 +568,6 @@ impl App {
                         return Err(pane_not_found(Some(&pane_id)));
                     };
                     return encode_unchanged_pane_move(
-                        id,
                         PaneMoveReason::SameTab,
                         previous_pane_id,
                         previous_workspace_id,
@@ -623,7 +582,6 @@ impl App {
                         self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
                     else {
                         return failure(
-                            id,
                             shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
@@ -632,7 +590,6 @@ impl App {
                         self.pane_layout_snapshot(target_ws_idx, target_tab_idx)
                     else {
                         return failure(
-                            id,
                             shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
@@ -641,7 +598,6 @@ impl App {
                         return Err(pane_not_found(Some(&pane_id)));
                     };
                     return encode_unchanged_pane_move(
-                        id,
                         PaneMoveReason::ZoomedTab,
                         previous_pane_id,
                         previous_workspace_id,
@@ -731,7 +687,6 @@ impl App {
                     .and_then(|ws| ws.move_pane_to_new_tab(source_pane_id, label))
                 else {
                     return failure(
-                        id,
                         shepr_api::error::ApiErrorCode::PaneMoveFailed,
                         "source pane could not be moved",
                     );
@@ -760,7 +715,6 @@ impl App {
                         Err(workspace) => {
                             self.state.workspaces.insert(source_ws_idx, *workspace);
                             return failure(
-                                id,
                                 shepr_api::error::ApiErrorCode::PaneMoveFailed,
                                 "source pane could not be moved",
                             );
@@ -789,7 +743,6 @@ impl App {
                         .and_then(|ws| ws.take_pane_for_move(source_pane_id))
                     else {
                         return failure(
-                            id,
                             shepr_api::error::ApiErrorCode::PaneMoveFailed,
                             "source pane could not be moved",
                         );
@@ -814,7 +767,6 @@ impl App {
                         else {
                             self.recover_failed_pane_move(recovery_context, moved);
                             return failure(
-                                id,
                                 shepr_api::error::ApiErrorCode::PaneMoveFailed,
                                 "target tab disappeared",
                             );
@@ -836,7 +788,6 @@ impl App {
                             Err(moved) => {
                                 self.recover_failed_pane_move(recovery_context, moved);
                                 return failure(
-                                    id,
                                     shepr_api::error::ApiErrorCode::PaneMoveFailed,
                                     "target pane could not be split",
                                 );
@@ -851,7 +802,6 @@ impl App {
                         let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
                             self.recover_failed_pane_move(recovery_context, moved);
                             return failure(
-                                id,
                                 shepr_api::error::ApiErrorCode::PaneMoveFailed,
                                 "target workspace disappeared",
                             );
@@ -862,7 +812,6 @@ impl App {
                             None => {
                                 self.recover_failed_pane_move(recovery_context, moved);
                                 return failure(
-                                    id,
                                     shepr_api::error::ApiErrorCode::PaneMoveFailed,
                                     "target workspace disappeared",
                                 );
@@ -922,7 +871,6 @@ impl App {
         self.schedule_session_save();
         let Some(pane) = self.pane_info(target_ws_idx, moved_pane_id) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneMoveFailed,
                 "moved pane is unavailable",
             );
@@ -935,7 +883,6 @@ impl App {
         };
         let Some(target_layout) = self.pane_layout_snapshot(target_ws_idx, target_tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
@@ -1001,7 +948,7 @@ impl App {
         }
         self.emit_layout_updated_snapshot((*move_result.target_layout).clone());
 
-        success(id, ResponseResult::PaneMove { move_result })
+        success(ResponseResult::PaneMove { move_result })
     }
 
     pub(super) fn recover_failed_pane_move(
@@ -1031,7 +978,6 @@ impl App {
 
     pub(crate) fn handle_pane_zoom(
         &mut self,
-        id: String,
         params: &PaneZoomParams,
     ) -> shepr_api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
@@ -1061,7 +1007,6 @@ impl App {
         self.state.mode = crate::app::Mode::Terminal;
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
-                id,
                 shepr_api::error::ApiErrorCode::PaneLayoutUnavailable,
                 "pane layout unavailable",
             );
@@ -1071,24 +1016,21 @@ impl App {
             self.emit_layout_updated_snapshot(layout.clone());
         }
 
-        success(
-            id,
-            ResponseResult::PaneZoom {
-                zoom: PaneZoomResult {
-                    changed: outcome.changed || outcome.focus_changed,
-                    zoom_changed: outcome.changed,
-                    focus_changed: outcome.focus_changed,
-                    reason: outcome.reason.map(|reason| match reason {
-                        PaneZoomNoopReason::SinglePane => PaneZoomReason::SinglePane,
-                        PaneZoomNoopReason::AlreadyZoomed => PaneZoomReason::AlreadyZoomed,
-                        PaneZoomNoopReason::AlreadyUnzoomed => PaneZoomReason::AlreadyUnzoomed,
-                    }),
-                    pane_id: pane_public_id,
-                    focused_pane_id,
-                    zoomed: outcome.zoomed,
-                    layout,
-                },
+        success(ResponseResult::PaneZoom {
+            zoom: PaneZoomResult {
+                changed: outcome.changed || outcome.focus_changed,
+                zoom_changed: outcome.changed,
+                focus_changed: outcome.focus_changed,
+                reason: outcome.reason.map(|reason| match reason {
+                    PaneZoomNoopReason::SinglePane => PaneZoomReason::SinglePane,
+                    PaneZoomNoopReason::AlreadyZoomed => PaneZoomReason::AlreadyZoomed,
+                    PaneZoomNoopReason::AlreadyUnzoomed => PaneZoomReason::AlreadyUnzoomed,
+                }),
+                pane_id: pane_public_id,
+                focused_pane_id,
+                zoomed: outcome.zoomed,
+                layout,
             },
-        )
+        })
     }
 }

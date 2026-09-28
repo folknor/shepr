@@ -194,7 +194,7 @@ fn unwrapped_text(rows: &[ScreenTextRow]) -> String {
     let mut lines = Vec::new();
     let mut current = String::new();
     for row in rows {
-        if row.soft_wrapped {
+        if row.wrap.soft_wrapped {
             // A soft wrap only happens once output reaches the last column, so
             // every cell of the row is real content: trailing spaces are the
             // text ("hello world" wrapped at the space), not padding. The one
@@ -263,8 +263,7 @@ mod tests {
                     graphemes: vec![ch as u32],
                 })
                 .collect(),
-            soft_wrapped: false,
-            wrap_continuation: false,
+            wrap: shepr_vt::RowWrap::default(),
         }
     }
 
@@ -501,7 +500,7 @@ mod tests {
         let previous = snapshot(&["line 3", "line 4", "line 5", "status"]);
         let next = snapshot(&["line 1", "line 2", "line 3", "line 4"]);
         let mut history = previous.rows.clone();
-        history[0].wrap_continuation = true;
+        history[0].wrap.wrap_continuation = true;
         assert_eq!(
             merge_scrolled_up(&mut history, &previous, &next),
             UpwardMerge::Advanced { rows: 2 }
@@ -539,9 +538,9 @@ mod tests {
     #[test]
     fn snapshot_text_limits_rendered_rows_before_unwrapping() {
         let mut first = row("hello ");
-        first.soft_wrapped = true;
+        first.wrap.soft_wrapped = true;
         let mut second = row("world");
-        second.wrap_continuation = true;
+        second.wrap.wrap_continuation = true;
         let rows = vec![row("older"), first, second];
 
         assert_eq!(
@@ -567,7 +566,7 @@ mod tests {
             wide: CellWide::SpacerHead,
             graphemes: vec![' ' as u32],
         });
-        first.soft_wrapped = true;
+        first.wrap.soft_wrapped = true;
         let mut second = ScreenTextRow {
             cells: vec![
                 ScreenTextCell {
@@ -579,8 +578,10 @@ mod tests {
                     graphemes: Vec::new(),
                 },
             ],
-            soft_wrapped: false,
-            wrap_continuation: true,
+            wrap: shepr_vt::RowWrap {
+                soft_wrapped: false,
+                wrap_continuation: true,
+            },
         };
         second.cells.extend(row("d  ").cells);
 

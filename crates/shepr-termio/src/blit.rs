@@ -602,23 +602,10 @@ const REPEAT_IME_ANCHOR_AFTER_SYNC: bool = true;
 
 /// Writes all cells in the frame (full redraw).
 fn cell_width(cell: &CellData) -> usize {
-    if is_halfwidth_katakana_voiced_grapheme(&cell.symbol) {
+    if shepr_vt::is_halfwidth_katakana_voiced_grapheme(&cell.symbol) {
         return 2;
     }
     cell.symbol.width()
-}
-
-fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    let Some(base) = chars.next() else {
-        return false;
-    };
-    let Some(mark) = chars.next() else {
-        return false;
-    };
-    chars.next().is_none()
-        && ('\u{ff66}'..='\u{ff9d}').contains(&base)
-        && matches!(mark, '\u{ff9e}' | '\u{ff9f}')
 }
 
 #[derive(Clone, Copy)]
