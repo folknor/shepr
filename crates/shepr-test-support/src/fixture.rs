@@ -442,7 +442,9 @@ pub fn main() -> std::process::ExitCode {
     match run_invocation() {
         Ok(code) => exit_code(code),
         Err(error) => {
-            let _ = writeln!(io::stderr(), "{FIXTURE_NAME}: {error}");
+            // With stderr unwritable there is nowhere left to report to; the
+            // failure exit code below still tells the test what happened.
+            writeln!(io::stderr(), "{FIXTURE_NAME}: {error}").ok();
             exit_code(FIXTURE_FAILURE_EXIT)
         }
     }

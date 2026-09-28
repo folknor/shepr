@@ -1353,12 +1353,11 @@ mod tests {
             .expect("the fixture should spawn");
         let resolved_via_target = agent_name_from_path_token("bin/agent", Some(child.id()));
         let resolved_via_dot = agent_name_from_path_token("./bin/agent", Some(child.id()));
-        child.kill().ok();
-        child.wait().ok();
+        child.kill().expect("kill the stand-in process");
+        child.wait().expect("reap the stand-in process");
 
         assert_eq!(resolved_via_target, Some("cursor".to_string()));
         assert_eq!(resolved_via_dot, Some("cursor".to_string()));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1398,8 +1397,6 @@ mod tests {
             identify_agent_in_job(&job),
             Some((Agent::Cursor, "cursor".to_string()))
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ---- Screen detection routing ----
@@ -1444,8 +1441,8 @@ mod tests {
         );
 
         // Clean up
-        child.kill().ok();
-        child.wait().ok();
+        child.kill().expect("kill the fixture");
+        child.wait().expect("reap the fixture");
     }
 
     #[test]
@@ -1477,7 +1474,9 @@ mod tests {
 
         // Write a command to the shell
         let mut writer = std::fs::File::from(pty.master.try_clone().expect("clone master"));
-        writer.write_all(b"exec the command\n").ok();
+        writer
+            .write_all(b"exec the command\n")
+            .expect("write the command to the stand-in shell");
         drop(writer);
 
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1495,8 +1494,8 @@ mod tests {
             "the command should not map to an agent"
         );
 
-        child.kill().ok();
-        child.wait().ok();
+        child.kill().expect("kill the command");
+        child.wait().expect("reap the command");
     }
 
     #[test]
@@ -1534,7 +1533,7 @@ mod tests {
         unsafe {
             libc::kill(-process_group_id, libc::SIGKILL);
         }
-        child.wait().ok();
+        child.wait().expect("reap the wrapper");
 
         let job = job.expect("expected foreground job");
         assert!(

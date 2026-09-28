@@ -384,7 +384,10 @@ fn capture_contract_tracks_tab_closure() {
     let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
     state.switch_tab(second_tab);
 
-    let _ = state.remove_active_tab();
+    assert!(matches!(
+        state.remove_active_tab(),
+        crate::app::actions::TabRemovalCommit::Removed(_)
+    ));
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
@@ -401,7 +404,10 @@ fn capture_contract_tracks_pane_closure() {
     let focused = state.workspaces[0]
         .focused_pane_id()
         .expect("test precondition");
-    let _ = state.remove_pane(0, focused);
+    assert!(matches!(
+        state.remove_pane(0, focused),
+        crate::app::actions::PaneRemovalCommit::Removed(_)
+    ));
 
     let snapshot = capture_from_state(&state);
     let tab = &snapshot.workspaces[0].tabs[0];
@@ -417,7 +423,9 @@ fn capture_contract_tracks_public_id_counters() {
     let third = state.workspaces[0].test_split(Direction::Vertical);
     let second_tab = state.workspaces[0].test_add_tab(None);
 
-    let _ = state.workspaces[0].close_pane(second);
+    state.workspaces[0]
+        .close_pane(second)
+        .expect("the split pane closes");
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];

@@ -874,26 +874,6 @@ Fix suggested: feed `join()` into `record_session_save_result`.
   teardown in test code, but a recursive delete of a path derived from workspace
   state is the one operation you want logged either way.
 
-## BUG-053 - Bootstrap aborts the process on `AddrInUse`, skipping the log flush
-
-**Decision (partial):** two rules adopted from broadarrow hold both halves:
-`process::exit` is confined to `src/main.rs` (so `run_server` returns a typed
-error), and the library-crate print-macro textlint forbids the six `eprintln!`
-lines (so the refusal goes through `tracing` or back to `main`). Open: the fix
-itself, and the three hand-built "already running" variants.
-
-`crates/shepr-server/src/server/headless/bootstrap.rs` calls
-`std::process::exit(1)` on `AddrInUse` from inside `run_server`, which returns
-`io::Result<()>` and is called from `main`. "Another server is already running"
-is exactly the condition a caller should be allowed to handle (the spawning
-client wants to attach to the existing server, not die), and `exit(1)` skips
-`logging::shutdown("server")` later in the same function, so the last log lines
-may not be flushed. The accompanying operator text is six `eprintln!` lines that
-the logging channel never sees, so a server started from a unit file or a
-spawning client leaves no trace in the log of why it refused; the "already
-running" message exists in three hand-built variants (two here, one in
-`server/socket_paths.rs`).
-
 ## BUG-054 - `public_workspace_id` answers an invalid index with an empty string
 
 `crates/shepr-server/src/app/ids.rs` documents this as deliberate ("a stale one
@@ -913,107 +893,6 @@ this a divergence today, not a prediction.
 
 Fix suggested: a single `resolve_workspace(...) -> Result<usize, ApiError>` that
 owns the code, plus a table test over the layout handlers.
-
-## BUG-056 - A crate-wide `allow(dead_code)` is active in exactly the builds that would report it
-
-**Decision (partial):** piece 4 of the test-isolation work adopted from broadarrow
-removes `shepr-server`'s `test-api` feature (test-only code moves to dev-only
-crates held by `never-ships` dependency rules), and the crate-wide allow goes
-with it. `#[allow]` is also denied workspace-wide in favour of
-`#[expect(.., reason)]` (adopted from broadarrow), so the attribute could not
-return in this form. The "`#[allow]` needs a comment" textlint is dropped in
-favour of that migration: the justification lives in each `#[expect]`'s
-`reason`, and `AGENTS.md`'s wording changes later. Open: the three deletion
-candidates, which the compiler can confirm once `dead_code` reports again.
-
-`crates/shepr-server/src/lib.rs`:
-`#![cfg_attr(feature = "test-api", allow(dead_code))]`. The root package depends
-on `shepr-server` normally and with `features = ["test-api"]` as a
-dev-dependency, so under feature unification any build that includes
-dev-dependencies - `cargo test`, `cargo clippy --all-targets`, i.e. exactly what
-`brokkr check` runs - turns `test-api` on and silences `dead_code` across all
-~45 000 lines of the crate. The gate cannot report an unused function, module,
-field or variant in `shepr-server`. It is the only crate-wide `allow(dead_code)`
-in the repo. The hunter noted that this hides other findings and left three
-deletion candidates unconfirmed for that reason
-(`MIN_CLIENT_COLS`/`MIN_CLIENT_ROWS`, `AttachInputDelivery::Failed`,
-`ShutdownLifecycle::set_frozen_session_policy_for_test`).
-
-## BUG-057 - The gate never compiles the feature set that ships, and test-only items are reachable from production builds
-
-**Decision:** piece 4 of the test-isolation work adopted from broadarrow:
-test-only code moves out of production crates' `test-api` and `test-support`
-features into dev-only crates, held by `never-ships` dependency rules (after
-broadarrow's `test-support-never-ships` and `test-scratch-never-ships`), plus a
-gate check of the shipped feature set. `PaneRuntimeIo::TestChannel` needs a seam
-before it can leave `shepr-mux` (HYGP-031). The gate check compiles the shipped
-feature set, not the release profile: building release in `brokkr check` is
-decided against (the owner's choice). Release builds get
-`overflow-checks = true` in the root `Cargo.toml` profile. With the
-`debug_assert!` ban and the `app_dir_name` switch removed (BUG-021), the
-profile the gate leaves unbuilt then differs in optimisation and debug info,
-not in behaviour.
-
-Reported independently from four scopes, all resting on cargo feature
-unification and none verified by a build:
-
-- `crates/shepr-mux`: the root `Cargo.toml` has `shepr-server` in
-  `[dependencies]` without features and in `[dev-dependencies]` with
-  `features = ["test-api"]`, and `shepr-server`'s `test-api` pulls in
-  `shepr-mux/test-api`. So `brokkr check` builds both with `test-api` on, and the
-  configuration `brokkr install` ships - `test-api` off - is compiled by no gate
-  step. This is not cosmetic in `shepr-mux`: `test-api` adds a variant to a
-  production enum (`PaneRuntimeIo::TestChannel`, whose arms contain real
-  behaviour including a thread that sleeps and sends), plus
-  `Workspace::clear_tabs_for_test`, `PaneRuntimeRegistry::drain`,
-  `TerminalState::set_detected_state` and nine `PaneRuntime::test_*`
-  constructors. `git/status.rs`'s `#[cfg]`-gated helpers mean the production
-  shape of that module is never compiled by the gate either.
-- `crates/shepr-platform`: `process.rs::signal_processes`, documented as
-  "Test-only: production code signals through `ProcessHandle`, which cannot hit a
-  reused pid", is gated `#[cfg(any(test, feature = "test-support"))]`, and
-  `crates/shepr-server/Cargo.toml` enables that feature as a dev-dependency
-  feature. Its single user is one line in `app/snapshot_tests.rs`.
-- `crates/shepr-agent`: `resume.rs::test_codex_plan` is gated on
-  `any(test, feature = "test-support")` and both the root and `shepr-server`
-  dev-dependencies enable `shepr-agent/test-support`.
-- `crates/shepr-client`: the root depends on it normally and as a dev-dependency
-  with `features = ["test-support"]`, so `ClientState::test_new()`, the
-  activation hooks in `endpoint/activation.rs` and the shell hooks in
-  `shell/endpoints.rs` are reachable from the crate's own production modules in
-  that build. `shepr-remote`'s `bridge_upload_cancellation_for_test` is the same
-  shape and additionally `expect()`s four times and `assert!`s once, in a library
-  that otherwise bans `unwrap`.
-
-The vt/pty hunter marked the resolver-3 consequence explicitly as inference, not
-verified. Fixes suggested: a `[[check]]` entry in `brokkr.toml` that builds the
-workspace with default features and without `--all-targets`; moving test doubles
-behind traits or into separate crates so production modules cannot name them.
-
-## BUG-058 - Invariant checks that vanish in the build that ships
-
-**Decision (partial):** `unregister_moved_pane` is deleted along with its call
-site (landed); `take_pane_for_move` already removes the record and number
-together. For the lifecycle phase, `debug_assert!` is banned workspace-wide (a
-`disallowed-macros` seal adopted from broadarrow), so the two `debug_assert_eq!`s
-become `assert_eq!` where a panic is the right containment, or typed handling
-(the `Result`-returning transitions suggested below) otherwise. Building the
-release profile in `brokkr check` is decided against, so the answer is to
-remove the profile dependence, not to test the other profile. The same answer
-covers integer overflow: release builds get `overflow-checks = true` in the
-root `Cargo.toml` profile, so overflow panics in the shipped build as it does in
-dev and in tests. That closes the dev/release overflow difference without
-building release in the gate, which still does not build it. Open: the two
-`debug_assert_eq!`s below, which still vanish in the build that ships.
-
-`crates/shepr-server/src/server/headless/lifecycle.rs` has the serving layer's
-only two invariant assertions, two `debug_assert_eq!` on the lifecycle phase.
-`brokkr.toml` sets `[test] debug = true`, but `brokkr test <name>` defaults to
-release and the shipped binary is release. They cover the phase machine, the
-one piece of state written by signal, API and logind threads.
-
-Fix suggested for the second: make the phase transitions total functions on
-`ShutdownPhase` returning `Result`.
 
 ## BUG-059 - Two `#[cfg(test)]` shortcuts make every agent-hosting assertion unfalsifiable
 
@@ -1261,48 +1140,25 @@ production writer, and the two paths are not the same code.
 Fix suggested: an injected writer on `ClientState`, which removes the
 `#[cfg(test)]` divergence as well.
 
-## BUG-071 - `forward_clipboard` reports success when nothing was written
+## BUG-072 - The bridge idle watchdog still leaves no log line saying why it fired
 
-`crates/shepr-client`: `shepr_termio::host_term::title::write_clipboard_bytes(&bytes);
-true`. `write_clipboard_bytes` returns `()`; inside it,
-`shepr_platform::write_clipboard`'s `bool` is consumed and the OSC 52 fallback
-does `let _ = stdout.write_all(...)`. So a failed native clipboard tool followed
-by a failed terminal write produces `true` from `forward_clipboard`, which the
-client reports to the server as a completed clipboard forward. The user's copy
-silently did not happen. Related, from the platform scope: a total clipboard
-failure is logged nowhere at any level, so "copy did nothing" is undiagnosable.
+**Decision (partial):** the suggested fix is adopted and landed: `process::exit`
+is confined to `src/main.rs`, held by both a `clippy.toml disallowed-methods`
+entry and broadarrow's `exits-from-main` textlint. `shepr-platform`'s remote
+bridge watchdog (`remote_bridge.rs::Activity::start`) now takes an `expired`
+callback instead of exiting, and `remote_bridge_io.rs` turns that into a
+`RemoteBridgeOutcome::IdleExpired` that `src/main.rs::finish_bridge` maps to
+`CliError::BridgeIdle`; `shepr-client`'s `run_client` returns a
+`ClientRunError` instead of exiting; `shepr-server`'s bootstrap returns a typed
+`RunServerError` on `AddrInUse` instead of exiting, so `logging::shutdown("server")`
+runs either way. Open: the bridge still
+ends with no log line saying the idle deadline fired - `CliError::BridgeIdle`
+prints nothing (`CliError::print`'s `Self::BridgeIdle => {}` arm) - so the one
+place a log would explain a mysterious remote disconnect still has none.
 
-Fix suggested: `write_clipboard_bytes(...) -> io::Result<()>`, so ignoring the
-outcome is a visible `let _ =` at one site.
-
-## BUG-072 - Library crates terminate the process
-
-**Decision (partial):** the suggested fix is adopted: `process::exit` is
-confined to `src/main.rs`, held by broadarrow's `exits-from-main` textlint form,
-and the library crates return outcomes. The bridge bullet is harder than it
-reads: the watchdog exits from its own thread because the relay's copy may be
-blocked in a read that returning cannot interrupt, so `main` also needs a way to
-unblock that copy (shut the fds down, or poll with a deadline). Open: the three
-sites, and the bridge's missing log line.
-
-- `crates/shepr-platform/src/remote_bridge.rs`: a watchdog thread calls
-  `std::process::exit(1)` when the relay has been idle for 60 seconds. The
-  comment justifies why returning is insufficient, and for the dedicated bridge
-  process the reasoning holds - but the decision now lives in a crate seven other
-  crates link, and nothing prevents a second caller of
-  `forward_remote_bridge_stdio(_, true)` from inheriting a hard exit it did not
-  ask for. The bridge also dies with no log line saying why: the one place a log
-  would explain a mysterious disconnect.
-- `crates/shepr-client/src/lib.rs`: `std::process::exit(1)` from library code
-  with a literal `1`, skipping every remaining destructor - in the crate with the
-  most to lose from skipped destructors (terminal restore), working today only
-  because restore is explicitly run a few lines earlier, and bypassing
-  `src/cli/error.rs::exit_code()`, which owns shepr's statuses.
-- `crates/shepr-server/src/server/headless/bootstrap.rs`: see BUG-053.
-
-Fix suggested: return an outcome (`BridgeOutcome::IdleExpired`, a typed client
-error) and let `src/main.rs` exit, plus a `disallowed_methods` entry for
-`std::process::exit` outside `src/main.rs`.
+Fix suggested: log the idle expiry (with the elapsed idle duration) at the
+point `RemoteBridgeOutcome::IdleExpired` is produced, or in `finish_bridge`
+before returning the exit code.
 
 ## BUG-073 - Tests that skip themselves when run as root and report success
 
@@ -1415,3 +1271,75 @@ Found by reading during the `SHEPR_AGENT` removal; the field arrived in
 Fix suggested: make the socket path a required input of `PaneLaunchEnv`
 construction rather than an optional builder step, so a pane cannot be launched
 without it, plus a test that every pane creation path sets a non-empty value.
+
+## BUG-078 - The agent sidebar's pane sort compares `PublicPaneId`'s encoded strings, not numbers
+
+`crates/shepr-client/src/shell/sidebar/agent_sidebar.rs`'s `AgentRowIndex`
+orders `AgentRowIndexItem::Pane` rows with `left.pane_id.cmp(&right.pane_id)`.
+`PublicPaneId` (`crates/shepr-protocol/src/ids.rs`) derives no `Ord`; the call
+compiles by deref-coercing through `impl Deref for PublicPaneId` to `&str` and
+comparing the encoded id text. The encoded suffix is a base-32-style digit
+string with no fixed width (`encode_public_number`), so it sorts
+lexicographically rather than numerically: pane 32 sorts before pane 1, and
+pane 60 before pane 2. `PublicTabId`, by contrast, derives `Ord` and sorts by
+its `(workspace_id, number)` fields, so tabs order correctly while panes in the
+same sidebar do not.
+
+Fix suggested: derive or implement `Ord`/`PartialOrd` on `PublicPaneId` from
+`(workspace_id, number)`, matching `PublicTabId`, and have the sidebar compare
+`left.pane_id.cmp(&right.pane_id)` order by that rather than by `Deref`.
+
+## BUG-079 - The new-workspace label runs a local `git` on a cwd that may be on a remote host, synchronously on the client's main thread
+
+`crates/shepr-client/src/workspace_label.rs::derive_label_from_cwd` spawns
+`git rev-parse --show-toplevel` in `cwd` to derive a suggested workspace name.
+Its only caller, `crates/shepr-client/src/shell/overlays/overlay_input.rs::open_new_workspace_overlay`,
+passes `new_workspace_cwd` read from `self.snapshot` - the *active endpoint's*
+snapshot, which for a workspace on a remote machine names a path on that
+remote host, not on the machine running the client. `derive_label_from_cwd`
+spawns `git` locally against that path regardless, so it either inspects an
+unrelated local directory that happens to share the remote path, or (more
+often) fails to enter it and falls through to the non-Git fallbacks - silently
+producing a wrong or generic label with no indication the lookup targeted the
+wrong host. Separately, the call runs synchronously in the client's input
+handling as the new-workspace overlay opens, blocking the UI thread on a
+subprocess spawn (and, on a slow or unmounted local filesystem, its `git`
+invocation) instead of asking the endpoint that owns the cwd.
+
+Fix suggested: only derive the label locally for the `Local` endpoint, and for
+a remote endpoint either skip the Git lookup or ask the remote server for the
+checkout root; run the lookup off the input-handling path either way.
+
+## BUG-080 - `PublicTabId::new` / `PublicPaneId::new` accept inputs their own parser rejects
+
+`crates/shepr-protocol/src/ids.rs`: `PublicTabId::new` and `PublicPaneId::new`
+perform no validation on `workspace_id` or `number`. An empty `workspace_id`
+builds an encoded id like `:t3`, which `parse_public_child_id` explicitly
+rejects (`if workspace_id.is_empty() { return Err(..) }`). A `number` of `0`
+encodes to the empty string via `encode_public_number` (its loop runs zero
+times), producing an id like `work:t`, which `parse_public_number` also
+explicitly rejects (`if encoded.is_empty() { return Err(..) }`, and separately
+`.filter(|number| *number > 0)`). Either input builds a `PublicTabId`/
+`PublicPaneId` value that serializes to text nothing in the codebase can parse
+back into the same type - a round-trip break reachable from any caller that
+constructs one from a raw workspace id string or a zero-based index.
+
+Fix suggested: make `new` fallible (or debug-assert / refuse in the same way
+`parse_public_child_id` does) so the two constructors agree with the one
+parser about what a valid id looks like.
+
+## BUG-081 - A Git config read failure reads the same as "the key has no value"
+
+`crates/shepr-mux/src/git/discovery.rs::read_git_config_value` does
+`std::fs::read_to_string(path).ok()?` and returns `None` on any read error
+(permission denied, a symlink loop, an `EIO`) exactly as it does when the file
+parses cleanly but the key is absent. Callers cannot tell "this repository is
+not bare" from "the config file's bareness could not be determined" (same for
+`extensions.refstorage`, which decides whether the repository uses `reftable`
+refs). An unreadable git config therefore silently reads as a normal,
+non-bare, non-reftable repository rather than failing the git-status read or
+logging the stat/read failure.
+
+Fix suggested: return a `Result` distinguishing "key absent" from "file could
+not be read", the same distinction `notes/bugs.md`'s BUG-034 asks for on the
+saved-machine catalog's `stat` failures.

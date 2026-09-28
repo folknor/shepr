@@ -126,22 +126,22 @@ pub(super) fn api_client(context: &CliContext) -> super::CliResult<ApiClient> {
         return Ok(ApiClient::local(context));
     };
     if target.bridge.is_none() {
-        target.bridge = Some(
-            shepr_remote::SavedSshApiBridge::start(
-                context,
-                &target.profile.id,
-                &target.profile.target,
-                &target.profile.session,
-                true,
-                target.ssh_settings,
+        let bridge = shepr_remote::SavedSshApiBridge::start(
+            context,
+            &target.profile.id,
+            &target.profile.target,
+            &target.profile.session,
+            true,
+            target.ssh_settings,
+        )
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("machine '{}': {error}", target.profile.label),
             )
-            .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("machine '{}': {error}", target.profile.label),
-                )
-            })?,
-        );
+        })?;
+        warn_metadata_store_failure(&target.profile, &bridge);
+        target.bridge = Some(bridge);
     }
     let bridge = target
         .bridge
@@ -185,20 +185,49 @@ pub(super) fn server_status(
         {
             return Err(failure.into());
         }
-        bridge.invalidate_metadata();
+        // The retry below rediscovers regardless, so this command still recovers. A
+        // hint that could not be removed is overwritten by the retry's own store;
+        // only when that store fails too does the stale hint outlive this command,
+        // and the retry's store failure is reported below.
+        if let Err(error) = bridge.invalidate_metadata() {
+            eprintln!(
+                "warning: machine '{}': could not remove stale SSH metadata {}: {error}",
+                target.profile.label,
+                bridge.metadata_path().display()
+            );
+        }
         target.bridge.take();
-        target.bridge = Some(shepr_remote::SavedSshApiBridge::start(
+        let bridge = shepr_remote::SavedSshApiBridge::start(
             context,
             &target.profile.id,
             &target.profile.target,
             &target.profile.session,
             false,
             target.ssh_settings,
-        )?);
+        )?;
+        warn_metadata_store_failure(&target.profile, &bridge);
+        target.bridge = Some(bridge);
         Ok(())
     };
     retried?;
     probe()
+}
+
+/// A bridge that had to discover the remote shepr and could not remember it still
+/// serves this command, but every later command pays discovery again. The CLI has
+/// no log subscriber, so this goes to stderr, leaving stdout to the command.
+fn warn_metadata_store_failure(
+    profile: &SavedSshEndpoint,
+    bridge: &shepr_remote::SavedSshApiBridge,
+) {
+    if let Some(error) = bridge.metadata_store_failure() {
+        eprintln!(
+            "warning: machine '{}': could not cache the remote shepr location in {}: {error}; \
+             later commands rediscover it",
+            profile.label,
+            bridge.metadata_path().display()
+        );
+    }
 }
 
 pub(super) fn remote_error(context: &CliContext, error: io::Error) -> io::Error {

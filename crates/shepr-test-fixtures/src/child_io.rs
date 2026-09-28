@@ -45,7 +45,10 @@ impl ChildIo for ChannelChildIo {
 
     fn write_terminal_response(&self, response: &mut dyn FnMut() -> Option<Bytes>) {
         if let Some(bytes) = response() {
-            let _ = self.sender.try_send(bytes);
+            // Many tests drop the receiver or never drain it, so a closed or
+            // full channel is the normal case for them; a test that checks
+            // replies reads the receiver and sees any that went missing.
+            self.sender.try_send(bytes).ok();
         }
     }
 
@@ -65,7 +68,9 @@ impl ChildIo for ChannelChildIo {
                     std::thread::sleep(delay);
                     sender.try_send(enter).map_err(std::io::Error::other)
                 });
-            let _ = reply_tx.send(result);
+            // The completion receiver is gone only when the caller dropped the
+            // submission, and then nobody is waiting for the outcome.
+            reply_tx.send(result).ok();
         });
         Ok(QueuedSubmission {
             completion: reply_rx,

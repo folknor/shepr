@@ -93,8 +93,8 @@ fn a_stand_in_process_carries_its_own_name() {
         .spawn()
         .expect("the stand-in starts");
     let comm = std::fs::read_to_string(format!("/proc/{}/comm", child.id()));
-    let _ = child.kill();
-    let _ = child.wait();
+    child.kill().expect("kill the sleeping stand-in");
+    child.wait().expect("reap the stand-in");
     assert_eq!(comm.expect("the process is visible").trim_end(), "droid");
 }
 

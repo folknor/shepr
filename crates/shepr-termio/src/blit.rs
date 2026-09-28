@@ -32,7 +32,7 @@
 //! and minimize cursor movement.
 
 use std::cmp;
-use std::io::Write;
+use std::io::{self, Write};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -86,7 +86,9 @@ impl BlitEncoder {
         let mut bytes = Vec::new();
         let mut next_last_visible_cursor = self.last_visible_cursor;
         let mut next_last_cursor_shape = self.last_cursor_shape;
-        blit_frame_to_with_cursor_memory_and_clear_policy(
+        // The sink is a Vec<u8>, whose io::Write impl never returns an error,
+        // so there is no failure to act on here.
+        drop(blit_frame_to_with_cursor_memory_and_clear_policy(
             &mut bytes,
             frame,
             prev,
@@ -95,7 +97,7 @@ impl BlitEncoder {
             REPEAT_IME_ANCHOR_AFTER_SYNC,
             clear_before_full_redraw,
             suppress_visible_cursor,
-        );
+        ));
         EncodedBlit {
             bytes,
             next_last_visible_cursor,
@@ -138,7 +140,9 @@ impl BlitEncoder {
         let mut bytes = Vec::new();
         let mut next_last_visible_cursor = self.last_visible_cursor;
         let mut next_last_cursor_shape = self.last_cursor_shape;
-        blit_patch_to(
+        // The sink is a Vec<u8>, whose io::Write impl never returns an error,
+        // so there is no failure to act on here.
+        drop(blit_patch_to(
             &mut bytes,
             frame,
             rows,
@@ -147,7 +151,7 @@ impl BlitEncoder {
             &mut next_last_cursor_shape,
             REPEAT_IME_ANCHOR_AFTER_SYNC,
             suppress_visible_cursor,
-        );
+        ));
         Some(EncodedBlit {
             bytes,
             next_last_visible_cursor,
@@ -422,7 +426,8 @@ fn blit_frame_to_with_cursor_memory_and_policy(
         repeat_ime_anchor,
         true,
         suppress_visible_cursor,
-    );
+    )
+    .expect("tests blit into a Vec, which cannot fail to write");
 }
 
 fn frame_cell_index(frame: &FrameData, x: u16, y: u16) -> Option<usize> {
@@ -469,8 +474,8 @@ fn blit_patch_to(
     last_cursor_shape: &mut u8,
     repeat_ime_anchor: bool,
     suppress_visible_cursor: bool,
-) {
-    let _ = writer.write_all(b"\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\");
+) -> io::Result<()> {
+    writer.write_all(b"\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\")?;
     let mut last_sgr = String::new();
     let mut last_style = None;
     let mut active_hyperlink = None;
@@ -494,7 +499,7 @@ fn blit_patch_to(
                     &mut last_style,
                     &mut active_hyperlink,
                     frame,
-                );
+                )?;
                 next_inline_col = (cell.symbol.is_ascii() && cell_width(cell) == 1)
                     .then_some(col.saturating_add(1));
             }
@@ -503,9 +508,9 @@ fn blit_patch_to(
             invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
         }
     }
-    close_hyperlink(&mut writer, &mut active_hyperlink);
+    close_hyperlink(&mut writer, &mut active_hyperlink)?;
     if !last_sgr.is_empty() {
-        let _ = writer.write_all(b"\x1b[0m");
+        writer.write_all(b"\x1b[0m")?;
     }
 
     let cursor_frame = FrameData {
@@ -519,12 +524,12 @@ fn blit_patch_to(
     if suppress_visible_cursor && host_cursor.visible {
         host_cursor.visible = false;
     }
-    write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape);
-    let _ = writer.write_all(b"\x1b[?2026l");
+    write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape)?;
+    writer.write_all(b"\x1b[?2026l")?;
     if repeat_ime_anchor {
-        write_ime_anchor_cursor_state(&mut writer, host_cursor);
+        write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
     }
-    let _ = writer.flush();
+    writer.flush()
 }
 
 fn blit_frame_to_with_cursor_memory_and_clear_policy(
@@ -536,7 +541,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     repeat_ime_anchor: bool,
     clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
-) {
+) -> io::Result<()> {
     // On first frame or size change, do a full redraw; otherwise diff against
     // the previous frame.
     let diff_base = prev.filter(|p| p.width == frame.width && p.height == frame.height);
@@ -544,25 +549,25 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     // Ask terminals that support synchronized output to apply the whole frame
     // atomically. This keeps IMEs and cursor trackers from observing the
     // intermediate CUP positions used while painting changed cells.
-    let _ = writer.write_all(b"\x1b[?2026h");
+    writer.write_all(b"\x1b[?2026h")?;
 
     // Hide cursor before any cell writes to avoid stray cursor artifacts
     // on terminals that render the hardware cursor at intermediate CUP positions.
-    let _ = writer.write_all(b"\x1b[?25l");
+    writer.write_all(b"\x1b[?25l")?;
 
     // Start each frame from a known OSC 8 state. If a previous write was
     // interrupted or the outer terminal had an active hyperlink, unlinked cells
     // must not inherit it.
-    let _ = writer.write_all(b"\x1b]8;;\x1b\\");
+    writer.write_all(b"\x1b]8;;\x1b\\")?;
 
     if let Some(prev) = diff_base {
         // Diff-based update: only write changed cells.
-        write_changed_cells(&mut writer, frame, prev);
+        write_changed_cells(&mut writer, frame, prev)?;
     } else {
         if clear_before_full_redraw {
-            let _ = writer.write_all(b"\x1b[2J");
+            writer.write_all(b"\x1b[2J")?;
         }
-        write_all_cells(&mut writer, frame);
+        write_all_cells(&mut writer, frame)?;
     }
 
     // Position the cursor while it is still hidden, then restore visibility.
@@ -575,19 +580,19 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     if suppress_visible_cursor && host_cursor.visible {
         host_cursor.visible = false;
     }
-    write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape);
+    write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape)?;
 
     // End the synchronized output block immediately after the final cursor
     // state is emitted so supporting terminals can present the frame atomically.
-    let _ = writer.write_all(b"\x1b[?2026l");
+    writer.write_all(b"\x1b[?2026l")?;
 
     // Some native IMEs track candidate-window placement from normal terminal
     // cursor updates and may not observe cursor moves emitted inside synchronized
     // output. Re-emit only the resolved final cursor anchor after the sync block.
     if repeat_ime_anchor {
-        write_ime_anchor_cursor_state(&mut writer, host_cursor);
+        write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
     }
-    let _ = writer.flush();
+    writer.flush()
 }
 
 /// Production always repeats the IME anchor after the synchronized block;
@@ -672,35 +677,42 @@ fn clamp_cursor_position(frame: &FrameData, x: u16, y: u16) -> (u16, u16) {
     )
 }
 
-fn write_cursor_position(writer: &mut impl Write, (x, y): (u16, u16)) {
+fn write_cursor_position(writer: &mut impl Write, (x, y): (u16, u16)) -> io::Result<()> {
     // CUP: move cursor to (row+1, col+1) - 1-based.
-    let _ = write!(writer, "\x1b[{};{}H", y + 1, x + 1);
+    write!(writer, "\x1b[{};{}H", y + 1, x + 1)
 }
 
-fn write_host_cursor_state(writer: &mut impl Write, cursor: HostCursorState, last_shape: &mut u8) {
-    write_cursor_position(writer, cursor.position);
+fn write_host_cursor_state(
+    writer: &mut impl Write,
+    cursor: HostCursorState,
+    last_shape: &mut u8,
+) -> io::Result<()> {
+    write_cursor_position(writer, cursor.position)?;
     if cursor.shape != *last_shape {
-        let _ = write!(writer, "\x1b[{} q", cursor.shape);
+        write!(writer, "\x1b[{} q", cursor.shape)?;
         *last_shape = cursor.shape;
     }
     if cursor.visible {
         // Show cursor only after it is already at the final position.
-        let _ = writer.write_all(b"\x1b[?25h");
+        writer.write_all(b"\x1b[?25h")
     } else {
-        let _ = writer.write_all(b"\x1b[?25l");
+        writer.write_all(b"\x1b[?25l")
     }
 }
 
-fn write_ime_anchor_cursor_state(writer: &mut impl Write, cursor: HostCursorState) {
-    write_cursor_position(writer, cursor.position);
+fn write_ime_anchor_cursor_state(
+    writer: &mut impl Write,
+    cursor: HostCursorState,
+) -> io::Result<()> {
+    write_cursor_position(writer, cursor.position)?;
     if cursor.visible {
-        let _ = writer.write_all(b"\x1b[?25h");
+        writer.write_all(b"\x1b[?25h")
     } else {
-        let _ = writer.write_all(b"\x1b[?25l");
+        writer.write_all(b"\x1b[?25l")
     }
 }
 
-fn write_all_cells(writer: &mut impl Write, frame: &FrameData) {
+fn write_all_cells(writer: &mut impl Write, frame: &FrameData) -> io::Result<()> {
     let mut last_sgr = String::new();
     let mut last_style = None;
     let mut active_hyperlink = None;
@@ -730,7 +742,7 @@ fn write_all_cells(writer: &mut impl Write, frame: &FrameData) {
                 &mut last_style,
                 &mut active_hyperlink,
                 frame,
-            );
+            )?;
             let width = cell_width(cell);
             next_inline_col =
                 (cell.symbol.is_ascii() && width == 1).then_some(col.saturating_add(1));
@@ -738,10 +750,10 @@ fn write_all_cells(writer: &mut impl Write, frame: &FrameData) {
         }
     }
 
-    close_hyperlink(writer, &mut active_hyperlink);
+    close_hyperlink(writer, &mut active_hyperlink)?;
 
     // Reset style at the end.
-    let _ = writer.write_all(b"\x1b[0m");
+    writer.write_all(b"\x1b[0m")
 }
 
 fn cell_hyperlink_uri<'a>(frame: &'a FrameData, cell: &CellData) -> Option<&'a str> {
@@ -777,25 +789,27 @@ fn write_hyperlink_if_changed(
     writer: &mut impl Write,
     active: &mut Option<String>,
     requested: Option<&str>,
-) {
+) -> io::Result<()> {
     let requested = requested.and_then(sanitized_hyperlink_uri);
     if active.as_deref() == requested.as_deref() {
-        return;
+        return Ok(());
     }
 
     if active.is_some() {
-        let _ = writer.write_all(b"\x1b]8;;\x1b\\");
+        writer.write_all(b"\x1b]8;;\x1b\\")?;
     }
     *active = requested;
     if let Some(uri) = active.as_deref() {
-        let _ = write!(writer, "\x1b]8;;{uri}\x1b\\");
+        write!(writer, "\x1b]8;;{uri}\x1b\\")?;
     }
+    Ok(())
 }
 
-fn close_hyperlink(writer: &mut impl Write, active: &mut Option<String>) {
+fn close_hyperlink(writer: &mut impl Write, active: &mut Option<String>) -> io::Result<()> {
     if active.take().is_some() {
-        let _ = writer.write_all(b"\x1b]8;;\x1b\\");
+        writer.write_all(b"\x1b]8;;\x1b\\")?;
     }
+    Ok(())
 }
 
 fn write_cell(
@@ -806,27 +820,27 @@ fn write_cell(
     last_style: &mut Option<(WireColor, WireColor, WireStyle)>,
     active_hyperlink: &mut Option<String>,
     frame: &FrameData,
-) {
+) -> io::Result<()> {
     if cell.skip {
-        return;
+        return Ok(());
     }
 
     if let Some(position) = cursor_position {
-        write_cursor_position(writer, position);
+        write_cursor_position(writer, position)?;
     }
 
     let style = (cell.fg, cell.bg, cell.style);
     if *last_style != Some(style) {
         let sgr = build_sgr(cell.fg, cell.bg, cell.style);
         if sgr != *last_sgr {
-            let _ = writer.write_all(sgr.as_bytes());
+            writer.write_all(sgr.as_bytes())?;
             *last_sgr = sgr;
         }
         *last_style = Some(style);
     }
 
-    write_hyperlink_if_changed(writer, active_hyperlink, cell_hyperlink_uri(frame, cell));
-    let _ = writer.write_all(cell.symbol.as_bytes());
+    write_hyperlink_if_changed(writer, active_hyperlink, cell_hyperlink_uri(frame, cell))?;
+    writer.write_all(cell.symbol.as_bytes())
 }
 
 /// Writes only the cells that changed between the previous and current frame.
@@ -845,7 +859,11 @@ fn cells_visually_equal(
     // Skip flag is only for ratatui internal use, not visual.
 }
 
-fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameData) {
+fn write_changed_cells(
+    writer: &mut impl Write,
+    frame: &FrameData,
+    prev: &FrameData,
+) -> io::Result<()> {
     let mut last_sgr = String::new(); // Track last SGR to avoid redundant style changes.
     let mut last_style = None;
     let mut active_hyperlink = None;
@@ -883,7 +901,7 @@ fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameD
                     &mut last_style,
                     &mut active_hyperlink,
                     frame,
-                );
+                )?;
                 next_inline_col = (cell.symbol.is_ascii() && cell_width(cell) == 1)
                     .then_some(col.saturating_add(1));
             }
@@ -894,12 +912,13 @@ fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameD
         }
     }
 
-    close_hyperlink(writer, &mut active_hyperlink);
+    close_hyperlink(writer, &mut active_hyperlink)?;
 
     // Reset style if we wrote anything.
     if !last_sgr.is_empty() {
-        let _ = writer.write_all(b"\x1b[0m");
+        writer.write_all(b"\x1b[0m")?;
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,7 +1074,7 @@ mod tests {
         let mut frame = make_frame(5, 1, cells);
         frame.hyperlinks.push("https://example.com".into());
         let mut output = Vec::new();
-        write_all_cells(&mut output, &frame);
+        write_all_cells(&mut output, &frame).expect("writing into a Vec cannot fail");
         assert_eq!(
             String::from_utf8(output).expect("test precondition"),
             "\x1b[1;1H\x1b[0;39;49ma\x1b]8;;https://example.com\x1b\\b\x1b]8;;\x1b\\c\x1b[0;31;49md\x1b[0;39;49me\x1b[0m"

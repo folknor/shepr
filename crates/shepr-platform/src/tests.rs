@@ -493,8 +493,8 @@ fn wait_for_process_exits_times_out_on_a_live_process() {
             Duration::from_millis(30)
         ));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    child.kill().expect("kill sleep");
+    child.wait().expect("reap sleep");
 }
 
 fn spawn_session_with_background_job() -> std::process::Child {
@@ -546,8 +546,8 @@ fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
         for member in &members {
             assert!(member.signal(Signal::Kill));
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        child.kill().expect("kill session leader");
+        child.wait().expect("reap session leader");
         let handles: Vec<&ProcessHandle> = members.iter().collect();
         assert!(wait_for_process_exits(&handles, Duration::from_secs(5)));
     }
@@ -560,8 +560,8 @@ fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
     // The leader is alive, so from the point of view of a caller that has
     // already reaped its own leader, pid `leader` belongs to someone else.
     assert!(session_member_handles(leader, || true).is_empty());
-    let _ = child.kill();
-    let _ = child.wait();
+    child.kill().expect("kill session leader");
+    child.wait().expect("reap session leader");
     // Clean up the background sleep, which outlives the leader.
     for member in session_member_handles(leader, || false) {
         member.signal(Signal::Kill);
@@ -712,11 +712,13 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
             program: fake_wl_copy,
             args: &["--type", "text/plain;charset=utf-8"],
         };
-        let _ = result_tx.send(run_clipboard_command(
-            &command,
-            b"clipboard text",
-            clipboard_deadline(),
-        ));
+        result_tx
+            .send(run_clipboard_command(
+                &command,
+                b"clipboard text",
+                clipboard_deadline(),
+            ))
+            .expect("the test holds the receiver until the writer joins");
     });
 
     // The marker is created before the pid is written into it, so wait for a

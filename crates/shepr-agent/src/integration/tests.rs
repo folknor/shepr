@@ -157,8 +157,6 @@ fn install_pi_writes_embedded_asset_to_pi_extensions_dir() {
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
     assert_eq!(content, PI_EXTENSION_ASSET);
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -177,8 +175,6 @@ fn install_pi_creates_extensions_dir_when_agent_dir_exists() {
         agent_dir.join("extensions").join(PI_EXTENSION_INSTALL_NAME)
     );
     assert!(path.stat_is_file());
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -195,7 +191,6 @@ fn install_pi_uses_pi_coding_agent_dir_env() {
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -213,7 +208,6 @@ fn install_pi_expands_tilde_in_pi_coding_agent_dir_env() {
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -233,8 +227,6 @@ fn install_omp_writes_embedded_asset_to_omp_extensions_dir() {
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
     assert_eq!(content, OMP_EXTENSION_ASSET);
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -255,7 +247,6 @@ fn install_omp_uses_omp_config_dir_env() {
     );
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -284,7 +275,6 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     assert!(installed.extension_path.stat_is_file());
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -304,8 +294,6 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
     assert!(ext_dir.stat_is_dir());
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -330,8 +318,6 @@ fn uninstall_omp_removes_embedded_extension_when_present() {
     );
     assert!(result.removed_extension);
     assert!(!result.extension_path.try_exists().expect("stat"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -347,8 +333,6 @@ fn install_omp_errors_when_extension_dir_missing() {
         .to_string();
 
     assert!(err.contains("omp extension directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -370,8 +354,6 @@ fn uninstall_pi_removes_embedded_extension_when_present() {
     );
     assert!(result.removed_extension);
     assert!(!result.extension_path.try_exists().expect("stat"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -392,8 +374,6 @@ fn outdated_integrations_treat_missing_version_marker_as_outdated() {
     assert_eq!(outdated[0].path, extension_path);
     assert_eq!(outdated[0].installed_version, None);
     assert_eq!(outdated[0].expected_version, PI_INTEGRATION_VERSION);
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -408,8 +388,6 @@ fn outdated_integrations_accept_current_version_marker() {
     env.set("HOME", &home);
 
     assert!(outdated_installed_integrations(&AgentIntegrationPaths::resolve()).is_empty());
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -425,8 +403,6 @@ fn install_pi_errors_when_extension_dir_missing() {
         .to_string();
 
     assert!(err.contains("pi extension directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -474,8 +450,6 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -495,7 +469,6 @@ fn install_claude_uses_claude_config_dir_env() {
     );
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -529,8 +502,6 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -581,8 +552,6 @@ fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
         settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
         "echo keep"
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -598,8 +567,6 @@ fn install_claude_errors_when_claude_dir_missing() {
         .to_string();
 
     assert!(err.contains("claude directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -638,8 +605,6 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
     assert!(config.contains("[features]"));
     assert!(config.contains("hooks = true"));
     assert!(!config.contains("codex_hooks"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -658,7 +623,6 @@ fn install_codex_uses_codex_home_env() {
     assert_eq!(installed.config_path, codex_dir.join("config.toml"));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -698,8 +662,6 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
     assert_eq!(config.matches("hooks = true").count(), 1);
     assert!(!config.contains("codex_hooks"));
     assert!(config.contains("other = true"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -730,8 +692,6 @@ fn install_codex_only_migrates_top_level_feature_flags() {
     assert_eq!(features.get("other"), Some(&toml::Value::Boolean(true)));
     assert!(!features.contains_key("codex_hooks"), "{config}");
     assert_eq!(config.matches("[features]").count(), 1, "{config}");
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -786,8 +746,6 @@ fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
     );
     assert!(config.contains("hooks = true"));
     assert!(config.contains("other = true"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -803,8 +761,6 @@ fn install_codex_errors_when_config_dir_missing() {
         .to_string();
 
     assert!(err.contains("codex config directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -850,8 +806,6 @@ fn install_kimi_writes_hook_and_updates_config() {
             action,
         );
     }
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -900,7 +854,6 @@ fn install_kimi_uses_kimi_code_home_env() {
     assert_eq!(installed.config_path, kimi_dir.join("config.toml"));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -921,8 +874,6 @@ fn install_kimi_is_idempotent_for_config_block() {
     assert_eq!(config.matches(KIMI_CONFIG_BLOCK_BEGIN).count(), 1);
     assert_eq!(config.matches(KIMI_CONFIG_BLOCK_END).count(), 1);
     assert_eq!(hooks.len(), KIMI_HOOK_EVENTS.len());
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -960,8 +911,6 @@ fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
         hooks[0].get("event").and_then(toml::Value::as_str),
         Some("Notification")
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -977,8 +926,6 @@ fn install_kimi_errors_when_config_dir_missing() {
         .to_string();
 
     assert!(err.contains("kimi code config directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1029,8 +976,6 @@ fn install_copilot_writes_hook_and_updates_settings() {
             assert!(entry.get("matcher").is_none(), "{event}: {entry}");
         }
     }
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1062,7 +1007,6 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
     );
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1111,8 +1055,6 @@ fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
         1
     );
     assert_eq!(settings["hooks"]["SessionStart"][0]["command"], "echo keep");
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1128,8 +1070,6 @@ fn install_copilot_errors_when_config_dir_missing() {
         .to_string();
 
     assert!(err.contains("copilot config directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1174,7 +1114,6 @@ fn install_devin_writes_hook_and_updates_settings() {
     }
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1207,7 +1146,6 @@ fn install_devin_is_idempotent_for_hook_entries() {
     }
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1271,7 +1209,6 @@ fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1289,7 +1226,6 @@ fn install_devin_errors_when_config_dir_missing() {
     assert!(err.contains("devin config directory not found"));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1345,8 +1281,6 @@ fn install_droid_writes_hook_to_settings() {
             hook.event
         );
     }
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1376,8 +1310,6 @@ fn install_droid_is_idempotent_for_hook_entries() {
             hook.event
         );
     }
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1412,8 +1344,6 @@ fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
     assert!(!result.hook_path.try_exists().expect("stat"));
     assert!(settings["hooks"].get("SessionStart").is_none());
     assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "Edit");
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1429,8 +1359,6 @@ fn install_droid_errors_when_config_dir_missing() {
         .to_string();
 
     assert!(err.contains("droid config directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1476,8 +1404,6 @@ fn install_opencode_writes_server_and_tui_plugins() {
         serde_json::from_str(&fs::read_to_string(&cli_config_path).expect("test precondition"))
             .expect("test precondition");
     assert_eq!(cli_config["plugins"], json!([OPENCODE_V2_TUI_PLUGIN_SPEC]));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1578,8 +1504,6 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
             .join("tui.js")
             .stat_is_file()
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1627,7 +1551,6 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
             .expect("test precondition"),
         json!({"theme":{"name":"catppuccin"},"plugins":["other"]})
     );
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1741,7 +1664,6 @@ fn opencode_invalid_cli_config_does_not_overwrite_existing_plugins() {
         "previous integration"
     );
     assert!(!dir.join("tui.jsonc").try_exists().expect("stat"));
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1770,8 +1692,6 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
     super::opencode_config::remove_tui_plugin(&opencode_dir, OPENCODE_TUI_PLUGIN_SPEC)
         .expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1801,8 +1721,6 @@ fn uninstall_opencode_removes_plugins_and_managed_tui_config_entry() {
     .expect("test precondition");
     assert_eq!(tui_config, json!({}));
     assert_eq!(installed.plugin_path, result.plugin_path);
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1833,8 +1751,6 @@ fn install_opencode_invalid_tui_config_does_not_write_plugins() {
             .try_exists()
             .expect("stat")
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1870,8 +1786,6 @@ fn uninstall_opencode_removes_plugins_when_tui_config_is_invalid() {
             .expect("test precondition"),
         json!({"plugin":["other"]})
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1887,8 +1801,6 @@ fn install_opencode_errors_when_config_dir_missing() {
         .to_string();
 
     assert!(err.contains("opencode config directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1908,8 +1820,6 @@ fn install_kilo_writes_plugin_to_plugin_dir() {
         kilo_dir.join("plugin").join(KILO_PLUGIN_INSTALL_NAME)
     );
     assert_eq!(plugin_content, KILO_PLUGIN_ASSET);
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1930,8 +1840,6 @@ fn uninstall_kilo_removes_plugin_when_present() {
 
     assert!(result.removed_plugin);
     assert!(!result.plugin_path.try_exists().expect("stat"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1947,8 +1855,6 @@ fn install_kilo_errors_when_config_dir_missing() {
         .to_string();
 
     assert!(err.contains("kilo config directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2257,7 +2163,6 @@ fn install_qodercli_writes_hook_and_updates_settings() {
     assert!(settings.get("permissions").is_some());
 
     env.remove(EnvVar::QoderConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2293,7 +2198,6 @@ fn install_qodercli_is_idempotent_for_hook_entries() {
     }
 
     env.remove(EnvVar::QoderConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2346,7 +2250,6 @@ fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
     assert_eq!(cmd, "echo user-defined");
 
     env.remove(EnvVar::QoderConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2365,7 +2268,6 @@ fn install_qodercli_errors_when_config_dir_missing() {
     );
 
     env.remove(EnvVar::QoderConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2425,7 +2327,6 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
     );
 
     env.remove(EnvVar::QwenHome);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2468,7 +2369,6 @@ fn uninstall_qwen_removes_only_shepr_hook() {
     assert_eq!(remaining[0]["hooks"][0]["command"], "echo user-defined");
 
     env.remove(EnvVar::QwenHome);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2484,7 +2384,6 @@ fn install_qwen_errors_when_config_dir_missing() {
     assert!(err.contains("qwen code config directory not found"));
 
     env.remove(EnvVar::QwenHome);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2544,8 +2443,6 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
         .expect("test precondition");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0]["hooks"][0]["command"], "echo user");
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2604,8 +2501,6 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     assert!(args.contains("--source shepr:letta --agent letta"));
     assert!(args.contains("--agent-session-id default:agent-123"));
     assert!(args.contains("--session-start-source resume"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 /// Runs the bundled Kimi hook with `payload` on stdin and returns the request
@@ -2698,8 +2593,6 @@ fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
         assert_eq!(request["params"]["state"], "working");
         assert_eq!(request["params"]["pane_id"], "w1:p2");
     }
-
-    let _ = fs::remove_dir_all(base);
 }
 
 /// Runs a session-only python hook asset with `payload` on stdin. Returns the
@@ -2829,8 +2722,6 @@ fn session_hooks_ignore_non_object_payloads_quietly() {
         assert_eq!(request["method"], "pane.report_agent_session");
         assert_eq!(request["params"]["agent_session_id"], "abc");
     }
-
-    let _ = fs::remove_dir_all(base);
 }
 
 /// A python exception the payload tests cannot provoke must still not fail the
@@ -2877,8 +2768,6 @@ fn install_letta_errors_when_config_dir_missing() {
         .expect_err("test precondition")
         .to_string();
     assert!(err.contains("letta code config directory not found"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2899,8 +2788,6 @@ fn install_letta_does_not_publish_hook_when_settings_are_invalid() {
             .try_exists()
             .expect("stat")
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -2958,8 +2845,6 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
         "a rejected settings target must not leave a hook behind"
     );
     assert!(uninstall_letta(&AgentIntegrationPaths::resolve()).is_err());
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3017,7 +2902,6 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
     );
 
     env.remove(EnvVar::CursorConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3046,7 +2930,6 @@ fn install_cursor_is_idempotent_for_hook_entries() {
     assert_eq!(session_start.len(), 1);
 
     env.remove(EnvVar::CursorConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3086,7 +2969,6 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     assert!(hooks.contains_key("beforeSubmitPrompt"));
 
     env.remove(EnvVar::CursorConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3106,7 +2988,6 @@ fn install_cursor_uses_cursor_config_dir_env() {
     assert_eq!(installed.hooks_path, cursor_dir.join("hooks.json"));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3130,7 +3011,6 @@ fn cursor_integration_status_is_current_after_install() {
     assert_eq!(cursor.installed_version, Some(CURSOR_INTEGRATION_VERSION));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3149,7 +3029,6 @@ fn install_cursor_errors_when_config_dir_missing() {
     );
 
     env.remove(EnvVar::CursorConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3223,8 +3102,6 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
             .and_then(Value::as_str),
         Some("echo keep-me")
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 fn grok_session_command(config: &Value) -> String {
@@ -3270,7 +3147,6 @@ fn install_grok_writes_hook_and_config() {
     assert!(command.ends_with(" session"));
 
     env.remove(GROK_CONFIG_DIR_TEST_SEAM);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3299,8 +3175,6 @@ fn install_mastracode_is_idempotent_for_hook_entries() {
             1
         );
     }
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3320,7 +3194,6 @@ fn install_grok_is_idempotent() {
     assert_eq!(first, second);
 
     env.remove(GROK_CONFIG_DIR_TEST_SEAM);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3339,8 +3212,6 @@ fn install_mastracode_refuses_when_config_dir_missing() {
         "{err}"
     );
     assert!(!base.join(".mastracode").try_exists().expect("stat"));
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3400,8 +3271,6 @@ fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
         user_prompt_submit[0].get("command").and_then(Value::as_str),
         Some("echo user-defined")
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3423,7 +3292,6 @@ fn install_grok_errors_when_config_dir_missing() {
     );
 
     env.remove(GROK_CONFIG_DIR_TEST_SEAM);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3447,7 +3315,6 @@ fn uninstall_grok_removes_files() {
     assert!(!again.removed_config_file);
 
     env.remove(GROK_CONFIG_DIR_TEST_SEAM);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3468,7 +3335,6 @@ fn install_grok_uses_grok_config_dir_env() {
     );
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3488,8 +3354,6 @@ fn install_mastracode_errors_when_event_value_not_array() {
         err.contains("hook entries for SessionStart must be an array"),
         "unexpected error: {err}"
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3509,8 +3373,6 @@ fn uninstall_mastracode_errors_when_event_value_not_array() {
         err.contains("hook entries for SessionStart must be an array"),
         "unexpected error: {err}"
     );
-
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3618,7 +3480,6 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
     );
 
     env.remove(EnvVar::AntigravityCliConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3665,7 +3526,6 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
     );
 
     env.remove(EnvVar::AntigravityCliConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3684,7 +3544,6 @@ fn install_antigravity_cli_errors_when_config_dir_missing() {
     );
 
     env.remove(EnvVar::AntigravityCliConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3706,7 +3565,6 @@ fn grok_integration_status_is_current_after_install() {
     assert_eq!(grok.installed_version, Some(GROK_INTEGRATION_VERSION));
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3803,7 +3661,6 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     assert_eq!(grok_state(), IntegrationStatusKind::Current);
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3842,7 +3699,6 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
     assert!(hooks.contains_key("lint-checker"));
 
     env.remove(EnvVar::AntigravityCliConfigDir);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3874,7 +3730,6 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
 
     env.remove(EnvVar::GrokHome);
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3923,7 +3778,6 @@ fn install_kimi_leaves_a_damaged_config_and_no_hook() {
     );
 
     clear_integration_path_env(&env);
-    let _ = fs::remove_dir_all(base);
 }
 
 #[test]

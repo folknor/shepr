@@ -484,7 +484,9 @@ fn clear_tree(path: &Path) {
 /// Gives the owner full access to every directory in the tree, without
 /// following symlinks. Errors are left for the retried removal to report.
 fn restore_owner_access(dir: &Path) {
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(PRIVATE_DIR_MODE));
+    // A failure here surfaces as the retried removal's panic, which names the
+    // path; reporting it twice adds nothing.
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(PRIVATE_DIR_MODE)).ok();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

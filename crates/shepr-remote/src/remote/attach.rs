@@ -206,7 +206,13 @@ mod tests {
         assert_eq!(mode, BRIDGE_SOCKET_PERMISSION_MODE);
 
         drop(bridge);
-        let _ = std::fs::remove_file(socket);
+        // Dropping the bridge removes the socket it owns.
+        assert_eq!(
+            std::fs::symlink_metadata(&socket)
+                .expect_err("dropped bridge left its socket behind")
+                .kind(),
+            io::ErrorKind::NotFound
+        );
     }
 
     #[test]
@@ -236,10 +242,11 @@ mod tests {
         let server = prepare_remote_bridge_stream(server).expect("prepare bridge stream");
         assert!(!is_nonblocking(&server));
 
+        // The socket file stays in the test's own scratch directory, which the
+        // next hand-out clears.
         drop(server);
         drop(client);
         drop(listener);
-        let _ = std::fs::remove_file(socket);
     }
 
     #[test]

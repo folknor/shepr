@@ -265,8 +265,18 @@ fn add(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    SshMetadataCache::new(paths, &id, &target, &session).store(&executable);
     println!("Saved SSH machine {id}. Remote server is ready.");
+    // The machine is saved and reachable either way; a missing cache only means
+    // the first connection discovers the remote shepr again, so this is a warning
+    // and not a failed add.
+    let metadata_cache = SshMetadataCache::new(paths, &id, &target, &session);
+    if let Err(error) = metadata_cache.store(&executable) {
+        eprintln!(
+            "warning: could not cache the remote shepr location in {}: {error}; \
+             connections to {id} rediscover it until the cache can be written",
+            metadata_cache.path().display()
+        );
+    }
     println!("Open Shepr clients connect automatically.");
     Ok(0)
 }
@@ -292,7 +302,15 @@ fn remove(paths: &shepr_config::AppPaths, selector: &str) -> super::CliResult<i3
         return Err(failed(&format!("machine profile {id} was not found")));
     }
     store_catalog(&mut catalog)?;
-    metadata_cache.invalidate();
+    // The profile is already gone from the catalog and a new profile gets a fresh
+    // ID, so nothing reads this file again; a leftover is an orphaned private file
+    // worth naming, not a failed removal.
+    if let Err(error) = metadata_cache.invalidate() {
+        eprintln!(
+            "warning: could not remove cached SSH metadata {}: {error}",
+            metadata_cache.path().display()
+        );
+    }
     // The next launch falls back to Local instead of naming a removed machine.
     if was_selected {
         catalog

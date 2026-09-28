@@ -39,7 +39,7 @@ use clipboard_forwarding::forward_clipboard;
 use events::{ClientLoopEvent, ParsedHostInput};
 use loop_config::{ClientLoopConfig, ClientSettings};
 use shell_runtime::*;
-use state::{AttachSession, ClientState, SessionMode, ShellSession};
+use state::{AttachSession, ClientState, HostWriteFailure, SessionMode, ShellSession};
 use transport::*;
 
 pub use shell::{ClientShellConfig, ClientShellState};
@@ -375,6 +375,8 @@ async fn run_client_loop(
         presentation_frozen: false,
         deferred_local_activation: None,
         draw_host_cursor,
+        frame_write_failure: HostWriteFailure::default(),
+        title_write_failure: HostWriteFailure::default(),
     };
     state.set_host_size(cols, rows);
     // Only a client that loaded the saved machines follows them; attach and remote-client
@@ -658,9 +660,12 @@ impl ClientLoop<'_> {
             }
         }
 
-        // Clean exit (Ctrl+C). Send Detach before closing.
-        let _ = write_to_server(&mut self.write_stream, &ClientMessage::Detach);
-        let _ = io::stdout().flush();
+        // Clean exit (Ctrl+C). Send Detach before closing. The registry records a failed
+        // send against the endpoint, and its Drop sends Detach to every connection again.
+        self.write_stream.send(&ClientMessage::Detach);
+        // Terminal restore writes and flushes this same stdout buffer next and logs its own
+        // failure, so a failure here would only be reported twice.
+        io::stdout().flush().ok();
         Ok(())
     }
 
@@ -835,14 +840,17 @@ impl ClientLoop<'_> {
                     }
                 }
                 AttachInputAction::Detach => {
-                    let _ = write_to_server(write_stream, &ClientMessage::Detach);
+                    // A failed send is recorded against the endpoint, and the registry's
+                    // Drop sends Detach again on the way out.
+                    write_stream.send(&ClientMessage::Detach);
                     return Ok(ClientLoopAction::Exit);
                 }
                 AttachInputAction::ForwardThenDetach(data) => {
                     if let Some(notice) = attach::forward_input(write_stream, &data).notice() {
                         remember_direct_notice(direct_notices, notice);
                     }
-                    let _ = write_to_server(write_stream, &ClientMessage::Detach);
+                    // As for Detach above: failure is recorded, and Drop resends.
+                    write_stream.send(&ClientMessage::Detach);
                     return Ok(ClientLoopAction::Exit);
                 }
                 AttachInputAction::None => {}
@@ -890,7 +898,9 @@ impl ClientLoop<'_> {
     ) -> Result<ClientLoopAction, ClientError> {
         let Self { write_stream, .. } = self;
         info!(err = %err, "client terminal unavailable; detaching");
-        let _ = write_to_server(write_stream, &ClientMessage::Detach);
+        // A failed send is recorded against the endpoint, and the registry's Drop sends
+        // Detach again on the way out.
+        write_stream.send(&ClientMessage::Detach);
         Ok(ClientLoopAction::Exit)
     }
 
@@ -1197,7 +1207,11 @@ impl ClientLoop<'_> {
                         match state.present_surface_patch(patch) {
                             Ok(presented) => !presented,
                             Err(error) => {
-                                warn!(%error, "failed to present retained pane surface patch");
+                                // Once per cause: a patch arrives with every pane update.
+                                // The full repaint that follows reports the recovery.
+                                state
+                                    .frame_write_failure
+                                    .observe("pane surface patch", &Err(error));
                                 state.request_repaint();
                                 false
                             }
@@ -1219,9 +1233,15 @@ impl ClientLoop<'_> {
                 }
             }
             ServerMessage::Terminal(frame) => {
+                // Direct attach passes the pane's byte stream straight through with no
+                // repaint to fall back on, so a lost write leaves the host terminal out of
+                // step with the pane for the rest of the session. End it like the other
+                // host terminal write failures on this path.
                 let mut stdout = io::stdout();
-                let _ = stdout.write_all(&frame.bytes);
-                let _ = stdout.flush();
+                stdout
+                    .write_all(&frame.bytes)
+                    .and_then(|()| stdout.flush())
+                    .map_err(ClientError::HostTerminal)?;
             }
             ServerMessage::ServerShutdown { reason } => {
                 if local_failure_policy.ends_client_for(endpoint_id) {
@@ -1371,17 +1391,30 @@ impl ClientLoop<'_> {
                 }
             }
             ServerMessage::Clipboard { data } => {
-                forward_clipboard(&data);
-                let _ = io::stdout().flush();
+                // write_clipboard_bytes flushes its own OSC 52 fallback, so no flush is
+                // needed here. Once per user copy, so a warn cannot flood; only the
+                // length is logged because the payload is the user's selection.
+                if let Err(error) = forward_clipboard(&data) {
+                    warn!(
+                        endpoint = %endpoint_id.storage_key(),
+                        generation,
+                        bytes = data.len(),
+                        %error,
+                        "clipboard copy from the server did not reach the host clipboard"
+                    );
+                }
             }
             ServerMessage::WindowTitle { title } => {
                 // `None` is deliberate from the server (an API title was
                 // cleared, or every template token resolved empty) and
                 // resets to Shepr's default. A disabled `ui.window_title`
                 // never reaches here: the server sends nothing at all.
-                let _ = state
+                // A lost title write is cosmetic and the next title change retries it;
+                // logged once per cause because titles can change with every agent state.
+                let written = state
                     .host_modes
                     .write_window_title(&mut io::stdout(), title.as_deref());
+                state.title_write_failure.observe("window title", &written);
             }
             ServerMessage::MouseCapture {
                 enabled,
@@ -1582,7 +1615,7 @@ impl ClientLoop<'_> {
                 now,
                 &format!("{}; reconnecting", failure.message),
             ) {
-                clear_endpoint_host_effects(state);
+                clear_endpoint_host_effects(state)?;
             }
         }
         // A revoked transport changes the safe rollback destination. Handle those
@@ -1619,7 +1652,7 @@ impl ClientLoop<'_> {
                 );
                 selection.catalog_changed(endpoint_catalog);
                 if active_retired {
-                    clear_endpoint_host_effects(state);
+                    clear_endpoint_host_effects(state)?;
                     if scheduled_activation.is_none() {
                         *scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
                             endpoint_id: endpoint::ClientEndpointId::Local,

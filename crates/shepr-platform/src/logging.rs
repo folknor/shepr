@@ -34,20 +34,34 @@ pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<()> {
     ) {
         Ok(make_writer) => make_writer,
         Err(error) => {
-            let _ = writeln!(
+            // With stderr unwritable too there is nowhere left to report
+            // to, and running without file logging is the documented outcome.
+            writeln!(
                 io::stderr().lock(),
                 "shepr: could not initialize file logging: {error}"
-            );
+            )
+            .ok();
             return Ok(());
         }
     };
 
-    let _ = tracing_subscriber::fmt()
+    // This only fails when a global subscriber (or `log` logger) is already
+    // installed. That one keeps receiving events, so the warning reaches
+    // wherever this process is already logging, and the file log is skipped.
+    if let Err(error) = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(make_writer)
         .with_ansi(false)
         .with_target(true)
-        .try_init();
+        .try_init()
+    {
+        tracing::warn!(
+            file = file_name,
+            dir = %dir.display(),
+            err = %error,
+            "file logging not installed: a logger is already set"
+        );
+    }
     Ok(())
 }
 

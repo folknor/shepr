@@ -137,9 +137,20 @@ impl<R: Read + AsRawFd> Read for DeadlineReader<R> {
 }
 
 /// Stop a helper that failed or ran out of time.
+///
+/// The clipboard request has already failed by the time this runs, so the
+/// caller has nothing to add; a helper that cannot be killed or reaped is left
+/// running or as a zombie, which is logged by pid.
 fn kill_and_reap(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+    let pid = child.id();
+    // `kill` succeeds on a helper that already exited but is not yet reaped,
+    // so an error here means the signal did not reach it.
+    if let Err(err) = child.kill() {
+        tracing::warn!(pid, %err, "failed to kill clipboard helper");
+    }
+    if let Err(err) = child.wait() {
+        tracing::warn!(pid, %err, "failed to reap clipboard helper");
+    }
 }
 
 /// Wait for `child` until `deadline`, then kill it. `None` on a timeout or a

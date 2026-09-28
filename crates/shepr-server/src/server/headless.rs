@@ -315,7 +315,7 @@ impl HeadlessServer {
         let stop_requested = Arc::clone(self.lifecycle.stop_request_flag());
         let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
         let quit_notify = self.server_event_tx.clone();
-        ctrlc_handler(stop_requested, signal_quit, quit_notify);
+        ctrlc_handler(stop_requested, signal_quit, quit_notify)?;
         self.start_host_shutdown_monitor();
 
         let mut render_demand = RenderDemand::Full;
@@ -519,8 +519,12 @@ impl HeadlessServer {
                         self.handle_internal_event_with_forwarding(ev);
                     }
                     LoopEvent::ServerEvent(
-                        ServerEvent::ClientConnected { writer, .. }
-                        | ServerEvent::ClientShellConnected { writer, .. },
+                        ServerEvent::ClientConnected {
+                            client_id, writer, ..
+                        }
+                        | ServerEvent::ClientShellConnected {
+                            client_id, writer, ..
+                        },
                     ) => {
                         if let Ok(message) =
                             Self::frame_server_message(&ServerMessage::ServerShutdown {
@@ -529,8 +533,13 @@ impl HeadlessServer {
                                 )),
                             })
                         {
-                            let _ = writer.control.send(message);
-                            self.shutdown_flushes.push(writer.flush());
+                            // A closed writer means the client already left;
+                            // there is nothing to flush for it.
+                            if writer.control.send(message).is_err() {
+                                debug!(?client_id, "client left before its shutdown notice");
+                            } else {
+                                self.shutdown_flushes.push(writer.flush());
+                            }
                         }
                     }
                     // Already dequeued, so the shutdown drain would never see
@@ -591,7 +600,7 @@ impl HeadlessServer {
             warn!("pane session teardown did not finish before server exit");
         }
         self.app.retire_session_writer();
-        self.release_sockets_after_save()?;
+        self.release_sockets_after_save();
 
         info!("headless server exiting");
         run_error.map_or(Ok(()), Err)
@@ -877,16 +886,25 @@ impl HeadlessServer {
     async fn reject_late_client_connections(&mut self) {
         self.server_event_rx.close();
         while let Some(event) = self.server_event_rx.recv().await {
-            if let ServerEvent::ClientConnected { writer, .. }
-            | ServerEvent::ClientShellConnected { writer, .. } = event
+            if let ServerEvent::ClientConnected {
+                client_id, writer, ..
+            }
+            | ServerEvent::ClientShellConnected {
+                client_id, writer, ..
+            } = event
                 && let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
                     reason: Some(shepr_protocol::ShutdownReason::Message(
                         "server is shutting down".to_owned(),
                     )),
                 })
             {
-                let _ = writer.control.send(message);
-                self.shutdown_flushes.push(writer.flush());
+                // A closed writer means the client already left; there is
+                // nothing to flush for it.
+                if writer.control.send(message).is_err() {
+                    debug!(?client_id, "late client left before its shutdown notice");
+                } else {
+                    self.shutdown_flushes.push(writer.flush());
+                }
             }
         }
     }
@@ -2160,7 +2178,7 @@ fn client_pane_input_has_interaction(events: &[shepr_protocol::ClientPaneInputEv
 
 impl Drop for HeadlessServer {
     fn drop(&mut self) {
-        let _ = self.cleanup_sockets();
+        self.cleanup_sockets();
     }
 }
 
@@ -2171,18 +2189,24 @@ impl Drop for HeadlessServer {
 /// Installs the SIGINT/SIGTERM/SIGHUP handler (ctrlc's `termination`
 /// feature). It marks the quit as signal-driven, sets the stop request flag, and
 /// wakes up the event loop by sending a QuitSignal on the server event channel.
+///
+/// Failing to install it is an error: without it a signal kills the server
+/// without the shutdown sequence that saves the session.
 fn ctrlc_handler(
     stop_requested: Arc<AtomicBool>,
     signal_quit: Arc<AtomicBool>,
     server_event_tx: mpsc::Sender<ServerEvent>,
-) {
-    let _ = ctrlc::set_handler(move || {
+) -> io::Result<()> {
+    ctrlc::set_handler(move || {
         // Before the stop request, so the loop never sees the quit without it.
         signal_quit.store(true, Ordering::Release);
         stop_requested.store(true, Ordering::Release);
-        // Wake up the event loop so the quit flag is checked promptly.
-        let _ = server_event_tx.try_send(ServerEvent::QuitSignal);
-    });
+        // Wake up the event loop so the quit flag is checked promptly. Only a
+        // wakeup, the flags above carry the quit: a full channel already
+        // wakes the loop, and a closed one means the loop has exited.
+        server_event_tx.try_send(ServerEvent::QuitSignal).ok();
+    })
+    .map_err(|err| io::Error::other(format!("installing the termination signal handler: {err}")))
 }
 
 /// Sleep until a deadline, or return pending if none.

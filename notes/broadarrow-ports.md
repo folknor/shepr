@@ -30,7 +30,7 @@ At a glance:
 | B7 clock seam | Adopted incrementally | |
 | B8 per-crate `limits` modules | Adopted incrementally | |
 | B9 `#[expect(.., reason)]` instead of `#[allow]` | Adopted now | Done |
-| B10 extra compiler lints and the rustdoc phase | Adopted, later round | Done, but `let_underscore_must_use` (see there) |
+| B10 extra compiler lints and the rustdoc phase | Adopted, later round | Done |
 | B11 release-profile sweep in `brokkr check` | Rejected; release gets `overflow-checks = true` instead | |
 | B12 install shape | Tracked elsewhere (piece 4 of the test-isolation work) | |
 | B13 tree debris | Adopted, later round | Done |
@@ -681,10 +681,9 @@ forwarding method and are excepted. Delete the unit test in the same commit.
 ## B1. Print macros
 
 **Decision:** adopted now, in the recommended form: the library-crate textlint
-below, leaving `src/` alone. The workspace clippy seal is not adopted, so the
-CLI's own `eprintln!` sites (HYGC-004) are not held by this rule. Wire A9's
-`check_skip_after_scopes.py` with it, or the three `shepr-remote/src/lib.rs`
-prints stay hidden.
+below, leaving `src/` alone. The workspace clippy seal is not adopted, so a CLI
+print site is not held by this rule. Wire A9's `check_skip_after_scopes.py`
+with it, or the three `shepr-remote/src/lib.rs` prints stay hidden.
 
 **Done**, as drafted: `library-crates-do-not-print`, with the skip-after
 witness re-checking the production items below an early `#[cfg(test)]`
@@ -732,8 +731,8 @@ The clippy seal form (`disallowed-macros` on `std::print` and friends) would fla
 
 **Decision:** adopted now: `process::exit` is confined to `src/main.rs`. The
 `exits-from-main` textlint below states exactly that; the clippy form would need
-an `#[expect]` at each of `main.rs`'s nine sites to say the same. Ties to HYGC-025
-and BUG-072. One site is harder than it looks: the `remote_bridge.rs` exit runs
+an `#[expect]` at each of `main.rs`'s nine sites to say the same. Ties to
+BUG-072. One site is harder than it looks: the `remote_bridge.rs` exit runs
 on a watchdog thread precisely because the relay's own thread may be blocked in
 a read (its comment: "returning from a blocked copy cannot guarantee shutdown,
 and joining it could hang forever"). Moving the exit to `main.rs` needs a way to
@@ -780,8 +779,8 @@ below). Textlint form: 4 in 3 files:
 
 **Decision:** adopted now, all three pieces. Each `debug_assert!` becomes an
 `assert!` where a panic is the right containment, and typed handling otherwise
-(BUG-058; `unregister_moved_pane` is already decided as a deletion). The
-`cfg!(debug_assertions)` switch in `crates/shepr-config/src/io.rs::app_dir_name`
+(`unregister_moved_pane` is deleted, and the headless lifecycle's phase
+transitions refuse instead of asserting). The `cfg!(debug_assertions)` switch in `crates/shepr-config/src/io.rs::app_dir_name`
 is removed, so dev and release builds resolve the same config, state and runtime
 directories. Consequence to plan for: `app_dir_name` also names the runtime
 directory the sockets live in, so after the change a dev build started with
@@ -1032,10 +1031,10 @@ If adopted, A8 becomes redundant.
 
 **Decision:** adopted; applied in a later round.
 
-**Done, except `let_underscore_must_use`.** `[workspace.lints.rust]` and
+**Done.** `[workspace.lints.rust]` and
 `[workspace.lints.rustdoc]` carry broadarrow's sets, `[workspace.lints.clippy]`
-adds `map_unwrap_or`, `match_same_arms`, `redundant_else` and
-`unnested_or_patterns`, and `brokkr.toml` has `[rustdoc] document_private_items
+adds `map_unwrap_or`, `match_same_arms`, `redundant_else`,
+`unnested_or_patterns` and `let_underscore_must_use`, and `brokkr.toml` has `[rustdoc] document_private_items
 = true`. The first run reported 690 diagnostics across the workspace (about
 370 `let_underscore_must_use`, 156 `unreachable_pub`, 74 `map_unwrap_or`, 39
 `match_same_arms`, and small counts of the rest). `unreachable_pub` was
@@ -1046,14 +1045,13 @@ largest variant) and carry an `#[expect]` saying so rather than a `Box`, as
 does one control-sequence state table that reads by source state
 (`match_same_arms` in `tab_bar_status.rs`).
 
-`let_underscore_must_use` is not enabled. About 370 sites discard a
+`let_underscore_must_use` is denied. About 370 sites discarded a
 `#[must_use]` value with `let _ = ..`, most of them channel sends, socket
-writes and cleanup removals whose failure is deliberately ignored, a third of
-them in tests. The only mechanical fix is respelling each as `.ok();` or
-`drop(..)`, which changes no behaviour and records no decision, and the lint's
-value is exactly that decision. Adopting it means reviewing each discard
-(handle, log, or state why it is safe to drop), crate by crate like B7 and B8;
-it needs the owner's go-ahead for that shape.
+writes and cleanup removals, a third of them in tests. A mechanical respelling
+to `.ok();` or `drop(..)` would have recorded no decision, so each discard was
+reviewed crate by crate instead: propagated or handled, logged through
+`tracing` with the identifiers an operator needs, or kept as a discard with a
+comment saying why the failure cannot matter.
 
 Broadarrow denies lints shepr does not: `[workspace.lints.rust]`
 (`unreachable_pub`, `rust_2018_idioms`, `single_use_lifetimes`, `trivial_casts`,
@@ -1126,8 +1124,8 @@ current tests including
 ## B12. Install shape (native brokkr)
 
 **Decision:** tracked elsewhere: it is the shipped-feature-set gate check of
-piece 4 of the test-isolation work, recorded under BUG-057 (`notes/bugs.md`)
-and HYGP-031 (`notes/hygiene-policy.md`). Not added separately from here.
+piece 4 of the test-isolation work, recorded under HYGP-031
+(`notes/hygiene-policy.md`). Not added separately from here.
 
 Broadarrow checks the `cargo install` feature graph with a package-unified sweep
 plus two scripts. Shepr's brokkr does it natively:
@@ -1170,10 +1168,9 @@ it.
 `textlint_sweep.py` diagnostic to classify.
 
 **Done**: `scripts/check_scripts_roster.py` and `scripts/README.md`, wired as
-`scripts-roster`. The one-off migration scripts (`fix_unwraps.py`,
-`hygiene_merge.py`, the three `test_isolation_*.py`,
-`narrow_unreachable_pub.py`) are rostered as tools; whether they stay is the
-owner's call.
+`scripts-roster`. The one-off migration scripts written during the hygiene
+sweeps were deleted once their work landed; `fix_unwraps.py` remains rostered
+as a tool.
 
 `check_scripts_roster.py` requires a `scripts/README.md` table stating each
 script's standing (gate, tool, diagnostic) and that every `gate` is wired in

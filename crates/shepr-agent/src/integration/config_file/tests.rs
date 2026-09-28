@@ -2,17 +2,13 @@ use super::*;
 use crate::integration::test_support::symlink_file;
 use shepr_test_support::IsolatedEnv;
 
+/// A scratch tree, left in place afterwards as every `ScratchDir` is: the next
+/// run clears it when it is handed out.
 struct Directory(PathBuf);
 
 impl Directory {
     fn new() -> Self {
         Self(shepr_test_support::ScratchDir::new("config-write").to_path_buf())
-    }
-}
-
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

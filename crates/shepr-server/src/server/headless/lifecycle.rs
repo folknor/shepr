@@ -221,7 +221,11 @@ impl HeadlessServer {
         self.host_shutdown_monitor = Some(shepr_platform::HostShutdownMonitor::start(
             Arc::clone(self.lifecycle.host_shutdown_request_flag()),
             move || {
-                let _ = quit_notify.try_send(ServerEvent::QuitSignal);
+                // Only a wakeup: the monitor updates the request flag before
+                // calling this, and the loop reads the flag every iteration.
+                // A full channel already wakes the loop, and a closed one
+                // means the loop has exited.
+                quit_notify.try_send(ServerEvent::QuitSignal).ok();
             },
         ));
     }
@@ -416,14 +420,16 @@ impl HeadlessServer {
 
     /// Removes the API socket and then the client socket, after the final
     /// session save.
-    pub(super) fn release_sockets_after_save(&mut self) -> io::Result<()> {
+    pub(super) fn release_sockets_after_save(&mut self) {
         // Dropping the handle removes the API socket file.
         drop(self._api_server.take());
-        self.cleanup_sockets()
+        self.cleanup_sockets();
     }
 
-    /// Removes socket files created by the server.
-    pub(super) fn cleanup_sockets(&self) -> io::Result<()> {
+    /// Removes socket files created by the server. A removal failure is
+    /// logged, not returned: this runs on the way out (final shutdown and
+    /// `Drop`), where no caller could act on it.
+    pub(super) fn cleanup_sockets(&self) {
         if let Err(err) =
             remove_socket_file_if_owned(&self.client_socket_path, &self.client_socket_identity)
             && err.kind() != io::ErrorKind::NotFound
@@ -434,7 +440,6 @@ impl HeadlessServer {
                 "failed to remove client socket on shutdown"
             );
         }
-        Ok(())
     }
 }
 

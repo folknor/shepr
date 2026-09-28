@@ -1,6 +1,6 @@
 use super::*;
 
-use super::process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho};
+use super::process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho, kill_and_reap, kill_child};
 use interprocess::TryClone as _;
 use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
@@ -78,13 +78,11 @@ impl SshStdioBridge {
             &local_socket,
             BRIDGE_SOCKET_PERMISSION_MODE,
         ) {
-            let _ =
-                shepr_platform::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
+            remove_bridge_socket(&local_socket, &socket_identity);
             return Err(err);
         }
         if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
-            let _ =
-                shepr_platform::ipc::remove_socket_file_if_owned(&local_socket, &socket_identity);
+            remove_bridge_socket(&local_socket, &socket_identity);
             return Err(err);
         }
 
@@ -143,7 +141,11 @@ impl SshStdioBridge {
                             // through `reported_failure` and presents it.
                             tracing::warn!(error = %err, noninteractive, "remote SSH bridge failed");
                             // The original error, so its typed SSH failure survives.
-                            let _ = failure_tx.try_send(err);
+                            // Already logged above. This thread shares the receiver,
+                            // so it never disconnects, and the slot was emptied before
+                            // this stream was served with only this thread filling
+                            // it: the send has no way to fail.
+                            drop(failure_tx.try_send(err));
                         }
                     }
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
@@ -151,10 +153,13 @@ impl SshStdioBridge {
                     }
                     Err(err) => {
                         tracing::warn!(error = %err, noninteractive, "remote SSH bridge listener failed");
-                        let _ = failure_tx.try_send(io::Error::new(
+                        // Already logged above. The send fails only when the last
+                        // stream's failure is still unclaimed; the owner then reads
+                        // that one, which is the failure its request actually saw.
+                        drop(failure_tx.try_send(io::Error::new(
                             err.kind(),
                             format!("remote bridge listener failed: {err}"),
-                        ));
+                        )));
                         break;
                     }
                 }
@@ -215,13 +220,25 @@ pub(super) fn prepare_remote_bridge_stream(
 impl Drop for SshStdioBridge {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Release);
-        let _ = shepr_platform::ipc::remove_socket_file_if_owned(
-            &self.local_socket,
-            &self.socket_identity,
-        );
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        remove_bridge_socket(&self.local_socket, &self.socket_identity);
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            // The panic itself went to the panic hook; this ties it to the bridge.
+            tracing::error!(
+                socket = %self.local_socket.display(),
+                "remote bridge accept thread panicked"
+            );
         }
+    }
+}
+
+/// Removes a bridge's own socket on a failed start or on drop. The caller has
+/// nothing better to do with a failure, but a socket file left behind in the
+/// runtime directory is worth a line naming it.
+fn remove_bridge_socket(path: &Path, identity: &shepr_platform::ipc::SocketFileIdentity) {
+    if let Err(error) = shepr_platform::ipc::remove_socket_file_if_owned(path, identity) {
+        tracing::warn!(%error, socket = %path.display(), "could not remove remote bridge socket");
     }
 }
 
@@ -389,14 +406,12 @@ pub(super) fn bridge_connection(
     let stream_to_child = match stream.try_clone() {
         Ok(stream) => stream,
         Err(err) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_and_reap(&mut child, "ssh bridge");
             return Err(err);
         }
     };
     if let Err(err) = shepr_platform::ipc::set_local_stream_polling(&mut stream, true) {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_and_reap(&mut child, "ssh bridge");
         return Err(err);
     }
     let mut child_to_stream = stream;
@@ -406,8 +421,7 @@ pub(super) fn bridge_connection(
     let upload = match BridgeUpload::spawn(stream_to_child, child_stdin, Arc::clone(bridge_stop)) {
         Ok(upload) => upload,
         Err(err) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_and_reap(&mut child, "ssh bridge");
             return Err(err);
         }
     };
@@ -442,15 +456,14 @@ pub(super) fn bridge_connection(
             Err(err) => {
                 connection_stop.store(true, Ordering::Release);
                 upload_stop.cancel();
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_and_reap(&mut child, "ssh bridge");
                 break (Err(err), false);
             }
         }
         if bridge_stop.load(Ordering::Acquire) {
             connection_stop.store(true, Ordering::Release);
             upload_stop.cancel();
-            let _ = child.kill();
+            kill_child(&mut child, "ssh bridge");
             break (child.wait(), false);
         }
         if upload.client_closed() || upload.failed() || download_done.load(Ordering::Acquire) {
@@ -458,7 +471,7 @@ pub(super) fn bridge_connection(
             let stopped_at = stopped_at.get_or_insert_with(Instant::now);
             if stopped_at.elapsed() >= Duration::from_millis(250) {
                 connection_stop.store(true, Ordering::Release);
-                let _ = child.kill();
+                kill_child(&mut child, "ssh bridge");
                 break (child.wait(), false);
             }
         }
@@ -598,8 +611,7 @@ pub(super) fn terminate_bridge_child(
     mut child: std::process::Child,
     message: &'static str,
 ) -> io::Result<()> {
-    let _ = child.kill();
-    let _ = child.wait();
+    kill_and_reap(&mut child, "ssh bridge");
     Err(io::Error::new(io::ErrorKind::BrokenPipe, message))
 }
 

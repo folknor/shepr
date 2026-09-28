@@ -70,7 +70,10 @@ impl PipeCapture {
         let (done_tx, done) = mpsc::sync_channel(1);
         thread::spawn(move || {
             let result = read_into(reader, &worker_captured, limit, echo, retention);
-            let _ = done_tx.send(result);
+            // The receiver is gone only when `finish` gave up on this reader after
+            // its grace, or the capture was dropped unfinished; either way nobody
+            // is left to want the result.
+            drop(done_tx.send(result));
         });
         Self { captured, done }
     }
@@ -134,8 +137,12 @@ fn read_into(
                 }
             }
         }
-        if matches!(echo, PipeEcho::Stderr) && destination.write_all(&buffer[..read]).is_ok() {
-            let _ = destination.flush();
+        // The echo is a live relay for the person at the terminal; the capture
+        // above is what callers use. A failed write has nowhere better to be
+        // reported than the stderr that just refused it, and std's stderr is
+        // unbuffered, so there is nothing to flush.
+        if matches!(echo, PipeEcho::Stderr) {
+            drop(destination.write_all(&buffer[..read]));
         }
     }
 }
@@ -162,18 +169,12 @@ pub(super) fn wait_with_output_timeout(
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout.finish(PIPE_DRAIN_GRACE);
-                let _ = stderr.finish(PIPE_DRAIN_GRACE);
+                abandon_command(&mut child, stdout, stderr);
                 return Err(error);
             }
         }
         if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout.finish(PIPE_DRAIN_GRACE);
-            let _ = stderr.finish(PIPE_DRAIN_GRACE);
+            abandon_command(&mut child, stdout, stderr);
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "noninteractive SSH command timed out",
@@ -188,6 +189,33 @@ pub(super) fn wait_with_output_timeout(
         stdout,
         stderr,
     })
+}
+
+/// Ends an SSH command that has already failed; that failure is what the caller
+/// returns. The pipes are drained only so their reader threads end, and what
+/// they captured (or why they failed) belongs to a command nobody will read.
+fn abandon_command(child: &mut std::process::Child, stdout: PipeCapture, stderr: PipeCapture) {
+    kill_and_reap(child, "SSH command");
+    drop(stdout.finish(PIPE_DRAIN_GRACE));
+    drop(stderr.finish(PIPE_DRAIN_GRACE));
+}
+
+/// Sends SIGKILL to an ssh child being abandoned. `kill` succeeds on a child
+/// that exited but is not yet reaped, so an error means the signal did not
+/// reach it and the process may outlive shepr's interest in it.
+pub(super) fn kill_child(child: &mut std::process::Child, what: &str) {
+    if let Err(error) = child.kill() {
+        tracing::warn!(pid = child.id(), %error, "could not kill {what}");
+    }
+}
+
+/// Kills and reaps an ssh child being abandoned, logging (with its pid) a child
+/// that could not be killed or reaped rather than leaving it unexplained.
+pub(super) fn kill_and_reap(child: &mut std::process::Child, what: &str) {
+    kill_child(child, what);
+    if let Err(error) = child.wait() {
+        tracing::warn!(pid = child.id(), %error, "could not reap {what}");
+    }
 }
 
 #[cfg(test)]

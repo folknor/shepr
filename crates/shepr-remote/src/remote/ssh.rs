@@ -46,7 +46,23 @@ impl ManagedSshConfigDirectory {
 
 impl Drop for ManagedSshConfigDirectory {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        remove_managed_config_directory(&self.path);
+    }
+}
+
+/// Removes a temporary ssh config directory. Absent is already removed: the
+/// exit sweep and an owner still dropping can both reach the same directory.
+/// Any other failure leaves the directory in the runtime directory, which is
+/// logged with its path since nothing retries it.
+fn remove_managed_config_directory(path: &Path) {
+    match fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(
+            %error,
+            path = %path.display(),
+            "could not remove temporary ssh config directory"
+        ),
     }
 }
 
@@ -64,11 +80,18 @@ impl TeardownResource {
     pub(super) fn remove(&self) {
         match self {
             Self::Socket { path, identity } => {
-                let _ = shepr_platform::ipc::remove_socket_file_if_owned(path, identity);
+                // Absent or replaced by another owner's socket already count as
+                // done inside `remove_socket_file_if_owned`.
+                if let Err(error) = shepr_platform::ipc::remove_socket_file_if_owned(path, identity)
+                {
+                    tracing::warn!(
+                        %error,
+                        socket = %path.display(),
+                        "could not remove ssh bridge socket at exit"
+                    );
+                }
             }
-            Self::Directory(path) => {
-                let _ = fs::remove_dir_all(path);
-            }
+            Self::Directory(path) => remove_managed_config_directory(path),
         }
     }
 }
@@ -598,7 +621,7 @@ pub(super) fn write_managed_ssh_config(
         file.write_all(contents.as_bytes())
     })();
     if let Err(err) = write_result {
-        let _ = fs::remove_dir_all(&dir);
+        remove_managed_config_directory(&dir);
         return Err(err);
     }
     Ok(ManagedSshConfig {

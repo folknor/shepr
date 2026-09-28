@@ -62,6 +62,10 @@ pub(super) struct ClientState {
     /// Latest explicit Local selection awaiting this client's replacement Local connection.
     pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
     pub(super) draw_host_cursor: bool,
+    /// Frame and pane surface patch writes, which repeat on every presented frame.
+    pub(super) frame_write_failure: HostWriteFailure,
+    /// Window title writes, which repeat on every title change.
+    pub(super) title_write_failure: HostWriteFailure,
 }
 
 impl ClientState {
@@ -82,6 +86,8 @@ impl ClientState {
             presentation_frozen: false,
             deferred_local_activation: None,
             draw_host_cursor: false,
+            frame_write_failure: HostWriteFailure::default(),
+            title_write_failure: HostWriteFailure::default(),
         }
     }
 
@@ -224,10 +230,6 @@ impl ClientState {
         Ok(committed)
     }
 
-    pub(super) fn present_frame(&mut self, frame_data: impl Into<frame_output::ComposedFrame>) {
-        let _ = self.try_present_frame(frame_data);
-    }
-
     fn write_composed_output(
         &mut self,
         writer: &mut impl io::Write,
@@ -238,14 +240,12 @@ impl ClientState {
     }
 
     /// Presents and commits a frame only after all terminal output has been written successfully.
-    /// Callers which acknowledge presentation-sensitive work use the return value rather than
-    /// treating composition as presentation.
-    pub(super) fn try_present_frame(
-        &mut self,
-        frame_data: impl Into<frame_output::ComposedFrame>,
-    ) -> bool {
+    /// A failed write is handled here rather than by callers: the frame is not committed, the
+    /// next frame repaints in full (`repaint_pending`), and the failure is logged once per cause
+    /// through `frame_write_failure` rather than once per frame.
+    pub(super) fn present_frame(&mut self, frame_data: impl Into<frame_output::ComposedFrame>) {
         if self.presentation_frozen {
-            return false;
+            return;
         }
         let frame_output::ComposedFrame { frame: frame_data } = frame_data.into();
         let frame_data = if self.draw_host_cursor {
@@ -266,13 +266,49 @@ impl ClientState {
         let mut stdout = io::stdout();
         #[cfg(test)]
         let mut stdout = io::sink();
-        if let Err(error) = self.write_composed_output(&mut stdout, &encoded.bytes) {
-            tracing::warn!(%error, "failed to present client frame");
+        let written = self.write_composed_output(&mut stdout, &encoded.bytes);
+        if !self.frame_write_failure.observe("client frame", &written) {
             self.repaint_pending = true;
-            return false;
+            return;
         }
         self.blit_encoder.commit(frame_data, &encoded);
         self.repaint_pending = false;
-        true
+    }
+}
+
+/// Tracks a host terminal write that repeats on every frame or event, so a persistent failure
+/// is logged once per cause instead of once per write. A cause is the error kind: a change of
+/// kind logs again, and the first success after a failure logs the recovery.
+#[derive(Debug, Default)]
+pub(super) struct HostWriteFailure {
+    failing: Option<io::ErrorKind>,
+}
+
+impl HostWriteFailure {
+    /// Records one write's outcome and returns whether it succeeded.
+    pub(super) fn observe(&mut self, write: &'static str, result: &io::Result<()>) -> bool {
+        match result {
+            Ok(()) => {
+                if let Some(kind) = self.failing.take() {
+                    tracing::info!(
+                        write,
+                        previous_error_kind = %kind,
+                        "host terminal write recovered"
+                    );
+                }
+                true
+            }
+            Err(error) => {
+                if self.failing != Some(error.kind()) {
+                    tracing::warn!(
+                        write,
+                        error = %error,
+                        "host terminal write failed; repeats of this failure are not logged until a write succeeds"
+                    );
+                    self.failing = Some(error.kind());
+                }
+                false
+            }
+        }
     }
 }

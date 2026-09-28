@@ -142,10 +142,14 @@ impl App {
                 let output = refresh_output_or_empty(|| {
                     refresh_workspace_git_statuses_with_cache_and_demand(workspaces, &cache, demand)
                 });
-                let _ = event_tx.blocking_send(AppEvent::GitStatusRefreshed {
-                    results: output.results,
-                    cache_updates: output.cache_updates,
-                });
+                // Fails only once the app dropped its event receiver, which
+                // takes the in-flight flag this event would clear with it.
+                event_tx
+                    .blocking_send(AppEvent::GitStatusRefreshed {
+                        results: output.results,
+                        cache_updates: output.cache_updates,
+                    })
+                    .ok();
             });
         if let Err(err) = spawned {
             tracing::warn!(%err, "failed to spawn git status refresh thread");

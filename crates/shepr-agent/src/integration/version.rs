@@ -125,20 +125,20 @@ fn run_version_probe(
         .stderr(Stdio::null())
         .spawn()?;
     let Some(mut stdout) = child.stdout.take() else {
-        let _ = stop_version_probe(&mut child);
+        abandon_version_probe(&mut child, requirement.binary);
         return Err(io::Error::other("version probe stdout was not captured"));
     };
     // SAFETY: fcntl(2) on the pipe fd `stdout` keeps open; integers only.
     let flags = unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL) };
     if flags == -1 {
         let error = io::Error::last_os_error();
-        let _ = stop_version_probe(&mut child);
+        abandon_version_probe(&mut child, requirement.binary);
         return Err(error);
     }
     // SAFETY: as above; only the status flags of our own pipe end change.
     if unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
         let error = io::Error::last_os_error();
-        let _ = stop_version_probe(&mut child);
+        abandon_version_probe(&mut child, requirement.binary);
         return Err(error);
     }
 
@@ -164,7 +164,7 @@ fn run_version_probe(
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => {
-                        let _ = stop_version_probe(&mut child);
+                        abandon_version_probe(&mut child, requirement.binary);
                         return Err(error);
                     }
                 }
@@ -176,7 +176,7 @@ fn run_version_probe(
                 Ok(Some(exited)) => status = Some(exited),
                 Ok(None) => {}
                 Err(error) => {
-                    let _ = stop_version_probe(&mut child);
+                    abandon_version_probe(&mut child, requirement.binary);
                     return Err(error);
                 }
             }
@@ -200,6 +200,20 @@ fn run_version_probe(
             return Ok(None);
         }
         thread::sleep(VERSION_PROBE_POLL_INTERVAL);
+    }
+}
+
+/// Stops the probe on a path that is already returning an error. That error
+/// is what the caller acts on; a probe that could not be killed or reaped is
+/// logged, since it may leave a stray process or zombie behind.
+fn abandon_version_probe(child: &mut std::process::Child, binary: &str) {
+    if let Err(error) = stop_version_probe(child) {
+        tracing::warn!(
+            binary,
+            pid = child.id(),
+            %error,
+            "failed to stop agent version probe"
+        );
     }
 }
 

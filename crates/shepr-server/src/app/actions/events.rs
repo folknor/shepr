@@ -372,6 +372,14 @@ impl AppState {
             debug!(pane = pane_id.raw(), "PaneDied for unknown pane");
             return;
         };
-        let _ = self.remove_pane(ws_idx, pane_id);
+        // The pane was just found in this workspace, so a stale plan means
+        // the removal logic and the lookup above disagree.
+        if matches!(self.remove_pane(ws_idx, pane_id), PaneRemovalCommit::Stale) {
+            tracing::warn!(
+                pane = pane_id.raw(),
+                workspace_index = ws_idx,
+                "PaneDied removal went stale; the dead pane stays in the layout"
+            );
+        }
     }
 }

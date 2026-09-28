@@ -685,7 +685,13 @@ impl App {
 
     pub(crate) fn retire_session_writer(&mut self) {
         if let Some(thread) = self.session_saver.session_save_thread.take() {
-            let _ = thread.join();
+            // The last save still in flight at shutdown: its failure is
+            // logged like any other save's. The retry it schedules is moot,
+            // the deadline is cleared below and the writer retired.
+            let result = thread
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("session save thread panicked")));
+            self.record_session_save_result(result, Instant::now());
         }
         self.session_saver.clear_deadline();
         // Retiring only drops the lock and marks the writer done; a panic in

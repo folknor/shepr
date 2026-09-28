@@ -321,8 +321,14 @@ mod tests {
 
     impl Drop for PrivateBus {
         fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+            let killed = self.0.kill();
+            let reaped = self.0.wait();
+            // Panicking again while a failed test unwinds would abort the
+            // whole test binary and hide the original failure.
+            if !std::thread::panicking() {
+                killed.expect("kill the private bus daemon");
+                reaped.expect("reap the private bus daemon");
+            }
         }
     }
 

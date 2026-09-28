@@ -446,7 +446,7 @@ mod tests {
         let status = shepr_api::read_runtime_status_at(&path, Duration::from_millis(200))
             .expect("test precondition")
             .expect("test precondition");
-        let _ = handle.join();
+        handle.join().expect("fake server thread");
         assert_eq!(status.version.as_deref(), Some("0.5.5"));
         assert_eq!(status.build_id, "0123456789abcdef");
     }
@@ -499,7 +499,7 @@ mod tests {
         let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
         let message = err.to_string();
 
-        let _ = handle.join();
+        handle.join().expect("fake server thread");
         assert!(
             message.contains("run this build in a session of its own"),
             "unexpected error: {message}"

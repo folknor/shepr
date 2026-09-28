@@ -115,15 +115,17 @@ pub(crate) fn spawn_response_waiter(
             let response =
                 shepr_api::error::encode_result(request_id.to_string(), response).into_bytes();
             if response.is_empty() {
-                let _ = server_event_tx.blocking_send(
-                    ServerEvent::ClientShellEndpointResponseChunkReady {
+                // As in the chunk loop below: a failed send means the server
+                // loop is gone, and the client with it.
+                server_event_tx
+                    .blocking_send(ServerEvent::ClientShellEndpointResponseChunkReady {
                         client_id,
                         boot_id,
                         request_id,
                         final_chunk: true,
                         data: Vec::new(),
-                    },
-                );
+                    })
+                    .ok();
                 return;
             }
             let chunk_count = response.len().div_ceil(ENDPOINT_RESPONSE_CHUNK_BYTES);

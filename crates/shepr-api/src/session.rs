@@ -751,7 +751,9 @@ mod tests {
         let (client, server, _scratch) = local_stream_pair("stop-empty");
         let handle = std::thread::spawn(move || {
             let mut request = String::new();
-            let _ = BufReader::new(server).read_line(&mut request);
+            BufReader::new(server)
+                .read_line(&mut request)
+                .expect("stop request line");
             request
         });
         let request = server_stop_request("cli:session:stop");
@@ -782,7 +784,6 @@ mod tests {
         let socket_path = api_socket_path_for(&paths, &session);
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
-        let _ = std::fs::remove_file(&socket_path);
         let listener =
             std::os::unix::net::UnixListener::bind(&socket_path).expect("test precondition");
         listener.set_nonblocking(true).expect("test precondition");
@@ -1081,12 +1082,15 @@ mod tests {
                             continue;
                         }
                         if request.contains("ping") {
-                            let _ = stream.write_all(
+                            // A client may close before reading this reply; the test
+                            // asserts on the requests recorded, not on the reply
+                            // reaching every one of them.
+                            drop(stream.write_all(
                                 format!(
                                     "{{\"id\":\"runtime:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.0.0\",\"build_id\":\"{build_id}\"}}}}\n"
                                 )
                                 .as_bytes(),
-                            );
+                            ));
                         }
                         requests.push(request);
                     }
@@ -1242,7 +1246,6 @@ mod tests {
         let socket_path = api_socket_path_for(&paths, &session);
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
-        let _ = std::fs::remove_file(&socket_path);
         let listener =
             std::os::unix::net::UnixListener::bind(&socket_path).expect("test precondition");
         listener.set_nonblocking(true).expect("test precondition");
@@ -1259,8 +1262,10 @@ mod tests {
                                 _ => continue,
                             }
                         }
-                        let _ = stream.write_all(b"{\"id\":\"cli:session:stop\",\"result\":{}}\n");
-                        let _ = stream.flush();
+                        // A client may close before reading this reply; the test
+                        // asserts on the stop call's timeout, not on the reply. A
+                        // Unix stream has nothing to flush.
+                        drop(stream.write_all(b"{\"id\":\"cli:session:stop\",\"result\":{}}\n"));
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));

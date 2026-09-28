@@ -1630,7 +1630,7 @@ mod tests {
         app.policy = AppPolicy::PRODUCTION;
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
-            let _ = release_rx.recv();
+            release_rx.recv().expect("test releases the save thread");
             Ok(())
         }));
         app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
@@ -1652,7 +1652,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
-            let _ = release_rx.recv();
+            release_rx.recv().expect("test releases the save thread");
             done_tx.send(()).expect("test precondition");
             Ok(())
         }));

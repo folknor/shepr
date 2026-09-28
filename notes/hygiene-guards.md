@@ -352,16 +352,6 @@ named: route the fixture through `ServerAddress::resolve_paths` with an absolute
 root, as `AppPaths::test_with_context` already does, or have `Default` call
 `validate_paths().expect(...)` so the fixture cannot drift.
 
-## HYGG-025 - `PublicTabId`/`PublicPaneId`'s test-support `From<&str>` silently produces nonsense
-
-`shepr-protocol/src/ids.rs`:
-`value.parse().unwrap_or_else(|_| Self { workspace_id: "", number: 0, encoded: value })`.
-A typo'd id in a test becomes a valid-looking `PublicPaneId` with workspace `""`
-and number 0 rather than a failure, and equality against `&str` still passes
-because it compares `encoded`. Any test built on a malformed literal quietly
-tests nothing. Enforcement named: make the helper panic on a parse failure - a
-one-line change the compiler cannot express.
-
 ## HYGG-026 - A constant-pattern match that would silently become a catch-all on rename
 
 `shepr-config/src/tab_bar.rs::tab_bar_entries_parse_with_command_defaults`:
@@ -1146,14 +1136,6 @@ agree today, but a single mismatch would silently mislabel every log line, every
 `api_method_name` caller, and the `api_response_outcome` classification for that
 method, with nothing failing. The test named: serialize each `Method` variant and
 assert `json["method"] == traits().name`.
-
-## HYGG-096 - `#![cfg_attr(feature = "test-api", allow(dead_code))]` silences dead-code detection for `shepr-server` in exactly the build that would run it
-
-Merged into BUG-056 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-097 - Two `debug_assert_eq!` phase claims are not checked in the build that ships
-
-Merged into BUG-058 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-099 - The one-tab workspace invariant is enforced by opt-in test calls and one `Deref` panic
 

@@ -1137,7 +1137,7 @@ mod tests {
         let writer = std::thread::spawn(move || {
             // The server stops reading at the limit, so the tail of this write
             // may fail once it closes; only the server's verdict matters.
-            let _ = client.write_all(&vec![b'x'; MAX_INITIAL_REQUEST_BYTES + 1]);
+            drop(client.write_all(&vec![b'x'; MAX_INITIAL_REQUEST_BYTES + 1]));
         });
         let error = read_request_line_until(&mut server, Instant::now() + Duration::from_secs(5))
             .expect_err("oversized line must be rejected");

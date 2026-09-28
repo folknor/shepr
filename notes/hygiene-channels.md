@@ -24,114 +24,38 @@ expected to find phantoms among them.
 
 ---
 
-## HYGC-001 - No owner for "how shepr addresses an operator", and library crates write to stderr directly
+## HYGC-001 - No owner for "how shepr addresses an operator"
 
 **Decision (partial):** the text rule named below is adopted: a `brokkr.toml`
 textlint forbidding `print!` / `println!` / `eprint!` / `eprintln!` in the
 library crates outside test code, leaving `src/` alone (B1 in
-`notes/broadarrow-ports.md`). The workspace clippy seal on the print macros is
-not adopted, so the CLI is not held by it (HYGC-004). Every library `eprintln!`
-site below is a violation and leaves its crate: log through `tracing`, or return
-the text for the binary to print. Open: the operator-message owner itself,
-`writeln!(io::stderr(), ..)` (not a print macro, so the rule does not catch it),
-and `prepare_socket_path`'s `busy_message` closure.
-
-Six scopes reported the same shape: there is no function that owns operator
-output, so the destination (stderr vs the log vs a returned value), the `shepr: `
-prefix and the capitalisation are re-decided per site, and several of the sites
-are in library crates below the binary that owns operator output
-(`src/cli/error.rs::CliError::print`).
-
-Sites reported:
-
-- `shepr-platform/src/logging.rs`: `"shepr: could not initialize file logging:
-  {error}"` written straight to stderr, and `"shepr: file logging resumed; log
-  lines were lost after an I/O error: {error}"` written into the log stream
-  itself. The core/platform hunter noted these two contradict each other:
-  `write_with_recovery`'s comment says an outage is deliberately *not* sent to
-  stderr "which is the client's TUI terminal", yet `init_file_logging`'s own
-  failure - the strictly more serious event, same module, same process - goes to
-  exactly that stderr.
-- `shepr-client/src/lib.rs`: three `"shepr: ..."` writes to stderr (see also
-  HYGC-003 and HYGC-013).
-- `shepr-agent/src/integration/registry.rs::print_outdated_update_notice`:
-  `eprintln!` from inside a library crate, and it re-formats operator text with
-  a string hack - it strips backticks out of `integration_update_instructions`
-  by replacing every backtick character with the empty string, because that
-  function was written for a different
-  medium. One message, two renderings, one produced by deleting characters from
-  the other.
-- `shepr-remote`: 13 `eprintln!`/`eprint!` sites across `lib.rs` (3),
-  `remote/bridge.rs` (2) and `remote/server_lifecycle.rs` (8). `bridge.rs`
-  branches on `noninteractive` to pick between `tracing::warn!` and `eprintln!`
-  for the same event ("saved SSH endpoint bridge failed" versus `"shepr: remote
-  bridge failed: {err}"`) - a channel decision made inside the transport.
-- `shepr-server/src/server/headless/bootstrap.rs`: six `eprintln!` lines the
-  logging channel never sees, two of which are the only record of a fatal
-  condition (`error: shepr server is already running` plus a socket path, then
-  `std::process::exit(1)`), so a server started from a unit file or a spawning
-  client leaves no trace in the server log of why it refused. `print_ready_message`
-  is the defensible case (the user is looking at the terminal) but duplicates
-  the `info!("shepr server started")` line with different fields, and assembles
-  the logs path by joining `SERVER_LOG_FILE` at the call site rather than
-  through whoever owns the log location.
-- `src/cli/machine.rs`, `src/cli/server.rs::server_stop` (local path),
-  `src/cli/integration.rs::report_outcome`, `src/cli/agent.rs::agent_attach`:
-  see HYGC-004, which is the same sites read as an error-channel finding.
-- `shepr-client`'s three stderr writes use two macros (`eprintln!` and
-  `writeln!(io::stderr(), ...)`), spell the `shepr: ` prefix three times, and
-  one path checks its result while two discard it.
-- `shepr-mux/src/pane/runtime.rs` has the crate's only `eprintln!`, in a test,
-  to say a test was skipped (see the tests sibling document).
-- `shepr-platform/src/ipc.rs::prepare_socket_path` takes a `busy_message`
-  closure so the *caller* supplies the operator text for an `AddrInUse`. The
-  core/platform hunter read this as the right idea at the wrong seam: the
-  platform layer should not be formatting operator text at all, so the closure
-  is a symptom of the missing operator-message channel rather than a fix for it.
+`notes/broadarrow-ports.md`). Every library-crate site this entry originally
+named is gone: `shepr-platform/src/logging.rs`'s two stderr writes,
+`shepr-client/src/lib.rs`'s stderr writes, `shepr-agent`'s
+`print_outdated_update_notice`, `shepr-remote`'s thirteen `eprintln!`/`eprint!`
+sites (the interactive prompt moved behind an `Operator` trait, see the former
+HYGC-002), and `shepr-server/src/server/headless/bootstrap.rs`'s six lines
+(`run_server` now returns a typed `RunServerError` and the caller decides how
+to report it). The workspace clippy seal on the print macros is still not
+adopted, so a CLI print site is not held by this rule, but the CLI's own
+divergent channels are resolved (the former HYGC-004). Open: no function yet
+owns operator output as a concept (the destination, the `shepr: ` prefix and
+the capitalisation are still decided per remaining site), `writeln!(io::stderr(),
+..)` is not a print macro so the rule does not catch it, and
+`shepr-platform/src/ipc.rs::prepare_socket_path`'s `busy_message` closure still
+has the platform layer's caller format operator text rather than the platform
+layer staying silent on it. Also still open: `shepr-server/src/server/headless/bootstrap.rs`
+and `crates/shepr-server/src/server/socket_paths.rs` spell "shepr server is
+already running" independently (reduced from three copies to two).
 
 Recorded absence, so it is not re-hunted: the protocol/config hunter verified by
 grep that neither `crates/shepr-protocol/src` nor `crates/shepr-config/src`
 contains `println!`, `eprintln!` or `print!`.
 
 Enforcement named: one `operator_message(...)` (or a returned `Hint`/typed
-value the binary renders) plus a `brokkr.toml` text rule forbidding
-`println!`/`eprintln!`/`print!` in `crates/**` outside test modules, and/or a
-`clippy.toml disallowed_methods` entry for `eprintln!`/`io::stderr` outside that
-one module and `src/main.rs`. The remote hunter called this "the single
-highest-value rule this hunt found: it is trivially checkable, and the crate
-violates it 13 times". The wording and phrasing of the messages themselves
-cannot be held mechanically.
-
-## HYGC-002 - An interactive terminal prompt lives in a library crate
-
-**Decision (partial):** the library-crate print-macro textlint is adopted
-(HYGC-001), and this function's `eprintln!` wall and `eprint!` prompt are among
-its violations, so the prompt has to move out of `shepr-remote`: the seam
-proposed below is how. Open: the seam, and the two copies of the default.
-
-`shepr-remote/src/remote/server_lifecycle.rs::confirm_remote_server_stop` checks
-`io::stdin().is_terminal()`, prints five lines to stderr, prints a `[y/N]`
-prompt, flushes, and reads from `stdin().lock()` - from a crate that also serves
-a headless client's background reconnect worker. It is only reachable from
-`run_remote`/`prepare_saved_ssh` today, but nothing structural keeps a
-supervisor thread out of it.
-
-Two further facts in the same function:
-
-- The `[y/N]` default is stated twice and the two copies can disagree: the
-  prompt text says `[y/N]` and the call is `read_remote_confirmation(&mut
-  stdin, false)`. The prompt and the `default` argument are independent, and
-  `default: true` is never passed.
-- It is a six-line `eprintln!` wall including one 130-character sentence and one
-  110-character sentence.
-
-Enforcement named: `ensure_remote_server_ready` takes an `&mut dyn Confirm`, or
-returns a `RemoteServerNeedsRestart` value the caller decides on -
-`read_remote_confirmation` already takes a `&mut impl BufRead`, so the seam is
-half-built and then bypassed by its caller. A `Confirmation { default }` type
-that renders its own prompt makes the two-copies-of-the-default case
-unrepresentable. The no-print rule from HYGC-001 catches the symptom; a
-dependency rule cannot express "no stdin".
+value the binary renders) plus a `clippy.toml disallowed_methods` entry for
+`eprintln!`/`io::stderr` outside that one module and `src/main.rs`. The wording
+and phrasing of the messages themselves cannot be held mechanically.
 
 ## HYGC-003 - `io::stdout()` is acquired fresh at eighteen production sites; nothing owns host-terminal output
 
@@ -154,34 +78,6 @@ that locks. Both facts point at giving it a writer parameter.
 Enforcement named: one owned writer handed to the client loop, plus a text rule
 "no `io::stdout()` outside `host_out.rs`", the same shape as the existing
 dependency allowlists.
-
-## HYGC-004 - CLI failures travel through two channels, chosen per site
-
-**Decision (partial):** the owner adopted the print-macro rule in its
-library-crate form (HYGC-001) and not the workspace clippy seal that would have
-reached `src/cli`, so no mechanical rule holds these sites. Open: all of it -
-returning `CliError` from these paths, the hand-spelled `Ok(2)` exit codes, and
-whether a CLI-scoped rule is wanted afterwards.
-
-`CliError` (printed as JSON on stderr with an exit code, `src/cli/error.rs`) is
-the owner. Roughly a dozen sites print with `eprintln!` and return an exit code
-instead: `src/cli/machine.rs` (eight sites, plain `error: {error}` text),
-`src/cli/server.rs::server_stop` (local path), `src/cli/integration.rs::report_outcome`,
-`src/cli/agent.rs::agent_attach`. A script that parses stderr as JSON - which is
-what the API-backed commands train it to do - gets plain prose from these.
-Within `machine.rs` alone the prefix is inconsistent: `eprintln!("{error}")` in
-some arms, `eprintln!("error: {error}")` in others, and
-`eprintln!("error: {error}; machine was not saved")` in a third.
-
-`machine.rs` is also the only command family in the CLI that spells exit code 2
-by hand, returning bare `Ok(2)` at five sites to mean "usage error" instead of
-`CliError::Usage`, which is the type that owns exit code 2.
-
-Enforcement named: these paths already run in `CliResult<i32>` functions, so
-returning `CliError` is mechanical; then a text rule banning `eprintln!` outside
-`error.rs`, and either a rule forbidding integer literals as `Ok(..)` exit codes
-outside `error.rs` or changing `run_machine_command`'s return type to
-`CliResult<()>` so the code cannot be spelled at all.
 
 ## HYGC-005 - Operator-facing sentences assembled at the call site, with the phrasing drifting between sites
 
@@ -719,68 +615,6 @@ mangles the other.
 Enforcement named: errors carry structure (subject, cause, guidance as fields)
 and the binary formats; then a test that no error message produced by the crate
 contains `\n`.
-
-## HYGC-025 - `std::process::exit` from library crates, and exit codes spelled outside their owner
-
-**Decision (partial):** `process::exit` is confined to `src/main.rs`, held by the
-`exits-from-main` textlint adopted from broadarrow (B2 in
-`notes/broadarrow-ports.md`). The three library bullets are its violations and
-return outcomes to `main` as the enforcement below proposes. The
-`remote_bridge.rs` watchdog is harder than it reads: it exits from its own
-thread because the relay's copy may be blocked in a read that returning cannot
-interrupt, so `main` also needs a way to unblock that copy (shut the fds down,
-or poll with a deadline). The rule allows `main.rs`'s own eight exits. Open: the
-`main.rs` consolidation into one exit site, and moving every exit code into
-`exit_code` as a named constant.
-
-`src/cli/error.rs::exit_code()` is the owner of shepr's exit statuses. Bypassing
-it:
-
-- `shepr-platform/src/remote_bridge.rs`: a watchdog thread calls
-  `std::process::exit(1)` when the relay has been idle for 60 seconds. The
-  comment justifies why returning is insufficient, and for the dedicated bridge
-  process that reasoning holds - but the decision now lives in a crate that
-  seven other crates link, and nothing prevents a second caller of
-  `forward_remote_bridge_stdio(_, true)` from inheriting a hard exit it did not
-  ask for. The refusal that was owed is a signal back to the caller plus the
-  caller's own `exit`. The `1` is then re-spelled as an assertion in
-  `remote_bridge_tests.rs` (`assert_eq!(bridge.wait().code(), Some(1))`).
-- `shepr-client/src/lib.rs`: `std::process::exit(1)` from library code with a
-  literal `1`, skipping every remaining destructor in the process. The client is
-  the crate with the most to lose from skipped destructors (terminal restore),
-  and it works today only because restore is explicitly run a few lines earlier.
-- `shepr-server/src/server/headless/bootstrap.rs`: two `std::process::exit(1)`
-  calls on `AddrInUse`, from inside `run_server`, which returns
-  `io::Result<()>` and is called from `main`. "Another server is already
-  running" is exactly the condition a caller should be allowed to handle (the
-  spawning client wants to attach to the existing server, not die). `exit(1)`
-  also skips `logging::shutdown("server")`, so the last log lines may not be
-  flushed, and the `1` is a bare literal with no named owner.
-- `src/main.rs`: eight sites - `usage_exit` (invalid UTF-8 argv, bad
-  `--session`, bad `--remote`, `--remote` with a subcommand),
-  `exit_if_nested_disabled`, `load_validated_config_or_exit` (twice), the
-  remote-launch failure and the autodetect failure. `main` returns
-  `io::Result<()>` and `finish_cli` exists to turn a `CliResult` into an exit
-  code, so the machinery for "refuse with a code" is already there and these
-  sites do not use it. Consequence: none of these paths is reachable from a
-  test, which is why `should_block_nested_for_env` was extracted while the
-  config-error and remote-launch paths have no tests at all. `main.rs` also
-  exits on `run_remote` failure and during remote launch after printing,
-  bypassing `CliError::exit_code`'s 1/2 distinction.
-
-Recorded absences from the same question: `shepr-protocol` and `shepr-config`
-abort only at the intended boundary (`main.rs` after printing diagnostics) and
-have no `panic!`/`unwrap()`/`expect()` in production code; `shepr-remote` itself
-has no `process::exit`/`panic!` on operator input - its callers do it on its
-behalf.
-
-Enforcement named: `shepr-platform` returns a `BridgeOutcome::IdleExpired` and
-lets `shepr-remote`/`src/main.rs` exit; `shepr-client` returns the failure to
-`main.rs`; bootstrap returns a typed error variant to `main`, which already owns
-process exit; `main` builds a `CliResult` and exits in exactly one place. Then a
-`clippy.toml disallowed_methods` entry or `brokkr.toml` text rule for
-`std::process::exit` outside `src/main.rs` holds all of it, and every exit code
-moves into `exit_code` as a named constant.
 
 ## HYGC-026 - Failures discarded with `let _ =` at cleanup, permission and signal sites
 

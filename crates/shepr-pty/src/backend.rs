@@ -69,7 +69,9 @@ pub fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
 }
 
 /// Mark the line discipline as UTF-8 so canonical-mode erase removes whole
-/// characters. Best effort, as in alacritty's tty setup.
+/// characters. Best effort, as in alacritty's tty setup: the pane still works
+/// without it, only canonical-mode erase of multibyte characters degrades, so
+/// a failure is logged rather than failing the spawn.
 fn enable_utf8_input(master: &OwnedFd) {
     // SAFETY: termios is a plain C struct of integers and arrays, for which
     // all-zero bytes are a valid value; tcgetattr overwrites it below.
@@ -77,11 +79,16 @@ fn enable_utf8_input(master: &OwnedFd) {
     // SAFETY: `master` is an open fd borrowed for the call, and `termios` is a
     // live, writable termios that tcgetattr fills in and does not retain.
     if unsafe { libc::tcgetattr(master.as_raw_fd(), &mut termios) } != 0 {
+        let err = io::Error::last_os_error();
+        tracing::warn!(%err, "could not read PTY attributes to enable UTF-8 input");
         return;
     }
     termios.c_iflag |= libc::IUTF8;
     // SAFETY: as above; tcsetattr only reads `termios`.
-    let _ = unsafe { libc::tcsetattr(master.as_raw_fd(), libc::TCSANOW, &termios) };
+    if unsafe { libc::tcsetattr(master.as_raw_fd(), libc::TCSANOW, &termios) } != 0 {
+        let err = io::Error::last_os_error();
+        tracing::warn!(%err, "could not enable UTF-8 input on the PTY");
+    }
 }
 
 /// Spawn `cmd` as a session leader whose controlling terminal and stdio are
@@ -158,11 +165,16 @@ fn prepare_pty_child() -> io::Result<()> {
     // SAFETY: sigset_t is a plain bit array; all-zero is a valid value, and
     // sigemptyset below sets it properly anyway.
     let mut empty_set: libc::sigset_t = unsafe { std::mem::zeroed() };
-    // SAFETY: `empty_set` is a live, writable sigset_t on this stack frame;
-    // sigprocmask only reads it, and the old-mask pointer is null.
-    unsafe {
-        libc::sigemptyset(&mut empty_set);
-        libc::sigprocmask(libc::SIG_SETMASK, &empty_set, std::ptr::null_mut());
+    // A mask left in place would start the pane child with the server's
+    // blocked signals, so a failure here fails the spawn.
+    // SAFETY: `empty_set` is a live, writable sigset_t on this stack frame.
+    if unsafe { libc::sigemptyset(&mut empty_set) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: sigprocmask is async-signal-safe; it only reads `empty_set`,
+    // and the old-mask pointer is null.
+    if unsafe { libc::sigprocmask(libc::SIG_SETMASK, &empty_set, std::ptr::null_mut()) } != 0 {
+        return Err(io::Error::last_os_error());
     }
 
     // New session, then take the PTY (already on stdin) as the controlling
@@ -356,8 +368,8 @@ mod tests {
             parent_pty_fd_targets()
         );
 
-        let _ = spawned.child.kill();
-        let _ = spawned.child.wait();
+        spawned.child.kill().expect("kill the cat child");
+        spawned.child.wait().expect("reap the cat child");
         drop(spawned.master_fd);
     }
 
@@ -379,8 +391,8 @@ mod tests {
         // SAFETY: getsid(2) takes a pid and touches no memory.
         let session = unsafe { libc::getsid(pid) };
 
-        let _ = spawned.child.kill();
-        let _ = spawned.child.wait();
+        spawned.child.kill().expect("kill the sleeping child");
+        spawned.child.wait().expect("reap the sleeping child");
         assert_eq!(session, pid, "child must lead its own session");
         assert_eq!(foreground, pid, "child must own the PTY foreground group");
     }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::ClientLoopEvent;
 
@@ -216,7 +216,15 @@ pub(super) fn resize_poll_loop(
         ) {
             Ok(size) => size,
             Err(err) => {
-                let _ = resize_tx.blocking_send(ClientLoopEvent::TerminalUnavailable(err));
+                if let Err(send_error) =
+                    resize_tx.blocking_send(ClientLoopEvent::TerminalUnavailable(err))
+                {
+                    // The client loop has already gone, so nothing is left to
+                    // react to the lost terminal; record why this thread stopped.
+                    if let ClientLoopEvent::TerminalUnavailable(err) = send_error.0 {
+                        debug!(error = %err, "host terminal unavailable after client loop exit");
+                    }
+                }
                 break;
             }
         };
@@ -232,8 +240,16 @@ pub(super) fn resize_poll_loop(
     }
 }
 
+/// Asks the host terminal for its color scheme. A query that fails to go out
+/// gets no reply, so the failure is logged here: without it the client just
+/// keeps its default appearance with nothing saying why.
 pub(super) fn query_host_terminal_appearance() {
-    let _ = write_host_terminal_appearance_query(io::stdout());
+    if let Err(error) = write_host_terminal_appearance_query(io::stdout()) {
+        warn!(
+            error = %error,
+            "failed to send host terminal color scheme query; keeping default appearance"
+        );
+    }
 }
 
 pub(super) fn write_host_terminal_appearance_query(mut writer: impl io::Write) -> io::Result<()> {
@@ -242,8 +258,15 @@ pub(super) fn write_host_terminal_appearance_query(mut writer: impl io::Write) -
     writer.flush()
 }
 
+/// Asks the host terminal for its palette. Logged on failure for the same
+/// reason as [`query_host_terminal_appearance`].
 pub(super) fn query_host_terminal_theme() {
-    let _ = write_host_terminal_theme_query(io::stdout());
+    if let Err(error) = write_host_terminal_theme_query(io::stdout()) {
+        warn!(
+            error = %error,
+            "failed to send host terminal theme query; keeping default theme"
+        );
+    }
 }
 
 pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
@@ -254,8 +277,19 @@ pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io:
 
 const HOST_CELL_SIZE_QUERY: &[u8] = b"\x1b[16t";
 
+/// Asks the host terminal for its cell size in pixels. Without a reply the
+/// client falls back to the last or the default cell size, which degrades
+/// pixel mouse and resize reporting to a guess, so a query that never went out
+/// is logged.
 pub(super) fn query_host_cell_size() {
-    let _ = write_host_cell_size_query(io::stdout());
+    if let Err(error) = write_host_cell_size_query(io::stdout()) {
+        warn!(
+            error = %error,
+            default_width_px = DEFAULT_CELL_WIDTH_PX,
+            default_height_px = DEFAULT_CELL_HEIGHT_PX,
+            "failed to send host cell size query; pixel geometry falls back to a guessed cell size"
+        );
+    }
 }
 
 pub(super) fn host_cell_size_query_required(pixel_geometry_enabled: bool) -> bool {

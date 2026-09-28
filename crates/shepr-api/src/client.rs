@@ -313,7 +313,9 @@ mod tests {
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).expect("test precondition");
-            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the test releases the stalled connection");
         });
         let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
         let request = Request {
@@ -323,7 +325,9 @@ mod tests {
         let error = client
             .request_value_with_timeout(&request, Duration::from_millis(100))
             .expect_err("test precondition");
-        let _ = release_tx.send(());
+        release_tx
+            .send(())
+            .expect("the stalled server is still holding the connection");
         server.join().expect("test precondition");
         std::fs::remove_file(path).expect("test precondition");
         assert!(

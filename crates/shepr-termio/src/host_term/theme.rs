@@ -47,7 +47,8 @@ pub fn host_terminal_theme_query_sequence() -> String {
 
     let mut sequence = String::from(HOST_COLOR_QUERY_SEQUENCE);
     for index in 0..=u8::MAX {
-        let _ = write!(sequence, "\x1b]4;{index};?\x1b\\");
+        // fmt::Write for String never returns an error.
+        write!(sequence, "\x1b]4;{index};?\x1b\\").ok();
     }
     sequence
 }

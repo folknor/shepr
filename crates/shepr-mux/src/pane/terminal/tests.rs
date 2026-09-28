@@ -2920,7 +2920,7 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
                 b: 0x33,
             },
         );
-        let _ = write!(queries, "\x1b]4;{index};?\x07");
+        write!(queries, "\x1b]4;{index};?\x07").expect("writing into a String cannot fail");
     }
     pane.apply_host_terminal_theme(theme);
 

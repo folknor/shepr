@@ -29,15 +29,20 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// Remote and VS Code remote sessions use OSC 52 so bytes reach the
 /// terminal on the user's machine. Some terminals still only honor BEL-
 /// terminated writes, so OSC 52 uses BEL here.
-pub fn write_clipboard_bytes(bytes: &[u8]) {
+///
+/// `Ok` means the native tool took the bytes or the OSC 52 sequence was
+/// written and flushed to the host terminal (whether the terminal honours
+/// OSC 52 cannot be observed). `Err` means the copy did not happen; the caller
+/// logs it with its own context.
+pub fn write_clipboard_bytes(bytes: &[u8]) -> io::Result<()> {
     if !shepr_platform::prefers_osc52_clipboard() && shepr_platform::write_clipboard(bytes) {
-        return;
+        return Ok(());
     }
 
     let sequence = osc52_sequence(bytes);
     let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(sequence.as_bytes());
-    let _ = stdout.flush();
+    stdout.write_all(sequence.as_bytes())?;
+    stdout.flush()
 }
 
 #[cfg(test)]

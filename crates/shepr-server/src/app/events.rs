@@ -112,13 +112,13 @@ impl App {
                 },
             });
         }
-        let pane_exit_layout_target = if let Some(plan) = &pane_removal_plan {
+        let mut pane_exit_layout_target = if let Some(plan) = &pane_removal_plan {
             (plan.scope == shepr_mux::workspace::PaneRemovalScope::Pane)
                 .then_some((plan.workspace_index, plan.tab_index))
         } else {
             None
         };
-        let pane_exit_container_events = if let Some(plan) = &pane_removal_plan {
+        let mut pane_exit_container_events: Vec<_> = if let Some(plan) = &pane_removal_plan {
             let events = match plan.scope {
                 shepr_mux::workspace::PaneRemovalScope::Pane => Vec::new(),
                 shepr_mux::workspace::PaneRemovalScope::Tab => {
@@ -148,9 +148,23 @@ impl App {
         };
 
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
-        let pane_updates = if matches!(ev, AppEvent::PaneDied { .. }) {
-            if let Some(plan) = pane_removal_plan {
-                let _ = self.state.commit_pane_removal(&plan);
+        let pane_updates = if let AppEvent::PaneDied { pane_id, .. } = &ev {
+            if let Some(plan) = pane_removal_plan
+                && matches!(
+                    self.state.commit_pane_removal(&plan),
+                    crate::app::actions::PaneRemovalCommit::Stale
+                )
+            {
+                // The plan was made above in this same call, so a stale one
+                // means something in between changed the workspaces. Nothing
+                // was removed: do not announce a layout or container change.
+                tracing::warn!(
+                    pane = pane_id.raw(),
+                    workspace_index = plan.workspace_index,
+                    "PaneDied removal went stale; the dead pane stays in the layout"
+                );
+                pane_exit_layout_target = None;
+                pane_exit_container_events.clear();
             }
             Vec::new()
         } else {

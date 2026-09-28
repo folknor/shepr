@@ -64,11 +64,14 @@ pub(super) fn server_reader_thread(
     mut surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) {
     if let Err(error) = stream.set_nonblocking(true) {
-        let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
-            endpoint_id,
-            generation,
-            error,
-        });
+        report_disconnect(
+            event_tx,
+            ClientLoopEvent::ServerDisconnected {
+                endpoint_id,
+                generation,
+                error,
+            },
+        );
         return;
     }
 
@@ -101,25 +104,46 @@ pub(super) fn server_reader_thread(
                 }
             }
             Err(shepr_protocol::FramingError::UnexpectedEof) => {
-                let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
-                    endpoint_id: endpoint_id.clone(),
-                    generation,
-                    error: framing_error_to_io(shepr_protocol::FramingError::UnexpectedEof),
-                });
+                report_disconnect(
+                    event_tx,
+                    ClientLoopEvent::ServerDisconnected {
+                        endpoint_id: endpoint_id.clone(),
+                        generation,
+                        error: framing_error_to_io(shepr_protocol::FramingError::UnexpectedEof),
+                    },
+                );
                 break;
             }
             // `EndpointReader` waits out WouldBlock itself, so any error here is final.
             Err(err) => {
-                warn!(err = %err, "server read error");
-                let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
-                    endpoint_id: endpoint_id.clone(),
+                warn!(
+                    endpoint = %endpoint_id.storage_key(),
                     generation,
-                    error: framing_error_to_io(err),
-                });
+                    err = %err,
+                    "server read error"
+                );
+                report_disconnect(
+                    event_tx,
+                    ClientLoopEvent::ServerDisconnected {
+                        endpoint_id: endpoint_id.clone(),
+                        generation,
+                        error: framing_error_to_io(err),
+                    },
+                );
                 break;
             }
         }
     }
+}
+
+/// Hands a reader's final disconnect to the client loop. The send fails only once the loop
+/// has exited and dropped its receiver, and then no one is left to act on the disconnect:
+/// the loop is tearing every endpoint down anyway.
+fn report_disconnect(
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    disconnect: ClientLoopEvent,
+) {
+    event_tx.blocking_send(disconnect).ok();
 }
 
 fn framing_error_to_io(error: shepr_protocol::FramingError) -> io::Error {

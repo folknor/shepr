@@ -740,13 +740,31 @@ fn restore_terminal_state_once(
     restore_terminal_state(host_modes)
 }
 
+/// Restores every host mode, the raw mode and the screen, running each step
+/// even after an earlier one fails. Each failure is logged here because the
+/// panic hook and `Drop` have no caller to hand an error to; the first failure
+/// is also returned.
 fn restore_terminal_state(host_modes: &HostModes) -> io::Result<()> {
-    let _ = host_modes.restore(&mut io::stdout());
+    // Runs first so the kitty keyboard pop reaches the host before the screen
+    // is torn down; a failure here leaves the host terminal encoding keys.
+    let modes_result = host_modes.restore(&mut io::stdout());
+    if let Err(error) = &modes_result {
+        tracing::warn!(
+            error = %error,
+            "failed to restore host terminal modes; keyboard protocol, mouse or paste modes may stay enabled"
+        );
+    }
 
     let restore_result = ratatui::try_restore();
+    if let Err(error) = &restore_result {
+        tracing::warn!(error = %error, "failed to restore host terminal screen and raw mode");
+    }
     let postlude_result = write_terminal_restore_postlude(&mut io::stdout());
+    if let Err(error) = &postlude_result {
+        tracing::warn!(error = %error, "failed to write host terminal restore postlude");
+    }
 
-    restore_result.and(postlude_result)
+    modes_result.and(restore_result).and(postlude_result)
 }
 
 impl TerminalGuard {
@@ -767,7 +785,9 @@ impl TerminalGuard {
         let restore_claimed = Arc::clone(&self.restore_claimed);
         let host_modes = self.host_modes.clone();
         move || {
-            let _ = restore_terminal_state_once(&restore_claimed, &host_modes);
+            // A panic has nowhere to report a restore failure, and
+            // restore_terminal_state already logged each failed step.
+            restore_terminal_state_once(&restore_claimed, &host_modes).ok();
         }
     }
 
@@ -780,7 +800,9 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         if !self.restored {
-            let _ = restore_terminal_state_once(&self.restore_claimed, &self.host_modes);
+            // Drop cannot return the error, and restore_terminal_state already
+            // logged each failed step.
+            restore_terminal_state_once(&self.restore_claimed, &self.host_modes).ok();
         }
     }
 }

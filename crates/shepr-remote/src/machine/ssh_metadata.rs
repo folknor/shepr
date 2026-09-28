@@ -42,27 +42,39 @@ impl SshMetadataCache {
         load_metadata(&self.path, &self.target, &self.session)
     }
 
-    pub fn store(&self, executable: &RemoteExecutable) {
+    /// The cache file, for callers naming it when a store or invalidate fails.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Remembers where the remote shepr lives. A failure leaves the cache as it
+    /// was, so every later connection pays full discovery; the caller decides how
+    /// loudly to say so.
+    pub fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
         let stored = StoredMetadata {
             target: self.target.clone(),
             session: self.session.clone(),
             executable: executable.as_str().to_owned(),
         };
-        let result = serde_json::to_vec(&stored)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| {
-                super::catalog::store_private_json(&self.path, &bytes, "SSH metadata")
-            });
-        if let Err(error) = result {
-            tracing::debug!(%error, "could not cache SSH machine metadata");
-        }
+        let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
+        super::catalog::store_private_json(&self.path, &bytes, "SSH metadata")
+            .map_err(io::Error::other)?;
+        tracing::debug!(
+            path = %self.path.display(),
+            target = %self.target,
+            session = %self.session,
+            executable = %executable.as_str(),
+            "cached SSH machine metadata"
+        );
+        Ok(())
     }
 
-    pub fn invalidate(&self) {
-        if let Err(error) = std::fs::remove_file(&self.path)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::debug!(%error, "could not invalidate SSH machine metadata");
+    /// Forgets the remembered executable. An absent cache is already forgotten. A
+    /// failure leaves a stale hint that later connections try first.
+    pub fn invalidate(&self) -> io::Result<()> {
+        match std::fs::remove_file(&self.path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
         }
     }
 }
@@ -108,8 +120,8 @@ mod tests {
         };
         let metadata = RemoteExecutable::parse("/some-path/shepr").expect("test precondition");
         assert!(first.load().is_none());
-        first.store(&metadata);
-        second.store(&metadata);
+        first.store(&metadata).expect("first store");
+        second.store(&metadata).expect("second store");
         assert_eq!(first.load(), Some(metadata.clone()));
         assert!(load_metadata(&first.path, "different-host", "fleet").is_none());
         assert!(load_metadata(&first.path, "mac", "different-session").is_none());
@@ -144,7 +156,10 @@ mod tests {
             std::fs::write(&first.path, bytes).expect("test precondition");
             assert!(first.load().is_none());
         }
-        first.invalidate();
+        first.invalidate().expect("invalidate");
+        assert!(first.load().is_none());
+        // Invalidating an absent cache is not a failure.
+        first.invalidate().expect("invalidate absent");
         assert_eq!(second.load(), Some(metadata));
         std::fs::remove_dir_all(root).expect("test precondition");
     }
@@ -161,7 +176,12 @@ mod tests {
         std::fs::write(&other, "untouched").expect("test precondition");
         std::os::unix::fs::symlink(&other, &cache.path).expect("test precondition");
         assert!(cache.load().is_none());
-        cache.store(&RemoteExecutable::parse("/bin/shepr").expect("test precondition"));
+        assert!(
+            cache
+                .store(&RemoteExecutable::parse("/bin/shepr").expect("test precondition"))
+                .is_err(),
+            "storing through a symlink must be refused"
+        );
         assert_eq!(
             std::fs::read_to_string(&other).expect("test precondition"),
             "untouched"

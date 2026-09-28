@@ -870,114 +870,30 @@ recorded here so the absence is not re-hunted.
 ## HYGP-031 - Test-only code is compiled into production libraries through Cargo feature unification (`test-api`, `test-support`)
 
 **Decision (partial):** piece 4 of the test-isolation work adopted from
-broadarrow: test-only code moves out of production crates' `test-api` and
-`test-support` features into dev-only crates, held by `never-ships` dependency
-rules (after broadarrow's `test-support-never-ships` and
-`test-scratch-never-ships`, which forbid a normal or build edge to the dev-only
-crates), plus a gate check that compiles the shipped feature set. That answers
-the mechanism, the gate gap and the `shepr-server` normal-dependency case. Open:
-the items not behind a feature at all (`TerminalId::test_new`, `WorkspaceId::new`
-and the `From<&str>` id constructors), and how `PaneRuntimeIo::TestChannel`
-leaves `shepr-mux` - it needs a seam (trait or generic) before a dev-only crate
-can hold it. Separately, `#[allow]` gives way to `#[expect(.., reason)]`
-workspace-wide (B9 in `notes/broadarrow-ports.md`), so the narrow per-item
-allows the `shepr-server` bullet calls the house style become `#[expect]`s,
-with a `cfg_attr` on the `dead_code` ones that tests use. The "`#[allow]`
-needs a comment" textlint is dropped in favour of that migration: the
-justifying comments become each `#[expect]`'s `reason`, and `AGENTS.md`'s
-wording changes later. Building the release profile in the gate is decided
-against; the shipped-feature-set check is about features, not the profile.
-Release builds get `overflow-checks = true` in the root `Cargo.toml` profile.
-With the `debug_assert!` ban and the `app_dir_name` switch removed (BUG-021),
-the unbuilt profile then differs in optimisation and debug info, not in
-behaviour.
-
-Reported from six scopes; several hunters marked the unification mechanics as an
-inference they had not verified by building. Gathered here as one entry.
-
-The mechanism: the root package (and `shepr-server`) depend on library crates
-both normally and, as dev-dependencies, with `features = ["test-api"]` /
-`["test-support"]`. Cargo unifies features across a single build graph, so any
-build that includes dev-dependencies - `cargo test`, `cargo clippy
---all-targets`, i.e. what `brokkr check` runs - compiles those libraries once
-with the test feature on, for every consumer in that invocation, including the
-production binary. Two hunters also draw the reverse conclusion: the feature set
-that `brokkr install` ships (`test-api` off) is compiled by no gate step, so a
-`#[cfg(not(feature = "test-api"))]` path or accidental dependence on a test-only
-item would not be caught.
-
-What becomes reachable:
-
-- `shepr-platform`: `process.rs::signal_processes`, documented as "Test-only:
-  production code signals through `ProcessHandle`, which cannot hit a reused
-  pid", gated `#[cfg(any(test, feature = "test-support"))]` with the feature
-  enabled by `shepr-server`'s dev-dependency. Its single user is one line in
-  `shepr-server/src/app/snapshot_tests.rs`. Suggested: move the nine lines of
-  `libc::kill` into the test that needs it and delete the `test-support` feature
-  from `shepr-platform` entirely, making the shortcut unrepresentable rather than
-  gated (see also HYGP-037).
-- `shepr-mux`: `test-api` is not cosmetic - it adds a whole variant to a
-  production enum (`PaneRuntimeIo::TestChannel`, whose arms contain real
-  behaviour including a thread that sleeps and sends, with six `#[cfg]` match
-  arms across `shutdown`, `owns_child_process`, `resize`, `try_send_bytes`,
-  `write_terminal_response`, `queue_user_input_submission`), plus
-  `Workspace::clear_tabs_for_test`, `PaneRuntimeRegistry::drain`,
-  `TerminalState::set_detected_state`, nine `PaneRuntime::test_*` constructors,
-  `GitStatusRefreshDemand::ALL` and `Workspace::assert_invariants_for_test`.
-  Suggested: `PaneRuntimeIo` is a four-method interface - making it a trait
-  object or generic puts the test double in the test module and deletes all six
-  `#[cfg]` arms.
-- `shepr-pty`: the same `TestChannel` double reimplements the actor - submissions
-  as a thread with `sleep`, `try_send`, no ordering,
-  `SubmissionCancel::untracked()`, resize replies discarded. Also
-  `SubmissionCancel::untracked()` / `never_started()` and
-  `backend::open_pty` / `spawn_in_pty` are public solely for tests in other
-  crates.
-- `shepr-agent`: `resume.rs::test_codex_plan` is gated
-  `any(test, feature = "test-support")`, and both the root `Cargo.toml` and
-  `shepr-server`'s dev-dependencies enable `shepr-agent/test-support`. It only
-  panics on its own bad input, so the risk is low, but it is a test-only shortcut
-  production code can reach. (`opencode_config.rs`'s and `manifest.rs`'s
-  `#[cfg(test)]` wrappers are fine as test seams.)
-- `shepr-protocol`: `TerminalId::test_new` is `pub` and ungated, and
-  `WorkspaceId::new`, `BootId::from(&str)` and `RequestId::from(&str)` let any
-  caller mint an identity that is supposed to come from one place.
-  `error.rs` exports `TestResponseJson`, `TestReply`, `test_json`,
-  `test_success`, `test_error` behind `cfg(any(test, feature = "test-support"))`
-  (`TestResponseJson` as a named bound appears only in its own file), which the
-  `shepr-api` hunter calls more surface than the use justifies and
-  production-reachable whenever the feature is on. `Config` being exported
-  publicly only under `feature = "test-support"` is named as the right pattern
-  the crate already knows.
-- `shepr-remote`: `bridge_upload_cancellation_for_test` is `pub` under
-  `cfg(any(test, feature = "test-support"))` and `expect()`s four times and
-  `assert!`s once - a panicking API exported from a library that otherwise bans
-  `unwrap`, if anything ever enables the feature in a non-test build.
-  (`RemoteSsh::test_with_state` is `#[cfg(test)]` only, which the hunter calls
-  correct.)
-- `shepr-client`: `test-support` is enabled in the same build as production code,
-  so `ClientState::test_new()`, the activation test hooks in `activation.rs` and
-  the shell hooks in `endpoints.rs` are reachable from `shepr-client`'s own
-  production modules in that build; nothing prevents a production path from
-  calling them, only the fact that none does today. The hunter's note: real
-  isolation means moving the helpers into a separate crate (the
-  `shepr-test-support` pattern the workspace already uses), because keeping the
-  feature and forbidding production callers is not mechanically checkable.
-- `shepr-server`: `#![cfg_attr(feature = "test-api", allow(dead_code))]` at the
-  crate root means the build that would run `dead_code` is exactly the build that
-  silences it across roughly 45 000 lines. The `shepr-server` hunter flags this
-  as the finding that hides other findings, and says their question-8 list is
-  hand-verified by grep as a result (see HYGP-051). It is the only crate-wide
-  `allow(dead_code)` in the repo; `shepr-vt` and `shepr-mux` use narrow per-item
-  allows with justifying comments, which is the house style.
-
-Enforcement named across hunters: add a `[[check]]` entry to `brokkr.toml` that
-builds the workspace with default features and without `--all-targets`, so the
-shipped feature set is compiled by the gate; forbid the `test-support` feature
-appearing in `[dependencies]` as opposed to `[dev-dependencies]`
-(`shepr-server`'s allowlist already lists `shepr-test-support` as a normal
-dependency, which is the case worth checking); and prefer moving helpers into a
-separate crate or a trait seam over gating them.
+broadarrow is landed: no production crate has a `[features]` table any more.
+Shared test doubles live in `shepr-test-support` and the new dev-only
+`shepr-test-fixtures` crate, server-only fixtures moved into `shepr-server`'s
+own `#[cfg(test)]` module, and `brokkr.toml` forbids any normal or build edge to
+either dev-only crate (`test-support-never-ships`,
+`test-fixtures-never-ships`). An install feature check
+(`install_feature_check = "always"`) compiles the shipped feature set the way
+`cargo install` resolves it, closing the gate gap. The seam
+`PaneRuntimeIo::TestChannel` needed is built: `shepr-pty::ChildIo` is a boxed
+trait object `PaneRuntime` holds, with a `PaneOutputWriter` for the real PTY
+read path and a `ChannelChildIo` test double in `shepr-test-fixtures`, so the
+enum variant and its six `#[cfg]` match arms are gone. `shepr-agent`'s
+`resume.rs::test_codex_plan`, `shepr-platform`'s `process.rs::signal_processes`,
+the `ServerAddress` `Default` that validation would reject, and
+`EventHub::events_after` are deleted outright rather than feature-gated.
+`shepr-server`'s crate-wide `#[cfg_attr(feature = "test-api", allow(dead_code))]`
+is gone along with the feature, and `dead_code` reports nothing in that crate
+today. `#[allow]` gives way to `#[expect(.., reason)]` workspace-wide (B9 in
+`notes/broadarrow-ports.md`). Open: `shepr-protocol`'s public id conversions
+are test-only again (`PublicTabId`/`PublicPaneId`'s `From<&str>` are
+`#[cfg(test)]` and panic on a non-canonical literal instead of the earlier
+`unwrap_or_else` fallback), but `TerminalId::test_new`, `WorkspaceId::new` and
+`WorkspaceId::from(&str)` remain `pub` and ungated, so any caller can still mint
+an identity that is supposed to come from one place.
 
 ## HYGP-032 - `#[cfg(test)]` branches inside production functions change what production runs
 
@@ -1498,10 +1414,6 @@ other three bullets.
   `shepr-agent` also reports `SHEPR_TEST_3970_CONFIG_DIR`, a test-only name in a
   production-visible namespace carrying an issue number nobody can look up in
   this repository.
-
-## HYGP-051 - `shepr-server`'s question-8 candidates cannot be confirmed while `dead_code` is silenced
-
-Merged into BUG-056 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGP-052 - `shepr-agent`'s `types.rs` and `actions.rs` are thirty-six structs and eighteen match arms serving one shape
 

@@ -29,7 +29,15 @@ pub(super) fn dispatch_client_shell_actions(
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
-                shepr_termio::host_term::title::write_clipboard_bytes(&bytes);
+                // Once per user copy, so a warn cannot flood; only the length is
+                // logged because the bytes are the user's selection.
+                if let Err(error) = shepr_termio::host_term::title::write_clipboard_bytes(&bytes) {
+                    warn!(
+                        bytes = bytes.len(),
+                        %error,
+                        "clipboard copy did not reach the host clipboard"
+                    );
+                }
             }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
@@ -95,9 +103,13 @@ pub(super) fn sync_client_shell_keyboard_report_all(
         .map_err(ClientError::HostTerminal)
 }
 
-pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
+/// Drops the host terminal effects a lost or retired endpoint asked for. Every step runs even
+/// after one fails, so a failed mouse reset still clears report-all and the title; the first
+/// failure is then returned as a host terminal error, like every other host mode write on the
+/// client loop.
+pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(), ClientError> {
     state.host_modes.clear_mouse_endpoint_request();
-    let _ =
+    let mouse =
         state
             .host_modes
             .apply_mouse(state.mode.is_shell(), state.reported_geometry.exact, false);
@@ -105,12 +117,16 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
         .mode
         .shell()
         .is_some_and(ShellSession::host_keyboard_report_all_requested);
-    let _ = state.host_modes.set_pane_keyboard_report_all(
+    let report_all = state.host_modes.set_pane_keyboard_report_all(
         &mut std::io::stdout(),
         false,
         shell_requests_report_all,
     );
-    let _ = state.host_modes.reset_window_title(&mut std::io::stdout());
+    let title = state.host_modes.reset_window_title(&mut std::io::stdout());
+    mouse
+        .and(report_all)
+        .and(title)
+        .map_err(ClientError::HostTerminal)
 }
 
 fn install_pending_activation(
@@ -779,7 +795,9 @@ pub(super) fn finish_client_shell_input(
     scheduled_activation: &mut Option<ClientLoopEvent>,
 ) -> Result<bool, ClientError> {
     if outcome.detach {
-        let _ = write_to_server(endpoints, &ClientMessage::Detach);
+        // A failed send is recorded against the endpoint, and the registry's Drop sends
+        // Detach again on the way out.
+        endpoints.send(&ClientMessage::Detach);
         return Ok(true);
     }
     if outcome.resize
@@ -798,7 +816,9 @@ pub(super) fn finish_client_shell_input(
                 rollback_endpoint_activation(state, endpoints, pending_activation, &error, false);
             }
         } else {
-            let _ = write_to_server(endpoints, &resize);
+            // A failed send is recorded against the active endpoint; the client timer
+            // applies the reconnect or local failure policy to it.
+            endpoints.send(&resize);
         }
     }
     if outcome.full_redraw {

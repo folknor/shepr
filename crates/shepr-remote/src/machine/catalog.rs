@@ -460,16 +460,30 @@ pub(super) fn store_private_json(
         .map_err(|error| format!("failed to create {description}: {error}"))?;
     if let Err(error) = temp.write_all(content).and_then(|()| temp.sync_all()) {
         drop(temp);
-        let _ = std::fs::remove_file(&temp_path);
+        remove_abandoned_temp_file(&temp_path, description);
         return Err(format!("failed to write {description}: {error}"));
     }
     drop(temp);
     if let Err(error) = std::fs::rename(&temp_path, path) {
-        let _ = std::fs::remove_file(&temp_path);
+        remove_abandoned_temp_file(&temp_path, description);
         return Err(format!("failed to activate {description}: {error}"));
     }
     shepr_platform::sync_directory(parent)
         .map_err(|error| format!("failed to persist {description} directory: {error}"))
+}
+
+/// Cleans up after a failed store, whose own error is what the caller returns. A
+/// failed removal leaves a private temporary file behind in the state directory;
+/// that is logged with its path so it can be found, and does not replace the
+/// store error.
+fn remove_abandoned_temp_file(temp_path: &Path, description: &str) {
+    if let Err(error) = std::fs::remove_file(temp_path) {
+        tracing::warn!(
+            %error,
+            path = %temp_path.display(),
+            "could not remove temporary {description} file after a failed store"
+        );
+    }
 }
 
 pub(crate) fn catalog_path(paths: &shepr_config::AppPaths) -> PathBuf {
@@ -498,7 +512,6 @@ mod tests {
     #[test]
     fn catalog_roundtrip_persists_profiles_without_secret_fields() {
         let path = path("roundtrip");
-        let _ = std::fs::remove_dir_all(path.parent().expect("test precondition"));
         let mut catalog = EndpointCatalog::default();
         let id = catalog
             .add_ssh("Build", "ssh://dev@build.example:2222", "agents")
@@ -602,7 +615,6 @@ mod tests {
     #[test]
     fn catalog_rejects_the_removed_enabled_field() {
         let path = path("unknown-field");
-        let _ = std::fs::remove_dir_all(path.parent().expect("test precondition"));
         std::fs::create_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
         std::fs::write(
@@ -631,7 +643,6 @@ mod tests {
     fn storing_selection_does_not_rewrite_profile_membership() {
         let catalog_path = path("separate-selection");
         let selection_path = catalog_path.with_file_name("selection.json");
-        let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
         let mut catalog = EndpointCatalog::default();
         let id = catalog
             .add_ssh("Build", "build", "agents")
@@ -666,7 +677,6 @@ mod tests {
     fn malformed_selection_does_not_discard_saved_profiles() {
         let catalog_path = path("malformed-selection");
         let selection_path = catalog_path.with_file_name("selection.json");
-        let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
         let mut catalog = EndpointCatalog::default();
         let id = catalog
             .add_ssh("Build", "build", "agents")
@@ -689,7 +699,6 @@ mod tests {
     fn absent_selected_profile_falls_back_without_discarding_catalog() {
         let catalog_path = path("absent-selection");
         let selection_path = catalog_path.with_file_name("selection.json");
-        let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
         let mut catalog = EndpointCatalog::default();
         let saved = catalog
             .add_ssh("Build", "build", "agents")
@@ -769,7 +778,6 @@ mod tests {
     #[test]
     fn catalog_watch_reloads_only_after_the_file_changes() {
         let path = path("watch");
-        let _ = std::fs::remove_dir_all(path.parent().expect("test precondition"));
         let start = Instant::now();
         let mut watch = EndpointCatalogWatch::for_path(path.clone(), start);
 

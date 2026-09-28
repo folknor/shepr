@@ -212,7 +212,10 @@ fn emit_line(
                     // in an id by the time it reaches a terminal cell.
                     // Preserve every id because explicit child ids can share
                     // alacritty's generated-id suffix.
-                    let _ = write!(out, "\x1b]8;id={};{}\x1b\\", link.id(), link.uri());
+                    push_fmt(
+                        out,
+                        format_args!("\x1b]8;id={};{}\x1b\\", link.id(), link.uri()),
+                    );
                     vt.link = Some((link.id().to_owned(), link.uri().to_owned()));
                 } else {
                     vt.link = None;
@@ -314,19 +317,19 @@ fn push_color(out: &mut String, color: Color, slot: ColorSlot) {
             }
             match slot {
                 ColorSlot::Foreground if index < 8 => {
-                    let _ = write!(out, ";{}", 30 + index);
+                    push_fmt(out, format_args!(";{}", 30 + index));
                 }
                 ColorSlot::Foreground => {
-                    let _ = write!(out, ";{}", 90 + index - 8);
+                    push_fmt(out, format_args!(";{}", 90 + index - 8));
                 }
                 ColorSlot::Background if index < 8 => {
-                    let _ = write!(out, ";{}", 40 + index);
+                    push_fmt(out, format_args!(";{}", 40 + index));
                 }
                 ColorSlot::Background => {
-                    let _ = write!(out, ";{}", 100 + index - 8);
+                    push_fmt(out, format_args!(";{}", 100 + index - 8));
                 }
                 ColorSlot::Underline => {
-                    let _ = write!(out, ";58;5;{index}");
+                    push_fmt(out, format_args!(";58;5;{index}"));
                 }
             }
         }
@@ -336,7 +339,7 @@ fn push_color(out: &mut String, color: Color, slot: ColorSlot) {
                 ColorSlot::Background => 48,
                 ColorSlot::Underline => 58,
             };
-            let _ = write!(out, ";{prefix};5;{index}");
+            push_fmt(out, format_args!(";{prefix};5;{index}"));
         }
         Color::Spec(rgb) => {
             let prefix = match slot {
@@ -344,9 +347,19 @@ fn push_color(out: &mut String, color: Color, slot: ColorSlot) {
                 ColorSlot::Background => 48,
                 ColorSlot::Underline => 58,
             };
-            let _ = write!(out, ";{prefix};2;{};{};{}", rgb.r, rgb.g, rgb.b);
+            push_fmt(
+                out,
+                format_args!(";{prefix};2;{};{};{}", rgb.r, rgb.g, rgb.b),
+            );
         }
     }
+}
+
+/// Appends formatted text to `out`. `fmt::Write for String` only reports an
+/// error a `Display` impl raises, and the arguments here are integers and
+/// `&str`, which never do, so there is no failure to act on.
+fn push_fmt(out: &mut String, args: std::fmt::Arguments<'_>) {
+    out.write_fmt(args).ok();
 }
 
 /// Clamp a (column, line) pair to the grid, returning `None` for lines that

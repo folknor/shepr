@@ -68,7 +68,15 @@ impl Drop for UnreapedChild {
             let spawned = std::thread::Builder::new()
                 .name("shepr-pane-reaper".into())
                 .spawn(move || {
-                    let _ = child.wait();
+                    // The pane is gone, so its exit status has no reader; only
+                    // a failed reap (a possible zombie) is worth a line.
+                    if let Err(err) = child.wait() {
+                        tracing::warn!(
+                            pid = child.id(),
+                            %err,
+                            "could not reap an abandoned pane child"
+                        );
+                    }
                 });
             if let Err(err) = spawned {
                 tracing::warn!(%err, "could not start a reaper for an abandoned pane child");
@@ -777,7 +785,9 @@ impl PaneRuntime {
                     return Err(err);
                 }
             };
-            let _ = timer_writer.set(actor.clone());
+            // `timer_writer` was created empty above and this is its only
+            // `set`, so it cannot already hold a handle.
+            timer_writer.set(actor.clone()).ok();
             Box::new(actor)
         };
 
@@ -2105,8 +2115,8 @@ mod tests {
 
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755))
             .expect("restore cwd path permissions");
-        let _ = child.kill();
-        let _ = child.wait();
+        child.kill().expect("kill the sleeping cwd fixture");
+        child.wait().expect("reap the cwd fixture");
 
         if path_is_traversable {
             eprintln!("skipping untraversable cwd assertion for privileged test process");
@@ -2263,9 +2273,7 @@ mod tests {
         let status = spawned.child.wait().expect("wait for the fixture");
         assert!(status.success(), "the fixture failed: {status:?}");
 
-        let output = std::fs::read_to_string(&output_path).expect("test precondition");
-        let _ = std::fs::remove_file(output_path);
-        output
+        std::fs::read_to_string(&output_path).expect("test precondition")
     }
 
     #[test]

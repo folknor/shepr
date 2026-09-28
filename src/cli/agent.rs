@@ -485,8 +485,15 @@ fn wait_for_named_agent(
     loop {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             // Let the server reconcile its matching startup deadline before
-            // returning so the pending name is immediately reusable.
-            let _ = resolve_agent_target_unchecked(paths, name, "cli:agent:start:timeout");
+            // returning so the pending name is immediately reusable. The poll is
+            // a courtesy: the timeout below is this command's answer whatever it
+            // returns, and a server that cannot answer it will fail the caller's
+            // next request loudly anyway.
+            drop(resolve_agent_target_unchecked(
+                paths,
+                name,
+                "cli:agent:start:timeout",
+            ));
             return Ok(Err(agent_wait_timeout()));
         }
         let poll_id = "cli:agent:start";

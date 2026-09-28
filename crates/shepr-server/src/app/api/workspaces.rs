@@ -540,7 +540,6 @@ mod tests {
             std::fs::canonicalize(&source_cwd).unwrap_or_else(|_| source_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);
-        let _ = std::fs::remove_dir_all(&source_cwd);
     }
 
     #[test]

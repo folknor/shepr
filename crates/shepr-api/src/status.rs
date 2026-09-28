@@ -96,11 +96,15 @@ mod tests {
             let mut line = String::new();
             reader.read_line(&mut line).expect("test precondition");
             // Hold the connection open without answering.
-            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the test releases the stalled connection");
         });
 
         let status = read_runtime_status_at(&path, Duration::from_millis(100));
-        let _ = release_tx.send(());
+        release_tx
+            .send(())
+            .expect("the stalled server is still holding the connection");
         server.join().expect("test precondition");
         assert!(
             matches!(status, Ok(None)),

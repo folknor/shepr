@@ -75,6 +75,7 @@ pub(crate) struct PaneRemovalOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a stale plan removed nothing; the caller must report it"]
 pub(crate) enum PaneRemovalCommit {
     Removed(PaneRemovalOutcome),
     Stale,
@@ -112,6 +113,7 @@ pub(crate) struct TabRemovalOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a stale plan removed nothing; the caller must report it"]
 pub(crate) enum TabRemovalCommit {
     Removed(TabRemovalOutcome),
     Stale,

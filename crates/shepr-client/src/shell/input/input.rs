@@ -52,7 +52,9 @@ fn read_clipboard_text_bounded_with(
         .spawn(move || {
             let text = read();
             in_flight.store(false, Ordering::Release);
-            let _ = sender.send(text);
+            // The receiver is gone only after the wait below timed out, which already
+            // logged the skipped paste; the late text is correctly dropped.
+            sender.send(text).ok();
         });
     if let Err(error) = spawned {
         in_flight.store(false, Ordering::Release);

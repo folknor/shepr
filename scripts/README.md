@@ -26,11 +26,5 @@ Three standings:
 | `check_tree_debris.py` | gate | the `tree-debris` check: every `crates/*/` root holds only `Cargo.toml`, `README.md`, `build.rs`, `src`, `tests`, `benches` and `examples`; an untracked file inside a crate's sources carries an extension those sources already use; and every workspace-root entry is tracked or gitignored |
 | `check_workspace_dependencies.py` | gate | the `workspace-dependencies` check: every name the root `[workspace.dependencies]` pins is taken with `workspace = true` and no restated version or path, and an external dependency two members share is pinned there |
 | `check_seal_paths.py` | gate | the `seal-paths` check: every `clippy.toml` seal is a path with a reason, the root `clippy.toml` is the only one, and both `disallowed_*` lints are denied (clippy itself refuses a path that no longer resolves) |
-| `textlint_sweep.py` | diagnostic | runs `brokkr.toml`'s textlint rules without building, to sweep a new or widened rule before it is wired |
 | `notes_drop.py` | tool | removes whole findings entries by ID from a notes document |
 | `fix_unwraps.py` | tool | one-off: replaced `.unwrap()` in test code for clippy's `unwrap_used` |
-| `narrow_unreachable_pub.py` | tool | one-off: narrowed every `unreachable_pub` item a clippy run reported to `pub(crate)`, when that lint was denied |
-| `hygiene_merge.py` | tool | one-off: collapsed duplicated hygiene entries into pointers |
-| `test_isolation_drop_line.py` | tool | one-off: dropped an exact line from every `.rs` file under a root, for the test-isolation move |
-| `test_isolation_imports.py` | tool | one-off: brought the fixture extension traits into scope in test modules, for the test-isolation move |
-| `test_isolation_rewrite.py` | tool | one-off: rewrote test call sites when test helpers moved into dev-only fixture crates |

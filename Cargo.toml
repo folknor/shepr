@@ -102,6 +102,7 @@ unnested_or_patterns = "deny"
 unwrap_in_result = "deny"
 ok_expect = "deny"
 unwrap_used = "deny"
+let_underscore_must_use = "deny"
 
 # Async safety
 await_holding_lock = "deny"

@@ -336,11 +336,14 @@ impl EndpointRegistry {
 impl Drop for EndpointRegistry {
     fn drop(&mut self) {
         let deadline = Instant::now() + std::time::Duration::from_millis(250);
+        // Detach is a courtesy on the way out: every connection is disconnected just
+        // below, and a server treats the closed connection as this client leaving, so a
+        // Detach that fails to send or flush changes nothing.
         for connection in self.connections.values_mut() {
-            let _ = connection.transport.send(&ClientMessage::Detach);
+            connection.transport.send(&ClientMessage::Detach).ok();
         }
         for connection in self.connections.values_mut() {
-            let _ = connection.transport.flush(deadline);
+            connection.transport.flush(deadline).ok();
             connection.transport.disconnect();
         }
     }

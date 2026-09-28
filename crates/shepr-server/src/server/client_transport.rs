@@ -119,10 +119,41 @@ enum DecodedEndpointRequest {
     },
 }
 
-fn write_endpoint_rejection(stream: &mut LocalStream, reason: shepr_protocol::HandshakeRefusal) {
+fn write_endpoint_rejection(
+    stream: &mut LocalStream,
+    client_id: ClientId,
+    reason: shepr_protocol::HandshakeRefusal,
+) {
     let welcome = EndpointServerWelcome::incompatible(reason);
     let response = ServerMessage::EndpointWelcome(welcome);
-    let _ = shepr_protocol::write_message(stream, &response);
+    if let Err(err) = shepr_protocol::write_message(stream, &response) {
+        debug!(?client_id, err = %err, "client left before its handshake refusal was written");
+    }
+}
+
+/// Forwards the last event a client transport thread produces before it
+/// exits (disconnect, detach). A send fails only once the server loop has
+/// dropped its receiver, which happens when the loop has exited and taken
+/// every client's state with it, so there is nothing left to tell.
+fn send_final_client_event(
+    server_event_tx: &mpsc::Sender<ServerEvent>,
+    client_id: ClientId,
+    event: ServerEvent,
+) {
+    if server_event_tx.blocking_send(event).is_err() {
+        debug!(
+            ?client_id,
+            "server loop gone before the client's final event"
+        );
+    }
+}
+
+fn send_client_disconnected(server_event_tx: &mpsc::Sender<ServerEvent>, client_id: ClientId) {
+    send_final_client_event(
+        server_event_tx,
+        client_id,
+        ServerEvent::ClientDisconnected { client_id },
+    );
 }
 
 fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointRequest> {
@@ -202,7 +233,10 @@ impl ClientWriter {
                         }
                     }
                     ClientControlItem::Flush(ack) => {
-                        let _ = ack.send(());
+                        // Same contract as the socket writer: a waiter that
+                        // stopped waiting dropped its receiver, and the
+                        // barrier was reached either way.
+                        ack.send(()).ok();
                     }
                 }
             }
@@ -802,7 +836,7 @@ pub(crate) fn handle_client_handshake(
             )
             .map(|reason| shepr_protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
             if let Some(reason) = incompatibility {
-                write_endpoint_rejection(&mut stream, reason);
+                write_endpoint_rejection(&mut stream, client_id, reason);
                 return Ok(());
             }
             (
@@ -819,7 +853,9 @@ pub(crate) fn handle_client_handshake(
             let welcome = ServerMessage::Welcome {
                 error: Some(shepr_protocol::HandshakeRefusal::ExpectedHello),
             };
-            let _ = shepr_protocol::write_message(&mut stream, &welcome);
+            if let Err(err) = shepr_protocol::write_message(&mut stream, &welcome) {
+                debug!(?client_id, err = %err, "client left before its handshake refusal was written");
+            }
             return Ok(());
         }
     };
@@ -942,13 +978,20 @@ fn client_writer_loop(
         let written = match item {
             ClientWriteItem::Control(data) => write_framed_bytes(&mut stream, &data),
             ClientWriteItem::Render(data) => {
-                let _ =
-                    server_event_tx.blocking_send(ServerEvent::ClientWriterDrained { client_id });
+                // Runs once per rendered frame, so no per-frame logging. The
+                // send fails only after the server loop dropped its receiver,
+                // when no one is left to schedule another frame for this client.
+                server_event_tx
+                    .blocking_send(ServerEvent::ClientWriterDrained { client_id })
+                    .ok();
                 write_framed_bytes(&mut stream, &data)
             }
             ClientWriteItem::Flush(ack) => match stream.flush() {
                 Ok(()) => {
-                    let _ = ack.send(());
+                    // The waiter drops its receiver when it stops waiting
+                    // (shutdown flush deadline passed); the flush happened
+                    // either way and nobody is left to tell.
+                    ack.send(()).ok();
                     true
                 }
                 Err(err) => {
@@ -958,7 +1001,7 @@ fn client_writer_loop(
             },
         };
         if !written {
-            let _ = server_event_tx.blocking_send(ServerEvent::ClientDisconnected { client_id });
+            send_client_disconnected(server_event_tx, client_id);
             break;
         }
     }
@@ -1006,8 +1049,7 @@ fn client_read_loop_with_endpoint_controls(
             Ok(msg) => msg,
             Err(shepr_protocol::FramingError::UnexpectedEof) => {
                 // Client disconnected.
-                let _ =
-                    server_event_tx.blocking_send(ServerEvent::ClientDisconnected { client_id });
+                send_client_disconnected(server_event_tx, client_id);
                 break;
             }
             Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
@@ -1015,14 +1057,12 @@ fn client_read_loop_with_endpoint_controls(
                     ?client_id,
                     claimed, max, "oversized message from client, closing"
                 );
-                let _ =
-                    server_event_tx.blocking_send(ServerEvent::ClientDisconnected { client_id });
+                send_client_disconnected(server_event_tx, client_id);
                 break;
             }
             Err(err) => {
                 debug!(?client_id, err = %err, "client read error, closing");
-                let _ =
-                    server_event_tx.blocking_send(ServerEvent::ClientDisconnected { client_id });
+                send_client_disconnected(server_event_tx, client_id);
                 break;
             }
         };
@@ -1049,8 +1089,7 @@ fn client_read_loop_with_endpoint_controls(
                             size = data.len(),
                             "oversized input from client, closing"
                         );
-                        let _ = server_event_tx
-                            .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                        send_client_disconnected(server_event_tx, client_id);
                         break;
                     }
                 } else {
@@ -1087,8 +1126,7 @@ fn client_read_loop_with_endpoint_controls(
                     client_shell_geometry_error(surface_size, geometry.width(), geometry.height())
                 {
                     warn!(?client_id, %reason, "invalid client shell resize, closing");
-                    let _ = server_event_tx
-                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    send_client_disconnected(server_event_tx, client_id);
                     break;
                 }
                 ServerEvent::ClientShellResize {
@@ -1110,8 +1148,7 @@ fn client_read_loop_with_endpoint_controls(
                         ?client_id,
                         "invalid client shell host theme update, closing"
                     );
-                    let _ = server_event_tx
-                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    send_client_disconnected(server_event_tx, client_id);
                     break;
                 }
                 ServerEvent::ClientShellHostTheme { client_id, update }
@@ -1132,8 +1169,7 @@ fn client_read_loop_with_endpoint_controls(
                             count = events.len(),
                             "oversized targeted pane input batch, closing"
                         );
-                        let _ = server_event_tx
-                            .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                        send_client_disconnected(server_event_tx, client_id);
                         break;
                     }
                     InputEventLimit::PasteTooLarge { size } => {
@@ -1156,8 +1192,7 @@ fn client_read_loop_with_endpoint_controls(
                             max = MAX_INPUT_PAYLOAD,
                             "oversized targeted pane input, closing"
                         );
-                        let _ = server_event_tx
-                            .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                        send_client_disconnected(server_event_tx, client_id);
                         break;
                     }
                 }
@@ -1172,16 +1207,14 @@ fn client_read_loop_with_endpoint_controls(
                         request_size = request.len(),
                         "oversized client shell endpoint command, closing"
                     );
-                    let _ = server_event_tx
-                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    send_client_disconnected(server_event_tx, client_id);
                     break;
                 }
                 let decoded = match decode_endpoint_request(&request) {
                     Ok(decoded) => decoded,
                     Err(error) => {
                         warn!(?client_id, %error, "invalid endpoint request envelope, closing");
-                        let _ = server_event_tx
-                            .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                        send_client_disconnected(server_event_tx, client_id);
                         break;
                     }
                 };
@@ -1195,8 +1228,7 @@ fn client_read_loop_with_endpoint_controls(
                         ?client_id,
                         "oversized client shell endpoint request id, closing"
                     );
-                    let _ = server_event_tx
-                        .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                    send_client_disconnected(server_event_tx, client_id);
                     break;
                 }
                 match decoded {
@@ -1238,7 +1270,11 @@ fn client_read_loop_with_endpoint_controls(
                 continue;
             }
             ClientMessage::Detach => {
-                let _ = server_event_tx.blocking_send(ServerEvent::ClientDetach { client_id });
+                send_final_client_event(
+                    server_event_tx,
+                    client_id,
+                    ServerEvent::ClientDetach { client_id },
+                );
                 break;
             }
             ClientMessage::AttachTerminal {
@@ -1304,7 +1340,10 @@ mod tests {
 
     impl Drop for TestSocketPath {
         fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            // Tidiness only: the socket lives in a per-test ScratchDir that
+            // is cleared when next handed out, and a panic here could run
+            // during an unwind and abort the test binary.
+            std::fs::remove_file(&self.0).ok();
         }
     }
 
@@ -1464,7 +1503,9 @@ mod tests {
                 &queue,
                 &server_event_tx,
             );
-            let _ = done_tx.send(());
+            done_tx
+                .send(())
+                .expect("test still waiting for the writer to exit");
         });
 
         drop(writer);
@@ -1488,7 +1529,9 @@ mod tests {
                 &queue,
                 &server_event_tx,
             );
-            let _ = done_tx.send(());
+            done_tx
+                .send(())
+                .expect("test still waiting for the writer to exit");
         });
 
         drop(writer);
@@ -1532,7 +1575,9 @@ mod tests {
                 &queue,
                 &server_event_tx,
             );
-            let _ = done_tx.send(());
+            done_tx
+                .send(())
+                .expect("test still waiting for the writer to exit");
         });
 
         drop(client_stream);
@@ -1775,7 +1820,16 @@ mod tests {
         client_stream
             .set_recv_timeout(Some(Duration::from_secs(2)))
             .expect("test precondition");
-        let _ = client_stream.read_to_end(&mut rest);
+        // The server hangs up without reading the hello, and Linux reports
+        // closing a unix socket with unread data as a reset to the peer; a
+        // timeout would mean it never hung up.
+        if let Err(err) = client_stream.read_to_end(&mut rest) {
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionReset,
+                "server hangs up after a foreign preamble: {err}"
+            );
+        }
         assert!(rest.is_empty(), "no welcome after a foreign preamble");
         handle
             .join()

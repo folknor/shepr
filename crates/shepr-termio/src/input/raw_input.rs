@@ -3561,7 +3561,8 @@ mod tests {
         let mut replies =
             String::from("\x1b]10;rgb:6565/7b7b/8383\x1b\\\x1b]11;rgb:2424/2727/3a3a\x1b\\");
         for index in 0..=u8::MAX {
-            let _ = write!(replies, "\x1b]4;{index};rgb:1111/2222/3333\x1b\\");
+            write!(replies, "\x1b]4;{index};rgb:1111/2222/3333\x1b\\")
+                .expect("writing into a String cannot fail");
         }
 
         let chunks = framer.push(replies.as_bytes());

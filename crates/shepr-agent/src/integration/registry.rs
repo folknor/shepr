@@ -726,7 +726,6 @@ mod registration_tests {
             state(IntegrationTarget::Claude, &hook),
             IntegrationStatusKind::Outdated
         );
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -758,7 +757,6 @@ mod registration_tests {
             state(IntegrationTarget::Codex, &hook),
             IntegrationStatusKind::Outdated
         );
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -784,7 +782,6 @@ mod registration_tests {
             state(IntegrationTarget::Kimi, &hook),
             IntegrationStatusKind::Outdated
         );
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -821,7 +818,6 @@ mod registration_tests {
             state(IntegrationTarget::Mastracode, &hook),
             IntegrationStatusKind::Outdated
         );
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -842,7 +838,6 @@ mod registration_tests {
                 .try_exists()
                 .expect("stat hook")
         );
-        let _ = fs::remove_dir_all(claude);
 
         let codex = base("codex-malformed");
         fs::write(codex.join("hooks.json"), "[1,").expect("test precondition");
@@ -857,7 +852,6 @@ mod registration_tests {
                 .try_exists()
                 .expect("stat hook")
         );
-        let _ = fs::remove_dir_all(codex);
 
         let copilot = base("copilot-malformed");
         fs::write(copilot.join("settings.json"), "{\"hooks\": []}").expect("test precondition");
@@ -867,7 +861,6 @@ mod registration_tests {
         );
         assert!(result.is_err());
         assert!(!copilot.join("hooks").try_exists().expect("stat hooks dir"));
-        let _ = fs::remove_dir_all(copilot);
     }
 
     #[test]
@@ -897,7 +890,6 @@ mod registration_tests {
             IntegrationStatusKind::Outdated
         );
         assert_eq!(integration_target_label(IntegrationTarget::Letta), "letta");
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -922,6 +914,5 @@ mod registration_tests {
             state(IntegrationTarget::Pi, &plugin),
             IntegrationStatusKind::Current
         );
-        let _ = fs::remove_dir_all(dir);
     }
 }

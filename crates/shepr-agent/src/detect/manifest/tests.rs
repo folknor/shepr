@@ -29,8 +29,10 @@ id = "codex"
 /// no environment variable and no global cache: other tests in the same
 /// process (plain `cargo test` runs them on parallel threads) keep seeing the
 /// bundled manifests.
+///
+/// The scratch tree is left in place afterwards, as every `ScratchDir` is: the
+/// next run clears it when it is handed out.
 struct TestManifests {
-    dir: PathBuf,
     override_dir: PathBuf,
     registry: ManifestRegistry,
 }
@@ -42,7 +44,6 @@ impl TestManifests {
         std::fs::create_dir_all(&override_dir).expect("create manifest override directory");
         let registry = ManifestRegistry::new(Some(&override_dir));
         Self {
-            dir,
             override_dir,
             registry,
         }
@@ -80,12 +81,6 @@ impl TestManifests {
 
     fn detect_input(&self, agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
         detect_with_manifest(agent, input, self.get(agent).as_deref())
-    }
-}
-
-impl Drop for TestManifests {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

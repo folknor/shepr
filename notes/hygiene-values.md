@@ -394,10 +394,6 @@ read in the crate is at `resolve()`. The agent hunter adds that this also remove
 `GROK_CONFIG_DIR`, a production environment variable whose own comment says it
 exists primarily as a test seam.
 
-## HYGV-017 - Exit code literals have no owner, and two library crates exit the process
-
-Merged into HYGC-025 (`notes/hygiene-channels.md`), which carries the full finding.
-
 ## HYGV-018 - The remote exit codes `255` and `254` are literals in a shell string with no decoder
 
 Reported by the remote hunter, as fact.

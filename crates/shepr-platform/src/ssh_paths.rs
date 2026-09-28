@@ -141,7 +141,8 @@ pub fn ssh_control_path_under(
     let digest = hash.finalize();
     let mut hash = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        let _ = write!(hash, "{byte:02x}");
+        // Formatting a byte into a String cannot fail.
+        write!(hash, "{byte:02x}").ok();
     }
     let path = runtime_dir.join(format!("{}-%C", &hash[..16]));
     // OpenSSH first binds ControlPath + '.' + 16 random characters, then

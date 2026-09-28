@@ -817,7 +817,10 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel::<crate::ApiRequestMessage>();
         std::thread::spawn(move || {
             while let Some(message) = api_rx.blocking_recv() {
-                let _ = message.respond_to.send(respond(&message.request));
+                // Like the real app (`send_api_response`), a requester that stopped
+                // waiting is not the stand-in's failure; the test asserts on what
+                // the requester saw.
+                drop(message.respond_to.send(respond(&message.request)));
             }
         });
         api_tx

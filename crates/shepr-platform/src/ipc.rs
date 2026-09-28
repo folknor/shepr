@@ -294,7 +294,15 @@ fn bind_in_place_then_restrict(path: &Path) -> io::Result<LocalListener> {
     let listener = bind_local_listener(path)?;
     if let Err(error) = restrict_socket_permissions(path, PRIVATE_SOCKET_MODE) {
         drop(listener);
-        let _ = fs::remove_file(path);
+        // The restrict error is what the caller acts on; a socket left behind
+        // with the wrong mode is still worth an operator's attention.
+        if let Err(remove_error) = fs::remove_file(path) {
+            tracing::warn!(
+                path = %path.display(),
+                err = %remove_error,
+                "failed to remove socket after restricting its mode failed"
+            );
+        }
         return Err(error);
     }
     Ok(listener)
@@ -332,8 +340,25 @@ fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindErro
         }
         let staged = staging_dir.join("s");
         let result = bind_staged_and_link(&staged, path);
-        let _ = fs::remove_file(&staged);
-        let _ = fs::remove_dir(&staging_dir);
+        // The staged name is absent when binding it failed, so NotFound is the
+        // expected outcome there. Anything else leaks a private directory in
+        // the runtime directory, which an operator needs to see.
+        match fs::remove_file(&staged) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => tracing::warn!(
+                path = %staged.display(),
+                err = %err,
+                "failed to remove staged socket"
+            ),
+        }
+        if let Err(err) = fs::remove_dir(&staging_dir) {
+            tracing::warn!(
+                path = %staging_dir.display(),
+                err = %err,
+                "failed to remove socket staging directory"
+            );
+        }
         return result;
     }
     Err(StagedBindError::Unavailable(last_error.unwrap_or_else(
@@ -595,7 +620,7 @@ mod tests {
         let listener = bind_private_local_listener(&path).expect("test precondition");
         let mode = fs::metadata(&path).expect("test precondition").mode() & 0o777;
         drop(listener);
-        let _ = fs::remove_file(&path);
+        fs::remove_file(&path).expect("remove the bound socket");
         assert_eq!(mode, PRIVATE_SOCKET_MODE);
     }
 
@@ -634,7 +659,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
         assert_eq!(fs::read(&plain).expect("file kept"), b"keep");
 
-        let _ = fs::remove_dir_all(&dir);
+        fs::remove_dir_all(&dir).expect("remove the socket directory");
     }
 
     #[test]
@@ -651,7 +676,7 @@ mod tests {
         let listener = bind_local_listener(&path).expect("test precondition");
         let client = connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
-        let _ = fs::remove_file(&path);
+        fs::remove_file(&path).expect("remove the bound socket");
         (client, server)
     }
 
@@ -696,7 +721,7 @@ mod tests {
         let listener = bind_local_listener(&path).expect("test precondition");
         let mut client = connect_local_stream(&path).expect("test precondition");
         let mut server = listener.accept().expect("test precondition");
-        let _ = fs::remove_file(&path);
+        fs::remove_file(&path).expect("remove the bound socket");
 
         // One byte every 50 ms: each read finishes well inside any per-read
         // timeout, so only an overall deadline can end the loop.

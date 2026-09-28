@@ -113,7 +113,16 @@ pub(crate) fn write_managed_asset(
         drop(file);
         let published = staged.and_then(|()| fs::rename(&temporary, path));
         if let Err(err) = published {
-            let _ = fs::remove_file(&temporary);
+            // The publication error is what the caller acts on; a temporary
+            // that cannot be removed is a stray file next to the asset, which
+            // an operator should hear about but which must not mask it.
+            if let Err(cleanup) = remove_file_if_exists(&temporary) {
+                tracing::warn!(
+                    path = %temporary.display(),
+                    error = %cleanup,
+                    "failed to remove managed asset temporary file"
+                );
+            }
             return Err(err);
         }
         return Ok(());

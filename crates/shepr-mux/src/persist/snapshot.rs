@@ -408,7 +408,7 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        let _ = write!(hex, "{byte:02x}");
+        write!(hex, "{byte:02x}").ok()?;
     }
     Some(hex)
 }

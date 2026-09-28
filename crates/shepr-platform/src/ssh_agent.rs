@@ -157,7 +157,15 @@ impl State {
             .with_extension(format!("{}.new", std::process::id()));
         symlink(target, &temporary)?;
         if let Err(error) = fs::rename(&temporary, &self.path) {
-            let _ = fs::remove_file(&temporary);
+            // The rename error is what the caller acts on; a temporary link
+            // left behind next to the agent address still needs reporting.
+            if let Err(remove_error) = fs::remove_file(&temporary) {
+                tracing::warn!(
+                    path = %temporary.display(),
+                    err = %remove_error,
+                    "failed to remove temporary SSH agent link"
+                );
+            }
             return Err(error);
         }
         let metadata = fs::symlink_metadata(&self.path)?;
@@ -171,7 +179,15 @@ impl Drop for State {
         if fs::symlink_metadata(&self.path)
             .is_ok_and(|metadata| self.identity == Some((metadata.dev(), metadata.ino())))
         {
-            let _ = fs::remove_file(&self.path);
+            // Drop has no caller to return to; a stale published address
+            // points panes at a dead agent, so it is logged.
+            if let Err(error) = fs::remove_file(&self.path) {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    err = %error,
+                    "failed to remove published SSH agent address"
+                );
+            }
         }
     }
 }

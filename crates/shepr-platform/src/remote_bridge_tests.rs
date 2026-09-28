@@ -73,10 +73,15 @@ impl Bridge {
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = std::fs::remove_file(&path);
-                    panic!("bridge did not connect: {error}");
+                    // The connect failure is what this reports; the cleanup
+                    // outcomes ride along rather than replace it.
+                    let killed = child.kill();
+                    let reaped = child.wait();
+                    let removed = std::fs::remove_file(&path);
+                    panic!(
+                        "bridge did not connect: {error} (cleanup: kill {killed:?}, wait \
+                         {reaped:?}, remove socket {removed:?})"
+                    );
                 }
             }
         };
@@ -131,9 +136,16 @@ impl Bridge {
 
 impl Drop for Bridge {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.path);
+        let killed = self.child.kill();
+        let reaped = self.child.wait();
+        let removed = std::fs::remove_file(&self.path);
+        // Panicking again while a failed test unwinds would abort the whole
+        // test binary and hide the original failure.
+        if !std::thread::panicking() {
+            killed.expect("kill the bridge child");
+            reaped.expect("reap the bridge child");
+            removed.expect("remove the bridge socket");
+        }
     }
 }
 

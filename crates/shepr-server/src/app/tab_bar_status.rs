@@ -554,12 +554,15 @@ fn spawn_status_command(
         )
         .await;
         task_control.terminate();
-        let _ = event_tx
+        // Fails only once the app dropped its event receiver, when no tab
+        // bar is left to show the result.
+        event_tx
             .send(shepr_mux::events::AppEvent::TabBarCommandFinished {
                 segment_index,
                 result,
             })
-            .await;
+            .await
+            .ok();
     });
     StatusCommandTask {
         abort_handle: task.abort_handle(),
@@ -720,7 +723,6 @@ mod tests {
             .expect("status command timed out")
             .expect("status command event channel closed");
         let command_ran = marker_exists(&ran);
-        let _ = std::fs::remove_file(ran);
         assert!(matches!(
             event,
             AppEvent::TabBarCommandFinished {
@@ -800,8 +802,6 @@ mod tests {
         // run, proving teardown kills its process group synchronously.
         std::thread::sleep(Duration::from_millis(400));
         let descendant_survived = marker_exists(&survived);
-        let _ = std::fs::remove_file(&descendant_started);
-        let _ = std::fs::remove_file(&survived);
         assert!(!descendant_survived, "status command descendant survived");
     }
 

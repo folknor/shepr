@@ -291,10 +291,14 @@ mod tests {
         use std::io::Write as _;
         let (mut client, mut server) = socket_pair(name);
         let peer = std::thread::spawn(move || {
-            let _ = server.write_all(&server_opening);
-            // Hold the connection until the client has read the opening.
+            server
+                .write_all(&server_opening)
+                .expect("test precondition: the client reads the opening");
+            // Hold the connection until the client has read the opening. The client
+            // writes its preamble before reading anything, so it is always there.
             let mut client_preamble = [0u8; shepr_protocol::preamble::PREAMBLE_LEN];
-            let _ = std::io::Read::read_exact(&mut server, &mut client_preamble);
+            std::io::Read::read_exact(&mut server, &mut client_preamble)
+                .expect("test precondition: the client sends its preamble first");
             std::thread::sleep(Duration::from_millis(50));
         });
         let error = do_handshake(

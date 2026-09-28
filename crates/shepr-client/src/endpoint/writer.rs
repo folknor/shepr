@@ -62,7 +62,9 @@ impl NativeEndpointTransport {
                     let batch = match command {
                         WriterCommand::Frames(batch) => batch,
                         WriterCommand::Flush(done) => {
-                            let _ = done.send(());
+                            // The receiver is gone only when `flush` already timed out and
+                            // reported that itself, so there is no one left to tell.
+                            done.send(()).ok();
                             continue;
                         }
                     };
@@ -390,7 +392,9 @@ mod tests {
         struct Lifetime(mpsc::Sender<()>);
         impl Drop for Lifetime {
             fn drop(&mut self) {
-                let _ = self.0.send(());
+                // Drop must not panic; a gone receiver means the test already failed
+                // its recv_timeout, which reports the failure.
+                self.0.send(()).ok();
             }
         }
         let (stream, peer) = streams();
@@ -436,7 +440,9 @@ mod tests {
         struct StalledWriter(mpsc::Sender<()>);
         impl io::Write for StalledWriter {
             fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                let _ = self.0.send(());
+                // The writer retries until stopped and the test awaits only the first
+                // attempt, so a retry that outlives the test's receiver tells no one.
+                self.0.send(()).ok();
                 Err(io::ErrorKind::WouldBlock.into())
             }
             fn flush(&mut self) -> io::Result<()> {

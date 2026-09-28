@@ -261,7 +261,17 @@ impl SavedSshConnector {
         *remote_shepr = Some(discovered.clone());
         match self.attempt(ssh, target, &discovered, deadline, &mut establish) {
             Ok(connected) => {
-                metadata_cache.store(&discovered);
+                // The connection is up and this connector keeps the hint in memory;
+                // only later processes and reconnects after a restart lose it.
+                if let Err(error) = metadata_cache.store(&discovered) {
+                    tracing::warn!(
+                        %error,
+                        profile = %self.profile_id,
+                        target = %target.as_str(),
+                        path = %metadata_cache.path().display(),
+                        "could not cache SSH machine metadata; later connections rediscover the remote shepr"
+                    );
+                }
                 Ok(connected)
             }
             Err(error) => {
@@ -306,6 +316,7 @@ pub struct SavedSshApiBridge {
     bridge: SshStdioBridge,
     metadata_cache: SshMetadataCache,
     pub used_cached_metadata: bool,
+    metadata_store_failure: Option<io::Error>,
 }
 
 impl SavedSshApiBridge {
@@ -321,11 +332,16 @@ impl SavedSshApiBridge {
         let metadata_cache = SshMetadataCache::new(paths, profile_id, target.as_str(), session);
         let cached = use_cached_metadata.then(|| metadata_cache.load()).flatten();
         let used_cached_metadata = cached.is_some();
+        let mut metadata_store_failure = None;
         let metadata = match cached {
             Some(metadata) => metadata,
             None => {
                 let metadata = super::discover_remote_api_executable(&ssh, session)?;
-                metadata_cache.store(&metadata);
+                // Discovery succeeded, so this command can proceed; a failed store
+                // only costs every later command another discovery. It is kept for
+                // the caller to report: the CLI process that starts this bridge has
+                // no log subscriber, so a log line here would reach nobody.
+                metadata_store_failure = metadata_cache.store(&metadata).err();
                 metadata
             }
         };
@@ -353,7 +369,14 @@ impl SavedSshApiBridge {
             bridge,
             metadata_cache,
             used_cached_metadata,
+            metadata_store_failure,
         })
+    }
+
+    /// Why the discovered executable could not be cached, when this bridge
+    /// discovered it and the store failed.
+    pub fn metadata_store_failure(&self) -> Option<&io::Error> {
+        self.metadata_store_failure.as_ref()
     }
 
     pub fn socket_path(&self) -> &std::path::Path {
@@ -364,8 +387,16 @@ impl SavedSshApiBridge {
         self.bridge.reported_failure()
     }
 
-    pub fn invalidate_metadata(&self) {
-        self.metadata_cache.invalidate();
+    /// Removes the shared hint this bridge started from. A failure leaves the stale
+    /// hint for the next command, which then pays one failed attempt before it
+    /// rediscovers; the caller decides whether to report it.
+    pub fn invalidate_metadata(&self) -> io::Result<()> {
+        self.metadata_cache.invalidate()
+    }
+
+    /// The metadata cache file, for naming it when invalidating fails.
+    pub fn metadata_path(&self) -> &std::path::Path {
+        self.metadata_cache.path()
     }
 
     pub fn stale_metadata_failure(error: &io::Error) -> bool {

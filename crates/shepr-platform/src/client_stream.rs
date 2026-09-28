@@ -44,7 +44,16 @@ pub fn write_client_stream(
     };
     let timed_out = || {
         // Dropping the writer clone alone would leave the reader blocked.
-        let _ = shutdown_client_stream(stream);
+        // NotConnected means the peer already hung up, which wakes the reader
+        // by itself; any other failure can leave it blocked.
+        if let Err(error) = shutdown_client_stream(stream)
+            && error.kind() != io::ErrorKind::NotConnected
+        {
+            tracing::warn!(
+                err = %error,
+                "failed to shut down a stalled terminal observer stream"
+            );
+        }
         io::Error::new(
             io::ErrorKind::TimedOut,
             "terminal observer stopped receiving output",

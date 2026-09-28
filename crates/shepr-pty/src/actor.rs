@@ -621,7 +621,9 @@ impl PtyIoActorRunner {
                 break;
             }
             if let Some(poll_observer) = &self.poll_observer {
-                let _ = poll_observer.send(());
+                // A test hook; a test that stopped listening wants no more
+                // poll notices, so a closed receiver is not an error.
+                poll_observer.send(()).ok();
             }
 
             match fd::poll_pty_and_wake(
@@ -743,7 +745,7 @@ impl PtyIoActorRunner {
             inbox.release_bytes(text.len().saturating_add(enter.len()));
             inbox.release_item();
             drop(inbox);
-            let _ = reply.send(Err(submission_withdrawn_error()));
+            deliver_submission_result(&reply, Err(submission_withdrawn_error()));
             return true;
         }
 
@@ -1014,7 +1016,7 @@ impl PtyIoActorRunner {
             inbox.release_bytes(submission.unqueued_enter_bytes);
             inbox.release_item();
         }
-        let _ = submission.reply.send(result);
+        deliver_submission_result(&submission.reply, result);
     }
 
     /// Drop a cancelled submission as soon as the actor sees it, rather than
@@ -1121,13 +1123,17 @@ impl PtyIoActorRunner {
         let error = input_submission_closed_error();
         if let Some(submission) = self.active_submission.take() {
             lock_state(&submission.state).finish();
-            let _ = submission
-                .reply
-                .send(Err(std::io::Error::new(error.kind(), error.to_string())));
+            deliver_submission_result(
+                &submission.reply,
+                Err(std::io::Error::new(error.kind(), error.to_string())),
+            );
         }
         for (reply, state) in queued_submissions {
             lock_state(&state).finish();
-            let _ = reply.send(Err(std::io::Error::new(error.kind(), error.to_string())));
+            deliver_submission_result(
+                &reply,
+                Err(std::io::Error::new(error.kind(), error.to_string())),
+            );
         }
     }
 
@@ -1267,6 +1273,17 @@ fn input_submission_closed_error() -> std::io::Error {
     )
 }
 
+/// Hand a submission's outcome to whoever queued it. The receiver is the
+/// `QueuedSubmission::completion` its caller holds; it is gone only when the
+/// caller dropped the submission, and then nobody is waiting for the outcome,
+/// so a failed send is not an error.
+fn deliver_submission_result(
+    reply: &std_mpsc::Sender<std::io::Result<()>>,
+    result: std::io::Result<()>,
+) {
+    reply.send(result).ok();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1362,7 +1379,9 @@ mod tests {
     fn write_failure_still_delivers_the_childs_last_output() {
         let (read_tx, read_rx) = std_mpsc::channel();
         let (mut runner, _handle, mut peer) = actor_test_parts(Box::new(move |bytes| {
-            let _ = read_tx.send(Bytes::copy_from_slice(bytes));
+            read_tx
+                .send(Bytes::copy_from_slice(bytes))
+                .expect("the test holds the read receiver while the runner runs");
             PtyReadResult::empty()
         }));
         // The child prints its last words and exits with a reply still queued.
@@ -1875,7 +1894,9 @@ mod tests {
             master_fd: owned,
             on_read,
             on_reader_exit: Some(Box::new(move |exit| {
-                let _ = exit_tx.send(exit);
+                // The actor thread can outlive a test that already finished
+                // and dropped the receiver; tests that check the exit hold it.
+                exit_tx.send(exit).ok();
             })),
             core_broken,
         })
@@ -2386,7 +2407,9 @@ mod tests {
             // Every read is a query that earns a reply, as for a child that
             // prints DA1 or DSR in a loop.
             on_read: Box::new(move |bytes| {
-                let _ = read_tx.send(bytes.len());
+                // The actor thread keeps reading after the test has counted
+                // enough and dropped the receiver; later reads need no count.
+                read_tx.send(bytes.len()).ok();
                 PtyReadResult {
                     terminal_responses: vec![Bytes::from(vec![b'r'; REPLY_LEN])],
                     core_broken: false,

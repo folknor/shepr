@@ -524,6 +524,7 @@ fn decode_clipboard_payload_rejects_invalid_base64() {
 fn forward_clipboard_uses_local_clipboard_path() {
     let env = IsolatedEnv::new();
     env.set("SSH_CONNECTION", "1 2 3 4");
-    assert!(forward_clipboard("dGVzdA=="));
-    assert!(!forward_clipboard("not base64"));
+    forward_clipboard("dGVzdA==").expect("valid base64 is written through OSC 52");
+    let error = forward_clipboard("not base64").expect_err("invalid base64 is rejected");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }

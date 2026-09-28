@@ -120,8 +120,10 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
     struct ChildGuard(std::process::Child);
     impl Drop for ChildGuard {
         fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+            // Best-effort cleanup that also runs while an assertion unwinds;
+            // panicking here would abort and hide that assertion's message.
+            self.0.kill().ok();
+            self.0.wait().ok();
         }
     }
     let pty = shepr_pty::backend::open_pty(24, 80).expect("open pty");

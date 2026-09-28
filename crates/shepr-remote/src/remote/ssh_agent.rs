@@ -66,8 +66,11 @@ impl Registration {
 impl Drop for Registration {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            // The panic itself went to the panic hook; this names what stopped.
+            tracing::error!("SSH agent registration thread panicked");
         }
     }
 }

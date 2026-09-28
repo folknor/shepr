@@ -106,8 +106,16 @@ pub(super) fn store(path: &Path, preferences: &ClientChromePreferences) -> Resul
     std::fs::write(&temp_path, content)
         .map_err(|error| format!("failed to write client shell state: {error}"))?;
     std::fs::rename(&temp_path, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temp_path);
-        format!("failed to replace client shell state: {error}")
+        // A failed cleanup leaves a stray file beside the state, so it is named in the
+        // error the caller already reports rather than dropped.
+        let cleanup = match std::fs::remove_file(&temp_path) {
+            Ok(()) => String::new(),
+            Err(cleanup_error) => format!(
+                "; the temporary file {} was left behind: {cleanup_error}",
+                temp_path.display()
+            ),
+        };
+        format!("failed to replace client shell state: {error}{cleanup}")
     })
 }
 

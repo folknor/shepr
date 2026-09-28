@@ -146,7 +146,7 @@ impl PaneRuntimeFixture for PaneRuntime {
             let early = writer.try_begin();
             let announced = early.is_some();
             ready_tx.send(()).expect("test ready channel is open");
-            let _ = release_rx.recv();
+            release_rx.recv().expect("test releases the waiting writer");
             early.unwrap_or_else(|| writer.begin()).write(0, &bytes);
             announced
         });

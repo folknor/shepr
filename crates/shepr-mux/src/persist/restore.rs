@@ -2213,12 +2213,6 @@ mod tests {
                 .contains("RESTORED_HISTORY \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} LINK"),
             "styled Unicode and hyperlink text should survive history replay"
         );
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while runtime.cwd().is_none() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
     }
 
     #[tokio::test]
@@ -2257,12 +2251,6 @@ mod tests {
                 .contains("RESTORED_HISTORY"),
             "pane history should not restore unless a history snapshot is supplied"
         );
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while runtime.cwd().is_none() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
     }
 
     #[tokio::test]

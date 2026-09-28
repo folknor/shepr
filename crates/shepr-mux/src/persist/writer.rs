@@ -404,14 +404,14 @@ fn copy_recovery(source: &mut impl io::Read, backup: &Path) -> io::Result<()> {
     if let super::io::Published::NotDurable(err) =
         super::io::publish_private_file(source, &backup.with_extension("pending"), backup, false)?
     {
-        let _ = std::fs::remove_file(backup);
+        super::io::remove_after_failed_publish(backup);
         return Err(err);
     }
     // The recovery directory may have just been created; its own entry must be
     // durable too, or the copy is not a recovery copy at all.
     let directory = super::io::containing_directory(backup);
     if let Err(err) = shepr_platform::sync_directory(super::io::containing_directory(directory)) {
-        let _ = std::fs::remove_file(backup);
+        super::io::remove_after_failed_publish(backup);
         return Err(err);
     }
     Ok(())
@@ -526,14 +526,14 @@ mod tests {
     fn snapshot_survives_exit_bursts_clears_and_writer_restarts() {
         let mut writer = writer(false);
         let original = snapshot();
-        let _ = writer.save(&original, None);
+        writer.save(&original, None).expect("save");
         let files = snapshots(&writer);
         assert_eq!(files.len(), 1);
         let saved = std::fs::read(&files[0].1).expect("test precondition");
         for i in 0..100 {
             let mut shrinking = snapshot();
             shrinking.workspaces[0].custom_name = Some(format!("remaining pane {i}"));
-            let _ = writer.save(&shrinking, None);
+            writer.save(&shrinking, None).expect("save");
             let path = writer.path.clone();
             drop(writer);
             writer = SessionWriter::new(
@@ -542,7 +542,7 @@ mod tests {
                 false,
             );
         }
-        let _ = writer.clear();
+        writer.clear().expect("clear");
         assert!(
             !writer.path.try_exists().expect("test stat"),
             "intentional clear must still persist"
@@ -579,7 +579,7 @@ mod tests {
                 .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
                 .expect("test precondition");
         }
-        let _ = writer.save(&snapshot(), None);
+        writer.save(&snapshot(), None).expect("save");
         assert_eq!(snapshots(&writer).len(), SNAPSHOT_LIMIT);
         assert!(
             !directory
@@ -605,7 +605,7 @@ mod tests {
             .expect("test precondition")
             .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
             .expect("test precondition");
-        let _ = writer.save(&snapshot(), None);
+        writer.save(&snapshot(), None).expect("save");
         assert_eq!(snapshots(&writer), vec![(1, old)]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn snapshot_cadence_recovers_after_clock_rollback_and_restart() {
         let mut writer = writer(false);
-        let _ = writer.save(&snapshot(), None);
+        writer.save(&snapshot(), None).expect("save");
         let file = snapshots(&writer).pop().expect("test precondition").1;
         File::options()
             .write(true)
@@ -632,7 +632,7 @@ mod tests {
         tab.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
         tab.focused = Some(1);
         tab.root_pane = Some(1);
-        let _ = writer.save(&changed, None);
+        writer.save(&changed, None).expect("save");
         assert_eq!(snapshots(&writer).len(), 2);
         let path = writer.path.clone();
         drop(writer);
@@ -642,7 +642,7 @@ mod tests {
             false,
         );
         changed.workspaces[0].custom_name = Some("after restart".into());
-        let _ = writer.save(&changed, None);
+        writer.save(&changed, None).expect("save");
         assert_eq!(
             snapshots(&writer).len(),
             2,
@@ -672,9 +672,9 @@ mod tests {
         let mut writer = writer(false);
         std::fs::write(writer.path.with_file_name("session-snapshots"), b"blocked")
             .expect("test precondition");
-        let _ = writer.save(&snapshot(), None);
+        writer.save(&snapshot(), None).expect("save");
         assert!(writer.path.try_exists().expect("test stat"));
-        let _ = writer.clear();
+        writer.clear().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -688,11 +688,11 @@ mod tests {
                 super::super::io::save_to_path(&writer.path, &snapshot())
                     .expect("test precondition");
             }
-            let _ = writer.save(&snapshot(), None);
+            writer.save(&snapshot(), None).expect("save");
             assert!(!writer.protect_unloaded);
             assert!(writer.path.try_exists().expect("test stat"));
-            let _ = writer.save(&snapshot(), None);
-            let _ = writer.clear();
+            writer.save(&snapshot(), None).expect("save");
+            writer.clear().expect("clear");
             assert!(!writer.path.try_exists().expect("test stat"));
             assert!(backups(&writer).is_empty());
             std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -709,8 +709,12 @@ mod tests {
         std::fs::write(&history_path, b"history").expect("test precondition");
         let directory = writer.path.with_file_name("session-backups");
         std::fs::write(&directory, b"blocks recovery").expect("test precondition");
-        let _ = writer.save(&snapshot(), None);
-        let _ = writer.clear();
+        writer
+            .save(&snapshot(), None)
+            .expect_err("a blocked recovery copy must fail the save");
+        writer
+            .clear()
+            .expect_err("a blocked recovery copy must fail the clear");
         assert!(writer.protect_unloaded);
         assert_eq!(
             std::fs::read(&writer.path).expect("test precondition"),
@@ -722,10 +726,10 @@ mod tests {
         );
 
         std::fs::remove_file(&directory).expect("test precondition");
-        let _ = writer.save(&snapshot(), None);
+        writer.save(&snapshot(), None).expect("save");
         assert!(!writer.protect_unloaded);
-        let _ = writer.save(&snapshot(), None);
-        let _ = writer.clear();
+        writer.save(&snapshot(), None).expect("save");
+        writer.clear().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![original.to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -832,7 +836,7 @@ mod tests {
     #[test]
     fn retiring_releases_the_directory_and_ignores_later_saves() {
         let mut writer = writer(false);
-        let _ = writer.save(&snapshot(), None);
+        writer.save(&snapshot(), None).expect("save");
         assert!(writer.may_write());
         let lock = File::open(
             writer
@@ -850,8 +854,10 @@ mod tests {
         let saved = std::fs::read(&writer.path).expect("test precondition");
         let mut changed = snapshot();
         changed.workspaces[0].custom_name = Some("after shutdown".into());
-        let _ = writer.save(&changed, None);
-        let _ = writer.clear();
+        writer
+            .save(&changed, None)
+            .expect("a retired writer ignores the save");
+        writer.clear().expect("a retired writer ignores the clear");
         assert_eq!(
             std::fs::read(&writer.path).expect("test precondition"),
             saved
@@ -870,27 +876,35 @@ mod tests {
         };
         let mut writer = writer(false);
         let history_path = writer.path.with_file_name("session-history.json");
-        let _ = writer.save(&snapshot(), Some(&history("one")));
+        writer
+            .save(&snapshot(), Some(&history("one")))
+            .expect("save");
         let written = std::fs::read(&history_path).expect("test precondition");
 
         // A marker only survives if the identical history is skipped.
         std::fs::write(&history_path, b"untouched").expect("test precondition");
-        let _ = writer.save(&snapshot(), Some(&history("one")));
+        writer
+            .save(&snapshot(), Some(&history("one")))
+            .expect("save");
         assert_eq!(
             std::fs::read(&history_path).expect("test precondition"),
             b"untouched"
         );
 
-        let _ = writer.save(&snapshot(), Some(&history("two")));
+        writer
+            .save(&snapshot(), Some(&history("two")))
+            .expect("save");
         let changed = std::fs::read(&history_path).expect("test precondition");
         assert_ne!(changed, written);
         assert!(String::from_utf8_lossy(&changed).contains("two"));
 
         // A clear forgets what was written, so the same history is written
         // again afterwards.
-        let _ = writer.clear();
+        writer.clear().expect("clear");
         assert!(!history_path.try_exists().expect("test stat"));
-        let _ = writer.save(&snapshot(), Some(&history("two")));
+        writer
+            .save(&snapshot(), Some(&history("two")))
+            .expect("save");
         assert_eq!(
             std::fs::read(&history_path).expect("test precondition"),
             changed
@@ -909,7 +923,7 @@ mod tests {
         for i in 0..5u8 {
             writer.protect_unloaded = true;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            let _ = writer.save(&snapshot(), None);
+            writer.save(&snapshot(), None).expect("save");
         }
         assert_eq!(
             std::fs::read(manual).expect("test precondition"),
@@ -928,10 +942,10 @@ mod tests {
     #[test]
     fn first_clear_preserves_an_unloaded_file_even_after_an_earlier_missing_clear() {
         let mut writer = writer(true);
-        let _ = writer.clear();
+        writer.clear().expect("clear");
         assert!(writer.protect_unloaded);
         std::fs::write(&writer.path, b"late layout").expect("test precondition");
-        let _ = writer.clear();
+        writer.clear().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -944,14 +958,18 @@ mod tests {
         std::fs::write(&writer.path, b"original").expect("test precondition");
         let temporary = writer.path.with_extension("json.tmp");
         std::fs::create_dir(&temporary).expect("test precondition");
-        let _ = writer.save(&snapshot(), None);
-        let _ = writer.save(&snapshot(), None);
+        writer
+            .save(&snapshot(), None)
+            .expect_err("a directory in the temporary's place must fail the save");
+        writer
+            .save(&snapshot(), None)
+            .expect_err("a directory in the temporary's place must fail the save");
         assert_eq!(
             std::fs::read(&writer.path).expect("test precondition"),
             b"original"
         );
         std::fs::remove_dir(&temporary).expect("test precondition");
-        let _ = writer.save(&snapshot(), None);
+        writer.save(&snapshot(), None).expect("save");
         assert_eq!(backups(&writer), vec![b"original".to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -1017,7 +1035,7 @@ mod tests {
         for i in 2..4u8 {
             writer.protect_unloaded = true;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            let _ = writer.save(&snapshot(), None);
+            writer.save(&snapshot(), None).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![1], vec![2], vec![3]]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -1030,11 +1048,11 @@ mod tests {
         for i in 0..5u8 {
             writer.protect_unloaded = true;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            let _ = writer.save(&snapshot(), None);
+            writer.save(&snapshot(), None).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
-        let _ = writer.save(&snapshot(), None);
-        let _ = writer.clear();
+        writer.save(&snapshot(), None).expect("save");
+        writer.clear().expect("clear");
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -1050,7 +1068,7 @@ mod tests {
             if late_target {
                 std::fs::write(&target, b"late layout").expect("test precondition");
             }
-            let _ = writer.save(&snapshot(), None);
+            writer.save(&snapshot(), None).expect("save");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")
@@ -1079,7 +1097,7 @@ mod tests {
             }
             // A clear removes the session behind the link and keeps the link,
             // so the next save writes through it again.
-            let _ = writer.clear();
+            writer.clear().expect("clear");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")
@@ -1087,7 +1105,7 @@ mod tests {
                     .is_symlink()
             );
             assert!(!target.try_exists().expect("test stat"));
-            let _ = writer.save(&snapshot(), None);
+            writer.save(&snapshot(), None).expect("save");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")

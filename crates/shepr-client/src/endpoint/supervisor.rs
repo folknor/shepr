@@ -280,7 +280,10 @@ impl EndpointSupervisors {
                     },
                 };
                 if !shutdown.load(Ordering::Acquire) {
-                    let _ = event_tx.send(event).await;
+                    // The send fails only once the client loop has exited and dropped its
+                    // receiver; the returned event then drops here, releasing any
+                    // connection it carries, which is all teardown needs.
+                    event_tx.send(event).await.ok();
                 }
             });
         }

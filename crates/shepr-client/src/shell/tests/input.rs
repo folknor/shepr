@@ -91,7 +91,8 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let mut responses = String::new();
     for index in 0..=u8::MAX {
-        let _ = write!(responses, "\x1b]4;{index};rgb:1111/2222/3333\x1b\\");
+        write!(responses, "\x1b]4;{index};rgb:1111/2222/3333\x1b\\")
+            .expect("test precondition: writing to a String cannot fail");
     }
 
     let outcome = state.handle_input_bytes(responses.as_bytes());

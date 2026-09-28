@@ -130,14 +130,31 @@ pub(super) fn publish_private_file(
     match result {
         Ok(()) => Ok(Published::Durable),
         Err(err) if !published => {
-            let _ = std::fs::remove_file(pending);
+            remove_after_failed_publish(pending);
             Err(err)
         }
         Err(err) if replace => Ok(Published::NotDurable(err)),
         Err(err) => {
-            let _ = std::fs::remove_file(target);
+            remove_after_failed_publish(target);
             Err(err)
         }
+    }
+}
+
+/// Best-effort removal of a file a failed publish left behind. The publish
+/// error is what the caller acts on, so a failed removal is logged rather than
+/// returned: it leaves a stray private file (a `.pending` one is never swept,
+/// and the next publish to that name fails `AlreadyExists`), which an
+/// operator should be able to see.
+pub(super) fn remove_after_failed_publish(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => tracing::warn!(
+            event = "persist.cleanup", subsystem = "persist", outcome = "remove_error",
+            path = %path.display(), err = %err,
+            "failed to remove a file left by a failed session publish"
+        ),
     }
 }
 
