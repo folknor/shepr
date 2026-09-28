@@ -219,10 +219,12 @@ impl ClientState {
         else {
             return Ok(false);
         };
+        #[cfg(not(test))]
+        let mut stdout = io::stdout();
+        #[cfg(test)]
+        let mut stdout = io::sink();
         if !encoded.bytes.is_empty() {
-            let mut stdout = io::stdout();
-            stdout.write_all(&encoded.bytes)?;
-            stdout.flush()?;
+            self.write_composed_output(&mut stdout, &encoded.bytes)?;
         }
         let committed = self
             .blit_encoder

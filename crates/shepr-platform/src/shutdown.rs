@@ -398,6 +398,10 @@ mod tests {
     }
 
     #[tokio::test]
+    // zbus 5.19 accepts UnixStream, but its server/peer setup is behind `p2p`,
+    // disabled by this workspace. A peer pair also lacks the bus-generated
+    // NameOwnerChanged signals this watch consumes; this test's `false`
+    // argument also leaves the reconnect-only warning refresh untested.
     #[ignore = "requires dbus-daemon; uses a private bus, never requests host shutdown"]
     async fn delay_lock_is_held_until_checkpoint_and_retaken_after_cancellation() {
         for already_preparing in [false, true] {

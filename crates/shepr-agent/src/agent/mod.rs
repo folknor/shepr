@@ -188,6 +188,11 @@ const DROID_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     None,
     Some(IntegrationHookAction::Session),
 )];
+const GROK_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
+    "SessionStart",
+    None,
+    Some(IntegrationHookAction::Session),
+)];
 const LETTA_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     "SessionStart",
     None,
@@ -581,7 +586,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         title_activity_glyphs: "",
         prompt_observation: false,
         integration_hook_events: &[],
-    },
+    }
+    .with_integration_hook_events(GROK_HOOK_EVENTS),
     AgentDescriptor {
         agent: Agent::Kilo,
         label: "kilo",

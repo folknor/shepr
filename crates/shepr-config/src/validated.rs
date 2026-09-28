@@ -306,6 +306,9 @@ pub(crate) enum CwdCheck {
 
 impl ValidatedTerminalConfig {
     fn parse(config: &TerminalConfig, paths: &AppPaths, check: CwdCheck) -> Result<Self, String> {
+        // The workspace dependency rule excludes a normal config-to-PTY edge;
+        // the PTY layer owns PATH and access(2) resolution. Duplicating those
+        // checks here could make validation disagree with pane spawning.
         Ok(Self {
             default_shell: config.default_shell.clone(),
             login_shell: config.login_shell,
@@ -776,6 +779,47 @@ impl<'de> Deserialize<'de> for ValidatedConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_default_provenance_includes_absent_sidebar_rule_fields() {
+        let config: Config = toml::from_str(
+            r#"
+[ui.sidebar.agents]
+rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "agent" }]]
+"#,
+        )
+        .expect("test config");
+        let encoded = toml::to_string(&config).expect("config serializes");
+        let decoded = toml::from_str::<Config>(&encoded).expect("serialized config parses");
+        assert_eq!(decoded, config);
+        let provenance = ConfigProvenance::from_config(&config, None).expect("provenance");
+        let keys = provenance
+            .values()
+            .iter()
+            .map(|origin| origin.key.as_str())
+            .collect::<Vec<_>>();
+
+        for field in [
+            "equals",
+            "contains",
+            "starts_with",
+            "gt",
+            "lt",
+            "ignore_case",
+            "fg",
+            "bold",
+            "dim",
+            "hide",
+        ] {
+            let key = format!("ui.sidebar.agents.rows[0][0].rules[0].{field}");
+            assert!(keys.contains(&key.as_str()), "missing {key}");
+        }
+        for field in ["fg", "bold", "dim"] {
+            let key = format!("ui.sidebar.agents.rows[0][0].{field}");
+            assert!(keys.contains(&key.as_str()), "missing {key}");
+        }
+        assert!(keys.contains(&"ui.sidebar.agents.rows[0][1].rules"));
+    }
 
     #[test]
     fn validated_config_resolves_runtime_values_once() {

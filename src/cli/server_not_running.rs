@@ -9,7 +9,11 @@ pub(super) fn response(
     socket_path: &Path,
     paths: &shepr_config::AppPaths,
 ) -> ErrorResponse {
-    let attach_command = startup_command(socket_path, paths);
+    // The local API client's socket is `paths.server_address().api_socket()`
+    // (a `--machine` failure is answered by `target::remote_error` before
+    // this), so the address's own attach command names the server that was
+    // not found, whatever session or socket override selected it.
+    let attach_command = paths.server_address().attach_command(paths.session_id());
     ErrorResponse {
         id: request_id.to_string(),
         error: ErrorBody {
@@ -19,14 +23,6 @@ pub(super) fn response(
                 socket_path.display()
             ),
         },
-    }
-}
-
-fn startup_command(socket_path: &Path, paths: &shepr_config::AppPaths) -> String {
-    if socket_path == paths.server_address().api_socket() {
-        paths.server_address().attach_command(paths.session_id())
-    } else {
-        "shepr".to_string()
     }
 }
 

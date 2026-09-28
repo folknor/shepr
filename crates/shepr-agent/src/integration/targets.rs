@@ -1,16 +1,16 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
-use crate::agent::IntegrationTarget as Target;
+use crate::agent::{IntegrationHookAction, IntegrationTarget as Target};
 
 use super::claude_settings::{
     install as install_claude_settings, uninstall as uninstall_claude_settings,
 };
-use super::command::hook_command;
-use super::command::shell_single_quote;
+use super::command::{hook_command, hook_command_with_interpreter};
 use super::config_edit::{
     build_codex_config_with_hooks, build_kimi_config_with_hooks, ensure_command_hook,
     ensure_direct_command_hook, ensure_flat_command_hook, ensure_hooks_object,
@@ -1014,6 +1014,10 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Cursor
         "cursor hooks file hooks",
     )?;
     let session_command = hook_command(&hook_path, Some("session"));
+    // Strip every entry carrying the command first, as the other targets do,
+    // so a hand-edited one (a matcher added, say) is replaced by the canonical
+    // entry that `integration status` looks for instead of being kept as-is.
+    remove_simple_command_hook(hooks, "sessionStart", &session_command)?;
     ensure_simple_command_hook(hooks, "sessionStart", &session_command)?;
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
@@ -1418,31 +1422,34 @@ pub(crate) fn uninstall_antigravity_cli(
     })
 }
 
-/// The complete Shepr-owned Grok hook config. Installation and status share
-/// this value so any config drift is reported as outdated.
-fn grok_hook_command(hook_path: &Path) -> String {
-    format!(
-        "sh {} session",
-        shell_single_quote(&hook_path.display().to_string())
-    )
+/// Grok's bundled hook uses `/bin/sh`, so its configured command uses `sh` too.
+fn grok_hook_command(hook_path: &Path, action: Option<IntegrationHookAction>) -> String {
+    hook_command_with_interpreter(hook_path, "sh", action.map(IntegrationHookAction::as_str))
 }
 
+/// The complete Shepr-owned Grok hook config, generated from its declared
+/// events. Installation and status share this value so config drift is outdated.
 pub(crate) fn grok_hook_config(hook_path: &Path) -> Value {
-    let session_command = grok_hook_command(hook_path);
-    json!({
-        "hooks": {
-            "SessionStart": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": session_command,
-                            "timeout": 10,
-                        }
-                    ]
-                }
-            ]
+    let mut event_groups = BTreeMap::<&'static str, Vec<Value>>::new();
+    for event in Target::Grok.hook_events() {
+        let command = grok_hook_command(hook_path, event.action);
+        let hook = json!({
+            "type": "command",
+            "command": command,
+            "timeout": 10,
+        });
+        let mut group = json!({ "hooks": [hook] });
+        if let Some(matcher) = event.matcher {
+            group["matcher"] = json!(matcher);
         }
+        event_groups.entry(event.event).or_default().push(group);
+    }
+    let hooks = event_groups
+        .into_iter()
+        .map(|(event, groups)| (event.to_owned(), Value::Array(groups)))
+        .collect::<Map<_, _>>();
+    json!({
+        "hooks": hooks
     })
 }
 
@@ -1492,4 +1499,45 @@ pub(crate) fn uninstall_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokUn
         removed_hook_file,
         removed_config_file,
     })
+}
+
+#[cfg(test)]
+mod grok_tests {
+    use std::path::Path;
+
+    use serde_json::Value;
+
+    use super::{Target, grok_hook_command, grok_hook_config};
+    use crate::agent::IntegrationHookAction;
+
+    #[test]
+    fn grok_config_uses_its_declared_hook_events() {
+        let hook_path = Path::new("/home/user/grok hooks/shepr-agent-state.sh");
+        let events = Target::Grok.hook_events();
+        let config = grok_hook_config(hook_path);
+        let configured_events = config["hooks"].as_object().expect("Grok hooks object");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "SessionStart");
+        assert_eq!(events[0].action, Some(IntegrationHookAction::Session));
+        for event in events {
+            let groups = configured_events
+                .get(event.event)
+                .and_then(Value::as_array)
+                .expect("declared Grok hook event");
+            let command = grok_hook_command(hook_path, event.action);
+            assert!(
+                groups.iter().any(|group| {
+                    group["matcher"].as_str() == event.matcher
+                        && group["hooks"].as_array().is_some_and(|hooks| {
+                            hooks.len() == 1
+                                && hooks[0]["type"] == "command"
+                                && hooks[0]["command"].as_str() == Some(command.as_str())
+                        })
+                }),
+                "missing config for Grok hook event {}",
+                event.event
+            );
+        }
+    }
 }

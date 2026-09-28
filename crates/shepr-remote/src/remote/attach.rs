@@ -282,6 +282,12 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let paths = test_app_paths();
+        let home = paths.home_dir().expect("test home is configured");
+        let user_config = home.join(".ssh").join("config");
+        std::fs::create_dir_all(user_config.parent().expect("config has a parent"))
+            .expect("create user ssh config directory");
+        std::fs::write(&user_config, "Host example\n  ServerAliveInterval 30\n")
+            .expect("write user ssh config");
         let managed_config = write_managed_ssh_config("example", &paths, test_control_dir())
             .expect("write managed config");
         let path = managed_config.options.config_path.clone();
@@ -310,24 +316,22 @@ mod tests {
         assert!(!contents.contains("ControlPath"));
         // ...and any user config is Included (quoted) before it so
         // first-value-wins keeps the user's own settings.
-        if let Some(home) = paths.home_dir() {
-            let user_config = home.join(".ssh").join("config");
-            if ssh_config_include(Some(user_config.as_path()))
+        assert!(
+            ssh_config_include(Some(user_config.as_path()))
                 .expect("stat user ssh config")
-                .is_some()
-            {
-                let include = format!(
-                    "Include {}",
-                    ssh_config_quote(&user_config.to_string_lossy())
-                );
-                let include_at = contents.find(&include).expect("user config Included");
-                let fallback_at = contents.find("Host *").expect("fallback present");
-                assert!(
-                    include_at < fallback_at,
-                    "user config must be Included before shepr's fallback: {contents}"
-                );
-            }
-        }
+                .is_some(),
+            "test user config must be included"
+        );
+        let include = format!(
+            "Include {}",
+            ssh_config_quote(&user_config.to_string_lossy())
+        );
+        let include_at = contents.find(&include).expect("user config Included");
+        let fallback_at = contents.find("Host *").expect("fallback present");
+        assert!(
+            include_at < fallback_at,
+            "user config must be Included before shepr's fallback: {contents}"
+        );
 
         let mode = std::fs::metadata(&path)
             .expect("test precondition")
@@ -573,6 +577,13 @@ mod tests {
             io::ErrorKind::UnexpectedEof,
             "closed before welcome"
         )));
+    }
+
+    #[test]
+    fn bridge_remote_stderr_is_filtered_before_error_output() {
+        let error = ssh_bridge_exit_error(exit_status(255), b"Connection refused\x1b[2J");
+        assert!(!error.to_string().contains('\x1b'));
+        assert!(error.to_string().contains("Connection refused?[2J"));
     }
 
     #[test]

@@ -709,8 +709,7 @@ HYGG-023 for the data half.
 different sites. Each site is filed in full elsewhere; this entry is the index
 for the claim.
 
-- Remote config is validated on the client at attach time: HYGV-089 (and
-  BUG-022 for the discarded decode error). The recommendation there is to state
+- Remote config is validated on the client at attach time: HYGV-089. The recommendation there is to state
   the forced cross-host revalidation in the `AGENTS.md` sentence, which reads
   as absolute.
 - XDG path variables get four empty/relative rules and `XDG_CONFIG_HOME` falls
@@ -811,8 +810,8 @@ skipped includes.
 symlink to a file passes (fine), an absent file is silently dropped (fine), and
 if OpenSSH on this host reads its system config from somewhere else entirely
 (`/etc/ssh/ssh_config.d/*`, a distro override) the managed config silently omits
-settings the user believes are active, with no line logged. Combined with
-BUG-036, the include ordering is neither tested nor observable. Fix named: log
+settings the user believes are active, with no line logged. The include ordering is now tested but still not
+observable at runtime. Fix named: log
 at `debug` which includes were emitted and which paths were skipped; the path
 list itself cannot be enforced against OpenSSH's actual search order.
 

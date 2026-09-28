@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::agent::IntegrationTarget as Target;
 
 use super::command::hook_command;
+use super::config_edit::{direct_command_field, is_matching_command_hook};
 
 pub fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'static str {
     target.label()
@@ -346,16 +347,65 @@ enum HooksRoot {
     Document,
 }
 
-fn json_contains_string(value: &serde_json::Value, needle: &str) -> bool {
-    match value {
-        serde_json::Value::String(value) => value == needle,
-        serde_json::Value::Array(items) => {
-            items.iter().any(|item| json_contains_string(item, needle))
-        }
-        serde_json::Value::Object(map) => {
-            map.values().any(|item| json_contains_string(item, needle))
-        }
-        _ => false,
+enum JsonHookShape {
+    // `None` means the installer wrote no matcher field on the event group.
+    Nested { matcher: Option<String> },
+    Flat,
+    Direct,
+    Simple,
+}
+
+/// Whether `entries` holds the hook in the shape its installer writes, under
+/// the installer's matcher. Install first strips every entry carrying shepr's
+/// command from the event, whatever its matcher or extra fields, and then
+/// writes the canonical one, so anything this rejects a reinstall repairs.
+///
+/// There is deliberately no per-entry `disabled` or `enabled` check: none of
+/// these agents documents such a field (Claude Code and Qwen Code only offer
+/// the global `disableAllHooks`, Cursor has neither), so an entry carrying one
+/// still runs and still counts as registered.
+fn json_event_has_command(
+    entries: &serde_json::Value,
+    command: &str,
+    shape: &JsonHookShape,
+) -> bool {
+    let Some(entries) = entries.as_array() else {
+        return false;
+    };
+    match shape {
+        JsonHookShape::Nested { matcher } => entries.iter().any(|group| {
+            let matcher_matches = match matcher {
+                Some(matcher) => {
+                    group.get("matcher").and_then(serde_json::Value::as_str)
+                        == Some(matcher.as_str())
+                }
+                None => group.get("matcher").is_none(),
+            };
+            matcher_matches
+                && group
+                    .get("hooks")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|hooks| {
+                        hooks
+                            .iter()
+                            .any(|hook| is_matching_command_hook(hook, command))
+                    })
+        }),
+        JsonHookShape::Flat => entries
+            .iter()
+            .any(|hook| hook.get("matcher").is_none() && is_matching_command_hook(hook, command)),
+        JsonHookShape::Direct => entries.iter().any(|hook| {
+            hook.get("matcher").is_none()
+                && hook.get("type").and_then(serde_json::Value::as_str) == Some("command")
+                && hook
+                    .get(direct_command_field())
+                    .and_then(serde_json::Value::as_str)
+                    == Some(command)
+        }),
+        JsonHookShape::Simple => entries.iter().any(|hook| {
+            hook.get("matcher").is_none()
+                && hook.get("command").and_then(serde_json::Value::as_str) == Some(command)
+        }),
     }
 }
 
@@ -363,14 +413,13 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-/// Every `(event, command)` pair appears as a command string somewhere in that
-/// event's entry list. The entry shape differs per agent (nested hook groups,
-/// flat entries, `bash` fields), so this searches the event's list for the
-/// exact command rather than modelling each shape.
+/// Every `(event, command)` pair appears in the command field used by that
+/// target's installer shape, under the matching event.
 fn json_hook_commands_registered(
     config_path: &Path,
     root: HooksRoot,
     expected: &[(&str, String)],
+    shape: &JsonHookShape,
 ) -> bool {
     let Some(document) = read_json(config_path) else {
         return false;
@@ -385,7 +434,7 @@ fn json_hook_commands_registered(
     expected.iter().all(|(event, command)| {
         events
             .get(*event)
-            .is_some_and(|entries| json_contains_string(entries, command))
+            .is_some_and(|entries| json_event_has_command(entries, command, shape))
     })
 }
 
@@ -444,21 +493,32 @@ fn hook_event_commands(
 fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_path: &Path) -> bool {
     use crate::agent::IntegrationTarget as Target;
 
-    let json_in = |levels: usize, file: &str, root: HooksRoot, expected: &[(&str, String)]| {
-        ancestor(hook_path, levels)
-            .is_some_and(|dir| json_hook_commands_registered(&dir.join(file), root, expected))
+    let json_in = |levels: usize,
+                   file: &str,
+                   root: HooksRoot,
+                   expected: &[(&str, String)],
+                   shape: &JsonHookShape| {
+        ancestor(hook_path, levels).is_some_and(|dir| {
+            json_hook_commands_registered(&dir.join(file), root, expected, shape)
+        })
     };
     match target {
         Target::Pi | Target::Omp | Target::Kilo | Target::Grok | Target::Opencode => true,
-        Target::Claude => json_in(
-            2,
-            "settings.json",
-            HooksRoot::HooksKey,
-            &hook_event_commands(
-                hook_path,
-                integration_hook_events(crate::agent::IntegrationTarget::Claude),
-            ),
-        ),
+        Target::Claude => {
+            let matcher = super::claude_settings::claude_session_start_matcher();
+            json_in(
+                2,
+                "settings.json",
+                HooksRoot::HooksKey,
+                &hook_event_commands(
+                    hook_path,
+                    integration_hook_events(crate::agent::IntegrationTarget::Claude),
+                ),
+                &JsonHookShape::Nested {
+                    matcher: Some(matcher),
+                },
+            )
+        }
         Target::Codex => {
             json_in(
                 1,
@@ -468,6 +528,7 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                     hook_path,
                     integration_hook_events(crate::agent::IntegrationTarget::Codex),
                 ),
+                &JsonHookShape::Nested { matcher: None },
             ) && ancestor(hook_path, 1)
                 .is_some_and(|dir| codex_hooks_feature_enabled(&dir.join("config.toml")))
         }
@@ -487,6 +548,7 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                     )
                 })
                 .collect::<Vec<_>>(),
+            &JsonHookShape::Direct,
         ),
         Target::Devin => json_in(
             1,
@@ -496,6 +558,7 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 hook_path,
                 integration_hook_events(crate::agent::IntegrationTarget::Devin),
             ),
+            &JsonHookShape::Nested { matcher: None },
         ),
         Target::Droid => json_in(
             2,
@@ -505,6 +568,7 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 hook_path,
                 integration_hook_events(crate::agent::IntegrationTarget::Droid),
             ),
+            &JsonHookShape::Nested { matcher: None },
         ),
         Target::Qodercli => json_in(
             2,
@@ -514,6 +578,9 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 hook_path,
                 integration_hook_events(crate::agent::IntegrationTarget::Qodercli),
             ),
+            &JsonHookShape::Nested {
+                matcher: Some("*".to_owned()),
+            },
         ),
         Target::Qwen => json_in(
             2,
@@ -523,6 +590,9 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 hook_path,
                 integration_hook_events(crate::agent::IntegrationTarget::Qwen),
             ),
+            &JsonHookShape::Nested {
+                matcher: Some("*".to_owned()),
+            },
         ),
         Target::Letta => json_in(
             2,
@@ -532,6 +602,7 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 hook_path,
                 integration_hook_events(crate::agent::IntegrationTarget::Letta),
             ),
+            &JsonHookShape::Nested { matcher: None },
         ),
         Target::Cursor => json_in(
             1,
@@ -541,6 +612,7 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 hook_path,
                 integration_hook_events(crate::agent::IntegrationTarget::Cursor),
             ),
+            &JsonHookShape::Simple,
         ),
         Target::Mastracode => json_in(
             2,
@@ -550,6 +622,7 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 hook_path,
                 integration_hook_events(crate::agent::IntegrationTarget::Mastracode),
             ),
+            &JsonHookShape::Flat,
         ),
         Target::AntigravityCli => ancestor(hook_path, 2).is_some_and(|dir| {
             read_json(&dir.join("hooks.json")).is_some_and(|document| {
@@ -729,6 +802,56 @@ mod registration_tests {
     }
 
     #[test]
+    fn claude_command_outside_the_installed_shape_is_outdated() {
+        let dir = base("claude-shape");
+        let hook = dir.join("hooks").join("shepr-agent-state.sh");
+        write_current_hook(&hook);
+        let settings_path = dir.join("settings.json");
+        let command = hook_command(&hook, Some("session"));
+        let matcher = super::super::claude_settings::claude_session_start_matcher();
+        let write = |session_start: serde_json::Value| {
+            let settings = serde_json::json!({ "hooks": { "SessionStart": session_start } });
+            fs::write(&settings_path, settings.to_string()).expect("test precondition");
+        };
+
+        write(serde_json::json!([
+            { "matcher": matcher, "hooks": [{ "type": "command", "command": command }] }
+        ]));
+        assert_eq!(
+            state(IntegrationTarget::Claude, &hook),
+            IntegrationStatusKind::Current
+        );
+
+        // Claude has no per-hook disable switch, so an unknown `disabled` field
+        // does not stop the hook running and does not unregister it.
+        write(serde_json::json!([{ "matcher": matcher, "hooks": [
+            { "type": "command", "command": command, "disabled": true }
+        ] }]));
+        assert_eq!(
+            state(IntegrationTarget::Claude, &hook),
+            IntegrationStatusKind::Current
+        );
+
+        for session_start in [
+            // An unrelated field of another hook carries the command string.
+            serde_json::json!([{ "matcher": matcher, "hooks": [
+                { "type": "command", "command": "echo keep", "description": command }
+            ] }]),
+            // The right hook under a group with another matcher.
+            serde_json::json!([{ "matcher": "startup", "hooks": [
+                { "type": "command", "command": command }
+            ] }]),
+        ] {
+            write(session_start.clone());
+            assert_eq!(
+                state(IntegrationTarget::Claude, &hook),
+                IntegrationStatusKind::Outdated,
+                "{session_start}"
+            );
+        }
+    }
+
+    #[test]
     fn codex_needs_the_hooks_entry_and_the_feature_flag() {
         let dir = base("codex");
         let hook = dir.join("shepr-agent-state.sh");
@@ -861,6 +984,151 @@ mod registration_tests {
         );
         assert!(result.is_err());
         assert!(!copilot.join("hooks").try_exists().expect("stat hooks dir"));
+    }
+
+    /// For every JSON-registered target: a fresh install reads Current, a
+    /// hand-edited entry (moved under another matcher) reads Outdated, and a
+    /// reinstall repairs it back to Current. An unknown `disabled` field does
+    /// not unregister the hook, since none of these agents honours one.
+    #[test]
+    fn install_repairs_every_registration_status_rejects() {
+        use super::super::targets;
+
+        type Install = fn(&super::super::env::AgentIntegrationPaths) -> io::Result<()>;
+        let env = shepr_test_support::IsolatedEnv::new();
+        let home = env.home();
+        let cases: [(IntegrationTarget, &[&str], &str, HooksRoot, Install); 10] = [
+            (
+                IntegrationTarget::Claude,
+                &[".claude"],
+                "settings.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_claude(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Codex,
+                &[".codex"],
+                "hooks.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_codex(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Copilot,
+                &[".copilot"],
+                "settings.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_copilot(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Devin,
+                &[".config", "devin"],
+                "config.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_devin(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Droid,
+                &[".factory"],
+                "settings.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_droid(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Qodercli,
+                &[".qoder"],
+                "settings.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_qodercli(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Qwen,
+                &[".qwen"],
+                "settings.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_qwen(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Letta,
+                &[".letta"],
+                "settings.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_letta(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Cursor,
+                &[".cursor"],
+                "hooks.json",
+                HooksRoot::HooksKey,
+                |paths| targets::install_cursor(paths).map(|_| ()),
+            ),
+            (
+                IntegrationTarget::Mastracode,
+                &[".mastracode"],
+                "hooks.json",
+                HooksRoot::Document,
+                |paths| targets::install_mastracode(paths).map(|_| ()),
+            ),
+        ];
+
+        for (target, dir_parts, config_name, root, install) in cases {
+            let dir = dir_parts
+                .iter()
+                .fold(home.clone(), |dir, part| dir.join(part));
+            fs::create_dir_all(&dir).expect("test precondition");
+            let paths = super::super::env::AgentIntegrationPaths::resolve();
+            let status = || {
+                integration_status_rows(&paths)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .find(|status| status.target == target)
+                    .expect("status row")
+            };
+            let config_path = dir.join(config_name);
+            // Apply `edit` to every event entry that carries this hook.
+            let edit_entries = |edit: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
+                let hook = status().path.display().to_string();
+                let mut document = read_json(&config_path).expect("test precondition");
+                let events = match root {
+                    HooksRoot::HooksKey => document.get_mut("hooks"),
+                    HooksRoot::Document => Some(&mut document),
+                }
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("test precondition");
+                for entries in events
+                    .values_mut()
+                    .filter_map(serde_json::Value::as_array_mut)
+                {
+                    for entry in entries {
+                        if entry.to_string().contains(&hook) {
+                            edit(entry.as_object_mut().expect("test precondition"));
+                        }
+                    }
+                }
+                fs::write(&config_path, document.to_string()).expect("test precondition");
+            };
+
+            install(&paths).expect("install");
+            assert_eq!(status().state, IntegrationStatusKind::Current, "{target:?}");
+
+            edit_entries(&|entry| {
+                entry.insert("disabled".to_owned(), serde_json::Value::Bool(true));
+            });
+            assert_eq!(status().state, IntegrationStatusKind::Current, "{target:?}");
+
+            edit_entries(&|entry| {
+                entry.insert("matcher".to_owned(), "hand-edited".into());
+            });
+            assert_eq!(
+                status().state,
+                IntegrationStatusKind::Outdated,
+                "{target:?}"
+            );
+
+            install(&paths).expect("reinstall");
+            assert_eq!(status().state, IntegrationStatusKind::Current, "{target:?}");
+            let document = fs::read_to_string(&config_path).expect("test precondition");
+            assert!(!document.contains("hand-edited"), "{target:?}: {document}");
+        }
     }
 
     #[test]

@@ -68,8 +68,9 @@ pub(crate) struct WakePipe {
 
 pub(crate) fn create_wake_pipe() -> std::io::Result<WakePipe> {
     let mut fds = [-1; 2];
-    // SAFETY: pipe(2) writes exactly two fds into the two-element array.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+    // SAFETY: pipe2(2) writes exactly two fds into the two-element array and
+    // sets both descriptor flags atomically before another process can spawn.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
 
@@ -78,9 +79,6 @@ pub(crate) fn create_wake_pipe() -> std::io::Result<WakePipe> {
     let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
     // SAFETY: as above.
     let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-    for fd in [read_fd.as_raw_fd(), write_fd.as_raw_fd()] {
-        set_cloexec(fd).and_then(|_| set_nonblocking(fd))?;
-    }
 
     Ok(WakePipe {
         read_fd,

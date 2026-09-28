@@ -154,6 +154,7 @@ fn launch() -> CliResult<i32> {
         }
         cli::Launch::ClientBridge => {
             let paths = resolve_bridge_paths(requested_session.clone())?;
+            init_bridge_logging(&paths)?;
             return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
         }
         _ => {}
@@ -232,13 +233,32 @@ fn load_launch_endpoint_catalog(
     })
 }
 
-/// A bridge that ended on its idle watchdog ends the process with status 1
-/// and prints nothing: its relay threads may still hold stdin and stdout.
+/// A bridge that ended on its idle watchdog logs the measured idle duration
+/// and ends the process with status 1. Its relay threads may still hold stdin
+/// and stdout, so the caller must not join them or write to stdout.
 fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32> {
     match outcome {
         shepr_platform::RemoteBridgeOutcome::Closed => Ok(0),
-        shepr_platform::RemoteBridgeOutcome::IdleExpired => Err(CliError::BridgeIdle),
+        shepr_platform::RemoteBridgeOutcome::IdleExpired { idle_for } => {
+            tracing::warn!(idle_for = ?idle_for, "remote bridge idle timeout expired");
+            Err(CliError::BridgeIdle)
+        }
     }
+}
+
+/// A client bridge runs on the remote host, spawned by the local client's
+/// ssh, and is its own process: nothing else has installed a logger in it.
+/// It writes that host's client log (never stdout, which carries the relayed
+/// stream), so an idle-watchdog expiry leaves a line saying why it fired. A
+/// log file that cannot be opened is reported on stderr, which ssh hands back
+/// to the local client as diagnostics.
+fn init_bridge_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
+    let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
+    shepr_platform::logging::init_file_logging_with_config(
+        &shepr_api::session::data_dir(paths),
+        shepr_platform::logging::CLIENT_LOG_FILE,
+        logging_config,
+    )
 }
 
 fn resolve_bridge_paths(

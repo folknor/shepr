@@ -19,19 +19,34 @@ use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 const PROBE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
-pub struct SshAgentRegistry(Arc<Mutex<State>>);
+pub struct SshAgentRegistry(Arc<SharedState>);
+
+struct SharedState {
+    state: Mutex<State>,
+    /// Serializes symlink updates without holding the attachment bookkeeping
+    /// lock through socket probes and filesystem operations.
+    publisher: Mutex<()>,
+}
 
 struct State {
     path: PathBuf,
     fallback: Option<PathBuf>,
     agents: Vec<(u64, PathBuf)>,
     next_id: u64,
+    revision: u64,
     identity: Option<(u64, u64)>,
     last_probe: Option<Instant>,
 }
 
+struct PublicationSnapshot {
+    path: PathBuf,
+    fallback: Option<PathBuf>,
+    agents: Vec<(u64, PathBuf)>,
+    identity: Option<(u64, u64)>,
+}
+
 pub struct SshAgentLease {
-    registry: Arc<Mutex<State>>,
+    registry: Arc<SharedState>,
     id: u64,
 }
 
@@ -87,31 +102,57 @@ impl SshAgentRegistry {
             fallback,
             agents: Vec::new(),
             next_id: 0,
+            revision: 0,
             identity: None,
             last_probe: None,
         };
         if managed {
-            state.publish()?;
+            // Initial publication runs before the state is shared with callers.
+            state.last_probe = Some(Instant::now());
+            let mut snapshot = state.publication_snapshot();
+            snapshot.publish()?;
+            state.identity = snapshot.identity;
         }
-        Ok(Self(Arc::new(Mutex::new(state))))
+        Ok(Self(Arc::new(SharedState {
+            state: Mutex::new(state),
+            publisher: Mutex::new(()),
+        })))
     }
 
     pub fn register(&self, path: PathBuf) -> io::Result<SshAgentLease> {
-        let mut state = self
-            .0
-            .lock()
-            .map_err(|_| io::Error::other("SSH agent registry poisoned"))?;
-        if !path.is_absolute() || path == state.path || !usable_socket(&path) {
+        if !path.is_absolute() || !usable_socket(&path) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "SSH agent must be an absolute, user-owned socket",
             ));
         }
-        let id = state.next_id;
-        state.next_id += 1;
-        state.agents.push((id, path));
-        if let Err(error) = state.publish() {
-            state.agents.retain(|(candidate, _)| *candidate != id);
+        let id = {
+            let mut state = self
+                .0
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("SSH agent registry poisoned"))?;
+            if path == state.path {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SSH agent must be an absolute, user-owned socket",
+                ));
+            }
+            let id = state.next_id;
+            state.next_id += 1;
+            state.agents.push((id, path));
+            state.revision = state.revision.wrapping_add(1);
+            state.last_probe = Some(Instant::now());
+            id
+        };
+        if let Err(error) = self.0.publish_latest() {
+            if let Ok(mut state) = self.0.state.lock() {
+                let previous_len = state.agents.len();
+                state.agents.retain(|(candidate, _)| *candidate != id);
+                if state.agents.len() != previous_len {
+                    state.revision = state.revision.wrapping_add(1);
+                }
+            }
             return Err(error);
         }
         Ok(SshAgentLease {
@@ -121,7 +162,59 @@ impl SshAgentRegistry {
     }
 }
 
+impl SharedState {
+    /// Publish the current agent set, holding only the publisher lock across
+    /// the probes and filesystem work. A change made while that work ran (a
+    /// registration, a lease drop, or a failed registration rolling itself
+    /// back) bumps `revision`, and the loop publishes again so the address
+    /// never settles on a set that no longer exists.
+    fn publish_latest(&self) -> io::Result<()> {
+        loop {
+            let publisher = self
+                .publisher
+                .lock()
+                .map_err(|_| io::Error::other("SSH agent publisher poisoned"))?;
+            let (revision, mut candidate) = {
+                let state = self
+                    .state
+                    .lock()
+                    .map_err(|_| io::Error::other("SSH agent registry poisoned"))?;
+                (state.revision, state.publication_snapshot())
+            };
+
+            // This private snapshot may probe sockets and update the published
+            // symlink while the shared state lock remains available to leases.
+            candidate.publish()?;
+
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("SSH agent registry poisoned"))?;
+            state.identity = candidate.identity;
+            let current = state.revision == revision;
+            drop(state);
+            drop(publisher);
+            if current {
+                return Ok(());
+            }
+        }
+    }
+}
+
 impl State {
+    fn publication_snapshot(&self) -> PublicationSnapshot {
+        PublicationSnapshot {
+            path: self.path.clone(),
+            fallback: self.fallback.clone(),
+            agents: self.agents.clone(),
+            identity: self.identity,
+        }
+    }
+}
+
+impl PublicationSnapshot {
+    /// Publish this owned snapshot; shared callers run it after releasing the
+    /// state lock because probes and filesystem operations can take time.
     fn publish(&mut self) -> io::Result<()> {
         if let Some(identity) = self.identity {
             let metadata = fs::symlink_metadata(&self.path)?;
@@ -133,7 +226,6 @@ impl State {
         }
         // Keep a working agent rather than letting probes or a second client replace it.
         let unavailable = self.path.with_extension("unavailable");
-        self.last_probe = Some(Instant::now());
         // Connection-level liveness cannot tell whether forwarded keys have
         // changed. Keep the daemon's inherited agent as its stable default;
         // letting a later client preempt it would redirect every shared pane
@@ -198,16 +290,25 @@ impl SshAgentLease {
     }
 
     fn refresh_at(&self, now: Instant) -> io::Result<()> {
-        let mut state = self
-            .registry
-            .lock()
-            .map_err(|_| io::Error::other("SSH agent registry poisoned"))?;
-        // Share the probe budget across attachments, not one SSH channel per polling client.
-        if state
-            .last_probe
-            .is_none_or(|last| now.saturating_duration_since(last) >= PROBE_INTERVAL)
-        {
-            state.publish()?;
+        let should_publish = {
+            let mut state = self
+                .registry
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("SSH agent registry poisoned"))?;
+            // Reserve the shared probe window before dropping the state lock.
+            // Other attachments can then skip publication while this one does
+            // socket probes and filesystem work outside that lock.
+            let should_publish = state
+                .last_probe
+                .is_none_or(|last| now.saturating_duration_since(last) >= PROBE_INTERVAL);
+            if should_publish {
+                state.last_probe = Some(now);
+            }
+            should_publish
+        };
+        if should_publish {
+            self.registry.publish_latest()?;
         }
         Ok(())
     }
@@ -215,11 +316,21 @@ impl SshAgentLease {
 
 impl Drop for SshAgentLease {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.registry.lock() {
+        let removed = if let Ok(mut state) = self.registry.state.lock() {
+            let previous_len = state.agents.len();
             state.agents.retain(|(id, _)| *id != self.id);
-            if let Err(error) = state.publish() {
-                tracing::warn!(%error, "could not refresh SSH agent after attachment ended");
+            if state.agents.len() != previous_len {
+                state.revision = state.revision.wrapping_add(1);
+                state.last_probe = Some(Instant::now());
+                true
+            } else {
+                false
             }
+        } else {
+            false
+        };
+        if removed && let Err(error) = self.registry.publish_latest() {
+            tracing::warn!(%error, "could not refresh SSH agent after attachment ended");
         }
     }
 }
@@ -323,6 +434,46 @@ mod tests {
             .register(supplied.clone())
             .expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), supplied);
+        drop(lease);
+        drop(registry);
+    }
+
+    #[test]
+    fn registration_releases_state_while_waiting_for_serial_publication() {
+        use std::sync::TryLockError;
+
+        let directory = scratch("agent-publish-lock");
+        let stable = directory.join("agent");
+        let forwarded = directory.join("forwarded");
+        let _listener = UnixListener::bind(&forwarded).expect("test precondition");
+        let registry = SshAgentRegistry::new(stable, None).expect("test precondition");
+        let publisher = registry.0.publisher.lock().expect("test precondition");
+        let registering = registry.clone();
+        let registration = std::thread::spawn(move || registering.register(forwarded));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let registered = loop {
+            match registry.0.state.try_lock() {
+                Ok(state) if !state.agents.is_empty() => break true,
+                // Not registered yet, or the state is briefly locked.
+                Ok(_) | Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Poisoned(_)) => panic!("registry state should not be poisoned"),
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        drop(publisher);
+
+        assert!(
+            registered,
+            "registration should not hold state while publishing"
+        );
+        let lease = registration
+            .join()
+            .expect("registration thread should finish")
+            .expect("registered agent should publish");
         drop(lease);
         drop(registry);
     }

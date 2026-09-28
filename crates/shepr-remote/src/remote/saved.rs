@@ -423,6 +423,9 @@ fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> i
 }
 
 fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
+    // This launch-time classifier is only called for local session validation, saved bridge
+    // paths, and SSH path setup. RemoteExecutable parsing happens during discovery after this
+    // point and cannot reach it; those local InvalidInput failures are permanent setup errors.
     if error.kind() == io::ErrorKind::InvalidInput {
         return true;
     }
@@ -450,7 +453,7 @@ mod tests {
     use shepr_test_fixtures::AppPathsFixture as _;
 
     #[test]
-    fn only_typed_runtime_directory_policy_errors_are_launch_fatal() {
+    fn launch_setup_input_and_runtime_policy_errors_are_fatal() {
         let policy = io::Error::new(
             io::ErrorKind::PermissionDenied,
             shepr_platform::UnsafeSshRuntimeDirectory,

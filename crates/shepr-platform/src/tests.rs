@@ -608,10 +608,9 @@ fn leak(text: String) -> &'static str {
     Box::leak(text.into_boxed_str())
 }
 
-/// Install a fixture stand-in named like the clipboard helper it replaces,
-/// since production recognises wl-copy by name, and return its absolute
-/// path as the `'static` program name `ClipboardCommand` wants (leaked;
-/// tests only).
+/// Install a fixture stand-in under the requested helper name and return its
+/// absolute path as the `'static` program name `ClipboardCommand` wants
+/// (leaked; tests only).
 fn fake_clipboard_program(dir: &Path, name: &str, steps: &[Step]) -> &'static str {
     leak(
         fixture::stand_in(dir, name, steps)
@@ -630,6 +629,7 @@ fn fixture_clipboard_command(steps: &[Step]) -> ClipboardCommand {
     ClipboardCommand {
         program: fixture::path_str(),
         args: Box::leak(args.into_boxed_slice()),
+        owns_selection_after_exit: false,
     }
 }
 
@@ -645,6 +645,7 @@ fn clipboard_commands_prefer_wayland_when_available() {
     });
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].program, "wl-copy");
+    assert!(commands[0].owns_selection_after_exit);
 }
 
 #[test]
@@ -658,17 +659,7 @@ fn clipboard_commands_are_empty_without_a_display_server() {
 }
 
 #[test]
-fn clipboard_program_name_strips_the_directory() {
-    assert_eq!(clipboard_program_name("wl-copy"), "wl-copy");
-    assert_eq!(clipboard_program_name("/usr/bin/wl-copy"), "wl-copy");
-    assert_eq!(
-        clipboard_program_name("/opt/wl-copy-wrapper"),
-        "wl-copy-wrapper"
-    );
-}
-
-#[test]
-fn wl_copy_owner_does_not_block_clipboard_write() {
+fn selection_owning_helper_does_not_block_clipboard_write() {
     use std::sync::mpsc;
 
     struct Cleanup {
@@ -678,7 +669,7 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
     impl Drop for Cleanup {
         fn drop(&mut self) {
             if let Some(pid) = self.owner_pid {
-                // SAFETY: kill(2) with a pid the fake wl-copy reported for
+                // SAFETY: kill(2) with a pid the fake selection helper reported for
                 // itself; it touches no memory of this process.
                 unsafe {
                     libc::kill(pid, libc::SIGTERM);
@@ -687,14 +678,14 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
         }
     }
 
-    let helper_dir = fake_clipboard_dir("wl-copy");
+    let helper_dir = fake_clipboard_dir("wl-copy-wrapper");
     let mut cleanup = Cleanup { owner_pid: None };
     let marker = helper_dir.join("owner-pid");
     let payload = helper_dir.join("payload");
     let args = helper_dir.join("args");
-    let fake_wl_copy = fake_clipboard_program(
+    let fake_owner = fake_clipboard_program(
         &helper_dir,
-        "wl-copy",
+        "wl-copy-wrapper",
         &[
             Step::To(payload.clone()),
             Step::Cat,
@@ -709,8 +700,9 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
     let (result_tx, result_rx) = mpsc::channel();
     let writer = std::thread::spawn(move || {
         let command = ClipboardCommand {
-            program: fake_wl_copy,
+            program: fake_owner,
             args: &["--type", "text/plain;charset=utf-8"],
+            owns_selection_after_exit: true,
         };
         result_tx
             .send(run_clipboard_command(
@@ -733,17 +725,17 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
             None if Instant::now() < marker_deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            None => panic!("fake wl-copy should enter its clipboard-owner phase"),
+            None => panic!("fake selection helper should enter its owner phase"),
         }
     };
     cleanup.owner_pid = Some(owner_pid);
     let returned_while_owner_running = result_rx
         .recv_timeout(Duration::from_secs(2))
         .is_ok_and(|result| result);
-    let actual_payload = std::fs::read(&payload).expect("fake wl-copy should record stdin");
-    let actual_args = std::fs::read_to_string(&args).expect("fake wl-copy should record args");
+    let actual_payload = std::fs::read(&payload).expect("fake helper should record stdin");
+    let actual_args = std::fs::read_to_string(&args).expect("fake helper should record args");
 
-    // SAFETY: kill(2) with the pid the fake wl-copy reported for itself.
+    // SAFETY: kill(2) with the pid the fake selection helper reported for itself.
     unsafe {
         libc::kill(owner_pid, libc::SIGTERM);
     }
@@ -759,13 +751,13 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
 
     assert!(
         returned_while_owner_running,
-        "clipboard writes must return while wl-copy remains alive to own the selection"
+        "clipboard writes must return while the helper remains alive to own the selection"
     );
     assert_eq!(actual_payload, b"clipboard text");
     assert_eq!(actual_args, "--type\ntext/plain;charset=utf-8\n");
     assert!(
         owner_was_reaped,
-        "wl-copy owner should be reaped after exit"
+        "selection owner should be reaped after exit"
     );
 }
 

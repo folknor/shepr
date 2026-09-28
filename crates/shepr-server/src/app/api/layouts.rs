@@ -459,9 +459,14 @@ fn stage_layout_node(
             let extra_env = super::env::normalize_launch_env(second_leaf.env.clone())
                 .map_err(shepr_api::error::ApiError::into_message)?;
             let command = layout_command(second_leaf)?;
-            let launch_env = shepr_mux::pane::PaneLaunchEnv::from_extra(extra_env).with_pane_id(
-                shepr_protocol::PublicPaneId::new(staging.workspace_id, *staging.next_pane_number),
-            );
+            let launch_env = shepr_mux::pane::PaneLaunchEnv::from_extra(
+                extra_env,
+                staging.spawn.api_socket_path.clone(),
+            )
+            .with_pane_id(shepr_protocol::PublicPaneId::new(
+                staging.workspace_id,
+                *staging.next_pane_number,
+            ));
             let direction = match direction {
                 SplitDirection::Right => Direction::Horizontal,
                 SplitDirection::Down => Direction::Vertical,

@@ -119,8 +119,6 @@ Reported from five scopes.
   Nothing keeps them in step; the threshold itself is correctly single-owned as
   `shepr_protocol::MAX_INPUT_PAYLOAD`.
 - Launch-env validation exists twice with different messages: see HYGP-017.
-- An untrusted remote version string is rendered by two policies, and the
-  unfiltered one reaches the terminal: see BUG-038.
 
 Enforcement named: have each install return a
 `Vec<(InstalledArtifact, PathBuf)>` and format once (agent); one guidance
@@ -130,9 +128,8 @@ load-bearing; make `restore_error` a typed enum
 (`RestoreFailure::DirectoryUnavailable { path }` / `ShellStartFailed { err }`)
 and put the wording in whatever owns presentation - a `String` field invites
 ad-hoc text, an enum does not; one `fn paste_rejected_notice(size, max)`; one
-validator in `shepr-api` returning one `ApiError` (HYGP-017); one
-`printable_remote_value` used everywhere (BUG-038). The wording itself is not
-mechanically holdable.
+validator in `shepr-api` returning one `ApiError` (HYGP-017). The wording
+itself is not mechanically holdable.
 
 ## HYGC-006 - Severity encoded as a text prefix instead of a level
 
@@ -547,8 +544,6 @@ banning the bare literals; either use or delete the `_context` parameter.
   {error}"). Nothing downstream can branch on why the catalog was rejected -
   compare `SshFailureDiagnostic`, which exists in the same crate and does this
   properly.
-- `shepr-remote`: `is_launch_fatal_setup_error` classifies launch-versus-retry
-  by `io::ErrorKind` rather than by cause: see BUG-039.
 - `shepr-remote`: `print_saved_ssh_error_hint` reclassifies an error by
   re-parsing it - `is_remote_host_key_error` / `is_remote_auth_error` call
   `SshFailureDiagnostic::from_error`, which for an error that is not already a
@@ -579,8 +574,7 @@ banning the bare literals; either use or delete the `_context` parameter.
   which is where the context loss in HYGC-022 comes from.
 
 Enforcement named: typed errors - `CatalogError` mirroring
-`SshFailureDiagnostic`'s design; the `DeterministicSetupError` marker in
-BUG-039; `print_saved_ssh_error_hint` taking `&SshFailureDiagnostic` rather than
+`SshFailureDiagnostic`'s design; `print_saved_ssh_error_hint` taking `&SshFailureDiagnostic` rather than
 `&io::Error`, so the typed value must be threaded; a typed
 `ManifestOverrideError` plus a `config check` path that loads overrides; a typed
 error carrying the segment's configured command; structured error types instead
@@ -659,8 +653,8 @@ fixes.
   each site; a small `fn read_cache(&self)` / `write_cache(&self)` pair would
   make it one decision.
 
-Note on disagreement across scopes: `shepr-platform`'s writer treats a poisoned
-mutex as a silent success (BUG-043), `shepr-vt::lock_terminal_core` treats
+Note on disagreement across scopes: `shepr-platform`'s log writer recovers a poisoned
+mutex and records the gap, `shepr-vt::lock_terminal_core` treats
 poisoning as terminal for the pane, `shepr-mux/src/render_signal.rs` continues on
 poisoned state at eight sites, and `shepr-server/src/app/session.rs` both
 recovers and refuses on the *same* mutex twenty lines apart. The hunters did not

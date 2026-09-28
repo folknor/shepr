@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use shepr_api as api;
 use shepr_client::endpoint::{
@@ -8,9 +9,64 @@ use shepr_client::endpoint::{
 use shepr_protocol::ServerMessage;
 
 use crate::server::ClientId;
-use crate::server::client_transport::ServerEvent;
+use crate::server::client_transport::{RenderLaneReceiver, ServerEvent};
 use crate::server::headless::tests as headless_tests;
 use crate::test_support::ValidatedConfigFixture as _;
+
+/// Maximum time an expected server control message may take in this test.
+const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn recv_server_message(
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+    expected: &str,
+) -> ServerMessage {
+    recv_server_message_until(receiver, Instant::now() + SERVER_RESPONSE_TIMEOUT, expected)
+}
+
+fn recv_server_message_until(
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+    deadline: Instant,
+    expected: &str,
+) -> ServerMessage {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let bytes = receiver
+        .recv_timeout(remaining)
+        .unwrap_or_else(|error| match error {
+            std::sync::mpsc::RecvTimeoutError::Timeout => {
+                panic!("timed out waiting for {expected}")
+            }
+            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                panic!("control channel closed while waiting for {expected}")
+            }
+        });
+    headless_tests::read_server_message(bytes)
+}
+
+fn recv_render_server_message(receiver: &RenderLaneReceiver, expected: &str) -> ServerMessage {
+    recv_render_server_message_until(receiver, Instant::now() + SERVER_RESPONSE_TIMEOUT, expected)
+}
+
+fn recv_render_server_message_until(
+    receiver: &RenderLaneReceiver,
+    deadline: Instant,
+    expected: &str,
+) -> ServerMessage {
+    loop {
+        match receiver.try_recv() {
+            Ok(bytes) => return headless_tests::read_server_message(bytes),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {expected}"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("render channel closed while waiting for {expected}");
+            }
+        }
+    }
+}
 
 /// The registry generation of the source (Local) connection.
 const SOURCE_GENERATION: u64 = 1;
@@ -178,9 +234,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         }
     }
     let source_release_request_id = source_release_request_id.expect("client source-off request");
+    let source_release_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
     let (source_release_boot_id, source_release_data) = loop {
-        let message = headless_tests::read_server_message(
-            source_control.recv().expect("source typed release ack"),
+        let message = recv_server_message_until(
+            &source_control,
+            source_release_deadline,
+            "source typed release acknowledgement",
         );
         match message {
             ServerMessage::ClientShellEndpointResponseChunk {
@@ -227,9 +286,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         request_id,
         data,
         ..
-    } = headless_tests::read_server_message(
-        target_control.recv().expect("target typed activation ack"),
-    )
+    } = recv_server_message(&target_control, "target typed activation acknowledgement")
     else {
         panic!("expected target activation acknowledgement");
     };
@@ -251,9 +308,9 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         activation.receive_snapshot(&target_id, TARGET_GENERATION, &coherent_snapshot);
     shell.set_endpoint_snapshot_for_generation(&target_id, TARGET_GENERATION, coherent_snapshot);
     assert_eq!(snapshot_progress, SurfaceActivationProgress::Pending);
-    let ServerMessage::PaneSurface(coherent_surface) = headless_tests::read_server_message(
-        target_render.recv().expect("target replacement surface"),
-    ) else {
+    let ServerMessage::PaneSurface(coherent_surface) =
+        recv_render_server_message(&target_render, "target replacement surface")
+    else {
         panic!("expected target pane surface");
     };
     assert_eq!(
@@ -296,9 +353,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             request: sync_request.1,
         }
     ));
+    let sync_response_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
     let (sync_boot_id, sync_request_id, sync_data) = loop {
-        let message = headless_tests::read_server_message(
-            target_control.recv().expect("presentation sync ack"),
+        let message = recv_server_message_until(
+            &target_control,
+            sync_response_deadline,
+            "presentation synchronization acknowledgement",
         );
         if let ServerMessage::ClientShellEndpointResponseChunk {
             boot_id,
@@ -323,9 +383,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         SurfaceActivationProgress::Pending
     );
     headless_tests::render_and_stream(&mut target_server);
+    let sync_snapshot_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
     let sync_snapshot = loop {
-        let message = headless_tests::read_server_message(
-            target_control.recv().expect("presentation sync snapshot"),
+        let message = recv_server_message_until(
+            &target_control,
+            sync_snapshot_deadline,
+            "presentation synchronization snapshot",
         );
         if let ServerMessage::EndpointSnapshot(snapshot) = message {
             break *snapshot;
@@ -338,9 +401,9 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         Box::new(sync_snapshot),
     );
     assert_eq!(sync_progress, SurfaceActivationProgress::Pending);
-    let ServerMessage::PaneSurface(sync_surface) = headless_tests::read_server_message(
-        target_render.recv().expect("presentation sync surface"),
-    ) else {
+    let ServerMessage::PaneSurface(sync_surface) =
+        recv_render_server_message(&target_render, "presentation synchronization surface")
+    else {
         panic!("expected synchronized target surface");
     };
     assert_eq!(
@@ -369,9 +432,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     ));
     let mut replayed_mouse = false;
     let mut replayed_keyboard = false;
+    let presentation_effects_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
     loop {
-        match headless_tests::read_server_message(
-            target_control.recv().expect("presentation effect or fence"),
+        match recv_server_message_until(
+            &target_control,
+            presentation_effects_deadline,
+            "presentation effects or readiness fence",
         ) {
             ServerMessage::MouseCapture { .. } => replayed_mouse = true,
             ServerMessage::ClientShellKeyboardReportAll { .. } => replayed_keyboard = true,
@@ -409,15 +475,18 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         target_client_id,
         std::mem::take(&mut *target_sent.lock().expect("test precondition")),
     );
+    let returning_activation_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
     loop {
         if let ServerMessage::ClientShellEndpointResponseChunk {
             boot_id,
             request_id,
             data,
             ..
-        } =
-            headless_tests::read_server_message(target_control.recv().expect("test precondition"))
-        {
+        } = recv_server_message_until(
+            &target_control,
+            returning_activation_deadline,
+            "returning activation acknowledgement",
+        ) {
             returning.receive_response_for_boot(
                 &target_id,
                 TARGET_GENERATION,
@@ -445,4 +514,11 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     );
     headless_tests::shutdown_test_runtimes(&mut source_server);
     headless_tests::shutdown_test_runtimes(&mut target_server);
+}
+
+#[test]
+#[should_panic(expected = "timed out waiting for test control response")]
+fn server_control_response_wait_has_a_deadline() {
+    let (_sender, receiver) = std::sync::mpsc::channel();
+    recv_server_message_until(&receiver, Instant::now(), "test control response");
 }

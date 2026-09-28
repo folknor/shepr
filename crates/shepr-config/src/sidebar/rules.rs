@@ -104,25 +104,15 @@ enum Condition {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawRule {
-    #[serde(skip_serializing_if = "Option::is_none")]
     equals: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     contains: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     starts_with: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     gt: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     lt: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     ignore_case: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     fg: Option<SidebarTokenColor>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     bold: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     dim: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     hide: Option<bool>,
 }
 

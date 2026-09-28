@@ -113,40 +113,6 @@ nothing is reported, and the only trace is a debug line.
 Fix suggested: a third `ReaderExit` variant (for example `Failed(io::Error)`) the
 owner must handle.
 
-## BUG-009 - A race that can leak PTY master fds into other children
-
-Both `openpty` in `crates/shepr-pty/src/backend.rs` and `create_wake_pipe` in
-`crates/shepr-pty/src/fd.rs` set `FD_CLOEXEC` after creating the fds. Pane
-children are covered by `mark_inherited_fds_cloexec`, but any other concurrent
-`std::process::Command` spawn is not - git status, and especially ssh or a
-ControlMaster. If one of those runs in the gap it can inherit a pane's master fd
-and the PTY never hangs up.
-
-Fix suggested: `pipe2(O_CLOEXEC|O_NONBLOCK)` for the wake pipe, and
-`posix_openpt(O_CLOEXEC)` plus opening the slave with `O_CLOEXEC`; the later
-`set_cloexec` on the master in `PtyIoActor::spawn_inner` is then redundant.
-
-## BUG-010 - `default_shell` is never validated at launch
-
-Stored as a raw `String` in `crates/shepr-config/src/validated.rs`. PATH lookup
-and the executability check happen in `PtyCommand::to_std_command` at every
-spawn, so a typo fails each pane rather than the launch, contradicting "Any
-config problem fails the launch". `default.toml` says "Empty means $SHELL, then
-/bin/sh", but a `$SHELL` that is set and invalid is an error in pane mode, not a
-fall-through to `/bin/sh`. Related: `to_std_command` quietly substitutes home for
-a bad cwd (warn only) while the API validates `new_cwd` upstream.
-
-Fix suggested: a `ValidatedShell` produced at config load.
-
-## BUG-011 - A flaky PTY fd test whose lock guards nothing
-
-`pty_spawn_leaves_one_parent_pty_fd` in `crates/shepr-pty/src/backend.rs` counts
-every `/dev/pts` fd in the process. The two sibling tests open PTYs in parallel
-without taking `pty_fd_test_lock`, which only that one test takes.
-
-Fix suggested: count only the fds this test created, or give every PTY test the
-same guard.
-
 ## BUG-012 - Poisoned-lock paths fabricate values and silently drop writes
 
 - `synchronized_output_state` returns `(true, 0)` on a poisoned core - a made-up
@@ -160,50 +126,6 @@ same guard.
   comment on `GhosttyPaneTerminal::core` justifies this policy for readers
   ("readers answer empty or default values rather than error"); it says nothing
   about writers, and a dropped resize is not a stale read.
-
-## BUG-013 - `prepare_pty_child` ignores the return codes of `sigemptyset` and `sigprocmask`
-
-`crates/shepr-pty` (child setup). A failure to reset the signal mask before
-`exec` is discarded, so a pane child can start with an inherited blocked signal
-set.
-
-## BUG-014 - `shepr agent explain --file` silently ignores local manifest overrides
-
-`src/cli/agent.rs` calls `manifest::explain_for_label`, which reaches
-`manifest::registry()`. `registry()` initialises the process-wide `MANIFESTS`
-`OnceLock` with `override_dir = None` when nothing has called
-`reload_manifests(config_dir)` first, and only the server does that
-(`shepr-server/src/server/headless/bootstrap.rs`, `app/api.rs`,
-`api_dispatcher.rs`). So in the CLI process the bundled manifests are the only
-ones ever loaded, and the documented workflow ("capture the pane, edit the
-override, re-explain") explains against rules that are not the ones the server is
-using. The `source: bundled` field is the only hint.
-
-Same root cause, stated as a hazard rather than a bug: `registry()` and
-`reload_manifests()` race for the same `OnceLock`, so the first caller fixes
-whether overrides exist for the process lifetime. In the server the ordering
-happens to be right today (bootstrap runs before any detection tick) and nothing
-in the build would notice a future early call to `has_screen_manifest` or
-`detect_with_osc` moving ahead of bootstrap: the result would be silently
-bundled-only detection with no warning.
-
-Fix suggested: make the override directory an argument of the explain entry
-point, or have the CLI resolve config paths and call `reload_manifests` first;
-better, remove the global and pass a `&ManifestRegistry` down.
-
-## BUG-015 - Declared hook events disagree with the hooks actually written, for Grok
-
-**Decision (partial):** Hermes support is removed entirely, so the Hermes half
-of this entry is gone. The Grok half remains open.
-
-Grok's descriptor carries `integration_hook_events: &[]` yet
-`targets.rs::grok_hook_config` writes a real `SessionStart` hook with action
-`session`, so any generic consumer of `IntegrationTarget::hook_events()` sees
-Grok as hookless.
-
-Fix suggested: a test asserting that a target with a config-registered hook has a
-non-empty event list, and deriving the written config from the event list instead
-of hand-writing it.
 
 ## BUG-016 - The three bun test files never run
 
@@ -220,67 +142,6 @@ directory and mutate `process.env` globally. `notes/todo.md` has an open item
 ("Resolve typescript question"), so this is known.
 
 Fix suggested: wire a bun step into `brokkr check` or delete the files.
-
-## BUG-017 - Three diverged shell-name lists mean some panes get no agent detection
-
-`crates/shepr-agent/src/detect/proc_tree.rs::is_pane_shell_process_name` knows
-twelve shells (`sh bash dash zsh fish ksh mksh csh tcsh elvish xonsh nu`);
-`detect/mod.rs::is_generic_runtime_or_shell` knows four plus `tmux node bun`;
-`wrapped_agent_name_from_runtime_argv` matches four. Consequence today, stated by
-the hunter as a fact rather than a prediction: a pane shell that is `dash`, `nu`,
-`ksh` or `xonsh` running an agent through `-c` is not unwrapped, so the agent is
-not identified, so there is no detection for that pane. `is_pane_shell_process_name`
-also fails open on any name outside its list (`nix-shell`, `toolbox`, a `$SHELL`
-symlink under another name), which changes `available_pane_shell` and the whole
-child-groups path while reporting nothing.
-
-Fix suggested: one `ShellKind` table with per-use predicates (`is_pane_shell`,
-`supports_dash_c`) derived from it, plus a launch-time check that the configured
-shell is one shepr recognises.
-
-## BUG-018 - The session-start-source vocabulary has three copies and they disagree
-
-**Decision (partial):** Hermes support is removed entirely, so the hermes
-asset's invented start sources go. The remaining disagreement (enum versus
-`SESSION_START_MATCHER`, Grok's `load`) stays open.
-
-`crates/shepr-agent/src/agent/resume.rs::AgentSessionStartSource::parse` accepts
-eight values (`startup resume clear compact branch new fork select`);
-`integration/claude_settings.rs::SESSION_START_MATCHER` is
-`^(startup|resume|clear|compact|fork)$` (five); the kimi asset defaults to the
-literal `"startup"`. The
-comment above `SESSION_START_MATCHER` says Grok "uses new/load", and `load` is in
-none of the three lists, so a grok-imported Claude hook firing with `load`
-normalises to `None` and is treated as unrecognised
-(`session_start_source_is_recognized` in `shepr-mux/.../hooks.rs`).
-
-Fix suggested: derive the matcher regex from the enum's variant strings and give
-the enum a single `as_str` the assets can be grepped against.
-
-## BUG-019 - `json_hook_commands_registered` verifies a hook by substring search
-
-`crates/shepr-agent/src/integration/registry.rs`. Install writes an exact shape
-(four different shapes across `ensure_command_hook`,
-`ensure_flat_command_hook`, `ensure_direct_command_hook`,
-`ensure_simple_command_hook`), and status verifies by walking the event's value
-recursively for a matching command string anywhere inside it
-(`json_contains_string`). A command string sitting in a disabled block, in a
-comment-like field, or in an unrelated nested entry counts as registered.
-
-Fix suggested: have status reuse the install shape (`is_matching_command_hook`
-already exists for one of the four).
-
-## BUG-020 - Grok reimplements `hook_command` with a different interpreter and a literal action
-
-`crates/shepr-agent/src/integration/command.rs::hook_command` produces
-`bash '<path>' <action>`; `targets.rs::grok_hook_command` produces
-`sh '<path>' session`. The grok asset is `#!/bin/sh`, so `sh` is probably
-intentional, but the choice is invisible at the one place that owns how shepr
-invokes hook scripts, and the action string `session` is spelled here rather than
-taken from `IntegrationHookAction::as_str`.
-
-Fix suggested: give `hook_command` an interpreter parameter (or read it off the
-spec row) so every call site goes through one function.
 
 ## BUG-021 - `app_dir_name()`'s `cfg!(test)` guard does not hold outside its own crate
 
@@ -336,10 +197,8 @@ Open here, all created or exposed by the removal:
 - `AGENTS.md`'s recipe for testing a dev build inside a running shepr
   (`env -u SHEPR_SOCKET_PATH -u SHEPR_CLIENT_SOCKET_PATH brokkr run --
   <command>`) now lands on the installed server's default-session socket and
-  is refused. It needs `--session <name>`. The `env -u` must stay while
-  BUG-077 stands. `resolve_paths_from_env` reads the socket overrides before
-  the session picks the address, so an empty `SHEPR_SOCKET_PATH` is refused
-  even alongside an explicit `--session`. An inherited `SHEPR_SESSION` does
+  is refused. It needs `--session <name>`. Panes now export a non-empty
+  `SHEPR_SOCKET_PATH`, so the empty-override refusal no longer bites. An inherited `SHEPR_SESSION` does
   not work as the switch: `ServerAddress::resolve_paths` lets only an explicit
   `--session` outrank a non-empty socket override.
 
@@ -357,51 +216,6 @@ hunter called this the most dangerous false claim in their scope.
 Fix suggested: a positive signal (for example a `SHEPR_TEST_DIR_NAME` set by
 `shepr-test-support`) that `app_dir_name()` honours, so isolation is opted into
 and a wrong name is loud.
-
-## BUG-022 - A remote endpoint's config decode error is discarded and drops the cached config
-
-`crates/shepr-client/src/shell/endpoints.rs::cache_endpoint_snapshot` does
-`codec::from_slice_exact::<ValidatedConfig>(&snapshot.resolved_config).ok()`: the
-decode error is discarded, nothing is logged, and `endpoint.resolved_config` is
-set to `None`, discarding any previously good cached config.
-`resolve_snapshot_config` then decodes the same bytes again and this time
-propagates, so the config is decoded twice per new snapshot on the fanout path.
-For a non-active endpoint the error is never surfaced at all
-(`apply_cached_endpoint_snapshot` only reports when
-`endpoint_id == self.active_endpoint_id`), so a remote machine shipping an
-unreadable config looks healthy in the sidebar until you switch to it. The
-message that does reach the operator names no subject: "invalid endpoint
-configuration: unexpected end of input: needed 1 bytes, 0 remaining" - no host,
-no endpoint, no session.
-
-Context from the same hunter: this is also where AGENTS.md's "config is validated
-once at launch" stops holding, because `ValidatedConfig`'s `Deserialize` re-runs
-`from_resolution(..., CwdCheck::Received)` on the client at attach time.
-
-Fix suggested: decode once, keep the `Result`, log at `warn` with the endpoint
-id, and set the endpoint's status to the error immediately.
-
-## BUG-023 - `skip_serializing_if` silently drops provenance keys
-
-`crates/shepr-config/src/validated.rs::ConfigProvenance::from_config` enumerates
-config keys by `serde_json::to_value(config)` and walking the tree. Any
-`skip_serializing_if` in a config type therefore drops provenance keys silently,
-and `RawRule` (behind `SidebarTokenRule`, `sidebar/rules.rs`) has ten of them
-today, so sidebar-rule fields that are `None` never appear in `config check`'s
-enumeration. The completeness of the provenance surface depends on an attribute
-nobody audits.
-
-## BUG-024 - `default.toml` ships one active setting
-
-Every line in `crates/shepr-config`'s `default.toml` is commented out except
-`pane_history = false` under `[experimental]`. The file is only printed
-(`shepr --default-config`), never parsed, so a user who redirects it to
-`~/.config/shepr/config.toml` gets a config that explicitly pins one experimental
-flag while leaving everything else to defaults. The hunter judged it almost
-certainly an editing slip.
-
-Fix suggested: a test asserting every non-blank, non-`[section]` line in
-`DEFAULT_CONFIG` starts with `#`.
 
 ## BUG-028 - `status`'s machine refusal message is wrong and malformed
 
@@ -423,29 +237,6 @@ API-backed is blanket-blocked with no test failing.
 Fix suggested: classify "may this run against a remote machine" rather than "is
 this API-backed", and make `name()` unable to return `""`.
 
-## BUG-030 - Four unbounded `recv()` loops in `src/netside_tests.rs` hang instead of failing
-
-The source-release ack, the presentation-sync ack, the sync snapshot, the
-presentation-effects fence and the final returning-activation loop all do
-`loop { ... control.recv().expect(..) ... }` with `continue` arms and no deadline.
-If the expected message never arrives the test blocks forever rather than
-failing, and `brokkr check` has no per-test timeout to rescue it. Contrast
-`crates/shepr-api/src/server/subscription_socket_tests.rs`, which defines
-`RESPONSE_TIMEOUT` and threads a deadline through every read.
-
-## BUG-031 - `startup_command` gives the wrong command when the socket path was overridden
-
-`src/cli/server_not_running.rs`: if the socket path is not exactly
-`paths.server_address().api_socket()`, the guidance degrades to "run `shepr`",
-which for a `--session work` invocation or a `SHEPR_SOCKET_PATH` override is the
-wrong command and will attach the wrong server. Nothing reports that the fallback
-was taken. The `--machine` case never reaches here (it routes to
-`target::remote_error`), so the reachable wrong-advice cases are socket
-overrides.
-
-Fix suggested: derive the command from the address, which already knows how
-(`ServerAddress::attach_command` takes the session).
-
 ## BUG-035 - The client protocol socket skips the startup lock its own contract requires
 
 `shepr_platform::ipc` documents the order ("Acquire this before
@@ -460,116 +251,6 @@ the omission is exactly the race the lock exists to close.
 Fix suggested: one
 `shepr_platform::ipc::bind_private_socket(path, busy_message) -> (Listener,
 SocketStartupLock, SocketFileIdentity)` so the wrong order is unrepresentable.
-
-## BUG-036 - A test's headline assertion has never executed
-
-**Decision (partial):** the `Path::exists` seal is extended to `Path::is_file`
-and `Path::is_dir`, and it reaches test code, so the `user_config.is_file()`
-guard cannot stay. The suggested fix below removes it anyway. Open: the fix.
-
-`crates/shepr-remote/src/remote/attach.rs::managed_ssh_config_includes_user_config_then_fallback`
-guards its ordering assertion with `if let Some(home) = paths.home_dir() { let
-user_config = home.join(".ssh").join("config"); if user_config.is_file() { ... }
-}`. `paths` comes from `test_app_paths()`
-(`AppPaths::test_with_context(&root, Some(&root), None)` over a fresh
-`ScratchDir`), and a fresh scratch directory never contains `.ssh/config`, so the
-inner block is dead in every run. The test's name and comment describe the one
-ordering rule OpenSSH's first-value-wins semantics depend on, and check nothing.
-The hunter listed this as one of two findings they would most want confirmed by
-execution.
-
-Fix suggested: write a `config` file into the scratch home and assert
-unconditionally.
-
-## BUG-039 - `is_launch_fatal_setup_error` classifies by `ErrorKind`, and the blanket is wrong
-
-`crates/shepr-remote`: it treats every `io::ErrorKind::InvalidInput` as
-launch-fatal. `InvalidInput` is produced by
-`shepr_platform::remote_bridge_endpoint_path` for "socket path exceeds the Unix
-socket length limit", by `validate_private_runtime_dir` for a relative runtime
-dir, by `shared_ssh_control_path`, and by `RemoteExecutable::parse` failures
-arriving through other paths. Some of those are genuinely deterministic; the
-classification is by kind, not by cause. The hunter marked this "FACT, partly
-false". Note the existing test
-`only_typed_runtime_directory_policy_errors_are_launch_fatal` pins the looser
-rule in place, so this needs the test changed, not added.
-
-Fix suggested: a typed `DeterministicSetupError` marker on every deterministic
-producer, and drop the blanket.
-
-## BUG-042 - The clipboard write path is keyed on the program name `wl-copy`
-
-`crates/shepr-platform/src/clipboard.rs`: the entire "detach the clipboard owner
-instead of waiting for it" behaviour hangs on
-`clipboard_program_name(command.program) == "wl-copy"`. Rename the helper, wrap
-it, or point at `wl-copy-wrapper` - a case the project's own test at
-`tests.rs` explicitly demonstrates produces `"wl-copy-wrapper"` - and the write
-path silently reverts to waiting for a process that never exits until the 2 s
-timeout kills it, taking the user's clipboard content with it. The hunter listed
-this second among their live defects.
-
-Fix suggested: put the "owns the selection after exit" property on
-`ClipboardCommand` as a field rather than inferring it from the program name.
-
-## BUG-043 - The logging writer's poisoned-mutex branch turns the process into one that never logs again
-
-`crates/shepr-platform/src/logging.rs`: `RotatingFileGuard::write` returns
-`Ok(buf.len())` on a poisoned mutex and on any write failure, and `flush` returns
-`Ok(())` on a poisoned mutex. The recovery design (remember the first error,
-report it into the log when writing resumes) is sound and tested, but the
-poisoned-mutex branch is not covered by it: it returns success and records
-nothing in `lost_error`, so a panic inside the rotation path silently turns the
-process into one that logs nothing, forever, with no "lines were lost" note -
-because it never recovers.
-
-Fix suggested: `PoisonError::into_inner` (as `shepr-test-support` already does
-for its own mutexes) so the state is recovered; the existing
-`writer_recovers_after_an_io_error_and_notes_the_gap` test shape extends to it.
-
-## BUG-045 - Mutexes held across blocking cross-process work in `shepr-platform`
-
-- `logging.rs::RotatingFileState`: the mutex is held across `flock(LOCK_EX)` - a
-  blocking syscall that waits for another process - plus `rename`, `remove_file`
-  and `write`. Every thread in the process that emits a log line blocks behind a
-  cross-process lock. The workspace already denies `await_holding_lock`; this is
-  the sync analogue and no lint covers it.
-- `ssh_agent.rs`: `SshAgentRegistry::register` and `SshAgentLease::refresh_at`
-  hold `Arc<Mutex<State>>` across `State::publish`, which does
-  `symlink_metadata`, up to N `connect_sync()` calls through `live_socket`,
-  `symlink`, `rename` and another `symlink_metadata`. Each `connect_sync` uses
-  `ConnectWaitMode::Timeout(Duration::ZERO)`, so the window is short by
-  construction - but the structure, not the timeout, is what keeps it short, and
-  nothing records that. Every attachment's refresh serialises behind it.
-
-Fix suggested for the logging case: take the file handle, drop the guard, then
-write.
-
-## BUG-046 - `Activity::record` turns a clock failure into a desynchronised SSH relay
-
-`crates/shepr-platform/src/remote_bridge.rs`: `TrackedIo::{read,write}` call
-`self.progressed(count)?`, which calls `now()?`, which fails if
-`clock_gettime(CLOCK_BOOTTIME)` fails. A clock error is then reported to the
-caller as an IO error on the relayed stream, after the bytes have already been
-read or written - so the byte count is lost and the stream desynchronises. A
-failed clock read should leave the watchdog stale (the watchdog already treats a
-`now()` failure as expiry), not corrupt the relay. The hunter marked this a
-prediction / latent desync rather than an observed failure.
-
-Fix suggested: make `record` infallible.
-
-## BUG-047 - The only behavioural test of the logind protocol never runs
-
-`crates/shepr-platform/src/shutdown.rs::delay_lock_is_held_until_checkpoint_and_retaken_after_cancellation`
-is `#[ignore = "requires dbus-daemon; ..."]`. It is the sole test of
-`watch_connection` - inhibitor acquisition, the hold-until-checkpoint invariant,
-retake-after-cancellation, and the `already_preparing` reconnect branch.
-Everything `brokkr check` exercises in that module is the three pure `Shared`
-tests. The mechanism AGENTS.md cites as the reason `zbus` is a dependency at all
-is unverified by the gate.
-
-Fix suggested: `zbus` can serve the `LoginManager` interface over a `UnixStream`
-pair or a `p2p` connection with no `dbus-daemon`, which removes the
-external-binary dependency and lets the test run in the gate.
 
 ## BUG-048 - Discarded cleanup failures leak private directories and temporary files
 
@@ -774,43 +455,6 @@ memory twice (string, then parsed tree). `git/discovery.rs` caps ref files at
 Fix suggested: one `BoundedSourceMap<V>` with the cap as a construction
 parameter, and a cap plus test on the history read.
 
-## BUG-070 - `present_surface_patch` writes to the real stdout under `cfg(test)`
-
-`crates/shepr-client/src/state.rs`: `try_present_frame` routes through
-`frame_output::write_composed_frame` and picks its sink by `cfg`
-(`io::stdout()` in production, `io::sink()` under test) with a comment explaining
-that a full-screen frame written to the test runner's real stdout would scribble
-on the developer's terminal. `present_surface_patch`, forty lines above, writes
-`io::stdout().write_all(&encoded.bytes)` unconditionally, with no `cfg` and
-bypassing `frame_output` entirely. The hunter marked this a live defect, not a
-prediction: any unit test reaching the patch path writes escape sequences to the
-test runner's terminal. It also means the presentation test surface
-(`shell/tests/copy.rs`, `mouse_selection.rs`, `endpoints.rs`) never covers the
-production writer, and the two paths are not the same code.
-
-Fix suggested: an injected writer on `ClientState`, which removes the
-`#[cfg(test)]` divergence as well.
-
-## BUG-072 - The bridge idle watchdog still leaves no log line saying why it fired
-
-**Decision (partial):** the suggested fix is adopted and landed: `process::exit`
-is confined to `src/main.rs`, held by both a `clippy.toml disallowed-methods`
-entry and broadarrow's `exits-from-main` textlint. `shepr-platform`'s remote
-bridge watchdog (`remote_bridge.rs::Activity::start`) now takes an `expired`
-callback instead of exiting, and `remote_bridge_io.rs` turns that into a
-`RemoteBridgeOutcome::IdleExpired` that `src/main.rs::finish_bridge` maps to
-`CliError::BridgeIdle`; `shepr-client`'s `run_client` returns a
-`ClientRunError` instead of exiting; `shepr-server`'s bootstrap returns a typed
-`RunServerError` on `AddrInUse` instead of exiting, so `logging::shutdown("server")`
-runs either way. Open: the bridge still
-ends with no log line saying the idle deadline fired - `CliError::BridgeIdle`
-prints nothing (`CliError::print`'s `Self::BridgeIdle => {}` arm) - so the one
-place a log would explain a mysterious remote disconnect still has none.
-
-Fix suggested: log the idle expiry (with the elapsed idle duration) at the
-point `RemoteBridgeOutcome::IdleExpired` is produced, or in `finish_bridge`
-before returning the exit code.
-
 ## BUG-073 - Tests that skip themselves when run as root and report success
 
 - `crates/shepr-platform/src/tests.rs::config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access`:
@@ -902,46 +546,6 @@ constants with no injection point; `SshAgentLease::refresh_at(now)`,
 `EndpointCatalogWatch::poll(now)` and `shepr-mux`'s `terminal/state` are cited as
 the pattern that works.
 
-## BUG-077 - Most panes are launched with an empty `SHEPR_SOCKET_PATH`
-
-`crates/shepr-mux/src/pane/launch.rs`: `PaneLaunchEnv::from_extra` starts with
-an empty `api_socket_path`, and `apply_pane_launch_env` always writes
-`SHEPR_SOCKET_PATH` from it. The only call to `with_api_socket_path` is in
-`crates/shepr-server/src/app/ids.rs::pane_launch_env`, which is reached from
-agent resume. Every other pane - new workspaces (`creation.rs` ->
-`Workspace::new_with_extra_env`), new tabs, API splits (`api/panes.rs` ->
-`split_pane`), layout apply and session restore (`persist/restore.rs`) - is
-built by `from_extra` alone, so the child sees `SHEPR_SOCKET_PATH=""`.
-
-Consequences, if the trace holds:
-
-- Every hook asset exits early when `SHEPR_SOCKET_PATH` is empty, so hook-based
-  agent state and session reporting silently does nothing in ordinary panes.
-- `pane_agent_socket(Path::new(""))` means those panes also never get shepr's
-  forwarded `SSH_AUTH_SOCK`.
-
-- With an empty API path, `pane_agent_socket` probes a relative `.agent` path,
-  so a `.agent` symlink in the server's working directory could hand a pane a
-  relative `SSH_AUTH_SOCK` that resolves differently from the server's probe.
-
-Confirmed by reading (wave 1 fixer): of five production construction sites only
-agent resume in `ids.rs` supplies the resolved path; 18 asset files reference
-`SHEPR_SOCKET_PATH` and several, including the Codex and Claude hooks, exit when
-it is empty. A comment at the `launch.rs` field now says the server must pass
-its resolved API socket path - which describes the intended fix, not what most
-construction sites do yet, so it is false until this entry closes. The fix was not made because startup restore's
-caller, `crates/shepr-server/src/app/mod.rs`, must thread the path too; the next
-fixer needs that file in scope alongside `launch.rs`, `workspace.rs`,
-`persist/restore.rs`, `creation.rs`, `ids.rs` and the `api/` callers.
-
-When the fix lands, `AGENTS.md`'s dev-build recipe sentence ("panes are
-currently launched with an empty `SHEPR_SOCKET_PATH`") becomes false and needs
-rewording.
-
-Fix suggested: make the socket path a required input of `PaneLaunchEnv`
-construction rather than an optional builder step, so a pane cannot be launched
-without it, plus a test that every pane creation path sets a non-empty value.
-
 ## BUG-025 - The CLI process installs no tracing subscriber before the launch dispatch
 
 The operator-guidance half is resolved: `validate_running_server_compatibility`'s
@@ -977,35 +581,6 @@ connector ownership through the blocking task and returning it with the attempt
 event, which crosses into `crates/shepr-client/src/lib.rs` as well as
 `saved.rs` and `crates/shepr-client/src/endpoint/`.
 
-## BUG-038 - Raw remote stderr reaches operator output unfiltered
-
-The version-string half is resolved: one filter covers the confirmation prompt,
-the unanswered notice and the compatibility error in `server_lifecycle.rs`,
-`version_label` is gone, and malformed status JSON is no longer echoed. The
-`--remote` forwarding socket name was checked and is not world-listable (it sits
-under a current-user-owned 0700 runtime directory), and `src/cli/machine.rs`
-escapes its text output and JSON-encodes ESC.
-
-Open:
-
-- `crates/shepr-remote/src/remote/ssh.rs::command_failed` and
-  `crates/shepr-remote/src/remote/bridge.rs::ssh_bridge_exit_error` fold raw
-  remote stderr (16 KiB cap, unredacted, unfiltered for control sequences) into
-  errors that reach CLI error printing.
-- Interactive SSH setup forwards subprocess stderr straight to local stderr
-  through `PipeEcho::Stderr` in `ssh.rs`: another raw terminal path.
-- `crates/shepr-remote/src/remote/discovery.rs` has its own non-graphic filter
-  for remote values; one shared `printable_remote_value` should serve it and
-  `server_lifecycle.rs`.
-
-## BUG-052 - A recursive delete whose failure is discarded
-
-`crates/shepr-server/src/app/api/workspaces.rs`: `let _ =
-std::fs::remove_dir_all(&source_cwd);`. It may be fixture teardown in test code,
-but a recursive delete of a path derived from workspace state is the one
-operation you want logged either way. (The sibling `commit_pane_removal` discard
-is resolved: the `PaneDied` handler logs a stale plan.)
-
 ## BUG-060 - Uncapped queues in the headless server
 
 The tab-bar half is resolved (the warning logs once per failure streak without
@@ -1018,23 +593,6 @@ Open: `crates/shepr-server/src/server/headless.rs`'s `pending_alt_screen_reads`,
 request that arrives while a reload runs, so a client looping on that method
 grows it without bound.
 
-## BUG-079 - The new-workspace label runs a local `git` on a cwd that may be on a remote host, synchronously on the client's main thread
-
-`crates/shepr-client/src/workspace_label.rs::derive_label_from_cwd` spawns
-`git rev-parse --show-toplevel` in `cwd`. Its only caller,
-`crates/shepr-client/src/shell/overlays/overlay_input.rs::open_new_workspace_overlay`,
-passes `new_workspace_cwd` from the active endpoint's snapshot, which for a
-remote workspace names a path on that remote host. The local `git` then either
-inspects an unrelated local directory at the same path or falls through to the
-non-Git fallbacks, silently producing a wrong label. It also runs synchronously
-in the client's input handling as the overlay opens, blocking the UI thread on a
-subprocess.
-
-Fix suggested: derive the label locally only for the `Local` endpoint and skip
-the Git lookup for a remote one; run the lookup off the input-handling path.
-(Asking the remote server for the checkout root is a new API method, moved to
-`notes/todo.md`.)
-
 ## BUG-082 - Nothing bounds concurrent API connections, so per-connection limits multiply
 
 `crates/shepr-api/src/server.rs` spawns one thread per API connection with no
@@ -1044,12 +602,73 @@ so a client (or a misbehaving hook) opening many subscription connections still
 multiplies the allocation. A global connection admission limit is the control
 that makes the per-connection budgets a bound.
 
-## BUG-083 - Restore can assign duplicate public tab numbers
+## BUG-010 - The configured shell is validated per spawn, not at launch
 
-`crates/shepr-mux/src/persist/restore.rs`: when a saved workspace's
-`public_tab_numbers` is shorter than its tab list, or holds a zero (now treated
-as missing rather than aborting), the fallback number is `idx + 1`, which can
-collide with a number saved for another tab. Nothing crashes, but two tabs can
-then share a public id, so API calls addressing one are ambiguous. The pane
-path already takes the next free number for a missing or zero entry; tabs
-should allocate the same way.
+`crates/shepr-config/src/validated.rs` keeps `terminal.default_shell` as a raw
+`String`; PATH lookup and the executability check happen in
+`crates/shepr-pty/src/command.rs::to_std_command` at every spawn, and
+`crates/shepr-mux/src/pane/launch.rs::pane_shell_command_builder` passes the
+raw string through. A typo fails each pane rather than the launch. A `$SHELL`
+that is set and invalid is an error in pane mode, not the fall-through to
+`/bin/sh` that `default.toml` describes. Related: `to_std_command` quietly
+substitutes home for a bad cwd (warn only) while the API validates `new_cwd`
+upstream.
+
+The layering question is the real blocker: `brokkr.toml` forbids a normal
+`shepr-config` to `shepr-pty` edge, so the resolver cannot simply move into
+config validation. Options: a shared shell resolver in a lower allowed layer
+(`shepr-core` or `shepr-platform`) that both config validation and the PTY
+call; or validation in the launch path in `src/main.rs` right after
+`load_validated_config`, before starting the server or client. Either way the
+pane builder should consume the validated value.
+
+The same launch-time check should refuse a configured shell whose process name
+shepr's detection does not recognise (`shepr-agent/src/detect/proc_tree.rs`'s
+shell table): an unrecognised pane shell makes `available_pane_shell` return
+`None`, and agent start then reports the target as busy.
+
+## BUG-014 - The manifest registry is a process-wide global
+
+`agent explain --file` now loads manifests from the CLI's resolved config
+directory, so its explanation honours local overrides. Open: `registry()` still
+serves a process-wide cache that a later `reload_manifests` replaces, so a
+detection read before the headless bootstrap reload would briefly use bundled
+rules with no warning. The structural fix passes a `&ManifestRegistry` down
+instead. Consumers: one detector call in `crates/shepr-agent/src/detect/mod.rs`,
+two readiness checks in `crates/shepr-mux/src/terminal/state/managed.rs`, one
+explain call in `crates/shepr-server/src/app/api/agents.rs`; reloads in
+`crates/shepr-server/src/server/headless/bootstrap.rs`,
+`headless/api_dispatcher.rs` and `app/api.rs` (test code).
+
+## BUG-079 - The Local new-workspace label blocks input handling on a git spawn
+
+Remote endpoints now get a lexical cwd label with no local Git lookup. Open: for
+the Local endpoint, `derive_label_from_cwd` still spawns `git rev-parse
+--show-toplevel` synchronously in the new-workspace overlay's input handler.
+Moving it off that path needs pending-label state and a client-loop completion
+event, in `crates/shepr-client/src/shell/state.rs` and `shell_runtime.rs` or
+`lib.rs` as well as `shell/overlays/overlay_input.rs`.
+
+## BUG-084 - A failed stat after publishing the SSH agent link leaves the link behind
+
+`crates/shepr-platform/src/ssh_agent.rs`: publication renames the temporary
+symlink into place and then calls `symlink_metadata` on it to record its
+identity. If that call fails, publication returns an error before the shared
+state records the link, so later cleanup does not know the link is shepr's and
+can leave the published path behind.
+
+## BUG-085 - A shepr-client test writes a real OSC 52 sequence to the test runner's stdout
+
+A full test run prints `]52;c;dGVzdA==` into the runner's output, so some
+`shepr-client` test reaches a clipboard write path that still writes to the real
+`io::stdout()` rather than an injected or test sink (candidates:
+`shepr-termio`'s `host_term::title::write_clipboard_bytes`, which HYGC-003 names
+as the lower crate's only direct stdout writer). Any test hitting it scribbles
+on the developer's terminal clipboard when run interactively.
+
+## BUG-086 - The API bridge logs its idle expiry to no subscriber
+
+The client bridge launch now initialises the client file logger, so its idle
+expiry is logged with the idle duration. The API bridge path (`remote-api-bridge`
+in `src/main.rs`) logs the same expiry but installs no logger, so that line goes
+nowhere.

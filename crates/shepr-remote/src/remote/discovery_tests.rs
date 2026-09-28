@@ -234,7 +234,6 @@ fn ssh_exit_255_from_a_discovery_command_is_a_link_failure() {
     let remote = command_failed("remote binary discovery failed", &ssh_output(1, "boom"));
     assert!(!is_ssh_link_failure(&remote));
     assert_eq!(remote.to_string(), "remote binary discovery failed: boom");
-
     // A `command -v` lookup whose ssh failed is not "no shepr on PATH".
     assert!(path_lookup_result(&ssh_output(1, "")).is_ok_and(|path| path.is_none()));
     let error = path_lookup_result(&ssh_output(255, "Connection timed out"))
@@ -280,6 +279,23 @@ fn ssh_exit_255_from_a_discovery_command_is_a_link_failure() {
         host.0.calls,
         ["login", "known", "dropped", "probe /usr/bin/shepr"]
     );
+}
+
+#[test]
+fn command_remote_stderr_is_filtered_before_error_output() {
+    let error = command_failed(
+        "remote binary discovery failed",
+        &ssh_output(1, "Connection refused\x1b[2J"),
+    );
+    assert!(!error.to_string().contains('\x1b'));
+    assert!(error.to_string().contains("Connection refused?[2J"));
+
+    let authentication = command_failed(
+        "remote SSH connection failed",
+        &ssh_output(255, "Permission denied (publickey)\x1b[2J"),
+    );
+    assert!(crate::SshFailureDiagnostic::from_error(&authentication).requires_authentication());
+    assert!(!authentication.to_string().contains('\x1b'));
 }
 
 #[test]
@@ -336,6 +352,21 @@ fn client_build_mismatch_offers_a_separate_remote_session() {
         error.to_string().contains("--remote-session <name>"),
         "{error}"
     );
+}
+
+#[test]
+fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
+    let mismatched = RemoteClientStatusJson {
+        version: Some("1.0\x1b[2J".into()),
+        build_id: Some("build id".into()),
+    };
+    let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
+    assert!(
+        error
+            .to_string()
+            .contains("found version unknown build build id")
+    );
+    assert!(!error.to_string().contains('\x1b'));
 }
 
 #[test]

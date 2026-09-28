@@ -669,6 +669,10 @@ pub fn reload_manifests(config_dir: &Path) -> Vec<AgentManifestSummary> {
         .summaries()
 }
 
+// A first lazy read may load bundled manifests, but a later reload replaces
+// that cache. Headless bootstrap reloads overrides before restoring panes, so
+// server detection starts with the configured manifests. Removing this cache
+// requires passing a registry through detection, mux readiness and server explain.
 fn registry() -> &'static ManifestRegistry {
     if let Some(registry) = MANIFESTS.get() {
         return registry;
@@ -788,7 +792,12 @@ fn explain_with_manifest(
     explain_loaded_manifest(agent, input, loaded)
 }
 
-pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionExplain {
+/// Explain a captured screen using manifests loaded from the supplied config directory.
+pub fn explain_for_label(
+    agent_label: &str,
+    screen_content: &str,
+    config_dir: &Path,
+) -> DetectionExplain {
     let Some(agent) = parse_agent_label(agent_label) else {
         return DetectionExplain {
             agent: Some(agent_label.to_string()),
@@ -806,7 +815,17 @@ pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionEx
             warning: None,
         };
     };
-    explain(agent, screen_content)
+    let override_dir = manifest_override_dir(config_dir);
+    let registry = ManifestRegistry::new(Some(&override_dir));
+    explain_with_manifest(
+        agent,
+        DetectionInput {
+            screen: screen_content,
+            osc_title: "",
+            osc_progress: "",
+        },
+        registry.get(agent).as_deref(),
+    )
 }
 
 fn rule_state(rule: &ManifestRule) -> AgentState {

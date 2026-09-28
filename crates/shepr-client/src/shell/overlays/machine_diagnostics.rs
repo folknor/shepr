@@ -49,16 +49,30 @@ impl ClientShellState {
         id: &ClientEndpointId,
         failure: &shepr_remote::SshFailureDiagnostic,
     ) {
+        self.insert_machine_diagnostic(id, failure.chars(), failure.requires_authentication());
+    }
+
+    /// Record a non-SSH failure (such as an undecodable endpoint config) as
+    /// the machine's diagnostic.
+    pub(super) fn set_machine_error(&mut self, id: &ClientEndpointId, message: &str) {
+        self.insert_machine_diagnostic(id, message.chars(), false);
+    }
+
+    fn insert_machine_diagnostic(
+        &mut self,
+        id: &ClientEndpointId,
+        message: impl Iterator<Item = char>,
+        requires_authentication: bool,
+    ) {
         if !id.is_local() {
             self.machine_diagnostics.errors.insert(
                 id.clone(),
                 MachineDiagnostic {
-                    message: failure
-                        .chars()
+                    message: message
                         .filter(|c| !c.is_control() || *c == '\n')
                         .take(4096)
                         .collect(),
-                    requires_authentication: failure.requires_authentication(),
+                    requires_authentication,
                 },
             );
         }

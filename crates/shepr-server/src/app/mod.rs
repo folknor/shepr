@@ -193,14 +193,18 @@ impl App {
                 pane_scrollbars: settings.pane_scrollbars,
             }
             .sole_pane_size();
+            let api_socket_path = shepr_api::socket_path(&paths);
             let restored = shepr_mux::persist::restore(
                 &snap,
                 history.as_ref(),
                 restore_rows,
                 restore_cols,
                 settings.pane_scrollback_limit_bytes,
-                &settings.default_shell,
-                settings.login_shell,
+                shepr_mux::pane::PaneShellConfig::new(
+                    &settings.default_shell,
+                    settings.login_shell,
+                ),
+                &api_socket_path,
                 config.session().resume_agents_on_restore,
                 &event_tx,
                 &render_notify,
@@ -325,6 +329,7 @@ impl App {
             events: self.event_tx.clone(),
             render_notify: Arc::clone(&self.render_notify),
             render_dirty: Arc::clone(&self.render_dirty),
+            api_socket_path: shepr_api::socket_path(&self.paths),
         }
     }
 

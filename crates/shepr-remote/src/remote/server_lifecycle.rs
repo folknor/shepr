@@ -130,11 +130,35 @@ fn remote_server_compatibility_error(
     )
 }
 
-fn printable_remote_value(value: Option<&str>) -> String {
+/// A single remote-reported token (a version, a build id) for a local message:
+/// printable ASCII and spaces only, else `unknown`.
+pub(super) fn printable_remote_value(value: Option<&str>) -> String {
     value
-        .filter(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic()))
+        .filter(|value| {
+            !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
+        })
         .unwrap_or("unknown")
         .to_owned()
+}
+
+/// Remote free text (SSH diagnostics, remote stderr) made safe for a local
+/// terminal. Line breaks and tabs stay. Carriage returns are dropped: OpenSSH
+/// ends its stderr lines with CRLF, and a bare one could overwrite the line
+/// before it. Every other control character, which could start a terminal
+/// escape sequence, becomes `?`. The mapping is per character, so text can be
+/// filtered in arbitrary chunks as it streams.
+pub(super) fn printable_remote_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| *ch != '\r')
+        .map(|ch| {
+            if ch.is_control() && ch != '\n' && ch != '\t' {
+                '?'
+            } else {
+                ch
+            }
+        })
+        .collect()
 }
 
 /// Offers to restart a remote server that was not started as a detached
@@ -408,6 +432,20 @@ mod tests {
 
         let parse_error = parse_remote_server_status_json(injected).expect_err("invalid JSON");
         assert!(!parse_error.to_string().contains('\x1b'));
+    }
+
+    #[test]
+    fn shared_remote_text_filter_keeps_printable_lines_and_rejects_controls() {
+        assert_eq!(
+            printable_remote_text("Connection refused\n\x1b[2J"),
+            "Connection refused\n?[2J"
+        );
+        assert_eq!(
+            printable_remote_text("Warning: added host\r\nbanner \u{9b}2J caf\u{e9}\ttab"),
+            "Warning: added host\nbanner ?2J caf\u{e9}\ttab"
+        );
+        assert_eq!(printable_remote_value(Some("build id")), "build id");
+        assert_eq!(printable_remote_value(Some("bad\tvalue")), "unknown");
     }
 
     #[test]

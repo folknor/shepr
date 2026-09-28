@@ -35,22 +35,10 @@ pub fn is_server_listening(paths: &shepr_config::AppPaths) -> io::Result<bool> {
 
 /// Checks whether a shepr server is listening at a specific socket path.
 fn is_server_listening_at(socket_path: &Path) -> io::Result<bool> {
-    match shepr_platform::ipc::connect_local_stream(socket_path) {
-        Ok(stream) => {
-            // Its preamble write fails or its handshake reader sees EOF, so the
-            // probe does not occupy the server until the handshake deadline.
-            drop(stream);
-            Ok(true)
-        }
-        Err(err)
-            if matches!(
-                err.kind(),
-                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(err) => {
+    match shepr_platform::ipc::probe(socket_path) {
+        shepr_platform::ipc::Liveness::Live => Ok(true),
+        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => Ok(false),
+        shepr_platform::ipc::Liveness::Unreachable(err) => {
             tracing::warn!(path = %socket_path.display(), %err, "failed to check server socket");
             Err(err)
         }

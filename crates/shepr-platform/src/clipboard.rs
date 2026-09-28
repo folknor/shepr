@@ -10,6 +10,9 @@ use std::{
 pub(super) struct ClipboardCommand {
     pub(super) program: &'static str,
     pub(super) args: &'static [&'static str],
+    /// Whether the helper becomes the clipboard owner after reading stdin.
+    /// Such helpers stay alive until another process replaces the selection.
+    pub(super) owns_selection_after_exit: bool,
 }
 
 /// How long one clipboard read or write may take, across every helper it
@@ -18,9 +21,8 @@ pub(super) struct ClipboardCommand {
 /// not outlive the request that started it.
 pub(super) const CLIPBOARD_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Clipboard helpers run in the root directory: they read no paths, and
-/// `wl-copy` forks a server that outlives the request, which must not pin the
-/// directory shepr happened to start in.
+/// Clipboard helpers read no paths. A selection-owning helper can outlive the
+/// request, so it must not pin the directory shepr happened to start in.
 fn clipboard_helper_dir() -> &'static std::path::Path {
     std::path::Path::new("/")
 }
@@ -61,12 +63,6 @@ impl ClipboardSession {
     }
 }
 
-/// The executable's base name, so a command given by absolute path is still
-/// recognised (`/usr/bin/wl-copy` is `wl-copy`).
-pub(super) fn clipboard_program_name(program: &str) -> &str {
-    program.rsplit('/').next().unwrap_or(program)
-}
-
 pub(super) fn clipboard_commands(session: ClipboardSession) -> Vec<ClipboardCommand> {
     let mut commands = Vec::new();
 
@@ -74,6 +70,7 @@ pub(super) fn clipboard_commands(session: ClipboardSession) -> Vec<ClipboardComm
         commands.push(ClipboardCommand {
             program: "wl-copy",
             args: &["--type", "text/plain;charset=utf-8"],
+            owns_selection_after_exit: true,
         });
     }
 
@@ -81,10 +78,12 @@ pub(super) fn clipboard_commands(session: ClipboardSession) -> Vec<ClipboardComm
         commands.push(ClipboardCommand {
             program: "xclip",
             args: &["-selection", "clipboard", "-in"],
+            owns_selection_after_exit: false,
         });
         commands.push(ClipboardCommand {
             program: "xsel",
             args: &["--clipboard", "--input"],
+            owns_selection_after_exit: false,
         });
     }
 
@@ -98,10 +97,12 @@ pub(super) fn read_clipboard_text_commands(session: ClipboardSession) -> Vec<Cli
         commands.push(ClipboardCommand {
             program: "wl-paste",
             args: &["--type", "text/plain;charset=utf-8"],
+            owns_selection_after_exit: false,
         });
         commands.push(ClipboardCommand {
             program: "wl-paste",
             args: &["--type", "text/plain"],
+            owns_selection_after_exit: false,
         });
     }
 
@@ -109,10 +110,12 @@ pub(super) fn read_clipboard_text_commands(session: ClipboardSession) -> Vec<Cli
         commands.push(ClipboardCommand {
             program: "xclip",
             args: &["-selection", "clipboard", "-out"],
+            owns_selection_after_exit: false,
         });
         commands.push(ClipboardCommand {
             program: "xsel",
             args: &["--clipboard", "--output"],
+            owns_selection_after_exit: false,
         });
     }
 
@@ -272,14 +275,14 @@ pub(super) fn run_clipboard_command(
     }
     drop(stdin);
 
-    if clipboard_program_name(command.program) == "wl-copy" {
-        return wait_for_wl_copy_startup(child);
+    if command.owns_selection_after_exit {
+        return wait_for_selection_owner_startup(child);
     }
 
     wait_child_until(&mut child, deadline).is_some_and(|status| status.success())
 }
 
-fn wait_for_wl_copy_startup(mut child: std::process::Child) -> bool {
+fn wait_for_selection_owner_startup(mut child: std::process::Child) -> bool {
     const STARTUP_WAIT: Duration = Duration::from_millis(100);
     const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -304,19 +307,19 @@ fn detach_clipboard_owner(child: std::process::Child) -> bool {
     let child = std::sync::Arc::new(std::sync::Mutex::new(child));
     let reaper_child = std::sync::Arc::clone(&child);
     let reaper = std::thread::Builder::new()
-        .name("shepr-wl-copy-reaper".to_string())
+        .name("shepr-clipboard-owner-reaper".to_string())
         .spawn(move || {
             let wait_result = match reaper_child.lock() {
                 Ok(mut child) => child.wait(),
                 Err(poisoned) => poisoned.into_inner().wait(),
             };
             if let Err(err) = wait_result {
-                tracing::warn!(pid, %err, "failed to reap wl-copy clipboard owner");
+                tracing::warn!(pid, %err, "failed to reap clipboard selection owner");
             }
         });
 
     if let Err(err) = reaper {
-        tracing::warn!(pid, %err, "failed to start wl-copy clipboard owner reaper");
+        tracing::warn!(pid, %err, "failed to start clipboard owner reaper");
         let mut child = match child.lock() {
             Ok(child) => child,
             Err(poisoned) => poisoned.into_inner(),

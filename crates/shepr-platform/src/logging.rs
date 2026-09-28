@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
@@ -448,7 +448,7 @@ impl RotatingFileMakeWriter {
             max_bytes,
             retained_files,
             file: None,
-            lost_error: None,
+            lost_reason: None,
         };
         state.open_current_file()?;
         Ok(Self {
@@ -473,9 +473,7 @@ struct RotatingFileGuard {
 
 impl Write for RotatingFileGuard {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let Ok(mut state) = self.state.lock() else {
-            return Ok(buf.len());
-        };
+        let mut state = self.lock_state();
         match state.write_with_recovery(buf) {
             Ok(written) => Ok(written),
             Err(_) => Ok(buf.len()),
@@ -483,11 +481,25 @@ impl Write for RotatingFileGuard {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let Ok(mut state) = self.state.lock() else {
-            return Ok(());
-        };
+        let mut state = self.lock_state();
         state.flush_with_recovery();
         Ok(())
+    }
+}
+
+impl RotatingFileGuard {
+    fn lock_state(&self) -> MutexGuard<'_, RotatingFileState> {
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                self.state.clear_poison();
+                if state.lost_reason.is_none() {
+                    state.lost_reason = Some("file logging state mutex was poisoned".to_owned());
+                }
+                state
+            }
+        }
     }
 }
 
@@ -502,9 +514,9 @@ struct RotatingFileState {
     max_bytes: u64,
     retained_files: usize,
     file: Option<File>,
-    /// The first write error of an ongoing outage, reported in the log once
-    /// writing works again.
-    lost_error: Option<String>,
+    /// The reason for an ongoing logging gap, reported once writing works
+    /// again.
+    lost_reason: Option<String>,
 }
 
 /// Log files hold pane activity and error details; keep them private to the
@@ -514,8 +526,8 @@ const LOG_FILE_MODE: u32 = 0o600;
 impl RotatingFileState {
     /// Write one chunk, reopening the file once on failure. A failed write
     /// never disables logging: the next event tries again, so a full disk or
-    /// a removed directory recovers once the cause is gone. The first error of
-    /// an outage is kept and written into the log when writing resumes; it is
+    /// a removed directory recovers once the cause is gone. The first reason
+    /// for a logging gap is written into the log when writing resumes; it is
     /// not sent to stderr, which is the client's TUI terminal.
     fn write_with_recovery(&mut self, buf: &[u8]) -> io::Result<usize> {
         let result = match self.write_once(buf) {
@@ -526,9 +538,9 @@ impl RotatingFileState {
             written => written,
         };
         if let Err(error) = &result
-            && self.lost_error.is_none()
+            && self.lost_reason.is_none()
         {
-            self.lost_error = Some(error.to_string());
+            self.lost_reason = Some(error.to_string());
         }
         result
     }
@@ -539,13 +551,13 @@ impl RotatingFileState {
             .file
             .as_mut()
             .ok_or_else(|| io::Error::other("log file is not open"))?;
-        if let Some(error) = self.lost_error.take()
+        if let Some(reason) = self.lost_reason.take()
             && let Err(write_error) = writeln!(
                 file,
-                "shepr: file logging resumed; log lines were lost after an I/O error: {error}"
+                "shepr: file logging resumed; log lines may have been lost: {reason}"
             )
         {
-            self.lost_error = Some(error);
+            self.lost_reason = Some(reason);
             return Err(write_error);
         }
         file.write(buf)
@@ -569,6 +581,9 @@ impl RotatingFileState {
         // Several processes can cross the limit together. Rotation happens
         // under an exclusive lock on the current file, and whoever gets the
         // lock second finds the path already pointing at a fresh file.
+        // This is nested under the state mutex: releasing that mutex here
+        // would let a local writer append through the descriptor being moved.
+        // The cross-process lock is only taken when a write reaches rotation.
         let Some(file) = self.file.as_ref() else {
             return Ok(());
         };
@@ -761,7 +776,7 @@ mod tests {
             max_bytes: 128,
             retained_files: 2,
             file: None,
-            lost_error: None,
+            lost_reason: None,
         };
         state.rotate_files().expect("test precondition");
 
@@ -863,7 +878,35 @@ mod tests {
 
         let contents = contents.expect("log recreated");
         assert!(
-            contents.starts_with("shepr: file logging resumed; log lines were lost"),
+            contents.starts_with("shepr: file logging resumed; log lines may have been lost"),
+            "{contents}"
+        );
+        assert!(contents.ends_with("\nafter"), "{contents}");
+    }
+
+    #[test]
+    fn writer_recovers_after_a_poisoned_mutex_and_notes_the_gap() {
+        let path = temp_log_path("poisoned");
+        let dir = path.parent().expect("test precondition").to_path_buf();
+        fs::create_dir_all(&dir).expect("test precondition");
+
+        let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        let poisoner = Arc::clone(&writer.state);
+        let joined = std::thread::spawn(move || {
+            let _state = poisoner.lock().expect("test lock");
+            panic!("simulate a panic while updating file logging state");
+        })
+        .join();
+        assert!(joined.is_err(), "test precondition");
+        assert!(writer.state.is_poisoned(), "test precondition");
+        writer
+            .make_writer()
+            .write_all(b"after")
+            .expect("poisoned logging state should recover");
+
+        let contents = fs::read_to_string(&path).expect("log recreated");
+        assert!(
+            contents.starts_with("shepr: file logging resumed; log lines may have been lost: file logging state mutex was poisoned"),
             "{contents}"
         );
         assert!(contents.ends_with("\nafter"), "{contents}");

@@ -94,6 +94,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn config_default_template_keeps_all_settings_comment_only() {
+        for (index, line) in DEFAULT_CONFIG.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
+                continue;
+            }
+
+            let line_number = index + 1;
+            panic!("active setting on line {line_number}: {line}");
+        }
+    }
+
+    #[test]
     fn keybind_parser_returns_only_complete_values() {
         for profile in ["", "[keys]\nprefix = \"ctrl+a\"\n"] {
             let config: Config = toml::from_str(profile).expect("test precondition");

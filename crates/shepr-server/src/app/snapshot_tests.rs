@@ -482,7 +482,10 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         Default::default(),
         None,
         shepr_mux::pane::PaneShellConfig::new(shell.to_str().expect("test precondition"), false),
-        &shepr_mux::pane::PaneLaunchEnv::default(),
+        &shepr_mux::pane::PaneLaunchEnv::from_extra(
+            Vec::new(),
+            "/run/user/1000/shepr-test.sock".into(),
+        ),
         &events,
         &std::sync::Arc::new(tokio::sync::Notify::new()),
         &std::sync::Arc::new(shepr_mux::render_signal::RenderSignal::new()),

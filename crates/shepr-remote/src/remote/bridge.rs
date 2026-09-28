@@ -522,7 +522,7 @@ pub(super) fn bridge_connection(
 
 pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
-    let stderr = stderr.trim();
+    let stderr = super::server_lifecycle::printable_remote_text(stderr.trim());
     let (failure, exit_status) = if status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
         (
             "remote SSH connection failed",

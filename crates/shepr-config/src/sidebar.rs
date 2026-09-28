@@ -307,18 +307,10 @@ where
     use serde::ser::SerializeMap;
     let mut map = serializer.serialize_map(None)?;
     map.serialize_entry("token", &name)?;
-    if let Some(fg) = style.fg {
-        map.serialize_entry("fg", &fg)?;
-    }
-    if let Some(bold) = style.bold {
-        map.serialize_entry("bold", &bold)?;
-    }
-    if let Some(dim) = style.dim {
-        map.serialize_entry("dim", &dim)?;
-    }
-    if !rules.is_empty() {
-        map.serialize_entry("rules", rules)?;
-    }
+    map.serialize_entry("fg", &style.fg)?;
+    map.serialize_entry("bold", &style.bold)?;
+    map.serialize_entry("dim", &style.dim)?;
+    map.serialize_entry("rules", rules)?;
     map.end()
 }
 

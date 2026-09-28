@@ -42,11 +42,12 @@ pub(super) struct Activity {
 impl Activity {
     /// Starts the watchdog thread. `expired` runs once, on the watchdog thread,
     /// when no positive IO was seen for `timeout` (or the clock cannot be
-    /// read). The watchdog never waits on the relay copies: they may be blocked
-    /// in a read or write that nothing can interrupt, so it only reports.
+    /// read), with the measured idle duration when available. The watchdog
+    /// never waits on the relay copies: they may be blocked in a read or write
+    /// that nothing can interrupt, so it only reports.
     pub(super) fn start(
         timeout: Duration,
-        expired: impl FnOnce() + Send + 'static,
+        expired: impl FnOnce(Option<Duration>) + Send + 'static,
     ) -> io::Result<Self> {
         let last = Arc::new(AtomicU64::new(now()?));
         let watched = Arc::clone(&last);
@@ -59,23 +60,35 @@ impl Activity {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    if now().map_or(true, |now| idle_expired(&watched, now, timeout)) {
-                        expired();
-                        return;
-                    }
+                    let idle_for = match now() {
+                        Ok(now) => {
+                            let Some(idle_for) = expired_idle(&watched, now, timeout) else {
+                                continue;
+                            };
+                            Some(idle_for)
+                        }
+                        Err(_) => None,
+                    };
+                    expired(idle_for);
+                    return;
                 }
             })?;
         Ok(Self { last, _stop: stop })
     }
 
-    fn record(&self) -> io::Result<()> {
-        self.last.fetch_max(now()?, Ordering::Relaxed);
-        Ok(())
+    fn record(&self) {
+        // Activity is advisory: a failed clock read leaves the timestamp stale
+        // for the watchdog instead of turning transferred bytes into an I/O error.
+        if let Ok(now) = now() {
+            self.last.fetch_max(now, Ordering::Relaxed);
+        }
     }
 }
 
-fn idle_expired(last: &AtomicU64, now: u64, timeout: Duration) -> bool {
-    Duration::from_nanos(now.saturating_sub(last.load(Ordering::Relaxed))) >= timeout
+/// How long the relay has been idle at `now`, if that is at least `timeout`.
+fn expired_idle(last: &AtomicU64, now: u64, timeout: Duration) -> Option<Duration> {
+    let idle_for = Duration::from_nanos(now.saturating_sub(last.load(Ordering::Relaxed)));
+    (idle_for >= timeout).then_some(idle_for)
 }
 
 pub(super) struct TrackedIo<T> {
@@ -88,20 +101,19 @@ impl<T> TrackedIo<T> {
         Self { inner, activity }
     }
 
-    fn progressed(&self, count: usize) -> io::Result<()> {
+    fn progressed(&self, count: usize) {
         if count > 0
             && let Some(activity) = &self.activity
         {
-            activity.record()?;
+            activity.record();
         }
-        Ok(())
     }
 }
 
 impl<T: Read> Read for TrackedIo<T> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let count = self.inner.read(buffer)?;
-        self.progressed(count)?;
+        self.progressed(count);
         Ok(count)
     }
 }
@@ -109,7 +121,7 @@ impl<T: Read> Read for TrackedIo<T> {
 impl<T: Write> Write for TrackedIo<T> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let count = self.inner.write(buffer)?;
-        self.progressed(count)?;
+        self.progressed(count);
         Ok(count)
     }
 
@@ -130,25 +142,31 @@ mod tests {
             last: Arc::clone(&last),
             _stop: stop,
         };
-        assert!(idle_expired(
-            &last,
-            u64::try_from(IDLE_TIMEOUT.as_nanos()).unwrap_or(u64::MAX),
-            IDLE_TIMEOUT
-        ));
+        assert_eq!(
+            expired_idle(
+                &last,
+                u64::try_from(IDLE_TIMEOUT.as_nanos()).unwrap_or(u64::MAX),
+                IDLE_TIMEOUT
+            ),
+            Some(IDLE_TIMEOUT)
+        );
         let mut reader = TrackedIo::new(&b"output"[..], Some(activity.clone()));
         reader.read_exact(&mut [0; 6]).expect("test precondition");
         let after_read = last.load(Ordering::Relaxed);
         assert!(after_read > 0);
-        assert!(!idle_expired(&last, after_read, IDLE_TIMEOUT));
+        assert_eq!(expired_idle(&last, after_read, IDLE_TIMEOUT), None);
         assert_eq!(reader.read(&mut [0; 1]).expect("test precondition"), 0);
         assert_eq!(last.load(Ordering::Relaxed), after_read);
         let mut writer = TrackedIo::new(Vec::new(), Some(activity));
         writer.write_all(b"ping").expect("test precondition");
         assert!(last.load(Ordering::Relaxed) >= after_read);
-        assert!(idle_expired(
-            &last,
-            last.load(Ordering::Relaxed) + 120_000_000_000,
-            IDLE_TIMEOUT
-        ));
+        assert!(
+            expired_idle(
+                &last,
+                last.load(Ordering::Relaxed) + 120_000_000_000,
+                IDLE_TIMEOUT
+            )
+            .is_some()
+        );
     }
 }

@@ -121,9 +121,8 @@ its own:
 
 - Use the `--session` flag, not `SHEPR_SESSION`: only an explicit
   `--session` outranks a socket override.
-- The `env -u` prefix stays for now: panes are currently launched with an
-  empty `SHEPR_SOCKET_PATH`, and the path resolver refuses an empty socket
-  override before the session picks the address, even alongside `--session`.
+- The `env -u` prefix drops the socket overrides every pane exports, so the
+  dev build resolves its sockets from the session alone.
 - Without `--session` the dev build targets the installed server's default
   session, and while that server runs the dev build is refused. Its `server
   stop` is refused too, naming both builds; `--force` overrides that and

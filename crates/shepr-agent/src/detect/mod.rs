@@ -228,9 +228,56 @@ fn wrapped_agent_name_from_runtime_argv(
             script_arg_agent_name(argv, &["-e", "--eval", "-p", "--print"], &[], cwd_pid)
         }
         name if is_python_runtime(name) => script_arg_agent_name(argv, &["-c"], &["-m"], cwd_pid),
-        "sh" | "bash" | "zsh" | "fish" => script_arg_agent_name(argv, &["-c"], &[], cwd_pid),
+        name if is_pane_shell_process_name(name) => {
+            shell_agent_name_from_runtime_argv(argv, cwd_pid)
+        }
         _ => None,
     }
+}
+
+/// Inspect only a direct command word from shell `-c` input; do not parse shell grammar.
+fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<u32>) -> Option<String> {
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            return args
+                .next()
+                .and_then(|token| agent_name_from_path_token(token, cwd_pid));
+        }
+
+        // `-c` alone or inside a short-flag cluster such as `-lc`.
+        if arg
+            .strip_prefix('-')
+            .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
+        {
+            return args
+                .next()
+                .and_then(|command| shell_command_agent_name(command, cwd_pid));
+        }
+
+        if arg.starts_with('-') {
+            if option_takes_value(arg) {
+                let _ = args.next();
+            }
+            continue;
+        }
+
+        return agent_name_from_path_token(arg, cwd_pid);
+    }
+
+    None
+}
+
+fn shell_command_agent_name(command: &str, cwd_pid: Option<u32>) -> Option<String> {
+    let mut words = command.split_whitespace();
+    let first = words.next()?;
+    let executable = if first == "exec" {
+        let next = words.next()?;
+        if next == "--" { words.next()? } else { next }
+    } else {
+        first
+    };
+    agent_name_from_path_token(executable, cwd_pid)
 }
 
 fn script_arg_agent_name(
@@ -562,11 +609,9 @@ fn process_priority(process: &ForegroundProcess, normalized_name: &str) -> u8 {
 
 fn is_generic_runtime_or_shell(name: &str) -> bool {
     let name = normalized_agent_lookup_name(path_basename(name));
-    is_python_runtime(&name)
-        || matches!(
-            name.as_str(),
-            "sh" | "bash" | "zsh" | "fish" | "tmux" | "node" | "bun"
-        )
+    is_pane_shell_process_name(&name)
+        || is_python_runtime(&name)
+        || matches!(name.as_str(), "tmux" | "node" | "bun")
 }
 
 fn is_python_runtime(name: &str) -> bool {
@@ -1304,6 +1349,27 @@ mod tests {
         };
 
         assert_eq!(identify_agent_in_job(&job), None);
+    }
+
+    #[test]
+    fn identify_agent_in_job_unwraps_an_agent_run_through_shell_dash_c() {
+        for argv in [
+            &["dash", "-c", "codex --model gpt-5"][..],
+            &["nu", "-c", "codex"][..],
+            &["/usr/bin/ksh", "-lc", "exec -- /usr/local/bin/codex"][..],
+            &["xonsh", "-c", "exec codex"][..],
+        ] {
+            let job = ForegroundJob {
+                process_group_id: 123,
+                processes: vec![foreground_process(1, argv[0], argv)],
+            };
+
+            assert_eq!(
+                identify_agent_in_job(&job),
+                Some((Agent::Codex, "codex".to_string())),
+                "{argv:?}"
+            );
+        }
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub enum AgentSessionStartSource {
     Compact,
     Branch,
     New,
+    Load,
     Fork,
     Select,
 }
@@ -365,18 +366,38 @@ pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
 }
 
 impl AgentSessionStartSource {
-    fn parse(value: &str) -> Option<Self> {
-        match value.trim() {
-            "startup" => Some(Self::Startup),
-            "resume" => Some(Self::Resume),
-            "clear" => Some(Self::Clear),
-            "compact" => Some(Self::Compact),
-            "branch" => Some(Self::Branch),
-            "new" => Some(Self::New),
-            "fork" => Some(Self::Fork),
-            "select" => Some(Self::Select),
-            _ => None,
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Startup,
+        Self::Resume,
+        Self::Clear,
+        Self::Compact,
+        Self::Branch,
+        Self::New,
+        Self::Load,
+        Self::Fork,
+        Self::Select,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::Resume => "resume",
+            Self::Clear => "clear",
+            Self::Compact => "compact",
+            Self::Branch => "branch",
+            Self::New => "new",
+            Self::Load => "load",
+            Self::Fork => "fork",
+            Self::Select => "select",
         }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|source| source.as_str() == value)
     }
 }
 
@@ -871,6 +892,10 @@ mod tests {
             Some(AgentSessionStartSource::New)
         );
         assert_eq!(
+            normalize_session_start_source(Some("load")),
+            Some(AgentSessionStartSource::Load)
+        );
+        assert_eq!(
             normalize_session_start_source(Some("fork")),
             Some(AgentSessionStartSource::Fork)
         );
@@ -884,6 +909,16 @@ mod tests {
         );
         assert_eq!(normalize_session_start_source(Some("other")), None);
         assert_eq!(normalize_session_start_source(None), None);
+    }
+
+    #[test]
+    fn every_session_start_source_round_trips_through_its_string() {
+        for source in AgentSessionStartSource::ALL {
+            assert_eq!(
+                normalize_session_start_source(Some(source.as_str())),
+                Some(source)
+            );
+        }
     }
 
     #[test]

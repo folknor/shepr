@@ -463,6 +463,7 @@ mod tests {
         app.state.ensure_test_terminals();
         shutdown_test_runtimes(&mut app);
 
+        // This test leaves its unique ScratchDir in place; it performs no recursive delete.
         let source_scratch = crate::test_support::ScratchDir::new("ws-source");
         let source_cwd = source_scratch.to_path_buf();
         let pane_id = app.state.workspaces[1]

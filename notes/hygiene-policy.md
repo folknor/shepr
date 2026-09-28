@@ -577,8 +577,6 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   without going through restore's sanitising. They only read
   `version` / `workspaces.len()` / `layout_fingerprint` today, so the harm is
   that the next consumer gets unvalidated data by default.
-- `shepr-remote`: `is_launch_fatal_setup_error` classifies by `ErrorKind`, not
-  by cause: see BUG-039.
 - `shepr-pty` / `shepr-config`: `to_std_command` quietly substitutes home for a
   bad cwd (warn only) while the API validates `new_cwd` upstream - two policies
   for one value.
@@ -818,8 +816,6 @@ recorded here so the absence is not re-hunted.
   reaching a log was found, recorded so it is not re-hunted. One note for
   whoever adds context to `clipboard_forwarding.rs`'s invalid-payload warning:
   add the length, not the data.
-- `shepr-remote` again, and adjacent to this entry: an unfiltered
-  remote-controlled version string reaches the terminal (see BUG-038).
 
 ## HYGP-031 - Test-only code is compiled into production libraries through Cargo feature unification (`test-api`, `test-support`)
 
@@ -869,8 +865,8 @@ an identity that is supposed to come from one place.
   would scribble on the developer's terminal. The presentation test surface
   (`shell/tests/copy.rs` 2492 lines, `mouse_selection.rs` 1312,
   `endpoints.rs` 1934) therefore never asserts anything about what the production
-  sink receives, and the sibling `present_surface_patch` has no `cfg` at all (the
-  hunter filed that divergence as a live defect). Suggested: an injected writer
+  sink receives; `present_surface_patch` now picks its sink the same way.
+  Suggested: an injected writer
   on `ClientState`, which removes the `cfg` divergence and lets tests assert on a
   `Vec<u8>` while running the same code production runs.
 - `shepr-remote`: `UPLOAD_READ_ATTEMPTS` is a `thread_local!` counter checked
@@ -1086,9 +1082,6 @@ for each is the hunter's.
   `discovery_tests.rs` exercises `DiscoveryProgress` directly and nothing tests
   that the three entry points agree - they agree by being copies. Keep
   `locate_remote_shepr`; delete the other two names and the struct.
-- `shepr-remote` `server_lifecycle.rs::version_label` is a one-line
-  `unwrap_or("unknown")` beside two stricter `printable` closures; the fix
-  (one `printable_remote_value`, delete `version_label`) is in BUG-038.
 - `shepr-api` `session.rs`: `data_dir_for`, `client_socket_path_for` and
   `api_socket_path_for` are `pub` one-line forwarders to `SessionId` methods
   (one, one and two callers). None is dead; all are redundant indirection that
@@ -1226,6 +1219,12 @@ for each is the hunter's.
   lint is silenced only by the leading underscore.
 
 ## HYGP-045 - Branches and checks that cannot run
+
+- `shepr-agent` `integration/`: every hook installer strips entries carrying
+  shepr's command from the event before writing the canonical one, so the
+  "already installed" early returns inside `ensure_command_hook`,
+  `ensure_flat_command_hook` and `ensure_simple_command_hook` never fire on
+  install. Either drop them or drop the strip step and let them decide.
 
 - `shepr-server` `app/actions/events.rs`: the `AppEvent::GitStatusRefreshed` arm
   of `AppState::handle_app_event` discards both payload fields and returns

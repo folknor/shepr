@@ -10,7 +10,7 @@
 //! resizing; this module only opens the PTY and starts the child.
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Stdio};
 
@@ -32,38 +32,54 @@ pub struct SpawnedPty {
 /// Open a PTY pair with the given grid size (pixel size starts at zero; the
 /// actor reports pixel geometry on resize).
 pub fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
-    let mut master: RawFd = -1;
-    let mut slave: RawFd = -1;
-    let size = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: `master` and `slave` are live locals openpty writes one fd each
-    // into; the name buffer is null (openpty then writes no name), the termios
-    // pointer is null (keep defaults), and `size` is a valid winsize it only
-    // reads. None of the pointers is retained after the call.
-    let result = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            &size,
+    // Linux accepts O_CLOEXEC while opening /dev/ptmx, closing the race with
+    // unrelated concurrent process spawns before either PTY fd is wrapped.
+    const PTMX: &[u8] = b"/dev/ptmx\0";
+    // SAFETY: `PTMX` is NUL-terminated and remains valid for the call; open
+    // reads it without retaining the pointer and takes no mode argument here.
+    let master = unsafe {
+        libc::open(
+            PTMX.as_ptr().cast(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
         )
     };
-    if result != 0 {
+    if master < 0 {
         return Err(io::Error::last_os_error());
     }
-    // Own both fds before anything else can fail so they are always closed.
-    // SAFETY: openpty succeeded, so both are fresh open fds that nothing else
-    // in this process owns; each is wrapped exactly once.
+    // SAFETY: open succeeded, so `master` is a fresh fd nothing else owns.
     let master = unsafe { OwnedFd::from_raw_fd(master) };
-    // SAFETY: as for `master`.
+
+    // SAFETY: grantpt and unlockpt take a live PTY master fd and retain no
+    // references to it.
+    if unsafe { libc::grantpt(master.as_raw_fd()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above.
+    if unsafe { libc::unlockpt(master.as_raw_fd()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // Open the slave through the master (`TIOCGPTPEER`, Linux 4.13+), as
+    // glibc's openpty does, rather than by ptsname path: the peer is the
+    // master's own devpts instance even when /dev/pts in this mount namespace
+    // is another one, and `O_CLOEXEC` is set at creation so no spawn can
+    // inherit it.
+    // SAFETY: `TIOCGPTPEER` takes the open flags as its integer argument and
+    // returns a new fd; nothing is read from or written to our memory.
+    let slave = unsafe {
+        libc::ioctl(
+            master.as_raw_fd(),
+            libc::TIOCGPTPEER,
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    if slave < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the ioctl succeeded, so `slave` is a fresh fd nothing else owns.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
-    fd::set_cloexec(master.as_raw_fd())?;
-    fd::set_cloexec(slave.as_raw_fd())?;
+
+    fd::resize_pty_fd(master.as_raw_fd(), rows, cols, 0, 0)?;
     enable_utf8_input(&master);
     Ok(OpenedPty { master, slave })
 }
@@ -135,6 +151,8 @@ pub fn spawn_pty(rows: u16, cols: u16, cmd: &PtyCommand) -> io::Result<SpawnedPt
 fn prepare_pty_child() -> io::Result<()> {
     // Clear dispositions and the signal mask inherited from the server
     // (ignored signals survive exec; handlers do not).
+    // Fail child setup if any signal-set or mask operation fails; exec must
+    // not proceed with the server's blocked signals still in place.
     // Linux architectures use signal numbers up to 64 or 128. SIGKILL and
     // SIGSTOP cannot have their dispositions changed; unsupported numbers and
     // libc-reserved signals report EINVAL and are skipped below.
@@ -329,6 +347,8 @@ mod tests {
     }
 
     fn pty_fd_test_lock() -> &'static Mutex<()> {
+        // PTY allocation changes /proc/self/fd, so every test that opens a
+        // PTY uses this guard while process-wide fd counts are asserted.
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -375,6 +395,7 @@ mod tests {
 
     #[test]
     fn child_is_session_leader_with_pty_as_controlling_terminal() {
+        let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
         let pid = libc::pid_t::try_from(spawned.child.id()).expect("pid fits pid_t");
@@ -399,6 +420,7 @@ mod tests {
 
     #[test]
     fn child_output_reaches_master_and_exit_status_is_reported() {
+        let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Print("shepr-pty-ok".into()), Step::Exit(7)]);
         let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
         let status = spawned.child.wait().expect("wait for child");

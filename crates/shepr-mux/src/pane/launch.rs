@@ -45,31 +45,26 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneLaunchEnv {
     extra: Vec<(String, String)>,
     /// The public id of a managed pane; `None` inherits whatever the server
     /// environment carries.
     pane_id: Option<PublicPaneId>,
     purpose: LaunchPurpose,
-    /// The server must pass its resolved API socket path here: an explicit
+    /// Resolved API socket path supplied by the server. An explicit
     /// `--session` can select a socket that is not present in the environment.
     api_socket_path: std::path::PathBuf,
 }
 
 impl PaneLaunchEnv {
-    pub fn from_extra(extra: Vec<(String, String)>) -> Self {
+    pub fn from_extra(extra: Vec<(String, String)>, api_socket_path: std::path::PathBuf) -> Self {
         Self {
             extra,
             pane_id: None,
             purpose: LaunchPurpose::Fresh,
-            api_socket_path: std::path::PathBuf::new(),
+            api_socket_path,
         }
-    }
-
-    pub fn with_api_socket_path(mut self, path: std::path::PathBuf) -> Self {
-        self.api_socket_path = path;
-        self
     }
 
     pub fn for_agent_resume(mut self) -> Self {

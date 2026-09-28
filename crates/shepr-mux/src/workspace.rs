@@ -28,15 +28,17 @@ pub use self::{
     tab::MovedPane,
 };
 
-/// The channels a pane runtime reports through once it is spawned: the app
-/// event queue, the render wakeup and the render dirty signal. `App` owns
-/// them and lends a copy to each call that spawns a pane, so the workspace
-/// tree itself holds no channels or async handles and stays plain data.
+/// The channels a pane runtime reports through once it is spawned, plus the
+/// resolved API socket path its child needs. `App` owns them and lends a copy
+/// to each call that spawns a pane, so the workspace tree itself holds no
+/// channels or async handles and stays plain data.
 #[derive(Clone)]
 pub struct PaneSpawnHandles {
     pub events: mpsc::Sender<AppEvent>,
     pub render_notify: Arc<Notify>,
     pub render_dirty: Arc<RenderSignal>,
+    /// Resolved API socket passed into every pane launched by this app.
+    pub api_socket_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,8 +339,8 @@ impl Workspace {
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let id = generate_workspace_id();
-        let launch_env =
-            PaneLaunchEnv::from_extra(extra_env).with_pane_id(PublicPaneId::new(&id, 1));
+        let launch_env = PaneLaunchEnv::from_extra(extra_env, spawn.api_socket_path.clone())
+            .with_pane_id(PublicPaneId::new(&id, 1));
         let (tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 1,
@@ -473,7 +475,7 @@ impl Workspace {
     ) -> std::io::Result<(Tab, TerminalState, PaneRuntime)> {
         let number = self.next_public_tab_number;
         let pane_number = self.next_public_pane_number;
-        let launch_env = self.launch_env_for_new_pane(pane_number, extra_env);
+        let launch_env = self.launch_env_for_new_pane(pane_number, extra_env, spawn);
 
         let (mut tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
@@ -674,7 +676,7 @@ impl Workspace {
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         let pane_number = self.next_public_pane_number;
-        let launch_env = self.launch_env_for_new_pane(pane_number, extra_env);
+        let launch_env = self.launch_env_for_new_pane(pane_number, extra_env, spawn);
         let tab = &self.tabs[tab_idx];
         let new_pane = match if let Some(argv) = argv {
             tab.split_pane_argv(
@@ -813,8 +815,10 @@ impl Workspace {
         &self,
         pane_number: usize,
         extra_env: Vec<(String, String)>,
+        spawn: &PaneSpawnHandles,
     ) -> PaneLaunchEnv {
-        PaneLaunchEnv::from_extra(extra_env).with_pane_id(PublicPaneId::new(&self.id, pane_number))
+        PaneLaunchEnv::from_extra(extra_env, spawn.api_socket_path.clone())
+            .with_pane_id(PublicPaneId::new(&self.id, pane_number))
     }
 
     pub fn next_public_tab_number(&self) -> usize {

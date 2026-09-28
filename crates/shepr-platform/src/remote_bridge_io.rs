@@ -12,16 +12,17 @@ pub enum RemoteBridgeOutcome {
     /// The server side closed and everything it sent reached stdout.
     Closed,
     /// The idle watchdog fired: no byte moved in either direction for the idle
-    /// timeout. The socket has been shut down, but a relay thread may still be
+    /// timeout. `idle_for` is absent only if the watchdog could not read its
+    /// clock. The socket has been shut down, but a relay thread may still be
     /// blocked writing to a full stdout or reading stdin, and nothing can
     /// interrupt either. The caller must end the process promptly (exit status
     /// 1) and must not join, wait for, or write to stdout behind those threads.
-    IdleExpired,
+    IdleExpired { idle_for: Option<Duration> },
 }
 
 enum RelayEvent {
     Download(std::io::Result<()>),
-    Expired,
+    Expired(Option<Duration>),
 }
 
 /// Relay the SSH bridge's stdio to the local server socket. Every remote
@@ -55,10 +56,10 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
     let activity = match idle_timeout {
         Some(timeout) => {
             let expired = events.clone();
-            Some(Activity::start(timeout, move || {
+            Some(Activity::start(timeout, move |idle_for| {
                 // The receiver is gone only once the relay already returned
                 // on a finished download, so there is nothing left to end.
-                expired.send(RelayEvent::Expired).ok();
+                expired.send(RelayEvent::Expired(idle_for)).ok();
             })?)
         }
         None => None,
@@ -99,7 +100,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
     });
     match relay.recv() {
         Ok(RelayEvent::Download(result)) => result.map(|()| RemoteBridgeOutcome::Closed),
-        Ok(RelayEvent::Expired) => {
+        Ok(RelayEvent::Expired(idle_for)) => {
             // Unblocks both socket copies; stdin and stdout cannot be
             // interrupted, which is why the caller must end the process.
             let interprocess::local_socket::Stream::UdSocket(socket) = &control;
@@ -110,7 +111,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             {
                 tracing::warn!(%err, "SSH bridge failed to shut down the idle server socket");
             }
-            Ok(RemoteBridgeOutcome::IdleExpired)
+            Ok(RemoteBridgeOutcome::IdleExpired { idle_for })
         }
         Err(std::sync::mpsc::RecvError) => Err(std::io::Error::other(
             "the bridge relay thread ended without reporting",

@@ -400,6 +400,25 @@ fn private_registry_leaves_the_process_wide_registry_alone() {
 }
 
 #[test]
+fn explain_for_label_loads_the_supplied_config_directory_override() {
+    let config_dir = shepr_test_support::ScratchDir::new("explain-override").to_path_buf();
+    let override_dir = manifest_override_dir(&config_dir);
+    std::fs::create_dir_all(&override_dir).expect("create manifest override directory");
+    let path = override_path(&override_dir, Agent::Codex);
+    std::fs::write(&path, local_manifest("blocked", "cli-override-marker"))
+        .expect("write manifest override");
+
+    let explain = explain_for_label("codex", "cli-override-marker", &config_dir);
+
+    assert_eq!(explain.state, AgentState::Blocked);
+    assert_eq!(explain.source, Some(ManifestSource::Override(path)));
+    assert_eq!(
+        explain.matched_rule.map(|rule| rule.id).as_deref(),
+        Some("test")
+    );
+}
+
+#[test]
 fn rule_semantics_apply_gates_priority_and_line_regex() {
     let manifests = TestManifests::new("rule-semantics");
     {

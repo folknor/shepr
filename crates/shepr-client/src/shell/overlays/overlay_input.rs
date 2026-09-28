@@ -161,10 +161,20 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == workspace_id)
                 .map(|workspace| workspace.new_workspace_cwd.clone())
         });
-        let suggested_name = cwd.as_deref().map(std::path::Path::new).map_or_else(
-            || "workspace".to_owned(),
-            crate::workspace_label::derive_label_from_cwd,
-        );
+        let suggested_name = match cwd.as_deref() {
+            Some(cwd) if self.active_endpoint_id.is_local() => {
+                // The cwd is on this host, so a local `git` can name the repository. It
+                // still runs on the client loop: moving it to the background would need
+                // a completion event to update the open overlay.
+                crate::workspace_label::derive_label_from_cwd(std::path::Path::new(cwd))
+            }
+            Some(cwd) => shepr_core::workspace_label::workspace_label_from_cwd(
+                std::path::Path::new(cwd),
+                None,
+                None,
+            ),
+            None => "workspace".to_owned(),
+        };
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "new workspace",
             input: TextEditor::new(&suggested_name, true),

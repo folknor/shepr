@@ -8,6 +8,8 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
     /// Config bytes are stable for a server boot; cache their launch-time parse across snapshots.
     pub(crate) resolved_config: Option<CachedEndpointConfig>,
+    /// Cache a failed wire value so reuse markers preserve its error without decoding again.
+    pub(crate) resolved_config_error: Option<CachedEndpointConfigError>,
     /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) agent_recency: HashMap<String, u64>,
@@ -17,6 +19,12 @@ pub(crate) struct ClientShellEndpoint {
 pub(crate) struct CachedEndpointConfig {
     pub(crate) wire: Vec<u8>,
     pub(crate) config: std::sync::Arc<shepr_config::ValidatedConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CachedEndpointConfigError {
+    pub(crate) wire: Vec<u8>,
+    pub(crate) message: String,
 }
 
 impl std::fmt::Debug for CachedEndpointConfig {
@@ -64,6 +72,8 @@ impl ClientShellState {
                     .map_or(ClientEndpointStatus::Connecting, |endpoint| endpoint.status),
                 snapshot: previous.and_then(|endpoint| endpoint.snapshot.clone()),
                 resolved_config: previous.and_then(|endpoint| endpoint.resolved_config.clone()),
+                resolved_config_error: previous
+                    .and_then(|endpoint| endpoint.resolved_config_error.clone()),
                 snapshot_generation: previous.and_then(|endpoint| endpoint.snapshot_generation),
                 agent_recency: previous.map_or_default(|endpoint| endpoint.agent_recency.clone()),
             });
@@ -96,6 +106,14 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         status: ClientEndpointStatus,
     ) {
+        let configuration_error = self.endpoints.iter().any(|endpoint| {
+            &endpoint.endpoint_id == endpoint_id && endpoint.resolved_config_error.is_some()
+        });
+        let status = if status == ClientEndpointStatus::Online && configuration_error {
+            ClientEndpointStatus::Attention
+        } else {
+            status
+        };
         if status == ClientEndpointStatus::Online {
             self.clear_machine_diagnostic(endpoint_id);
         }
@@ -140,6 +158,13 @@ impl ClientShellState {
             return false;
         };
         if endpoint.status != ClientEndpointStatus::Online {
+            if let Some(error) = endpoint.resolved_config_error.as_ref() {
+                let label = endpoint.label.clone();
+                let message = error.message.clone();
+                self.set_endpoint_error(format!(
+                    "{label}: invalid endpoint configuration: {message}"
+                ));
+            }
             return false;
         }
         let Some(snapshot) = endpoint.snapshot.clone() else {
@@ -152,7 +177,10 @@ impl ClientShellState {
         let snapshot_config = match self.resolve_snapshot_config(endpoint_id, &snapshot) {
             Ok(config) => config,
             Err(error) => {
-                self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
+                let label = self.endpoint_label(endpoint_id).to_owned();
+                self.set_endpoint_error(format!(
+                    "{label}: invalid endpoint configuration: {error}"
+                ));
                 return false;
             }
         };
@@ -335,6 +363,19 @@ impl ClientShellState {
         {
             return;
         }
+        // Decode every endpoint's config as it arrives, active or not, so a bad
+        // one is reported at once. An empty value reuses the connection's
+        // previous config; without a cached value it is malformed and is
+        // decoded (and so reported) once. A failure is cached, logged and set
+        // on the endpoint inside `cache_endpoint_config`, so the result is not
+        // needed here.
+        let endpoint = &self.endpoints[index];
+        if !snapshot.resolved_config.is_empty()
+            || (endpoint.resolved_config.is_none() && endpoint.resolved_config_error.is_none())
+        {
+            self.cache_endpoint_config(endpoint_id, &snapshot.resolved_config)
+                .ok();
+        }
         let previous = self.endpoints[index].snapshot.as_deref();
         let mut next_recency = self
             .endpoints
@@ -367,16 +408,6 @@ impl ClientShellState {
             .collect::<std::collections::HashSet<_>>();
         recency.retain(|pane_id, _| live_agent_ids.contains(pane_id));
         let endpoint = &mut self.endpoints[index];
-        if !snapshot.resolved_config.is_empty() {
-            endpoint.resolved_config = shepr_protocol::codec::from_slice_exact::<
-                shepr_config::ValidatedConfig,
-            >(&snapshot.resolved_config)
-            .ok()
-            .map(|config| CachedEndpointConfig {
-                wire: snapshot.resolved_config.clone(),
-                config: std::sync::Arc::new(config),
-            });
-        }
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);
@@ -420,7 +451,10 @@ impl ClientShellState {
             match self.resolve_snapshot_config(endpoint_id, &snapshot) {
                 Ok(config) => self.apply_active_snapshot(snapshot, generation, &config),
                 Err(error) => {
-                    self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
+                    let label = self.endpoint_label(endpoint_id).to_owned();
+                    self.set_endpoint_error(format!(
+                        "{label}: invalid endpoint configuration: {error}"
+                    ));
                 }
             }
         }
@@ -431,12 +465,25 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         snapshot: &ClientShellSnapshot,
     ) -> Result<std::sync::Arc<shepr_config::ValidatedConfig>, String> {
-        let cached_config = self
+        let endpoint = self
             .endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .and_then(|endpoint| endpoint.resolved_config.as_ref())
+            .ok_or_else(|| "endpoint is no longer available".to_owned())?;
+        let cached_error = endpoint
+            .resolved_config_error
+            .as_ref()
             // A zero-length config is the connection-local reuse marker.
+            .filter(|cached| {
+                snapshot.resolved_config.is_empty() || cached.wire == snapshot.resolved_config
+            })
+            .map(|cached| cached.message.clone());
+        if let Some(error) = cached_error {
+            return Err(error);
+        }
+        let cached_config = endpoint
+            .resolved_config
+            .as_ref()
             .filter(|cached| {
                 snapshot.resolved_config.is_empty() || cached.wire == snapshot.resolved_config
             })
@@ -445,22 +492,86 @@ impl ClientShellState {
             return Ok(config);
         }
 
-        let config = shepr_protocol::codec::from_slice_exact::<shepr_config::ValidatedConfig>(
-            &snapshot.resolved_config,
-        )
-        .map_err(|error| error.to_string())?;
-        let config = std::sync::Arc::new(config);
-        if let Some(endpoint) = self
-            .endpoints
-            .iter_mut()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-        {
-            endpoint.resolved_config = Some(CachedEndpointConfig {
-                wire: snapshot.resolved_config.clone(),
-                config: std::sync::Arc::clone(&config),
-            });
+        if snapshot.resolved_config.is_empty() {
+            return Err(
+                "endpoint snapshot omitted configuration without a cached value".to_owned(),
+            );
         }
-        Ok(config)
+        self.cache_endpoint_config(endpoint_id, &snapshot.resolved_config)
+    }
+
+    fn cache_endpoint_config(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        wire: &[u8],
+    ) -> Result<std::sync::Arc<shepr_config::ValidatedConfig>, String> {
+        let Some(index) = self
+            .endpoints
+            .iter()
+            .position(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        else {
+            return Err("endpoint is no longer available".to_owned());
+        };
+        if let Some(cached) = self.endpoints[index]
+            .resolved_config_error
+            .as_ref()
+            .filter(|cached| cached.wire == wire)
+        {
+            return Err(cached.message.clone());
+        }
+        if let Some(config) = self.endpoints[index]
+            .resolved_config
+            .as_ref()
+            .filter(|cached| cached.wire == wire)
+            .map(|cached| std::sync::Arc::clone(&cached.config))
+        {
+            if self.endpoints[index].resolved_config_error.take().is_some() {
+                self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Online);
+            }
+            return Ok(config);
+        }
+
+        match shepr_protocol::codec::from_slice_exact::<shepr_config::ValidatedConfig>(wire) {
+            Ok(config) => {
+                let config = std::sync::Arc::new(config);
+                let had_error = {
+                    let endpoint = &mut self.endpoints[index];
+                    let had_error = endpoint.resolved_config_error.take().is_some();
+                    endpoint.resolved_config = Some(CachedEndpointConfig {
+                        wire: wire.to_vec(),
+                        config: std::sync::Arc::clone(&config),
+                    });
+                    had_error
+                };
+                if had_error {
+                    self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Online);
+                }
+                Ok(config)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let label = self.endpoints[index].label.clone();
+                {
+                    let endpoint = &mut self.endpoints[index];
+                    endpoint.resolved_config_error = Some(CachedEndpointConfigError {
+                        wire: wire.to_vec(),
+                        message: message.clone(),
+                    });
+                }
+                self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Attention);
+                self.set_machine_error(
+                    endpoint_id,
+                    &format!("invalid endpoint configuration: {message}"),
+                );
+                tracing::warn!(
+                    endpoint = %endpoint_id.storage_key(),
+                    label = %label,
+                    error = %message,
+                    "endpoint configuration could not be decoded"
+                );
+                Err(message)
+            }
+        }
     }
 }
 
@@ -483,6 +594,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         status: ClientEndpointStatus::Online,
         snapshot: None,
         resolved_config: None,
+        resolved_config_error: None,
         snapshot_generation: None,
         agent_recency: HashMap::new(),
     }

@@ -64,8 +64,8 @@ use process::session_and_tty_from_stat;
 #[cfg(test)]
 use clipboard::{
     CLIPBOARD_HELPER_TIMEOUT, ClipboardCommand, ClipboardSession, clipboard_commands,
-    clipboard_program_name, read_clipboard_text_commands, read_clipboard_text_with_command,
-    run_clipboard_command, write_clipboard_with,
+    read_clipboard_text_commands, read_clipboard_text_with_command, run_clipboard_command,
+    write_clipboard_with,
 };
 #[cfg(test)]
 use host::{is_detached_session, resolve_launch_executable};

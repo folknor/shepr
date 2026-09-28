@@ -117,6 +117,52 @@ fn switching_to_an_endpoint_with_an_undecodable_config_keeps_the_previous_one() 
 }
 
 #[test]
+fn inactive_endpoint_with_an_undecodable_config_is_flagged_at_once() {
+    let (mut state, endpoint_id) = state_with_remote();
+    let endpoint = |state: &ClientShellState| {
+        state
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+            .expect("remote endpoint")
+            .clone()
+    };
+    let good = endpoint(&state).snapshot.expect("remote snapshot");
+    let mut bad = (*good).clone();
+    bad.revision = bad.revision.next();
+    bad.resolved_config = vec![0xff; 3];
+    state.cache_endpoint_snapshot(&endpoint_id, Box::new(bad.clone()));
+
+    // Surfaced while the endpoint is still in the background, and the last
+    // good config is kept rather than dropped.
+    let flagged = endpoint(&state);
+    assert_eq!(flagged.status, ClientEndpointStatus::Attention);
+    assert!(flagged.resolved_config.is_some());
+    assert!(flagged.resolved_config_error.is_some());
+    // A connection reporting itself online does not hide the bad config.
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    assert_eq!(endpoint(&state).status, ClientEndpointStatus::Attention);
+
+    assert!(!state.activate_endpoint_projection(&endpoint_id));
+    assert!(
+        state
+            .endpoint_error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Build: invalid endpoint configuration")),
+        "{:?}",
+        state.endpoint_error
+    );
+
+    let mut fixed = (*good).clone();
+    fixed.revision = bad.revision.next();
+    state.cache_endpoint_snapshot(&endpoint_id, Box::new(fixed));
+    let recovered = endpoint(&state);
+    assert_eq!(recovered.status, ClientEndpointStatus::Online);
+    assert!(recovered.resolved_config_error.is_none());
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+}
+
+#[test]
 fn inactive_endpoint_keeps_config_when_later_snapshots_omit_bytes() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut later = state

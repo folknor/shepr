@@ -430,7 +430,11 @@ pub(super) fn output_with_forwarded_stderr(
     // command exits; the capture stops waiting for it shortly after the exit.
     let stdout_capture =
         PipeCapture::spawn_tail(child_stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
-    let stderr_relay = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::Stderr);
+    let stderr_relay = PipeCapture::spawn(
+        PrintableRemoteStderr::new(child_stderr),
+        SSH_STDERR_CAPTURE_LIMIT,
+        PipeEcho::Stderr,
+    );
 
     let write_result = if let Some(bytes) = stdin {
         if let Some(mut child_stdin) = child.stdin.take() {
@@ -458,6 +462,54 @@ pub(super) fn output_with_forwarded_stderr(
         stdout: stdout_result?,
         stderr: stderr_result?,
     })
+}
+
+/// Sanitizes untrusted SSH diagnostics before `PipeCapture` relays them to the
+/// local terminal, with the shared remote-text filter. Each chunk is filtered
+/// and handed on as soon as it is read, never held back for a line ending, so
+/// a prompt written without a trailing newline still appears at once.
+struct PrintableRemoteStderr<R> {
+    reader: R,
+    pending: Vec<u8>,
+    offset: usize,
+}
+
+impl<R> PrintableRemoteStderr<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            pending: Vec::new(),
+            offset: 0,
+        }
+    }
+}
+
+impl<R: io::Read> io::Read for PrintableRemoteStderr<R> {
+    fn read(&mut self, destination: &mut [u8]) -> io::Result<usize> {
+        if destination.is_empty() {
+            return Ok(0);
+        }
+        // A chunk of only carriage returns filters to nothing; returning 0 for
+        // it would read as end of stream, so read on.
+        while self.offset == self.pending.len() {
+            let mut incoming = [0_u8; 4096];
+            let read = io::Read::read(&mut self.reader, &mut incoming)?;
+            if read == 0 {
+                return Ok(0);
+            }
+            let printable = super::server_lifecycle::printable_remote_text(
+                &String::from_utf8_lossy(&incoming[..read]),
+            );
+            self.pending = printable.into_bytes();
+            self.offset = 0;
+        }
+
+        let available = self.pending.len() - self.offset;
+        let read = available.min(destination.len());
+        destination[..read].copy_from_slice(&self.pending[self.offset..self.offset + read]);
+        self.offset += read;
+        Ok(read)
+    }
 }
 
 pub(super) fn normalize_remote_output(mut output: Output) -> io::Result<Output> {
@@ -636,7 +688,7 @@ pub(super) fn write_managed_ssh_config(
 /// Preserve the SSH process exit code and its classified diagnostic in the error source.
 pub(super) fn command_failed(context: &str, output: &Output) -> io::Error {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let stderr = stderr.trim();
+    let stderr = super::server_lifecycle::printable_remote_text(stderr.trim());
     let message = if stderr.is_empty() {
         format!("{context}: {}", output.status)
     } else {
@@ -646,4 +698,55 @@ pub(super) fn command_failed(context: &str, output: &Output) -> io::Error {
         output.status.code(),
         message,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrintableRemoteStderr;
+    use std::io::Read as _;
+
+    #[test]
+    fn interactive_remote_stderr_is_filtered_before_echo() {
+        let input = b"Connection refused\n\x1b[2J\n";
+        let mut reader = PrintableRemoteStderr::new(&input[..]);
+        let mut output = String::new();
+        reader
+            .read_to_string(&mut output)
+            .expect("read sanitized remote stderr");
+        assert_eq!(output, "Connection refused\n?[2J\n");
+        assert!(!output.contains('\x1b'));
+    }
+
+    #[test]
+    fn interactive_remote_stderr_passes_prompts_and_crlf_through_at_once() {
+        // A prompt with no line ending is handed on from the first read.
+        let prompt = b"Are you sure you want to continue connecting (yes/no)? ";
+        let mut reader = PrintableRemoteStderr::new(&prompt[..]);
+        let mut buffer = [0_u8; 256];
+        let read = reader.read(&mut buffer).expect("read prompt");
+        assert_eq!(&buffer[..read], &prompt[..]);
+
+        // OpenSSH's CRLF line endings lose the carriage return, including a
+        // chunk that holds nothing else.
+        let chunks = [&b"Warning: added host\r"[..], b"\r", b"\npassword: "];
+        let mut reader = PrintableRemoteStderr::new(ChunkedReader(chunks.iter()));
+        let mut output = String::new();
+        reader
+            .read_to_string(&mut output)
+            .expect("read sanitized remote stderr");
+        assert_eq!(output, "Warning: added host\npassword: ");
+    }
+
+    /// Returns one given chunk per read, as a pipe would.
+    struct ChunkedReader<'a>(std::slice::Iter<'a, &'a [u8]>);
+
+    impl std::io::Read for ChunkedReader<'_> {
+        fn read(&mut self, destination: &mut [u8]) -> std::io::Result<usize> {
+            let Some(chunk) = self.0.next() else {
+                return Ok(0);
+            };
+            destination[..chunk.len()].copy_from_slice(chunk);
+            Ok(chunk.len())
+        }
+    }
 }

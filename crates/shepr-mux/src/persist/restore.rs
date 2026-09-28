@@ -39,6 +39,7 @@ struct RestoreRuntimeContext<'a> {
     scrollback_limit_bytes: usize,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     shell_config: crate::pane::PaneShellConfig<'a>,
+    api_socket_path: &'a std::path::Path,
     resume_agents_on_restore: bool,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -101,34 +102,8 @@ pub fn restore(
     rows: u16,
     cols: u16,
     scrollback_limit_bytes: usize,
-    default_shell: &str,
-    login_shell: bool,
-    resume_agents_on_restore: bool,
-    events: &mpsc::Sender<AppEvent>,
-    render_notify: &Arc<Notify>,
-    render_dirty: &Arc<RenderSignal>,
-) -> RestoredSession {
-    restore_with_imports(
-        snapshot,
-        history,
-        rows,
-        cols,
-        scrollback_limit_bytes,
-        crate::pane::PaneShellConfig::new(default_shell, login_shell),
-        resume_agents_on_restore,
-        events,
-        render_notify,
-        render_dirty,
-    )
-}
-
-fn restore_with_imports(
-    snapshot: &SessionSnapshot,
-    history: Option<&SessionHistorySnapshot>,
-    rows: u16,
-    cols: u16,
-    scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'_>,
+    api_socket_path: &std::path::Path,
     resume_agents_on_restore: bool,
     events: &mpsc::Sender<AppEvent>,
     render_notify: &Arc<Notify>,
@@ -162,6 +137,7 @@ fn restore_with_imports(
             scrollback_limit_bytes,
             host_theme,
             shell_config,
+            api_socket_path,
             resume_agents_on_restore,
             events: events.clone(),
             render_notify: Arc::clone(render_notify),
@@ -218,6 +194,56 @@ fn remap_saved_index(saved: usize, restored: &[Option<usize>]) -> Option<usize> 
         .next()
         .or_else(|| restored[..split].iter().rev().flatten().next())
         .copied()
+}
+
+/// Keep unique saved tab numbers and give every missing, zero, or duplicate
+/// number the next unused public number. The allocator starts beyond every
+/// saved number so an early missing entry cannot take an ID saved for a later
+/// tab.
+fn assign_public_tab_numbers(
+    saved_numbers: &[usize],
+    tab_count: usize,
+    saved_next_public_tab_number: usize,
+) -> (Vec<usize>, usize) {
+    let max_saved = saved_numbers
+        .iter()
+        .copied()
+        .filter(|number| *number > 0)
+        .max();
+    let mut next_public_tab_number = max_saved
+        .and_then(|number| number.checked_add(1))
+        .unwrap_or(1)
+        .max(saved_next_public_tab_number)
+        .max(1);
+    let mut used = HashSet::new();
+    let mut numbers = Vec::with_capacity(tab_count);
+
+    for saved_number in saved_numbers
+        .iter()
+        .copied()
+        .map(Some)
+        .chain(std::iter::repeat(None))
+        .take(tab_count)
+    {
+        let saved_number = saved_number
+            .filter(|number| *number > 0)
+            .filter(|number| used.insert(*number));
+        let number = saved_number
+            .unwrap_or_else(|| next_free_public_tab_number(&mut next_public_tab_number, &used));
+        used.insert(number);
+        numbers.push(number);
+    }
+
+    (numbers, next_public_tab_number)
+}
+
+fn next_free_public_tab_number(next: &mut usize, used: &HashSet<usize>) -> usize {
+    while *next == 0 || used.contains(next) {
+        *next = (*next).checked_add(1).unwrap_or(1);
+    }
+    let number = *next;
+    *next = number.checked_add(1).unwrap_or(1);
+    number
 }
 
 /// The ID a restored workspace gets. A saved ID is kept unless an earlier
@@ -279,25 +305,13 @@ fn restore_workspace(
             )
         })
         .collect();
-    let mut next_public_tab_number = snap
-        .public_tab_numbers
-        .iter()
-        .copied()
-        .max()
-        .and_then(|max| max.checked_add(1))
-        .unwrap_or(1)
-        .max(snap.next_public_tab_number);
+    let (public_tab_numbers, next_public_tab_number) = assign_public_tab_numbers(
+        &snap.public_tab_numbers,
+        snap.tabs.len(),
+        snap.next_public_tab_number,
+    );
 
-    for (idx, tab_snap) in snap.tabs.iter().enumerate() {
-        // Public numbers are one-based, and building a public ID from zero is
-        // an invariant violation that aborts; a saved zero (a hand-edited or
-        // damaged file) is treated like a missing entry.
-        let saved_tab_number = snap
-            .public_tab_numbers
-            .get(idx)
-            .copied()
-            .filter(|number| *number > 0);
-        let tab_number = saved_tab_number.unwrap_or(idx + 1);
+    for (idx, (tab_snap, tab_number)) in snap.tabs.iter().zip(public_tab_numbers).enumerate() {
         let restored_tab = restore_tab(
             tab_snap,
             history.and_then(|history| history.tabs.get(idx)),
@@ -314,10 +328,6 @@ fn restore_workspace(
             continue;
         };
         restored_tab_index.push(Some(tabs.len()));
-        if let Some(public_tab_number) = saved_tab_number {
-            tab.number = public_tab_number;
-        }
-        next_public_tab_number = next_public_tab_number.max(tab.number + 1);
         for (pane_id, pane) in &mut tab.panes {
             let public_number = public_pane_numbers_by_old_raw
                 .get(
@@ -536,9 +546,13 @@ fn restore_tab(
         let public_pane_id = old_pane_id
             .and_then(|old_id| public_pane_ids_by_old_raw.get(&old_id))
             .map(String::as_str);
-        let launch_env = public_pane_id
-            .and_then(|pane_id| pane_id.parse::<shepr_protocol::PublicPaneId>().ok())
-            .map_or_default(|pane_id| PaneLaunchEnv::from_extra(Vec::new()).with_pane_id(pane_id));
+        let mut launch_env =
+            PaneLaunchEnv::from_extra(Vec::new(), runtime_context.api_socket_path.to_path_buf());
+        if let Some(pane_id) =
+            public_pane_id.and_then(|pane_id| pane_id.parse::<shepr_protocol::PublicPaneId>().ok())
+        {
+            launch_env = launch_env.with_pane_id(pane_id);
+        }
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(saved_pane, RestoredPaneStart::PendingResume(plan));
             // Native resume owns what this pane shows once it runs, so the
@@ -910,6 +924,10 @@ mod tests {
 
     use super::*;
 
+    /// A non-empty API socket path for restored test panes; nothing listens on
+    /// it, and a pane only exports it as SHEPR_SOCKET_PATH.
+    const TEST_API_SOCKET: &str = "/run/user/1000/shepr-test.sock";
+
     fn test_session_path(name: &str) -> String {
         std::env::current_dir()
             .expect("test precondition")
@@ -1011,8 +1029,8 @@ mod tests {
             5,
             40,
             4096,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1084,12 +1102,15 @@ mod tests {
                 5,
                 40,
                 4096,
-                if missing_shell {
-                    "__shepr_missing_restore_shell__"
-                } else {
-                    test_restore_shell()
-                },
-                false,
+                crate::pane::PaneShellConfig::new(
+                    if missing_shell {
+                        "__shepr_missing_restore_shell__"
+                    } else {
+                        test_restore_shell()
+                    },
+                    false,
+                ),
+                std::path::Path::new(TEST_API_SOCKET),
                 resume,
                 &events,
                 &Arc::new(Notify::new()),
@@ -1257,8 +1278,8 @@ mod tests {
             5,
             40,
             0,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1712,12 +1733,15 @@ mod tests {
                 24,
                 80,
                 0,
-                if missing_shell {
-                    "__shepr_missing_restore_shell__"
-                } else {
-                    test_restore_shell()
-                },
-                false,
+                crate::pane::PaneShellConfig::new(
+                    if missing_shell {
+                        "__shepr_missing_restore_shell__"
+                    } else {
+                        test_restore_shell()
+                    },
+                    false,
+                ),
+                std::path::Path::new(TEST_API_SOCKET),
                 false,
                 &events,
                 &Arc::new(Notify::new()),
@@ -1830,8 +1854,8 @@ mod tests {
             24,
             80,
             0,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1921,8 +1945,8 @@ mod tests {
             24,
             80,
             0,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -2036,6 +2060,16 @@ mod tests {
         assert_eq!(next, 2);
     }
 
+    #[test]
+    fn missing_zero_and_duplicate_tab_numbers_get_unique_free_numbers() {
+        assert_eq!(
+            assign_public_tab_numbers(&[0, 1, 4, 4], 5, 0),
+            (vec![5, 1, 4, 6, 7], 8)
+        );
+        assert_eq!(assign_public_tab_numbers(&[1], 3, 0), (vec![1, 2, 3], 4));
+        assert_eq!(assign_public_tab_numbers(&[2], 2, 0), (vec![2, 3], 4));
+    }
+
     #[tokio::test]
     async fn cold_restore_with_gapped_public_tab_numbers_drops_unmanaged_agent_name() {
         let cwd = std::env::current_dir().expect("test precondition");
@@ -2128,8 +2162,8 @@ mod tests {
             24,
             80,
             0,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -2203,8 +2237,8 @@ mod tests {
             24,
             80,
             0,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             true,
             &events,
             &Arc::new(Notify::new()),
@@ -2247,8 +2281,8 @@ mod tests {
             5,
             40,
             4096,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             false,
             &events,
             &render_notify,
@@ -2285,8 +2319,8 @@ mod tests {
             5,
             40,
             4096,
-            test_restore_shell(),
-            false,
+            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            std::path::Path::new(TEST_API_SOCKET),
             false,
             &events,
             &render_notify,
@@ -2332,8 +2366,8 @@ mod tests {
                 5,
                 80,
                 4096,
-                test_restore_shell(),
-                false,
+                crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+                std::path::Path::new(TEST_API_SOCKET),
                 false,
                 &events,
                 &Arc::new(Notify::new()),

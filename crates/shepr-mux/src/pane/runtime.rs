@@ -1879,7 +1879,10 @@ mod tests {
         cmd.env("ANTHROPIC_API_KEY", "fake-api-key");
         cmd.env("DISPLAY", ":42");
 
-        apply_pane_launch_env(&mut cmd, &PaneLaunchEnv::default());
+        apply_pane_launch_env(
+            &mut cmd,
+            &PaneLaunchEnv::from_extra(Vec::new(), "/run/user/1000/shepr-test.sock".into()),
+        );
 
         for key in keys {
             assert!(cmd.get_env(key).is_none(), "{key} must not leak into panes");
@@ -1934,13 +1937,21 @@ mod tests {
             ("CLAUDE_CODE_MESSAGING_TOKEN".into(), "fake-token".into()),
             ("ITERM_SESSION_ID".into(), "intentional-host".into()),
         ];
+        let api_socket_path = std::path::PathBuf::from("/run/user/1000/shepr-test.sock");
         let mut cmd = PtyCommand::new("shell");
         apply_pane_terminal_env(&mut cmd);
-        apply_pane_launch_env(&mut cmd, &PaneLaunchEnv::from_extra(extra.clone()));
+        apply_pane_launch_env(
+            &mut cmd,
+            &PaneLaunchEnv::from_extra(extra.clone(), api_socket_path.clone()),
+        );
 
         for (key, value) in extra {
             assert_eq!(cmd.get_env(key), Some(OsStr::new(&value)));
         }
+        assert_eq!(
+            cmd.get_env("SHEPR_SOCKET_PATH"),
+            Some(api_socket_path.as_os_str())
+        );
     }
 
     #[tokio::test]

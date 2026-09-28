@@ -459,14 +459,8 @@ fn ensure_remote_client_build(target: &str, status: &RemoteClientStatusJson) -> 
 }
 
 fn remote_compatibility_error(target: &str, status: &RemoteClientStatusJson) -> io::Error {
-    let printable = |value: Option<&str>| {
-        value
-            .filter(|value| value.chars().all(|ch| ch.is_ascii_graphic()))
-            .unwrap_or("unknown")
-            .to_owned()
-    };
-    let version = printable(status.version.as_deref());
-    let build_id = printable(status.build_id.as_deref());
+    let version = super::server_lifecycle::printable_remote_value(status.version.as_deref());
+    let build_id = super::server_lifecycle::printable_remote_value(status.build_id.as_deref());
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(

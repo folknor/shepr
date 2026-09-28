@@ -757,7 +757,7 @@ impl TerminalState {
             ) | (Agent::Mastracode, Some(Start::Startup))
                 | (Agent::OpenCode, Some(Start::Select))
                 | (Agent::Pi, Some(Start::New | Start::Resume | Start::Fork))
-                | (Agent::Grok, Some(Start::New))
+                | (Agent::Grok, Some(Start::New | Start::Load))
                 | (
                     Agent::Omp,
                     Some(Start::Startup | Start::New | Start::Resume | Start::Fork)

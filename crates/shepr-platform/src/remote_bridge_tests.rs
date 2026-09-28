@@ -22,7 +22,7 @@ fn bridge_child() {
     let stream = interprocess::local_socket::Stream::connect(name).expect("test precondition");
     let outcome = super::forward_remote_bridge_stdio_with_timeout(stream, Some(TIMEOUT))
         .expect("test precondition");
-    if outcome == super::RemoteBridgeOutcome::IdleExpired {
+    if let super::RemoteBridgeOutcome::IdleExpired { .. } = outcome {
         exit_as_expired_bridge();
     }
 }

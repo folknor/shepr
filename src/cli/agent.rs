@@ -167,7 +167,11 @@ fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super:
             }
         };
         shepr_agent::detect::manifest::explain_to_json_value(
-            &shepr_agent::detect::manifest::explain_for_label(&agent_label, &content),
+            &shepr_agent::detect::manifest::explain_for_label(
+                &agent_label,
+                &content,
+                paths.config_dir(),
+            ),
         )
     } else {
         let response = super::send_request(
