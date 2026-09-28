@@ -1,5 +1,5 @@
 use crate::terminal::TerminalReadSnapshot;
-pub use shepr_protocol::ScrollMetrics;
+pub use shepr_termio::ScrollMetrics;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

@@ -214,14 +214,6 @@ impl AppState {
             | AppEvent::GitStatusRefreshed { .. }
             | AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
-                // The PTY reader thread that publishes this event has already
-                // checked that the path is an existing directory. Repeating
-                // that `stat` here would put filesystem IO (possibly a hung
-                // network mount) on the loop that fans frames out to every
-                // client, so only the pure shape check is kept.
-                if !cwd.is_absolute() {
-                    return Vec::new();
-                }
                 let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
                     ws.pane_state(pane_id)
                         .map(|pane| pane.attached_terminal_id.clone())
@@ -231,8 +223,8 @@ impl AppState {
                 let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
                     return Vec::new();
                 };
-                if terminal.cwd != cwd {
-                    terminal.cwd = cwd;
+                if terminal.cwd() != cwd.as_path() {
+                    terminal.set_cwd(cwd);
                     self.mark_session_dirty();
                 }
                 Vec::new()

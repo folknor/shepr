@@ -1481,7 +1481,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
         .app
         .handle_internal_event(shepr_mux::events::AppEvent::TerminalCwdReported {
             pane_id,
-            cwd: cwd.clone(),
+            cwd: shepr_mux::UsableCwd::new(cwd.clone()).expect("socket directory is usable"),
         });
     server.render_and_stream();
     let reported = client_shell_snapshot(&control);

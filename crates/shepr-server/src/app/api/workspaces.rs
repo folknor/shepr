@@ -1,5 +1,4 @@
 use shepr_api::error::{ApiErrorCode, ApiResult};
-use std::path::PathBuf;
 
 use crate::app::{App, actions::PaneContextFallback};
 use shepr_api::schema::{
@@ -32,7 +31,12 @@ impl App {
     }
 
     pub(super) fn handle_workspace_create(&mut self, params: WorkspaceCreateParams) -> ApiResult {
-        let source_context = if params.cwd.is_some() {
+        let explicit_cwd = params
+            .cwd
+            .as_deref()
+            .map(super::cwd::launch_cwd)
+            .transpose()?;
+        let source_context = if explicit_cwd.is_some() {
             None
         } else {
             match params.source_workspace_id.as_deref() {
@@ -54,20 +58,17 @@ impl App {
                 ),
             }
         };
-        let cwd = params.cwd.map_or_else(
-            || {
-                source_context.map_or_else(
-                    || self.resolve_new_terminal_cwd(None),
-                    |context| {
-                        self.resolved_new_workspace_cwd_from_tab(
-                            context.workspace_index,
-                            Some(context.tab_index),
-                        )
-                    },
-                )
-            },
-            PathBuf::from,
-        );
+        let cwd = explicit_cwd.unwrap_or_else(|| {
+            source_context.map_or_else(
+                || self.resolve_new_terminal_cwd(None),
+                |context| {
+                    self.resolved_new_workspace_cwd_from_tab(
+                        context.workspace_index,
+                        Some(context.tab_index),
+                    )
+                },
+            )
+        });
         let extra_env = super::env::normalize_launch_env(params.env)?;
         match self.create_workspace_with_launch_env(&cwd, params.focus, extra_env) {
             Ok(index) => {
@@ -374,7 +375,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .cwd = focused_cwd.clone();
+            .set_cwd(shepr_mux::UsableCwd::new(focused_cwd.clone()).expect("test cwd is usable"));
 
         let response = app.handle_workspace_create(WorkspaceCreateParams {
             source_workspace_id: None,
@@ -432,7 +433,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .cwd = source_cwd.clone();
+            .set_cwd(shepr_mux::UsableCwd::new(source_cwd.clone()).expect("test cwd is usable"));
         let source_workspace_id = app.public_workspace_id(1).expect("test precondition");
 
         let response = app.handle_workspace_create(WorkspaceCreateParams {

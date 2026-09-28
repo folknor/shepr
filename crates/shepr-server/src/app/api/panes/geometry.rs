@@ -829,7 +829,7 @@ impl App {
                                         .unwrap_or_else(|| std::path::Path::new("/"))
                                         .to_path_buf()
                                 },
-                                |terminal| terminal.cwd.clone(),
+                                |terminal| terminal.cwd().to_path_buf(),
                             );
                         let moved_pane_id = moved.pane_id;
                         let workspace = shepr_mux::workspace::Workspace::from_existing_pane(

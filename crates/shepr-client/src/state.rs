@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write as _;
 
 pub(super) type ShellSession = shell::ClientShellState;
 
@@ -48,6 +49,8 @@ impl SessionMode {
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
     pub(super) blit_encoder: render_ansi::BlitEncoder,
+    /// Host terminal output used by every composed frame and surface patch.
+    pub(super) output_writer: Box<dyn io::Write + Send>,
     pub(super) host_modes: terminal_setup::HostModes,
     /// Latest physical host theme observations, retained so an endpoint selected after the
     /// observation receives the same client-owned baseline.
@@ -75,6 +78,7 @@ impl ClientState {
         let config = shepr_config::ValidatedConfig::test_default();
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
+            output_writer: Box::new(io::sink()),
             host_modes: terminal_setup::HostModes::new(false, false, false),
             host_theme_updates: Vec::new(),
             settings: ClientSettings::from_config(&config),
@@ -89,6 +93,13 @@ impl ClientState {
             frame_write_failure: HostWriteFailure::default(),
             title_write_failure: HostWriteFailure::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_new_with_writer(writer: impl io::Write + Send + 'static) -> Self {
+        let mut state = Self::test_new();
+        state.output_writer = Box::new(writer);
+        state
     }
 
     pub(super) fn request_repaint(&mut self) {
@@ -219,12 +230,8 @@ impl ClientState {
         else {
             return Ok(false);
         };
-        #[cfg(not(test))]
-        let mut stdout = io::stdout();
-        #[cfg(test)]
-        let mut stdout = io::sink();
         if !encoded.bytes.is_empty() {
-            self.write_composed_output(&mut stdout, &encoded.bytes)?;
+            self.write_composed_output(&encoded.bytes)?;
         }
         let committed = self
             .blit_encoder
@@ -232,13 +239,15 @@ impl ClientState {
         Ok(committed)
     }
 
-    fn write_composed_output(
-        &mut self,
-        writer: &mut impl io::Write,
-        encoded: &[u8],
-    ) -> io::Result<()> {
-        frame_output::write_composed_frame(writer.by_ref(), encoded)?;
-        writer.flush()
+    fn write_composed_output(&mut self, encoded: &[u8]) -> io::Result<()> {
+        frame_output::write_composed_frame(&mut self.output_writer, encoded)?;
+        self.output_writer.flush()
+    }
+
+    pub(super) fn presentation_log_context(&self) -> Option<shell::ClientPresentationLogContext> {
+        self.mode
+            .shell()
+            .map(shell::ClientShellState::presentation_log_context)
     }
 
     /// Presents and commits a frame only after all terminal output has been written successfully.
@@ -262,15 +271,16 @@ impl ClientState {
         } else {
             self.blit_encoder.encode(&frame_data, self.repaint_pending)
         };
-        // Unit tests drive the loop's presentation paths; a full-screen frame written to the
-        // test runner's real stdout (libtest only captures `print!`) would scribble on its
-        // terminal.
-        #[cfg(not(test))]
-        let mut stdout = io::stdout();
-        #[cfg(test)]
-        let mut stdout = io::sink();
-        let written = self.write_composed_output(&mut stdout, &encoded.bytes);
-        if !self.frame_write_failure.observe("client frame", &written) {
+        let written = self.write_composed_output(&encoded.bytes);
+        // Built only for a failed write: every frame passes through here.
+        let context = written
+            .is_err()
+            .then(|| self.presentation_log_context())
+            .flatten();
+        if !self
+            .frame_write_failure
+            .observe("client frame", &written, context.as_ref())
+        {
             self.repaint_pending = true;
             return;
         }
@@ -289,7 +299,12 @@ pub(super) struct HostWriteFailure {
 
 impl HostWriteFailure {
     /// Records one write's outcome and returns whether it succeeded.
-    pub(super) fn observe(&mut self, write: &'static str, result: &io::Result<()>) -> bool {
+    pub(super) fn observe(
+        &mut self,
+        write: &'static str,
+        result: &io::Result<()>,
+        context: Option<&shell::ClientPresentationLogContext>,
+    ) -> bool {
         match result {
             Ok(()) => {
                 if let Some(kind) = self.failing.take() {
@@ -303,15 +318,96 @@ impl HostWriteFailure {
             }
             Err(error) => {
                 if self.failing != Some(error.kind()) {
-                    tracing::warn!(
-                        write,
-                        error = %error,
-                        "host terminal write failed; repeats of this failure are not logged until a write succeeds"
-                    );
+                    if let Some(context) = context {
+                        tracing::warn!(
+                            write,
+                            endpoint = %context.endpoint,
+                            generation = ?context.generation,
+                            projection_revision = ?context.projection_revision,
+                            surface_revision = ?context.surface_revision,
+                            boot_id = ?context.boot_id,
+                            pane_ids = ?context.pane_ids,
+                            error = %error,
+                            "host terminal write failed; repeats of this failure are not logged until a write succeeds"
+                        );
+                    } else {
+                        tracing::warn!(
+                            write,
+                            error = %error,
+                            "host terminal write failed; repeats of this failure are not logged until a write succeeds"
+                        );
+                    }
                     self.failing = Some(error.kind());
                 }
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use shepr_protocol::{CellData, PaneSurfacePatchRow, WireColor, WireStyle};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for SharedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| io::Error::other("test output lock poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn cell(symbol: &str) -> CellData {
+        CellData {
+            symbol: symbol.into(),
+            fg: WireColor::Reset,
+            bg: WireColor::Reset,
+            style: WireStyle::default(),
+            skip: false,
+            hyperlink: None,
+        }
+    }
+
+    #[test]
+    fn composed_frames_and_surface_patches_use_the_injected_writer() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let mut state = ClientState::test_new_with_writer(SharedWriter(Arc::clone(&output)));
+        let frame = shepr_protocol::FrameData::from_ratatui_buffer_with_hyperlinks(
+            &Buffer::with_lines(["a"]),
+            None,
+            &[],
+        );
+
+        state.present_frame(frame);
+        let frame_bytes = output.lock().expect("test output lock");
+        assert!(frame_bytes.contains(&b'a'));
+        drop(frame_bytes);
+
+        output.lock().expect("test output lock").clear();
+        let presented = state
+            .present_surface_patch(shell::ClientComposedSurfacePatch {
+                rows: vec![PaneSurfacePatchRow {
+                    x: 0,
+                    y: 0,
+                    cells: vec![cell("b")],
+                }],
+                cursor: None,
+            })
+            .expect("surface patch writes through the injected writer");
+
+        assert!(presented);
+        assert!(output.lock().expect("test output lock").contains(&b'b'));
     }
 }

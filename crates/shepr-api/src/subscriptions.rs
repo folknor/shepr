@@ -247,15 +247,6 @@ impl ActiveSubscription {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn poll(
-        &mut self,
-        api_tx: &ApiRequestSender,
-        event_hub: &EventHub,
-    ) -> Option<serde_json::Value> {
-        self.poll_for_wait(api_tx, event_hub).ok().flatten()
-    }
-
     /// The next matching event, if any. Errors are final: a subscription whose
     /// pane closed or moved (its public id changes with the workspace), or
     /// whose event history was lost, can never deliver again, so it reports
@@ -524,15 +515,6 @@ impl ActiveOutputMatchedSubscription {
 }
 
 impl ActiveAgentStatusChangedSubscription {
-    #[cfg(test)]
-    fn poll(
-        &mut self,
-        api_tx: &ApiRequestSender,
-        event_hub: &EventHub,
-    ) -> Option<SubscriptionEventEnvelope> {
-        self.poll_result(api_tx, event_hub).ok().flatten()
-    }
-
     fn poll_result(
         &mut self,
         api_tx: &ApiRequestSender,
@@ -1128,13 +1110,22 @@ mod tests {
         .expect("workspace focus subscription");
 
         let setup_event = subscription
-            .poll(&api_tx, &event_hub)
+            .poll_for_wait(&api_tx, &event_hub)
+            .expect("history poll succeeds")
             .expect("setup-window event");
         assert_eq!(setup_event["data"]["workspace_id"], "during_setup");
-        assert!(subscription.poll(&api_tx, &event_hub).is_none());
+        assert!(
+            subscription
+                .poll_for_wait(&api_tx, &event_hub)
+                .expect("history poll succeeds")
+                .is_none()
+        );
 
         event_hub.push(workspace_focused_event("after_setup"));
-        let live_event = subscription.poll(&api_tx, &event_hub).expect("live event");
+        let live_event = subscription
+            .poll_for_wait(&api_tx, &event_hub)
+            .expect("history poll succeeds")
+            .expect("live event");
         assert_eq!(live_event["data"]["workspace_id"], "after_setup");
     }
 
@@ -1307,7 +1298,8 @@ mod tests {
         event_hub.push(presentation_event(None));
 
         let set_event = subscription
-            .poll(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .expect("history poll succeeds")
             .expect("set event");
         let SubscriptionEventData::PaneAgentStatusChanged(set_data) = set_event.data else {
             panic!("wrong event data");
@@ -1315,7 +1307,8 @@ mod tests {
         assert_eq!(set_data.title.as_deref(), Some("short lived"));
 
         let expiry_event = subscription
-            .poll(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .expect("history poll succeeds")
             .expect("expiry event");
         let SubscriptionEventData::PaneAgentStatusChanged(expiry_data) = expiry_event.data else {
             panic!("wrong event data");
@@ -1350,7 +1343,8 @@ mod tests {
         event_hub.push(presentation_event(None));
 
         let set_event = subscription
-            .poll(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .expect("history poll succeeds")
             .expect("set event");
         let SubscriptionEventData::PaneAgentStatusChanged(set_data) = set_event.data else {
             panic!("wrong event data");
@@ -1358,7 +1352,8 @@ mod tests {
         assert_eq!(set_data.title.as_deref(), Some("short lived"));
 
         let expiry_event = subscription
-            .poll(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .expect("history poll succeeds")
             .expect("expiry event");
         let SubscriptionEventData::PaneAgentStatusChanged(expiry_data) = expiry_event.data else {
             panic!("wrong event data");
@@ -1392,7 +1387,8 @@ mod tests {
         event_hub.push(presentation_event(Some("short lived")));
 
         let event = subscription
-            .poll(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
+            .expect("history poll succeeds")
             .expect("setup-window event");
         let SubscriptionEventData::PaneAgentStatusChanged(data) = event.data else {
             panic!("wrong event data");

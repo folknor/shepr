@@ -230,6 +230,8 @@ impl Confirmation {
     /// Reads one answer line. End of input and an unrecognised answer cancel
     /// the operation.
     pub fn read_answer(&self, reader: &mut impl io::BufRead) -> io::Result<bool> {
+        // `Confirmation` is public and supports both defaults, so blank input
+        // must continue to match the hint rendered by `prompt`.
         read_remote_confirmation(reader, self.default)
     }
 }

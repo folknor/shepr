@@ -54,7 +54,7 @@ pub(super) struct ShellHitMap {
     pub(super) workspaces: Vec<WorkspaceHit>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
-    pub(super) workspace_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
+    pub(super) workspace_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
     pub(super) workspace_max_scroll: usize,
     pub(super) tabs: Vec<(Rect, shepr_protocol::PublicTabId)>,
     pub(super) panes: Vec<PaneHit>,
@@ -63,7 +63,7 @@ pub(super) struct ShellHitMap {
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, shepr_protocol::PublicPaneId)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
-    pub(super) agent_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
+    pub(super) agent_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
     pub(super) agent_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
     pub(super) sidebar_divider: Rect,
@@ -84,10 +84,10 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(super) navigator_scrollbar: Rect,
-    pub(super) navigator_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
+    pub(super) navigator_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
     pub(super) help_popup: Rect,
     pub(super) help_scrollbar: Rect,
-    pub(super) help_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
+    pub(super) help_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
     pub(super) help_max_scroll: usize,
 }
 
@@ -96,7 +96,7 @@ pub(super) struct PaneHit {
     pub(super) rect: Rect,
     pub(super) inner_rect: Rect,
     pub(super) scrollbar_rect: Option<Rect>,
-    pub(super) scroll: Option<shepr_protocol::ScrollMetrics>,
+    pub(super) scroll: Option<shepr_termio::ScrollMetrics>,
     pub(super) pane_id: shepr_protocol::PublicPaneId,
     pub(super) mouse_reporting: bool,
     pub(super) sgr_pixel_mouse: bool,
@@ -486,9 +486,14 @@ pub(crate) struct ClientShellEndpointError {
     pub message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum ClientInputTarget {
-    Pane(shepr_protocol::PublicPaneId),
+#[derive(Debug)]
+pub(crate) struct ClientPresentationLogContext {
+    pub(crate) endpoint: String,
+    pub(crate) generation: Option<u64>,
+    pub(crate) boot_id: Option<String>,
+    pub(crate) projection_revision: Option<u64>,
+    pub(crate) surface_revision: Option<u64>,
+    pub(crate) pane_ids: Vec<shepr_protocol::PublicPaneId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -499,7 +504,7 @@ pub(super) struct ClientInputContext {
 }
 
 type ClientInputLeases =
-    shepr_termio::input::InputLeaseTable<u8, ClientInputContext, ClientInputTarget>;
+    shepr_termio::input::InputLeaseTable<u8, ClientInputContext, shepr_protocol::PublicPaneId>;
 
 #[derive(Clone, Debug)]
 pub(super) struct ClientPaneClick {
@@ -769,6 +774,43 @@ impl ClientShellState {
             host_background: None,
             endpoint_error: None,
             endpoint_error_deadline: None,
+        }
+    }
+
+    pub(crate) fn presentation_log_context(&self) -> ClientPresentationLogContext {
+        let surface = self.pane_surface.as_ref();
+        let mut pane_ids: Vec<_> = surface.map_or_else(Vec::new, |surface| {
+            surface
+                .panes
+                .iter()
+                .filter(|pane| pane.focused)
+                .map(|pane| pane.pane_id.clone())
+                .collect()
+        });
+        if pane_ids.is_empty()
+            && let Some(pane_id) = self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.focused_pane_id.clone())
+        {
+            pane_ids.push(pane_id);
+        }
+        let snapshot = self.snapshot.as_deref();
+        ClientPresentationLogContext {
+            endpoint: self.active_endpoint_id.storage_key(),
+            generation: if surface.is_some() {
+                self.pane_surface_generation
+            } else {
+                self.active_snapshot_generation
+            },
+            boot_id: surface
+                .map(|surface| surface.boot_id.to_string())
+                .or_else(|| snapshot.map(|snapshot| snapshot.boot_id.to_string())),
+            projection_revision: surface
+                .map(|surface| surface.projection_revision.get())
+                .or_else(|| snapshot.map(|snapshot| snapshot.revision.get())),
+            surface_revision: surface.map(|surface| surface.surface_revision.get()),
+            pane_ids,
         }
     }
 

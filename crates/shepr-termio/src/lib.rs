@@ -2,8 +2,10 @@ pub mod blit;
 pub mod copy_mode;
 pub mod host_term;
 pub mod input;
+pub mod scroll;
 
 pub use input::raw_input;
+pub use scroll::ScrollMetrics;
 pub mod selection_render;
 
 /// Config for this crate's unit tests. It cannot take the shared

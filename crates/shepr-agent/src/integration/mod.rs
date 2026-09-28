@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 mod actions;
 mod claude_settings;
 mod command;
@@ -34,8 +36,6 @@ const KIMI_INTEGRATION_VERSION: u32 = 3;
 const KIMI_CONFIG_BLOCK_BEGIN: &str = "# >>> shepr kimi integration";
 const KIMI_CONFIG_BLOCK_END: &str = "# <<< shepr kimi integration";
 const KIMI_MIN_VERSION: &str = "0.14.0";
-const KIMI_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
-    crate::agent::Agent::Kimi.integration_hook_events();
 const COPILOT_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const COPILOT_HOOK_ASSET: &str = include_str!("assets/copilot/shepr-agent-state.sh");
 const COPILOT_INTEGRATION_VERSION: u32 = 2;
@@ -76,7 +76,6 @@ const QWEN_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
 const LETTA_HOOK_INSTALL_NAME: &str = "shepr-agent-session.sh";
 const LETTA_HOOK_ASSET: &str = include_str!("assets/letta/shepr-agent-session.sh");
 const LETTA_INTEGRATION_VERSION: u32 = 1;
-const LETTA_HOOK_TIMEOUT_MS: u64 = 10_000;
 const CURSOR_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CURSOR_HOOK_ASSET: &str = include_str!("assets/cursor/shepr-agent-state.sh");
 const CURSOR_INTEGRATION_VERSION: u32 = 2;
@@ -87,19 +86,16 @@ const ANTIGRAVITY_CLI_INTEGRATION_VERSION: u32 = 1;
 /// Antigravity CLI keys `hooks.json` by hook name, so every Shepr entry lives
 /// under one Shepr-owned block that install rewrites and uninstall removes.
 const ANTIGRAVITY_CLI_HOOK_BLOCK_NAME: &str = "shepr";
-const ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC: u64 = 10;
-const ANTIGRAVITY_CLI_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
-    crate::agent::Agent::Antigravity.integration_hook_events();
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");
 const MASTRACODE_INTEGRATION_VERSION: u32 = 4;
-const MASTRACODE_HOOK_TIMEOUT_MS: u64 = 10_000;
 const MASTRACODE_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
     crate::agent::Agent::Mastracode.integration_hook_events();
 const GROK_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 const GROK_INTEGRATION_VERSION: u32 = 2;
+const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Each agent's own config files, named once. The `IntegrationSpec` rows list
 // them for the registration check, and install and uninstall join the same

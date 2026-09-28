@@ -2,8 +2,7 @@
 //!
 //! The server:
 //! - Does not enter raw mode or read stdin
-//! - Creates and listens on both `shepr.sock` (existing JSON API) and
-//!   `shepr-client.sock` (new binary protocol)
+//! - Creates and listens on the API and client sockets
 //! - Initializes AppState and all PTYs from session restore or fresh state
 //! - Runs the main event loop (drain events, drain API requests, scheduled tasks)
 //! - Renders to a virtual ratatui Buffer in memory
@@ -33,6 +32,7 @@ use tracing::{debug, info, warn};
 use base64::Engine;
 
 use crate::app;
+use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
 use crate::server::client_accept::accept_pending_client_connections;
 use crate::server::client_shell::{
     render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
@@ -265,7 +265,7 @@ impl HeadlessServer {
         }
 
         // Channel for server events from client threads.
-        let (server_event_tx, server_event_rx) = mpsc::channel(64);
+        let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
         let (agent_manifest_reload_tx, agent_manifest_reload_rx) = mpsc::unbounded_channel();
 
         let effective_size = app.state.settings.headless_size;

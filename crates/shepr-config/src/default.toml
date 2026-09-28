@@ -156,7 +156,7 @@
 # Empty or an off value disables this. Shift is intentionally unsupported
 # because terminals commonly reserve Shift+mouse.
 # Terminal mouse reports use only ctrl and alt, with keybinding aliases accepted.
-# right_click_passthrough_modifier = ""
+# right_click_passthrough_modifier = "off"
 
 # Force a full redraw when the outer terminal regains focus.
 # Set false to reduce visible flashing when switching back to Shepr.
@@ -225,7 +225,8 @@
 # distinct static glyphs for Working, Blocked and Idle states.
 # status_indicators = "dots"
 
-# Accent color for highlights, borders, and navigation UI. Unset uses the theme accent.
+# Accent color for highlights, borders, and navigation UI.
+# Unset or empty uses the theme accent.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
 # This is an example override; theme.custom.accent takes precedence.
 # accent = "#89b4fa"

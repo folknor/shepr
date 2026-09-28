@@ -1,6 +1,5 @@
 mod agent_detection;
 mod cursor;
-mod cwd;
 mod launch;
 mod osc;
 mod process_probe;

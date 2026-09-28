@@ -30,7 +30,8 @@ impl SavedSshEndpoint {
         session: impl Into<String>,
     ) -> Result<Self, String> {
         let profile = Self {
-            id: ProfileId::generate(),
+            id: ProfileId::generate()
+                .map_err(|error| format!("failed to generate endpoint profile id: {error}"))?,
             label: label.into(),
             target: target.into_ssh_target()?,
             session: session.into(),

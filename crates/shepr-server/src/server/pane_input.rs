@@ -94,13 +94,10 @@ fn send_paste(
         .map_err(|err| send_error(&err, what))
 }
 
-fn send_error(
-    err: &tokio::sync::mpsc::error::TrySendError<Bytes>,
-    what: &'static str,
-) -> PaneInputError {
+fn send_error(err: &shepr_pty::ChildIoSendError, what: &'static str) -> PaneInputError {
     match err {
-        tokio::sync::mpsc::error::TrySendError::Full(_) => PaneInputError::Backpressure(what),
-        tokio::sync::mpsc::error::TrySendError::Closed(_) => PaneInputError::Closed(what),
+        shepr_pty::ChildIoSendError::Full(_) => PaneInputError::Backpressure(what),
+        shepr_pty::ChildIoSendError::Closed(_) => PaneInputError::Closed(what),
     }
 }
 

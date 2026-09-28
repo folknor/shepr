@@ -496,7 +496,7 @@ impl Tab {
             .or_else(|| {
                 terminals
                     .get(terminal_id)
-                    .map(|terminal| terminal.cwd.clone())
+                    .map(|terminal| terminal.cwd().to_path_buf())
             })
     }
 

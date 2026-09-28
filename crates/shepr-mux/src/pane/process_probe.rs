@@ -9,9 +9,9 @@ use super::agent_detection::{
     PendingIdleConfirmation, ScreenDetectionPublishInput, decide_detection_screen_read,
     decide_screen_detection_publish, withhold_agent_absence,
 };
-use super::cwd::UsableCwd;
 use super::launch::LaunchPurpose;
 use super::terminal::PaneTerminal;
+use crate::UsableCwd;
 use crate::events::AppEvent;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;

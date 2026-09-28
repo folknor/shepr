@@ -900,12 +900,15 @@ fn install_kimi_writes_hook_and_updates_config() {
         kimi_dir.join("config.toml")
     );
     assert_eq!(hook_content, KIMI_HOOK_ASSET);
-    assert_eq!(hooks.len(), KIMI_HOOK_EVENTS.len() + 1);
+    assert_eq!(
+        hooks.len(),
+        crate::agent::Agent::Kimi.integration_hook_events().len() + 1
+    );
     assert!(config.contains("default_model = \"moonshot\""));
     assert!(config.contains("command = \"echo keep\""));
     assert!(config.contains(KIMI_CONFIG_BLOCK_BEGIN));
     assert!(config.contains(KIMI_CONFIG_BLOCK_END));
-    for hook in KIMI_HOOK_EVENTS {
+    for hook in crate::agent::Agent::Kimi.integration_hook_events() {
         let action = hook
             .action
             .map(crate::agent::IntegrationHookAction::as_str)
@@ -923,9 +926,12 @@ fn install_kimi_writes_hook_and_updates_config() {
 #[test]
 fn kimi_question_hooks_report_blocked_until_the_question_finishes() {
     let has_event = |event, matcher, action| {
-        KIMI_HOOK_EVENTS.iter().any(|hook| {
-            hook.event == event && hook.matcher == matcher && hook.action == Some(action)
-        })
+        crate::agent::Agent::Kimi
+            .integration_hook_events()
+            .iter()
+            .any(|hook| {
+                hook.event == event && hook.matcher == matcher && hook.action == Some(action)
+            })
     };
     assert!(has_event(
         "PreToolUse",
@@ -988,7 +994,10 @@ fn install_kimi_is_idempotent_for_config_block() {
 
     assert_eq!(config.matches(KIMI_CONFIG_BLOCK_BEGIN).count(), 1);
     assert_eq!(config.matches(KIMI_CONFIG_BLOCK_END).count(), 1);
-    assert_eq!(hooks.len(), KIMI_HOOK_EVENTS.len());
+    assert_eq!(
+        hooks.len(),
+        crate::agent::Agent::Kimi.integration_hook_events().len()
+    );
 }
 
 #[test]
@@ -2563,7 +2572,10 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0]["hooks"][0]["command"], "echo user");
     assert!(entries[1].get("matcher").is_none());
-    assert_eq!(entries[1]["hooks"][0]["timeout"], LETTA_HOOK_TIMEOUT_MS);
+    assert_eq!(
+        entries[1]["hooks"][0]["timeout"],
+        u64::try_from(HOOK_TIMEOUT.as_millis()).expect("test precondition")
+    );
     assert_eq!(entries[1]["hooks"][0]["quiet"], true);
     assert!(
         entries[1]["hooks"][0]["command"]
@@ -3269,7 +3281,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
         );
         assert_eq!(
             entries[0].get("timeout").and_then(Value::as_u64),
-            Some(MASTRACODE_HOOK_TIMEOUT_MS)
+            Some(u64::try_from(HOOK_TIMEOUT.as_millis()).expect("test precondition"))
         );
     }
     assert_eq!(
@@ -3319,7 +3331,7 @@ fn install_grok_writes_hook_and_config() {
     .expect("test precondition");
     assert_eq!(
         config,
-        grok_hook_config(&install_path(&installed, ArtifactRole::Hook))
+        grok_hook_config(&install_path(&installed, ArtifactRole::Hook)).expect("test precondition")
     );
     let session_start = config["hooks"]["SessionStart"]
         .as_array()
@@ -3607,7 +3619,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
         .and_then(Value::as_object)
         .expect("test precondition");
 
-    for hook in ANTIGRAVITY_CLI_HOOK_EVENTS {
+    for hook in crate::agent::Agent::Antigravity.integration_hook_events() {
         let action = hook
             .action
             .map(crate::agent::IntegrationHookAction::as_str)
@@ -3635,7 +3647,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
         assert_eq!(handler.get("type").and_then(Value::as_str), Some("command"));
         assert_eq!(
             handler.get("timeout").and_then(Value::as_u64),
-            Some(ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC)
+            Some(HOOK_TIMEOUT.as_secs())
         );
         let command = handler
             .get("command")
@@ -3813,7 +3825,8 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // Correct command but not a command-type hook: grok will not execute it.
-    let session_command = grok_session_command(&grok_hook_config(&hook_path));
+    let session_command =
+        grok_session_command(&grok_hook_config(&hook_path).expect("test precondition"));
     fs::write(
         &config_path,
         format!(
@@ -3825,7 +3838,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // A matcher can prevent the expected hook from running.
-    let mut config = grok_hook_config(&hook_path);
+    let mut config = grok_hook_config(&hook_path).expect("test precondition");
     config["hooks"]["SessionStart"][0]["matcher"] = json!("(");
     fs::write(
         &config_path,
@@ -3835,7 +3848,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // A malformed sibling group makes grok reject the event's hook groups.
-    let mut config = grok_hook_config(&hook_path);
+    let mut config = grok_hook_config(&hook_path).expect("test precondition");
     config["hooks"]["SessionStart"]
         .as_array_mut()
         .expect("test precondition")

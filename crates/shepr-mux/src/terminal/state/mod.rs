@@ -194,7 +194,7 @@ struct RecentAgentProcessExit {
 /// agent metadata live here, not in pane or view state.
 pub struct TerminalState {
     pub id: TerminalId,
-    pub cwd: PathBuf,
+    cwd: PathBuf,
     pub detected_agent: Option<Agent>,
     pub fallback_state: AgentState,
     fallback_visible_blocker: bool,

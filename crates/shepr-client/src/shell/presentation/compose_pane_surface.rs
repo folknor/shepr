@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
+pub(super) fn compose_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
     let copy_width = source.width.min(area.width);
     let copy_height = source.height.min(area.height);
     let hyperlink_base = u32::try_from(target.hyperlinks.len()).unwrap_or(u32::MAX);

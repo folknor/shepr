@@ -45,6 +45,7 @@ api_error_codes! {
     EmptyAgentPrompt => "empty_agent_prompt",
     InternalError => "internal_error",
     InvalidAgent => "invalid_agent",
+    InvalidCwd => "invalid_cwd",
     InvalidEnv => "invalid_env",
     InvalidKey => "invalid_key",
     InvalidLayout => "invalid_layout",

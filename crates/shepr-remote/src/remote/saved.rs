@@ -128,7 +128,12 @@ impl SavedSshConnector {
             if is_launch_fatal_setup_error(&error) {
                 self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
             } else {
-                tracing::debug!(%error, "saved SSH path setup failed transiently; it will be retried");
+                tracing::debug!(
+                    %error,
+                    profile = %self.profile_id,
+                    target = %self.target.as_str(),
+                    "saved SSH path setup failed transiently; it will be retried"
+                );
             }
             return;
         }
@@ -142,7 +147,12 @@ impl SavedSshConnector {
                 self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
             }
             Err(error) => {
-                tracing::debug!(%error, "saved SSH setup failed transiently; it will be retried");
+                tracing::debug!(
+                    %error,
+                    profile = %self.profile_id,
+                    target = %self.target.as_str(),
+                    "saved SSH setup failed transiently; it will be retried"
+                );
             }
         }
     }
@@ -235,6 +245,8 @@ impl SavedSshConnector {
                 Err(error) => {
                     tracing::debug!(
                         %error,
+                        profile = %self.profile_id,
+                        target = %self.target.as_str(),
                         "remembered remote Shepr did not connect; rediscovering"
                     );
                     *remote_shepr = None;
@@ -248,7 +260,12 @@ impl SavedSshConnector {
         let discovered =
             resume_installed_remote_shepr_discovery(ssh, discovery).inspect_err(|error| {
                 if discovery.has_progress() {
-                    tracing::debug!(%error, "SSH discovery stopped; the next attempt resumes it");
+                    tracing::debug!(
+                        %error,
+                        profile = %self.profile_id,
+                        target = %self.target.as_str(),
+                        "SSH discovery stopped; the next attempt resumes it"
+                    );
                 }
             })?;
         *discovery = DiscoveryProgress::default();

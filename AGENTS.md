@@ -144,8 +144,9 @@ its own:
 - **Render is pure.** `compute_view()` in `crates/shepr-server/src/ui.rs`
   updates only `AppState::view`; pane runtimes are resized by explicit geometry
   paths, and surface drawing takes shared references and only draws.
-- **No god objects.** `crates/shepr-server/src/app/` is split into state, actions and input; keep it
-  that way.
+- **No god objects.** `AppState` lives in `crates/shepr-server/src/app/state.rs`;
+  `App` behavior is organized across modules under
+  `crates/shepr-server/src/app/`. Keep it that way.
 - **Linux only.** No `#[cfg(windows)]`, `#[cfg(target_os = "macos")]` or
   `cfg!` branches for other platforms. libc, `/proc` and helper-program
   plumbing lives in the flat `crates/shepr-platform/src/` crate (`lib.rs`, plus
@@ -182,18 +183,19 @@ its own:
 ## Terminal core
 
 The emulator is `alacritty_terminal`, pinned with `=` in `Cargo.toml` (bump it
-deliberately, never through a loose requirement). Everything that touches it
-lives in `crates/shepr-vt/src/`: `lib.rs` owns `Terminal` and the adapter boundary;
-`color.rs`, `cell.rs`, `render.rs` and `read.rs` hold the focused data and
-methods around it. `format.rs` has the plain/VT formatters used for reads and
-history persistence, while `scan.rs` is a scanner
-for sequences alacritty ignores (OSC 7, modes 9/1016/2031/2048, CSI ? 996 n,
-CSI 16 t, XTGETTCAP, modifyOtherKeys) and for the halfwidth katakana voiced
-marks U+FF9E/U+FF9F, which unicode-width calls zero-width but terminals give
-their own column. Alacritty types must not leak out of that module. When
-writing against its API, read the source instead of relying on memory: the
-pinned `alacritty_terminal` release and the matching `vte` are in the cargo
-registry (`~/.cargo/registry/src/*/alacritty_terminal-<version>/`,
+deliberately, never through a loose requirement). Direct use of its types stays
+in `crates/shepr-vt/src/`: `lib.rs` defines `shepr_vt::Terminal` and the adapter
+boundary, with supporting implementation split across modules. `format.rs`
+provides the plain/VT formatters used for reads and history persistence;
+`handler.rs` wraps the parser's `Handler` for dispatched input, while `scan.rs`
+scans sequences vte does not dispatch that shepr still needs to answer or track.
+Alacritty types must not leak out of `shepr-vt`. In the mux
+layer, `crates/shepr-mux/src/pane/terminal.rs` defines `PaneTerminal`; its
+`PaneTerminalCore` holds the `shepr_vt::Terminal` and pane-level render and OSC
+state. When writing against alacritty's API, read the source instead of relying
+on memory: the pinned `alacritty_terminal` release and the matching `vte` are
+in the cargo registry
+(`~/.cargo/registry/src/*/alacritty_terminal-<version>/`,
 `~/.cargo/registry/src/*/vte-<version>/`, versions per `Cargo.lock`).
 
 PTYs do not use `alacritty_terminal::tty`: it can only add environment
@@ -204,7 +206,10 @@ libc instead: `command.rs` (`PtyCommand`: argv or login shell, full env
 control, cwd) builds the launch, `backend.rs` opens the PTY and spawns the
 child as a session leader with the PTY as controlling terminal, and
 `actor.rs`/`fd.rs` own the master fd, the IO loop and resizing. The child is a
-plain `std::process::Child`, reaped by a blocking `wait()` in the pane runtime.
+plain `std::process::Child`. The pane runtime watches its pidfd and reaps it
+with `waitid` when available; `Child::wait` runs in a blocking task as the
+fallback. If the watcher is dropped before reaping, the child is handed to a
+detached reaper thread.
 
 ## Rules
 

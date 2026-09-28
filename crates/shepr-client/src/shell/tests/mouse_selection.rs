@@ -784,7 +784,7 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
 #[test]
 fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     let mut state = word_drag_state(false);
-    state.hits.panes[0].scroll = Some(shepr_protocol::ScrollMetrics {
+    state.hits.panes[0].scroll = Some(shepr_termio::ScrollMetrics {
         max_offset_from_bottom: 10,
         offset_from_bottom: 5,
         viewport_rows: 3,

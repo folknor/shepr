@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::agent::IntegrationTarget as Target;
 
@@ -26,6 +27,7 @@ struct IntegrationSpec {
     registration: RegistrationCheck,
     path: &'static [&'static str],
     version: u32,
+    hook_timeout: Option<Duration>,
     events: &'static [crate::agent::IntegrationHookEvent],
     action_label: &'static str,
     install: fn(&AgentIntegrationPaths) -> io::Result<InstallOutcome>,
@@ -65,6 +67,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::PiExtension,
         path: &[super::PI_EXTENSION_INSTALL_NAME],
         version: super::PI_INTEGRATION_VERSION,
+        hook_timeout: None,
         events: Target::Pi.hook_events(),
     },
     IntegrationSpec {
@@ -78,6 +81,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::OmpExtension,
         path: &[super::OMP_EXTENSION_INSTALL_NAME],
         version: super::OMP_INTEGRATION_VERSION,
+        hook_timeout: None,
         events: Target::Omp.hook_events(),
     },
     IntegrationSpec {
@@ -94,6 +98,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Claude,
         path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
         version: super::CLAUDE_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Claude.hook_events(),
     },
     IntegrationSpec {
@@ -107,6 +112,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Codex,
         path: &[super::CODEX_HOOK_INSTALL_NAME],
         version: super::CODEX_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Codex.hook_events(),
     },
     IntegrationSpec {
@@ -123,6 +129,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Copilot,
         path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
         version: super::COPILOT_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Copilot.hook_events(),
     },
     IntegrationSpec {
@@ -139,6 +146,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Devin,
         path: &[super::DEVIN_HOOK_INSTALL_NAME],
         version: super::DEVIN_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Devin.hook_events(),
     },
     IntegrationSpec {
@@ -155,6 +163,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Droid,
         path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
         version: super::DROID_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Droid.hook_events(),
     },
     IntegrationSpec {
@@ -168,6 +177,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Kimi,
         path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
         version: super::KIMI_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Kimi.hook_events(),
     },
     IntegrationSpec {
@@ -189,6 +199,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Opencode,
         path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
         version: super::OPENCODE_INTEGRATION_VERSION,
+        hook_timeout: None,
         events: Target::Opencode.hook_events(),
     },
     IntegrationSpec {
@@ -202,6 +213,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Kilo,
         path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
         version: super::KILO_INTEGRATION_VERSION,
+        hook_timeout: None,
         events: Target::Kilo.hook_events(),
     },
     IntegrationSpec {
@@ -218,6 +230,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Qodercli,
         path: &["hooks", super::QODERCLI_HOOK_INSTALL_NAME],
         version: super::QODERCLI_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Qodercli.hook_events(),
     },
     IntegrationSpec {
@@ -234,6 +247,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Qwen,
         path: &["hooks", super::QWEN_HOOK_INSTALL_NAME],
         version: super::QWEN_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Qwen.hook_events(),
     },
     IntegrationSpec {
@@ -250,6 +264,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Cursor,
         path: &[super::CURSOR_HOOK_INSTALL_NAME],
         version: super::CURSOR_INTEGRATION_VERSION,
+        hook_timeout: None,
         events: Target::Cursor.hook_events(),
     },
     IntegrationSpec {
@@ -266,6 +281,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Mastracode,
         path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
         version: super::MASTRACODE_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Mastracode.hook_events(),
     },
     IntegrationSpec {
@@ -279,6 +295,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::AntigravityCli,
         path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
         version: super::ANTIGRAVITY_CLI_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::AntigravityCli.hook_events(),
     },
     IntegrationSpec {
@@ -292,6 +309,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Grok,
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
         version: super::GROK_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Grok.hook_events(),
     },
     IntegrationSpec {
@@ -308,6 +326,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Letta,
         path: &["hooks", super::LETTA_HOOK_INSTALL_NAME],
         version: super::LETTA_INTEGRATION_VERSION,
+        hook_timeout: Some(super::HOOK_TIMEOUT),
         events: Target::Letta.hook_events(),
     },
 ];
@@ -323,6 +342,14 @@ fn spec_for(target: Target) -> io::Result<&'static IntegrationSpec> {
 /// declares them.
 pub(crate) fn config_file_names(target: Target) -> io::Result<&'static [&'static str]> {
     spec_for(target).map(|spec| spec.config_files)
+}
+
+pub(crate) fn integration_hook_timeout(target: Target) -> io::Result<Duration> {
+    spec_for(target)?.hook_timeout.ok_or_else(|| {
+        io::Error::other(format!(
+            "integration spec for {target:?} has no hook timeout"
+        ))
+    })
 }
 
 pub(crate) fn action_label(target: Target) -> &'static str {
@@ -364,7 +391,7 @@ pub(crate) fn integration_asset(target: crate::agent::IntegrationTarget) -> Opti
         .and_then(|spec| spec.assets.first().copied())
 }
 
-fn integration_hook_events(
+pub(crate) fn integration_hook_events(
     target: crate::agent::IntegrationTarget,
 ) -> &'static [crate::agent::IntegrationHookEvent] {
     INTEGRATION_SPECS
@@ -481,11 +508,14 @@ fn grok_hook_config_is_valid(hook_path: &Path) -> bool {
     let Some(hooks_dir) = hook_path.parent() else {
         return false;
     };
+    let Ok(expected_config) = super::targets::grok_hook_config(hook_path) else {
+        return false;
+    };
     let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
     fs::read_to_string(config_path)
         .ok()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .is_some_and(|config| config == super::targets::grok_hook_config(hook_path))
+        .is_some_and(|config| config == expected_config)
 }
 
 fn opencode_tui_integration_is_valid(
@@ -712,10 +742,12 @@ fn hook_registration_is_current(
             return opencode_tui_integration_is_valid(hook_path, expected_version);
         }
         RegistrationCheck::Kimi => kimi_hooks_registered(&config(0)?, hook_path),
-        RegistrationCheck::AntigravityCli => read_json(&config(0)?).is_some_and(|document| {
-            document.get(super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME)
-                == Some(&super::targets::antigravity_cli_hook_block(hook_path))
-        }),
+        RegistrationCheck::AntigravityCli => {
+            let expected_block = super::targets::antigravity_cli_hook_block(hook_path)?;
+            read_json(&config(0)?).is_some_and(|document| {
+                document.get(super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME) == Some(&expected_block)
+            })
+        }
         RegistrationCheck::Codex => {
             json_hook_commands_registered(
                 &config(0)?,
@@ -934,8 +966,15 @@ mod registration_tests {
         );
 
         let settings_path = dir.join("settings.json");
-        let installed = super::super::claude_settings::install("{}", &settings_path, &hook)
-            .expect("test precondition");
+        let target = Target::Claude;
+        let installed = super::super::claude_settings::install(
+            "{}",
+            &settings_path,
+            &hook,
+            integration_hook_events(target),
+            integration_hook_timeout(target).expect("test precondition"),
+        )
+        .expect("test precondition");
         fs::write(&settings_path, installed).expect("test precondition");
         assert_eq!(
             state(IntegrationTarget::Claude, &hook),

@@ -85,13 +85,13 @@ impl ClientShellState {
         let track = hit.scrollbar_rect?;
         let metrics = hit.scroll?;
         (metrics.max_offset_from_bottom > 0).then(|| match grab_row_offset {
-            Some(grab_row_offset) => shepr_protocol::scroll::scrollbar_offset_from_drag_row(
+            Some(grab_row_offset) => shepr_termio::scroll::scrollbar_offset_from_drag_row(
                 metrics,
                 track,
                 row,
                 grab_row_offset,
             ),
-            None => shepr_protocol::scroll::scrollbar_offset_from_row(metrics, track, row),
+            None => shepr_termio::scroll::scrollbar_offset_from_row(metrics, track, row),
         })
     }
 
@@ -193,13 +193,13 @@ impl ClientShellState {
         usize::from(distance).saturating_mul(3).clamp(3, 15)
     }
 
-    fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<shepr_protocol::ScrollMetrics> {
+    fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<shepr_termio::ScrollMetrics> {
         let metrics = hit.scroll?;
         Some(
             self.selection_autoscroll
                 .as_ref()
                 .filter(|autoscroll| autoscroll.pane_id == hit.pane_id)
-                .map_or(metrics, |autoscroll| shepr_protocol::ScrollMetrics {
+                .map_or(metrics, |autoscroll| shepr_termio::ScrollMetrics {
                     offset_from_bottom: autoscroll.offset_from_bottom,
                     max_offset_from_bottom: autoscroll.max_offset_from_bottom,
                     viewport_rows: metrics.viewport_rows,
@@ -233,7 +233,7 @@ impl ClientShellState {
         hit: &PaneHit,
         column: u16,
         row: u16,
-        metrics: Option<shepr_protocol::ScrollMetrics>,
+        metrics: Option<shepr_termio::ScrollMetrics>,
         outcome: &mut ClientShellInput,
     ) {
         // Selections hold absolute rows. Without the pane's scroll origin a
@@ -267,7 +267,7 @@ impl ClientShellState {
             let anchor = selection.anchor_position();
             let top = metrics.map_or(
                 shepr_vt::AbsRow(0),
-                shepr_protocol::ScrollMetrics::viewport_top_row,
+                shepr_termio::ScrollMetrics::viewport_top_row,
             );
             let anchor_row = hit
                 .inner_rect
@@ -336,7 +336,7 @@ impl ClientShellState {
             }
         };
         if offset_from_bottom != metrics.offset_from_bottom {
-            let projected = shepr_protocol::ScrollMetrics {
+            let projected = shepr_termio::ScrollMetrics {
                 offset_from_bottom,
                 ..metrics
             };
@@ -384,7 +384,7 @@ impl ClientShellState {
             _ => unreachable!(),
         };
         if offset_from_bottom != metrics.offset_from_bottom {
-            let projected = shepr_protocol::ScrollMetrics {
+            let projected = shepr_termio::ScrollMetrics {
                 offset_from_bottom,
                 ..metrics
             };
@@ -473,7 +473,7 @@ impl ClientShellState {
             return outcome;
         }
         autoscroll.offset_from_bottom = next_offset;
-        let metrics = shepr_protocol::ScrollMetrics {
+        let metrics = shepr_termio::ScrollMetrics {
             offset_from_bottom: next_offset,
             max_offset_from_bottom: autoscroll.max_offset_from_bottom,
             viewport_rows: hit.scroll.map_or(0, |metrics| metrics.viewport_rows),
@@ -746,7 +746,7 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.workspace_scroll_metrics {
-                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.workspace_scrollbar,
                             mouse.row,
@@ -762,7 +762,7 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.agent_scroll_metrics {
-                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.agent_scrollbar,
                             mouse.row,
@@ -778,7 +778,7 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.navigator_scroll_metrics {
-                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.navigator_scrollbar,
                             mouse.row,
@@ -796,7 +796,7 @@ impl ClientShellState {
                     if let (Some(metrics), Some(ClientShellOverlay::Help(help))) =
                         (self.hits.help_scroll_metrics, self.overlay.as_mut())
                     {
-                        let offset = shepr_protocol::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
                             metrics,
                             self.hits.help_scrollbar,
                             mouse.row,
@@ -1178,7 +1178,7 @@ impl ClientShellState {
                     if super::contains(self.hits.help_scrollbar, point) {
                         if let Some(metrics) = self.hits.help_scroll_metrics {
                             if let Some(grab_row_offset) =
-                                shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                                shepr_termio::scroll::scrollbar_thumb_grab_offset(
                                     metrics,
                                     self.hits.help_scrollbar,
                                     mouse.row,
@@ -1187,7 +1187,7 @@ impl ClientShellState {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::HelpScrollbar { grab_row_offset });
                             } else {
-                                let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
+                                let offset = shepr_termio::scroll::scrollbar_offset_from_row(
                                     metrics,
                                     self.hits.help_scrollbar,
                                     mouse.row,
@@ -1249,7 +1249,7 @@ impl ClientShellState {
                     if super::contains(self.hits.navigator_scrollbar, point) {
                         if let Some(metrics) = self.hits.navigator_scroll_metrics {
                             if let Some(grab_row_offset) =
-                                shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                                shepr_termio::scroll::scrollbar_thumb_grab_offset(
                                     metrics,
                                     self.hits.navigator_scrollbar,
                                     mouse.row,
@@ -1258,7 +1258,7 @@ impl ClientShellState {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset });
                             } else {
-                                let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
+                                let offset = shepr_termio::scroll::scrollbar_offset_from_row(
                                     metrics,
                                     self.hits.navigator_scrollbar,
                                     mouse.row,
@@ -1569,7 +1569,7 @@ impl ClientShellState {
                 if super::contains(self.hits.workspace_scrollbar, point) {
                     if let Some(metrics) = self.hits.workspace_scroll_metrics {
                         if let Some(grab_row_offset) =
-                            shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                            shepr_termio::scroll::scrollbar_thumb_grab_offset(
                                 metrics,
                                 self.hits.workspace_scrollbar,
                                 mouse.row,
@@ -1578,7 +1578,7 @@ impl ClientShellState {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset });
                         } else {
-                            let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
+                            let offset = shepr_termio::scroll::scrollbar_offset_from_row(
                                 metrics,
                                 self.hits.workspace_scrollbar,
                                 mouse.row,
@@ -1595,7 +1595,7 @@ impl ClientShellState {
                 if super::contains(self.hits.agent_scrollbar, point) {
                     if let Some(metrics) = self.hits.agent_scroll_metrics {
                         if let Some(grab_row_offset) =
-                            shepr_protocol::scroll::scrollbar_thumb_grab_offset(
+                            shepr_termio::scroll::scrollbar_thumb_grab_offset(
                                 metrics,
                                 self.hits.agent_scrollbar,
                                 mouse.row,
@@ -1604,7 +1604,7 @@ impl ClientShellState {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset });
                         } else {
-                            let offset = shepr_protocol::scroll::scrollbar_offset_from_row(
+                            let offset = shepr_termio::scroll::scrollbar_offset_from_row(
                                 metrics,
                                 self.hits.agent_scrollbar,
                                 mouse.row,
@@ -1779,9 +1779,7 @@ impl ClientShellState {
                         return;
                     };
                     if let Some(grab_row_offset) =
-                        shepr_protocol::scroll::scrollbar_thumb_grab_offset(
-                            metrics, track, mouse.row,
-                        )
+                        shepr_termio::scroll::scrollbar_thumb_grab_offset(metrics, track, mouse.row)
                     {
                         self.chrome_drag = Some(ClientChromeDrag::PaneScrollbar {
                             hit,
@@ -1993,7 +1991,7 @@ impl ClientShellState {
             },
         );
         push_target_event(
-            ClientInputTarget::Pane(hit.pane_id.clone()),
+            hit.pane_id.clone(),
             ClientPaneInputEvent::Mouse {
                 kind,
                 position,

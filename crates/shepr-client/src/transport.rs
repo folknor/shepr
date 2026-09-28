@@ -119,7 +119,7 @@ pub(super) fn server_reader_thread(
                 warn!(
                     endpoint = %endpoint_id.storage_key(),
                     generation,
-                    err = %err,
+                    error = %err,
                     "server read error"
                 );
                 report_disconnect(

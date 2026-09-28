@@ -81,10 +81,18 @@ impl App {
         let target_pane_public_id = self.public_pane_id(ws_idx, target_pane_id);
         let extra_env = super::env::normalize_launch_env(params.env)?;
         let geometry = self.state.pane_geometry();
-        let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
-            let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
-            Some(self.resolve_new_terminal_cwd(follow_cwd))
-        });
+        let split_cwd = match params
+            .cwd
+            .as_deref()
+            .map(super::cwd::launch_cwd)
+            .transpose()?
+        {
+            Some(cwd) => cwd,
+            None => {
+                let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
+                self.resolve_new_terminal_cwd(follow_cwd)
+            }
+        };
         let default_cwd = self
             .paths
             .current_dir()
@@ -115,7 +123,7 @@ impl App {
                 direction,
                 ratio,
                 &geometry,
-                split_cwd,
+                Some(split_cwd),
                 default_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
@@ -129,7 +137,7 @@ impl App {
                 target_pane_id,
                 direction,
                 &geometry,
-                split_cwd,
+                Some(split_cwd),
                 default_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,

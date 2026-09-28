@@ -1121,8 +1121,8 @@ mod tests {
 
     /// Scroll metrics for a live view with no scrollback: viewport row N is
     /// absolute row N.
-    fn zero_origin_metrics(viewport_rows: usize) -> Option<shepr_protocol::ScrollMetrics> {
-        Some(shepr_protocol::ScrollMetrics {
+    fn zero_origin_metrics(viewport_rows: usize) -> Option<shepr_termio::ScrollMetrics> {
+        Some(shepr_termio::ScrollMetrics {
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             viewport_rows,

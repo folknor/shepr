@@ -1654,7 +1654,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .offset_from_bottom,
         metrics.max_offset_from_bottom
     );
-    let thumb = shepr_protocol::scroll::scrollbar_thumb(metrics, track).expect("thumb");
+    let thumb = shepr_termio::scroll::scrollbar_thumb(metrics, track).expect("thumb");
     let grab = thumb.len - 1;
     mouse(
         &mut state,
@@ -2372,7 +2372,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
     state.compose(106, 20).expect("composed frame");
     let hit = state.hits.panes[0].clone();
     let mut request = ClientShellInput::default();
-    let metrics = shepr_protocol::ScrollMetrics {
+    let metrics = shepr_termio::ScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,

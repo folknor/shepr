@@ -10,10 +10,10 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_search: Rect,
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(crate) navigator_scrollbar: Rect,
-    pub(crate) navigator_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
+    pub(crate) navigator_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
     pub(crate) help_popup: Rect,
     pub(crate) help_scrollbar: Rect,
-    pub(crate) help_scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
+    pub(crate) help_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
     pub(crate) help_max_scroll: usize,
     pub(crate) cursor: Option<shepr_protocol::CursorState>,
 }
@@ -417,7 +417,7 @@ fn render_navigator_overlay(
         .max(selected.saturating_sub(body.height.saturating_sub(1) as usize))
         .min(selected)
         .min(max);
-    let metrics = shepr_protocol::ScrollMetrics {
+    let metrics = shepr_termio::ScrollMetrics {
         offset_from_bottom: max.saturating_sub(scroll),
         max_offset_from_bottom: max,
         viewport_rows: usize::from(body.height),
@@ -623,7 +623,7 @@ fn render_navigator_overlay(
         }
     }
     if let Some(track) = scrollbar {
-        shepr_protocol::scroll::render_scrollbar_buffer(
+        shepr_termio::scroll::render_scrollbar_buffer(
             b, metrics, track, p.overlay0, p.overlay1, "▐",
         );
     }
@@ -818,7 +818,7 @@ fn render_help_overlay(
     let total_rows = wrapped_rows(text_area.width);
     let max_scroll = total_rows.saturating_sub(viewport_rows);
     let scroll = h.scroll.min(max_scroll);
-    let metrics = shepr_protocol::ScrollMetrics {
+    let metrics = shepr_termio::ScrollMetrics {
         offset_from_bottom: max_scroll.saturating_sub(scroll),
         max_offset_from_bottom: max_scroll,
         viewport_rows,
@@ -838,7 +838,7 @@ fn render_help_overlay(
         b,
     );
     if let Some(track) = scrollbar
-        && let Some(thumb) = shepr_protocol::scroll::scrollbar_thumb(metrics, track)
+        && let Some(thumb) = shepr_termio::scroll::scrollbar_thumb(metrics, track)
     {
         for y in track.y..track.bottom() {
             set_cell(

@@ -9,37 +9,27 @@ use serde::de::DeserializeOwned;
 use crate::schema::{ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse};
 use shepr_platform::ipc::LocalStream;
 
-/// API connection target resolved by clients at the process edge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConnectionTarget {
-    SocketPath(PathBuf),
-}
-
-impl ConnectionTarget {
-    fn socket_path(&self) -> PathBuf {
-        match self {
-            Self::SocketPath(path) => path.clone(),
-        }
-    }
-}
-
 /// Reusable client for Shepr's newline-delimited JSON API.
 #[derive(Debug, Clone)]
 pub struct ApiClient {
-    target: ConnectionTarget,
+    socket_path: PathBuf,
 }
 
 impl ApiClient {
     pub fn local(paths: &shepr_config::AppPaths) -> Self {
-        Self::for_target(ConnectionTarget::SocketPath(crate::socket_path(paths)))
+        Self::for_socket(crate::socket_path(paths))
     }
 
-    pub fn for_target(target: ConnectionTarget) -> Self {
-        Self { target }
+    /// A client for the API socket at `socket_path`, resolved by the caller
+    /// at the process edge.
+    pub fn for_socket(socket_path: impl Into<PathBuf>) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+        }
     }
 
     pub fn socket_path(&self) -> PathBuf {
-        self.target.socket_path()
+        self.socket_path.clone()
     }
 
     pub fn request(&self, request: &Request) -> Result<SuccessResponse, ApiClientError> {
@@ -162,7 +152,7 @@ impl ApiClient {
     }
 
     fn connect(&self) -> io::Result<LocalStream> {
-        shepr_platform::ipc::connect_local_stream(&self.socket_path())
+        shepr_platform::ipc::connect_local_stream(&self.socket_path)
     }
 }
 
@@ -238,7 +228,12 @@ pub enum ApiClientError {
     Io(io::Error),
     Json(serde_json::Error),
     ErrorResponse(ErrorResponse),
+    /// No response bytes; session shutdown treats a server that closes after
+    /// receiving its stop request as having completed the request.
     EmptyResponse,
+    /// A successful response with a result variant other than the one asked for.
+    /// Keep it distinct from transport and JSON errors so callers do not
+    /// classify a decoded protocol mismatch as server unavailability.
     UnexpectedResult(String),
 }
 
@@ -331,7 +326,7 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(300));
         });
-        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let client = ApiClient::for_socket(path.clone());
         let error = client
             .status_with_timeout(Duration::from_millis(100))
             .expect_err("test precondition");
@@ -360,7 +355,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("the test releases the stalled connection");
         });
-        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let client = ApiClient::for_socket(path.clone());
         let request = Request {
             id: "stalled".into(),
             method: Method::WorkspaceList(crate::schema::EmptyParams::default()),
@@ -394,7 +389,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(30))
                 .expect("the test releases the stalled connection");
         });
-        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let client = ApiClient::for_socket(path.clone());
         // A plain prompt has no response bound, and a body far larger than
         // the socket buffers blocks the write once they fill.
         let request = Request {
@@ -445,7 +440,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(70));
             }
         });
-        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let client = ApiClient::for_socket(path.clone());
         let request = Request {
             id: "partial".into(),
             method: Method::WorkspaceList(crate::schema::EmptyParams::default()),
@@ -501,7 +496,7 @@ mod tests {
     #[test]
     fn socket_path_target_uses_explicit_path() {
         let path = PathBuf::from("/tmp/shepr-test.sock");
-        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let client = ApiClient::for_socket(path.clone());
         assert_eq!(client.socket_path(), path);
     }
 }

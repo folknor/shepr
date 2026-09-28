@@ -1,5 +1,7 @@
 // Shared pane, workspace, and persistence model.
+mod cwd;
 pub mod events;
+pub use cwd::UsableCwd;
 pub mod git;
 pub mod pane;
 pub mod persist;

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize, de::Visitor};
 
-use super::{Agent, AgentSource, ResumeArgs, SessionRefPolicy};
+use super::{Agent, AgentSource, CONVERSATION_FLAG, ResumeArgs, SessionRefPolicy};
 
 const MAX_SESSION_ID_LEN: usize = 512;
 const MAX_SESSION_PATH_LEN: usize = 4096;
@@ -148,12 +148,19 @@ impl AgentSessionRef {
     }
 
     fn accepted_for(&self, agent: Agent) -> bool {
-        match (agent.descriptor().session_ref_policy, self) {
-            (Some(SessionRefPolicy::Id), Self::Id(session)) => {
+        let Some(policy) = agent
+            .descriptor()
+            .resume_support
+            .map(|support| support.session_ref_policy)
+        else {
+            return false;
+        };
+        match (policy, self) {
+            (SessionRefPolicy::Id, Self::Id(session)) => {
                 agent != Agent::Letta || !session.as_str().starts_with("default:")
             }
-            (Some(SessionRefPolicy::Id), Self::LettaDefaultAgent(_)) => agent == Agent::Letta,
-            (Some(SessionRefPolicy::IdOrPath), Self::Id(_) | Self::Path(_)) => true,
+            (SessionRefPolicy::Id, Self::LettaDefaultAgent(_)) => agent == Agent::Letta,
+            (SessionRefPolicy::IdOrPath, Self::Id(_) | Self::Path(_)) => true,
             _ => false,
         }
     }
@@ -286,21 +293,13 @@ pub fn session_ref_from_report(
 ) -> Option<AgentSessionRef> {
     let source = AgentSource::from_pair(source, agent_label)?;
     let agent = source.agent()?;
-    let descriptor = agent.descriptor();
-    match (
-        descriptor.session_ref_policy,
-        agent_session_path,
-        agent_session_id,
-    ) {
-        (Some(SessionRefPolicy::IdOrPath), Some(path), agent_session_id) => {
-            AgentSessionRef::path(path).or_else(|| {
-                agent_session_id.and_then(|id| AgentSessionRef::for_agent_id(agent, id))
-            })
-        }
-        (Some(SessionRefPolicy::IdOrPath), None, Some(id)) => {
+    let policy = agent.descriptor().resume_support?.session_ref_policy;
+    match (policy, agent_session_path, agent_session_id) {
+        (SessionRefPolicy::IdOrPath, Some(path), agent_session_id) => AgentSessionRef::path(path)
+            .or_else(|| agent_session_id.and_then(|id| AgentSessionRef::for_agent_id(agent, id))),
+        (SessionRefPolicy::IdOrPath, None, Some(id)) | (SessionRefPolicy::Id, _, Some(id)) => {
             AgentSessionRef::for_agent_id(agent, id)
         }
-        (Some(SessionRefPolicy::Id), _, Some(id)) => AgentSessionRef::for_agent_id(agent, id),
         _ => None,
     }
 }
@@ -312,7 +311,7 @@ pub fn persisted_session_from_launch_args(
     let [command, session_id] = args else {
         return None;
     };
-    let ResumeArgs::Subcommand(subcommand) = agent.descriptor().resume_args? else {
+    let ResumeArgs::Subcommand(subcommand) = agent.descriptor().resume_support?.resume_args else {
         return None;
     };
     if command != subcommand || session_id.starts_with('-') {
@@ -341,7 +340,7 @@ pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
     }
 
     let executable = agent.executable().to_owned();
-    let argv = match (descriptor.resume_args?, &session.session_ref) {
+    let argv = match (descriptor.resume_support?.resume_args, &session.session_ref) {
         (ResumeArgs::FlagValue(flag), reference) => {
             vec![executable, flag.to_owned(), reference.value()]
         }
@@ -353,13 +352,13 @@ pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
         }
         (ResumeArgs::LettaConversation, AgentSessionRef::LettaDefaultAgent(agent_id)) => vec![
             executable,
-            "--conversation".into(),
+            CONVERSATION_FLAG.into(),
             "default".into(),
             "--agent".into(),
             agent_id.id().to_owned(),
         ],
         (ResumeArgs::LettaConversation, reference) => {
-            vec![executable, "--conversation".into(), reference.value()]
+            vec![executable, CONVERSATION_FLAG.into(), reference.value()]
         }
     };
     AgentResumePlan::with_argv(session, argv)

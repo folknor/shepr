@@ -1,7 +1,7 @@
 //! Linux process, terminal, filesystem and transport primitives.
 //!
-//! The modules are flat by responsibility; domain rules live with their
-//! consumers in `detect`, `remote`, and the app.
+//! The modules stay flat by responsibility; higher-level rules belong to the
+//! crates that consume these primitives.
 
 mod child_io;
 mod client_stream;
@@ -40,6 +40,7 @@ pub use private_file::{create_private_file, sync_directory};
 pub use process::{
     ProcessHandle, Signal, reap_pidfd, session_member_handles, wait_for_process_exits,
 };
+pub use random::unpredictable_token;
 pub use remote_bridge_io::{RemoteBridgeOutcome, RemoteBridgeWake, forward_remote_bridge_stdio};
 pub use shutdown::HostShutdownMonitor;
 pub use ssh_paths::UnsafeSshRuntimeDirectory;

@@ -92,6 +92,19 @@ mod path_bytes {
 
         deserializer.deserialize_any(PathVisitor)
     }
+
+    pub(crate) fn deserialize_saved_cwd<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let path = deserialize(deserializer)?;
+        // A saved directory may have disappeared while shepr was stopped.
+        // Restore retains it so a later restart can retry the original path.
+        if !path.is_absolute() {
+            return Err(serde::de::Error::custom("saved cwd must be absolute"));
+        }
+        Ok(path)
+    }
 }
 
 /// Serializable snapshot of the entire shepr session.
@@ -185,7 +198,10 @@ pub struct WorkspaceSnapshot {
     pub id: Option<String>,
     #[serde(default)]
     pub custom_name: Option<String>,
-    #[serde(with = "path_bytes")]
+    #[serde(
+        serialize_with = "path_bytes::serialize",
+        deserialize_with = "path_bytes::deserialize_saved_cwd"
+    )]
     pub identity_cwd: PathBuf,
     /// Captured from the public numbers in each tab's pane records.
     #[serde(default)]
@@ -216,7 +232,10 @@ pub struct TabSnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct PaneSnapshot {
-    #[serde(with = "path_bytes")]
+    #[serde(
+        serialize_with = "path_bytes::serialize",
+        deserialize_with = "path_bytes::deserialize_saved_cwd"
+    )]
     pub cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -347,7 +366,7 @@ fn capture_tab(
         let cwd = terminal_id
             .and_then(|id| terminal_runtimes.get(id))
             .and_then(crate::pane::PaneRuntime::cwd_for_persistence)
-            .or_else(|| terminal.map(|terminal| terminal.cwd.clone()))
+            .or_else(|| terminal.map(|terminal| terminal.cwd().to_path_buf()))
             .unwrap_or_else(|| fallback_cwd.to_path_buf());
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
         let (agent_name, managed_agent_kind) = terminal
@@ -756,6 +775,17 @@ mod tests {
             assert!(serde_json::from_str::<super::SessionSnapshot>(json).is_err());
             assert!(serde_json::from_str::<super::SessionHistorySnapshot>(json).is_err());
         }
+    }
+
+    #[test]
+    fn snapshot_cwds_reject_relative_paths_but_retain_missing_absolute_paths() {
+        let relative = r#"{"cwd":"relative"}"#;
+        assert!(serde_json::from_str::<super::PaneSnapshot>(relative).is_err());
+        let missing = r#"{"cwd":"/shepr-missing-saved-directory"}"#;
+        // The rest of the pane fields default, so this also checks that a
+        // missing saved path remains available for a later restore attempt.
+        let pane: super::PaneSnapshot = serde_json::from_str(missing).expect("absolute saved cwd");
+        assert_eq!(pane.cwd, PathBuf::from("/shepr-missing-saved-directory"));
     }
 
     #[test]

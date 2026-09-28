@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use super::{App, SESSION_SAVE_DEBOUNCE};
+use crate::limits::{HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_CHECK_INTERVAL};
 #[cfg(test)]
 use shepr_mux::events::AppEvent;
 
@@ -267,7 +268,7 @@ impl App {
                 Some(
                     SESSION_SAVE_RETRY_MIN
                         .saturating_mul(1_u32 << exponent)
-                        .min(Duration::from_secs(1)),
+                        .min(HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY),
                 )
             }
             SessionSavePurpose::Autosave
@@ -423,7 +424,8 @@ impl App {
             if self.session_saver.save_is_due(now) {
                 self.session_saver.retry(now);
             }
-            self.session_saver.session_save_check_deadline = Some(now + Duration::from_millis(250));
+            self.session_saver.session_save_check_deadline =
+                Some(now + SESSION_SAVE_CHECK_INTERVAL);
             return;
         }
 
@@ -480,7 +482,7 @@ impl App {
                 self.session_saver.session_save_thread = Some(thread);
                 self.session_saver.session_save_purpose = Some(purpose);
                 self.session_saver.session_save_check_deadline =
-                    Some(now + Duration::from_millis(250));
+                    Some(now + SESSION_SAVE_CHECK_INTERVAL);
             }
             Err(err) => self.finish_session_save(
                 purpose,

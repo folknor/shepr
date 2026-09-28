@@ -475,7 +475,7 @@ impl ClientShellState {
                 height_px: gesture.hit.pixel_height,
             });
             super::push_target_event(
-                ClientInputTarget::Pane(gesture.hit.pane_id),
+                gesture.hit.pane_id,
                 ClientPaneInputEvent::Mouse {
                     kind: shepr_protocol::ClientMouseKind::Up(
                         shepr_protocol::ClientMouseButton::from_crossterm(gesture.button),
@@ -495,7 +495,7 @@ impl ClientShellState {
         &mut self,
         lease_key: shepr_termio::input::InputLeaseKey<u8>,
         key: shepr_termio::input::TerminalKey,
-        plan: shepr_termio::input::RepeatPlan<ClientInputContext, ClientInputTarget>,
+        plan: shepr_termio::input::RepeatPlan<ClientInputContext, shepr_protocol::PublicPaneId>,
         outcome: &mut ClientShellInput,
     ) {
         match plan {
@@ -582,7 +582,7 @@ impl ClientShellState {
         &mut self,
         key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
-    ) -> Option<ClientInputTarget> {
+    ) -> Option<shepr_protocol::PublicPaneId> {
         if self.handle_modal_paste_shortcut_with(key, outcome, read_clipboard_text_bounded) {
             return None;
         }
@@ -632,7 +632,7 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
-                self.focused_pane_id().map(ClientInputTarget::Pane)
+                self.focused_pane_id()
             }
             ClientShellMode::Prefix => {
                 let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
@@ -645,7 +645,7 @@ impl ClientShellState {
                 if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
                     self.mode = return_mode;
                     outcome.repaint = true;
-                    return self.focused_pane_id().map(ClientInputTarget::Pane);
+                    return self.focused_pane_id();
                 }
                 if key.code == KeyCode::Esc {
                     self.mode = return_mode;
@@ -1012,7 +1012,7 @@ impl ClientShellState {
 
     fn push_pane_key(
         &self,
-        target: ClientInputTarget,
+        target: shepr_protocol::PublicPaneId,
         key: shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
@@ -1054,12 +1054,11 @@ impl ClientShellState {
         };
         let event = ClientPaneInputEvent::Paste(text);
         if batched.saturating_add(size) > shepr_protocol::MAX_INPUT_PAYLOAD {
-            outcome.requests.push(super::target_event_message(
-                ClientInputTarget::Pane(pane_id),
-                event,
-            ));
+            outcome
+                .requests
+                .push(super::target_event_message(pane_id, event));
         } else {
-            super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
+            super::push_target_event(pane_id, event, outcome);
         }
     }
 }

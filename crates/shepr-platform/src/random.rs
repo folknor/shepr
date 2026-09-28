@@ -1,11 +1,11 @@
 use std::io;
 
-/// Return 64 bits from the kernel random source for private runtime names.
+/// Return 64 bits from the kernel random source for identifiers and runtime names.
 ///
 /// These tokens distinguish concurrently created paths. If the kernel random
 /// source is unavailable, fail the operation rather than silently falling
 /// back to a value whose unpredictability is harder to audit.
-pub(crate) fn unpredictable_token() -> io::Result<u64> {
+pub fn unpredictable_token() -> io::Result<u64> {
     let mut bytes = [0_u8; 8];
     let mut filled = 0;
     while filled < bytes.len() {

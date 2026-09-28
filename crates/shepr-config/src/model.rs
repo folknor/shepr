@@ -456,7 +456,16 @@ pub struct UiConfig {
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     /// Applies when set in the config file; otherwise the theme accent applies.
     /// theme.custom.accent takes precedence.
-    pub accent: String,
+    /// An empty string has the same meaning as unset.
+    #[serde(default, deserialize_with = "deserialize_ui_accent")]
+    pub accent: Option<String>,
+}
+
+fn deserialize_ui_accent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.filter(|accent| !accent.is_empty()))
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
@@ -623,7 +632,7 @@ impl Default for UiConfig {
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
-            accent: "cyan".into(),
+            accent: None,
         }
     }
 }

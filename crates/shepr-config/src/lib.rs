@@ -97,6 +97,81 @@ impl Config {
 mod tests {
     use super::model::KeysConfig;
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn collect_default_leaves(
+        value: &toml::Value,
+        path: &mut Vec<String>,
+        leaves: &mut Vec<(Vec<String>, toml::Value)>,
+    ) {
+        match value {
+            toml::Value::Table(table) => {
+                for (key, value) in table {
+                    path.push(key.clone());
+                    collect_default_leaves(value, path, leaves);
+                    path.pop();
+                }
+            }
+            _ => leaves.push((path.clone(), value.clone())),
+        }
+    }
+
+    fn default_template_values() -> BTreeMap<Vec<String>, Vec<String>> {
+        let mut values = BTreeMap::new();
+        let mut section = Vec::new();
+
+        for line in DEFAULT_CONFIG.lines() {
+            let trimmed = line.trim();
+            let content = trimmed.strip_prefix("# ").unwrap_or(trimmed);
+            if content.starts_with('[') && content.ends_with(']') {
+                section = content[1..content.len() - 1]
+                    .split('.')
+                    .map(str::to_owned)
+                    .collect();
+                continue;
+            }
+
+            let Some(setting) = trimmed.strip_prefix("# ") else {
+                continue;
+            };
+            let Some((key, value)) = setting.split_once(" = ") else {
+                continue;
+            };
+            let mut path = section.clone();
+            path.push(key.to_owned());
+            values
+                .entry(path)
+                .or_insert_with(Vec::new)
+                .push(value.to_owned());
+        }
+
+        values
+    }
+
+    #[test]
+    fn default_template_documents_every_config_default() {
+        let config = toml::Value::try_from(Config::default()).expect("default config serializes");
+        let mut leaves = Vec::new();
+        collect_default_leaves(&config, &mut Vec::new(), &mut leaves);
+        assert!(!leaves.is_empty());
+
+        let documented = default_template_values();
+        for (path, value) in &leaves {
+            let key = path.join(".");
+            let expected = value.to_string();
+            let matches = documented.get(path).is_some_and(|values| {
+                values.iter().any(|documented| {
+                    documented.strip_prefix(&expected).is_some_and(|suffix| {
+                        suffix.trim().is_empty() || suffix.trim_start().starts_with('#')
+                    })
+                })
+            });
+            assert!(
+                matches,
+                "{key} = {expected} is missing from the commented default config"
+            );
+        }
+    }
 
     #[test]
     fn config_default_template_keeps_all_settings_comment_only() {

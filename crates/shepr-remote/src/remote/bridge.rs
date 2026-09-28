@@ -88,6 +88,7 @@ impl SshStdioBridge {
         let (failure_tx, failure_rx) = mpsc::sync_channel(1);
         let failure_rx = Arc::new(std::sync::Mutex::new(failure_rx));
         let thread_failure_rx = Arc::clone(&failure_rx);
+        let thread_socket = local_socket.clone();
         let thread = thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -96,12 +97,19 @@ impl SshStdioBridge {
                             Ok(true) => {}
                             Ok(false) => {
                                 tracing::warn!(
+                                    target = %target.as_str(),
+                                    socket = %thread_socket.display(),
                                     "rejected remote bridge socket peer with different credentials"
                                 );
                                 continue;
                             }
                             Err(err) => {
-                                tracing::warn!(error = %err, "could not check remote bridge socket peer");
+                                tracing::warn!(
+                                    error = %err,
+                                    target = %target.as_str(),
+                                    socket = %thread_socket.display(),
+                                    "could not check remote bridge socket peer"
+                                );
                                 continue;
                             }
                         }
@@ -111,6 +119,8 @@ impl SshStdioBridge {
                             Err(err) => {
                                 tracing::error!(
                                     error = %err,
+                                    target = %target.as_str(),
+                                    socket = %thread_socket.display(),
                                     "remote bridge failed to prepare client socket"
                                 );
                                 continue;
@@ -131,7 +141,13 @@ impl SshStdioBridge {
                             // TUI (the interactive client) or a background
                             // supervisor. The owner reads the error back
                             // through `reported_failure` and presents it.
-                            tracing::warn!(error = %err, noninteractive, "remote SSH bridge failed");
+                            tracing::warn!(
+                                error = %err,
+                                noninteractive,
+                                target = %target.as_str(),
+                                socket = %thread_socket.display(),
+                                "remote SSH bridge failed"
+                            );
                             // The original error, so its typed SSH failure survives.
                             // Already logged above. This thread shares the receiver,
                             // so it never disconnects, and the slot was emptied before
@@ -144,7 +160,13 @@ impl SshStdioBridge {
                         thread::sleep(BRIDGE_ACCEPT_POLL);
                     }
                     Err(err) => {
-                        tracing::warn!(error = %err, noninteractive, "remote SSH bridge listener failed");
+                        tracing::warn!(
+                            error = %err,
+                            noninteractive,
+                            target = %target.as_str(),
+                            socket = %thread_socket.display(),
+                            "remote SSH bridge listener failed"
+                        );
                         // Already logged above. The send fails only when the last
                         // stream's failure is still unclaimed; the owner then reads
                         // that one, which is the failure its request actually saw.

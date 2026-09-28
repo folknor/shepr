@@ -62,11 +62,14 @@ impl ClientProcessRole {
 fn set_handshake_recv_timeout(
     stream: &LocalStream,
     timeout: Option<Duration>,
-    _context: &'static str,
+    context: &'static str,
 ) -> Result<(), ClientError> {
-    stream
-        .set_recv_timeout(timeout)
-        .map_err(ClientError::ConnectionFailed)
+    stream.set_recv_timeout(timeout).map_err(|error| {
+        ClientError::ConnectionFailed(std::io::Error::new(
+            error.kind(),
+            format!("{context}: {error}"),
+        ))
+    })
 }
 
 /// Maps a failed preamble exchange onto the client's error kinds: an early

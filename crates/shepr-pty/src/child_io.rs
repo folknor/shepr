@@ -3,9 +3,29 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio::sync::mpsc::error::TrySendError;
 
 use crate::actor::{PtyIoActorHandle, QueuedSubmission};
+
+/// A non-blocking child write was rejected. The original bytes are returned
+/// so the caller can retry or handle the input itself.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChildIoSendError {
+    /// The child's input queue has no room for this write.
+    Full(Bytes),
+    /// The child channel has stopped accepting writes.
+    Closed(Bytes),
+}
+
+impl std::fmt::Display for ChildIoSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full(_) => f.write_str("child input queue is full"),
+            Self::Closed(_) => f.write_str("child input channel is closed"),
+        }
+    }
+}
+
+impl std::error::Error for ChildIoSendError {}
 
 /// What a pane runtime writes to its child through: user input, prompt
 /// submissions, terminal replies and resizes. Every pane shepr runs talks to
@@ -32,7 +52,7 @@ pub trait ChildIo: Send + Sync {
         terminal_responses: &mut dyn FnMut() -> Vec<Bytes>,
     );
 
-    fn try_write_user_input(&self, bytes: Bytes) -> Result<(), TrySendError<Bytes>>;
+    fn try_write_user_input(&self, bytes: Bytes) -> Result<(), ChildIoSendError>;
 
     /// Queue a terminal reply produced outside a read of the child's output.
     fn write_terminal_response(&self, response: &mut dyn FnMut() -> Option<Bytes>);
@@ -63,7 +83,7 @@ impl ChildIo for PtyIoActorHandle {
         PtyIoActorHandle::resize(self, geometry, terminal_responses);
     }
 
-    fn try_write_user_input(&self, bytes: Bytes) -> Result<(), TrySendError<Bytes>> {
+    fn try_write_user_input(&self, bytes: Bytes) -> Result<(), ChildIoSendError> {
         PtyIoActorHandle::try_write_user_input(self, bytes)
     }
 

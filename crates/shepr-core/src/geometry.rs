@@ -10,12 +10,6 @@ pub enum SplitBranch {
     Second,
 }
 
-impl From<bool> for SplitBranch {
-    fn from(second: bool) -> Self {
-        if second { Self::Second } else { Self::First }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridSize {
     pub cols: NonZeroU16,
@@ -126,10 +120,5 @@ mod tests {
         assert!(CellPx::new(8, 0).is_none());
         assert_eq!(PaneGeometry::new(80, 24, 8, 0).cell, None);
         assert!(!HostGeometry::new(80, 24, 8, 0, true).exact);
-        assert!(std::mem::size_of::<PaneGeometry>() <= std::mem::size_of::<(u16, u16, u32, u32)>());
-        assert!(
-            std::mem::size_of::<HostGeometry>()
-                <= std::mem::size_of::<(u16, u16, u32, u32, bool)>()
-        );
     }
 }

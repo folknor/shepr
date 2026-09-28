@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError, ConnectionTarget};
+use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 
 // Session management only connects to sockets (the API socket, to stop or
 // probe a server); it never binds one. Binding goes through
@@ -522,7 +522,7 @@ fn send_stop_request(
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Ok(());
     }
-    let client = ApiClient::for_target(ConnectionTarget::SocketPath(socket_path.into()));
+    let client = ApiClient::for_socket(socket_path);
     match client.request_value_until(request, deadline) {
         Ok(response) if response.get("error").is_some() => {
             Err(SessionError::Protocol(response["error"].to_string()))

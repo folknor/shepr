@@ -21,7 +21,8 @@ pub enum ConfigSource {
     Default,
     ConfigFileKey,
     EnvironmentVariable(String),
-    CliFlag(String),
+    /// The session was selected with the `--session` flag.
+    CliFlag,
 }
 
 impl fmt::Display for ConfigSource {
@@ -32,7 +33,7 @@ impl fmt::Display for ConfigSource {
             Self::EnvironmentVariable(variable) => {
                 write!(formatter, "environment variable {variable}")
             }
-            Self::CliFlag(flag) => write!(formatter, "CLI flag {flag}"),
+            Self::CliFlag => formatter.write_str("CLI flag --session"),
         }
     }
 }
@@ -103,12 +104,17 @@ impl ConfigProvenance {
                 ConfigSource::Default
             }
         };
+        let ui_accent = if config.ui.accent.is_some() {
+            source("ui.accent")
+        } else {
+            ConfigSource::Default
+        };
         Ok(Self {
             values,
             ui_sidebar_width: source("ui.sidebar_width"),
             ui_sidebar_start_collapsed: source("ui.sidebar_start_collapsed"),
             ui_agent_panel_sort: source("ui.agent_panel_sort"),
-            ui_accent: source("ui.accent"),
+            ui_accent,
         })
     }
 

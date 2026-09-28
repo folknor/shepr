@@ -15,12 +15,12 @@ use super::agent_detection::{
     DetectionPublishDecision, detection_update_for_publish_with_osc,
     mark_detection_content_changed, observe_detection_content_change,
 };
-use super::cwd::UsableCwd;
 use super::launch::*;
 use super::process_probe::*;
 use super::teardown::*;
 use super::terminal::{PaneTerminal, ProcessBytesResult};
 use super::*;
+use crate::UsableCwd;
 use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalReadSnapshot;
@@ -283,10 +283,6 @@ pub enum WheelRouting {
     AlternateScroll,
 }
 
-fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
-    UsableCwd::new(cwd).map(UsableCwd::into_path_buf)
-}
-
 /// The last accepted OSC 7 report, with the pane shell's /proc cwd sampled
 /// when it arrived.
 ///
@@ -328,14 +324,14 @@ fn publish_reported_cwd(
     reported_cwd: &Arc<Mutex<Option<ReportedCwd>>>,
     events: &mpsc::Sender<AppEvent>,
 ) {
-    let Some(cwd) = usable_reported_cwd(cwd) else {
+    let Some(cwd) = UsableCwd::new(cwd) else {
         return;
     };
     // One readlink per OSC 7, sampled before taking the lock.
     let shell_cwd_at_report = shepr_agent::detect::process_cwd(shell_pid);
     let mut last_reported = shepr_vt::lock_auxiliary(reported_cwd);
     if let Some(last) = last_reported.as_mut()
-        && last.path == cwd
+        && last.path == cwd.as_path()
     {
         // A repeated report is not a new event, but it is fresh evidence
         // that the path is current wherever the shell now is.
@@ -353,7 +349,7 @@ fn publish_reported_cwd(
     }) {
         Ok(()) => {
             *last_reported = Some(ReportedCwd {
-                path: cwd,
+                path: cwd.into_path_buf(),
                 shell_cwd_at_report,
             });
         }
@@ -1642,7 +1638,7 @@ impl PaneRuntime {
             .encode_terminal_key(key, self.keyboard_protocol())
     }
 
-    pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
+    pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), shepr_pty::ChildIoSendError> {
         self.io.try_write_user_input(bytes)
     }
 
@@ -1655,7 +1651,7 @@ impl PaneRuntime {
         self.io.queue_user_input_submission(text, enter, delay)
     }
 
-    pub fn try_send_paste(&self, text: String) -> Result<(), mpsc::error::TrySendError<Bytes>> {
+    pub fn try_send_paste(&self, text: String) -> Result<(), shepr_pty::ChildIoSendError> {
         self.try_send_bytes(self.paste_payload(text))
     }
 
@@ -2196,7 +2192,7 @@ mod tests {
         events
             .try_send(AppEvent::TerminalCwdReported {
                 pane_id: runtime.pane_id,
-                cwd: other,
+                cwd: UsableCwd::new(other).expect("root is usable"),
             })
             .expect("test precondition");
 
@@ -2224,7 +2220,7 @@ mod tests {
         let Ok(AppEvent::TerminalCwdReported { cwd: sent, .. }) = event_rx.try_recv() else {
             panic!("expected the retried cwd report");
         };
-        assert_eq!(sent, cwd);
+        assert_eq!(sent.as_path(), cwd);
         assert_eq!(reported_path(&runtime), Some(cwd));
     }
 

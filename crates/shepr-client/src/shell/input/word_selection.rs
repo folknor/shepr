@@ -28,7 +28,7 @@ impl ClientShellState {
     pub(super) fn request_word_selection(
         &mut self,
         hit: &PaneHit,
-        metrics: shepr_protocol::ScrollMetrics,
+        metrics: shepr_termio::ScrollMetrics,
         viewport_row: u16,
         col: u16,
         outcome: &mut ClientShellInput,

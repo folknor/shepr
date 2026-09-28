@@ -91,7 +91,7 @@ pub enum AppEvent {
     /// metadata such as OSC 7.
     TerminalCwdReported {
         pane_id: PaneId,
-        cwd: std::path::PathBuf,
+        cwd: crate::UsableCwd,
     },
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {

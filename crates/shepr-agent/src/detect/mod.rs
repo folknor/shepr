@@ -286,12 +286,15 @@ fn script_arg_agent_name(
     module_flags: &[&str],
     cwd_pid: Option<u32>,
 ) -> Option<String> {
-    let mut args = argv.iter().skip(1);
-    while let Some(arg) = args.next() {
+    let index = script_arg_index(argv, eval_flags, module_flags)?;
+    agent_name_from_path_token(argv.get(index)?, cwd_pid)
+}
+
+fn script_arg_index(argv: &[String], eval_flags: &[&str], module_flags: &[&str]) -> Option<usize> {
+    let mut index = 1;
+    while let Some(arg) = argv.get(index) {
         if arg == "--" {
-            return args
-                .next()
-                .and_then(|token| agent_name_from_path_token(token, cwd_pid));
+            return argv.get(index + 1).map(|_| index + 1);
         }
 
         if flag_matches(arg, eval_flags) || flag_matches(arg, module_flags) {
@@ -299,13 +302,11 @@ fn script_arg_agent_name(
         }
 
         if arg.starts_with('-') {
-            if option_takes_value(arg) {
-                let _ = args.next();
-            }
+            index += if option_takes_value(arg) { 2 } else { 1 };
             continue;
         }
 
-        return agent_name_from_path_token(arg, cwd_pid);
+        return Some(index);
     }
 
     None
@@ -450,24 +451,8 @@ fn letta_entrypoint_index(argv: &[String], cwd_pid: Option<u32>) -> Option<usize
         return None;
     }
 
-    let mut index = 1;
-    while let Some(arg) = argv.get(index) {
-        if arg == "--" {
-            return argv
-                .get(index + 1)
-                .is_some_and(|arg| is_letta(arg))
-                .then_some(index + 1);
-        }
-        if flag_matches(arg, &["-e", "--eval", "-p", "--print"]) {
-            return None;
-        }
-        if arg.starts_with('-') {
-            index += if option_takes_value(arg) { 2 } else { 1 };
-            continue;
-        }
-        return is_letta(arg).then_some(index);
-    }
-    None
+    script_arg_index(argv, &["-e", "--eval", "-p", "--print"], &[])
+        .filter(|index| argv.get(*index).is_some_and(|arg| is_letta(arg)))
 }
 
 fn letta_first_arg_after_backend_selection(args: &[String]) -> Option<&str> {

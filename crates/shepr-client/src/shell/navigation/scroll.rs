@@ -7,9 +7,9 @@ pub(super) fn list_scroll_metrics(
     gaps_after: &[u16],
     body_height: u16,
     requested_start: usize,
-) -> shepr_protocol::ScrollMetrics {
+) -> shepr_termio::ScrollMetrics {
     if row_heights.is_empty() || body_height == 0 {
-        return shepr_protocol::ScrollMetrics {
+        return shepr_termio::ScrollMetrics {
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             viewport_rows: 0,
@@ -47,7 +47,7 @@ pub(super) fn list_scroll_metrics(
         used = used.saturating_add(gap);
     }
 
-    shepr_protocol::ScrollMetrics {
+    shepr_termio::ScrollMetrics {
         offset_from_bottom: max_start.saturating_sub(start),
         max_offset_from_bottom: max_start,
         viewport_rows,
@@ -81,10 +81,10 @@ pub(super) fn list_scroll_start_to_reveal(
 pub(super) fn render_list_scrollbar(
     buffer: &mut Buffer,
     track: Rect,
-    metrics: shepr_protocol::ScrollMetrics,
+    metrics: shepr_termio::ScrollMetrics,
     palette: &Palette,
 ) {
-    let Some(thumb) = shepr_protocol::scroll::scrollbar_thumb(metrics, track) else {
+    let Some(thumb) = shepr_termio::scroll::scrollbar_thumb(metrics, track) else {
         return;
     };
     for row in track.y..track.bottom() {

@@ -8,11 +8,11 @@ use std::{
 
 use bytes::Bytes;
 use shepr_core::layout::PaneId;
-use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, error, warn};
 
 pub use crate::submission::{QueuedSubmission, SubmissionCancel, SubmissionCancelOutcome};
 use crate::{
+    child_io::ChildIoSendError,
     fd,
     submission::{EnterStart, SharedSubmissionState, SubmissionPart, SubmissionState, lock_state},
 };
@@ -134,11 +134,13 @@ struct PtyIoInbox {
     pending_bytes: usize,
     pending_items: usize,
     next_order: u64,
+    next_entry_id: u64,
     latest_resize: Option<QueuedResize>,
     shutdown: bool,
 }
 
 struct PtyIoInboxEntry {
+    id: u64,
     order: u64,
     kind: PtyIoInboxEntryKind,
 }
@@ -167,6 +169,12 @@ impl PtyIoInbox {
         let order = self.next_order;
         self.next_order = self.next_order.wrapping_add(1);
         order
+    }
+
+    fn next_entry_id(&mut self) -> u64 {
+        let id = self.next_entry_id;
+        self.next_entry_id = self.next_entry_id.wrapping_add(1);
+        id
     }
 
     /// Admit work while the outstanding total stays within the caps. One item
@@ -206,7 +214,9 @@ impl PtyIoInbox {
             return Err(bytes);
         }
         let order = self.next_order();
+        let id = self.next_entry_id();
         self.entries.push_back(PtyIoInboxEntry {
+            id,
             order,
             kind: PtyIoInboxEntryKind::Write(PendingWrite::User(bytes)),
         });
@@ -227,7 +237,9 @@ impl PtyIoInbox {
             return false;
         }
         let order = self.next_order();
+        let id = self.next_entry_id();
         self.entries.push_back(PtyIoInboxEntry {
+            id,
             order,
             kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)),
         });
@@ -249,7 +261,9 @@ impl PtyIoInbox {
             return Err(());
         }
         let order = self.next_order();
+        let id = self.next_entry_id();
         self.entries.push_back(PtyIoInboxEntry {
+            id,
             order,
             kind: PtyIoInboxEntryKind::Submission {
                 text,
@@ -302,10 +316,10 @@ impl PtyIoInbox {
     fn next_entry_index(
         &self,
         active_submission: bool,
-        current_order: Option<u64>,
+        current_write_id: Option<u64>,
     ) -> Option<usize> {
-        if let Some(order) = current_order {
-            return self.entries.iter().position(|entry| entry.order == order);
+        if let Some(id) = current_write_id {
+            return self.entries.iter().position(|entry| entry.id == id);
         }
         if active_submission {
             self.entries.iter().position(|entry| {
@@ -331,14 +345,18 @@ impl PtyIoInbox {
     }
 
     /// The write the actor can start or continue now, if any.
-    fn writable_index(&self, active_submission: bool, current_order: Option<u64>) -> Option<usize> {
-        let index = self.next_entry_index(active_submission, current_order)?;
+    fn writable_index(
+        &self,
+        active_submission: bool,
+        current_write_id: Option<u64>,
+    ) -> Option<usize> {
+        let index = self.next_entry_index(active_submission, current_write_id)?;
         let entry = self.entries.get(index)?;
         if !matches!(entry.kind, PtyIoInboxEntryKind::Write(_)) {
             return None;
         }
         // A write under way was started before any resize that could hold it.
-        if current_order.is_none() && self.resize_holds(entry.order) {
+        if current_write_id.is_none() && self.resize_holds(entry.order) {
             return None;
         }
         Some(index)
@@ -378,9 +396,11 @@ impl PtyIoInbox {
             .position(|entry| entry.order > order)
             .unwrap_or(self.entries.len());
         for (offset, bytes) in replies.into_iter().enumerate() {
+            let id = self.next_entry_id();
             self.entries.insert(
                 insert_at + offset,
                 PtyIoInboxEntry {
+                    id,
                     order,
                     kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)),
                 },
@@ -390,11 +410,11 @@ impl PtyIoInbox {
 }
 
 impl PtyIoActorHandle {
-    pub fn try_write_user_input(&self, bytes: Bytes) -> Result<(), TrySendError<Bytes>> {
+    pub fn try_write_user_input(&self, bytes: Bytes) -> Result<(), ChildIoSendError> {
         let result = {
             let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
             if inbox.shutdown {
-                return Err(TrySendError::Closed(bytes));
+                return Err(ChildIoSendError::Closed(bytes));
             }
             inbox.push_user_input(bytes)
         };
@@ -403,7 +423,7 @@ impl PtyIoActorHandle {
                 self.wake_actor();
                 Ok(())
             }
-            Err(bytes) => Err(TrySendError::Full(bytes)),
+            Err(bytes) => Err(ChildIoSendError::Full(bytes)),
         }
     }
 
@@ -537,7 +557,7 @@ impl PtyIoActor {
             file: std::fs::File::from(config.master_fd),
             inbox,
             response_order,
-            current_write_order: None,
+            current_write_id: None,
             current_write_offset: 0,
             active_submission: None,
             wake_read_fd: wake_pipe.read_fd,
@@ -573,8 +593,8 @@ struct PtyIoActorRunner {
     inbox: Arc<Mutex<PtyIoInbox>>,
     response_order: Arc<Mutex<()>>,
     /// The entry whose write is under way, and how much of it is written.
-    /// The offset is zero whenever the order is `None`.
-    current_write_order: Option<u64>,
+    /// The offset is zero whenever the entry id is `None`.
+    current_write_id: Option<u64>,
     current_write_offset: usize,
     active_submission: Option<ActiveSubmission>,
     wake_read_fd: OwnedFd,
@@ -679,7 +699,7 @@ impl PtyIoActorRunner {
                         ));
                         break;
                     }
-                    if readiness.pty_read_ready && !self.read_once() {
+                    if readiness.pty_read_ready && self.read_chunk() == ReadOutcome::Closed {
                         break;
                     }
                     if readiness.pty_write_ready
@@ -748,7 +768,7 @@ impl PtyIoActorRunner {
             return false;
         }
         let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-        let Some(entry_index) = inbox.next_entry_index(false, self.current_write_order) else {
+        let Some(entry_index) = inbox.next_entry_index(false, self.current_write_id) else {
             return false;
         };
         let Some(entry) = inbox.entries.get(entry_index) else {
@@ -759,7 +779,7 @@ impl PtyIoActorRunner {
         {
             return false;
         }
-        let Some(PtyIoInboxEntry { order, kind }) = inbox.entries.remove(entry_index) else {
+        let Some(PtyIoInboxEntry { id, order, kind }) = inbox.entries.remove(entry_index) else {
             return false;
         };
         let (text, enter, delay, reply, state) = match kind {
@@ -773,7 +793,7 @@ impl PtyIoActorRunner {
             kind => {
                 inbox
                     .entries
-                    .insert(entry_index, PtyIoInboxEntry { order, kind });
+                    .insert(entry_index, PtyIoInboxEntry { id, order, kind });
                 return false;
             }
         };
@@ -789,9 +809,11 @@ impl PtyIoActorRunner {
         // The text takes the submission's place in the sequence and keeps
         // its reservation; the Enter's bytes stay reserved until it is queued.
         if !text.is_empty() {
+            let id = inbox.next_entry_id();
             inbox.entries.insert(
                 entry_index,
                 PtyIoInboxEntry {
+                    id,
                     order,
                     kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
                         bytes: text,
@@ -904,17 +926,13 @@ impl PtyIoActorRunner {
         }
     }
 
-    fn read_once(&mut self) -> bool {
-        self.read_chunk() != ReadOutcome::Closed
-    }
-
     /// A write failure usually means the child has gone (the master reports EIO
     /// once the slave side is closed), but whatever it printed before exiting is
     /// still buffered on the master. Read that out before the loop ends so the
     /// child's last output reaches the terminal. Bounded so a peer that keeps
     /// producing output cannot hold the actor here.
     fn handle_write_failure(&mut self, err: std::io::Error) {
-        self.fail_active_submission(err);
+        self.finish_active_submission(Err(err));
         const MAX_DRAIN_CHUNKS: usize = 1024;
         for _ in 0..MAX_DRAIN_CHUNKS {
             match self.read_chunk() {
@@ -923,7 +941,7 @@ impl PtyIoActorRunner {
             }
         }
         // Replies generated while draining are discarded when the inbox closes.
-        self.current_write_order = None;
+        self.current_write_id = None;
         self.current_write_offset = 0;
     }
 
@@ -1062,9 +1080,9 @@ impl PtyIoActorRunner {
                     PtyIoInboxEntryKind::Write(PendingWrite::Submission { .. })
                 )
             }) {
-                let order = inbox.entries.get(index).map(|entry| entry.order);
-                let written = if order.is_some() && order == self.current_write_order {
-                    self.current_write_order = None;
+                let id = inbox.entries.get(index).map(|entry| entry.id);
+                let written = if id.is_some() && id == self.current_write_id {
+                    self.current_write_id = None;
                     std::mem::take(&mut self.current_write_offset)
                 } else {
                     0
@@ -1115,7 +1133,9 @@ impl PtyIoActorRunner {
                 if !enter.is_empty() {
                     let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
                     let order = inbox.next_order();
+                    let id = inbox.next_entry_id();
                     inbox.entries.push_back(PtyIoInboxEntry {
+                        id,
                         order,
                         kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
                             bytes: enter,
@@ -1160,10 +1180,6 @@ impl PtyIoActorRunner {
         .unwrap_or(ACTOR_IDLE_POLL_MS)
     }
 
-    fn fail_active_submission(&mut self, err: std::io::Error) {
-        self.finish_active_submission(Err(err));
-    }
-
     fn close_inbox(&mut self) {
         let mut queued_submissions = Vec::new();
         {
@@ -1199,10 +1215,10 @@ impl PtyIoActorRunner {
     /// released around the write syscall; the entry's index stays valid
     /// because only this thread removes or inserts entries.
     fn write_next(&mut self) -> std::io::Result<WriteStep> {
-        let (index, order, bytes, part) = {
+        let (index, id, bytes, part) = {
             let inbox = crate::locks::lock_auxiliary(&self.inbox);
             let Some(index) =
-                inbox.writable_index(self.active_submission.is_some(), self.current_write_order)
+                inbox.writable_index(self.active_submission.is_some(), self.current_write_id)
             else {
                 return Ok(WriteStep::Idle);
             };
@@ -1218,7 +1234,7 @@ impl PtyIoActorRunner {
                 }
                 PendingWrite::Submission { bytes, part } => (bytes.clone(), Some(*part)),
             };
-            (index, entry.order, bytes, part)
+            (index, entry.id, bytes, part)
         };
         let offset = self.current_write_offset;
 
@@ -1242,7 +1258,7 @@ impl PtyIoActorRunner {
         };
         if skip {
             drop(state_guard);
-            self.retire_entry(index, order, 0);
+            self.retire_entry(index, id, 0);
             return Ok(WriteStep::Progress(part));
         }
 
@@ -1260,12 +1276,12 @@ impl PtyIoActorRunner {
                 let offset = offset.saturating_add(written);
                 if offset < bytes.len() {
                     crate::locks::lock_auxiliary(&self.inbox).release_bytes(written);
-                    self.current_write_order = Some(order);
+                    self.current_write_id = Some(id);
                     self.current_write_offset = offset;
                     return Ok(WriteStep::Progress(None));
                 }
                 // `retire_entry` releases what the earlier chunks left.
-                self.retire_entry(index, order, offset.saturating_sub(written));
+                self.retire_entry(index, id, offset.saturating_sub(written));
                 if part.is_some() {
                     self.file.flush()?;
                 }
@@ -1284,22 +1300,18 @@ impl PtyIoActorRunner {
 
     /// Remove a finished or skipped entry. `released` bytes of it were
     /// released as earlier chunks were written.
-    fn retire_entry(&mut self, index: usize, order: u64, released: usize) {
-        self.current_write_order = None;
+    fn retire_entry(&mut self, index: usize, id: u64, released: usize) {
+        self.current_write_id = None;
         self.current_write_offset = 0;
         let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-        if inbox
-            .entries
-            .get(index)
-            .is_some_and(|entry| entry.order == order)
-        {
+        if inbox.entries.get(index).is_some_and(|entry| entry.id == id) {
             inbox.remove_entry(index, released);
         }
     }
 
     fn has_writable_work(&self) -> bool {
         crate::locks::lock_auxiliary(&self.inbox)
-            .writable_index(self.active_submission.is_some(), self.current_write_order)
+            .writable_index(self.active_submission.is_some(), self.current_write_id)
             .is_some()
     }
 }
@@ -1414,7 +1426,7 @@ mod tests {
             file: std::fs::File::from(owned),
             inbox,
             response_order,
-            current_write_order: None,
+            current_write_id: None,
             current_write_offset: 0,
             active_submission: None,
             wake_read_fd: wake_pipe.read_fd,
@@ -1471,12 +1483,12 @@ mod tests {
             .try_write_user_input(Bytes::from(vec![b'f'; ACTOR_INBOX_MAX_BYTES]))
             .expect("first write fits the queue");
         match handle.try_write_user_input(Bytes::from_static(b"full")) {
-            Err(TrySendError::Full(bytes)) => assert_eq!(bytes, "full"),
+            Err(ChildIoSendError::Full(bytes)) => assert_eq!(bytes, "full"),
             other => panic!("expected a full queue, got {other:?}"),
         }
         handle.shutdown();
         match handle.try_write_user_input(Bytes::from_static(b"closed")) {
-            Err(TrySendError::Closed(bytes)) => assert_eq!(bytes, "closed"),
+            Err(ChildIoSendError::Closed(bytes)) => assert_eq!(bytes, "closed"),
             other => panic!("expected a closed queue, got {other:?}"),
         }
     }
@@ -1504,11 +1516,11 @@ mod tests {
         for _ in 0..(ACTOR_INBOX_MAX_BYTES / chunk.len() + 8) {
             match handle.try_write_user_input(chunk.clone()) {
                 Ok(()) => {}
-                Err(TrySendError::Full(bytes)) => {
+                Err(ChildIoSendError::Full(bytes)) => {
                     rejected = Some(bytes);
                     break;
                 }
-                Err(TrySendError::Closed(_)) => panic!("live actor closed unexpectedly"),
+                Err(ChildIoSendError::Closed(_)) => panic!("live actor closed unexpectedly"),
             }
         }
 
@@ -1552,7 +1564,9 @@ mod tests {
             let mut inbox = crate::locks::lock_auxiliary(&runner.inbox);
             inbox.reserve(14, 2);
             let submission_order = inbox.next_order();
+            let submission_id = inbox.next_entry_id();
             inbox.entries.push_back(PtyIoInboxEntry {
+                id: submission_id,
                 order: submission_order,
                 kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
                     bytes: Bytes::from_static(b"prompt"),
@@ -1560,7 +1574,9 @@ mod tests {
                 }),
             });
             let reply_order = inbox.next_order();
+            let reply_id = inbox.next_entry_id();
             inbox.entries.push_back(PtyIoInboxEntry {
+                id: reply_id,
                 order: reply_order,
                 kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(
                     Bytes::from_static(b"response"),
@@ -2309,6 +2325,23 @@ mod tests {
     }
 
     #[test]
+    fn resize_reply_entries_have_distinct_ids_at_the_same_sequence_order() {
+        let mut inbox = PtyIoInbox::default();
+        inbox.replace_resize(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 8, 16),
+            vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+        );
+        let resize = inbox.latest_resize.take().expect("resize was queued");
+        inbox.insert_resize_replies(resize.order, resize.terminal_responses);
+
+        let first = inbox.entries.front().expect("first reply was inserted");
+        let second = inbox.entries.get(1).expect("second reply was inserted");
+        assert_eq!(first.order, second.order);
+        assert_ne!(first.id, second.id);
+        assert_eq!(inbox.next_entry_index(false, Some(second.id)), Some(1));
+    }
+
+    #[test]
     fn resize_keeps_latest_request_without_reordering_queued_replies() {
         let (_runner, handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
         handle.write_terminal_response(|| Some(Bytes::from_static(b"before")));
@@ -2378,7 +2411,7 @@ mod tests {
         peer.write_all(b"query").expect("write query");
         let reader = std::thread::spawn(move || {
             let mut runner = runner;
-            assert!(runner.read_once());
+            assert_eq!(runner.read_chunk(), ReadOutcome::Data);
             runner
         });
         continue_tx.send(()).expect("release appearance report");
@@ -2590,11 +2623,13 @@ mod tests {
             .try_write_user_input(paste.clone())
             .expect("a large paste reaches an idle pane");
         match handle.try_write_user_input(Bytes::from_static(b"k")) {
-            Err(TrySendError::Full(bytes)) => assert_eq!(bytes, "k"),
+            Err(ChildIoSendError::Full(bytes)) => assert_eq!(bytes, "k"),
             other => panic!("expected a full queue, got {other:?}"),
         }
         match handle.try_write_user_input(paste) {
-            Err(TrySendError::Full(bytes)) => assert_eq!(bytes.len(), ACTOR_INBOX_MAX_BYTES * 2),
+            Err(ChildIoSendError::Full(bytes)) => {
+                assert_eq!(bytes.len(), ACTOR_INBOX_MAX_BYTES * 2);
+            }
             other => panic!("expected a full queue, got {other:?}"),
         }
     }

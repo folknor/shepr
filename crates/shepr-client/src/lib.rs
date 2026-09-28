@@ -291,7 +291,7 @@ fn run_client_with_launch_state(
     if let Err(err) = ctrlc::set_handler(move || {
         quit_flag.store(true, Ordering::Release);
     }) {
-        warn!(%err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
+        warn!(error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
     }
 
     let mut direct_notices = VecDeque::new();
@@ -379,6 +379,7 @@ async fn run_client_loop(
     ));
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
+        output_writer: Box::new(io::stdout()),
         host_modes,
         host_theme_updates: Vec::new(),
         reported_geometry: shepr_core::geometry::HostGeometry::new(
@@ -803,7 +804,7 @@ impl ClientLoop<'_> {
                     .host_modes
                     .apply_mouse(shell_mode, state.reported_geometry.exact, true)
             {
-                warn!(err = %err, "failed to re-assert host mouse capture");
+                warn!(error = %err, "failed to re-assert host mouse capture");
             }
             let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
             let Some(shell) = state.mode.shell_mut() else {
@@ -971,7 +972,7 @@ impl ClientLoop<'_> {
         err: &io::Error,
     ) -> Result<ClientLoopAction, ClientError> {
         let Self { write_stream, .. } = self;
-        info!(err = %err, "client terminal unavailable; detaching");
+        info!(error = %err, "client terminal unavailable; detaching");
         // A failed send is recorded against the endpoint, and the registry's Drop sends
         // Detach again on the way out.
         write_stream.send(&ClientMessage::Detach);
@@ -1281,15 +1282,27 @@ impl ClientLoop<'_> {
                     .shell_mut()
                     .map(|shell| shell.apply_pane_surface_patch(&patch));
                 let compose_fallback = match outcome {
-                    Some(shell::ClientPaneSurfacePatchOutcome::Applied(Some(patch))) => {
-                        match state.present_surface_patch(patch) {
+                    Some(shell::ClientPaneSurfacePatchOutcome::Applied(Some(composed))) => {
+                        match state.present_surface_patch(composed) {
                             Ok(presented) => !presented,
                             Err(error) => {
                                 // Once per cause: a patch arrives with every pane update.
                                 // The full repaint that follows reports the recovery.
-                                state
-                                    .frame_write_failure
-                                    .observe("pane surface patch", &Err(error));
+                                let mut context = state.presentation_log_context();
+                                if let Some(context) = context.as_mut()
+                                    && !patch.panes.is_empty()
+                                {
+                                    context.pane_ids = patch
+                                        .panes
+                                        .iter()
+                                        .map(|pane| pane.pane_id.clone())
+                                        .collect();
+                                }
+                                state.frame_write_failure.observe(
+                                    "pane surface patch",
+                                    &Err(error),
+                                    context.as_ref(),
+                                );
                                 state.request_repaint();
                                 false
                             }
@@ -1492,7 +1505,9 @@ impl ClientLoop<'_> {
                 let written = state
                     .host_modes
                     .write_window_title(&mut io::stdout(), title.as_deref());
-                state.title_write_failure.observe("window title", &written);
+                state
+                    .title_write_failure
+                    .observe("window title", &written, None);
             }
             ServerMessage::MouseCapture {
                 enabled,
@@ -1621,7 +1636,11 @@ impl ClientLoop<'_> {
                 }
             }
             ServerMessage::Welcome { .. } => {
-                debug!("received unexpected Welcome in main loop");
+                debug!(
+                    endpoint = %endpoint_id.storage_key(),
+                    generation,
+                    "received unexpected Welcome in main loop"
+                );
             }
             ServerMessage::SurfaceUpdate(_) => {
                 return Err(ClientError::SurfaceUpdateBeforeDecode);

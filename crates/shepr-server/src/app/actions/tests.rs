@@ -1060,17 +1060,13 @@ fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
         .expect("test precondition")
         .attached_terminal_id
         .clone();
-    // Deliberately a path that does not exist: the reporting thread
-    // validates the directory, and the main loop must not stat it again.
-    let cwd = std::path::PathBuf::from(format!(
-        "/shepr-cwd-report-test-{}/does-not-exist",
-        std::process::id()
-    ));
+    let scratch = crate::test_support::ScratchDir::new("cwd-report");
+    let cwd = scratch.to_path_buf();
     state.session_dirty = false;
 
     let updates = state.handle_app_event(AppEvent::TerminalCwdReported {
         pane_id,
-        cwd: cwd.clone(),
+        cwd: shepr_mux::UsableCwd::new(cwd.clone()).expect("test cwd is usable"),
     });
 
     assert!(updates.is_empty());
@@ -1079,14 +1075,14 @@ fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
             .terminals
             .get(&terminal_id)
             .expect("test precondition")
-            .cwd,
+            .cwd(),
         cwd
     );
     assert!(state.session_dirty);
 }
 
 #[test]
-fn relative_terminal_cwd_report_is_ignored() {
+fn cwd_report_for_missing_pane_is_ignored() {
     let mut state = app_with_workspaces(&["active"]);
     let pane_id = *state.workspaces[0].tabs()[0]
         .panes
@@ -1098,15 +1094,15 @@ fn relative_terminal_cwd_report_is_ignored() {
         .expect("test precondition")
         .attached_terminal_id
         .clone();
-    let before = state.terminals[&terminal_id].cwd.clone();
+    let before = state.terminals[&terminal_id].cwd().to_path_buf();
     state.session_dirty = false;
 
     state.handle_app_event(AppEvent::TerminalCwdReported {
-        pane_id,
-        cwd: std::path::PathBuf::from("relative/dir"),
+        pane_id: PaneId::from_raw(pane_id.raw().saturating_add(1_000_000)),
+        cwd: shepr_mux::UsableCwd::new(std::path::PathBuf::from("/")).expect("root is usable"),
     });
 
-    assert_eq!(state.terminals[&terminal_id].cwd, before);
+    assert_eq!(state.terminals[&terminal_id].cwd(), before);
     assert!(!state.session_dirty);
 }
 

@@ -63,6 +63,9 @@ impl App {
         if let Err(message) = validate_layout_launches(&params.root) {
             return failure(ApiErrorCode::InvalidLayout, message);
         }
+        // Every leaf's cwd is checked before the first pane launches, so a
+        // relative one refuses the whole layout rather than half of it.
+        validate_layout_cwds(&params.root)?;
 
         let replacement_label = params.tab_label.clone().or_else(|| {
             let (_, tab_idx) = replace_target?;
@@ -85,7 +88,7 @@ impl App {
         let replace_close_events = replace_target
             .map_or_default(|(target_ws, target_tab)| self.tab_close_events(target_ws, target_tab));
         let root_leaf = first_layout_leaf(&params.root);
-        let first_cwd = self.layout_root_cwd(ws_idx, replace_target, root_leaf);
+        let first_cwd = self.layout_root_cwd(ws_idx, replace_target, root_leaf)?;
         let (rows, cols) = self.state.pane_geometry().sole_pane_size();
         let default_shell = self.state.settings.default_shell.clone();
         let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
@@ -144,7 +147,7 @@ impl App {
         };
         let new_root_pane = tab.root_pane;
         let root_terminal_id = terminal.id.clone();
-        let root_cwd = terminal.cwd.clone();
+        let root_cwd = terminal.cwd().to_path_buf();
         let mut pane_terminals = std::collections::HashMap::from([(new_root_pane, terminal)]);
         let mut pane_runtimes =
             std::collections::HashMap::from([(new_root_pane, (root_terminal_id, runtime))]);
@@ -255,11 +258,18 @@ impl App {
             return failure(ApiErrorCode::LayoutNotFound, "layout target not found");
         };
 
+        // The API spells a split path as booleans: `true` descends into the
+        // second branch.
         let path = params
             .path
             .iter()
-            .copied()
-            .map(Into::into)
+            .map(|&second| {
+                if second {
+                    shepr_core::geometry::SplitBranch::Second
+                } else {
+                    shepr_core::geometry::SplitBranch::First
+                }
+            })
             .collect::<Vec<_>>();
         let changed = self
             .state
@@ -365,9 +375,9 @@ impl App {
         ws_idx: usize,
         replace_target: Option<(usize, usize)>,
         pane: &LayoutPane,
-    ) -> PathBuf {
-        if let Some(cwd) = pane.cwd.as_ref() {
-            return PathBuf::from(cwd);
+    ) -> Result<PathBuf, shepr_api::error::ApiError> {
+        if let Some(cwd) = pane.cwd.as_deref() {
+            return super::cwd::launch_cwd(cwd);
         }
         let follow_cwd = replace_target.and_then(|(_, tab_idx)| {
             let pane_id = self
@@ -380,9 +390,9 @@ impl App {
                 .focused();
             self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id)
         });
-        self.resolve_new_terminal_cwd(
+        Ok(self.resolve_new_terminal_cwd(
             follow_cwd.or_else(|| self.focused_pane_cwd_in_workspace(ws_idx)),
-        )
+        ))
     }
 }
 
@@ -433,8 +443,10 @@ fn stage_layout_node(
             let second_leaf = first_layout_leaf(second);
             let cwd = second_leaf
                 .cwd
-                .as_ref()
-                .map(PathBuf::from)
+                .as_deref()
+                .map(super::cwd::launch_cwd)
+                .transpose()
+                .map_err(shepr_api::error::ApiError::into_message)?
                 .or_else(|| {
                     staging
                         .pane_runtimes
@@ -502,7 +514,7 @@ fn stage_layout_node(
                 prepared_layout,
             } = new_pane;
             let terminal_id = terminal.id.clone();
-            let terminal_cwd = terminal.cwd.clone();
+            let terminal_cwd = terminal.cwd().to_path_buf();
             if !tab.commit_prepared_split(
                 pane_id,
                 prepared_layout,
@@ -542,6 +554,19 @@ fn validate_layout_launches(node: &LayoutNode) -> Result<(), String> {
         LayoutNode::Split { first, second, .. } => {
             validate_layout_launches(first)?;
             validate_layout_launches(second)
+        }
+    }
+}
+
+fn validate_layout_cwds(node: &LayoutNode) -> Result<(), shepr_api::error::ApiError> {
+    match node {
+        LayoutNode::Pane { pane } => pane
+            .cwd
+            .as_deref()
+            .map_or(Ok(()), |cwd| super::cwd::launch_cwd(cwd).map(drop)),
+        LayoutNode::Split { first, second, .. } => {
+            validate_layout_cwds(first)?;
+            validate_layout_cwds(second)
         }
     }
 }
@@ -852,7 +877,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .cwd = cached_cwd.clone();
+            .set_cwd(shepr_mux::UsableCwd::new(cached_cwd.clone()).expect("test cwd is usable"));
 
         let response = app.handle_layout_apply(&LayoutApplyParams {
             workspace_id: None,
@@ -870,14 +895,14 @@ mod tests {
         let created_terminal_id = created
             .terminal_id(created.root_pane)
             .expect("test precondition");
-        let created_cwd = &app
+        let created_cwd = app
             .state
             .terminals
             .get(created_terminal_id)
             .expect("test precondition")
-            .cwd;
+            .cwd();
         assert_eq!(
-            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.clone()),
+            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.to_path_buf()),
             std::fs::canonicalize(&cached_cwd).unwrap_or_else(|_| cached_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);

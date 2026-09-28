@@ -102,9 +102,9 @@ use topology::*;
 mod status_presentation;
 use status_presentation::*;
 
-#[path = "shell/presentation/blit.rs"]
-mod blit;
-use blit::*;
+#[path = "shell/presentation/compose_pane_surface.rs"]
+mod compose_pane_surface;
+use compose_pane_surface::*;
 
 #[cfg(test)]
 mod tests;

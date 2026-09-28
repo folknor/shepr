@@ -1,7 +1,7 @@
 use std::fmt;
+use std::io;
 
 use serde::{Deserialize, Deserializer, Serialize};
-use sha2::{Digest as _, Sha256};
 
 const PROFILE_ID_BYTES: usize = 16;
 /// Hex characters `ProfileId::short` keeps. A character count, unlike
@@ -25,25 +25,10 @@ impl ProfileId {
         Ok(Self(value))
     }
 
-    pub fn generate() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-        // Profile IDs identify catalog rows and may label bridge socket paths, but those paths
-        // get a separate unpredictable token in the private runtime directory; the IDs need
-        // practical uniqueness rather than secrecy.
-        let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let digest = Sha256::digest(format!("{}:{now}:{sequence}", std::process::id()).as_bytes());
-        Self(
-            digest[..PROFILE_ID_BYTES]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
-        )
+    pub fn generate() -> io::Result<Self> {
+        let high = shepr_platform::unpredictable_token()?;
+        let low = shepr_platform::unpredictable_token()?;
+        Ok(Self(format!("{high:016x}{low:016x}")))
     }
 
     pub fn as_str(&self) -> &str {
@@ -79,8 +64,8 @@ mod tests {
 
     #[test]
     fn profile_ids_are_opaque_and_stable_when_parsed() {
-        let first = ProfileId::generate();
-        let second = ProfileId::generate();
+        let first = ProfileId::generate().expect("kernel random source is available");
+        let second = ProfileId::generate().expect("kernel random source is available");
         assert_ne!(first, second);
         assert_eq!(
             ProfileId::parse(first.to_string()).expect("test precondition"),

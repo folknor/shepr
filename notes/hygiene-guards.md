@@ -220,14 +220,6 @@ and `PANE_COLORTERM` directly instead of the hard-coded
 scrub list verbatim, so a key added to production is not tested. Enforcement
 named: export the list and iterate it.
 
-## HYGG-021 - A geometry size assertion that cannot fail
-
-`shepr-core/src/geometry.rs` (the entry originally placed it in
-`shepr-platform`): `assert!(size_of::<PaneGeometry>() <= size_of::<(u16, u16,
-u32, u32)>())` asserts a property of the compiler's layout choices, not of this
-code; it passes for any plausible field arrangement. Delete it, or state what
-size bound actually matters and why. Review only.
-
 ## HYGG-023 - The only codec exercise of `ValidatedConfig` covers the empty case of every interesting field
 
 `codec::to_vec(&ValidatedConfig::test_default())` in `shepr-client`
@@ -459,23 +451,6 @@ the parser.
   single accept loop) but nothing asserts it; a future `thread::spawn` per stream
   would break the claim silently.
 
-## HYGG-085 - `shepr-platform`'s `lib.rs` says domain rules live in modules that do not exist there
-
-`crates/shepr-platform/src/lib.rs`: "domain rules live with their consumers in
-`detect`, `remote`, and the app". There is no `detect` or `remote` module in
-this crate or at that path in this workspace - they are
-`crates/shepr-agent/src/detect` and `crates/shepr-remote`. **False today**, and
-false in a second way: 25 domain event functions (`workspace_created`,
-`tab_renamed`, `pane_spawned`, `session_saved`, `api_request_started`,
-`integration_action`, ...) live in `logging.rs` in this crate, named after
-concepts the crate knows nothing about.
-
-Enforcement named for the second half, and the hunter says `brokkr.toml`
-already expresses this kind of rule: a text rule forbidding the identifiers
-`workspace`/`tab`/`pane`/`api`/`session` in `shepr-platform` public item names,
-or simply moving the functions so the existing dependency allowlists do the
-work.
-
 ## HYGG-086 - `AGENTS.md` describes `reference/` and `docs/` as binding in-repo folders that do not exist
 
 **False today**: neither directory exists in the tree; only `notes/` does.
@@ -498,41 +473,6 @@ checks - and `logging.rs`'s domain catalogue is already outside its stated
 responsibility (HYGG-085). `shepr-agent` reports the same shape: `AGENTS.md`
 restates the agent state vocabulary and the crate layering, the latter enforced
 by `brokkr.toml` and the former not.
-
-## HYGG-088 - `AGENTS.md`'s description of `shepr-vt`'s `scan.rs` names things that live elsewhere and omits the module list
-
-`AGENTS.md` says `scan.rs` scans "modes 9/1016/2031/2048 ... and the halfwidth
-katakana voiced marks". Those live in `handler.rs`. `scan.rs` explicitly forbids
-them and has a test for it
-(`modes_and_reset_are_left_to_the_parser_handler`). `AGENTS.md` also omits
-OSC 9;4, 9;9, 1337 and `CSI ? 3 J`, and its module list for `shepr-vt` omits
-`handler.rs`, `modes.rs`, `rows.rs`, `selection.rs`, `coords.rs` and `locks.rs`.
-The hunter files this as documentation restating a list the code owns.
-
-## HYGG-089 - `AGENTS.md` says the pane child is reaped by a blocking `wait()` in the pane runtime
-
-It is reaped through a pidfd `waitid`; blocking wait is only the fallback, per
-commit b7c14da. **False today.**
-
-## HYGG-090 - `AGENTS.md` and `app/mod.rs` both say `src/app/` is split into state, actions and input
-
-**False as written**, per the `shepr-server` hunter. There is no `input` module
-under `src/app/` at all; `app/` holds 20 modules (`actions`, `agent_resume`,
-`agents`, `api`, `api_helpers`, `creation`, `events`, `git_refresh`,
-`host_theme`, `ids`, `runtime`, `session`, `state`, `tab_bar_status`,
-`terminal_targets`, `terminal_titles`, `window_title`, `snapshot_tests`, plus
-the `api/` and `actions/` subtrees), and input lives in
-`server/pane_input.rs` and `server/input_wire.rs`. The module doc at
-`app/mod.rs` restates the same stale claim, listing only `state.rs` and
-`actions.rs` - a doc comment enumerating a list the directory generates. The
-no-god-object intent is honoured in substance (nothing is a 3000-line
-monolith), but `impl App` is spread over 25 blocks in 20 files and `impl
-AppState` over 6, so the "three parts" framing no longer describes anything.
-
-Enforcement named: restate the claim as what is true and enforceable - `AppState`
-is pure data, `App` owns runtime, no single file over N lines - and add a
-file-length rule to `brokkr.toml`. The prose itself is not lintable and should
-stop naming a module count that drifts.
 
 ## HYGG-091 - `AGENTS.md`'s "No god objects" principle names only `shepr-server/src/app/`, so it does not reach the crate's actual largest types
 
@@ -671,15 +611,6 @@ none of which exist since the crate split, all now under `crates/`. `notes/`
 carries no truth guarantee, but the paths are stale enough to send a reader
 nowhere.
 
-## HYGG-112 - `HeadlessServer`'s module doc names socket files the config owns
-
-`shepr-server/src/server/headless.rs` claims the server listens on `shepr.sock`
-and `shepr-client.sock`. Those names live in `shepr-config::address` and are
-session-dependent: a named session listens on
-`sessions/<name>/shepr-client.sock`, per `socket_paths.rs`. Documentation
-restating a list the code generates. Fix named: delete the names from the
-comment.
-
 ## HYGG-116 - Claim: alacritty types never leak out of `shepr-vt`
 
 The dependency rule enforces this at crate level, and the hunter found no
@@ -687,13 +618,6 @@ alacritty types in public signatures. Two soft spots recorded: the public
 `impl From<Rgb> for RgbColor` and `From<RgbColor> for Rgb`; and `CellStyle`,
 which is `pub` in a private module and reachable through `CellBasicData.style`
 but not re-exported, so callers cannot name it.
-
-## HYGG-117 - `PtyIoInbox` assumes an entry's `order` identifies one entry
-
-`shepr-pty`. `insert_resize_replies` inserts several entries with the *same*
-order, and `next_entry_index(current_order)` uses `position(order == order)`. It
-is correct only because those replies are contiguous and written front to back.
-Enforcement named: give each reply its own order.
 
 ## HYGG-118 - A mutation rule in `shepr-vt` that nothing checks
 

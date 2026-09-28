@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use shepr_pty::ChildIo;
 use shepr_pty::actor::{QueuedSubmission, SubmissionCancel};
+use shepr_pty::{ChildIo, ChildIoSendError};
 use tokio::sync::mpsc;
 
 /// Stands in for the PTY actor in a pane runtime built with
@@ -39,8 +39,11 @@ impl ChildIo for ChannelChildIo {
         let _ = terminal_responses();
     }
 
-    fn try_write_user_input(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        self.sender.try_send(bytes)
+    fn try_write_user_input(&self, bytes: Bytes) -> Result<(), ChildIoSendError> {
+        self.sender.try_send(bytes).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(bytes) => ChildIoSendError::Full(bytes),
+            mpsc::error::TrySendError::Closed(bytes) => ChildIoSendError::Closed(bytes),
+        })
     }
 
     fn write_terminal_response(&self, response: &mut dyn FnMut() -> Option<Bytes>) {

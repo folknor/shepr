@@ -1,7 +1,7 @@
 //! Application orchestration.
 //!
-//! - `state.rs` - AppState, Mode, and pure data structs
-//! - `actions.rs` - state mutations (testable without PTYs/async)
+//! `AppState` holds pure application data. `App` coordinates it with live
+//! runtime concerns across focused modules under `app/`.
 
 pub(crate) mod actions;
 mod agent_resume;
@@ -609,7 +609,7 @@ mod tests {
         let theme_accent = state::Palette::catppuccin().accent;
         assert_ne!(theme_accent, Color::Cyan, "test precondition");
 
-        // Unset: the theme's accent, not the placeholder default.
+        // Unset: the theme's accent.
         let config = Config::default();
         assert_eq!(
             config
@@ -619,9 +619,9 @@ mod tests {
             theme_accent
         );
 
-        // Set explicitly to the placeholder value: it still applies.
+        // Set explicitly: it applies over the theme accent.
         let mut config = Config::default();
-        config.ui.accent = "cyan".into();
+        config.ui.accent = Some("cyan".into());
         assert_eq!(
             config
                 .resolve_palette_with_ui_accent(true)
@@ -630,7 +630,7 @@ mod tests {
             Color::Cyan
         );
 
-        config.ui.accent = "magenta".into();
+        config.ui.accent = Some("magenta".into());
         assert_eq!(
             config
                 .resolve_palette_with_ui_accent(true)

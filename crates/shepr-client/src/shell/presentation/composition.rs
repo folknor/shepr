@@ -235,7 +235,7 @@ impl ClientShellState {
         // The surface may have been produced for another layout: a resize or sidebar toggle
         // keeps the retained surface until the resized one arrives, a resize can race a surface
         // already in flight, and the tab bar appears (shrinking the pane area by a row) when a
-        // second tab opens. `blit_pane_surface` clips the cells; the hits are clipped to match
+        // second tab opens. `compose_pane_surface` clips the cells; the hits are clipped to match
         // (`clip_pane_hit`), so mouse input and the copy cursor never target rows or
         // columns that are not on screen. Later draws that use these rects still go through
         // `Buffer::cell_mut`, never `buffer[(x, y)]`.
@@ -265,7 +265,7 @@ impl ClientShellState {
                             rect.height,
                         )
                     }),
-                    scroll: pane.scroll.map(|metrics| shepr_protocol::ScrollMetrics {
+                    scroll: pane.scroll.map(|metrics| shepr_termio::ScrollMetrics {
                         offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
                             .unwrap_or(usize::MAX),
                         max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
@@ -373,7 +373,7 @@ impl ClientShellState {
         let mode_bar_cells = mode_bar
             .and_then(|bar| mode_bar_range(&frame, bar))
             .map(|range| frame.cells[range].to_vec());
-        blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        compose_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let has_selection = self
             .selection
@@ -757,7 +757,7 @@ mod tests {
             rect: Rect::new(0, 0, 6, 4),
             inner_rect: Rect::new(0, 0, 6, 4),
             scrollbar_rect: None,
-            scroll: Some(shepr_protocol::ScrollMetrics {
+            scroll: Some(shepr_termio::ScrollMetrics {
                 offset_from_bottom: 0,
                 max_offset_from_bottom: 0,
                 viewport_rows: 4,

@@ -44,6 +44,17 @@ pub(crate) fn target_pane_not_found(pane_id: &str, tab_id: Option<&str>) -> ApiE
     ApiError::new(ApiErrorCode::TargetPaneNotFound, message)
 }
 
+pub(super) fn agent_target_pane_not_found(pane_id: &str) -> ApiError {
+    ApiError::new(
+        ApiErrorCode::AgentPaneNotFound,
+        format!("agent target pane {pane_id} not found"),
+    )
+}
+
+pub(super) fn agent_target_not_found(target: &str) -> ApiError {
+    ApiError::agent_not_found(target)
+}
+
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
     let normalized = normalize_api_key_alias(key.trim());
     let (code, modifiers) = shepr_config::parse_key_combo(normalized)?;
@@ -472,8 +483,9 @@ mod metadata_token_tests {
 #[cfg(test)]
 mod not_found_tests {
     use super::{
-        active_workspace_not_found, pane_in_workspace_not_found, pane_not_found,
-        tab_for_pane_not_found, tab_not_found, target_pane_not_found, workspace_not_found,
+        active_workspace_not_found, agent_target_not_found, agent_target_pane_not_found,
+        pane_in_workspace_not_found, pane_not_found, tab_for_pane_not_found, tab_not_found,
+        target_pane_not_found, workspace_not_found,
     };
     use shepr_api::error::ApiErrorCode;
 
@@ -517,5 +529,13 @@ mod not_found_tests {
             error.into_message(),
             "target pane w1:p2 is not in tab w1:t4"
         );
+
+        let error = agent_target_pane_not_found("w1:p2");
+        assert_eq!(error.code, ApiErrorCode::AgentPaneNotFound);
+        assert_eq!(error.into_message(), "agent target pane w1:p2 not found");
+
+        let error = agent_target_not_found("reviewer");
+        assert_eq!(error.code, ApiErrorCode::AgentNotFound);
+        assert_eq!(error.into_message(), "agent target reviewer not found");
     }
 }

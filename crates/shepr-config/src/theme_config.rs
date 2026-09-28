@@ -118,7 +118,7 @@ pub(crate) fn resolve_palette(
     if let Err(errors) = &overrides {
         diagnostics.extend(errors.iter().cloned());
     }
-    let ui_accent = match parse_configured_color("ui.accent", Some(config.ui.accent.as_str())) {
+    let ui_accent = match parse_configured_color("ui.accent", config.ui.accent.as_deref()) {
         Ok(color) => color,
         Err(errors) => {
             diagnostics.extend(errors);
@@ -142,12 +142,10 @@ pub(crate) fn resolve_palette(
         .custom
         .as_ref()
         .is_some_and(|custom| custom.accent.is_some());
-    if !custom_accent && ui_accent_is_explicit {
-        let Some(accent) = ui_accent else {
-            return Err(vec![
-                "ui.accent was marked configured without a value".to_owned(),
-            ]);
-        };
+    if !custom_accent
+        && ui_accent_is_explicit
+        && let Some(accent) = ui_accent
+    {
         palette.accent = accent;
     }
     Ok(palette)
@@ -382,6 +380,25 @@ peach = "#aééb"
                 .iter()
                 .any(|d| d.contains("invalid color"))
         );
+    }
+
+    #[test]
+    fn empty_ui_accent_is_unset_and_uses_the_theme_accent() {
+        let source = "[ui]\naccent = \"\"\n";
+        let config: Config = toml::from_str(source).expect("empty accent parses as unset");
+        let document: toml::Value = toml::from_str(source).expect("source parses as TOML");
+        let provenance = crate::validated::ConfigProvenance::from_config(&config, Some(&document))
+            .expect("config provenance resolves");
+
+        assert_eq!(config.ui.accent, None);
+        assert!(!provenance.is_explicit(crate::UiPreferenceKey::Accent));
+
+        let palette = resolve_palette(
+            &config,
+            provenance.is_explicit(crate::UiPreferenceKey::Accent),
+        )
+        .expect("empty accent leaves the theme palette in effect");
+        assert_eq!(palette.accent, crate::theme::Palette::catppuccin().accent);
     }
 
     #[test]

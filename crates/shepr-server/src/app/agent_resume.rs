@@ -283,7 +283,7 @@ impl App {
                     pending.push(PendingAgentResumeCandidate {
                         pane_id: info.id,
                         terminal_id: pane.attached_terminal_id.clone(),
-                        cwd: terminal.cwd.clone(),
+                        cwd: terminal.cwd().to_path_buf(),
                         plan,
                         rows: info.inner_rect.height,
                         cols: info.inner_rect.width,
@@ -352,7 +352,7 @@ impl App {
                     let terminal = self.state.terminals.get(terminal_id)?;
                     Some((
                         pane_id,
-                        terminal.cwd.clone(),
+                        terminal.cwd().to_path_buf(),
                         terminal.pending_agent_resume_plan.clone()?,
                     ))
                 })
@@ -598,7 +598,10 @@ mod tests {
                 crate::test_support::ScratchDir::new("resume-cwd").join("__missing_resume_cwd__");
             assert!(!missing.try_exists().expect("stat missing resume cwd"));
             for terminal in app.state.terminals.values_mut() {
-                terminal.cwd = missing.clone();
+                // Restore builds a terminal from its saved cwd, which may have
+                // disappeared; a live pane never reports a missing one.
+                *terminal =
+                    shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing.clone());
                 terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
                     &terminal.id.to_string(),
                     vec!["codex".into()],
@@ -782,9 +785,12 @@ mod tests {
                 .get_mut(&terminal_id)
                 .expect("test precondition");
             if !missing_shell {
-                terminal.cwd = crate::test_support::ScratchDir::new("resume-cwd")
+                let missing = crate::test_support::ScratchDir::new("resume-cwd")
                     .join("__shepr_missing_resume_cwd__");
-                assert!(!terminal.cwd.try_exists().expect("stat missing resume cwd"));
+                assert!(!missing.try_exists().expect("stat missing resume cwd"));
+                // Restore builds a terminal from its saved cwd, which may have
+                // disappeared; a live pane never reports a missing one.
+                *terminal = shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing);
             }
             let session = shepr_agent::agent::resume::PersistedAgentSession {
                 source: "shepr:codex".into(),

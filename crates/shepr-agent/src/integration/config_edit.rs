@@ -1,11 +1,14 @@
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
 
+use crate::agent::IntegrationTarget as Target;
+
 use super::command::hook_command;
-use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END, KIMI_HOOK_EVENTS};
+use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END};
 
 pub(crate) fn ensure_hooks_object<'a>(
     settings: &'a mut Value,
@@ -375,6 +378,8 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String>
 }
 
 pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
+    let events = super::registry::integration_hook_events(Target::Kimi);
+    let timeout = super::registry::integration_hook_timeout(Target::Kimi)?;
     let mut result = remove_kimi_config_block(content)?
         .trim_end_matches('\n')
         .to_string();
@@ -385,7 +390,7 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
 
     result.push_str(KIMI_CONFIG_BLOCK_BEGIN);
     result.push('\n');
-    for hook in KIMI_HOOK_EVENTS {
+    for hook in events {
         let Some(action) = hook.action else {
             continue;
         };
@@ -394,6 +399,7 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
             hook.matcher,
             hook_path,
             action.as_str(),
+            timeout,
         ));
     }
     result.push_str(KIMI_CONFIG_BLOCK_END);
@@ -406,14 +412,16 @@ pub(crate) fn kimi_hook_table(
     matcher: Option<&str>,
     hook_path: &Path,
     action: &str,
+    timeout: Duration,
 ) -> String {
     let command = hook_command(hook_path, Some(action));
     let matcher =
         matcher.map_or_default(|matcher| format!("matcher = {}\n", toml_basic_string(matcher)));
     format!(
-        "[[hooks]]\nevent = {}\n{matcher}command = {}\ntimeout = 10\n\n",
+        "[[hooks]]\nevent = {}\n{matcher}command = {}\ntimeout = {}\n\n",
         toml_basic_string(event),
-        toml_basic_string(&command)
+        toml_basic_string(&command),
+        timeout.as_secs()
     )
 }
 

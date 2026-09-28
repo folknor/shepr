@@ -30,9 +30,7 @@ pub fn read_runtime_status_at(
         return Ok(None);
     }
 
-    let client = crate::client::ApiClient::for_target(crate::client::ConnectionTarget::SocketPath(
-        socket_path.to_path_buf(),
-    ));
+    let client = crate::client::ApiClient::for_socket(socket_path);
     let request = Request {
         id: "runtime:status".into(),
         method: Method::Ping(crate::schema::PingParams::default()),

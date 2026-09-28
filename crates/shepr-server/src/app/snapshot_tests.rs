@@ -8,6 +8,7 @@ use super::{AppState, Mode};
 use shepr_core::layout::NavDirection;
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_mux::persist::snapshot::*;
+use shepr_mux::terminal::TerminalState;
 use shepr_mux::workspace::Workspace;
 
 fn test_session_path(name: &str) -> String {
@@ -563,19 +564,17 @@ fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
     let root_terminal_id = state.workspaces[0].tabs()[0].panes[&root]
         .attached_terminal_id
         .clone();
-    state
-        .terminals
-        .get_mut(&root_terminal_id)
-        .expect("test precondition")
-        .cwd = PathBuf::from("/tmp/pion");
+    state.terminals.insert(
+        root_terminal_id.clone(),
+        TerminalState::new(root_terminal_id.clone(), PathBuf::from("/tmp/pion")),
+    );
     let second_terminal_id = state.workspaces[0].tabs()[0].panes[&second]
         .attached_terminal_id
         .clone();
-    state
-        .terminals
-        .get_mut(&second_terminal_id)
-        .expect("test precondition")
-        .cwd = PathBuf::from("/tmp/shepr");
+    state.terminals.insert(
+        second_terminal_id.clone(),
+        TerminalState::new(second_terminal_id.clone(), PathBuf::from("/tmp/shepr")),
+    );
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];

@@ -102,7 +102,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
         .write_all(shepr_termio::host_term::modes::HOST_KEYBOARD_QUERY_SEQUENCE)
         .and_then(|()| io::stdout().flush())
     {
-        tracing::debug!(%err, "host keyboard enhancement query unavailable");
+        tracing::debug!(error = %err, "host keyboard enhancement query unavailable");
         return (false, buffered_input);
     }
 
@@ -123,7 +123,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
             Ok(false) => break,
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
             Err(err) => {
-                tracing::debug!(%err, "host keyboard enhancement query read unavailable");
+                tracing::debug!(error = %err, "host keyboard enhancement query read unavailable");
                 break;
             }
         }
@@ -142,7 +142,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
             Err(err) => {
-                tracing::debug!(%err, "host keyboard enhancement query read failed");
+                tracing::debug!(error = %err, "host keyboard enhancement query read failed");
                 break;
             }
         }

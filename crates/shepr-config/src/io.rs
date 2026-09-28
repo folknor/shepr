@@ -183,9 +183,7 @@ impl AppPaths {
     pub fn resolve_with_session(
         requested_session: Option<super::SessionId>,
     ) -> Result<Self, Vec<String>> {
-        let session_source = requested_session
-            .as_ref()
-            .map(|_| ConfigSource::CliFlag("--session".to_owned()));
+        let session_source = requested_session.as_ref().map(|_| ConfigSource::CliFlag);
         resolve_paths_from_env(
             requested_session,
             session_source,
@@ -205,9 +203,7 @@ impl AppPaths {
     pub fn resolve_for_server(
         requested_session: Option<super::SessionId>,
     ) -> Result<Self, Vec<String>> {
-        let session_source = requested_session
-            .as_ref()
-            .map(|_| ConfigSource::CliFlag("--session".to_owned()));
+        let session_source = requested_session.as_ref().map(|_| ConfigSource::CliFlag);
         resolve_paths_from_env(
             requested_session,
             session_source,
@@ -1350,10 +1346,7 @@ tab_bar_right = [
 
         let cli = AppPaths::resolve_with_session(Some(crate::SessionId::Default))
             .expect("CLI session paths resolve");
-        assert_eq!(
-            cli.provenance().session_id,
-            ConfigSource::CliFlag("--session".to_owned())
-        );
+        assert_eq!(cli.provenance().session_id, ConfigSource::CliFlag);
 
         let machine = AppPaths::resolve_for_machine().expect("machine paths resolve");
         assert_eq!(machine.provenance().session_id, ConfigSource::Default);

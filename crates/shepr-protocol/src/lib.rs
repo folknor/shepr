@@ -14,7 +14,6 @@ pub mod preamble;
 mod projection;
 mod ratatui_conversion;
 mod revision;
-pub mod scroll;
 mod status;
 mod style;
 mod surface;
@@ -77,8 +76,6 @@ pub fn builds_match(ours: &str, peer: &str) -> bool {
 pub fn is_this_build(peer: &str) -> bool {
     builds_match(BUILD_ID, peer)
 }
-
-pub use scroll::ScrollMetrics;
 
 /// The workspace build script, compiled as a module so its identity recipe is
 /// tested against the same code that stamps `BUILD_ID`.

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
@@ -27,19 +28,18 @@ use super::opencode_config::{
     PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, remove_cli_plugin, remove_tui_plugin,
     validate_tui_plugin_config,
 };
-use super::registry::config_file_names;
+use super::registry::{config_file_names, integration_hook_events, integration_hook_timeout};
 use super::types::{ArtifactRole, InstallOutcome, UninstallOutcome, UninstallState};
 use super::{
-    ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
-    ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC, CLAUDE_HOOK_INSTALL_NAME,
+    ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, CLAUDE_HOOK_INSTALL_NAME,
     CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME,
     CURSOR_HOOK_INSTALL_NAME, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_EVENTS,
     DROID_HOOK_INSTALL_NAME, GROK_HOOK_INSTALL_NAME, KILO_PLUGIN_INSTALL_NAME,
-    KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION, LETTA_HOOK_INSTALL_NAME, LETTA_HOOK_TIMEOUT_MS,
-    MASTRACODE_HOOK_EVENTS, MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS,
-    OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_ASSET,
-    OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC, PI_EXTENSION_INSTALL_NAME,
-    QODERCLI_HOOK_EVENTS, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
+    KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION, LETTA_HOOK_INSTALL_NAME, MASTRACODE_HOOK_EVENTS,
+    MASTRACODE_HOOK_INSTALL_NAME, OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME,
+    OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
+    PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_EVENTS, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS,
+    QWEN_HOOK_INSTALL_NAME,
 };
 
 // Install order for targets that register the hook in an agent config: read,
@@ -82,6 +82,11 @@ fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
         "{agent} extension directory not found at {}. install {agent} first",
         dir.display()
     )))
+}
+
+fn timeout_millis(timeout: Duration) -> io::Result<u64> {
+    u64::try_from(timeout.as_millis())
+        .map_err(|_| io::Error::other("hook timeout exceeds millisecond configuration range"))
 }
 
 pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
@@ -133,7 +138,13 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Instal
     };
     // Edit the settings in memory before writing anything, so settings that
     // cannot be parsed or edited leave no orphan hook behind.
-    let updated_settings = install_claude_settings(&existing_settings, &settings_path, &hook_path)?;
+    let updated_settings = install_claude_settings(
+        &existing_settings,
+        &settings_path,
+        &hook_path,
+        integration_hook_events(Target::Claude),
+        integration_hook_timeout(Target::Claude)?,
+    )?;
 
     fs::create_dir_all(&hooks_dir)?;
     write_hook_script(Target::Claude, &hook_path)?;
@@ -175,7 +186,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
         hooks,
         "SessionStart",
         &hook_command(&hook_path, Some("session")),
-        10,
+        integration_hook_timeout(Target::Codex)?.as_secs(),
         None,
     )?;
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
@@ -272,7 +283,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Insta
             hooks,
             hook.event,
             hook_command(&hook_path, action),
-            10,
+            integration_hook_timeout(Target::Copilot)?.as_secs(),
             None,
         )?;
     }
@@ -320,7 +331,7 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<Install
             hooks,
             hook.event,
             &hook_command(&hook_path, action),
-            10,
+            integration_hook_timeout(Target::Devin)?.as_secs(),
             None,
         )?;
     }
@@ -368,7 +379,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<Install
             hooks,
             hook.event,
             &hook_command(&hook_path, action),
-            10,
+            integration_hook_timeout(Target::Droid)?.as_secs(),
             None,
         )?;
     }
@@ -491,8 +502,13 @@ pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<Unin
 
     if is_file(&settings_path)? {
         let existing_settings = fs::read_to_string(&settings_path)?;
-        let new_settings =
-            uninstall_claude_settings(&existing_settings, &settings_path, &hook_path)?;
+        let new_settings = uninstall_claude_settings(
+            &existing_settings,
+            &settings_path,
+            &hook_path,
+            integration_hook_events(Target::Claude),
+            integration_hook_timeout(Target::Claude)?,
+        )?;
         updated_settings = new_settings != existing_settings;
         if updated_settings {
             write_config(&settings_path, new_settings)?;
@@ -804,7 +820,7 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Inst
             hooks,
             hook.event,
             &hook_command(&hook_path, action),
-            10,
+            integration_hook_timeout(Target::Qodercli)?.as_secs(),
             Some("*"),
         )?;
     }
@@ -850,7 +866,7 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<InstallO
             hooks,
             hook.event,
             &hook_command(&hook_path, action),
-            10_000,
+            timeout_millis(integration_hook_timeout(Target::Qwen)?)?,
             Some("*"),
         )?;
     }
@@ -875,7 +891,11 @@ fn restore_letta_hook(hook_path: &Path, previous: Option<&[u8]>) -> io::Result<(
     }
 }
 
-fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> io::Result<()> {
+fn ensure_letta_session_hook(
+    hooks: &mut Map<String, Value>,
+    command: &str,
+    timeout_ms: u64,
+) -> io::Result<()> {
     let entries = hooks
         .entry("SessionStart".to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
@@ -886,7 +906,7 @@ fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> i
         "hooks": [{
             "type": "command",
             "command": command,
-            "timeout": LETTA_HOOK_TIMEOUT_MS,
+            "timeout": timeout_ms,
             "quiet": true,
         }],
     }));
@@ -926,7 +946,11 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<Install
         "letta settings hooks",
     )?;
     remove_hook_commands(hooks, "SessionStart", &hook_path, Some("session"))?;
-    ensure_letta_session_hook(hooks, &hook_command(&hook_path, Some("session")))?;
+    ensure_letta_session_hook(
+        hooks,
+        &hook_command(&hook_path, Some("session")),
+        timeout_millis(integration_hook_timeout(Target::Letta)?)?,
+    )?;
 
     // Settings are parsed and edited before anything is written, so a
     // malformed settings file leaves no hook behind. The settings file is
@@ -1227,7 +1251,7 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
             hooks,
             hook.event,
             &mastracode_hook_command(&hook_path, action),
-            MASTRACODE_HOOK_TIMEOUT_MS,
+            timeout_millis(integration_hook_timeout(Target::Mastracode)?)?,
         )?;
     }
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
@@ -1316,7 +1340,7 @@ pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Resu
     // other named hook untouched.
     hooks.insert(
         ANTIGRAVITY_CLI_HOOK_BLOCK_NAME.to_string(),
-        antigravity_cli_hook_block(&hook_path),
+        antigravity_cli_hook_block(&hook_path)?,
     );
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
@@ -1338,20 +1362,21 @@ pub(crate) fn antigravity_cli_hook_command(hook_path: &Path, action: &str) -> St
 ///
 /// Every event Shepr registers takes a flat handler list; the `matcher`/`hooks`
 /// group is only valid for the tool events, which Shepr does not use.
-pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
+pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> io::Result<Value> {
     let mut block = Map::new();
-    for hook in ANTIGRAVITY_CLI_HOOK_EVENTS {
+    let timeout_seconds = integration_hook_timeout(Target::AntigravityCli)?.as_secs();
+    for hook in integration_hook_events(Target::AntigravityCli) {
         let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
             continue;
         };
         let handler = json!({
             "type": "command",
             "command": antigravity_cli_hook_command(hook_path, action),
-            "timeout": ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC,
+            "timeout": timeout_seconds,
         });
         block.insert(hook.event.to_string(), json!([handler]));
     }
-    Value::Object(block)
+    Ok(Value::Object(block))
 }
 
 pub(crate) fn uninstall_antigravity_cli(
@@ -1392,21 +1417,23 @@ pub(crate) fn uninstall_antigravity_cli(
     Ok(outcome)
 }
 
-/// Grok's bundled hook uses `/bin/sh`, so its configured command uses `sh` too.
+/// Grok's hook asset is a POSIX `sh` script, so it runs under `sh` rather than
+/// the `bash` the shared command formatter uses for the other hooks.
 fn grok_hook_command(hook_path: &Path, action: Option<IntegrationHookAction>) -> String {
     hook_command_with_interpreter(hook_path, "sh", action.map(IntegrationHookAction::as_str))
 }
 
 /// The complete Shepr-owned Grok hook config, generated from its declared
 /// events. Installation and status share this value so config drift is outdated.
-pub(crate) fn grok_hook_config(hook_path: &Path) -> Value {
+pub(crate) fn grok_hook_config(hook_path: &Path) -> io::Result<Value> {
     let mut event_groups = BTreeMap::<&'static str, Vec<Value>>::new();
-    for event in Target::Grok.hook_events() {
+    let timeout_seconds = integration_hook_timeout(Target::Grok)?.as_secs();
+    for event in integration_hook_events(Target::Grok) {
         let command = grok_hook_command(hook_path, event.action);
         let hook = json!({
             "type": "command",
             "command": command,
-            "timeout": 10,
+            "timeout": timeout_seconds,
         });
         let mut group = json!({ "hooks": [hook] });
         if let Some(matcher) = event.matcher {
@@ -1418,9 +1445,9 @@ pub(crate) fn grok_hook_config(hook_path: &Path) -> Value {
         .into_iter()
         .map(|(event, groups)| (event.to_owned(), Value::Array(groups)))
         .collect::<Map<_, _>>();
-    json!({
+    Ok(json!({
         "hooks": hooks
-    })
+    }))
 }
 
 pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
@@ -1444,7 +1471,7 @@ pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallO
     let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
     write_managed_asset(
         &config_path,
-        serde_json::to_string_pretty(&grok_hook_config(&hook_path))?.as_bytes(),
+        serde_json::to_string_pretty(&grok_hook_config(&hook_path)?)?.as_bytes(),
         false,
     )?;
 
@@ -1482,7 +1509,7 @@ mod grok_tests {
     fn grok_config_uses_its_declared_hook_events() {
         let hook_path = Path::new("/home/user/grok hooks/shepr-agent-state.sh");
         let events = Target::Grok.hook_events();
-        let config = grok_hook_config(hook_path);
+        let config = grok_hook_config(hook_path).expect("test precondition");
         let configured_events = config["hooks"].as_object().expect("Grok hooks object");
 
         assert_eq!(events.len(), 1);

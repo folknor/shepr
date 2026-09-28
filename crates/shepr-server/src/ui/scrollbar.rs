@@ -11,7 +11,7 @@ pub(crate) fn should_show_scrollbar(metrics: shepr_mux::pane::ScrollMetrics) -> 
     metrics.max_offset_from_bottom > 0
 }
 
-use shepr_protocol::scroll::render_scrollbar_buffer;
+use shepr_termio::scroll::render_scrollbar_buffer;
 
 pub(crate) fn render_pane_scrollbar_buffer(
     buffer: &mut Buffer,

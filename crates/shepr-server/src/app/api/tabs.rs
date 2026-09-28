@@ -1,5 +1,4 @@
 use shepr_api::error::{ApiErrorCode, ApiResult};
-use std::path::PathBuf;
 
 use crate::app::App;
 #[cfg(test)]
@@ -66,10 +65,10 @@ impl App {
         } else {
             return Err(active_workspace_not_found());
         };
-        let cwd = cwd.map_or_else(
-            || self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx)),
-            PathBuf::from,
-        );
+        let cwd = match cwd.as_deref().map(super::cwd::launch_cwd).transpose()? {
+            Some(cwd) => cwd,
+            None => self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx)),
+        };
         let (rows, cols) = self.state.pane_geometry().sole_pane_size();
         let default_shell = self.state.settings.default_shell.clone();
         let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
@@ -480,7 +479,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .cwd = cached_cwd.clone();
+            .set_cwd(shepr_mux::UsableCwd::new(cached_cwd.clone()).expect("test cwd is usable"));
 
         let response = app.handle_tab_create(TabCreateParams {
             workspace_id: None,
@@ -496,14 +495,14 @@ mod tests {
         let created_terminal_id = created
             .terminal_id(created.root_pane)
             .expect("test precondition");
-        let created_cwd = &app
+        let created_cwd = app
             .state
             .terminals
             .get(created_terminal_id)
             .expect("test precondition")
-            .cwd;
+            .cwd();
         assert_eq!(
-            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.clone()),
+            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.to_path_buf()),
             std::fs::canonicalize(&cached_cwd).unwrap_or_else(|_| cached_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);

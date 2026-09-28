@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::io;
 use std::ops::Deref;
 
-use shepr_api::client::{ApiClient, ConnectionTarget};
+use shepr_api::client::ApiClient;
 use shepr_remote::machine::{EndpointCatalog, SavedSshEndpoint};
 
 struct MachineTarget {
@@ -147,9 +147,7 @@ pub(super) fn api_client(context: &CliContext) -> super::CliResult<ApiClient> {
         .bridge
         .as_ref()
         .ok_or_else(|| io::Error::other("machine bridge unavailable"))?;
-    Ok(ApiClient::for_target(ConnectionTarget::SocketPath(
-        bridge.socket_path().to_owned(),
-    )))
+    Ok(ApiClient::for_socket(bridge.socket_path()))
 }
 
 pub(super) fn server_status(

@@ -94,7 +94,6 @@ impl BlitEncoder {
             prev,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
-            REPEAT_IME_ANCHOR_AFTER_SYNC,
             clear_before_full_redraw,
             suppress_visible_cursor,
         ));
@@ -149,7 +148,6 @@ impl BlitEncoder {
             cursor,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
-            REPEAT_IME_ANCHOR_AFTER_SYNC,
             suppress_visible_cursor,
         ));
         Some(EncodedBlit {
@@ -396,34 +394,12 @@ fn blit_frame_to_with_cursor_memory(
     last_cursor_shape: &mut u8,
     suppress_visible_cursor: bool,
 ) {
-    blit_frame_to_with_cursor_memory_and_policy(
-        writer,
-        frame,
-        prev,
-        last_visible_cursor,
-        last_cursor_shape,
-        REPEAT_IME_ANCHOR_AFTER_SYNC,
-        suppress_visible_cursor,
-    );
-}
-
-#[cfg(test)]
-fn blit_frame_to_with_cursor_memory_and_policy(
-    writer: impl Write,
-    frame: &FrameData,
-    prev: Option<&FrameData>,
-    last_visible_cursor: &mut Option<(u16, u16)>,
-    last_cursor_shape: &mut u8,
-    repeat_ime_anchor: bool,
-    suppress_visible_cursor: bool,
-) {
     blit_frame_to_with_cursor_memory_and_clear_policy(
         writer,
         frame,
         prev,
         last_visible_cursor,
         last_cursor_shape,
-        repeat_ime_anchor,
         true,
         suppress_visible_cursor,
     )
@@ -472,7 +448,6 @@ fn blit_patch_to(
     cursor: Option<CursorState>,
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
-    repeat_ime_anchor: bool,
     suppress_visible_cursor: bool,
 ) -> io::Result<()> {
     writer.write_all(b"\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\")?;
@@ -526,9 +501,7 @@ fn blit_patch_to(
     }
     write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape)?;
     writer.write_all(b"\x1b[?2026l")?;
-    if repeat_ime_anchor {
-        write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
-    }
+    write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
     writer.flush()
 }
 
@@ -538,7 +511,6 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     prev: Option<&FrameData>,
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
-    repeat_ime_anchor: bool,
     clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
 ) -> io::Result<()> {
@@ -589,16 +561,9 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     // Some native IMEs track candidate-window placement from normal terminal
     // cursor updates and may not observe cursor moves emitted inside synchronized
     // output. Re-emit only the resolved final cursor anchor after the sync block.
-    if repeat_ime_anchor {
-        write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
-    }
+    write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
     writer.flush()
 }
-
-/// Production always repeats the IME anchor after the synchronized block;
-/// the parameter threaded through the blit functions exists so tests can
-/// check both output shapes.
-const REPEAT_IME_ANCHOR_AFTER_SYNC: bool = true;
 
 /// Writes all cells in the frame (full redraw).
 fn cell_width(cell: &CellData) -> usize {
@@ -1207,24 +1172,22 @@ mod tests {
         let mut last_visible_cursor = None;
         let mut last_cursor_shape = 0;
         let mut first_output = Vec::new();
-        blit_frame_to_with_cursor_memory_and_policy(
+        blit_frame_to_with_cursor_memory(
             &mut first_output,
             &visible,
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            true,
             false,
         );
 
         let mut second_output = Vec::new();
-        blit_frame_to_with_cursor_memory_and_policy(
+        blit_frame_to_with_cursor_memory(
             &mut second_output,
             &changed,
             Some(&visible),
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            true,
             false,
         );
 
@@ -1271,13 +1234,12 @@ mod tests {
         let mut last_visible_cursor = None;
         let mut last_cursor_shape = 0;
         let mut output = Vec::new();
-        blit_frame_to_with_cursor_memory_and_policy(
+        blit_frame_to_with_cursor_memory(
             &mut output,
             &frame,
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            true,
             false,
         );
 
@@ -1289,45 +1251,6 @@ mod tests {
         assert_eq!(
             trailing_cursor, "\x1b[2;3H\x1b[?25h",
             "should expose only the final cursor state after synchronized output"
-        );
-    }
-
-    #[test]
-    fn blit_frame_can_skip_final_cursor_state_after_synchronized_output() {
-        let frame = FrameData {
-            cells: vec![default_cell("A"); 9],
-            width: 3,
-            height: 3,
-            cursor: Some(CursorState {
-                x: 2,
-                y: 1,
-                visible: true,
-                shape: shepr_protocol::CursorShapeParam::Default,
-            }),
-            hyperlinks: Vec::new(),
-        };
-
-        let mut last_visible_cursor = None;
-        let mut last_cursor_shape = 0;
-        let mut output = Vec::new();
-        blit_frame_to_with_cursor_memory_and_policy(
-            &mut output,
-            &frame,
-            None,
-            &mut last_visible_cursor,
-            &mut last_cursor_shape,
-            false,
-            false,
-        );
-
-        let output_str = String::from_utf8(output).expect("test precondition");
-        let sync_end = output_str
-            .find("\x1b[?2026l")
-            .expect("should end synchronized output");
-        let trailing_cursor = &output_str[sync_end + "\x1b[?2026l".len()..];
-        assert_eq!(
-            trailing_cursor, "",
-            "should not expose a post-sync cursor repeat when the target terminal flickers on it"
         );
     }
 
@@ -1413,13 +1336,12 @@ mod tests {
         let mut last_visible_cursor = None;
         let mut last_cursor_shape = 0;
         let mut output = Vec::new();
-        blit_frame_to_with_cursor_memory_and_policy(
+        blit_frame_to_with_cursor_memory(
             &mut output,
             &frame,
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            true,
             false,
         );
 
@@ -1471,23 +1393,21 @@ mod tests {
         let mut last_cursor_shape = 0;
         let mut output = Vec::new();
 
-        blit_frame_to_with_cursor_memory_and_policy(
+        blit_frame_to_with_cursor_memory(
             &mut output,
             &visible,
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            true,
             false,
         );
         output.clear();
-        blit_frame_to_with_cursor_memory_and_policy(
+        blit_frame_to_with_cursor_memory(
             &mut output,
             &hidden,
             Some(&visible),
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            true,
             false,
         );
 

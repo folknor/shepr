@@ -2,14 +2,14 @@ use std::path::PathBuf;
 
 /// A directory path that is absolute and usable when it is observed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct UsableCwd(PathBuf);
+pub struct UsableCwd(PathBuf);
 
 impl UsableCwd {
     /// `None` for a relative path, a non-directory, an absent path, or one
     /// that cannot be stat'd: none of them is usable. The last is traced
     /// with its error, so an unreadable directory is not mistaken for a
     /// missing one when a pane's cwd is not picked up.
-    pub(super) fn new(path: PathBuf) -> Option<Self> {
+    pub fn new(path: PathBuf) -> Option<Self> {
         if !path.is_absolute() {
             return None;
         }
@@ -23,7 +23,11 @@ impl UsableCwd {
         }
     }
 
-    pub(super) fn into_path_buf(self) -> PathBuf {
+    pub fn as_path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    pub fn into_path_buf(self) -> PathBuf {
         self.0
     }
 }

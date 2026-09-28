@@ -18,7 +18,7 @@ pub fn render_selection_highlight<P: PartialEq>(
     buffer: &mut Buffer,
     pane_id: &P,
     inner: Rect,
-    scroll_metrics: Option<shepr_protocol::ScrollMetrics>,
+    scroll_metrics: Option<crate::scroll::ScrollMetrics>,
     p: &Palette,
     host_theme: crate::host_term::theme::TerminalTheme,
 ) {

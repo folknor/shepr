@@ -693,42 +693,12 @@ an identity that is supposed to come from one place.
 
 ## HYGP-032 - `#[cfg(test)]` branches inside production functions change what production runs
 
-- `shepr-server` `app/agents.rs`: `available_shell_name` returns `Some("sh")` and
-  `runtime_hosts_agent` returns `true` when `runtime.child_pid().is_none()`,
-  under `#[cfg(test)]`. Any test using a `PaneRuntime` without a live child -
-  which is most of them, including every `PaneRuntime::test_with_screen_bytes`
-  fixture - therefore gets `runtime_hosts_agent == true` for every agent, so
-  assertions that a pane hosts the expected agent cannot fail. The shortcut is
-  gated on `cfg(test)` only while the rest of the crate gates test affordances on
-  `any(test, feature = "test-api")`, so the root binary's integration tests see
-  the production path and unit tests see the shortcut: the two suites test
-  different code. Suggested: inject the probe (a `ProcessProbe` trait or an
-  `Option<fn>` on the runtime) so a test that wants "hosts the agent" must say
-  so.
-- `shepr-client` `state.rs`: `try_present_frame` selects its sink by `cfg` -
-  `io::stdout()` in production, `io::sink()` under test - with a comment
-  explaining that a full-screen frame written to the test runner's real stdout
-  would scribble on the developer's terminal. The presentation test surface
-  (`shell/tests/copy.rs` 2492 lines, `mouse_selection.rs` 1312,
-  `endpoints.rs` 1934) therefore never asserts anything about what the production
-  sink receives; `present_surface_patch` now picks its sink the same way.
-  Suggested: an injected writer
-  on `ClientState`, which removes the `cfg` divergence and lets tests assert on a
-  `Vec<u8>` while running the same code production runs.
 - `shepr-remote`: `UPLOAD_READ_ATTEMPTS` is a `thread_local!` counter checked
   inside `copy_local_stream_to_writer`'s hot loop under `#[cfg(test)]`. Correctly
   gated, but it means the hot path under test is not the hot path that ships.
 
 ## HYGP-033 - Test-only helpers that cannot report what their production siblings report
 
-- `shepr-api` `subscriptions.rs`: `ActiveSubscription::poll` and
-  `ActiveAgentStatusChangedSubscription::poll` are `#[cfg(test)]`-only and
-  implemented as `self.poll_for_wait(..).ok().flatten()`, while the module's own
-  doc comment stresses that errors are final and must not be silently dropped
-  ("reports that instead of going silent"). Tests written against the shims
-  cannot observe a `pane_not_found` or `events_lost` at all; two of the module's
-  tests were clearly written to compensate. Suggested: delete the shims and have
-  tests call `poll_for_wait` and `.expect(..)`.
 - `shepr-api` `event_hub.rs`: the test-support `events_after` returns
   `Vec::new()` on a poisoned lock and has no `Lost` signal, while
   `events_after_checked` distinguishes both. Eleven call sites in `shepr-server`
@@ -802,7 +772,6 @@ for each is the hunter's.
   `shepr-config::SessionId` is.
 - `shepr-api` `restart_after_update_guidance` is `pub` with exactly one caller,
   `restart_after_update_guidance_for` in the same file.
-- `shepr-pty`: `fail_active_submission` and `read_once` are single-line aliases.
 - `shepr-agent`: `AgentSource::to_source_string`, `as_str` and `Display` are
   three ways to spell one projection (`to_source_string` is
   `as_str().to_owned()`), plus `PartialEq<&str>` for both `AgentSource` and
@@ -822,24 +791,9 @@ for each is the hunter's.
 
 ## HYGP-042 - Flags, parameters and constants that have had one value since they were added
 
-- `shepr-client`/`shepr-termio` `blit.rs`: `REPEAT_IME_ANCHOR_AFTER_SYNC: bool =
-  true`, whose own doc says "Production always repeats the IME anchor after the
-  synchronized block; the parameter threaded through the blit functions exists so
-  tests can check both output shapes." So the constant is `true` at all three
-  production call sites and a `bool` parameter is threaded through the blit call
-  chain to let tests exercise a shape production never produces - the tests
-  asserting the `false` shape assert nothing about shipped behaviour. Evidence:
-  the constant has one value, is never computed, and its comment states the
-  parameter exists only for tests. Deletion also removes a branch from the hot
-  blit path.
 - `shepr-vt`/`shepr-mux`: `hide_kitty_placeholders = true` (twice) and the
   parameter it feeds; `PtyIoActorConfig.on_reader_exit` and `core_broken` are
   `Option` while production always passes `Some`.
-- `shepr-remote`: `read_remote_confirmation(reader, default)` is called once,
-  with `false`; the `default` parameter has had one value since it was added, and
-  the `[y/N]` prompt text it should agree with is printed separately by
-  `confirm_remote_server_stop`. (`CandidateVerification` is a genuine two-valued
-  enum - both arms reachable - which the hunter records as the good case.)
 - `shepr-protocol`: `read_message`'s `max_frame_size` parameter is passed
   `shepr_protocol::MAX_FRAME_SIZE` at roughly fifteen production call sites
   across `shepr-client` and `shepr-server`; only
@@ -847,10 +801,6 @@ for each is the hunter's.
   parameter nobody varies is dead weight and a hazard - a call site can weaken
   the cap and nothing notices. Suggested: drop it from the public function and
   keep a `cfg(any(test, feature = "test-support"))` variant for the one test.
-- `shepr-config`: `ConfigSource::CliFlag(String)`'s only construction is
-  `ConfigSource::CliFlag("--session".to_owned())` in `io.rs::resolve_with_session`.
-  Nothing mechanical; either a unit variant documented as the session flag, or
-  accept the generality.
 - `shepr-agent`: `AgentDescriptor::prompt_observation` is `true` for Codex alone,
   and `Agent::prompt_ready` hardcodes Codex's own prompt text
   (`"AskCodextodoanything"`, `"model:loading"`, `"Resumingsession"`) plus a
@@ -865,27 +815,12 @@ for each is the hunter's.
 
 ## HYGP-043 - One-variant enums and an `Option` field that cannot be `None`
 
-- `shepr-api` `client.rs`: `enum ConnectionTarget { SocketPath(PathBuf) }` with a
-  `socket_path()` method that matches one arm, wrapped by `ApiClient` whose
-  `socket_path` forwards again. Evidence: no second variant anywhere in the
-  workspace and no test constructs one; all three consumers construct
-  `SocketPath`. Fix: `ApiClient { socket_path: PathBuf }`.
-- `shepr-client` `shell/state.rs`: `enum ClientInputTarget { Pane(PublicPaneId) }`
-  with nine construct-or-match sites, so every `match target { .. }` in
-  `shell/input/events.rs` is a rename of a field. It reads as a policy point
-  ("where does input go?") and holds no policy. Fix: replace with
-  `PublicPaneId`. If it is anticipating a second target, nothing says so.
-- `shepr-agent`: `session_ref_policy: Option<SessionRefPolicy>` encodes two facts
-  as three states - `None` means "no resume", and every agent with
-  `resume_args: None` also has `session_ref_policy: None`; the two fields are
-  never independently set. One `Option<ResumeSupport>` carrying both would make
-  `session_ref_from_report`'s `_ => None` arm unnecessary. Adjacent, recorded as
-  a question rather than a finding: `AgentState::Unknown` versus the "Idle"
-  presentation - AGENTS.md says "Unknown presents as Idle" and `attention_rank`
-  gives them the same rank, so four states exist where three are presentable,
-  with the distinction carried by convention across several crates. Not dead, but
-  worth asking whether `Option<AgentState>` with three variants would say it
-  better.
+- `shepr-api` `client.rs`: `ApiClient` now stores `socket_path: PathBuf`, but
+  the one-variant `enum ConnectionTarget { SocketPath(PathBuf) }` and
+  `ApiClient::for_target` remain public, kept only so the CLI
+  (`src/cli/target.rs`) and the other constructors did not need editing. A
+  fixer holding both `shepr-api` and `src/cli/` deletes the enum and constructs
+  from the path.
 
 ## HYGP-044 - Parameters that are threaded and then discarded
 
@@ -893,13 +828,6 @@ for each is the hunter's.
   `_shell_pid` in `flush_expired_synchronized_output` - threaded from the runtime
   and ignored. One test's whole setup exists to supply a real pid to the first of
   these (HYGP-036).
-- `shepr-client` `set_handshake_recv_timeout(stream, timeout, _context: &'static
-  str)`: the parameter is unused, so the one caller's string
-  ("failed to clear client handshake read timeout") is dead and the resulting
-  `ClientError::ConnectionFailed` carries the bare socket error with no
-  indication where it came from. The intent to attach context is visible in the
-  source and does nothing. Either use it or drop it; clippy's unused-variable
-  lint is silenced only by the leading underscore.
 
 ## HYGP-045 - Branches and checks that cannot run
 
@@ -942,17 +870,6 @@ is dropped in favour of that migration; `AGENTS.md`'s wording changes later.
 Whether "documents the table" is reason enough to keep them is open, as are
 the first two bullets.
 
-- `shepr-core` `geometry.rs`: `impl From<bool> for SplitBranch` has no callers.
-  Evidence: the hunter grepped the workspace for `SplitBranch::from`, `.into()`
-  producing a `SplitBranch`, and any `bool`-to-`SplitBranch` coercion - zero
-  sites, including inside `shepr-core`. Trait impls are invisible to `dead_code`,
-  so nothing in the build notices. It also encodes a claim (`true` means
-  `Second`) that nothing depends on:
-  `shepr-client/src/shell/presentation/topology.rs` and `::input/mouse.rs` (two
-  sites) all write the comparison out by hand, in the opposite direction. The
-  same hunter notes why it went unnoticed: `SplitBranch` lives in `geometry.rs`
-  while `SplitRatio`/`SplitBorder`/`Node` live in `layout.rs`, and
-  `shepr-protocol/src/geometry.rs` has a third set of conversions.
 - `shepr-vt`: `Setter::Vte(NamedPrivateMode)` and `ModeSpec::name` carry
   `#[allow(dead_code)]` with the justification "documents the table" and are read
   only by tests.
@@ -966,13 +883,6 @@ in `notes/broadarrow-ports.md`), so the stat-error-preserving distinction
 now carry the distinction to the refresh task as typed errors, so the
 `RefFileRead` bullet is resolved. Open: the other three bullets.
 
-- `shepr-api` `ApiClientError::EmptyResponse` and `UnexpectedResult` are produced
-  but never distinguished: every consumer in scope funnels them through
-  `api_client_error_to_io` or `io::Error::other(err)`, i.e. straight to a string,
-  and only `ApiClientError::Io` is ever matched. Evidence: grep for either name
-  outside its definition and `Display` impl returns nothing. Not dead (they carry
-  message text) but they carry no decision, so the enum's shape overstates what
-  callers can do.
 - Root binary `src/cli/error.rs`: `CliError::source()` matches
   `Stop(error) | Delete(error)` and falls through to `_ => None` for
   `SessionCliError::InvalidName`, though `InvalidName` wraps the same
@@ -1007,19 +917,6 @@ changes" work item.
 
 ## HYGP-057 - Modules and items sitting in a crate that does not use them
 
-- `shepr-protocol/src/scroll.rs` is not wire code: `ScrollMetrics` derives no
-  `Serialize`/`Deserialize` at all and never crosses the wire, and the rest is
-  scrollbar rendering and hit-testing - `render_scrollbar_buffer` writes into a
-  `ratatui::buffer::Buffer` and hardcodes the track glyph while taking
-  `thumb_symbol` as a parameter (one of two glyphs injected, the other not), and
-  `scrollbar_thumb_grab_offset` / `scrollbar_offset_from_row` /
-  `scrollbar_offset_from_drag_row` are client interaction logic. What tells the
-  hunter it does not belong: no type in the file is serialisable, and `ratatui`'s
-  `Buffer`/`Rect` are a presentation dependency the wire-protocol crate does not
-  otherwise need for drawing. Move it to `shepr-termio` or `shepr-client`; the
-  enforcement is the move plus a structural rule about `Buffer` use, not the
-  dependency allowlist alone, since `ratatui` is still needed for
-  `ratatui_conversion.rs`.
 - `shepr-api` `RenderDemand::join` has a dedicated test and one user,
   `shepr-server`. Not dead - flagged because `RenderDemand` lives in
   `shepr-api` while every consumer is in `shepr-server`, so it is in the wrong
@@ -1033,14 +930,6 @@ changes" work item.
 
 ## HYGP-058 - Dependencies that production code does not use
 
-- `shepr-pty` depends on `tokio` for one import,
-  `tokio::sync::mpsc::error::TrySendError`. The actor is a std thread; the error
-  type exists to match the test double's `mpsc::Sender`. Fix: a shepr-owned error
-  type, then remove `tokio` from the `shepr-pty-layer` allowlist in
-  `brokkr.toml`.
-- `shepr-remote`'s `sha2` is used only by `ProfileId::generate`; replacing that
-  with `unpredictable_token` (HYGV-087) lets `sha2` be dropped from the crate and
-  from its allowlist, which then enforces the change thereafter.
 - `shepr-core` depends on `ratatui`: `layout.rs` uses
   `ratatui::layout::{Direction, Rect}` and `brokkr.toml` allows it, putting a TUI
   rendering crate at the bottom of the layering where `shepr-mux`,
@@ -1048,16 +937,6 @@ changes" work item.
   four `u16`s and a two-variant enum; owning them in `shepr-core` alongside
   `GridSize` would drop `ratatui` from the bottom four crates' dependency closure
   and remove a re-export the wire types currently share with the renderer.
-
-## HYGP-059 - Two id types of one shape, and two `blit` modules of two shapes
-
-- `shepr-termio/src/blit.rs` and `shepr-client/src/shell/presentation/blit.rs`
-  are two modules named `blit` doing different things - the termio one encodes a
-  frame to terminal bytes, the client one copies cells between `FrameData`
-  buffers (`blit_pane_surface`). Not dead, but the collision makes "the blit
-  code" ambiguous in every conversation and every grep, and the client's copy is
-  pane-surface composition rather than blitting. Worth a rename
-  (`compose_pane_surface`), free pre-1.0. Holdable only by review.
 
 ## HYGP-060 - A duplicated startup sequence and a doubled rejection check in `shepr-remote`
 
@@ -1070,6 +949,12 @@ changes" work item.
   `local_server::ensure_running(paths, ReadyTimeout, BuildCheck)` owns the
   sequence and both callers pick the policy explicitly. Not a rule, a shared
   function.
+
+## HYGP-064 - The client presentation write-failure warning is spelled twice
+
+`crates/shepr-client/src/shell/state.rs`: `HostWriteFailure::observe` writes
+the same `warn!` in two branches around `presentation_log_context`. One
+warning site, fed the context once.
 
 ## HYGP-062 - `modes::lookup(DecMode)` returns `Option` for a table that holds every variant
 

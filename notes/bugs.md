@@ -18,43 +18,6 @@ pass should expect phantoms.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## BUG-003 - The one type that encodes the pane cwd rule is unreachable from every writer
-
-**Decision (partial):** the `Path::exists` seal is extended to `Path::is_file`
-and `Path::is_dir`, so `UsableCwd::new`'s `path.is_dir()` becomes a metadata
-match that tells a missing directory apart from one that cannot be stat'ed.
-Open: the defect, promoting `UsableCwd` and routing every writer through it.
-
-`crates/shepr-mux/src/pane/cwd.rs` defines `UsableCwd` (absolute and `is_dir`),
-and `pane/runtime.rs::usable_reported_cwd` throws the type away one line later
-(`UsableCwd::new(cwd).map(UsableCwd::into_path_buf)`), so the guarantee never
-propagates. `TerminalState::cwd` is a bare `pub PathBuf` written directly from
-four `shepr-server` sites that do no checking at all: `app/api/workspaces.rs`
-(two sites), `app/api/layouts.rs`, `app/api/tabs.rs`, `app/actions/events.rs`.
-`UsableCwd` is `pub(super)` inside `pane`, so those callers cannot use it even if
-they wanted to. `WorkspaceSnapshot::identity_cwd` and `PaneSnapshot::cwd` are
-`PathBuf` with no validation either.
-
-Fix suggested: promote `UsableCwd` to the crate root, make `TerminalState::cwd`
-private behind `cwd()` / `set_cwd(PaneCwd)`, and deserialize `PaneSnapshot::cwd`
-through it.
-
-## BUG-016 - The three bun test files never run
-
-**Decision:** deferred; tracked by the "Resolve typescript question" item in
-`notes/todo.md`. Not handled in the hygiene fix pass.
-
-`crates/shepr-agent/src/integration/assets/shepr-agent-state.test.ts`,
-`assets/opencode/shepr-agent-state.test.ts` and
-`assets/opencode/shepr-tui-session.test.ts` import `bun:test`. There is no
-`package.json`, no bun or vitest config, and `brokkr.toml` runs cargo only. They
-read as coverage for the JavaScript and TypeScript hook assets (Pi, OMP,
-opencode, Kilo) and provide none. They also write sockets into the system temp
-directory and mutate `process.env` globally. `notes/todo.md` has an open item
-("Resolve typescript question"), so this is known.
-
-Fix suggested: wire a bun step into `brokkr check` or delete the files.
-
 ## BUG-073 - Tests that skip themselves when run as root and report success
 
 Resolved: the platform ownership test is renamed for its ACL coverage with a

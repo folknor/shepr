@@ -234,15 +234,6 @@ Reported from six scopes.
 - `shepr-protocol/src/surface_reuse.rs::message`: `tracing::warn!(%error,
   "failed to size surface reuse")` omits the boot id, both revisions and the
   surface dimensions - everything an operator would need.
-- `shepr-remote/src/remote/bridge.rs` logs "saved SSH endpoint bridge failed",
-  "saved SSH endpoint listener failed", "rejected remote bridge socket peer with
-  different credentials" and "remote bridge failed to prepare client socket" with
-  no profile id, label, target or socket path, and the bridge thread owns all of
-  them (`target` is captured in the closure). With several saved machines
-  configured, these lines do not say which machine. `remote/saved.rs` logs
-  "remembered remote Shepr did not connect; rediscovering" and "SSH discovery
-  stopped; the next attempt resumes it" without the profile id or target, though
-  `self.profile_id` and `self.target` are in hand.
 - `shepr-mux/src/persist/io.rs`, twenty lines apart: `load()` logs
   `warn!(event = "persist.restore", subsystem = "persist", outcome =
   "read_error", path = %path.display(), err = %err, "failed to read session
@@ -251,17 +242,6 @@ Reported from six scopes.
   cannot tell which session directory failed, which matters precisely because
   named sessions put the file somewhere non-obvious. The parse-error pair has the
   same asymmetry.
-- `shepr-client`, in a client that serves several endpoints at once:
-  `transport.rs` `warn!(err = %err, "server read error")` (no endpoint, no
-  generation - which machine dropped?); `state.rs` `warn!(%error, "failed to
-  present client frame")` (no endpoint, no frame or surface revision);
-  `clipboard_forwarding.rs` `warn!("received invalid clipboard payload from
-  server")` (no endpoint, no payload length - "from server" names no server);
-  `lib.rs` `warn!(%error, "failed to present retained pane surface patch")` (no
-  pane id, no endpoint); `lib.rs` `debug!("received unexpected Welcome in main
-  loop")` (no endpoint). Two other sites in `lib.rs` do carry
-  `endpoint = %...storage_key()` and `generation`, so the crate knows what a
-  good line looks like.
 - `shepr-agent`, for contrast, was reported as mostly fine on field content:
   `installed_integration_statuses` logs `integration` and `error`,
   `process_detection_mode` logs `variable` and `value`, `config_file.rs::Drop`
@@ -277,11 +257,9 @@ identifier structurally, which is the closest thing to enforcement available.
 
 ## HYGC-013 - Structured field names for the same thing differ across sites
 
-`shepr-client` uses `%err` at some sites, `err = %err` at others, `%error` and
-`error = %message` elsewhere; `lib.rs` alone uses three of the four. Fields keyed
-`err` and `error` for the same thing mean no single query finds client failures.
-
-Same shape in `shepr-mux/src/persist/writer.rs`: the `persist.snapshot` line
+`shepr-client` now keys every failure field `error`. Open: the same audit across
+the other crates, which was never done, and in `shepr-mux/src/persist/writer.rs`
+the `persist.snapshot` line
 omits `subsystem = "persist"` while `persist.backup` includes it.
 
 Enforcement named: a text rule on the field name, or funnelling failures through
@@ -412,11 +390,6 @@ Gathered from six scopes.
 - `FramingError::SurfaceDecode(String)` and `CodecError::Message(String)` flow to
   the client with no pane, boot id or revision attached.
 
-`shepr-server`: the API not-found errors now go through shared helpers in
-`app/api_helpers.rs` that own the code and name the identifier. Open: the two
-agent-target texts in `app/agents.rs` (`"agent target pane {target} not found"`,
-`"agent target {target} not found"`) still build their own messages.
-
 `src/cli`: `target.rs::run_on_machine` returns
 `usage_error("usage: shepr --machine <label-or-id> <command>")` when no command
 was given - the message does not repeat the selector the user typed, so with
@@ -424,17 +397,8 @@ several shells open it names no subject. `resolve_machine`'s errors do name it
 ("unknown machine 'x'; use `shepr machine list`"), which is the standard to
 match.
 
-`shepr-client`: `set_handshake_recv_timeout(stream, timeout, _context: &'static
-str)` never reads `_context`. Its one caller passes "failed to clear client
-handshake read timeout", so the string is dead and the resulting
-`ClientError::ConnectionFailed` carries the bare socket error with no indication
-that it came from clearing the handshake timeout. The intent to attach context is
-visible in the source and does nothing.
-
 Enforcement named: partly. A typed error per module carrying the subject makes the
 subject impossible to omit; a lint cannot.
-`api_helpers::pane_not_found(&pane_id) -> ApiError` and siblings plus a text rule
-banning the bare literals; either use or delete the `_context` parameter.
 
 ## HYGC-023 - Stringly-typed errors, and classification by `ErrorKind`, shed the category
 

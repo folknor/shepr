@@ -3,7 +3,11 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use super::{App, terminal_targets::TerminalTargetError};
+use super::{
+    App,
+    api_helpers::{agent_target_not_found, agent_target_pane_not_found},
+    terminal_targets::TerminalTargetError,
+};
 use shepr_api::schema::AgentStartParams;
 
 const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -286,10 +290,7 @@ impl App {
                 ApiErrorCode::InvalidAgentTimeout,
                 INVALID_AGENT_TIMEOUT_MESSAGE,
             ),
-            AgentStartError::TargetNotFound(target) => ApiError::new(
-                ApiErrorCode::AgentPaneNotFound,
-                format!("agent target pane {target} not found"),
-            ),
+            AgentStartError::TargetNotFound(target) => agent_target_pane_not_found(&target),
             AgentStartError::TargetBusy(target) => ApiError::new(
                 ApiErrorCode::AgentPaneBusy,
                 format!("agent target pane {target} is not an available shell"),
@@ -326,10 +327,7 @@ impl App {
 
     pub(super) fn agent_target_error(&self, err: TerminalTargetError) -> ApiError {
         match err {
-            TerminalTargetError::NotFound { target } => ApiError::new(
-                ApiErrorCode::AgentNotFound,
-                format!("agent target {target} not found"),
-            ),
+            TerminalTargetError::NotFound { target } => agent_target_not_found(&target),
             TerminalTargetError::Ambiguous { target, candidates } => {
                 ApiError::new(
                     ApiErrorCode::AgentTargetAmbiguous,
@@ -446,6 +444,8 @@ fn available_shell_name(runtime: &shepr_mux::pane::PaneRuntime) -> Option<String
     runtime.pane_shell_name()
 }
 
+/// Uses the same runtime observation path in tests and production; childless
+/// test runtimes seed observations through `PaneRuntime`'s explicit probe seam.
 pub(super) fn runtime_hosts_agent(
     runtime: &shepr_mux::pane::PaneRuntime,
     expected: shepr_agent::detect::Agent,

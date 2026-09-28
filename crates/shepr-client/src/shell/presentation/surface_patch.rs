@@ -230,7 +230,7 @@ impl ClientShellState {
                         rect.height,
                     )
                 });
-                hit.scroll = updated.scroll.map(|metrics| shepr_protocol::ScrollMetrics {
+                hit.scroll = updated.scroll.map(|metrics| shepr_termio::ScrollMetrics {
                     offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
                         .unwrap_or(usize::MAX),
                     max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)

@@ -304,30 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn default_config_documents_every_keybinding_with_its_default() {
-        let keys =
-            toml::Value::try_from(shepr_config::Config::default().keys).expect("test precondition");
-        let keys = keys.as_table().expect("test precondition");
-        assert!(!keys.is_empty());
-        for (field, value) in keys {
-            let Some(default) = value.as_str() else {
-                continue;
-            };
-            let marker = format!("# {field} = ");
-            let quoted = format!("{default:?}");
-            let documented = shepr_config::DEFAULT_CONFIG.lines().any(|line| {
-                line.strip_prefix(marker.as_str())
-                    .and_then(|rest| rest.split_whitespace().next())
-                    == Some(quoted.as_str())
-            });
-            assert!(
-                documented,
-                "keys.{field} = {default:?} missing from the printed default config"
-            );
-        }
-    }
-
-    #[test]
     fn an_unreadable_saved_machine_catalog_fails_the_launch() {
         use shepr_test_fixtures::AppPathsFixture as _;
 

@@ -1451,7 +1451,6 @@ dependencies = [
  "libc",
  "shepr-core",
  "shepr-test-support",
- "tokio",
  "tracing",
 ]
 
@@ -1463,7 +1462,6 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sha2",
  "shepr-api",
  "shepr-config",
  "shepr-core",

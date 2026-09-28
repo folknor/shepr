@@ -334,7 +334,7 @@ struct WireUiConfig {
     agent_panel_sort: AgentPanelSortConfig,
     status_indicators: StatusIndicatorStyle,
     sidebar: WireSidebarConfig,
-    accent: String,
+    accent: Option<String>,
 }
 
 impl WireUiConfig {
