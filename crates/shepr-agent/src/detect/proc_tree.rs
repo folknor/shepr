@@ -487,29 +487,6 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
-/// Read a Shepr agent identity hint from a process environment.
-pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
-    if pid == 0 {
-        return None;
-    }
-    let (_, comm, state) = process_pgrp_comm_and_state(pid)?;
-    if !process_allows_remote_memory_read(state, &comm, shepr_platform::running_inside_wsl()) {
-        return None;
-    }
-    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    parse_agent_env_hint(&environ)
-}
-
-pub(crate) fn parse_agent_env_hint(environ: &[u8]) -> Option<crate::detect::Agent> {
-    for record in environ.split(|&byte| byte == 0) {
-        let Some(value) = record.strip_prefix(b"SHEPR_AGENT=") else {
-            continue;
-        };
-        return crate::detect::parse_agent_label(std::str::from_utf8(value).ok()?);
-    }
-    None
-}
-
 pub fn is_pane_shell_process_name(name: &str) -> bool {
     let normalized = name
         .rsplit('/')

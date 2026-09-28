@@ -294,7 +294,6 @@ fn restore_workspace(
             tab_snap,
             history.and_then(|history| history.tabs.get(idx)),
             tab_number,
-            &workspace_id,
             rows,
             cols,
             runtime_context,
@@ -438,7 +437,6 @@ fn restore_tab(
     snap: &TabSnapshot,
     history: Option<&TabHistorySnapshot>,
     number: usize,
-    workspace_id: &str,
     rows: u16,
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
@@ -514,13 +512,7 @@ fn restore_tab(
             .map(String::as_str);
         let launch_env = public_pane_id
             .and_then(|pane_id| pane_id.parse::<shepr_protocol::PublicPaneId>().ok())
-            .map(|pane_id| {
-                PaneLaunchEnv::from_extra(Vec::new()).with_identity(
-                    shepr_protocol::WorkspaceId::new(workspace_id),
-                    shepr_protocol::PublicTabId::new(workspace_id, number),
-                    pane_id,
-                )
-            })
+            .map(|pane_id| PaneLaunchEnv::from_extra(Vec::new()).with_pane_id(pane_id))
             .unwrap_or_default();
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(saved_pane, RestoredPaneStart::PendingResume(plan));

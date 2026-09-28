@@ -483,21 +483,3 @@ fn pane_shell_process_names_reject_exec_replacement_programs() {
         assert!(!is_pane_shell_process_name(program), "{program}");
     }
 }
-
-#[test]
-fn parse_agent_env_hint_accepts_known_agents() {
-    assert_eq!(
-        parse_agent_env_hint(b"PATH=/bin\0SHEPR_AGENT=claude\0TERM=xterm\0"),
-        Some(crate::detect::Agent::Claude)
-    );
-    assert_eq!(
-        parse_agent_env_hint(b"SHEPR_AGENT=codex"),
-        Some(crate::detect::Agent::Codex)
-    );
-}
-
-#[test]
-fn parse_agent_env_hint_ignores_missing_or_unknown_agents() {
-    assert_eq!(parse_agent_env_hint(b"PATH=/bin\0TERM=xterm\0"), None);
-    assert_eq!(parse_agent_env_hint(b"SHEPR_AGENT=not-an-agent\0"), None);
-}

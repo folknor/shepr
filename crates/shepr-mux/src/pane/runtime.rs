@@ -1899,7 +1899,6 @@ mod tests {
     #[test]
     fn pane_launch_env_removes_outer_agent_identity() {
         let keys = [
-            "SHEPR_AGENT",
             "CODEX_THREAD_ID",
             "OMPCODE",
             "CLAUDECODE",
@@ -2578,118 +2577,41 @@ mod tests {
     }
 
     #[test]
-    fn foreground_agent_hint_accepts_pane_shell_environment() {
-        let job = shepr_agent::detect::ForegroundJob {
-            process_group_id: 42,
-            processes: vec![foreground_process(42, "bash")],
-        };
-
-        assert_eq!(
-            agent_hint_for_foreground_job_members(&job, |pid| {
-                (pid == 42).then_some(Agent::Claude)
-            }),
-            Some(Agent::Claude)
-        );
-    }
-
-    #[test]
-    fn foreground_agent_hint_accepts_non_leader_foreground_process_environment() {
-        let job = shepr_agent::detect::ForegroundJob {
-            process_group_id: 99,
-            processes: vec![
-                foreground_process(99, "fence"),
-                foreground_process(100, "pi"),
-            ],
-        };
-
-        assert_eq!(
-            agent_hint_for_foreground_job_members(&job, |pid| {
-                (pid == 100).then_some(Agent::Codex)
-            }),
-            Some(Agent::Codex)
-        );
-    }
-
-    #[test]
-    fn foreground_agent_hint_wins_over_process_name_detection() {
-        let job = shepr_agent::detect::ForegroundJob {
-            process_group_id: 99,
-            processes: vec![foreground_process(99, "codex")],
-        };
-
-        let result = probe_foreground_process_from_jobs(
-            42,
-            Some(99),
-            Some(&job),
-            || None,
-            |pid| (pid == 99).then_some(Agent::Claude),
-        );
-
-        assert_eq!(result.agent(), Some(Agent::Claude));
-        assert_eq!(result.process_name(), Some("claude"));
-    }
-
-    #[test]
-    fn foreground_agent_hint_on_inherited_child_environment_is_authoritative() {
-        let job = shepr_agent::detect::ForegroundJob {
-            process_group_id: 99,
-            processes: vec![foreground_process(99, "vim")],
-        };
-
-        let result = probe_foreground_process_from_jobs(
-            42,
-            Some(99),
-            None,
-            || Some(job),
-            |pid| (pid == 99).then_some(Agent::Claude),
-        );
-
-        assert_eq!(result.agent(), Some(Agent::Claude));
-        assert_eq!(result.process_name(), Some("claude"));
-    }
-
-    #[test]
-    fn non_leader_agent_hint_does_not_override_identifiable_leader() {
+    fn identifiable_foreground_leader_wins_over_other_job_members() {
         let job = shepr_agent::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "codex"),
-                foreground_process(100, "vim"),
+                foreground_process(100, "claude"),
             ],
         };
 
-        let result = probe_foreground_process_from_jobs(
-            42,
-            Some(99),
-            None,
-            || Some(job),
-            |pid| (pid == 100).then_some(Agent::Claude),
-        );
+        let result = probe_foreground_process_from_jobs(42, Some(99), None, || Some(job));
 
         assert_eq!(result.agent(), Some(Agent::Codex));
         assert_eq!(result.process_name(), Some("codex"));
     }
 
     #[test]
-    fn non_leader_agent_hint_wins_when_leader_is_unidentified() {
-        let job = shepr_agent::detect::ForegroundJob {
+    fn unidentified_leader_job_falls_through_to_foreground_job() {
+        let leader_job = shepr_agent::detect::ForegroundJob {
+            process_group_id: 99,
+            processes: vec![foreground_process(99, "some_vm")],
+        };
+        let foreground_job = shepr_agent::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "some_vm"),
-                foreground_process(100, "vim"),
+                foreground_process(100, "codex"),
             ],
         };
 
-        let result = probe_foreground_process_from_jobs(
-            42,
-            Some(99),
-            None,
-            || Some(job),
-            |pid| (pid == 100).then_some(Agent::Claude),
-        );
+        let result = probe_foreground_process_from_jobs(42, Some(99), Some(&leader_job), || {
+            Some(foreground_job)
+        });
 
-        assert_eq!(result.agent(), Some(Agent::Claude));
-        assert_eq!(result.process_name(), Some("claude"));
+        assert_eq!(result.agent(), Some(Agent::Codex));
+        assert_eq!(result.process_name(), Some("codex"));
     }
 
     #[test]

@@ -64,32 +64,10 @@ Reported by the vt/pty, agent, mux and server hunters.
 
 Same fix and enforcement as HYGV-001.
 
-## HYGV-003 - `SHEPR_AGENT` is spelled in three places with three shapes
-
-Reported by the agent hunter (and the vt/pty hunter, who noted the scrub list).
-
-- `crates/shepr-agent/src/agent/mod.rs`: `LAUNCH_ENV_TO_SCRUB = &["SHEPR_AGENT"]`.
-- `crates/shepr-agent/src/detect/proc_tree.rs::parse_agent_env_hint` matches the
-  byte literal `b"SHEPR_AGENT="` when reading `/proc/<pid>/environ`, with the
-  `=` baked into the pattern.
-- `crates/shepr-mux/src/pane/runtime.rs` passes `"SHEPR_AGENT"` when setting it.
-
-Fail-open consequence recorded by the agent hunter: rename the setter and the
-`/proc` hint is simply never found, with no log; the pane falls back to
-process-name detection. Fix: one `pub const`, with the probe deriving its prefix
-from it, which turns the rename into a compile error.
-
-Disagreement to preserve: the vt/pty hunter reports that nothing in the
-repository sets `SHEPR_AGENT` and reads the scrub-list entry as a herdr
-leftover; the agent and mux hunters both name `pane/runtime.rs` as a live setter.
-
 ## HYGV-004 - The pane and tab-bar identity variables have no single owner
 
 Reported by the mux and server hunters.
 
-- `crates/shepr-mux/src/pane/launch.rs` exports `SHEPR_PANE_ID_ENV_VAR` publicly
-  (and `src/cli/target.rs` correctly reads it through that), but keeps
-  `SHEPR_TAB_ID_ENV_VAR` and `SHEPR_WORKSPACE_ID_ENV_VAR` private.
 - `crates/shepr-server/src/app/tab_bar_status.rs` spells
   `"SHEPR_ACTIVE_WORKSPACE_ID"`, `"SHEPR_ACTIVE_TAB_ID"`, `"SHEPR_ACTIVE_PANE_ID"`
   and `"SHEPR_ACTIVE_PANE_CWD"` inline.
@@ -98,17 +76,14 @@ Reported by the mux and server hunters.
 
 The server hunter notes the repo already has the convention this family breaks
 (`shepr-config::SOCKET_PATH_ENV_VAR`, `shepr-mux`'s `SHEPR_PANE_ID_ENV_VAR`,
-`shepr-remote`'s `STARTUP_CWD_ENV_VAR`). The mux hunter separately found
-`SHEPR_TAB_ID` and `SHEPR_WORKSPACE_ID` have no reader anywhere, including the
-assets; that deadness question is filed with the dead-code findings, but the
-ownership question is here either way.
+`shepr-remote`'s `STARTUP_CWD_ENV_VAR`).
 
 ## HYGV-005 - The `SHEPR_*` namespace has no registry, and nothing answers "what environment variables does shepr read"
 
 Reported by the core/platform, api/cli and mux hunters.
 
-The core/platform hunter counted roughly forty distinct `SHEPR_*` names across
-twenty files. `crates/shepr-config/src/address.rs` owns two of them as constants
+Distinct `SHEPR_*` names are spread across many files in several crates.
+`crates/shepr-config/src/address.rs` owns two of them as constants
 (`SOCKET_PATH_ENV_VAR`, `CLIENT_SOCKET_PATH_ENV_VAR`), and then:
 
 - `crates/shepr-remote/src/remote/local_server.rs` spells
@@ -257,6 +232,9 @@ shape as the existing `alacritty-terminal-only-in-shepr-vt` rule.
 
 ## HYGV-010 - Two different rules for "am I running under WSL", already divergent
 
+**Decision:** WSL support is removed entirely; shepr is Linux only. Both WSL
+predicates and every WSL branch go, which resolves this entry.
+
 Reported by the core/platform hunter.
 
 `crates/shepr-platform/src/host.rs::detect_running_inside_wsl` is the owner: four
@@ -299,6 +277,9 @@ Enforcement: return `Result` from `init_file_logging` and fail the launch on a b
 filter; the signature change makes `unused_must_use` fire.
 
 ## HYGV-012 - `SHEPR_PROCESS_DETECTION` is read at the moment of use, not validated at startup
+
+**Decision:** removed with WSL support: `ProcessDetectionMode::ChildGroups`, the
+variable and its parser are deleted rather than validated.
 
 Reported by the agent hunter.
 
@@ -353,6 +334,10 @@ two crates have only four production `env::var` call sites, so the rule is cheap
 today).
 
 ## HYGV-015 - `prefers_osc52_clipboard` re-reads four environment values on every call
+
+**Decision (partial):** the WSL inputs (the `WSLInterop` stat and the
+`running_inside_wsl()` combination) go with WSL support. The SSH and VS Code
+reads remain open.
 
 Reported by the core/platform hunter.
 
@@ -506,6 +491,12 @@ and a text rule banning the bare literals.
 
 ## HYGV-021 - The agent state label vocabulary has four or five owners, and one of them rejects a state the table accepts
 
+**Decision (partial):** the `--state-label STATUS=TEXT` feature is deleted end
+to end (CLI flag, API params `state_labels`/`clear_state_labels`, storage in
+`shepr-mux` metadata, projection, sidebar rendering). That removes
+`state_label_assignment` and `normalize_state_labels`, so the `unknown` question
+is moot. The "Unknown presents as Idle" half remains open.
+
 Reported by the agent, api/cli and mux hunters.
 
 - `IntegrationHookAction::as_str` owns `session working blocked idle`.
@@ -536,6 +527,10 @@ serde validate; have `state_label_assignment` parse its key through
 deleted rather than restated.
 
 ## HYGV-022 - The session-start-source vocabulary is spelled three times and the copies disagree
+
+**Decision (partial):** Hermes support is removed entirely, so the hermes
+asset's invented start sources go. The remaining disagreement (enum versus
+`SESSION_START_MATCHER`, Grok's `load`) stays open.
 
 Reported by the agent hunter, as fact.
 
@@ -1415,6 +1410,12 @@ gives the render and timer paths one `now`.
 
 ## HYGV-063 - The keybinding action list is spelled at eight sites; three of the eight are compiler-checked
 
+**Decision:** either keys are rebindable or they are not, and they are. The six
+hard-coded help entries (`esc`, `tab / shift+tab`, `enter`, `1..9`) become
+ordinary configurable bindings with defaults. Do this together with the single
+declarative keybinding table so the new keys are not added to eight sites by
+hand.
+
 Reported by the protocol/config hunter, who calls it the largest single finding
 in that scope.
 
@@ -1693,6 +1694,10 @@ which cannot be written as a bare integer into JSON.
 
 ## HYGV-077 - The remote `shepr` CLI's argument spellings are re-spelled in `shepr-remote` with no shared constant
 
+**Decision (partial):** `--idle-timeout-v1` is deleted (see HYGP-039), which
+removes one of the listed spellings. The shared-constant and round-trip-test
+proposal remains open for the rest.
+
 Reported by the remote hunter, as fact.
 
 `shepr-remote` builds command lines for a remote `shepr` binary out of bare
@@ -1710,6 +1715,10 @@ The only current check is byte-for-byte golden strings in `attach.rs`, which pin
 the producer to itself and say nothing about the parser.
 
 ## HYGV-078 - The asset version parity test carries a hand-written list, and Hermes has a fourth version number
+
+**Decision (partial):** Hermes support is removed entirely, so the
+`plugin.yaml` version and name findings go with it. The hand-written parity
+list (the two opencode TUI assets) remains open.
 
 Reported by the agent hunter.
 
@@ -1811,6 +1820,8 @@ the join - and the existing test catches that. The recommendation is: keep the
 test, it is the enforcement.
 
 ## HYGV-084 - `ProcessDetectionMode::ChildGroups` has no injection point, so no test can reach it
+
+**Decision:** WSL support is removed entirely; the mode is deleted.
 
 Reported by the agent hunter.
 

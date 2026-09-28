@@ -610,7 +610,8 @@ belongs in `notes/bugs.md`.
   `UnsafeSshRuntimeDirectory` is the right one and is used once. Note the
   existing test `only_typed_runtime_directory_policy_errors_are_launch_fatal`
   pins the looser rule in place, so this needs the test changed, not added.
-- `shepr-agent` / `shepr-server`: `IntegrationHookAction::as_str` owns
+- Decided: resolved by deleting the `--state-label` feature end to end
+  (HYGV-021). `shepr-agent` / `shepr-server`: `IntegrationHookAction::as_str` owns
   `session working blocked idle` and `PaneAgentState` owns the wire spelling, but
   `shepr-server/src/app/api/panes.rs::normalize_state_labels` re-checks
   `matches!(status.as_str(), "idle" | "working" | "blocked")` against a fresh
@@ -741,6 +742,9 @@ parser-driven mutation must use `with_handler`" and every mutation must end with
 
 ## HYGP-021 - The hook assets implement one report protocol twice, with two transports, two timeout budgets and two request-id formats
 
+**Decision (partial):** Hermes support is removed entirely, so the hermes asset
+drops out of the lists below.
+
 From `shepr-agent`: the claude, codex, kimi, copilot, devin, droid, grok, cursor,
 antigravity, mastracode and opencode assets open the API socket directly with a
 0.5 s timeout and hand-build the JSON-RPC envelope
@@ -759,6 +763,8 @@ owned solely by Rust, and the JSON-RPC client disappears from fifteen shipped
 scripts. Called a real reduction rather than a tidy-up.
 
 ## HYGP-022 - A hand-rolled YAML editor exists for one agent's one config key
+
+**Decision:** Hermes support is removed entirely, and the YAML editor with it.
 
 From `shepr-agent`: `config_edit.rs` carries about twenty `yaml_*` helpers
 (indent parsing, inline comments, flow sequences, scalar quoting, list-item
@@ -1252,6 +1258,14 @@ not run. After deletion the `#[cfg]`-free code has one identity and
 
 ## HYGP-039 - Version suffixes and negotiation for a deployment that does not exist
 
+**Decision:** delete the `--idle-timeout-v1` flag, its plumbing,
+`SHEPR_BRIDGE_TEST_LEGACY` and `legacy_bridge_has_no_idle_deadline`; drop the
+`:1` and `-v1` suffixes from the two markers. Note found while checking: the
+interactive `--remote` path (`launch.rs::run_remote`) passes `false` today, so
+after deletion the interactive client bridge also gets the idle watchdog. The
+client heartbeat keeps a live bridge busy, so this should be harmless, but it
+is a behaviour change to verify.
+
 Reported by the `shepr-platform` and `shepr-remote` hunters. AGENTS.md: "no wire
 compatibility obligations", "client and server are always the same build".
 
@@ -1479,7 +1493,7 @@ for each is the hunter's.
   `ghostty_buffer_symbol_into`), `pane/terminal/text.rs` and
   `terminal/history_read.rs` are unreachable. Suggested: stop making
   `KITTY_UNICODE_PLACEHOLDER` public.
-- `shepr-mux` `workspace.rs::unregister_moved_pane(&mut self, _pane_id)` has a
+- Decided: delete. `shepr-mux` `workspace.rs::unregister_moved_pane(&mut self, _pane_id)` has a
   body of one `debug_assert!`, and is called from production
   (`shepr-server/src/app/api/panes/geometry.rs`). In a release build
   (`brokkr install`) the assert compiles away and this is a `&mut self` method
@@ -1610,28 +1624,9 @@ literals from `model.rs`.
 
 ## HYGP-050 - Environment variables with no reader
 
-- `shepr-mux` `pane/launch.rs` sets `SHEPR_PANE_ID`, `SHEPR_TAB_ID` and
-  `SHEPR_WORKSPACE_ID` for a managed pane. Evidence for the latter two being
-  dead: a full-text search over every file type that could read an environment
-  variable, including the shipped hook assets (`.sh`, `.js`, `.py`) that run
-  inside other agents' processes, finds only the two `cmd.env(..)` writes and the
-  two `const` declarations; they are also the only two of the three kept private,
-  so no external reader could exist. Cost of being wrong: low but nonzero - a
-  user's own shell profile or tab-bar command could read them and nothing in the
-  repo would show it. The hunter says to check with the owner before deleting, or
-  document them as an intentional public contract, in which case they should be
-  `pub` consts alongside `SHEPR_PANE_ID_ENV_VAR`.
-- `shepr-agent` / `shepr-pty`: `SHEPR_AGENT` is scrubbed from pane env
-  (`LAUNCH_ENV_TO_SCRUB`) but the `shepr-pty` hunter found nothing in the repo
-  that sets it and reads the guard as a herdr leftover. Note the `shepr-agent`
-  hunter reports the opposite for the write side: `shepr-mux/src/pane/runtime.rs`
-  passes `"SHEPR_AGENT"` when setting it, and
-  `detect/proc_tree.rs::parse_agent_env_hint` matches `b"SHEPR_AGENT="` when
-  reading `/proc/<pid>/environ`. Both readings are recorded; the disagreement
-  needs resolving before anything is deleted.
 - `SHEPR_MIGRATION_OBSERVATIONS` (HYGP-036), `SHEPR_BRIDGE_TEST_LEGACY`
-  (HYGP-039) and `GROK_CONFIG_DIR` (HYGP-033) are the other three named by
-  hunters as existing for something that is over or for tests only. `shepr-agent`
+  (HYGP-039) and `GROK_CONFIG_DIR` (HYGP-033) are named by hunters as existing
+  for something that is over or for tests only. `shepr-agent`
   also reports `SHEPR_TEST_3970_CONFIG_DIR`, a test-only name in a
   production-visible namespace carrying an issue number nobody can look up in
   this repository.
@@ -1670,6 +1665,10 @@ root, registration check strategy, directory key as an enum, asset, version,
 events and timeout on the row.
 
 ## HYGP-053 - `ProcessDetectionMode::ChildGroups` may be a WSL-era mode that nothing exercises
+
+**Decision:** WSL support is removed entirely: delete the mode, its budget and
+parser, `SHEPR_PROCESS_DETECTION`, `running_inside_wsl` and every WSL branch
+(including the one in `process_allows_remote_memory_read`).
 
 From `shepr-agent`, gathering three of that hunter's findings. What tells them it
 may be dead: shepr is documented Linux-only; native `tpgid` reading via

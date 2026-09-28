@@ -266,7 +266,6 @@ pub struct AgentDescriptor {
 }
 
 const CLAUDE_ACTIVITY_GLYPHS: &str = "·\u{2722}\u{2733}\u{2736}\u{273B}\u{273D}◐◓◑◒";
-const LAUNCH_ENV_TO_SCRUB: &[&str] = &["SHEPR_AGENT"];
 
 pub const AGENTS: [AgentDescriptor; 24] = [
     AgentDescriptor {
@@ -863,10 +862,7 @@ fn contains_recent_non_whitespace(content: &str, needle: &str) -> bool {
 }
 
 pub fn launch_env_to_scrub() -> impl Iterator<Item = &'static str> {
-    LAUNCH_ENV_TO_SCRUB
-        .iter()
-        .copied()
-        .chain(Agent::all().flat_map(|agent| agent.env_to_scrub().iter().copied()))
+    Agent::all().flat_map(|agent| agent.env_to_scrub().iter().copied())
 }
 
 fn agent_name_lookup() -> &'static HashMap<&'static str, Agent> {

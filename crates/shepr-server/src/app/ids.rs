@@ -70,17 +70,13 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
         extra_env: Vec<(String, String)>,
     ) -> Option<shepr_mux::pane::PaneLaunchEnv> {
-        let tab_idx = self.tab_index_for_pane(ws_idx, pane_id)?;
         let workspace = self.state.workspaces.get(ws_idx)?;
-        let tab_number = workspace.public_tab_number(tab_idx)?;
         let pane_number = workspace.public_pane_number(pane_id)?;
-        let workspace_id = shepr_protocol::WorkspaceId::new(workspace.id.clone());
-        let tab_id = shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab_number);
         let pane_id = shepr_protocol::PublicPaneId::new(workspace.id.as_str(), pane_number);
         Some(
             shepr_mux::pane::PaneLaunchEnv::from_extra(extra_env)
                 .with_api_socket_path(shepr_api::socket_path(&self.paths))
-                .with_identity(workspace_id, tab_id, pane_id),
+                .with_pane_id(pane_id),
         )
     }
 

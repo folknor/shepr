@@ -923,38 +923,6 @@ impl DetectorState {
     }
 }
 
-pub(super) fn agent_hint_for_foreground_job_members(
-    job: &shepr_agent::detect::ForegroundJob,
-    read_hint: impl Fn(u32) -> Option<Agent>,
-) -> Option<Agent> {
-    read_hint(job.process_group_id)
-        .or_else(|| agent_hint_for_non_leader_foreground_job_members(job, read_hint))
-}
-
-fn agent_hint_for_non_leader_foreground_job_members(
-    job: &shepr_agent::detect::ForegroundJob,
-    read_hint: impl Fn(u32) -> Option<Agent>,
-) -> Option<Agent> {
-    job.processes
-        .iter()
-        .filter(|process| process.pid != job.process_group_id)
-        .find_map(|process| read_hint(process.pid))
-}
-
-fn identify_process_group_leader_in_job(
-    job: &shepr_agent::detect::ForegroundJob,
-) -> Option<(Agent, String)> {
-    let leader = job
-        .processes
-        .iter()
-        .find(|process| process.pid == job.process_group_id)?;
-    let leader_job = shepr_agent::detect::ForegroundJob {
-        process_group_id: job.process_group_id,
-        processes: vec![leader.clone()],
-    };
-    shepr_agent::detect::identify_agent_in_job(&leader_job)
-}
-
 fn process_probe_result(
     job: &shepr_agent::detect::ForegroundJob,
     pid: u32,
@@ -971,58 +939,20 @@ fn process_probe_result(
     }
 }
 
-fn hinted_process_probe_result(
-    job: &shepr_agent::detect::ForegroundJob,
-    pid: u32,
-    read_hint: impl Fn(u32) -> Option<Agent>,
-) -> Option<ProcessProbeResult> {
-    let agent = agent_hint_for_foreground_job_members(job, read_hint)?;
-    Some(process_probe_result(
-        job,
-        pid,
-        agent,
-        shepr_agent::detect::agent_label(agent).to_string(),
-    ))
-}
-
 pub(super) fn probe_foreground_process_from_jobs(
     pid: u32,
     foreground_pgid: Option<u32>,
     leader_job: Option<&shepr_agent::detect::ForegroundJob>,
     foreground_job: impl FnOnce() -> Option<shepr_agent::detect::ForegroundJob>,
-    read_hint: impl Fn(u32) -> Option<Agent> + Copy,
 ) -> ProcessProbeResult {
-    if let Some(job) = leader_job {
-        if let Some(hinted) = hinted_process_probe_result(job, pid, read_hint) {
-            return hinted;
-        }
-        if let Some((agent, process_name)) = shepr_agent::detect::identify_agent_in_job(job) {
-            return process_probe_result(job, pid, agent, process_name);
-        }
+    if let Some(job) = leader_job
+        && let Some((agent, process_name)) = shepr_agent::detect::identify_agent_in_job(job)
+    {
+        return process_probe_result(job, pid, agent, process_name);
     }
 
     let foreground_job = foreground_job();
     if let Some(job) = foreground_job.as_ref() {
-        if let Some(agent) = read_hint(job.process_group_id) {
-            return process_probe_result(
-                job,
-                pid,
-                agent,
-                shepr_agent::detect::agent_label(agent).to_string(),
-            );
-        }
-        if let Some((agent, process_name)) = identify_process_group_leader_in_job(job) {
-            return process_probe_result(job, pid, agent, process_name);
-        }
-        if let Some(agent) = agent_hint_for_non_leader_foreground_job_members(job, read_hint) {
-            return process_probe_result(
-                job,
-                pid,
-                agent,
-                shepr_agent::detect::agent_label(agent).to_string(),
-            );
-        }
-
         let identified = shepr_agent::detect::identify_agent_in_job(job);
         return ProcessProbeResult {
             process_group_id: Some(job.process_group_id),
@@ -1055,7 +985,6 @@ pub(super) fn probe_foreground_process(
             .and_then(shepr_agent::detect::foreground_group_leader_job)
             .as_ref(),
         || shepr_agent::detect::foreground_job(pid),
-        shepr_agent::detect::process_agent_hint,
     )
 }
 

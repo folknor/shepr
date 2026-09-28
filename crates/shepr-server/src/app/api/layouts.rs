@@ -115,12 +115,11 @@ impl App {
         };
 
         let spawn = self.pane_spawn_handles();
-        let (workspace_id, tab_number, root_pane_number, created) = {
+        let (workspace_id, root_pane_number, created) = {
             let Some(workspace) = self.state.workspaces.get(ws_idx) else {
                 return failure(id, ApiErrorCode::WorkspaceNotFound, "workspace not found");
             };
             let workspace_id = workspace.id.clone();
-            let tab_number = workspace.next_public_tab_number();
             let root_pane_number = workspace.next_public_pane_number();
             let created = if let Some(argv) = command.as_deref() {
                 workspace.create_tab_argv_command(
@@ -150,7 +149,7 @@ impl App {
                     &spawn,
                 )
             };
-            (workspace_id, tab_number, root_pane_number, created)
+            (workspace_id, root_pane_number, created)
         };
 
         let (mut tab, terminal, runtime) = match created {
@@ -167,7 +166,6 @@ impl App {
         let mut next_pane_number = root_pane_number.saturating_add(1);
         let mut staging = LayoutStaging {
             workspace_id: &workspace_id,
-            tab_number,
             geometry: self.state.pane_geometry(),
             default_shell: &default_shell,
             login_shell: self.state.settings.login_shell,
@@ -404,7 +402,6 @@ impl App {
 
 struct LayoutStaging<'a> {
     workspace_id: &'a str,
-    tab_number: usize,
     geometry: shepr_mux::workspace::PaneGeometry,
     default_shell: &'a str,
     login_shell: bool,
@@ -463,9 +460,7 @@ fn stage_layout_node(
             let extra_env = super::env::normalize_launch_env(second_leaf.env.clone())
                 .map_err(shepr_api::error::ApiError::into_message)?;
             let command = layout_command(second_leaf)?;
-            let launch_env = shepr_mux::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
-                shepr_protocol::WorkspaceId::new(staging.workspace_id),
-                shepr_protocol::PublicTabId::new(staging.workspace_id, staging.tab_number),
+            let launch_env = shepr_mux::pane::PaneLaunchEnv::from_extra(extra_env).with_pane_id(
                 shepr_protocol::PublicPaneId::new(staging.workspace_id, *staging.next_pane_number),
             );
             let direction = match direction {

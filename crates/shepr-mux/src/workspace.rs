@@ -340,11 +340,8 @@ impl Workspace {
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let id = generate_workspace_id();
-        let launch_env = PaneLaunchEnv::from_extra(extra_env).with_identity(
-            WorkspaceId::new(id.clone()),
-            PublicTabId::new(&id, 1),
-            PublicPaneId::new(&id, 1),
-        );
+        let launch_env =
+            PaneLaunchEnv::from_extra(extra_env).with_pane_id(PublicPaneId::new(&id, 1));
         let (tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 1,
@@ -484,7 +481,7 @@ impl Workspace {
     ) -> std::io::Result<(Tab, TerminalState, PaneRuntime)> {
         let number = self.next_public_tab_number;
         let pane_number = self.next_public_pane_number;
-        let launch_env = self.launch_env_for_new_pane(number, pane_number, extra_env);
+        let launch_env = self.launch_env_for_new_pane(pane_number, extra_env);
 
         let (mut tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
@@ -676,8 +673,7 @@ impl Workspace {
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         let pane_number = self.next_public_pane_number;
-        let tab_number = self.tabs[tab_idx].number;
-        let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
+        let launch_env = self.launch_env_for_new_pane(pane_number, extra_env);
         let tab = &self.tabs[tab_idx];
         let new_pane = match if let Some(argv) = argv {
             tab.split_pane_argv(
@@ -820,15 +816,10 @@ impl Workspace {
 
     pub(crate) fn launch_env_for_new_pane(
         &self,
-        tab_number: usize,
         pane_number: usize,
         extra_env: Vec<(String, String)>,
     ) -> PaneLaunchEnv {
-        PaneLaunchEnv::from_extra(extra_env).with_identity(
-            WorkspaceId::new(self.id.clone()),
-            PublicTabId::new(&self.id, tab_number),
-            PublicPaneId::new(&self.id, pane_number),
-        )
+        PaneLaunchEnv::from_extra(extra_env).with_pane_id(PublicPaneId::new(&self.id, pane_number))
     }
 
     pub fn next_public_tab_number(&self) -> usize {

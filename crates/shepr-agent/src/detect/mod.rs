@@ -10,7 +10,7 @@ pub use crate::agent::Agent;
 mod proc_tree;
 pub use proc_tree::{
     ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
-    foreground_process_group_id, process_agent_hint, process_cwd,
+    foreground_process_group_id, process_cwd,
 };
 pub use proc_tree::{available_pane_shell, is_pane_shell_process_name};
 

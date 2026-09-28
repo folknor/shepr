@@ -1,7 +1,7 @@
 const SHEPR_ENV_VAR: &str = "SHEPR_ENV";
 const SHEPR_ENV_VALUE: &str = "1";
 
-use shepr_protocol::{PublicPaneId, PublicTabId, WorkspaceId};
+use shepr_protocol::PublicPaneId;
 use shepr_pty::PtyCommand;
 
 /// Time allowed for a restored agent to appear after its resume launch.
@@ -9,8 +9,6 @@ pub const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = std::time::Duratio
 
 const PANE_COLORTERM: &str = "truecolor";
 pub const SHEPR_PANE_ID_ENV_VAR: &str = "SHEPR_PANE_ID";
-const SHEPR_TAB_ID_ENV_VAR: &str = "SHEPR_TAB_ID";
-const SHEPR_WORKSPACE_ID_ENV_VAR: &str = "SHEPR_WORKSPACE_ID";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LaunchPurpose {
@@ -50,27 +48,18 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneLaunchEnv {
     extra: Vec<(String, String)>,
-    identity: PaneLaunchIdentity,
+    /// The public id of a managed pane; `None` inherits whatever the server
+    /// environment carries.
+    pane_id: Option<PublicPaneId>,
     purpose: LaunchPurpose,
     api_socket_path: std::path::PathBuf,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum PaneLaunchIdentity {
-    #[default]
-    Inherit,
-    Managed {
-        workspace_id: WorkspaceId,
-        tab_id: PublicTabId,
-        pane_id: PublicPaneId,
-    },
 }
 
 impl PaneLaunchEnv {
     pub fn from_extra(extra: Vec<(String, String)>) -> Self {
         Self {
             extra,
-            identity: PaneLaunchIdentity::Inherit,
+            pane_id: None,
             purpose: LaunchPurpose::Fresh,
             api_socket_path: std::path::PathBuf::new(),
         }
@@ -86,17 +75,8 @@ impl PaneLaunchEnv {
         self
     }
 
-    pub fn with_identity(
-        mut self,
-        workspace_id: WorkspaceId,
-        tab_id: PublicTabId,
-        pane_id: PublicPaneId,
-    ) -> Self {
-        self.identity = PaneLaunchIdentity::Managed {
-            workspace_id,
-            tab_id,
-            pane_id,
-        };
+    pub fn with_pane_id(mut self, pane_id: PublicPaneId) -> Self {
+        self.pane_id = Some(pane_id);
         self
     }
 
@@ -125,17 +105,8 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     if let Ok(executable) = shepr_platform::launch_executable() {
         cmd.env("SHEPR_BIN_PATH", executable);
     }
-    match &launch_env.identity {
-        PaneLaunchIdentity::Inherit => {}
-        PaneLaunchIdentity::Managed {
-            workspace_id,
-            tab_id,
-            pane_id,
-        } => {
-            cmd.env(SHEPR_WORKSPACE_ID_ENV_VAR, workspace_id.as_str());
-            cmd.env(SHEPR_TAB_ID_ENV_VAR, tab_id.to_string());
-            cmd.env(SHEPR_PANE_ID_ENV_VAR, pane_id.to_string());
-        }
+    if let Some(pane_id) = &launch_env.pane_id {
+        cmd.env(SHEPR_PANE_ID_ENV_VAR, pane_id.to_string());
     }
 }
 

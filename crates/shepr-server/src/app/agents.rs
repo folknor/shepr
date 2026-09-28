@@ -466,13 +466,7 @@ fn live_runtime_agent(
     runtime: &shepr_mux::pane::PaneRuntime,
 ) -> Option<shepr_agent::detect::Agent> {
     let job = shepr_agent::detect::foreground_job(runtime.child_pid()?)?;
-    shepr_agent::detect::identify_agent_in_job(&job)
-        .map(|(agent, _)| agent)
-        .or_else(|| {
-            job.processes
-                .iter()
-                .find_map(|process| shepr_agent::detect::process_agent_hint(process.pid))
-        })
+    shepr_agent::detect::identify_agent_in_job(&job).map(|(agent, _)| agent)
 }
 
 pub(super) enum AgentStartError {

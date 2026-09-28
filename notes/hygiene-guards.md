@@ -546,6 +546,9 @@ so the return value cannot be false; call sites presumably
 
 ## HYGG-030 - The three bun test files never run
 
+**Decision:** deferred; tracked by the "Resolve typescript question" item in
+`notes/todo.md`. Not handled in the hygiene fix pass.
+
 `shepr-agent/src/integration/assets/shepr-agent-state.test.ts`,
 `assets/opencode/shepr-agent-state.test.ts` and
 `assets/opencode/shepr-tui-session.test.ts` import `bun:test`. There is no
@@ -943,6 +946,8 @@ comment.
 
 ## HYGG-055 - `WSL_MARKER_ENV_VARS` is a two-entry list that goes quiet when the names change
 
+**Decision:** WSL support is removed entirely; the list is deleted.
+
 `shepr-platform/src/host.rs`. When Microsoft renames or drops a variable the
 check quietly stops contributing, and there is no log and no test that the list
 is non-empty or current. Checkable only against a real WSL host; the hunter says
@@ -974,26 +979,6 @@ hunter calls the honest version.
 `shepr-test-support`:
 `key.to_str().is_some_and(|k| k.starts_with("SHEPR_"))`. Not reachable in
 practice, but it is the fail-open shape.
-
-## HYGG-059 - `SHEPR_AGENT` guards are keyed on a name with no producer, and on a byte literal with the `=` baked in
-
-`shepr-agent/src/agent/mod.rs` has `LAUNCH_ENV_TO_SCRUB = &["SHEPR_AGENT"]`,
-`detect/proc_tree.rs::parse_agent_env_hint` matches the byte literal
-`b"SHEPR_AGENT="` when reading `/proc/<pid>/environ`, and
-`shepr-mux/src/pane/runtime.rs` passes `"SHEPR_AGENT"` when setting it. The
-`shepr-agent` hunter's reading of the guard: `parse_agent_env_hint` fails open on
-a renamed variable - the hint is simply never found, the pane falls back to
-process-name detection, and nothing is logged.
-
-The `shepr-vt`/`shepr-pty` hunter reads the same names differently and files
-them as a guard keyed on a name nothing produces: "`SHEPR_AGENT` is scrubbed
-from pane env (`LAUNCH_ENV_TO_SCRUB` in `shepr-agent`), but nothing in the repo
-sets it. The guard is keyed on a name that nothing produces; it looks like a
-herdr leftover." Both readings are recorded; they disagree about whether there
-is a live setter.
-
-Enforcement named by both: one shared `pub const`, with the probe deriving its
-prefix from it, so a rename is a compile error.
 
 ## HYGG-060 - `is_pane_shell_process_name` fails open on a shell it does not know, and three shell-name lists have already diverged
 
@@ -1052,6 +1037,8 @@ directory - with no log line. Enforcement named: derive the depth from
 walking upward from the hook path.
 
 ## HYGG-064 - `ProcessDetectionMode::ChildGroups` is a claim nothing exercises
+
+**Decision:** WSL support is removed entirely; the mode is deleted.
 
 `shepr-agent`. No test sets `SHEPR_PROCESS_DETECTION=child-groups` end to end -
 the two `*_with` tests call the inner function directly - and on Linux
@@ -1201,7 +1188,8 @@ try_init();`. Enforcement named: return `Result` from `init_file_logging`, fail
 the launch on a bad filter, and add `clippy::let_underscore_must_use` (or just
 make the signature `-> io::Result<()>` so `unused_must_use` fires).
 
-*`SHEPR_PROCESS_DETECTION`* (`shepr-agent/src/detect/proc_tree.rs`):
+*`SHEPR_PROCESS_DETECTION`* (decided: deleted with WSL support, not moved into
+config) (`shepr-agent/src/detect/proc_tree.rs`):
 `process_detection_mode` reads the variable behind a `OnceLock` on the first
 foreground probe, and an unrecognised value produces `tracing::warn!` and native
 mode. It is config in all but name and breaks both halves of the rule: a typo is
@@ -1410,6 +1398,9 @@ at `debug` which includes were emitted and which paths were skipped; the path
 list itself cannot be enforced against OpenSSH's actual search order.
 
 ## HYGG-079 - `discard_remote_output_preamble` and two siblings are keyed on version-suffixed markers for a compatibility story the project does not have
+
+**Decision:** delete. The `--idle-timeout-v1` flag goes entirely (HYGP-039);
+the two markers keep their role and lose their `:1` / `-v1` suffixes.
 
 `REMOTE_OUTPUT_READY_MARKER = "shepr-remote-output-ready:1"`,
 `STALE_API_METADATA = "shepr-machine-metadata-stale-v1"`, and the
@@ -1727,6 +1718,10 @@ illegal transition is unrepresentable rather than asserted.
 
 ## HYGG-098 - `unregister_moved_pane` is a guard that vanishes in release
 
+**Decision:** delete the method and its call site in
+`shepr-server/src/app/api/panes/geometry.rs`. `take_pane_for_move` already
+removes the record and number together.
+
 `shepr-mux/src/workspace.rs`:
 
 ```rust
@@ -1840,9 +1835,8 @@ answer to the forced duplication. Neither test exists.
 
 ## HYGG-103 - The same shape one level down: `SHEPR_*` names spelled as literals in shipped assets with no membership test
 
-`shepr-mux/src/pane/launch.rs` exports `SHEPR_PANE_ID_ENV_VAR` publicly, keeps
-`SHEPR_TAB_ID_ENV_VAR` and `SHEPR_WORKSPACE_ID_ENV_VAR` private, and writes
-`"SHEPR_BIN_PATH"` as a bare literal; `shepr-server/src/app/tab_bar_status.rs`
+`shepr-mux/src/pane/launch.rs` exports `SHEPR_PANE_ID_ENV_VAR` publicly but
+writes `"SHEPR_BIN_PATH"` as a bare literal; `shepr-server/src/app/tab_bar_status.rs`
 writes `"SHEPR_BIN_PATH"` as a bare literal too, so there are two independent
 writers of one name with no shared definition. Roughly twenty shipped hook
 assets read both names as literals, and `shepr-agent` reports that every asset
@@ -1859,6 +1853,10 @@ last test is the only thing that can ever keep the deployment-forced copies
 honest, and it does not exist.
 
 ## HYGG-104 - The asset version parity test carries a hand-written list
+
+**Decision (partial):** Hermes support is removed entirely, so the Hermes
+manifest and plugin-name findings go with it. The hand-written list remains
+open.
 
 `shepr-agent`'s `bundled_integration_asset_versions_match_expected_versions`
 enumerates eighteen `(name, asset, version)` triples and omits
@@ -1878,6 +1876,9 @@ status only checks that `plugin.yaml` exists, not what it says. Checkable with a
 test that parses or greps the asset.
 
 ## HYGG-105 - Hermes's and Grok's declared hook events are fiction
+
+**Decision (partial):** Hermes support is removed entirely. The Grok half
+remains open.
 
 `shepr-agent`. `HERMES_HOOK_EVENTS` in `agent/mod.rs` declares one event,
 `SessionStart`, with action `Session`; the actual asset
@@ -2102,6 +2103,10 @@ named: remove the defaults, so the compiler requires each implementor to state
 its answer.
 
 ## HYGG-120 - The keybinding help screen is a hand-maintained restatement of the `Keybinds` struct
+
+**Decision:** the six hard-coded entries become configurable bindings with
+defaults - keys are either rebindable or not, and they are. Done together with
+the declarative keybinding table (HYGV-063).
 
 `shepr-client/src/keybind_help.rs::keybind_help_groups` enumerates
 `keybinds.<field>` by hand for every one of `Keybinds`' 47 fields plus
