@@ -105,7 +105,7 @@ fn is_directory(path: &Path) -> bool {
 
 const DATETIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
-const MAX_STATUS_TEXT_CHARS: usize = 80;
+const MAX_TAB_BAR_TEXT_CHARS: usize = 80;
 
 #[derive(Default)]
 pub(super) struct TabBarStatus {
@@ -137,6 +137,7 @@ pub(super) struct TabBarCommandRuntime {
     timeout: Duration,
     next_run_at: std::time::Instant,
     task: Option<StatusCommandTask>,
+    failure_logged: bool,
 }
 
 impl Drop for TabBarCommandRuntime {
@@ -165,7 +166,7 @@ impl App {
         self.tab_bar_status.datetimes.clear();
         self.tab_bar_status.commands.clear();
         self.state.tab_bar_right.clear();
-        self.state.tab_bar_right_separator = sanitize_separator(separator);
+        self.state.tab_bar_right_separator = TabBarText::new(separator).into_string();
 
         let now = std::time::Instant::now();
         for entry in entries {
@@ -174,11 +175,12 @@ impl App {
                     self.state.tab_bar_right.push(TabBarStatusSegment::Zoom);
                 }
                 ValidatedTabBarRightEntry::Hostname => {
-                    self.state
-                        .tab_bar_right
-                        .push(TabBarStatusSegment::Text(sanitize_status_text(
+                    self.state.tab_bar_right.push(TabBarStatusSegment::Text(
+                        TabBarText::trimmed(
                             shepr_platform::hostname().as_deref().unwrap_or_default(),
-                        )));
+                        )
+                        .into_option(),
+                    ));
                 }
                 ValidatedTabBarRightEntry::Datetime { format } => {
                     let value = format_local_datetime(format);
@@ -192,9 +194,9 @@ impl App {
                     });
                 }
                 ValidatedTabBarRightEntry::Text { text } => {
-                    self.state
-                        .tab_bar_right
-                        .push(TabBarStatusSegment::Text(sanitize_literal_text(text)));
+                    self.state.tab_bar_right.push(TabBarStatusSegment::Text(
+                        TabBarText::new(text).into_option(),
+                    ));
                 }
                 ValidatedTabBarRightEntry::Command {
                     command,
@@ -212,6 +214,7 @@ impl App {
                         timeout: Duration::from_secs(timeout_seconds.get()),
                         next_run_at: now,
                         task: None,
+                        failure_logged: false,
                     });
                 }
             }
@@ -304,9 +307,15 @@ impl App {
         runtime.task = None;
 
         let output = match result {
-            Ok(output) => output,
+            Ok(output) => {
+                runtime.failure_logged = false;
+                output
+            }
             Err(error) => {
-                tracing::warn!(command = %runtime.command, error, "tab bar status command failed");
+                if !runtime.failure_logged {
+                    tracing::warn!(segment_index, %error, "tab bar status command failed");
+                    runtime.failure_logged = true;
+                }
                 None
             }
         };
@@ -326,32 +335,53 @@ fn format_local_datetime(format: &time::format_description::OwnedFormatItem) -> 
     datetime
         .format(format)
         .ok()
-        .and_then(|value| sanitize_status_text(&value))
+        .and_then(|value| TabBarText::trimmed(&value).into_option())
 }
 
-fn sanitize_separator(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect()
+/// The only constructors for text that can reach the tab bar. All sources
+/// share the same control filtering and length bound. Separators and literal
+/// entries keep their spacing, which the user wrote on purpose; generated
+/// values (command output, hostname, datetime) are trimmed, so padding or a
+/// whitespace-only line does not render as a blank segment.
+struct TabBarText(String);
+
+impl TabBarText {
+    fn new(value: &str) -> Self {
+        Self(
+            Self::printable(value)
+                .take(MAX_TAB_BAR_TEXT_CHARS)
+                .collect(),
+        )
+    }
+
+    fn trimmed(value: &str) -> Self {
+        let printable: String = Self::printable(value).collect();
+        Self(
+            printable
+                .trim()
+                .chars()
+                .take(MAX_TAB_BAR_TEXT_CHARS)
+                .collect(),
+        )
+    }
+
+    fn printable(value: &str) -> impl Iterator<Item = char> + '_ {
+        value
+            .chars()
+            .filter(|character| !character.is_control() && !is_unicode_format_control(*character))
+    }
+
+    fn into_string(self) -> String {
+        self.0
+    }
+
+    fn into_option(self) -> Option<String> {
+        (!self.0.is_empty()).then_some(self.0)
+    }
 }
 
-fn sanitize_literal_text(value: &str) -> Option<String> {
-    let value: String = value
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
-    (!value.is_empty()).then_some(value)
-}
-
-fn sanitize_status_text(value: &str) -> Option<String> {
-    let value: String = value
-        .trim()
-        .chars()
-        .filter(|character| !character.is_control() && !is_unicode_format_control(*character))
-        .take(MAX_STATUS_TEXT_CHARS)
-        .collect();
-    (!value.is_empty()).then_some(value)
+fn status_command_timeout_error(timeout: Duration) -> String {
+    format!("timed out after {timeout:?}")
 }
 
 fn is_unicode_format_control(character: char) -> bool {
@@ -385,7 +415,10 @@ fn command_output_text(output: &[u8]) -> Option<String> {
     let output = String::from_utf8_lossy(output);
     let output = strip_terminal_control_sequences(output.as_bytes());
     let output = String::from_utf8_lossy(&output);
-    output.lines().next_back().and_then(sanitize_status_text)
+    output
+        .lines()
+        .next_back()
+        .and_then(|line| TabBarText::trimmed(line).into_option())
 }
 
 #[derive(Clone, Copy)]
@@ -579,7 +612,7 @@ async fn run_status_command(
     cwd: std::path::PathBuf,
 ) -> Result<Option<String>, String> {
     if control.is_terminated() || tokio::time::Instant::now() >= deadline {
-        return Err(format!("timed out after {}s", timeout.as_secs()));
+        return Err(status_command_timeout_error(timeout));
     }
 
     // host-program-ok: a status command is the user's shell command line
@@ -589,6 +622,8 @@ async fn run_status_command(
         .args(["-lc", &command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
+        // Arbitrary command stderr is unbounded and may contain secrets;
+        // failures are reported through redacted status errors instead.
         .stderr(Stdio::null())
         .envs(environment);
     configure_status_command(&mut process);
@@ -621,7 +656,7 @@ async fn run_status_command(
     };
     match tokio::time::timeout_at(deadline, operation).await {
         Ok(result) => result,
-        Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
+        Err(_) => Err(status_command_timeout_error(timeout)),
     }
 }
 
@@ -855,6 +890,9 @@ mod tests {
             Some("winter".into())
         );
         assert_eq!(command_output_text(b"\r\n"), None);
+        // Generated text is trimmed; padding alone is not a segment.
+        assert_eq!(command_output_text(b"  42%\t \n"), Some("42%".into()));
+        assert_eq!(command_output_text(b"   \n"), None);
     }
 
     #[test]
@@ -899,16 +937,56 @@ mod tests {
     }
 
     #[test]
-    fn status_text_strips_bidi_and_zero_width_format_controls() {
+    fn tab_bar_sources_share_control_filter_and_length_cap() {
+        let source = format!("safe\u{202e}{}", "x".repeat(90));
+        let expected = format!("safe{}", "x".repeat(76));
+        let mut app = test_app();
+        app.configure_tab_bar_status_config(
+            &[TabBarRightEntryConfig::Text {
+                text: source.clone(),
+            }],
+            &source,
+        );
+
         assert_eq!(
-            sanitize_status_text("safe\u{202e}evil\u{200b}"),
-            Some("safeevil".into())
+            app.state.tab_bar_right,
+            vec![TabBarStatusSegment::Text(Some(expected.clone()))]
+        );
+        assert_eq!(app.state.tab_bar_right_separator, expected);
+        assert_eq!(command_output_text(source.as_bytes()), Some(expected));
+    }
+
+    #[test]
+    fn tab_bar_text_preserves_spacing_and_drops_controls() {
+        assert_eq!(TabBarText::new(" \x1b|\n ").into_string(), " | ");
+    }
+
+    #[test]
+    fn timeout_error_keeps_subsecond_precision() {
+        assert_eq!(
+            status_command_timeout_error(Duration::from_millis(500)),
+            "timed out after 500ms"
         );
     }
 
     #[test]
-    fn separator_preserves_printable_spacing_and_drops_controls() {
-        assert_eq!(sanitize_separator(" \x1b|\n "), " | ");
+    fn command_failure_warning_state_resets_only_after_success() {
+        let mut app = test_app();
+        app.configure_tab_bar_status_config(
+            &[TabBarRightEntryConfig::Command {
+                command: "false".into(),
+                interval_seconds: 1,
+                timeout_seconds: 1,
+            }],
+            " ",
+        );
+
+        app.handle_tab_bar_command_finished(0, Err("exited with status 1".into()));
+        assert!(app.tab_bar_status.commands[0].failure_logged);
+        app.handle_tab_bar_command_finished(0, Err("exited with status 1".into()));
+        assert!(app.tab_bar_status.commands[0].failure_logged);
+        app.handle_tab_bar_command_finished(0, Ok(Some("healthy".into())));
+        assert!(!app.tab_bar_status.commands[0].failure_logged);
     }
 }
 

@@ -26,6 +26,8 @@ impl EventHub {
 
     pub fn push(&self, event: crate::schema::EventEnvelope) {
         let sequence = {
+            // A poisoned history may have inconsistent sequence and event data; do not publish
+            // into it. Readers report the unavailable history instead of treating it as empty.
             let Ok(mut state) = self.inner.lock() else {
                 return;
             };

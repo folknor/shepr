@@ -8,6 +8,13 @@ use shepr_api::client::{ApiClientError, parse_response_value};
 use shepr_api::schema::{Method, Request, ResponseResult, ServerSshAgentRegisterParams};
 use shepr_platform::ipc::{LocalStream, LocalStreamRead, LocalStreamReadCount};
 
+const STREAM_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
+/// Keep retrying while the bridge is attached because the API server can restart
+/// at any time. Capping the delay bounds wakeups during a long outage.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
+const MAX_RESPONSE_BYTES: usize = 4096;
+
 pub(super) struct Registration {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -38,22 +45,46 @@ impl Registration {
         let worker_stop = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
             let mut byte = [0];
-            while !worker_stop.load(Ordering::Relaxed) {
+            let mut retry_delay = INITIAL_RETRY_DELAY;
+            while !worker_stop.load(Ordering::Acquire) {
                 if let Some(connection) = stream.as_mut() {
-                    if !matches!(
+                    if matches!(
                         shepr_platform::ipc::poll_local_stream_read(connection, &mut byte),
                         Ok(LocalStreamRead::Pending)
                     ) {
-                        stream = None;
+                        std::thread::park_timeout(STREAM_POLL_INTERVAL);
+                        continue;
                     }
-                } else {
-                    // Retry both initial API readiness and connections lost during handoff.
-                    match connect(&path, &socket_path) {
-                        Ok(None) => break,
-                        result => stream = result.ok().flatten(),
+                    stream = None;
+                    retry_delay = INITIAL_RETRY_DELAY;
+                }
+
+                // Retry both initial API readiness and connections lost during handoff.
+                match connect(&path, &socket_path) {
+                    Ok(None) => break,
+                    Ok(Some(connection)) => {
+                        stream = Some(connection);
+                        retry_delay = INITIAL_RETRY_DELAY;
+                        std::thread::park_timeout(STREAM_POLL_INTERVAL);
+                    }
+                    Err(error) => {
+                        let wait = retry_delay;
+                        retry_delay = next_retry_delay(retry_delay);
+                        // A missing API server is often permanent for the bridge's
+                        // life, so log when a failure streak starts and when the
+                        // delay settles at its ceiling, not on every retry.
+                        if wait == INITIAL_RETRY_DELAY
+                            || (wait < MAX_RETRY_DELAY && retry_delay == MAX_RETRY_DELAY)
+                        {
+                            tracing::debug!(
+                                %error,
+                                retry_after_ms = wait.as_millis(),
+                                "SSH agent registration retry failed; retrying while attached"
+                            );
+                        }
+                        std::thread::park_timeout(wait);
                     }
                 }
-                std::thread::sleep(Duration::from_millis(100));
             }
         });
         Some(Self {
@@ -65,14 +96,20 @@ impl Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            // The panic itself went to the panic hook; this names what stopped.
-            tracing::error!("SSH agent registration thread panicked");
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            // Wake a worker that is in its capped retry wait so bridge teardown is prompt.
+            thread.thread().unpark();
+            if thread.join().is_err() {
+                // The panic itself went to the panic hook; this names what stopped.
+                tracing::error!("SSH agent registration thread panicked");
+            }
         }
     }
+}
+
+fn next_retry_delay(current: Duration) -> Duration {
+    current.saturating_mul(2).min(MAX_RETRY_DELAY)
 }
 
 fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
@@ -102,7 +139,13 @@ fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     let deadline = Instant::now() + timeout;
     let mut response = Vec::new();
     let mut byte = [0];
-    while Instant::now() < deadline && response.len() < 4096 {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "SSH agent registration did not complete",
+            ));
+        }
         match shepr_platform::ipc::poll_local_stream_read_count(&mut stream, &mut byte)? {
             LocalStreamReadCount::Data(_) if byte[0] == b'\n' => {
                 let response = match parse_response_value(serde_json::from_slice(&response)?) {
@@ -122,17 +165,23 @@ fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
                     )),
                 };
             }
-            LocalStreamReadCount::Data(_) => response.push(byte[0]),
+            LocalStreamReadCount::Data(_) => {
+                if response.len() == MAX_RESPONSE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "SSH agent registration response exceeded {MAX_RESPONSE_BYTES} bytes"
+                        ),
+                    ));
+                }
+                response.push(byte[0]);
+            }
             LocalStreamReadCount::Closed => {
                 return Err(io::Error::other("SSH agent registration closed"));
             }
             LocalStreamReadCount::Pending => std::thread::sleep(Duration::from_millis(10)),
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "SSH agent registration did not complete",
-    ))
 }
 
 #[cfg(test)]
@@ -140,6 +189,18 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read};
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn retry_delay_grows_to_a_fixed_ceiling() {
+        let mut delay = INITIAL_RETRY_DELAY;
+        while delay < MAX_RETRY_DELAY {
+            let next = next_retry_delay(delay);
+            assert!(next > delay);
+            delay = next;
+        }
+        assert_eq!(delay, MAX_RETRY_DELAY);
+        assert_eq!(next_retry_delay(delay), MAX_RETRY_DELAY);
+    }
 
     #[test]
     fn registration_stops_when_the_server_rejects_the_agent() {
@@ -182,6 +243,52 @@ mod tests {
             registration.is_none(),
             "a rejected agent must not start a retry worker"
         );
+    }
+
+    #[test]
+    fn registration_rejects_a_response_larger_than_the_limit() {
+        let scratch = shepr_test_support::ScratchDir::new("agent-response-too-large");
+        let socket_path = scratch.join("api.sock");
+        let listener = UnixListener::bind(&socket_path).expect("test precondition");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test precondition");
+            let mut line = String::new();
+            BufReader::new(&mut stream)
+                .read_line(&mut line)
+                .expect("test precondition");
+            let request: serde_json::Value =
+                serde_json::from_str(&line).expect("test precondition");
+            assert_eq!(request["method"], "ping");
+            writeln!(
+                stream,
+                "{}",
+                serde_json::json!({"id": request["id"], "result": {
+                    "type": "pong", "version": "test",
+                    "build_id": shepr_protocol::BUILD_ID,
+                    "capabilities": {"detached_server_daemon": false,
+                        "ssh_agent_registration": true}
+                }})
+            )
+            .expect("test precondition");
+
+            let (mut stream, _) = listener.accept().expect("test precondition");
+            let mut line = String::new();
+            BufReader::new(&mut stream)
+                .read_line(&mut line)
+                .expect("test precondition");
+            let request: serde_json::Value =
+                serde_json::from_str(&line).expect("test precondition");
+            assert_eq!(request["method"], "server.ssh_agent.register");
+            stream
+                .write_all(&vec![b'x'; MAX_RESPONSE_BYTES + 1])
+                .expect("test precondition");
+        });
+
+        let error =
+            connect("/test/agent.sock", &socket_path).expect_err("oversized response must fail");
+        server.join().expect("test precondition");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("response exceeded 4096 bytes"));
     }
 
     #[test]

@@ -104,8 +104,9 @@ beside `read`. `std::env::var`/`var_os`/`vars`/`vars_os` and
 escapes (so the `unsafe remove_var` in `bootstrap.rs` must go), `IsolatedEnv`
 isolates from the registry rather than a `SHEPR_` prefix, `SHEPR_LOG` becomes an
 entry, and a test holds every `SHEPR_*` literal in the shipped assets to
-registry membership. Open: rendering the registry into `shepr --help`, and the
-pane-inheritance question (which entries a pane may inherit, HYGP-018).
+registry membership. Open: the pane-inheritance question (which entries a pane
+may inherit, HYGP-018). Rendering the registry into `shepr --help` is a new
+claim, moved to `notes/todo.md`.
 
 Reported by the core/platform, api/cli and mux hunters.
 
@@ -234,7 +235,7 @@ Owners of the names:
   reads `XDG_CONFIG_HOME` directly, filters on `is_absolute()`, and falls back to
   `~/.config/git/config`. The mux hunter notes this duplication has a legitimate
   answer (these are Git's paths, not shepr's, and the file says so) but that the
-  answer is incomplete - see HYGV-071.
+  answer is incomplete - see BUG-064.
 
 Owners of the rule (protocol/config hunter, inside `resolve_paths_from_env` /
 `platform_xdg_dir` / `socket_path_override` alone - five variables, four rules):
@@ -285,14 +286,6 @@ and all three call it (mux already calls `ssh_agent::pane_agent_socket`, so the
 module is the natural owner). Enforcement: a `brokkr.toml` text rule forbidding
 the literal `"SSH_AUTH_SOCK"` outside `shepr-platform/src/ssh_agent.rs`, the same
 shape as the existing `alacritty-terminal-only-in-shepr-vt` rule.
-
-## HYGV-011 - `SHEPR_LOG` is read at the moment of use and an invalid value degrades silently
-
-Merged into BUG-044 (`notes/bugs.md`), which carries the full finding.
-
-Fix: move it into the config file (or validate it during launch and pass the mode
-down); `parse_process_detection_mode` is already the right shape for that. See
-also HYGV-085 for the mode's missing injection point.
 
 ## HYGV-013 - `SHEPR_DEBUG_OSC_EVIDENCE` is resolved at pane creation, not at launch, and is documented nowhere
 
@@ -496,14 +489,6 @@ Enforcement: one mapping function in `shepr-agent` used by both
 `attention_rank` and `pane_agent_status`, with the `aggregate.rs` doc comment
 deleted rather than restated.
 
-## HYGV-022 - The session-start-source vocabulary is spelled three times and the copies disagree
-
-Merged into BUG-018 (`notes/bugs.md`), which carries the full finding.
-
-## HYGV-023 - The `shepr:<agent>` source string and the agent label are hard-coded in every asset
-
-Merged into HYGG-102 (`notes/hygiene-guards.md`), which carries the full finding.
-
 ## HYGV-024 - `/etc/ssh/ssh_config` is hardcoded, in an `Option` that is never `None`
 
 Reported by the core/platform hunter, as fact.
@@ -549,10 +534,6 @@ defines a private `fits_unix_socket_path` shim over
 `shepr-remote` already depends on directly, used by `attach.rs` at three sites -
 which makes the socket limit look like it has two owners.
 
-## HYGV-026 - Socket basenames are single-owned but the test fixture spells them relatively
-
-Merged into HYGG-024 (`notes/hygiene-guards.md`), which carries the full finding.
-
 ## HYGV-027 - The client state subdirectory is spelled at three sites, two ways
 
 Reported by the remote hunter.
@@ -589,36 +570,6 @@ Fix: consts in `io.rs`, `writer.rs` calling `io::` accessors, and the guard
 replaced by a `PrunePolicy { Fatal, Warn }` passed alongside `keep`, which makes
 the string comparison disappear entirely. Holdable by a text rule once the
 literals are gone.
-
-## HYGV-029 - The recovery-filename timestamp width is spelled twice, ninety lines apart
-
-Reported by the mux hunter.
-
-`crates/shepr-mux/src/persist/writer.rs` writes
-`format!("session-{timestamp:039}-{}-{sequence}.json", std::process::id())` and
-later checks `fields[0].len() == 39`. Change one and every existing recovery copy
-becomes invisible to pruning and to `prepare_snapshot_history`, silently, because
-`recovery_files` just skips names it cannot parse.
-
-Fix: a `const RECOVERY_TIMESTAMP_DIGITS: usize = 39` used by the format string
-(`{timestamp:0width$}`) and the check, plus a round-trip test.
-
-## HYGV-030 - Two pending-file naming conventions in one module
-
-Merged into BUG-069 (`notes/bugs.md`), which carries the full finding.
-
-## HYGV-031 - The temp-file prefix in `store_private_json` is wrong for two of its three users
-
-Reported by the remote hunter, as fact.
-
-`crates/shepr-remote/src/machine/catalog.rs::store_private_json` names its
-staging file `.endpoints-<pid>-<seq>.tmp` regardless of the `description` it was
-given, and it is used for the endpoint catalog, the endpoint selection, and the
-SSH metadata cache. A leftover `.endpoints-*.tmp` in the `ssh-metadata` directory
-names the wrong subject.
-
-Fix: derive the prefix from the destination file name. Enforcement: a test
-asserting the staged name derives from the target path.
 
 ## HYGV-032 - `"shepr"` as a program name has two resolution rules, plus an independent remote-install location list
 
@@ -1276,10 +1227,6 @@ Reported by the vt/pty hunter.
 next to a `RowWrap` type with the same two fields; the comment admits it. Fix by
 type: embed `RowWrap`.
 
-## HYGV-057 - The seqlock protocol on `content_seq` is hand-copied at six sites, and the sync epoch bump at four
-
-Merged into HYGP-020 (`notes/hygiene-policy.md`), which carries the full finding.
-
 ## HYGV-058 - `PANE_TERM` has one owner but `PANE_COLORTERM` lives in another crate, and a test re-spells both
 
 **Decision (partial):** `pane_terminal_identity_overrides_outer_terminal_env`
@@ -1545,17 +1492,15 @@ Reported by the protocol/config hunter.
 are correct, but someone tuning one will edit the alias and find it does nothing
 independent. Fix: delete the aliases and use the protocol constants directly.
 
-## HYGV-071 - The Git configuration rule has four owners, and two of the parsers already disagree
-
-Merged into BUG-063 (`notes/bugs.md`) and BUG-064 (`notes/bugs.md`), which carry the full finding.
-
 ## HYGV-072 - Three boolean-from-string parsers, no owner, and one is an incomplete implementation of an external grammar
 
 **Decision (partial):** the `env_bool()` half is piece 1 (the `shepr-core`
 environment registry, after broadarrow's `core::env`): shepr env flags have one
 kind and one rule, exactly `1`/`0`/`true`/`false`, so `osc.rs`'s
-`"1" | "true" | "yes" | "on"` goes (and `yes`/`on` become refusals). Open: the
-`git_bool()` half against Git's grammar.
+`"1" | "true" | "yes" | "on"` goes (and `yes`/`on` become refusals). The
+`git_bool()` half is resolved: `git/config.rs::git_config_bool` follows git's
+grammar (checked against git 2.53) and serves `core.bare` and
+`worktree_config_enabled`. Open: the env half, until piece 1 lands at `osc.rs`.
 
 Reported by the mux hunter.
 
@@ -1699,10 +1644,6 @@ parameter (or read it off the spec row) so every call site goes through one
 function, and make `claude_settings` take the event list so the descriptor really
 is the domain source its module doc claims.
 
-## HYGV-080 - Shell-name lists have already diverged three ways, and panes running some shells get no detection
-
-Merged into BUG-017 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGV-081 - Two walkers over one argv grammar, each with its own flag list
 
 Reported by the agent hunter.
@@ -1757,20 +1698,6 @@ consequently sleeps 300 ms plus 50 ms of real wall clock to let a grandchild die
 Fix: have `enforce_agent_version` take the timeout (or a small `ProbeBudget`),
 and the test stops needing the wall clock.
 
-## HYGV-086 - Log rotation size and retention have no injection point and never reach the config crate
-
-Reported by the core/platform hunter.
-
-`crates/shepr-platform/src/logging.rs::init_file_logging(dir, file_name)`
-hardcodes `DEFAULT_MAX_LOG_BYTES` and `DEFAULT_RETAINED_LOG_FILES` into the
-`RotatingFileMakeWriter::new` call. The struct already takes both as parameters
-and the tests use that, so production cannot set them. A 5 MiB cap with one
-generation is a policy decision that never reaches `shepr-config`, the crate that
-owns "read and validate once at launch".
-
-Fix: move both into `shepr-config` as validated keys and pass them to
-`init_file_logging`, after which the launch-time validation rule covers them.
-
 ## HYGV-087 - Identifier allocation reaches process-global counters and clocks directly, with no injection point and no owner of the format
 
 Reported by the core/platform, protocol/config, remote and server hunters.
@@ -1814,10 +1741,6 @@ Reported by the core/platform, protocol/config, remote and server hunters.
   id or layout position", while `TerminalId` has a public `From<String>` and a
   non-`cfg`-gated `pub fn test_new`, so deriving one from anything is a one-liner.
   Removing `From<String>` and gating `test_new` makes the claim structural.
-
-## HYGV-088 - The clock has no injection point in several subsystems, and tests wait or fabricate mtimes as a result
-
-Merged into HYGP-001 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGV-089 - Remote configuration is validated at the moment of use, on the client, at attach time
 
@@ -1972,10 +1895,6 @@ Reported by the server hunter.
 there and the two will drift. Fix: move the aliases into `shepr-config` next to
 the parser.
 
-## HYGV-097 - The remote `status --json` contract is two independent structs with no shared type
-
-Merged into HYGG-080 (`notes/hygiene-guards.md`), which carries the full finding.
-
 ## HYGV-098 - The `local` / `server` keybinding-role round trip is spelled twice, in two crates
 
 **Decision (partial):** piece 1 (the `shepr-core` environment registry, after
@@ -2023,14 +1942,6 @@ Fix: one `fn is_shell_plain_word(s: &str) -> bool` called by both. Enforcement: 
 test asserting `shell_quote(s) == s` exactly when
 `has_only_shell_safe_characters(s)`, writeable today, which pins the two together
 without merging them.
-
-## HYGV-100 - An untrusted remote version string is rendered by two policies, and the looser one is the interactive prompt
-
-Merged into BUG-038 (`notes/bugs.md`), which carries the full finding.
-
-## HYGV-101 - `input_wire` is one conversion layer written twice, with the accounting rule byte-identical and the unknown-bit policy opposite
-
-Merged into HYGP-023 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGV-102 - The local endpoint's name exists in three spellings
 
@@ -2080,14 +1991,6 @@ the project's "any config problem fails the launch; no fallbacks".
 Fix: a startup probe on the preferences path, which turns this into a launch
 refusal. Checkable by a test that launches with a read-only state directory.
 
-## HYGV-105 - Two distinct types named `DeadlineReader` in one crate
-
-Merged into HYGP-007 (`notes/hygiene-policy.md`), which carries the full finding.
-
-## HYGV-106 - Nine `serde` bounded-vec annotations restate the codec's own default cap
-
-Merged into HYGP-056 (`notes/hygiene-policy.md`), which carries the full finding.
-
 ## HYGV-107 - `read_message`'s `max_frame_size` parameter has had one value at every production call site
 
 Reported by the protocol/config hunter.
@@ -2100,8 +2003,3 @@ cap and nothing notices.
 Fix: drop the parameter from the public function and keep a
 `#[cfg(any(test, feature = "test-support"))]` variant for the one test; the
 signature then makes the bad spelling unrepresentable.
-
-## HYGV-108 - `git` is invoked from four production sites with four policies, and the client's is the least careful
-
-Merged into BUG-066 (`notes/bugs.md`), which carries the full finding.
-

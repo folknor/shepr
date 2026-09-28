@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
@@ -40,18 +40,16 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
 
 pub(crate) fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     let repo_root = git_repo_root(cwd)?;
-    let git_dir = canonicalize_best_effort_path(&git_dir_for_repo_root(&repo_root)?);
-    let git_common_dir = canonicalize_best_effort_path(&git_common_dir_for_git_dir(&git_dir)?);
-    let is_linked_worktree = git_dir != git_common_dir;
-    let is_bare = git_dir_is_bare(&git_dir);
-
-    Some(GitWorktreeInfo {
-        repo_root,
-        git_dir,
-        git_common_dir,
-        is_bare,
-        is_linked_worktree,
-    })
+    let git_dir = git_dir_for_repo_root(&repo_root)?;
+    let mut info = git_config_info(&repo_root, &git_dir).ok()?;
+    info.is_bare = match git_dir_is_bare(&info) {
+        Ok(is_bare) => is_bare,
+        Err(error) => {
+            tracing::debug!(path = %info.git_dir.join("config").display(), %error, "git config unreadable");
+            return None;
+        }
+    };
+    Some(info)
 }
 
 /// Inside a Git checkout the label is the checkout root's name; the home
@@ -119,6 +117,25 @@ fn git_common_dir_for_git_dir(git_dir: &Path) -> Option<PathBuf> {
         path.to_path_buf()
     } else {
         git_dir.join(path)
+    })
+}
+
+fn git_config_info(repo_root: &Path, git_dir: &Path) -> io::Result<GitWorktreeInfo> {
+    let repo_root = repo_root.to_path_buf();
+    let git_dir = canonicalize_best_effort_path(git_dir);
+    let git_common_dir = git_common_dir_for_git_dir(&git_dir).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} has an unreadable commondir", git_dir.display()),
+        )
+    })?;
+    let git_common_dir = canonicalize_best_effort_path(&git_common_dir);
+    Ok(GitWorktreeInfo {
+        repo_root,
+        is_linked_worktree: git_dir != git_common_dir,
+        git_dir,
+        git_common_dir,
+        is_bare: false,
     })
 }
 
@@ -241,8 +258,11 @@ fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<PathBuf>> {
         Some(_) | None => {}
     }
 
-    if path_is_git_dir_layout(repo_root)? && git_dir_is_bare(repo_root) {
-        return Ok(Some(repo_root.to_path_buf()));
+    if path_is_git_dir_layout(repo_root)? {
+        let info = git_config_info(repo_root, repo_root)?;
+        if git_dir_is_bare(&info)? {
+            return Ok(Some(repo_root.to_path_buf()));
+        }
     }
 
     Ok(None)
@@ -262,56 +282,59 @@ pub(super) fn git_rev_parse_verify(repo_root: &Path, revision: &str) -> Option<S
     git_trimmed_stdout(repo_root, &["rev-parse", "--verify", revision])
 }
 
-pub(super) fn git_ref_storage_is_reftable(git_common_dir: &Path) -> bool {
-    read_git_config_value(&git_common_dir.join("config"), "extensions", "refstorage")
-        .is_some_and(|value| value.eq_ignore_ascii_case("reftable"))
+/// Whether the repository keeps its refs in a reftable store. Git takes
+/// `extensions.refstorage` from the common directory's `config` file alone,
+/// as part of its repository format check: an include or the user's global
+/// config cannot switch the ref backend, so neither is read here.
+pub(super) fn git_ref_storage_is_reftable(
+    info: &GitWorktreeInfo,
+) -> io::Result<(bool, Vec<super::config::FileDep>)> {
+    let config_path = info.git_common_dir.join("config");
+    let result =
+        super::config::read_repository_format_value(&config_path, "extensions", "refstorage");
+    let (value, deps) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::debug!(path = %config_path.display(), %error, "git config unreadable");
+            return Err(error);
+        }
+    };
+    Ok((
+        value.is_some_and(|value| value.eq_ignore_ascii_case("reftable")),
+        deps,
+    ))
 }
 
-fn git_dir_is_bare(git_dir: &Path) -> bool {
-    read_git_config_value(&git_dir.join("config"), "core", "bare")
-        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+/// Whether `core.bare` resolves to true for this Git directory. Unlike the
+/// repository format keys, Git's effective `core.bare` (what `git rev-parse
+/// --is-bare-repository` reports from inside a Git directory) comes from the
+/// whole config chain: the user's global files, then the repository's config,
+/// each with its includes, the last value winning. So a bare repository whose
+/// `core.bare = true` sits in an included file or in `~/.gitconfig` is still
+/// bare here. The value takes Git's boolean grammar; a malformed one, which
+/// Git refuses to run on, reads as not bare. One deliberate difference: Git
+/// treats a Git directory it discovers as bare when `core.bare` is unset,
+/// while this requires an explicit true, so a directory that merely looks
+/// like a Git directory is walked past rather than taken as a repository
+/// root.
+fn git_dir_is_bare(info: &GitWorktreeInfo) -> io::Result<bool> {
+    let branch = git_head_branch(&info.git_dir);
+    let mut config_paths = super::config::git_user_config_paths();
+    config_paths.push(info.git_dir.join("config"));
+    let (value, _) =
+        super::config::read_config_value(info, &branch, &config_paths, "core", "bare")?;
+    Ok(value.as_deref().and_then(super::config::git_config_bool) == Some(true))
 }
 
-fn read_git_config_value(path: &Path, section: &str, key: &str) -> Option<String> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    let mut in_section = false;
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        if let Some(section_name) = simple_git_config_section(line) {
-            in_section = section_name.eq_ignore_ascii_case(section);
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let Some((name, value)) = line.split_once('=') else {
-            continue;
-        };
-        if name.trim().eq_ignore_ascii_case(key) {
-            return Some(strip_git_config_comment(value).trim().to_string());
-        }
-    }
-    None
-}
-
-fn simple_git_config_section(line: &str) -> Option<&str> {
-    let section = line.strip_prefix('[')?.split_once(']')?.0.trim();
-    (!section.contains('"')).then_some(section)
-}
-
-fn strip_git_config_comment(value: &str) -> &str {
-    let value = value.trim();
-    for marker in ['#', ';'] {
-        if let Some((prefix, _)) = value.split_once(marker)
-            && prefix.chars().next_back().is_some_and(char::is_whitespace)
-        {
-            return prefix;
-        }
-    }
-    value
+fn git_head_branch(git_dir: &Path) -> String {
+    std::fs::read_to_string(git_dir.join("HEAD"))
+        .ok()
+        .and_then(|head| {
+            head.trim()
+                .strip_prefix("ref: refs/heads/")
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
 }
 
 fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
@@ -664,6 +687,7 @@ mod tests {
 
     #[test]
     fn discovery_does_not_ascend_into_or_above_a_ceiling() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let (outer, ceiling, work) = checkout_with_ceiling_below("ceiling-stops-walk");
         let spelled = ceiling.to_str().expect("test precondition");
 
@@ -690,6 +714,7 @@ mod tests {
 
     #[test]
     fn a_checkout_below_a_ceiling_and_a_ceiling_start_are_still_found() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let (_, ceiling, work) = checkout_with_ceiling_below("ceiling-below");
         let spelled = ceiling.to_str().expect("test precondition");
         let inner = work.join("inner");
@@ -710,6 +735,7 @@ mod tests {
 
     #[test]
     fn relative_ceiling_entries_are_ignored() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let (outer, _, work) = checkout_with_ceiling_below("ceiling-relative");
 
         assert_eq!(
@@ -723,6 +749,7 @@ mod tests {
     /// taken as spelled, as Git takes them.
     #[test]
     fn ceilings_resolve_symlinks_until_an_empty_entry() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let (outer, ceiling, work) = checkout_with_ceiling_below("ceiling-symlink");
         let link = outer.join("link");
         std::os::unix::fs::symlink(&ceiling, &link).expect("test precondition");
@@ -775,6 +802,7 @@ mod tests {
 
     #[test]
     fn git_space_metadata_supports_standalone_bare_repo() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let bare = temp_test_dir("bare-space");
         write_git_dir(&bare, "main", true);
         let nested = bare.join("refs");
@@ -794,6 +822,7 @@ mod tests {
 
     #[test]
     fn bare_source_and_linked_checkout_share_repo_name_but_not_auto_label() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let (_, bare, checkout) =
             crate::git::test_support::create_bare_repo_with_linked_worktree("bare-linked-labels");
 
@@ -824,6 +853,7 @@ mod tests {
 
     #[test]
     fn embedded_dot_bare_source_and_checkout_use_container_repo_name() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("embedded-dot-bare");
         let repo = base.join("reported-repo");
         let bare = repo.join(".bare");
@@ -841,6 +871,7 @@ mod tests {
 
     #[test]
     fn git_space_metadata_marks_bare_dot_git_repo() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("bare-dot-git");
         write_git_dir(&root.join(".git"), "main", true);
 
@@ -861,6 +892,7 @@ mod tests {
 
     #[test]
     fn derive_label_prefers_repo_root_name() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("label-repo");
         let nested = root.join("nested");
         std::fs::create_dir_all(root.join(".git")).expect("test precondition");
@@ -892,6 +924,7 @@ mod tests {
     /// binary format only Git writes, so Git makes this fixture.
     #[test]
     fn git_rev_parse_verify_reads_reftable_refs() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("reftable-ref-oid");
         let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git

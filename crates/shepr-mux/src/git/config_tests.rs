@@ -1,14 +1,176 @@
 use super::config::*;
 use crate::git::{
-    discovery::git_worktree_info,
+    discovery::{git_ref_storage_is_reftable, git_repo_root, git_worktree_info},
     status::git_status_fingerprint,
     test_support::{temp_test_dir, write_fake_tracked_repo},
 };
 
 #[test]
+fn tilde_git_config_paths_require_a_valid_home() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let config = env.path().join("config");
+    for home in [None, Some(""), Some("relative/home")] {
+        match home {
+            Some(home) => env.set("HOME", home),
+            None => env.remove("HOME"),
+        }
+        assert!(normalize_gitdir_include_pattern("~/repo", &config).is_none());
+        assert!(resolve_include_path(&config, "~/included.cfg").is_none());
+    }
+}
+
+/// A directory laid out as a Git directory (`HEAD`, `objects`, `refs`) whose
+/// own `config` holds `config`.
+fn bare_layout(name: &str, config: &str) -> std::path::PathBuf {
+    let bare = temp_test_dir(name);
+    std::fs::create_dir_all(bare.join("objects")).expect("test precondition");
+    std::fs::create_dir_all(bare.join("refs")).expect("test precondition");
+    std::fs::write(bare.join("HEAD"), "ref: refs/heads/main\n").expect("test precondition");
+    std::fs::write(bare.join("config"), config).expect("test precondition");
+    bare
+}
+
+/// Git resolves `core.bare` through includes: a bare repository whose
+/// config reaches `bare = true` only through `include.path` is bare to
+/// `git rev-parse --is-bare-repository`, so it is a repository root here.
+#[test]
+fn included_core_bare_marks_a_bare_layout_as_a_repository_root() {
+    let _env = shepr_test_support::IsolatedEnv::new();
+    let bare = bare_layout(
+        "included-core-bare",
+        "[core]\n\tbare = false\n[include]\n\tpath = bare.cfg\n",
+    );
+    std::fs::write(bare.join("bare.cfg"), "[core]\n\tbare = true\n").expect("test precondition");
+
+    assert_eq!(git_repo_root(&bare.join("refs")), Some(bare));
+}
+
+/// Git resolves `core.bare` through the global config too, with the
+/// repository's own config read last and winning.
+#[test]
+fn global_core_bare_applies_unless_the_repository_config_overrides_it() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    std::fs::write(env.home().join(".gitconfig"), "[core]\n\tbare = true\n")
+        .expect("test precondition");
+
+    let bare = bare_layout("global-core-bare", "[core]\n");
+    assert_eq!(git_repo_root(&bare.join("refs")), Some(bare));
+
+    let overridden = bare_layout("global-core-bare-overridden", "[core]\n\tbare = false\n");
+    assert_eq!(git_repo_root(&overridden.join("refs")), None);
+}
+
+/// `core.bare` takes Git's boolean grammar, each spelling checked against
+/// `git rev-parse --is-bare-repository`. Git refuses to run on a malformed
+/// value such as `maybe`; discovery reads it as not bare.
+#[test]
+fn core_bare_takes_git_boolean_spellings() {
+    let _env = shepr_test_support::IsolatedEnv::new();
+    let cases = [
+        ("\tbare = yes\n", true),
+        ("\tbare = on\n", true),
+        ("\tbare = 1\n", true),
+        ("\tbare = 2\n", true),
+        ("\tbare = TRUE\n", true),
+        ("\tbare\n", true),
+        ("\tbare = true\n\tbare =\n", false),
+        ("\tbare = no\n", false),
+        ("\tbare = off\n", false),
+        ("\tbare = 0\n", false),
+        ("\tbare = maybe\n", false),
+    ];
+    for (index, (lines, bare)) in cases.into_iter().enumerate() {
+        let dir = bare_layout(
+            &format!("core-bare-spelling-{index}"),
+            &format!("[core]\n{lines}"),
+        );
+        let expected = bare.then(|| dir.clone());
+        assert_eq!(git_repo_root(&dir.join("refs")), expected, "{lines:?}");
+    }
+    assert_eq!(git_config_bool("1k"), Some(true));
+    assert_eq!(git_config_bool("0g"), Some(false));
+    assert_eq!(git_config_bool("-1"), Some(true));
+}
+
+/// Git reads `extensions.refstorage` from the repository's own config file
+/// alone: `git rev-parse --show-ref-format` still reports `files` when
+/// `reftable` comes only from an include or the global config.
+#[test]
+fn ref_storage_reads_only_the_repository_config_file() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let repo = temp_test_dir("repository-only-refstorage");
+    write_fake_tracked_repo(&repo);
+    let config = repo.join(".git/config");
+    std::fs::write(
+        &config,
+        "[core]\n\trepositoryformatversion = 1\n[include]\n\tpath = extensions.cfg\n",
+    )
+    .expect("test precondition");
+    std::fs::write(
+        repo.join(".git/extensions.cfg"),
+        "[extensions]\n\trefstorage = reftable\n",
+    )
+    .expect("test precondition");
+    std::fs::write(
+        env.home().join(".gitconfig"),
+        "[extensions]\n\trefstorage = reftable\n",
+    )
+    .expect("test precondition");
+    let info = git_worktree_info(&repo).expect("test precondition");
+
+    let (is_reftable, _) = git_ref_storage_is_reftable(&info).expect("test precondition");
+    assert!(!is_reftable);
+
+    std::fs::write(
+        &config,
+        "[core]\n\trepositoryformatversion = 1\n[Extensions]\n\tRefStorage = reftable\n",
+    )
+    .expect("test precondition");
+    let (is_reftable, deps) = git_ref_storage_is_reftable(&info).expect("test precondition");
+    assert!(is_reftable);
+    assert!(deps.iter().any(|dep| dep.0 == config));
+    assert!(deps_current(&deps));
+    std::fs::write(&config, "[core]\n\trepositoryformatversion = 1\n").expect("test precondition");
+    assert!(!deps_current(&deps));
+}
+
+#[test]
+fn git_config_value_distinguishes_missing_key_from_read_failure() {
+    use std::os::unix::fs::symlink;
+
+    let _env = shepr_test_support::IsolatedEnv::new();
+    let root = temp_test_dir("git-config-read-failure");
+    write_fake_tracked_repo(&root);
+    let info = git_worktree_info(&root).expect("test precondition");
+    let config = root.join(".git/config");
+
+    std::fs::write(&config, "[core]\n\tbare = false\n").expect("test precondition");
+    let (missing, _) = read_repository_format_value(&config, "extensions", "refstorage")
+        .expect("an absent key is not a read failure");
+    assert_eq!(missing, None);
+    let (absent_file, _) = read_repository_format_value(
+        &root.join(".git/no-such-config"),
+        "extensions",
+        "refstorage",
+    )
+    .expect("an absent file is not a read failure");
+    assert_eq!(absent_file, None);
+
+    std::fs::remove_file(&config).expect("test precondition");
+    symlink("config", &config).expect("test precondition");
+    assert!(read_repository_format_value(&config, "extensions", "refstorage").is_err());
+    assert!(git_ref_storage_is_reftable(&info).is_err());
+    assert!(
+        read_config_value(&info, "main", std::slice::from_ref(&config), "core", "bare").is_err()
+    );
+    assert!(git_worktree_info(&root).is_none());
+}
+
+#[test]
 fn config_symlink_retarget_invalidates_context() {
     use std::os::unix::fs::symlink;
 
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("config-symlink-retarget");
     write_fake_tracked_repo(&root);
     let alias = root.join("branch.cfg");
@@ -30,18 +192,18 @@ fn config_symlink_retarget_invalidates_context() {
 
 #[test]
 fn config_read_error_retries_next_refresh() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("config-read-error");
     write_fake_tracked_repo(&root);
+    let info = git_worktree_info(&root).expect("test precondition");
     std::fs::write(root.join(".git/config"), [0xff]).expect("test precondition");
-    let context = read_config(
-        &git_worktree_info(&root).expect("test precondition"),
-        "main",
-    );
+    let context = read_config(&info, "main");
     assert!(!deps_current(&context.2));
 }
 
 #[test]
 fn git_status_fingerprint_honors_remote_fetch_refspec() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("custom-fetch-refspec");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -65,6 +227,7 @@ fn git_status_fingerprint_honors_remote_fetch_refspec() {
 
 #[test]
 fn git_status_fingerprint_reads_included_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("included-config");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -94,6 +257,7 @@ fn git_status_fingerprint_reads_included_config() {
 
 #[test]
 fn git_status_branch_config_reads_user_config_before_repo_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("user-config");
     write_fake_tracked_repo(&root);
     let user_config = root.join("user.gitconfig");
@@ -118,6 +282,7 @@ fn git_status_branch_config_reads_user_config_before_repo_config() {
 
 #[test]
 fn git_status_branch_config_repo_config_overrides_user_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("repo-overrides-user-config");
     write_fake_tracked_repo(&root);
     let user_config = root.join("user.gitconfig");
@@ -141,6 +306,7 @@ fn git_status_branch_config_repo_config_overrides_user_config() {
 
 #[test]
 fn git_status_fingerprint_applies_repeated_includes_in_order() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("repeated-include");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -170,6 +336,7 @@ fn git_status_fingerprint_applies_repeated_includes_in_order() {
 
 #[test]
 fn git_status_fingerprint_reads_matching_include_if_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-if-config");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -202,6 +369,7 @@ fn git_status_fingerprint_reads_matching_include_if_config() {
 
 #[test]
 fn git_status_fingerprint_matches_gitdir_include_if_directory_pattern() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let base = temp_test_dir("include-if-dir");
     let root = base.join("work/repo");
     std::fs::create_dir_all(&root).expect("test precondition");
@@ -236,6 +404,7 @@ fn git_status_fingerprint_matches_gitdir_include_if_directory_pattern() {
 
 #[test]
 fn git_status_fingerprint_reads_case_insensitive_config_keys() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("case-insensitive-config");
     write_fake_tracked_repo(&root);
     std::fs::write(
@@ -253,6 +422,7 @@ fn git_status_fingerprint_reads_case_insensitive_config_keys() {
 
 #[test]
 fn git_status_fingerprint_keeps_refspecs_for_later_remote_override() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("worktree-remote-override");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -282,6 +452,7 @@ fn git_status_fingerprint_keeps_refspecs_for_later_remote_override() {
 
 #[test]
 fn git_status_fingerprint_ignores_worktree_config_when_extension_disabled() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("worktree-config-disabled");
     write_fake_tracked_repo(&root);
     std::fs::create_dir_all(root.join(".git/refs/remotes/fork")).expect("test precondition");
@@ -310,6 +481,7 @@ fn git_status_fingerprint_ignores_worktree_config_when_extension_disabled() {
 
 #[test]
 fn git_status_fingerprint_accepts_git_boolean_worktree_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("worktree-config-boolean");
     write_fake_tracked_repo(&root);
     std::fs::create_dir_all(root.join(".git/refs/remotes/fork")).expect("test precondition");
@@ -338,6 +510,7 @@ fn git_status_fingerprint_accepts_git_boolean_worktree_config() {
 
 #[test]
 fn git_status_fingerprint_uses_last_worktree_config_boolean() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("worktree-config-duplicate-boolean");
     write_fake_tracked_repo(&root);
     std::fs::create_dir_all(root.join(".git/refs/remotes/fork")).expect("test precondition");
@@ -366,6 +539,7 @@ fn git_status_fingerprint_uses_last_worktree_config_boolean() {
 
 #[test]
 fn git_status_fingerprint_ignores_included_worktree_config_extension() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("worktree-config-included-extension");
     write_fake_tracked_repo(&root);
     std::fs::create_dir_all(root.join(".git/refs/remotes/fork")).expect("test precondition");
@@ -399,6 +573,7 @@ fn git_status_fingerprint_ignores_included_worktree_config_extension() {
 
 #[test]
 fn git_status_fingerprint_reads_onbranch_include_if_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-if-onbranch");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -428,6 +603,7 @@ fn git_status_fingerprint_reads_onbranch_include_if_config() {
 
 #[test]
 fn git_status_fingerprint_reads_hasconfig_include_if_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-if-hasconfig");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -457,6 +633,7 @@ fn git_status_fingerprint_reads_hasconfig_include_if_config() {
 
 #[test]
 fn git_status_fingerprint_matches_user_hasconfig_against_repo_remote_url() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-if-hasconfig-user-repo-url");
     let user_config = root.join("user.gitconfig");
     write_fake_tracked_repo(&root);
@@ -494,6 +671,7 @@ fn git_status_fingerprint_matches_user_hasconfig_against_repo_remote_url() {
 
 #[test]
 fn git_status_fingerprint_skips_hasconfig_include_that_defines_remote_url() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-if-hasconfig-rejects-remote-url");
     let user_config = root.join("user.gitconfig");
     write_fake_tracked_repo(&root);
@@ -530,6 +708,7 @@ fn git_status_fingerprint_skips_hasconfig_include_that_defines_remote_url() {
 
 #[test]
 fn git_status_fingerprint_skips_hasconfig_include_chain_that_defines_remote_url() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-if-hasconfig-rejects-nested-remote-url");
     let user_config = root.join("user.gitconfig");
     write_fake_tracked_repo(&root);
@@ -571,6 +750,7 @@ fn git_status_fingerprint_skips_hasconfig_include_chain_that_defines_remote_url(
 
 #[test]
 fn git_status_fingerprint_ignores_worktree_urls_for_hasconfig() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-if-hasconfig-worktree-url");
     write_fake_tracked_repo(&root);
     std::fs::write(
@@ -598,6 +778,7 @@ fn git_status_fingerprint_ignores_worktree_urls_for_hasconfig() {
 
 #[test]
 fn git_status_fingerprint_stops_recursive_include_cycles() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("include-cycle");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -626,6 +807,7 @@ fn git_status_fingerprint_stops_recursive_include_cycles() {
 
 #[test]
 fn git_status_fingerprint_reads_linked_worktree_config() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let base = temp_test_dir("linked-worktree-config");
     let common_dir = base.join("repo/.git");
     let worktree = base.join("linked");
@@ -671,6 +853,7 @@ fn git_status_fingerprint_reads_linked_worktree_config() {
 
 #[test]
 fn git_status_fingerprint_ignores_inline_fetch_refspec_comment() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("commented-fetch-refspec");
     write_fake_tracked_repo(&root);
     std::fs::remove_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
@@ -698,6 +881,7 @@ fn git_status_fingerprint_ignores_inline_fetch_refspec_comment() {
 
 #[test]
 fn git_status_fingerprint_clears_upstream_for_unmapped_refspec() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("unmapped-fetch-refspec");
     write_fake_tracked_repo(&root);
     std::fs::write(
@@ -713,6 +897,7 @@ fn git_status_fingerprint_clears_upstream_for_unmapped_refspec() {
 
 #[test]
 fn git_status_fingerprint_honors_negative_fetch_refspec() {
+    let _env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("negative-fetch-refspec");
     write_fake_tracked_repo(&root);
     std::fs::write(

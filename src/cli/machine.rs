@@ -90,6 +90,8 @@ fn list(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
         })
         .collect::<Vec<_>>();
     if json {
+        // SSH diagnostics can include remote control bytes. serde_json writes ESC as
+        // `\u001b`; the text renderer below uses escape_debug before printing it.
         println!(
             "{}",
             serde_json::to_string_pretty(&rows).map_err(std::io::Error::other)?

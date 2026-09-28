@@ -52,6 +52,8 @@ pub struct PaneLaunchEnv {
     /// environment carries.
     pane_id: Option<PublicPaneId>,
     purpose: LaunchPurpose,
+    /// The server must pass its resolved API socket path here: an explicit
+    /// `--session` can select a socket that is not present in the environment.
     api_socket_path: std::path::PathBuf,
 }
 

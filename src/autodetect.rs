@@ -20,11 +20,20 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// A launch failure before the client runs is the error; once the client has
 /// run, its own result is handed back untouched for the caller to report.
 pub(crate) fn auto_detect_launch<T>(
-    saved_federation: bool,
+    endpoint_catalog: shepr_remote::machine::EndpointCatalog,
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
-    run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> T,
+    run_client: impl FnOnce(
+        &shepr_config::ValidatedConfig,
+        &shepr_config::AppPaths,
+        shepr_remote::machine::EndpointCatalog,
+        shepr_platform::logging::FileLoggingConfig,
+    ) -> T,
 ) -> io::Result<T> {
+    // The detached server's stderr is redirected, so validate the filter
+    // before startup and pass it through to avoid reading it again in-client.
+    let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
+
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
     shepr_platform::terminal_grid_size().map_err(|err| {
@@ -58,7 +67,7 @@ pub(crate) fn auto_detect_launch<T>(
         Err(error) => Err(error),
     };
     if let Err(error) = startup {
-        if !saved_federation {
+        if !endpoint_catalog.has_ssh() {
             return Err(error);
         }
         // No tracing subscriber is installed in this process yet, so a log
@@ -66,7 +75,7 @@ pub(crate) fn auto_detect_launch<T>(
         crate::cli::print_notice(&local_startup_notice(&error));
     }
 
-    Ok(run_client(config, paths))
+    Ok(run_client(config, paths, endpoint_catalog, logging_config))
 }
 
 /// What the operator is told when Local fails to start or is refused while

@@ -8,6 +8,27 @@ once, so it needs a wave of its own rather than parallel fixers.
 
 What to do about src/integration/assets/shepr-agent-state.test.ts.
 
+## Moved out of the findings documents as new claims
+
+Each of these would make shepr promise something it does not promise today,
+so they wait for a decision rather than a fixer.
+
+- **Log rotation as config keys.** `shepr-platform/src/logging.rs::init_file_logging`
+  hardcodes `DEFAULT_MAX_LOG_BYTES` (5 MiB) and `DEFAULT_RETAINED_LOG_FILES` (1)
+  although `RotatingFileMakeWriter::new` takes both. Moving them into
+  `shepr-config` as validated keys would add two config keys.
+- **Environment variables in `shepr --help`.** Render the `shepr-core`
+  environment registry into `print_help`, with a test that it covers every
+  entry. `--help` currently documents only `SHEPR_CONFIG_PATH`.
+- **Hook assets call the CLI.** About fifteen hook assets open the API socket and
+  hand-build the JSON-RPC envelope (two request-id formats, two timeouts), while
+  qwen, qodercli and letta exec `shepr pane report-agent-session`. Moving every
+  asset to the CLI keeps socket framing in Rust only. A rewrite of every shipped
+  asset rather than a defect fix.
+- **Remote checkout root for the new-workspace label.** For a remote endpoint,
+  ask the remote server for the cwd's checkout root instead of skipping the Git
+  lookup. Needs a new API method.
+
 ## Monitor upstream changes to integrations
 
 We need to create a script we can run periodically that checks upstream

@@ -43,7 +43,7 @@ pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
     "timed out waiting for app response; the request may still run, so its outcome is unknown";
-const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
 
@@ -369,7 +369,7 @@ fn handle_connection_with_stop(
                 )
                 .into_body(),
             };
-            write_json_line_allow_disconnect(&mut stream, &response)?;
+            write_api_json_line_allow_disconnect(&mut stream, &response.id, &response)?;
             return Ok(());
         }
     };
@@ -418,10 +418,11 @@ fn handle_connection_with_stop(
                     );
                 }
             };
-            write_json_line(
+            write_api_json_line(
                 &mut stream,
+                &request_id,
                 &SuccessResponse {
-                    id: request_id,
+                    id: request_id.clone(),
                     result: ResponseResult::Ok {},
                 },
             )?;
@@ -438,7 +439,7 @@ fn handle_connection_with_stop(
         Method::EventsSubscribe(params) => {
             let result = stream_subscriptions(
                 stream,
-                request_id.clone(),
+                &request_id,
                 params,
                 api_tx,
                 event_hub,
@@ -731,19 +732,48 @@ fn read_request_line_blocking(
 
 fn stream_subscriptions(
     mut stream: LocalStream,
-    request_id: String,
+    request_id: &str,
     params: crate::schema::EventsSubscribeParams,
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<()> {
+    let regex_subscription_count = params
+        .subscriptions
+        .iter()
+        .filter(|subscription| {
+            matches!(
+                subscription,
+                crate::schema::Subscription::PaneOutputMatched {
+                    r#match: crate::schema::OutputMatch::Regex { .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    if regex_subscription_count > crate::subscriptions::MAX_REGEX_MATCH_SUBSCRIPTIONS {
+        let response = ErrorResponse {
+            id: request_id.to_string(),
+            error: crate::error::ApiError::new(
+                crate::error::ApiErrorCode::InvalidParams,
+                format!(
+                    "events.subscribe allows at most {} regex output subscriptions",
+                    crate::subscriptions::MAX_REGEX_MATCH_SUBSCRIPTIONS
+                ),
+            )
+            .into_body(),
+        };
+        write_api_json_line_allow_disconnect(&mut stream, request_id, &response)?;
+        return Ok(());
+    }
+
     let event_start_sequence = event_hub.current_sequence();
     let mut subscriptions = Vec::with_capacity(params.subscriptions.len());
     for (index, subscription) in params.subscriptions.into_iter().enumerate() {
         let active = match ActiveSubscription::new(
             subscription,
-            &request_id,
+            request_id,
             index,
             api_tx,
             event_hub,
@@ -751,8 +781,8 @@ fn stream_subscriptions(
         ) {
             Ok(active) => active,
             Err(mut response) => {
-                response.id = request_id;
-                if let Err(err) = write_json_line(&mut stream, &response) {
+                response.id = request_id.to_string();
+                if let Err(err) = write_api_json_line(&mut stream, request_id, &response) {
                     if is_connection_closed_error(&err) {
                         return Ok(());
                     }
@@ -764,10 +794,11 @@ fn stream_subscriptions(
         subscriptions.push(active);
     }
 
-    if let Err(err) = write_json_line(
+    if let Err(err) = write_api_json_line(
         &mut stream,
+        request_id,
         &SuccessResponse {
-            id: request_id.clone(),
+            id: request_id.to_string(),
             result: ResponseResult::SubscriptionStarted {},
         },
     ) {
@@ -789,7 +820,7 @@ fn stream_subscriptions(
             if server_is_stopping(server_stop) || should_stop_connection(&mut stream, running)? {
                 return Ok(());
             }
-            if let Err(err) = write_json_line(&mut stream, &event) {
+            if let Err(err) = write_api_json_line(&mut stream, request_id, &event) {
                 if is_connection_closed_error(&err) {
                     return Ok(());
                 }
@@ -797,10 +828,11 @@ fn stream_subscriptions(
             }
         }
         if let Some(error) = batch.error {
-            write_json_line_allow_disconnect(
+            write_api_json_line_allow_disconnect(
                 &mut stream,
+                request_id,
                 &ErrorResponse {
-                    id: request_id,
+                    id: request_id.to_string(),
                     error,
                 },
             )?;
@@ -823,22 +855,24 @@ fn write_text_line_allow_disconnect(stream: &mut LocalStream, value: &str) -> st
     }
 }
 
-fn write_json_line<T: serde::Serialize>(
+fn write_api_json_line<T: serde::Serialize>(
     stream: &mut LocalStream,
+    request_id: &str,
     value: &T,
 ) -> std::io::Result<()> {
-    let encoded = serde_json::to_string(value)
-        .map_err(|err| std::io::Error::other(format!("failed to encode json: {err}")))?;
+    let encoded = crate::serialize_response_or_error(request_id, value);
     write_text_line(stream, &encoded)
 }
 
-fn write_json_line_allow_disconnect<T: serde::Serialize>(
+fn write_api_json_line_allow_disconnect<T: serde::Serialize>(
     stream: &mut LocalStream,
+    request_id: &str,
     value: &T,
 ) -> std::io::Result<()> {
-    let encoded = serde_json::to_string(value)
-        .map_err(|err| std::io::Error::other(format!("failed to encode json: {err}")))?;
-    write_text_line_allow_disconnect(stream, &encoded)
+    match write_api_json_line(stream, request_id, value) {
+        Err(err) if is_connection_closed_error(&err) => Ok(()),
+        result => result,
+    }
 }
 
 pub(super) fn should_stop_connection(
@@ -1220,18 +1254,14 @@ mod tests {
             )
             .expect("test precondition");
         });
-        write_json_line(
-            &mut client,
-            &Request {
-                id: "agent-lease".into(),
-                method: Method::ServerSshAgentRegister(
-                    crate::schema::ServerSshAgentRegisterParams {
-                        socket_path: agent.to_string_lossy().into_owned(),
-                    },
-                ),
-            },
-        )
-        .expect("test precondition");
+        let request = Request {
+            id: "agent-lease".into(),
+            method: Method::ServerSshAgentRegister(crate::schema::ServerSshAgentRegisterParams {
+                socket_path: agent.to_string_lossy().into_owned(),
+            }),
+        };
+        let encoded = serde_json::to_string(&request).expect("test precondition");
+        write_text_line(&mut client, &encoded).expect("test precondition");
         let response: SuccessResponse =
             serde_json::from_str(&read_line(&mut client)).expect("test precondition");
         assert!(matches!(response.result, ResponseResult::Ok {}));

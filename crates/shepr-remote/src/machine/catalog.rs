@@ -299,15 +299,42 @@ struct CatalogFingerprint {
     modified_nsec: i64,
 }
 
-fn catalog_fingerprint(path: &Path) -> Option<CatalogFingerprint> {
-    let metadata = std::fs::metadata(path).ok()?;
-    Some(CatalogFingerprint {
+fn catalog_fingerprint(path: &Path) -> io::Result<Option<CatalogFingerprint>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // A missing catalog is empty only while its directory is available. If the
+            // state directory vanished, keep the profiles already held by the client.
+            let parent = path.parent().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "endpoint catalog path has no parent directory",
+                )
+            })?;
+            let parent_metadata = std::fs::metadata(parent)?;
+            if !parent_metadata.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "endpoint catalog parent is not a directory",
+                ));
+            }
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(Some(CatalogFingerprint {
         device: metadata.dev(),
         inode: metadata.ino(),
         len: metadata.len(),
         modified_sec: metadata.mtime(),
         modified_nsec: metadata.mtime_nsec(),
-    })
+    }))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatalogFingerprintState {
+    Known(Option<CatalogFingerprint>),
+    Unavailable(io::ErrorKind),
 }
 
 /// Watches the saved-machine catalog for an open client. The catalog is state, not config:
@@ -315,13 +342,13 @@ fn catalog_fingerprint(path: &Path) -> Option<CatalogFingerprint> {
 /// change up here instead of at their next launch.
 ///
 /// It polls a `stat` at most once per `CATALOG_POLL_INTERVAL` and reloads only when the
-/// file's identity changed. The first poll always reloads, so a write that landed between
-/// the client's launch-time load and the watcher's creation is not missed; applying an
-/// unchanged catalog is a no-op.
+/// file's identity changed. The first poll always attempts inspection and reload, so a
+/// write that landed between the client's launch-time load and the watcher's creation is
+/// not missed when storage is available; applying an unchanged catalog is a no-op.
 pub struct EndpointCatalogWatch {
     path: PathBuf,
-    /// `None` until the first poll; `Some(None)` when the file was absent.
-    seen: Option<Option<CatalogFingerprint>>,
+    /// `None` until the first poll; known absence and stat failures are distinct states.
+    seen: Option<CatalogFingerprintState>,
     next_poll: Instant,
 }
 
@@ -339,18 +366,33 @@ impl EndpointCatalogWatch {
     }
 
     /// The saved profiles when the file changed since the last poll, or `None` when it did
-    /// not (or it is not time to look yet). An unreadable or invalid file is reported once
-    /// per change; the caller keeps the profiles it has.
+    /// not (or it is not time to look yet). An unstatable, unreadable or invalid file is
+    /// reported once per observed state; the caller keeps the profiles it has.
     pub fn poll(&mut self, now: Instant) -> Option<Result<Vec<SavedSshEndpoint>, String>> {
         if now < self.next_poll {
             return None;
         }
         self.next_poll = now + CATALOG_POLL_INTERVAL;
-        let fingerprint = catalog_fingerprint(&self.path);
-        if self.seen == Some(fingerprint) {
-            return None;
+        match catalog_fingerprint(&self.path) {
+            Ok(fingerprint) => {
+                let state = CatalogFingerprintState::Known(fingerprint);
+                if self.seen == Some(state) {
+                    return None;
+                }
+                self.seen = Some(state);
+            }
+            Err(error) => {
+                let state = CatalogFingerprintState::Unavailable(error.kind());
+                if self.seen == Some(state) {
+                    return None;
+                }
+                self.seen = Some(state);
+                return Some(Err(format!(
+                    "failed to inspect endpoint catalog {}: {error}",
+                    self.path.display()
+                )));
+            }
         }
-        self.seen = Some(fingerprint);
         Some(EndpointCatalog::load_from_path(&self.path).map(|catalog| catalog.ssh))
     }
 }
@@ -455,7 +497,7 @@ pub(super) fn store_private_json(
     }
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
-    let temp_path = parent.join(format!(".endpoints-{}-{sequence}.tmp", std::process::id()));
+    let temp_path = private_json_temp_path(path, std::process::id(), sequence)?;
     let mut temp = shepr_platform::create_private_file(&temp_path)
         .map_err(|error| format!("failed to create {description}: {error}"))?;
     if let Err(error) = temp.write_all(content).and_then(|()| temp.sync_all()) {
@@ -470,6 +512,19 @@ pub(super) fn store_private_json(
     }
     shepr_platform::sync_directory(parent)
         .map_err(|error| format!("failed to persist {description} directory: {error}"))
+}
+
+fn private_json_temp_path(path: &Path, process_id: u32, sequence: u64) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid private JSON path: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("invalid private JSON path: {}", path.display()))?;
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!("-{process_id}-{sequence}.tmp"));
+    Ok(parent.join(temp_name))
 }
 
 /// Cleans up after a failed store, whose own error is what the caller returns. A
@@ -778,6 +833,8 @@ mod tests {
     #[test]
     fn catalog_watch_reloads_only_after_the_file_changes() {
         let path = path("watch");
+        std::fs::create_dir_all(path.parent().expect("test precondition"))
+            .expect("test precondition");
         let start = Instant::now();
         let mut watch = EndpointCatalogWatch::for_path(path.clone(), start);
 
@@ -813,6 +870,54 @@ mod tests {
 
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
+    }
+
+    #[test]
+    fn catalog_watch_keeps_profiles_when_the_catalog_cannot_be_statted() {
+        let path = path("watch-stat-failure");
+        let mut catalog = EndpointCatalog::default();
+        catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
+        catalog.store_to_path(&path).expect("test precondition");
+
+        let start = Instant::now();
+        let mut watch = EndpointCatalogWatch::for_path(path.clone(), start);
+        assert_eq!(watch.poll(start), Some(Ok(catalog.ssh.clone())));
+
+        // Losing the parent directory makes the catalog path return ENOENT, but it is
+        // unavailable state rather than an absent catalog. Preserve the loaded profiles.
+        let parent = path.parent().expect("test precondition");
+        std::fs::remove_dir_all(parent).expect("test precondition");
+
+        let failed_poll = start + CATALOG_POLL_INTERVAL;
+        let error = watch
+            .poll(failed_poll)
+            .expect("stat failure is reported")
+            .expect_err("stat failure must not look like an empty catalog");
+        assert!(error.contains("failed to inspect endpoint catalog"));
+        assert_eq!(watch.poll(failed_poll + CATALOG_POLL_INTERVAL), None);
+
+        std::fs::create_dir_all(parent).expect("test precondition");
+        catalog.store_to_path(&path).expect("test precondition");
+        assert_eq!(
+            watch.poll(failed_poll + CATALOG_POLL_INTERVAL * 2),
+            Some(Ok(catalog.ssh.clone()))
+        );
+        std::fs::remove_dir_all(parent).expect("test precondition");
+    }
+
+    #[test]
+    fn catalog_private_json_temp_name_uses_the_destination_file_name() {
+        let target = path("target-derived-temp-name").with_file_name("endpoint-selection.json");
+        let temp = private_json_temp_path(&target, 42, 7).expect("test precondition");
+        assert_eq!(
+            temp,
+            target
+                .parent()
+                .expect("test precondition")
+                .join(".endpoint-selection.json-42-7.tmp")
+        );
     }
 
     #[test]

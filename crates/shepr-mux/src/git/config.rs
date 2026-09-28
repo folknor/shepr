@@ -35,10 +35,17 @@ pub(super) fn deps_current(deps: &[FileDep]) -> bool {
 
 pub(super) type ConfigCtx = (String, Option<BranchConfig>, Vec<FileDep>);
 
+#[derive(Clone, Copy)]
+struct ConfigValueQuery<'a> {
+    section: &'a str,
+    key: &'a str,
+}
+
 #[derive(Default)]
 struct ConfigReader {
     files: HashMap<PathBuf, Option<String>>,
     deps: Vec<FileDep>,
+    failure: Option<(PathBuf, ErrorKind, String)>,
 }
 
 impl ConfigReader {
@@ -47,19 +54,37 @@ impl ConfigReader {
         let path = canonicalize_best_effort_path(path);
         self.deps
             .extend((logical != path).then(|| stamp(logical, Some(path.clone()))));
-        let deps = &mut self.deps;
-        let contents = self
-            .files
+        let Self {
+            files,
+            deps,
+            failure,
+        } = self;
+        let contents = files
             .entry(path.clone())
             .or_insert_with(|| {
                 let mut dep = stamp(path.clone(), None);
                 let r = std::fs::read_to_string(&path);
                 dep.2 &= r.is_ok() || matches!(&r, Err(e) if e.kind() == ErrorKind::NotFound);
                 deps.push(dep);
-                r.ok()
+                match r {
+                    Ok(contents) => Some(contents),
+                    Err(error) if error.kind() == ErrorKind::NotFound => None,
+                    Err(error) => {
+                        if failure.is_none() {
+                            *failure = Some((path.clone(), error.kind(), error.to_string()));
+                        }
+                        None
+                    }
+                }
             })
             .clone();
         (path, contents)
+    }
+
+    fn read_error(&self) -> Option<std::io::Error> {
+        self.failure.as_ref().map(|(path, kind, message)| {
+            std::io::Error::new(*kind, format!("{}: {message}", path.display()))
+        })
     }
 }
 
@@ -97,6 +122,7 @@ pub(super) fn read_config_with_user_paths(
         fetch_refspecs: Vec::new(),
         remote_urls,
     };
+    let mut ignored_value = None;
     for path in config_paths {
         let mut include_stack = Vec::new();
         merge_git_config(
@@ -105,6 +131,8 @@ pub(super) fn read_config_with_user_paths(
             branch,
             info,
             true,
+            None,
+            &mut ignored_value,
             &mut include_stack,
             &mut reader,
         );
@@ -117,6 +145,8 @@ pub(super) fn read_config_with_user_paths(
             branch,
             info,
             false,
+            None,
+            &mut ignored_value,
             &mut include_stack,
             &mut reader,
         );
@@ -128,7 +158,7 @@ pub(super) fn read_config_with_user_paths(
     )
 }
 
-fn git_user_config_paths() -> Vec<PathBuf> {
+pub(super) fn git_user_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let home = shepr_core::pathutil::home_dir().ok();
     // This reads Git's user config, not a Shepr location. A refused
@@ -147,6 +177,127 @@ fn git_user_config_paths() -> Vec<PathBuf> {
         paths.push(home.join(".gitconfig"));
     }
     paths
+}
+
+/// Reads the final value for one key across `config_paths`, using the same
+/// include handling and file dependency tracking as branch config. This is
+/// for keys Git resolves through the whole config chain; repository format
+/// keys go through [`read_repository_format_value`] instead. A missing file
+/// or key is distinct from an unreadable config file so discovery can fail
+/// closed when it cannot tell what Git would see.
+pub(super) fn read_config_value(
+    info: &GitWorktreeInfo,
+    branch: &str,
+    config_paths: &[PathBuf],
+    target_section: &str,
+    target_key: &str,
+) -> std::io::Result<(Option<String>, Vec<FileDep>)> {
+    let mut reader = ConfigReader::default();
+    let mut remote_urls = Vec::new();
+    for path in config_paths {
+        let mut include_stack = Vec::new();
+        collect_remote_urls(
+            path,
+            info,
+            branch,
+            &mut remote_urls,
+            &mut include_stack,
+            &mut reader,
+        );
+    }
+    if let Some(error) = reader.read_error() {
+        return Err(error);
+    }
+
+    let mut config = BranchConfig {
+        remote: String::new(),
+        merge_ref: String::new(),
+        fetch_refspecs: Vec::new(),
+        remote_urls,
+    };
+    let mut value = None;
+    let query = ConfigValueQuery {
+        section: target_section,
+        key: target_key,
+    };
+    for path in config_paths {
+        let mut include_stack = Vec::new();
+        merge_git_config(
+            &mut config,
+            path,
+            branch,
+            info,
+            true,
+            Some(query),
+            &mut value,
+            &mut include_stack,
+            &mut reader,
+        );
+    }
+    if let Some(error) = reader.read_error() {
+        return Err(error);
+    }
+    Ok((value, reader.deps))
+}
+
+/// The last value of `[section] key` in the one config file at `path`, with
+/// no includes and no other config level. Git reads its repository format
+/// (`core.repositoryformatversion` and every `extensions.*` key) this way:
+/// the format check parses the repository's own config file alone before
+/// any include is resolved, so `extensions.refstorage = reftable` reached
+/// only through `include.path` or `~/.gitconfig` leaves a files ref store,
+/// as `git rev-parse --show-ref-format` confirms. A key written without `=`
+/// reads as `true`, Git's implicit boolean. A missing file or key is `None`;
+/// an unreadable file is an error, so the caller can fail closed rather than
+/// guess the format.
+pub(super) fn read_repository_format_value(
+    path: &Path,
+    target_section: &str,
+    target_key: &str,
+) -> std::io::Result<(Option<String>, Vec<FileDep>)> {
+    let mut reader = ConfigReader::default();
+    let contents = reader.read(path).1;
+    if let Some(error) = reader.read_error() {
+        return Err(error);
+    }
+    let mut value = None;
+    let mut in_section = false;
+    for raw_line in contents.as_deref().unwrap_or_default().lines() {
+        let line = raw_line.trim();
+        if let Some(section_name) = extract_config_section(line) {
+            in_section = section_name.trim().eq_ignore_ascii_case(target_section);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        match line.split_once('=') {
+            Some((key, raw_value)) if key.trim().eq_ignore_ascii_case(target_key) => {
+                value = Some(normalize_config_value(raw_value));
+            }
+            None if line.eq_ignore_ascii_case(target_key) => value = Some("true".to_string()),
+            _ => {}
+        }
+    }
+    Ok((value, reader.deps))
+}
+
+/// A config value read with Git's boolean grammar: `true`, `yes`, `on` and a
+/// non-zero integer (with an optional `k`, `m` or `g` unit) are true;
+/// `false`, `no`, `off`, `0` and the empty value (`key =`) are false, all
+/// case-insensitively. A key with no `=` at all arrives here as `true`.
+/// Anything else is `None`: Git refuses to run on such a value.
+pub(super) fn git_config_bool(value: &str) -> Option<bool> {
+    let lower = value.to_ascii_lowercase();
+    match lower.as_str() {
+        "true" | "yes" | "on" => return Some(true),
+        "false" | "no" | "off" | "" => return Some(false),
+        _ => {}
+    }
+    let digits = lower
+        .strip_suffix(['k', 'm', 'g'])
+        .unwrap_or(lower.as_str());
+    digits.parse::<i64>().ok().map(|number| number != 0)
 }
 
 #[cfg(test)]
@@ -216,10 +367,7 @@ fn worktree_config_enabled(path: &Path, info: &GitWorktreeInfo, reader: &mut Con
             let value = normalize_config_value(value);
             match &section {
                 ConfigSection::Extensions if key.eq_ignore_ascii_case("worktreeConfig") => {
-                    enabled = matches!(
-                        value.to_ascii_lowercase().as_str(),
-                        "true" | "1" | "yes" | "on"
-                    );
+                    enabled = git_config_bool(&value) == Some(true);
                 }
                 _ => {}
             }
@@ -300,6 +448,8 @@ fn merge_git_config(
     branch: &str,
     info: &GitWorktreeInfo,
     collect_hasconfig_urls: bool,
+    query: Option<ConfigValueQuery<'_>>,
+    query_value: &mut Option<String>,
     include_stack: &mut Vec<PathBuf>,
     reader: &mut ConfigReader,
 ) {
@@ -313,18 +463,35 @@ fn merge_git_config(
         return;
     };
     let mut section = ConfigSection::Other;
+    let mut current_section_name = String::new();
 
     for raw_line in contents.lines() {
         let line = raw_line.trim();
         if let Some(section_name) = extract_config_section(line) {
+            current_section_name.clear();
+            current_section_name.push_str(section_name);
             section = parse_config_section(section_name, branch, info, &path, config);
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
+        let (key, raw_value) = match line.split_once('=') {
+            Some((key, value)) => (key, value),
+            None if query.is_some_and(|query| {
+                current_section_name.eq_ignore_ascii_case(query.section)
+                    && line.eq_ignore_ascii_case(query.key)
+            }) =>
+            {
+                (line, "true")
+            }
+            None => continue,
         };
         let key = key.trim();
-        let value = normalize_config_value(value);
+        let value = normalize_config_value(raw_value);
+        if let Some(query) = query
+            && current_section_name.eq_ignore_ascii_case(query.section)
+            && key.eq_ignore_ascii_case(query.key)
+        {
+            *query_value = Some(value.clone());
+        }
         match &section {
             ConfigSection::Branch if key.eq_ignore_ascii_case("remote") => config.remote = value,
             ConfigSection::Branch if key.eq_ignore_ascii_case("merge") => config.merge_ref = value,
@@ -348,6 +515,8 @@ fn merge_git_config(
                     branch,
                     info,
                     collect_hasconfig_urls,
+                    query,
+                    query_value,
                     include_stack,
                     reader,
                 );
@@ -372,6 +541,8 @@ fn merge_git_config(
                         branch,
                         info,
                         collect_hasconfig_urls,
+                        query,
+                        query_value,
                         include_stack,
                         reader,
                     );
@@ -580,8 +751,13 @@ fn normalize_branch_include_pattern(pattern: &str) -> String {
 /// The `gitdir:` pattern as an absolute glob, or `None` when it starts with
 /// `~/` and `HOME` is unusable: the condition then names no directory, rather
 /// than one relative to wherever the server runs.
-fn normalize_gitdir_include_pattern(pattern: &str, config_path: &Path) -> Option<String> {
+pub(super) fn normalize_gitdir_include_pattern(
+    pattern: &str,
+    config_path: &Path,
+) -> Option<String> {
     let mut pattern = if let Some(rest) = pattern.strip_prefix("~/") {
+        // `home_dir` rejects unusable HOME values instead of resolving this
+        // Git config path relative to the server's current directory.
         shepr_core::pathutil::home_dir()
             .ok()?
             .join(rest)
@@ -647,8 +823,9 @@ fn quoted_config_subsection<'a>(section: &'a str, name: &str) -> Option<&'a str>
 /// The file an `include.path` names, or `None` when it starts with `~/` and
 /// `HOME` is unusable: the include is then skipped, rather than read from a
 /// path relative to the including file.
-fn resolve_include_path(config_path: &Path, include_path: &str) -> Option<PathBuf> {
+pub(super) fn resolve_include_path(config_path: &Path, include_path: &str) -> Option<PathBuf> {
     let include_path = match include_path.strip_prefix("~/") {
+        // Keep tilde includes under the shared absolute HOME policy.
         Some(rest) => shepr_core::pathutil::home_dir().ok()?.join(rest),
         None => PathBuf::from(include_path),
     };

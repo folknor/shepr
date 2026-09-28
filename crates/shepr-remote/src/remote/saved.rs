@@ -192,9 +192,12 @@ impl SavedSshConnector {
             target.as_str(),
             &self.session,
         );
-        // Attempts for one endpoint never overlap (the supervisor keeps one in flight, and
-        // a replacement connector for the same profile waits for a retired one's attempt),
-        // so holding the lock for the whole attempt contends with nothing.
+        // The client stores this connector in a cloneable ConnectTarget::Ssh(Arc<...>) and
+        // clones that target into its blocking task, so connect updates state through shared
+        // access. Its supervisor starts only one attempt per endpoint and defers replacements
+        // until retired attempts report, so calls in that path do not contend. Removing this
+        // lock would require moving connector ownership into the task and returning it with
+        // the attempt result.
         let mut state = self
             .state
             .lock()

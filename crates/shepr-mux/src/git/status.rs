@@ -51,14 +51,16 @@ type RepoContext = (GitWorktreeInfo, bool, Vec<FileDep>, Option<ConfigCtx>);
 
 fn repo_context(cwd: &Path) -> Option<RepoContext> {
     let info = git_worktree_info(cwd)?;
-    let reftable = git_ref_storage_is_reftable(&info.git_common_dir);
+    let (reftable, config_deps) = git_ref_storage_is_reftable(&info).ok()?;
     let mut paths = vec![info.repo_root.join(".git"), info.git_dir.join("commondir")];
     paths.push(info.git_dir.join("HEAD"));
     paths.push(info.git_common_dir.join("config"));
     paths.extend((info.git_dir != info.git_common_dir).then(|| info.git_dir.join("config")));
     let mut deps: Vec<_> = paths.into_iter().map(|path| stamp(path, None)).collect();
+    deps.extend(config_deps);
     deps[0].2 &= git_worktree_info(cwd).as_ref() == Some(&info)
-        && git_ref_storage_is_reftable(&info.git_common_dir) == reftable
+        && git_ref_storage_is_reftable(&info)
+            .is_ok_and(|(current_reftable, _)| current_reftable == reftable)
         && deps_current(&deps);
     Some((info, reftable, deps, None))
 }
@@ -399,6 +401,7 @@ mod tests {
     fn cache_key_preserves_non_utf8_checkout_path() {
         use std::os::unix::ffi::OsStringExt;
 
+        let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("non-utf8-key");
         let root = base.join(std::ffi::OsString::from_vec(vec![
             b'r', b'e', b'p', b'o', 0x80,
@@ -415,6 +418,7 @@ mod tests {
 
     #[test]
     fn branch_reads_head_from_standard_repo() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("standard-repo");
         std::fs::create_dir_all(root.join(".git")).expect("test precondition");
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
@@ -427,6 +431,7 @@ mod tests {
 
     #[test]
     fn oversized_head_reports_no_branch() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("oversized-head");
         let git_dir = root.join(".git");
         std::fs::create_dir_all(&git_dir).expect("test precondition");
@@ -450,6 +455,7 @@ mod tests {
 
     #[test]
     fn branch_reads_head_from_worktree_gitdir_file() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("worktree");
         let worktree_git_dir = root.join(".bare/worktrees/feature");
         std::fs::create_dir_all(&worktree_git_dir).expect("test precondition");
@@ -465,6 +471,7 @@ mod tests {
 
     #[test]
     fn detached_head_reports_no_branch() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("detached-head");
         std::fs::create_dir_all(root.join(".git")).expect("test precondition");
         std::fs::write(root.join(".git/HEAD"), "3e1b9a8d\n").expect("test precondition");
@@ -487,6 +494,7 @@ mod tests {
     /// binary format only Git writes, so Git makes this fixture.
     #[test]
     fn branch_reads_unborn_symbolic_head_from_reftable_repo() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("reftable-branch");
         let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
@@ -561,6 +569,7 @@ mod tests {
 
     #[test]
     fn branch_only_refresh_skips_ahead_behind_cache_work() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("branch-only");
         write_fake_tracked_repo(&root);
 
@@ -580,6 +589,7 @@ mod tests {
 
     #[test]
     fn git_status_reuses_cached_ahead_behind_when_fingerprint_matches() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("cache-hit");
         write_fake_tracked_repo(&root);
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
@@ -618,6 +628,7 @@ mod tests {
 
     #[test]
     fn git_status_does_not_reuse_cache_when_branch_changes_at_same_oid() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("branch-switch");
         write_fake_tracked_repo(&root);
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
@@ -655,6 +666,7 @@ mod tests {
 
     #[test]
     fn git_status_clears_ahead_behind_when_upstream_is_unset() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("upstream-unset");
         write_fake_tracked_repo(&root);
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
@@ -681,6 +693,7 @@ mod tests {
 
     #[test]
     fn git_status_rebuilds_config_when_missing_include_appears() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("include-appears");
         write_fake_tracked_repo(&root);
         std::fs::write(
@@ -708,6 +721,7 @@ mod tests {
 
     #[test]
     fn git_status_fingerprint_reads_packed_refs() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("packed-refs");
         write_fake_tracked_repo(&root);
         std::fs::remove_file(root.join(".git/refs/remotes/origin/main"))
@@ -732,6 +746,7 @@ mod tests {
 
     #[test]
     fn linked_worktree_refresh_keeps_checkout_name_as_auto_label() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let (_, _, checkout) =
             crate::git::test_support::create_repo_with_linked_worktree("linked-refresh-label");
 
@@ -749,6 +764,7 @@ mod tests {
 
     #[test]
     fn git_status_cache_key_is_per_linked_worktree_checkout() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("linked-worktree-keys");
         let common_dir = base.join("repo/.git");
         let worktree_one = base.join("one");
@@ -784,6 +800,7 @@ mod tests {
     /// through Git.
     #[test]
     fn git_status_fingerprint_reads_reftable_branch_identity() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("reftable-fingerprint");
         let root_arg = root.to_string_lossy().to_string();
         // host-program-ok: a reftable store is written by Git; production reads it through Git
@@ -814,6 +831,7 @@ mod tests {
     /// real commit objects, so Git makes this fixture.
     #[test]
     fn git_status_recomputes_ahead_behind_when_head_moves() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("head-moves");
         let remote = base.join("remote.git");
         let repo = base.join("repo");

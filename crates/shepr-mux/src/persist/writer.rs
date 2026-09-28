@@ -5,6 +5,42 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SessionHistorySnapshot, SessionSnapshot};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HistoryFileStamp {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+}
+
+impl HistoryFileStamp {
+    fn read(path: &Path) -> io::Result<Option<Self>> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        if !metadata.is_file() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.len(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+        }))
+    }
+}
+
+struct WrittenHistory {
+    digest: Vec<u8>,
+    file: HistoryFileStamp,
+}
+
 enum SnapshotHistoryPlan {
     /// The previous on-disk layout was just preserved, or the snapshot gate
     /// is closed until the next interval.
@@ -23,10 +59,11 @@ pub struct SessionWriter {
     path: PathBuf,
     protect_unloaded: bool,
     lease: Option<super::lock::DataDirLease>,
-    /// Digest of the history JSON this writer last put on disk. History is
-    /// the bulk of a save (full scrollback per pane) and is rewritten and
-    /// fsynced on every save otherwise, even when no pane printed anything.
-    written_history: Option<Vec<u8>>,
+    /// Digest and file stamp for the history JSON this writer last put on
+    /// disk. History is the bulk of a save (full scrollback per pane) and is
+    /// rewritten and fsynced on every save otherwise, even when no pane printed
+    /// anything.
+    written_history: Option<WrittenHistory>,
 }
 
 impl SessionWriter {
@@ -200,12 +237,23 @@ impl SessionWriter {
         };
         let json = super::io::serialize_history(history)?;
         let digest = Sha256::digest(json.as_bytes()).to_vec();
-        if self.written_history.as_ref() == Some(&digest) {
+        if let Some(written) = self
+            .written_history
+            .as_ref()
+            .filter(|written| written.digest == digest)
+            && HistoryFileStamp::read(history_path)? == Some(written.file)
+        {
             return Ok(());
         }
         self.written_history = None;
         super::io::save_history_json_to_path(history_path, &json)?;
-        self.written_history = Some(digest);
+        // Metadata only guards the optimization. If it cannot be captured
+        // after a successful write, future saves simply publish the history
+        // again rather than trusting a cache with no matching file stamp.
+        self.written_history = HistoryFileStamp::read(history_path)
+            .ok()
+            .flatten()
+            .map(|file| WrittenHistory { digest, file });
         Ok(())
     }
 
@@ -235,6 +283,11 @@ impl SessionWriter {
 
 const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const SNAPSHOT_LIMIT: usize = 48;
+const RECOVERY_TIMESTAMP_DIGITS: usize = 39;
+
+fn recovery_filename(timestamp: u128, process_id: u32, sequence: usize) -> String {
+    format!("session-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-{process_id}-{sequence}.json")
+}
 
 fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
     let directory = path.with_file_name("session-snapshots");
@@ -362,10 +415,7 @@ fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::R
         None => now,
     };
     for sequence in 0..128 {
-        let backup = directory.join(format!(
-            "session-{timestamp:039}-{}-{sequence}.json",
-            std::process::id()
-        ));
+        let backup = directory.join(recovery_filename(timestamp, std::process::id(), sequence));
         match copy_recovery(&mut source, &backup) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -456,7 +506,7 @@ fn recovery_timestamp(name: &str) -> Option<u128> {
     let fields = name.strip_prefix("session-")?.strip_suffix(".json")?;
     let fields: Vec<_> = fields.split('-').collect();
     if fields.len() == 3
-        && fields[0].len() == 39
+        && fields[0].len() == RECOVERY_TIMESTAMP_DIGITS
         && fields
             .iter()
             .all(|field| !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit()))
@@ -879,23 +929,26 @@ mod tests {
         writer
             .save(&snapshot(), Some(&history("one")))
             .expect("save");
-        let written = std::fs::read(&history_path).expect("test precondition");
-
-        // A marker only survives if the identical history is skipped.
-        std::fs::write(&history_path, b"untouched").expect("test precondition");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o400))
+            .expect("test precondition");
         writer
             .save(&snapshot(), Some(&history("one")))
             .expect("save");
         assert_eq!(
-            std::fs::read(&history_path).expect("test precondition"),
-            b"untouched"
+            std::fs::metadata(&history_path)
+                .expect("test precondition")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o400,
+            "unchanged history should keep the file written by the previous save"
         );
 
         writer
             .save(&snapshot(), Some(&history("two")))
             .expect("save");
         let changed = std::fs::read(&history_path).expect("test precondition");
-        assert_ne!(changed, written);
         assert!(String::from_utf8_lossy(&changed).contains("two"));
 
         // A clear forgets what was written, so the same history is written
@@ -911,6 +964,38 @@ mod tests {
         );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
+    }
+
+    #[test]
+    fn deleted_unchanged_history_is_written_again() {
+        let history = || SessionHistorySnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            layout_fingerprint: Some("same-layout".into()),
+            workspaces: Vec::new(),
+        };
+        let mut writer = writer(false);
+        let history_path = writer.path.with_file_name("session-history.json");
+        writer.save(&snapshot(), Some(&history())).expect("save");
+        let expected = std::fs::read(&history_path).expect("test precondition");
+
+        std::fs::remove_file(&history_path).expect("test precondition");
+        writer
+            .save(&snapshot(), Some(&history()))
+            .expect("save after history deletion");
+
+        assert_eq!(
+            std::fs::read(&history_path).expect("history is restored"),
+            expected
+        );
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn recovery_filename_timestamp_round_trips() {
+        let timestamp = 1_729_123_456_789_012_345_678_901_234_567_890u128;
+        let filename = recovery_filename(timestamp, 42, 7);
+        assert_eq!(recovery_timestamp(&filename), Some(timestamp));
     }
 
     #[test]
@@ -1011,6 +1096,26 @@ mod tests {
                 .expect("test precondition")
                 .is_empty()
         );
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn stale_recovery_temporary_is_removed_before_reusing_its_name() {
+        let writer = writer(true);
+        let directory = writer.path.with_file_name("session-backups");
+        std::fs::create_dir(&directory).expect("test precondition");
+        let backup = directory.join(recovery_filename(123, 42, 0));
+        let pending = backup.with_extension("pending");
+        std::fs::write(&pending, b"interrupted copy prefix").expect("test precondition");
+
+        copy_recovery(&mut io::Cursor::new(b"complete copy"), &backup).expect("copy recovery");
+
+        assert_eq!(
+            std::fs::read(&backup).expect("published recovery copy"),
+            b"complete copy"
+        );
+        assert!(!pending.try_exists().expect("test stat"));
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }

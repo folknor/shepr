@@ -14,6 +14,21 @@ const DEFAULT_RETAINED_LOG_FILES: usize = 1;
 /// The filter every file log starts with when `SHEPR_LOG` is unset or empty.
 const DEFAULT_LOG_FILTER: &str = "shepr=info";
 
+/// The validated filter for one process's file logger.
+pub struct FileLoggingConfig {
+    filter: EnvFilter,
+}
+
+impl FileLoggingConfig {
+    /// Reads and validates `SHEPR_LOG` once for this process launch.
+    pub fn from_environment() -> io::Result<Self> {
+        let directives = shepr_core::env::read_text(shepr_core::env::EnvVar::SheprLog)?;
+        Ok(Self {
+            filter: log_filter(directives.as_deref())?,
+        })
+    }
+}
+
 /// Installs the file logger.
 ///
 /// # Errors
@@ -21,10 +36,20 @@ const DEFAULT_LOG_FILTER: &str = "shepr=info";
 /// A `SHEPR_LOG` the environment policy refuses, or one that is not valid
 /// `tracing` filter syntax, fails the launch rather than silently logging at
 /// the default level. A log file that cannot be opened is reported on stderr
-/// and the process runs without file logging.
+/// and the process runs without file logging. An already-installed global
+/// logger also fails initialization because this call cannot install its file
+/// writer.
 pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<()> {
-    let directives = shepr_core::env::read_text(shepr_core::env::EnvVar::SheprLog)?;
-    let filter = log_filter(directives.as_deref())?;
+    init_file_logging_with_config(dir, file_name, FileLoggingConfig::from_environment()?)
+}
+
+/// Installs the file logger with a filter already validated for this process.
+pub fn init_file_logging_with_config(
+    dir: &Path,
+    file_name: &str,
+    config: FileLoggingConfig,
+) -> io::Result<()> {
+    let filter = config.filter;
 
     let make_writer = match RotatingFileMakeWriter::new(
         dir,
@@ -45,9 +70,8 @@ pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<()> {
         }
     };
 
-    // This only fails when a global subscriber (or `log` logger) is already
-    // installed. That one keeps receiving events, so the warning reaches
-    // wherever this process is already logging, and the file log is skipped.
+    // A global subscriber (or `log` logger) already installed means this
+    // process cannot honor the file logger setup requested by this call.
     if let Err(error) = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(make_writer)
@@ -61,6 +85,9 @@ pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<()> {
             err = %error,
             "file logging not installed: a logger is already set"
         );
+        return Err(io::Error::other(format!(
+            "file logging could not be initialized because a logger is already set: {error}"
+        )));
     }
     Ok(())
 }

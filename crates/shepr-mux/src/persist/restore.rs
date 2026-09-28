@@ -289,7 +289,15 @@ fn restore_workspace(
         .max(snap.next_public_tab_number);
 
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
-        let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
+        // Public numbers are one-based, and building a public ID from zero is
+        // an invariant violation that aborts; a saved zero (a hand-edited or
+        // damaged file) is treated like a missing entry.
+        let saved_tab_number = snap
+            .public_tab_numbers
+            .get(idx)
+            .copied()
+            .filter(|number| *number > 0);
+        let tab_number = saved_tab_number.unwrap_or(idx + 1);
         let restored_tab = restore_tab(
             tab_snap,
             history.and_then(|history| history.tabs.get(idx)),
@@ -306,7 +314,7 @@ fn restore_workspace(
             continue;
         };
         restored_tab_index.push(Some(tabs.len()));
-        if let Some(public_tab_number) = snap.public_tab_numbers.get(idx).copied() {
+        if let Some(public_tab_number) = saved_tab_number {
             tab.number = public_tab_number;
         }
         next_public_tab_number = next_public_tab_number.max(tab.number + 1);
@@ -844,13 +852,19 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
 /// Public pane numbers for every saved pane of a workspace, keyed by saved
 /// pane ID. Every restored pane needs its public ID before its shell starts:
 /// the ID goes into the shell's SHEPR identity environment, which agent hooks
-/// use to report back. A saved pane without a number (a hand-edited or
-/// damaged file) gets the next free one, in layout order.
+/// use to report back. A saved pane without a number, or with the number zero
+/// that no public ID can carry (a hand-edited or damaged file), gets the next
+/// free one, in layout order.
 fn assign_public_pane_numbers(
     snap: &WorkspaceSnapshot,
     next_public_pane_number: &mut usize,
 ) -> HashMap<u32, usize> {
-    let mut numbers = snap.public_pane_numbers.clone();
+    let mut numbers: HashMap<u32, usize> = snap
+        .public_pane_numbers
+        .iter()
+        .filter(|(_, number)| **number > 0)
+        .map(|(old_raw, number)| (*old_raw, *number))
+        .collect();
     for tab_snap in &snap.tabs {
         let mut layout_panes = Vec::new();
         collect_snapshot_pane_ids(&tab_snap.layout, &mut layout_panes);
@@ -1982,6 +1996,44 @@ mod tests {
 
         assert_eq!(numbers, HashMap::from([(10, 4), (30, 5), (20, 6)]));
         assert_eq!(next, 7);
+    }
+
+    #[test]
+    fn a_saved_zero_pane_number_is_replaced_instead_of_aborting() {
+        let snap = WorkspaceSnapshot {
+            id: Some("w1".into()),
+            custom_name: None,
+            identity_cwd: PathBuf::from("/"),
+            public_pane_numbers: HashMap::from([(10, 0)]),
+            next_public_pane_number: 1,
+            public_tab_numbers: vec![0],
+            next_public_tab_number: 0,
+            tabs: vec![TabSnapshot {
+                custom_name: None,
+                layout: LayoutSnapshot::Pane(10),
+                panes: HashMap::from([(
+                    10,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd: PathBuf::from("/"),
+                        label: None,
+                        agent_name: None,
+                        managed_agent_kind: None,
+                        agent_session: None,
+                        launch_argv: None,
+                    },
+                )]),
+                zoomed: false,
+                focused: None,
+                root_pane: None,
+            }],
+            active_tab: 0,
+        };
+        let mut next = 1;
+
+        let numbers = assign_public_pane_numbers(&snap, &mut next);
+
+        assert_eq!(numbers, HashMap::from([(10, 1)]));
+        assert_eq!(next, 2);
     }
 
     #[tokio::test]

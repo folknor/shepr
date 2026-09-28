@@ -1,8 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use regex::Regex;
-
 use crate::schema::{
     ErrorResponse, EventData, EventEnvelope, EventMatch, EventsWaitParams, Method, Request,
     ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
@@ -36,22 +34,14 @@ pub(super) fn wait_for_output(
     shepr_platform::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
 
     let regex = match &params.r#match {
-        crate::schema::OutputMatch::Regex { value } => match Regex::new(value) {
-            Ok(regex) => Some(regex),
-            Err(err) => {
-                return Ok(Some(
-                    serde_json::to_string(&ErrorResponse {
-                        id: request_id,
-                        error: crate::error::ApiError::new(
-                            crate::error::ApiErrorCode::InvalidRegex,
-                            err.to_string(),
-                        )
-                        .into_body(),
-                    })
-                    .map_err(std::io::Error::other)?,
-                ));
+        crate::schema::OutputMatch::Regex { value } => {
+            match crate::subscriptions::compile_match_regex(value) {
+                Ok(regex) => Some(regex),
+                Err(error) => {
+                    return Ok(Some(crate::error::encode_result(request_id, Err(error))));
+                }
             }
-        },
+        }
         crate::schema::OutputMatch::Substring { .. } => None,
     };
 
@@ -107,33 +97,35 @@ pub(super) fn wait_for_output(
         if matched_line.is_some() {
             let revision = read.revision;
             shepr_platform::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
-            return Ok(Some(
-                serde_json::to_string(&SuccessResponse {
-                    id: request_id,
-                    result: ResponseResult::OutputMatched {
-                        pane_id: read.pane_id.clone(),
-                        revision,
-                        matched_line,
-                        read,
-                    },
-                })
-                .map_err(std::io::Error::other)?,
-            ));
+            let response = SuccessResponse {
+                id: request_id,
+                result: ResponseResult::OutputMatched {
+                    pane_id: read.pane_id.clone(),
+                    revision,
+                    matched_line,
+                    read,
+                },
+            };
+            return Ok(Some(crate::serialize_response_or_error(
+                &response.id,
+                &response,
+            )));
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             shepr_platform::logging::api_wait_timed_out(&request_id, &params.pane_id);
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: crate::error::ApiError::new(
-                        crate::error::ApiErrorCode::Timeout,
-                        "timed out waiting for output match",
-                    )
-                    .into_body(),
-                })
-                .map_err(std::io::Error::other)?,
-            ));
+            let response = ErrorResponse {
+                id: request_id,
+                error: crate::error::ApiError::new(
+                    crate::error::ApiErrorCode::Timeout,
+                    "timed out waiting for output match",
+                )
+                .into_body(),
+            };
+            return Ok(Some(crate::serialize_response_or_error(
+                &response.id,
+                &response,
+            )));
         }
 
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
@@ -153,9 +145,10 @@ pub(super) fn wait_for_agent(
     let initial = match agent_get(&request_id, &params.target, api_tx) {
         Ok(agent) => agent,
         Err(response) => {
-            return serde_json::to_string(&response)
-                .map(Some)
-                .map_err(std::io::Error::other);
+            return Ok(Some(crate::serialize_response_or_error(
+                &response.id,
+                &response,
+            )));
         }
     };
     let until = agent_wait_statuses(params.until);
@@ -225,9 +218,10 @@ pub(super) fn prompt_agent(
     ) {
         Ok(agent) => agent,
         Err(response) => {
-            return serde_json::to_string(&response)
-                .map(Some)
-                .map_err(std::io::Error::other);
+            return Ok(Some(crate::serialize_response_or_error(
+                &response.id,
+                &response,
+            )));
         }
     };
     let prompt_started_working = before_prompt.agent_status == crate::schema::AgentStatus::Working;
@@ -368,11 +362,11 @@ fn agent_prompt_success(
     request_id: String,
     agent: crate::schema::AgentInfo,
 ) -> std::io::Result<String> {
-    serde_json::to_string(&SuccessResponse {
+    let response = SuccessResponse {
         id: request_id,
         result: ResponseResult::AgentPrompted { agent },
-    })
-    .map_err(std::io::Error::other)
+    };
+    Ok(crate::serialize_response_or_error(&response.id, &response))
 }
 
 struct ResolvedAgentWait {
@@ -443,12 +437,13 @@ fn wait_for_resolved_agent(
         let events = match subscription_events_after(event_hub, last_event_sequence) {
             Ok(events) => events,
             Err(error) => {
-                return serde_json::to_string(&ErrorResponse {
+                let response = ErrorResponse {
                     id: request_id,
                     error,
-                })
-                .map(|response| Some(AgentWaitOutcome::Response(response)))
-                .map_err(std::io::Error::other);
+                };
+                return Ok(Some(AgentWaitOutcome::Response(
+                    crate::serialize_response_or_error(&response.id, &response),
+                )));
             }
         };
         for (sequence, event) in events {
@@ -691,11 +686,11 @@ fn agent_wait_success(
     request_id: String,
     agent: crate::schema::AgentInfo,
 ) -> std::io::Result<String> {
-    serde_json::to_string(&SuccessResponse {
+    let response = SuccessResponse {
         id: request_id,
         result: ResponseResult::AgentInfo { agent },
-    })
-    .map_err(std::io::Error::other)
+    };
+    Ok(crate::serialize_response_or_error(&response.id, &response))
 }
 
 fn agent_wait_timeout(
@@ -718,23 +713,23 @@ fn agent_wait_timeout(
             )
         }
     };
-    serde_json::to_string(&ErrorResponse {
+    let response = ErrorResponse {
         id: request_id,
         error: crate::error::ApiError::new(code, message).into_body(),
-    })
-    .map_err(std::io::Error::other)
+    };
+    Ok(crate::serialize_response_or_error(&response.id, &response))
 }
 
 fn agent_wait_not_running(request_id: String) -> std::io::Result<String> {
-    serde_json::to_string(&ErrorResponse {
+    let response = ErrorResponse {
         id: request_id,
         error: crate::error::ApiError::new(
             crate::error::ApiErrorCode::AgentNotRunning,
             "agent is no longer running in the target pane",
         )
         .into_body(),
-    })
-    .map_err(std::io::Error::other)
+    };
+    Ok(crate::serialize_response_or_error(&response.id, &response))
 }
 
 fn agent_wait_probe_error(response: ErrorResponse) -> std::io::Result<String> {
@@ -743,7 +738,7 @@ fn agent_wait_probe_error(response: ErrorResponse) -> std::io::Result<String> {
     {
         return agent_wait_not_running(response.id);
     }
-    serde_json::to_string(&response).map_err(std::io::Error::other)
+    Ok(crate::serialize_response_or_error(&response.id, &response))
 }
 
 pub(super) fn wait_for_event(
@@ -771,9 +766,10 @@ pub(super) fn wait_for_event(
     ) {
         Ok(active) => active,
         Err(response) => {
-            return Ok(Some(
-                serde_json::to_string(&response).map_err(std::io::Error::other)?,
-            ));
+            return Ok(Some(crate::serialize_response_or_error(
+                &response.id,
+                &response,
+            )));
         }
     };
 
@@ -791,27 +787,30 @@ pub(super) fn wait_for_event(
             Ok(Some(event)) => return Ok(Some(wait_matched_response(&request_id, event))),
             Ok(None) => {}
             Err(error) => {
-                return serde_json::to_string(&ErrorResponse {
+                let response = ErrorResponse {
                     id: request_id,
                     error,
-                })
-                .map(Some)
-                .map_err(std::io::Error::other);
+                };
+                return Ok(Some(crate::serialize_response_or_error(
+                    &response.id,
+                    &response,
+                )));
             }
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: crate::error::ApiError::new(
-                        crate::error::ApiErrorCode::Timeout,
-                        "timed out waiting for event match",
-                    )
-                    .into_body(),
-                })
-                .map_err(std::io::Error::other)?,
-            ));
+            let response = ErrorResponse {
+                id: request_id,
+                error: crate::error::ApiError::new(
+                    crate::error::ApiErrorCode::Timeout,
+                    "timed out waiting for event match",
+                )
+                .into_body(),
+            };
+            return Ok(Some(crate::serialize_response_or_error(
+                &response.id,
+                &response,
+            )));
         }
 
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
@@ -866,7 +865,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
         );
     };
 
-    serde_json::to_string(&SuccessResponse {
+    let response = SuccessResponse {
         id: request_id.into(),
         result: ResponseResult::WaitMatched {
             event: EventEnvelope {
@@ -880,14 +879,8 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
                 },
             },
         },
-    })
-    .unwrap_or_else(|err| {
-        error_response_json(
-            request_id,
-            crate::error::ApiErrorCode::InternalError,
-            format!("failed to encode matched event: {err}"),
-        )
-    })
+    };
+    crate::serialize_response_or_error(request_id, &response)
 }
 
 #[cfg(test)]

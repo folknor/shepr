@@ -206,16 +206,30 @@ fn launch() -> CliResult<i32> {
 
     refuse_if_nested_disabled(&loaded_config)?;
 
-    let saved_federation =
-        shepr_remote::machine::EndpointCatalog::load(paths).is_ok_and(|catalog| catalog.has_ssh());
+    let endpoint_catalog = load_launch_endpoint_catalog(paths)?;
     let client = autodetect::auto_detect_launch(
-        saved_federation,
+        endpoint_catalog,
         &loaded_config,
         paths,
-        shepr_client::run_client,
+        shepr_client::run_client_with_launch_config,
     )
     .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
     cli::finish_client(client)
+}
+
+/// The saved-machine catalog for a TUI launch, loaded once and handed to both
+/// the launch policy and the client. A catalog that cannot be read or parsed
+/// fails the launch: treating it as "no saved machines" would silently switch
+/// a Local startup failure from a notice to a hard failure and change the
+/// client's lifetime rule.
+fn load_launch_endpoint_catalog(
+    paths: &shepr_config::AppPaths,
+) -> CliResult<shepr_remote::machine::EndpointCatalog> {
+    shepr_remote::machine::EndpointCatalog::load(paths).map_err(|error| {
+        CliError::Client(shepr_client::ClientRunError::Launch(io::Error::other(
+            format!("saved SSH endpoint catalog is unavailable: {error}"),
+        )))
+    })
 }
 
 /// A bridge that ended on its idle watchdog ends the process with status 1
@@ -292,6 +306,35 @@ mod tests {
                 "keys.{field} = {default:?} missing from the printed default config"
             );
         }
+    }
+
+    #[test]
+    fn an_unreadable_saved_machine_catalog_fails_the_launch() {
+        use shepr_test_fixtures::AppPathsFixture as _;
+
+        let scratch = crate::test_support::ScratchDir::new("launch-catalog-error");
+        let paths = shepr_config::AppPaths::test_at(scratch.path());
+
+        let absent = load_launch_endpoint_catalog(&paths)
+            .unwrap_or_else(|_| panic!("an absent catalog is an empty one"));
+        assert!(!absent.has_ssh());
+
+        let catalog_dir = paths.state_dir().join("client");
+        std::fs::create_dir_all(&catalog_dir).expect("test precondition");
+        std::fs::write(catalog_dir.join("endpoints.json"), b"{ not json")
+            .expect("test precondition");
+
+        let Err(CliError::Client(shepr_client::ClientRunError::Launch(error))) =
+            load_launch_endpoint_catalog(&paths)
+        else {
+            panic!("a corrupt catalog must refuse the launch");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("saved SSH endpoint catalog is unavailable"),
+            "{error}"
+        );
     }
 
     #[test]

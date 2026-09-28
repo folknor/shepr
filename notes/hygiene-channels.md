@@ -144,14 +144,6 @@ prefix constant is a severity encoded in text.
 Enforcement named: return a typed `InstallWarning` and let the printer decide
 the prefix.
 
-## HYGC-007 - The CLI process installs no tracing subscriber, so everything it logs is discarded
-
-Merged into BUG-025 (`notes/bugs.md`), which carries the full finding.
-
-## HYGC-008 - `SHEPR_LOG` degrades silently on a bad filter, and a second subscriber install is discarded
-
-Merged into BUG-044 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGC-009 - The domain event catalogue, and one API level policy, live in the bottom platform crate
 
 `shepr-platform/src/logging.rs` holds 25 functions named after concepts the
@@ -428,10 +420,6 @@ literal from the shipped assets and asserting `AgentSource::from_pair` accepts
 each one - belongs to the guards sibling document, where the asset-literal
 finding is filed.
 
-## HYGC-017 - A persistent tab-bar status failure re-logs every interval, at warn, carrying the user's command line
-
-Merged into BUG-060 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGC-018 - Drops on the terminal-reply and dirty-patch paths with no counter and no log
 
 `shepr-pty`/`shepr-mux`:
@@ -469,10 +457,6 @@ Enforcement named: thread the `ApiResult`'s outcome to `finish_api_response`
 instead of the encoded string; the literal and the reparse both disappear. The
 api/cli hunter noted this is the one finding in that hunt where the structural
 fix also removes measurable work from a hot path.
-
-## HYGC-020 - Three response-encoding implementations, with different behaviour on encoder failure
-
-Merged into BUG-029 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-021 - A second, hand-rolled API client transport
 
@@ -632,15 +616,6 @@ Elsewhere:
 
 - `shepr-pty`'s `prepare_pty_child` ignores the return codes of `sigemptyset`
   and `sigprocmask`.
-- `shepr-server/src/server/headless.rs`: `let _ = ctrlc::set_handler(...)` on the
-  server's only signal path. If installation fails (a handler already
-  registered, which `ctrlc` reports as `MultipleHandlers`), the server runs with
-  no SIGINT/SIGTERM/SIGHUP handling, so `systemctl stop`, a logout or a Ctrl-C
-  kills it without the shutdown sequence that saves the session; nothing is
-  logged and nothing is returned. The server hunter called this a live swallowed
-  failure rather than a style point. Enforcement named: return `io::Result` from
-  `ctrlc_handler` and propagate to `run_server`, which already returns
-  `io::Result<()>`.
 - `shepr-server/src/app/api/workspaces.rs`: `let _ =
   std::fs::remove_dir_all(&source_cwd)` - a recursive delete whose failure is
   discarded. The hunter noted it is fixture teardown in test code, but a
@@ -664,46 +639,8 @@ once. The termio/client hunter's dissenting view on the same lint: an allow-list
 for it would be "too noisy to be worth it", and those sites are individual
 fixes.
 
-## HYGC-027 - Results dropped on the server's shutdown and commit paths
-
-- `shepr-server/src/app/session.rs::retire_session_writer` does
-  `let _ = thread.join();`, dropping both the thread's panic (`Err`) and the
-  `io::Result<()>` the save job returned. On the one path where losing a save
-  matters most - server shutdown - a failed write is invisible, while every
-  other save result goes through `record_session_save_result`, which logs and
-  retries. Enforcement named: `join()` into `record_session_save_result`; the
-  `Result` then cannot be dropped without `#[must_use]` firing.
-- `shepr-server/src/server/headless/lifecycle.rs::cleanup_sockets` returns
-  `io::Result` but logs a removal failure and returns `Ok(())` unconditionally;
-  `release_sockets_after_save` propagates that always-`Ok`; `Drop for
-  HeadlessServer` then writes `let _ = self.cleanup_sockets();`, discarding a
-  value that is provably `Ok`. The signature claims a failure can travel and
-  nothing can. Enforcement named: change the signature to `()`, at which point
-  the `let _ =` at the Drop site disappears - or make the warn an `Err`.
-- `shepr-server/src/app/events.rs`: `let _ = self.state.commit_pane_removal(&plan);`
-  in the `AppEvent::PaneDied` handler. If the plan no longer matches state (the
-  pane was closed by an API call between plan and commit), the event is consumed
-  with nothing recorded. Enforcement named: `#[must_use]` on the return,
-  handled explicitly.
-
-## HYGC-028 - The rotating log writer swallows write errors by contract, and its poisoned-mutex branch never recovers
-
-Merged into BUG-043 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGC-029 - Poisoned locks answered with success, a fabricated value, or a silent drop
 
-- `shepr-api/src/event_hub.rs::EventHub::push`: `let Ok(mut state) =
-  self.inner.lock() else { return; }`. The read path was deliberately hardened -
-  `events_after_checked` returns `EventHistoryError::Unavailable` and has a test
-  for the poisoned case - but the write path just returns. After a poison,
-  subscribers see a silent, permanent gap rather than the `server_unavailable`
-  they were designed to receive, because `current_sequence` also stops
-  advancing, so `events_after_checked` sees a consistent-looking empty tail
-  rather than `Lost`. Enforcement named: make `push` infallible by construction
-  (a lock-free ring, or `PoisonError::into_inner`, both defensible given the
-  state is a plain `Vec` of values), or report; a test can cover it the same way
-  `checked_history_reports_unavailable_instead_of_empty_after_poison` covers the
-  read side.
 - `shepr-vt`/`shepr-mux`: `synchronized_output_state` returns `(true, 0)` on a
   poisoned core - a made-up value rather than an error.
 - `shepr-mux`: `GhosttyPaneTerminal::resize`, `scroll_up`, `scroll_down`,
@@ -723,7 +660,7 @@ Merged into BUG-043 (`notes/bugs.md`), which carries the full finding.
   make it one decision.
 
 Note on disagreement across scopes: `shepr-platform`'s writer treats a poisoned
-mutex as a silent success (HYGC-028), `shepr-vt::lock_terminal_core` treats
+mutex as a silent success (BUG-043), `shepr-vt::lock_terminal_core` treats
 poisoning as terminal for the pane, `shepr-mux/src/render_signal.rs` continues on
 poisoned state at eight sites, and `shepr-server/src/app/session.rs` both
 recovers and refuses on the *same* mutex twenty lines apart. The hunters did not
@@ -749,10 +686,6 @@ distinguished from a hook running outside shepr.
 Mitigation named: have the receiving side own the observability - log
 unrecognised or malformed reports (HYGC-016) - since the sending side
 structurally cannot.
-
-## HYGC-031 - Git failure collapses to `None` everywhere, so nothing ever reaches an operator
-
-Merged into BUG-065 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-032 - Failures answered with a valid-looking sentinel instead of a refusal
 
@@ -823,10 +756,6 @@ leaves production crates' `test-support` features for dev-only crates, held by
   `assert!`s once, so if anything ever enables `test-support` in a non-test build
   a panicking API is exported from a library that otherwise bans `unwrap`. (The
   feature-unification half of that is filed with the test findings.)
-
-## HYGC-034 - An unbounded write with no send timeout
-
-Merged into BUG-027 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGC-035 - Presentation and restore results discarded in the client
 

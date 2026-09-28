@@ -122,6 +122,35 @@ fn run_client_with_mode(
     mode: ClientLaunchMode,
     log_message: &'static str,
 ) -> Result<ClientExit, ClientRunError> {
+    run_client_with_launch_state(config, paths, mode, log_message, None, None)
+}
+
+/// Runs the local shell client with startup settings already loaded by the
+/// launch coordinator, so preflight and the client use the same values.
+pub fn run_client_with_launch_config(
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
+    endpoint_catalog: endpoint::EndpointCatalog,
+    logging_config: shepr_platform::logging::FileLoggingConfig,
+) -> Result<ClientExit, ClientRunError> {
+    run_client_with_launch_state(
+        config,
+        paths,
+        ClientLaunchMode::Shell,
+        "connecting to server",
+        Some(endpoint_catalog),
+        Some(logging_config),
+    )
+}
+
+fn run_client_with_launch_state(
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
+    mode: ClientLaunchMode,
+    log_message: &'static str,
+    initial_catalog: Option<endpoint::EndpointCatalog>,
+    initial_logging_config: Option<shepr_platform::logging::FileLoggingConfig>,
+) -> Result<ClientExit, ClientRunError> {
     let (attach_request, attach_escape) = match mode {
         ClientLaunchMode::Shell => (None, None),
         ClientLaunchMode::Attach {
@@ -130,10 +159,18 @@ fn run_client_with_mode(
             escape,
         } => (Some((terminal_id, takeover)), Some(escape)),
     };
-    shepr_platform::logging::init_file_logging(
-        &shepr_api::session::data_dir(paths),
-        shepr_platform::logging::CLIENT_LOG_FILE,
-    )?;
+    let data_dir = shepr_api::session::data_dir(paths);
+    match initial_logging_config {
+        Some(logging_config) => shepr_platform::logging::init_file_logging_with_config(
+            &data_dir,
+            shepr_platform::logging::CLIENT_LOG_FILE,
+            logging_config,
+        )?,
+        None => shepr_platform::logging::init_file_logging(
+            &data_dir,
+            shepr_platform::logging::CLIENT_LOG_FILE,
+        )?,
+    }
 
     let client_rendered_shell = attach_request.is_none();
     let socket_path = paths.server_address().client_socket().to_path_buf();
@@ -168,11 +205,14 @@ fn run_client_with_mode(
     info!(path = %socket_path.display(), "{log_message}");
 
     let endpoint_catalog = if client_rendered_shell && role == ClientProcessRole::Local {
-        endpoint::EndpointCatalog::load(paths).map_err(|error| {
-            io::Error::other(format!(
-                "saved SSH endpoint catalog is unavailable: {error}"
-            ))
-        })?
+        match initial_catalog {
+            Some(catalog) => catalog,
+            None => endpoint::EndpointCatalog::load(paths).map_err(|error| {
+                io::Error::other(format!(
+                    "saved SSH endpoint catalog is unavailable: {error}"
+                ))
+            })?,
+        }
     } else {
         endpoint::EndpointCatalog::default()
     };

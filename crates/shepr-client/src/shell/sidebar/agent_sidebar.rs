@@ -7,7 +7,7 @@ use ratatui::{
     text::Line,
     widgets::{Paragraph, Widget},
 };
-use shepr_protocol::{ClientShellAgent, ClientShellPane};
+use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId, PublicTabId};
 
 use super::*;
 
@@ -347,11 +347,11 @@ impl<'a> AgentRowIndex<'a> {
         }
     }
 
-    fn tab(&self, tab_id: &str) -> Option<&'a ClientShellTab> {
+    fn tab(&self, tab_id: &PublicTabId) -> Option<&'a ClientShellTab> {
         let items = &self.items[self.tabs.clone()];
         let index = items
             .binary_search_by(|item| match item {
-                AgentRowIndexItem::Tab(tab) => tab.tab_id.as_str().cmp(tab_id),
+                AgentRowIndexItem::Tab(tab) => tab.tab_id.cmp(tab_id),
                 _ => std::cmp::Ordering::Equal,
             })
             .ok()?;
@@ -361,11 +361,11 @@ impl<'a> AgentRowIndex<'a> {
         }
     }
 
-    fn pane(&self, pane_id: &str) -> Option<&'a ClientShellPane> {
+    fn pane(&self, pane_id: &PublicPaneId) -> Option<&'a ClientShellPane> {
         let items = &self.items[self.panes.clone()];
         let index = items
             .binary_search_by(|item| match item {
-                AgentRowIndexItem::Pane(pane) => pane.pane_id.as_str().cmp(pane_id),
+                AgentRowIndexItem::Pane(pane) => pane.pane_id.cmp(pane_id),
                 _ => std::cmp::Ordering::Equal,
             })
             .ok()?;
@@ -396,7 +396,7 @@ impl<'a> AgentRowIndex<'a> {
     ) -> Option<AgentRow> {
         let workspace = self.workspace(&agent.workspace_id)?;
         let tab = self.tab(&agent.tab_id);
-        let pane = self.pane(&agent.pane_id.to_string());
+        let pane = self.pane(&agent.pane_id);
         let tab_count = self.tab_count(&agent.workspace_id);
         let tab_label = tab
             .filter(|tab| tab_count > 1 || tab.custom_label)

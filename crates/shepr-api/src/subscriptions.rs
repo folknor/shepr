@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 use crate::event_hub::EventHistoryError;
 use crate::schema::{
@@ -8,6 +8,21 @@ use crate::schema::{
 };
 use crate::server::{APP_RESPONSE_TIMEOUT, dispatch_to_app_with_timeout_result};
 use crate::{ApiRequestSender, EventHub};
+
+// Bound each compiled program and its lazy DFA cache; the server also caps each stream's count.
+pub(crate) const MAX_REGEX_MATCH_SUBSCRIPTIONS: usize = 32;
+const MATCH_REGEX_SIZE_LIMIT: usize = 256 * 1024;
+const MATCH_REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;
+
+pub(crate) fn compile_match_regex(value: &str) -> Result<Regex, crate::error::ApiError> {
+    let mut builder = RegexBuilder::new(value);
+    builder
+        .size_limit(MATCH_REGEX_SIZE_LIMIT)
+        .dfa_size_limit(MATCH_REGEX_DFA_SIZE_LIMIT);
+    builder.build().map_err(|error| {
+        crate::error::ApiError::new(crate::error::ApiErrorCode::InvalidRegex, error.to_string())
+    })
+}
 
 pub(super) fn output_match_read_source(
     source: &crate::schema::ReadSource,
@@ -154,19 +169,17 @@ impl ActiveSubscription {
                 strip_ansi,
             } => {
                 let regex = match &r#match {
-                    crate::schema::OutputMatch::Regex { value } => match Regex::new(value) {
-                        Ok(regex) => Some(regex),
-                        Err(err) => {
-                            return Err(ErrorResponse {
-                                id: request_id.to_string(),
-                                error: crate::error::ApiError::new(
-                                    crate::error::ApiErrorCode::InvalidRegex,
-                                    err.to_string(),
-                                )
-                                .into_body(),
-                            });
+                    crate::schema::OutputMatch::Regex { value } => {
+                        match compile_match_regex(value) {
+                            Ok(regex) => Some(regex),
+                            Err(error) => {
+                                return Err(ErrorResponse {
+                                    id: request_id.to_string(),
+                                    error: error.into_body(),
+                                });
+                            }
                         }
-                    },
+                    }
                     crate::schema::OutputMatch::Substring { .. } => None,
                 };
 
@@ -839,6 +852,18 @@ mod tests {
         for index in 0..600 {
             event_hub.push(workspace_focused_event(&format!("overflow_{index}")));
         }
+    }
+
+    #[test]
+    fn wire_regexes_compile_within_a_size_bound() {
+        assert!(compile_match_regex("ready: \\d+").is_ok());
+        // A Unicode word class repeated this often compiles to far more than
+        // the bound.
+        let error = compile_match_regex("\\w{2000}").expect_err("an oversized program is refused");
+        assert!(matches!(
+            error.code,
+            crate::error::ApiErrorCode::InvalidRegex
+        ));
     }
 
     #[test]

@@ -2204,7 +2204,9 @@ fn ctrlc_handler(
         // Wake up the event loop so the quit flag is checked promptly. Only a
         // wakeup, the flags above carry the quit: a full channel already
         // wakes the loop, and a closed one means the loop has exited.
-        server_event_tx.try_send(ServerEvent::QuitSignal).ok();
+        let (Ok(())
+        | Err(mpsc::error::TrySendError::Full(_) | mpsc::error::TrySendError::Closed(_))) =
+            server_event_tx.try_send(ServerEvent::QuitSignal);
     })
     .map_err(|err| io::Error::other(format!("installing the termination signal handler: {err}")))
 }

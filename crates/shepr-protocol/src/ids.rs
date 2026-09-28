@@ -120,8 +120,19 @@ pub struct PublicTabId {
 }
 
 impl PublicTabId {
+    /// Builds a tab ID from a non-empty workspace ID and a one-based number.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `workspace_id` is empty or `number` is zero, because neither
+    /// value can be represented by a canonical public tab ID.
     pub fn new(workspace_id: impl Into<String>, number: usize) -> Self {
         let workspace_id = WorkspaceId::new(workspace_id);
+        assert!(
+            !workspace_id.as_str().is_empty(),
+            "public tab IDs require a non-empty workspace ID"
+        );
+        assert!(number > 0, "public tab IDs use one-based numbers");
         Self {
             encoded: format!("{}:t{}", workspace_id, encode_public_number(number)),
             workspace_id,
@@ -222,7 +233,7 @@ impl PartialEq<PublicTabId> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PublicPaneId {
     workspace_id: WorkspaceId,
     number: usize,
@@ -230,8 +241,19 @@ pub struct PublicPaneId {
 }
 
 impl PublicPaneId {
+    /// Builds a pane ID from a non-empty workspace ID and a one-based number.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `workspace_id` is empty or `number` is zero, because neither
+    /// value can be represented by a canonical public pane ID.
     pub fn new(workspace_id: impl Into<String>, number: usize) -> Self {
         let workspace_id = WorkspaceId::new(workspace_id);
+        assert!(
+            !workspace_id.as_str().is_empty(),
+            "public pane IDs require a non-empty workspace ID"
+        );
+        assert!(number > 0, "public pane IDs use one-based numbers");
         Self {
             encoded: format!("{}:p{}", workspace_id, encode_public_number(number)),
             workspace_id,

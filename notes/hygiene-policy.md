@@ -58,7 +58,7 @@ handed in, so behaviour that depends on time is untestable without sleeping.
   function is reachable from a test; `version_probe_deadline_includes_inherited_stdout`
   sleeps 300 ms + 50 ms of real time as a result.
 - `shepr-config`: `TerminalId::alloc()` reads `SystemTime::now()` (see
-  HYGP-003). `tab_bar.rs` `Command` interval/timeout effects are equally
+  HYGV-087). `tab_bar.rs` `Command` interval/timeout effects are equally
   untestable without waiting.
 - `shepr-remote`: `RemoteSsh::noninteractive_timeout`,
   `SavedSshConnector::attempt`, `SshStdioBridge::reported_failure`,
@@ -164,10 +164,6 @@ config or a settings value carried down, then a
 designated env or launch module. Two hunters note the client has only four
 production `env::var` sites, so the rule is cheap there today.
 
-## HYGP-003 - Identifier allocation reaches process-global counters, and there are two id schemes
-
-Merged into HYGV-087 (`notes/hygiene-values.md`), which carries the full finding.
-
 ## HYGP-004 - The process id and the randomness source are reached from logic, with the randomness utility living in the SSH module
 
 **Decision (partial):** the four `shepr-test-support` sites go with piece 2
@@ -182,7 +178,7 @@ per-process slot rather than the pid. Open: every production site.
   test), `shepr-remote` (six sites embedding the pid in a name:
   `local_forward_socket_path`, `saved_bridge_path`, `SavedSshApiBridge::start`,
   `store_private_json`, `create_remote_ssh_config_dir`, `unpredictable_token`)
-  and `shepr-server` (the boot id, HYGP-003).
+  and `shepr-server` (the boot id, HYGV-087).
 - `ssh_paths.rs::unpredictable_token` is the single owner of randomness, which
   the hunter calls good, but `ipc.rs` reaches across module boundaries into
   `super::ssh_paths::unpredictable_token` for a socket staging name: a
@@ -515,11 +511,7 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   safe today by ordering, not by structure. Suggested: make the checked state
   part of the bridge or target value it describes, so replacing the bridge
   necessarily clears it.
-- Also in this class: `PaneId::NEXT_PANE_ID` and `NEXT_TERMINAL_ID` (HYGP-003).
-
-## HYGP-012 - The manifest registry is a process-global whose first caller fixes the override policy for the process
-
-Merged into BUG-014 (`notes/bugs.md`), which carries the full finding.
+- Also in this class: `PaneId::NEXT_PANE_ID` and `NEXT_TERMINAL_ID` (HYGV-087).
 
 ## HYGP-013 - Mutex poison policy is re-decided at every lock site, and one mutex has two policies
 
@@ -605,10 +597,6 @@ Enforcement named: a small derive or macro
 (`#[validated_deserialize(validate = "validate_resolved")]`), after which the
 rule exists once.
 
-## HYGP-016 - User-supplied regexes arrive off the wire and are compiled with no size limit, by two independently written call sites
-
-Merged into BUG-032 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGP-017 - Launch-environment validation exists twice, with different rules and different operator text
 
 From `shepr-server` and the root binary: `app/api/env.rs` validates a JSON map;
@@ -646,11 +634,7 @@ Enforcement named: one list in `shepr-config`, plus a test that every
 `*_ENV_VAR` constant is either scrubbed or explicitly allowed. Related: the
 `shepr-mux` hunter notes `pane/launch.rs` goes to real trouble to scrub
 inherited host and agent variables for pane children while the crate's own
-subprocesses get none of that care (HYGP-019).
-
-## HYGP-019 - `git` is spawned from four production sites with four policies, no timeout budget and an inherited environment
-
-Merged into BUG-066 (`notes/bugs.md`) and BUG-065 (`notes/bugs.md`), which carry the full finding.
+subprocesses get none of that care (BUG-066).
 
 ## HYGP-020 - "Flush the synchronized-output buffer if it has expired" is re-implemented at six call sites
 
@@ -679,28 +663,6 @@ parser-driven mutation must use `with_handler`" and every mutation must end with
 `collect_damage()` (or `bump_full_damage`), which callers do by hand in `write`,
 `flush`, `mode_set`, `resize` and the scroll methods. Suggested: call
 `collect_damage` inside `with_handler`.
-
-## HYGP-021 - The hook assets implement one report protocol twice, with two transports, two timeout budgets and two request-id formats
-
-**Decision (partial):** Hermes support is removed entirely, so the hermes asset
-drops out of the lists below.
-
-From `shepr-agent`: the claude, codex, kimi, copilot, devin, droid, grok, cursor,
-antigravity, mastracode and opencode assets open the API socket directly with a
-0.5 s timeout and hand-build the JSON-RPC envelope
-(`{"id": .., "method": .., "params": ..}` plus a newline, then a best-effort
-`recv(4096)`). The qwen, qodercli and letta assets instead exec
-`shepr pane report-agent-session` with an unspecified timeout.
-Two implementations of one protocol in about fifteen copies, plus two request-id
-formats (`f"{source}:{ms}:{rand:06d}"` in claude, `f"shepr:kimi:{seq}"` in kimi)
-and two `seq` sources (`date +%s%N` in the shell prologue,
-`time.time_ns()` in Python). Each asset also reaches for its own ambient
-`time.time_ns()` / `random.randrange`.
-
-The hunter's consolidation: every asset shells out to `shepr pane report-*` - the
-CLI already exists, `SHEPR_BIN_PATH` is already exported, socket framing stays
-owned solely by Rust, and the JSON-RPC client disappears from fifteen shipped
-scripts. Called a real reduction rather than a tidy-up.
 
 ## HYGP-023 - `input_wire` is one conversion layer written twice, with the shared half duplicated verbatim and opposite policies for unrecognised bits
 
@@ -738,14 +700,6 @@ From `shepr-server`: `server/headless/render.rs` (three sites, all inside
 `if cell_size.is_known() { cell_size } else { HostCellSize::default() }`.
 Enforcement named: `HostCellSize::or_default(self) -> Self` in `shepr-termio`,
 after which the branch is unspellable at call sites.
-
-## HYGP-025 - Three sanitizers decide what may appear in the same tab bar row, with three different rules
-
-Merged into BUG-061 (`notes/bugs.md`), which carries the full finding.
-
-## HYGP-026 - A three-entry key-alias table lives away from the key parser
-
-Merged into HYGV-096 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGP-027 - "Only send if enough time has passed since `last_sent_at`" is reimplemented three times in the client mouse layer
 
@@ -1336,10 +1290,6 @@ the first two bullets.
   `#[allow(dead_code)]` with the justification "documents the table" and are read
   only by tests.
 
-## HYGP-047 - `ModifyOtherKeysMode` is a second enum over a `shepr-vt` concept, and its output is recovered by sniffing a byte string
-
-Merged into HYGV-059 (`notes/hygiene-values.md`), which carries the full finding.
-
 ## HYGP-048 - Public surface nobody outside the crate names
 
 - `shepr-remote` `machine.rs` re-exports only
@@ -1522,7 +1472,7 @@ are all genuinely tighter. Enforcement named: a text rule banning
   hunter lists this as one of the two findings in their scope they would most
   want confirmed by an actual build.
 - `shepr-remote`'s `sha2` is used only by `ProfileId::generate`; replacing that
-  with `unpredictable_token` (HYGP-003) lets `sha2` be dropped from the crate and
+  with `unpredictable_token` (HYGV-087) lets `sha2` be dropped from the crate and
   from its allowlist, which then enforces the change thereafter.
 - `shepr-core` depends on `ratatui`: `layout.rs` uses
   `ratatui::layout::{Direction, Rect}` and `brokkr.toml` allows it, putting a TUI

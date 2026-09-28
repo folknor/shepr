@@ -225,7 +225,10 @@ impl HeadlessServer {
                 // calling this, and the loop reads the flag every iteration.
                 // A full channel already wakes the loop, and a closed one
                 // means the loop has exited.
-                quit_notify.try_send(ServerEvent::QuitSignal).ok();
+                let (Ok(())
+                | Err(
+                    mpsc::error::TrySendError::Full(_) | mpsc::error::TrySendError::Closed(_),
+                )) = quit_notify.try_send(ServerEvent::QuitSignal);
             },
         ));
     }

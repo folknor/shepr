@@ -20,10 +20,6 @@ pass should expect that.
 
 ---
 
-## HYGG-003 - The only behavioural test of the logind protocol never runs
-
-Merged into BUG-047 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-004 - `failed_cli_registration_preserves_existing_config` re-executes the test binary through the host `bash`
 
 **Decision:** the host `bash` re-exec is resolved: the test now re-executes
@@ -115,10 +111,6 @@ Enforcement rule named: take `now: SystemTime` as a parameter the way the state
 layer takes `now: Instant`, delete the mtime fabrication, and hold it with a
 text rule against `SystemTime::now()` / `Instant::now()` in `src/persist/`.
 
-## HYGG-007 - Tests that skip silently, or return early, and report success
-
-Merged into BUG-073 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-008 - `bridge_child` is a `#[test]` that returns immediately and passes
 
 `shepr-platform/src/remote_bridge_tests.rs`: if `SHEPR_BRIDGE_TEST_SOCKET` is
@@ -130,10 +122,6 @@ process running crate-private code - but says it should be named so nobody reads
 it as coverage, and the guard should `panic!` when the variable is absent unless
 the harness can be told to skip it. The same file hardcodes libtest CLI flags
 (`--exact`, `--nocapture`), which couples the crate's tests to the harness.
-
-## HYGG-009 - `config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access` compares a value to itself on every normal run
-
-Merged into BUG-073 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-010 - Tests that take their inputs from the developer's directory layout
 
@@ -210,7 +198,7 @@ Enforcement rule named: expose `pub(crate) const INTEGRATION_PATH_ENV_VARS:
 &[&str]` in `env.rs`, have both the `resolve()`-adjacent code and the test
 helper read it, and add a test asserting the list covers every variable the
 resolvers consult - checkable by construction if the resolvers take their
-variable name from the list. Related: HYGG-030 (the same shape one layer up, in
+variable name from the list. Related: HYGG-053 (the same shape one layer up, in
 `IsolatedEnv`).
 
 ## HYGG-012 - Fixed `/tmp` literals remain in test data, standing in for a scratch directory
@@ -238,14 +226,6 @@ real one (HYGG-010).
 Enforcement rules named: a gremlin-style text rule forbidding `temp_dir`
 outside `shepr-test-support` plus a documented exemption; a text rule against
 `/tmp` literals in `shepr-mux` and in `crates/*/src` generally.
-
-## HYGG-013 - `capture_bounded_migration_observations` cannot fail
-
-Merged into HYGP-036 (`notes/hygiene-policy.md`), which carries the full finding.
-
-## HYGG-014 - `primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries` has a setup step that does nothing
-
-Merged into HYGP-036 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-015 - `child_sees_resolved_shell_not_a_non_executable_shell_env` compares against the function under test
 
@@ -285,10 +265,6 @@ named: export the list and iterate it.
 reached. The tests accept `BrokenPipe | ConnectionReset | WriteZero`, but a real
 PTY master reports EIO. The hunter's fix: one end-to-end actor-on-`openpty`
 test would close the gap.
-
-## HYGG-020 - `MAX_CLIPBOARD_TEXT_BYTES` is restated as a magic number in its own test
-
-Merged into HYGV-043 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-021 - Four small `shepr-platform` assertions that cannot fail, or that hide a failure
 
@@ -405,14 +381,6 @@ breaks the join - and the existing test catches that.
 so the return value cannot be false; call sites presumably
 `assert!(symlink_file(...))`, which asserts nothing.
 
-## HYGG-030 - The three bun test files never run
-
-Merged into BUG-016 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-031 - `src/netside_tests.rs` has four unbounded `recv()` loops that hang instead of failing
-
-Merged into BUG-030 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-032 - One `netside_tests.rs` assertion discards the result it exists to check
 
 `returning.receive_response(&target_id, 7, &request_id, &data, &mut endpoints);`
@@ -474,10 +442,6 @@ just parsed. The assertion that a TUI launch yields no command for
 setup as `machine_prefix_rejects_missing_target_and_conflicting_global_options`,
 duplicated.
 
-## HYGG-038 - `managed_ssh_config_includes_user_config_then_fallback` never runs its headline assertion
-
-Merged into BUG-036 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-039 - `remote_executable_accepts_only_cacheable_absolute_paths` has no accepting case
 
 `shepr-remote`. Every row of the table has `valid == false`
@@ -489,10 +453,6 @@ what is accepted. A valid path is exercised incidentally elsewhere (the
 by the test named for it, and the `valid` column is dead weight that reads as if
 both directions were covered. Fix named: add `("/usr/bin/shepr", true)` and
 friends.
-
-## HYGG-040 - Three names for one remote-locate call make a test assert nothing about their agreement
-
-Merged into HYGP-041 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-041 - `attach.rs` is a 1112-line test file named after a subject it does not contain
 
@@ -521,10 +481,6 @@ drop `libc` from the allowlist, at which point the dependency rule that already
 exists enforces it - a one-line tightening of a check somebody already paid for.
 The hunter flags this as one of the two findings it would most want confirmed by
 actually building.
-
-## HYGG-044 - The gate may never compile the feature set that ships
-
-Merged into HYGP-031 (`notes/hygiene-policy.md`), which carries the full finding.
 
 ## HYGG-045 - `advertised_client_shell_methods_all_exist` cannot fail for most breakages
 
@@ -559,14 +515,6 @@ with `MIN_* = 1`: a `u16` fails it only at zero. Fix named: assert the literal
 `(1, 1)` and add a case asserting `clamp_terminal_size(0, 0) == (1, 1)`, which
 is the behaviour actually at stake.
 
-## HYGG-047 - Two `#[cfg(test)]` shortcuts make every agent-hosting assertion unfalsifiable
-
-Merged into BUG-059 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-048 - `#[cfg(test)]` changes where client frames go, so no test covers the production writer
-
-Merged into BUG-070 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-049 - `an_attempt_deadline_caps_a_silent_peer_below_the_read_timeout` asserts against a quarter of a 60-second constant
 
 `shepr-client/src/handshake.rs`. The test sets a 200 ms deadline and asserts
@@ -598,7 +546,7 @@ hold.
 binding"; the body checks `copy mode` plus the four `swap pane` directions. It
 reads as coverage of the whole help screen and is coverage of five rows. The
 hunter's position is that the fix is not to widen this test but to make the help
-list structural - see HYGG-070.
+list structural - see HYGV-063.
 
 ## HYGG-053 - `IsolatedEnv` guarantees isolation from a list it does not own
 
@@ -634,15 +582,7 @@ report: if every environment variable name lives in one `shepr-core::env`
 module, `IsolatedEnv` can iterate that module's full list instead of restating a
 subset, and a `brokkr.toml` text rule forbidding env-name literals elsewhere
 keeps the list complete by construction. Related: HYGG-011 (the same shape
-inside `shepr-agent`'s own test helper) and HYGG-054.
-
-## HYGG-054 - `app_dir_name()`'s `cfg!(test)` guard is false outside its own crate
-
-Merged into BUG-021 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-056 - The clipboard detach behaviour hangs on the program name `wl-copy`
-
-Merged into BUG-042 (`notes/bugs.md`), which carries the full finding.
+inside `shepr-agent`'s own test helper) and BUG-021.
 
 ## HYGG-057 - `is_posix_acl_xattr` is keyed on the `system.posix_acl_` prefix
 
@@ -661,10 +601,6 @@ prefix, so the fail-open string test goes.
 `key.to_str().is_some_and(|k| k.starts_with("SHEPR_"))`. Not reachable in
 practice, but it is the fail-open shape.
 
-## HYGG-060 - `is_pane_shell_process_name` fails open on a shell it does not know, and three shell-name lists have already diverged
-
-Merged into BUG-017 (`notes/bugs.md`), which carries the full finding.
-
 ## HYGG-061 - `hook_registration_is_current` fails open for five targets and the coupling is invisible
 
 `shepr-agent/src/integration/registry.rs`:
@@ -677,14 +613,6 @@ report a broken Grok install as Current with nothing noticing.
 Enforcement named: make the spec row carry a `RegistrationCheck` variant
 (`SelfRegistering | Json { file, root, depth } | Custom(fn)`) so the match is
 exhaustive over data rather than over a target list.
-
-## HYGG-062 - `json_hook_commands_registered` verifies installation by substring search
-
-Merged into BUG-019 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-063 - Ancestor depths in `hook_registration_is_current` mirror the install paths by hand
-
-Merged into HYGV-075 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-065 - Sidebar and theme guards keyed on strings before the strings become enums
 
@@ -787,7 +715,6 @@ for the claim.
   as absolute.
 - XDG path variables get four empty/relative rules and `XDG_CONFIG_HOME` falls
   back silently: HYGV-008.
-- An invalid `SHEPR_LOG` filter degrades silently: BUG-044.
 - `SHEPR_DEBUG_OSC_EVIDENCE` is read per pane and documented nowhere: HYGV-013.
 - `terminal.default_shell` is validated per spawn rather than at launch:
   BUG-010.
@@ -801,18 +728,6 @@ strftime compile (`parse_tab_bar_datetime_format`), the window-title template
 parse and the keybind parse. The `shepr-server` hunter verified the same for its
 scope and reports no finding there.
 
-## HYGG-069 - Claim: every CLI subcommand acting on a running server goes through the JSON API, and local-state commands cannot be sent with `--machine`
-
-Merged into BUG-028 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-070 - Claim: API error codes, response shapes and operator guidance each have one owner
-
-Merged into HYGV-019 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-071 - `error_response_json`'s `impl Into<ApiErrorCode>` is a check that fails open on a name
-
-Merged into HYGV-019 (`notes/hygiene-values.md`), which carries the full finding.
-
 ## HYGG-072 - `server_not_running`'s test helpers string-match the code their own comment says they do not
 
 `src/cli/server_not_running.rs`. `was_reported` / `reported_response` are
@@ -823,10 +738,6 @@ the code is renamed, both helpers become silent no-ops and the test
 `maps_dead_server_connect_failure_to_friendly_error` fails loudly - so this one
 fails closed, which the hunter calls fine. **The claim in the comment is what is
 false.**
-
-## HYGG-073 - `startup_command` keys on path equality and falls back to a bare `shepr`
-
-Merged into BUG-031 (`notes/bugs.md`), which carries the full finding.
 
 ## HYGG-074 - `matches::required` returns `String::default()` when the spec and the handler disagree, and a comment claims a test would catch it
 
@@ -901,7 +812,7 @@ symlink to a file passes (fine), an absent file is silently dropped (fine), and
 if OpenSSH on this host reads its system config from somewhere else entirely
 (`/etc/ssh/ssh_config.d/*`, a distro override) the managed config silently omits
 settings the user believes are active, with no line logged. Combined with
-HYGG-038, the include ordering is neither tested nor observable. Fix named: log
+BUG-036, the include ordering is neither tested nor observable. Fix named: log
 at `debug` which includes were emitted and which paths were skipped; the path
 list itself cannot be enforced against OpenSSH's actual search order.
 
@@ -932,7 +843,7 @@ parser proves the producer - the only current check is byte-for-byte golden
 strings in `attach.rs`, which pin the producer to itself and say nothing about
 the parser.
 
-## HYGG-081 - Five `shepr-remote` comment claims nothing checks, two of them false today
+## HYGG-081 - Four `shepr-remote` comment claims nothing checks, one of them false today
 
 - `RemoteSsh` doc: "no noninteractive command runs past it [the attempt
   deadline]" - `sh_output` and `framed_user_shell_output` honour it;
@@ -950,28 +861,9 @@ the parser.
   Checkable only by a test in `shepr-client`. The hunter adds: if it is truly
   serialised the mutex is unnecessary; if it is not, this is a 25-second stall -
   either way one of the two is wrong, and `&mut self` would make concurrent
-  attempts a compile error.
-- `catalog.rs::EndpointCatalogWatch`: "an unreadable or invalid file is reported
-  once per change; the caller keeps the profiles it has" - **false today** for
-  stat errors: `catalog_fingerprint` does `std::fs::metadata(path).ok()?`, so
-  `None` means both "the file is absent" and "we cannot stat it", and in the
-  second case the watcher reports `Ok(Vec::new())` once, retiring every saved
-  machine in the running client. The hunter calls this a likely live defect as
-  well.
+  attempts a compile error. Tracked as BUG-037.
 - `ipc.rs`: "Acquire this before `prepare_socket_path`" - **false at one of three
-  call sites**, see HYGG-082.
-
-## HYGG-082 - Claim: `SocketStartupLock` must be acquired before `prepare_socket_path` and held until the listener stops
-
-Merged into BUG-035 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-083 - Claim: the client's five-second HealthPing renews the bridge's sixty-second byte-level watchdog
-
-Merged into HYGV-037 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-084 - Claim: `ProcessIdentity::StartTime` has a pid-reuse race window of a few syscalls
-
-Merged into HYGP-038 (`notes/hygiene-policy.md`), which carries the full finding.
+  call sites**, see BUG-035.
 
 ## HYGG-085 - `shepr-platform`'s `lib.rs` says domain rules live in modules that do not exist there
 
@@ -1184,10 +1076,6 @@ Enforcement named, trivially: `load(lease: &DataDirLease)`. The claim then holds
 by signature, the comment can be deleted, and `lock::LOCK_FILE_NAME` stops
 needing to be reachable.
 
-## HYGG-101 - A pruning-policy guard keyed on a directory-name string literal
-
-Merged into HYGV-028 (`notes/hygiene-values.md`), which carries the full finding.
-
 ## HYGG-102 - Fifteen hook-authority guards key on `(source, agent_label)` strings that arrive from shipped shell scripts, with nothing keeping the two sides in step
 
 Reported from `shepr-mux` and `shepr-agent`.
@@ -1259,30 +1147,6 @@ added without extending the list is silently uncovered.
 `registry::integration_asset(target)` already exists, so iterating
 `INTEGRATION_SPECS` would make the test exhaustive by construction.
 
-## HYGG-105 - Grok's declared hook events are fiction
-
-Merged into BUG-015 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-106 - The session-start-source vocabulary is spelled three times and the copies disagree
-
-Merged into BUG-018 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-107 - `default.toml`'s theme list has already diverged from `THEME_NAMES`
-
-Merged into HYGV-066 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-108 - `default.toml` restates four more lists the code owns, none of them checked
-
-Merged into HYGV-065 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-109 - `default.toml` ships one active setting
-
-Merged into BUG-024 (`notes/bugs.md`), which carries the full finding.
-
-## HYGG-110 - `shepr --help` documents one of five environment variables the CLI honours
-
-Merged into HYGV-005 (`notes/hygiene-values.md`), which carries the full finding.
-
 ## HYGG-111 - `manifest.rs`'s module doc enumerates region names, matcher keys, gate keys and limits in prose
 
 `shepr-agent`, next to `RegionSpec::parse`, `ManifestRule`, `ManifestGate` and
@@ -1339,10 +1203,6 @@ workaround is still needed against the real emulator, which cannot be answered
 by reading; `AGENTS.md` already directs the reader to the pinned
 `alacritty_terminal` source in the cargo registry.
 
-## HYGG-114 - `TerminalState`'s docs and a whole test module describe a migration that is over
-
-Merged into HYGP-036 (`notes/hygiene-policy.md`), which carries the full finding.
-
 ## HYGG-115 - `handler.rs` claims every `Handler` method is listed explicitly, and vte is not pinned
 
 `shepr-vt`. The hunter checked the impl against vte 0.15.0: it is complete
@@ -1392,22 +1252,6 @@ defaults, three silent no-ops keyed on a name the implementor did not write.
 There are few implementors, so the defaults save almost nothing. Enforcement
 named: remove the defaults, so the compiler requires each implementor to state
 its answer.
-
-## HYGG-120 - The keybinding help screen is a hand-maintained restatement of the `Keybinds` struct
-
-Merged into HYGV-063 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-121 - `modes.rs`'s mouse-clear list and its test are maintained by hand, together
-
-Merged into HYGV-060 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-122 - `MAX_RETRY_DELAY`'s doc asserts a user-visible promise nothing checks
-
-Merged into HYGV-047 (`notes/hygiene-values.md`), which carries the full finding.
-
-## HYGG-123 - `ClientProcessRole::from_env` is the model for environment resolution and nothing holds the others to it
-
-Merged into HYGV-014 (`notes/hygiene-values.md`), which carries the full finding.
 
 ## HYGG-124 - `HostModes::apply_mouse` records the restore flag only when a parameter that means something else is true
 

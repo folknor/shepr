@@ -1111,6 +1111,8 @@ mod tests {
         let runtime_dir = shepr_test_support::ScratchDir::new("local-forward-readable");
         // Short target + session leave plenty of room - keep the human-
         // readable form so the socket path stays grep-friendly.
+        // remote_bridge_endpoint_path validates this directory as current-user owned
+        // mode 0700, so this readable basename is not exposed to other local users.
         let path = local_forward_socket_path(runtime_dir.path(), "dev", "default")
             .expect("test precondition");
         let filename = path

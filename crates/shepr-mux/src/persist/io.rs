@@ -85,7 +85,9 @@ pub(super) enum Published {
 /// Publishes `source` at `target` through a private (0600) temporary at
 /// `pending`: write, fsync the file, rename, fsync the directory. A crash
 /// leaves either the previous file or the complete new one, never a truncated
-/// one. `pending` must not exist yet.
+/// one. Before creating the temporary, a leftover file from an interrupted
+/// publish is removed. The caller must hold the data directory lease so this
+/// cannot remove another live writer's temporary.
 ///
 /// With `replace` false an existing `target` is refused with `AlreadyExists`,
 /// and a published target is withdrawn again when the directory sync fails,
@@ -105,6 +107,7 @@ pub(super) fn publish_private_file(
     replace: bool,
 ) -> std::io::Result<Published> {
     let directory = containing_directory(target);
+    remove_stale_temporary(pending)?;
     let mut output = shepr_platform::create_private_file(pending)?;
     let mut published = false;
     let result = (|| {
@@ -143,9 +146,7 @@ pub(super) fn publish_private_file(
 
 /// Best-effort removal of a file a failed publish left behind. The publish
 /// error is what the caller acts on, so a failed removal is logged rather than
-/// returned: it leaves a stray private file (a `.pending` one is never swept,
-/// and the next publish to that name fails `AlreadyExists`), which an
-/// operator should be able to see.
+/// returned; an operator should be able to see the stray private file.
 pub(super) fn remove_after_failed_publish(path: &Path) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -186,7 +187,6 @@ fn save_serialized_to_path(path: &Path, json: &str) -> std::io::Result<Published
     let missing_directories = missing_directory_chain(directory)?;
     std::fs::create_dir_all(directory)?;
     let pending = target.with_extension("json.tmp");
-    remove_stale_temporary(&pending)?;
     let published = publish_private_file(&mut json.as_bytes(), &pending, &target, true)?;
     if matches!(published, Published::Durable) {
         // Publishing synced the leaf directory. Sync each parent that records

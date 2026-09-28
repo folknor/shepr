@@ -99,9 +99,7 @@ pub(super) fn remote_server_status(
 
 pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatus> {
     let parsed: RemoteServerStatusJson = serde_json::from_str(status).map_err(|err| {
-        io::Error::other(format!(
-            "could not parse remote server status JSON from `{status}`: {err}"
-        ))
+        io::Error::other(format!("could not parse remote server status JSON: {err}"))
     })?;
     if !parsed.running {
         return Ok(RemoteServerStatus::NotRunning);
@@ -120,14 +118,8 @@ fn remote_server_compatibility_error(
     version: Option<&str>,
     build_id: Option<&str>,
 ) -> io::Error {
-    let printable = |value: Option<&str>| {
-        value
-            .filter(|value| value.chars().all(|ch| ch.is_ascii_graphic()))
-            .unwrap_or("unknown")
-            .to_owned()
-    };
-    let version = printable(version);
-    let build_id = printable(build_id);
+    let version = printable_remote_value(version);
+    let build_id = printable_remote_value(build_id);
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
@@ -136,6 +128,13 @@ fn remote_server_compatibility_error(
             shepr_protocol::BUILD_ID
         ),
     )
+}
+
+fn printable_remote_value(value: Option<&str>) -> String {
+    value
+        .filter(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic()))
+        .unwrap_or("unknown")
+        .to_owned()
 }
 
 /// Offers to restart a remote server that was not started as a detached
@@ -148,7 +147,7 @@ pub(super) fn confirm_remote_server_stop(
     let confirmation = Confirmation {
         context: vec![
             format!("remote shepr server on {target} is currently running:"),
-            format!("  server: v{}", version_label(version)),
+            format!("  server: v{}", printable_remote_value(version)),
             String::new(),
             "the remote server was not started as a detached daemon and may not survive SSH connection loss. restart it so network drops disconnect only this client."
                 .to_owned(),
@@ -163,7 +162,7 @@ pub(super) fn confirm_remote_server_stop(
         None => {
             operator.notice(&format!(
                 "remote shepr server on {target} is still running v{}.",
-                version_label(version)
+                printable_remote_value(version)
             ));
             Ok(false)
         }
@@ -257,10 +256,6 @@ pub(super) fn wait_for_remote_server_shutdown(
         }
         thread::sleep(REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL);
     }
-}
-
-pub(super) fn version_label(version: Option<&str>) -> &str {
-    version.unwrap_or("unknown")
 }
 
 pub(super) fn read_remote_confirmation(
@@ -361,6 +356,58 @@ mod tests {
             operator.0,
             ["remote shepr server on host is still running v1.0."]
         );
+    }
+
+    #[test]
+    fn remote_version_text_is_filtered_before_operator_output() {
+        struct Capture {
+            confirmation: Option<Confirmation>,
+            notices: Vec<String>,
+        }
+        impl Operator for Capture {
+            fn notice(&mut self, line: &str) {
+                self.notices.push(line.to_owned());
+            }
+            fn confirm(&mut self, confirmation: &Confirmation) -> io::Result<Option<bool>> {
+                self.confirmation = Some(confirmation.clone());
+                Ok(None)
+            }
+        }
+
+        let injected = "\x1b[2J";
+        let mut operator = Capture {
+            confirmation: None,
+            notices: Vec::new(),
+        };
+        assert!(
+            !confirm_remote_server_stop(&mut operator, "host", Some(injected))
+                .expect("unanswered confirmation keeps the server")
+        );
+        let confirmation = operator.confirmation.expect("confirmation was rendered");
+        assert_eq!(confirmation.context[1], "  server: vunknown");
+        assert!(
+            confirmation
+                .context
+                .iter()
+                .all(|line| !line.contains('\x1b'))
+        );
+        assert_eq!(
+            operator.notices,
+            ["remote shepr server on host is still running vunknown."]
+        );
+
+        let error =
+            ensure_remote_server_build("host", &running(Some(injected.into()), Some(injected)))
+                .expect_err("different build is rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("found version unknown build unknown")
+        );
+        assert!(!error.to_string().contains('\x1b'));
+
+        let parse_error = parse_remote_server_status_json(injected).expect_err("invalid JSON");
+        assert!(!parse_error.to_string().contains('\x1b'));
     }
 
     #[test]
