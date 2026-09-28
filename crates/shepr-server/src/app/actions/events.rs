@@ -159,10 +159,8 @@ impl AppState {
                 applies_to_source,
                 title,
                 display_agent,
-                state_labels,
                 clear_title,
                 clear_display_agent,
-                clear_state_labels,
                 seq,
                 ttl,
             } => self
@@ -173,10 +171,8 @@ impl AppState {
                         applies_to_source,
                         title,
                         display_agent,
-                        state_labels,
                         clear_title,
                         clear_display_agent,
-                        clear_state_labels,
                         ttl,
                         seq,
                     })

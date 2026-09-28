@@ -28,23 +28,22 @@ pub(super) enum ClientProcessRole {
     },
 }
 
-/// Where this client's keybindings come from. "server" imports the endpoint's; "local" or
-/// no value keeps this client's own. Any other value refuses startup rather than guessing.
+/// Where this client's keybindings come from. "server" imports the endpoint's; "local"
+/// keeps this client's own; unset (or empty) is a local client. Any other value refuses
+/// startup rather than guessing.
 impl ClientProcessRole {
     pub(super) fn from_env() -> Result<Self, String> {
-        let var = shepr_remote::REMOTE_KEYBINDINGS_ENV_VAR;
-        match std::env::var(var) {
-            Ok(value) if value == "server" => Ok(Self::Remote {
+        let var = shepr_core::env::EnvVar::SheprRemoteKeybindings;
+        match shepr_core::env::read_text(var) {
+            Ok(Some(value)) if value == "server" => Ok(Self::Remote {
                 keybindings: shell::ClientShellKeybindingSource::Endpoint,
             }),
-            Ok(value) if value == "local" => Ok(Self::Remote {
+            Ok(Some(value)) if value == "local" => Ok(Self::Remote {
                 keybindings: shell::ClientShellKeybindingSource::RemoteLocal,
             }),
-            Err(std::env::VarError::NotPresent) => Ok(Self::Local),
-            Ok(value) => Err(format!("{var} must be 'local' or 'server', got {value:?}")),
-            Err(std::env::VarError::NotUnicode(value)) => {
-                Err(format!("{var} must be 'local' or 'server', got {value:?}"))
-            }
+            Ok(None) => Ok(Self::Local),
+            Ok(Some(value)) => Err(format!("{var} must be 'local' or 'server', got {value:?}")),
+            Err(error) => Err(error.to_string()),
         }
     }
 

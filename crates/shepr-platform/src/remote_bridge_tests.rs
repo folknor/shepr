@@ -8,6 +8,10 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_millis(300);
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "SHEPR_BRIDGE_TEST_SOCKET and SHEPR_BRIDGE_TEST_LEGACY are this test's own re-exec harness probes, not shepr settings"
+)]
 fn bridge_child() {
     let Some(path) = std::env::var_os("SHEPR_BRIDGE_TEST_SOCKET") else {
         return;

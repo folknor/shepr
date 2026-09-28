@@ -113,11 +113,6 @@ pub struct ClientShellAgent {
         serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
         deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
     )]
-    pub state_labels: Vec<(String, String)>,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
-    )]
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
 }

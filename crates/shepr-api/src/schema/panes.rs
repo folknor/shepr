@@ -400,15 +400,11 @@ pub struct PaneReportMetadataParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_agent: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub state_labels: HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tokens: HashMap<String, Option<String>>,
     #[serde(default)]
     pub clear_title: bool,
     #[serde(default)]
     pub clear_display_agent: bool,
-    #[serde(default)]
-    pub clear_state_labels: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -459,8 +455,6 @@ pub struct PaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_agent: Option<String>,
     pub agent_status: AgentStatus,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub state_labels: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tokens: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

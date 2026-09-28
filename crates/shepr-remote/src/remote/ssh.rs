@@ -184,8 +184,8 @@ pub(super) fn authentication_command_with_config(
     let mut command = Command::new("ssh");
     apply_managed_ssh_options(&mut command, Some(&config.options));
     command
-        .env("SSH_ASKPASS_REQUIRE", "never")
-        .env_remove("SSH_ASKPASS")
+        .env(shepr_core::env::ChildEnv::SshAskpassRequire, "never")
+        .env_remove(shepr_core::env::ChildEnv::SshAskpass)
         .arg("-o")
         .arg("BatchMode=no")
         .arg("-o")

@@ -1135,10 +1135,8 @@ fn metadata_expiry_state_change_bumps_state_sequence() {
             applies_to_source: None,
             title: Some("temporary".into()),
             display_agent: None,
-            state_labels: std::collections::HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(std::time::Duration::from_millis(1)),
             seq: None,
         });

@@ -12,6 +12,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path};
 
+use shepr_core::env::{ChildEnv, EnvVar};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Program {
     /// An interactive pane shell. The configured name, environment fallback,
@@ -44,7 +46,7 @@ impl PtyCommand {
     pub fn interactive_shell(default_shell: &str, login: bool) -> Self {
         let mut command = Self::with_program(Program::Shell { login });
         if !default_shell.trim().is_empty() {
-            command.env("SHELL", default_shell.trim());
+            command.env(ChildEnv::Shell, default_shell.trim());
         }
         command
     }
@@ -154,7 +156,7 @@ impl PtyCommand {
         cmd.env_clear();
         cmd.envs(&self.envs);
         // The child sees the same resolved SHELL that was selected above.
-        cmd.env("SHELL", shell);
+        cmd.env(ChildEnv::Shell, shell);
         Ok(cmd)
     }
 
@@ -162,7 +164,7 @@ impl PtyCommand {
     /// the environment value is empty and reject an invalid selected shell;
     /// other child commands fall back to passwd, then `/bin/sh`.
     fn resolve_shell(&self, cwd: &OsStr, policy: ShellResolutionPolicy) -> io::Result<OsString> {
-        let inherited = self.get_env("SHELL").and_then(trimmed_shell);
+        let inherited = self.get_env(ChildEnv::Shell).and_then(trimmed_shell);
         let candidate = inherited.clone().unwrap_or_else(|| match policy {
             ShellResolutionPolicy::PaneProgram => OsString::from("/bin/sh"),
             ShellResolutionPolicy::ChildEnvironment => passwd_shell(),
@@ -189,7 +191,7 @@ impl PtyCommand {
 
     fn home_dir(&self) -> OsString {
         if let Some(home) = self
-            .get_env("HOME")
+            .get_env(EnvVar::Home)
             .filter(|home| Path::new(home).is_absolute() && Path::new(home).is_dir())
         {
             return home.to_owned();
@@ -214,7 +216,7 @@ impl PtyCommand {
             }
 
             let mut errors = Vec::new();
-            if let Some(path) = self.get_env("PATH") {
+            if let Some(path) = self.get_env(ChildEnv::Path) {
                 for dir in std::env::split_paths(path) {
                     let candidate = cwd.join(dir).join(exe_path);
                     let status = classify_candidate(&candidate);
@@ -322,6 +324,10 @@ fn trimmed_shell(shell: &OsStr) -> Option<OsString> {
 
 /// The server's environment. Shell selection and validation happen at spawn,
 /// after pane policy and launch environment have been applied.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a pane child inherits the server's environment verbatim; it is copied, not interpreted, and pane launch policy then edits the copy"
+)]
 fn base_env() -> BTreeMap<OsString, OsString> {
     std::env::vars_os().collect()
 }

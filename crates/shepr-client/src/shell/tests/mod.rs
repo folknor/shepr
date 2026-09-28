@@ -165,7 +165,6 @@ fn pane_scroll_result(
             terminal_title_stripped: None,
             display_agent: None,
             agent_status: shepr_api::schema::AgentStatus::Idle,
-            state_labels: HashMap::new(),
             tokens: HashMap::new(),
             agent_session: None,
             scroll: Some(shepr_api::schema::PaneScrollInfo {

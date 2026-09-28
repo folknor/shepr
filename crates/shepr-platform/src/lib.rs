@@ -47,6 +47,16 @@ pub use ssh_paths::{
 };
 pub use terminal_environment::prefers_osc52_clipboard;
 
+/// Whether a presence variable (`shepr_core::env::EnvKind::Presence`) is set,
+/// for the per-call host probes that have no error path to report through: a
+/// refused value (padded or non-UTF-8) is logged and reads as unset.
+fn env_present(var: shepr_core::env::EnvVar) -> bool {
+    shepr_core::env::read_present(var).unwrap_or_else(|error| {
+        tracing::warn!(%error, "ignoring a refused environment value");
+        false
+    })
+}
+
 // Shared helpers for sibling platform modules.
 use child_io::{LimitedRead, poll_fd, poll_timeout_until, read_limited_reader};
 use host::effective_uid;

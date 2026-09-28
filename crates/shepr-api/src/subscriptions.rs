@@ -67,7 +67,6 @@ pub(super) struct ActiveScrollChangedSubscription {
 struct PanePresentationSnapshot {
     title: Option<String>,
     display_agent: Option<String>,
-    state_labels: std::collections::HashMap<String, String>,
 }
 
 impl PanePresentationSnapshot {
@@ -75,19 +74,13 @@ impl PanePresentationSnapshot {
         Self {
             title: pane.title.clone(),
             display_agent: pane.display_agent.clone(),
-            state_labels: pane.state_labels.clone(),
         }
     }
 
-    fn from_event(
-        title: &Option<String>,
-        display_agent: &Option<String>,
-        state_labels: &std::collections::HashMap<String, String>,
-    ) -> Self {
+    fn from_event(title: &Option<String>, display_agent: &Option<String>) -> Self {
         Self {
             title: title.clone(),
             display_agent: display_agent.clone(),
-            state_labels: state_labels.clone(),
         }
     }
 }
@@ -215,7 +208,6 @@ impl ActiveSubscription {
                         agent: probe.agent,
                         title: probe.title,
                         display_agent: probe.display_agent,
-                        state_labels: probe.state_labels,
                     });
 
                 Ok(Self::AgentStatusChanged(Box::new(
@@ -557,7 +549,6 @@ impl ActiveAgentStatusChangedSubscription {
             agent,
             title,
             display_agent,
-            state_labels,
         } = event.data
         else {
             return None;
@@ -566,11 +557,7 @@ impl ActiveAgentStatusChangedSubscription {
             return None;
         }
         self.last_status = Some(agent_status);
-        self.last_presentation = Some(PanePresentationSnapshot::from_event(
-            &title,
-            &display_agent,
-            &state_labels,
-        ));
+        self.last_presentation = Some(PanePresentationSnapshot::from_event(&title, &display_agent));
         self.initial_event = None;
         if self
             .status_filter
@@ -588,7 +575,6 @@ impl ActiveAgentStatusChangedSubscription {
                 agent,
                 title,
                 display_agent,
-                state_labels,
             }),
         })
     }
@@ -657,7 +643,6 @@ impl ActiveAgentStatusChangedSubscription {
                 agent: pane.agent,
                 title: pane.title,
                 display_agent: pane.display_agent,
-                state_labels: pane.state_labels,
             }),
         })
     }
@@ -788,7 +773,6 @@ mod tests {
                 agent: Some("pi".into()),
                 title: title.map(str::to_string),
                 display_agent: None,
-                state_labels: HashMap::new(),
             },
         }
     }
@@ -818,7 +802,6 @@ mod tests {
             terminal_title_stripped: None,
             display_agent: None,
             agent_status: AgentStatus::Idle,
-            state_labels: HashMap::new(),
             tokens: HashMap::new(),
             agent_session: None,
             scroll,
@@ -1198,7 +1181,6 @@ mod tests {
                         agent: Some("pi".into()),
                         title: Some("stale initial snapshot".into()),
                         display_agent: None,
-                        state_labels: HashMap::new(),
                     }),
                     request_prefix: "batch".into(),
                 },
@@ -1287,7 +1269,6 @@ mod tests {
             last_presentation: Some(PanePresentationSnapshot {
                 title: None,
                 display_agent: None,
-                state_labels: HashMap::new(),
             }),
             last_sequence: event_hub.current_sequence(),
             initial_event: None,
@@ -1324,7 +1305,6 @@ mod tests {
             last_presentation: Some(PanePresentationSnapshot {
                 title: None,
                 display_agent: None,
-                state_labels: HashMap::new(),
             }),
             last_sequence: event_hub.current_sequence(),
             initial_event: Some(PaneAgentStatusChangedEvent {
@@ -1334,7 +1314,6 @@ mod tests {
                 agent: Some("pi".into()),
                 title: None,
                 display_agent: None,
-                state_labels: HashMap::new(),
             }),
             request_prefix: "test".into(),
         };
@@ -1369,7 +1348,6 @@ mod tests {
             last_presentation: Some(PanePresentationSnapshot {
                 title: Some("short lived".into()),
                 display_agent: None,
-                state_labels: HashMap::new(),
             }),
             last_sequence: event_hub.current_sequence(),
             initial_event: Some(PaneAgentStatusChangedEvent {
@@ -1379,7 +1357,6 @@ mod tests {
                 agent: Some("pi".into()),
                 title: Some("short lived".into()),
                 display_agent: None,
-                state_labels: HashMap::new(),
             }),
             request_prefix: "test".into(),
         };

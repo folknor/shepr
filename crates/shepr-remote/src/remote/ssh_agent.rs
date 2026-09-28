@@ -15,9 +15,13 @@ pub(super) struct Registration {
 
 impl Registration {
     pub(super) fn start(paths: &shepr_config::AppPaths) -> Option<Self> {
-        let path = std::env::var("SSH_AUTH_SOCK")
-            .ok()
-            .filter(|path| !path.is_empty())?;
+        // Unset or empty means no agent to register. The bridge has no launch
+        // to fail, so a refused value is logged and registers nothing.
+        let path = shepr_core::env::read_text(shepr_core::env::EnvVar::SshAuthSock)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "SSH agent refresh unavailable");
+                None
+            })?;
         Self::start_at(path, shepr_api::socket_path(paths))
     }
 

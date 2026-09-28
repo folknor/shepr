@@ -37,6 +37,13 @@ pub(super) fn setup_terminal_with_capabilities(
     enable_client_protocols: bool,
     mouse_capture: bool,
 ) -> io::Result<TerminalGuard> {
+    // Read before the terminal leaves cooked mode, so a refused variable is
+    // reported on an ordinary terminal.
+    let modify_other_keys_mode = if enable_client_protocols {
+        shepr_termio::input::host_modify_other_keys_mode()?
+    } else {
+        None
+    };
     ratatui::init();
     let host_modes = HostModes::new(false, false, mouse_capture);
     let mut terminal_guard = TerminalGuard {
@@ -71,9 +78,6 @@ pub(super) fn setup_terminal_with_capabilities(
         (false, Vec::new())
     };
 
-    let modify_other_keys_mode = enable_client_protocols
-        .then(shepr_termio::input::host_modify_other_keys_mode)
-        .flatten();
     if let Some(mode) = modify_other_keys_mode {
         let parameter = if mode.set_sequence().ends_with(b";1m") {
             1

@@ -1,8 +1,5 @@
 use crate::machine::SshTarget;
 
-pub const REATTACH_COMMAND_ENV_VAR: &str = "SHEPR_REATTACH_COMMAND";
-pub const REMOTE_KEYBINDINGS_ENV_VAR: &str = "SHEPR_REMOTE_KEYBINDINGS";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteKeybindings {
     Local,

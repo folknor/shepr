@@ -462,22 +462,6 @@ fn normalize_presentation_text(value: Option<String>) -> Option<String> {
     (!normalized.trim().is_empty()).then(|| normalized.trim().to_string())
 }
 
-fn normalize_state_labels(
-    labels: std::collections::HashMap<String, String>,
-) -> Result<std::collections::HashMap<String, String>, String> {
-    labels
-        .into_iter()
-        .map(|(status, label)| {
-            let status = status.trim().to_ascii_lowercase();
-            if !matches!(status.as_str(), "idle" | "working" | "blocked") {
-                return Err(status);
-            }
-            Ok(normalize_presentation_text(Some(label)).map(|label| (status, label)))
-        })
-        .filter_map(Result::transpose)
-        .collect()
-}
-
 fn terminal_word_motion(motion: PaneCopyMotion) -> Option<shepr_mux::pane::TerminalWordMotion> {
     use shepr_mux::pane::TerminalWordMotion;
     match motion {

@@ -407,13 +407,7 @@ impl<'a> AgentRowIndex<'a> {
             .or(agent.name.as_deref())
             .or(agent.agent.as_deref())
             .or(agent.title.as_deref());
-        let state_text = agent
-            .state_labels
-            .iter()
-            .rev()
-            .find(|(state, _)| state == status_text(agent.agent_status))
-            .map(|(_, label)| label.as_str())
-            .unwrap_or_else(|| status_text(agent.agent_status));
+        let state_text = status_text(agent.agent_status);
         let canonical_agent = agent
             .agent
             .as_deref()

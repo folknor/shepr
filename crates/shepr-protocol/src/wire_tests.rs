@@ -452,7 +452,6 @@ mod tests {
                 terminal_title_stripped: None,
                 agent_status: crate::AgentStatus::Working,
                 state_change_seq: 1,
-                state_labels: Vec::new(),
                 tokens: Vec::new(),
                 focused: true,
             }],

@@ -14,7 +14,6 @@ impl std::error::Error for SessionNameError {}
 
 const MAX_SESSION_NAME_LEN: usize = 64;
 
-pub const SESSION_ENV_VAR: &str = "SHEPR_SESSION";
 pub const DEFAULT_SESSION_NAME: &str = "default";
 
 /// A validated non-default session name.
@@ -134,10 +133,10 @@ impl SessionId {
     pub fn apply_to_child_command(&self, command: &mut std::process::Command) {
         match self {
             Self::Default => {
-                command.env_remove(SESSION_ENV_VAR);
+                command.env_remove(shepr_core::env::EnvVar::SheprSession);
             }
             Self::Named(name) => {
-                command.env(SESSION_ENV_VAR, name.as_str());
+                command.env(shepr_core::env::EnvVar::SheprSession, name.as_str());
             }
         }
     }

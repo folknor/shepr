@@ -141,6 +141,9 @@ fn start_server_inner(
     server_stop: Option<Arc<AtomicBool>>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
+    // Read before anything is bound, so a refused value leaves no socket
+    // behind. Unset or empty means no inherited agent.
+    let inherited_agent = shepr_core::env::read_path(shepr_core::env::EnvVar::SshAuthSock)?;
     let path = socket_path(paths);
     // Held for the server lifetime. A second server on the same path fails
     // here with `AddrInUse` instead of racing `prepare_socket_path`, which
@@ -156,7 +159,7 @@ fn start_server_inner(
 
     let ssh_agents = match shepr_platform::ssh_agent::SshAgentRegistry::new(
         shepr_platform::ssh_agent::socket_path(&crate::socket_path(paths)),
-        std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from),
+        inherited_agent,
     ) {
         Ok(registry) => Some(registry),
         Err(error) => {
@@ -1266,7 +1269,6 @@ mod tests {
             terminal_title_stripped: None,
             display_agent: None,
             agent_status,
-            state_labels: HashMap::new(),
             tokens: HashMap::new(),
             agent_session: None,
             scroll: None,
@@ -1305,7 +1307,7 @@ mod tests {
     fn socket_path_prefers_explicit_env_override() {
         let env = IsolatedEnv::new();
         let unique = env.path().join("override.sock");
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, &unique);
+        env.set(shepr_core::env::EnvVar::SheprSocketPath, &unique);
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         assert_eq!(socket_path(&paths), unique);
     }
@@ -1322,7 +1324,7 @@ mod tests {
     #[test]
     fn socket_path_uses_named_session_dir() {
         let env = IsolatedEnv::new();
-        env.set(shepr_config::SESSION_ENV_VAR, "work");
+        env.set(shepr_core::env::EnvVar::SheprSession, "work");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         let expected = paths

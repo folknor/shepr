@@ -100,6 +100,13 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
     notices.push_back(message);
 }
 
+/// The reattach command the remote bridge hands the client it spawns, read
+/// once at launch; unset for a local client.
+fn reattach_command_from_env() -> io::Result<Option<String>> {
+    shepr_core::env::read_text(shepr_core::env::EnvVar::SheprReattachCommand)
+        .map_err(io::Error::from)
+}
+
 enum ClientLaunchMode {
     Shell,
     Attach {
@@ -126,13 +133,13 @@ fn run_client_with_mode(
     shepr_platform::logging::init_file_logging(
         &shepr_api::session::data_dir(paths),
         shepr_platform::logging::CLIENT_LOG_FILE,
-    );
+    )?;
 
     let client_rendered_shell = attach_request.is_none();
     let socket_path = paths.server_address().client_socket().to_path_buf();
     let error_context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
-        std::env::var(shepr_remote::REATTACH_COMMAND_ENV_VAR).ok(),
+        reattach_command_from_env()?,
     );
     let role = ClientProcessRole::from_env().map_err(io::Error::other)?;
     let keybinding_source = role.keybinding_source();

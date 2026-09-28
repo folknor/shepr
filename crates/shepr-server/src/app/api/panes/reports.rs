@@ -87,7 +87,6 @@ impl App {
         };
         let raw_title_set = params.title.is_some();
         let raw_display_agent_set = params.display_agent.is_some();
-        let raw_state_labels_set = !params.state_labels.is_empty();
         let tokens = if params.tokens.is_empty() {
             None
         } else {
@@ -127,19 +126,8 @@ impl App {
             },
             None => None,
         };
-        let state_labels = match normalize_state_labels(params.state_labels) {
-            Ok(labels) => labels,
-            Err(status) => {
-                return failure(
-                    id,
-                    shepr_api::error::ApiErrorCode::InvalidStateLabel,
-                    format!("unknown state label: {status}"),
-                );
-            }
-        };
         if raw_title_set && params.clear_title
             || raw_display_agent_set && params.clear_display_agent
-            || raw_state_labels_set && params.clear_state_labels
         {
             return failure(
                 id,
@@ -149,11 +137,9 @@ impl App {
         }
         if title.is_none()
             && display_agent.is_none()
-            && state_labels.is_empty()
             && tokens.is_none()
             && !params.clear_title
             && !params.clear_display_agent
-            && !params.clear_state_labels
         {
             return failure(
                 id,
@@ -163,10 +149,8 @@ impl App {
         }
         let presentation_requested = title.is_some()
             || display_agent.is_some()
-            || !state_labels.is_empty()
             || params.clear_title
-            || params.clear_display_agent
-            || params.clear_state_labels;
+            || params.clear_display_agent;
         let Some(terminal_id) = self
             .state
             .workspaces
@@ -239,10 +223,8 @@ impl App {
                 applies_to_source,
                 title,
                 display_agent,
-                state_labels,
                 clear_title: params.clear_title,
                 clear_display_agent: params.clear_display_agent,
-                clear_state_labels: params.clear_state_labels,
                 seq: None,
                 ttl,
             });

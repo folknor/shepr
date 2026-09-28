@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use shepr_agent::detect::AgentState;
@@ -12,11 +11,9 @@ pub struct AgentMetadata {
     pub applies_to_source: Option<String>,
     pub title: Option<String>,
     pub display_agent: Option<String>,
-    pub state_labels: HashMap<String, String>,
     pub reported_at: Instant,
     title_reported_at: Option<Instant>,
     display_agent_reported_at: Option<Instant>,
-    state_label_reported_at: HashMap<String, Instant>,
     pub ttl: Option<Duration>,
     expiry_event_pending: bool,
 }
@@ -28,10 +25,8 @@ pub struct AgentMetadataReport {
     pub applies_to_source: Option<String>,
     pub title: Option<String>,
     pub display_agent: Option<String>,
-    pub state_labels: HashMap<String, String>,
     pub clear_title: bool,
     pub clear_display_agent: bool,
-    pub clear_state_labels: bool,
     pub ttl: Option<Duration>,
     pub seq: Option<u64>,
 }
@@ -40,7 +35,6 @@ pub struct AgentMetadataReport {
 pub struct EffectivePresentation {
     pub title: Option<String>,
     pub display_agent: Option<String>,
-    pub state_labels: HashMap<String, String>,
 }
 
 impl EffectivePresentation {
@@ -48,7 +42,6 @@ impl EffectivePresentation {
         Self {
             title: None,
             display_agent: None,
-            state_labels: HashMap::new(),
         }
     }
 }
@@ -58,9 +51,6 @@ impl EffectivePresentation {
 /// can report metadata under a source name of its choosing, so without a cap
 /// a script that invents a new name per report grows these maps forever.
 pub(crate) const MAX_METADATA_SOURCES: usize = 64;
-
-/// State labels one source can accumulate through partial updates.
-pub(crate) const MAX_STATE_LABELS_PER_SOURCE: usize = 16;
 
 impl TerminalState {
     /// Make room for `source` in the report-sequence maps. Sequences of
@@ -99,9 +89,7 @@ impl TerminalState {
             .iter()
             .filter(|(_, metadata)| {
                 (self.agent_metadata_is_expired(metadata, now) && !metadata.expiry_event_pending)
-                    || (metadata.title.is_none()
-                        && metadata.display_agent.is_none()
-                        && metadata.state_labels.is_empty())
+                    || (metadata.title.is_none() && metadata.display_agent.is_none())
             })
             .map(|(source, _)| source.clone())
             .collect();
@@ -284,14 +272,12 @@ impl TerminalState {
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
         let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
-        let has_set_fields = report.title.is_some()
-            || report.display_agent.is_some()
-            || !report.state_labels.is_empty();
+        let has_set_fields = report.title.is_some() || report.display_agent.is_some();
 
         let report_source = report.source.clone();
         let report_has_ttl = report.ttl.is_some();
 
-        if report.clear_title || report.clear_display_agent || report.clear_state_labels {
+        if report.clear_title || report.clear_display_agent {
             let metadata = self
                 .agent_metadata
                 .entry(report.source.clone())
@@ -301,11 +287,9 @@ impl TerminalState {
                     applies_to_source: report.applies_to_source.clone(),
                     title: None,
                     display_agent: None,
-                    state_labels: HashMap::new(),
                     reported_at: now,
                     title_reported_at: None,
                     display_agent_reported_at: None,
-                    state_label_reported_at: HashMap::new(),
                     ttl: report.ttl,
                     expiry_event_pending: false,
                 });
@@ -316,10 +300,6 @@ impl TerminalState {
             if report.clear_display_agent {
                 metadata.display_agent = None;
                 metadata.display_agent_reported_at = None;
-            }
-            if report.clear_state_labels {
-                metadata.state_labels.clear();
-                metadata.state_label_reported_at.clear();
             }
             if let Some(agent_label) = report.agent_label {
                 metadata.agent_label = Some(agent_label);
@@ -335,17 +315,6 @@ impl TerminalState {
                 metadata.display_agent = Some(display_agent);
                 metadata.display_agent_reported_at = Some(now);
             }
-            for (state, label) in report.state_labels {
-                // Partial updates merge, so a source could otherwise grow
-                // this map one new key per report.
-                if !metadata.state_labels.contains_key(&state)
-                    && metadata.state_labels.len() >= MAX_STATE_LABELS_PER_SOURCE
-                {
-                    continue;
-                }
-                metadata.state_labels.insert(state.clone(), label);
-                metadata.state_label_reported_at.insert(state, now);
-            }
             if has_set_fields || report.ttl.is_some() {
                 metadata.reported_at = now;
                 metadata.ttl = report.ttl;
@@ -354,11 +323,6 @@ impl TerminalState {
         } else {
             let title_reported_at = report.title.as_ref().map(|_| now);
             let display_agent_reported_at = report.display_agent.as_ref().map(|_| now);
-            let state_label_reported_at = report
-                .state_labels
-                .keys()
-                .map(|state| (state.clone(), now))
-                .collect();
             self.agent_metadata.insert(
                 report.source.clone(),
                 AgentMetadata {
@@ -367,11 +331,9 @@ impl TerminalState {
                     applies_to_source: report.applies_to_source,
                     title: report.title,
                     display_agent: report.display_agent,
-                    state_labels: report.state_labels,
                     reported_at: now,
                     title_reported_at,
                     display_agent_reported_at,
-                    state_label_reported_at,
                     ttl: report.ttl,
                     expiry_event_pending: false,
                 },
@@ -515,7 +477,6 @@ impl TerminalState {
         let mut presentation = EffectivePresentation::empty();
         presentation.title = self.newest_metadata_title(now, enforce_ttl);
         presentation.display_agent = self.newest_metadata_display_agent(now, enforce_ttl);
-        presentation.state_labels = self.effective_metadata_state_labels(now, enforce_ttl);
         presentation
     }
 
@@ -543,40 +504,13 @@ impl TerminalState {
             .and_then(|metadata| metadata.display_agent.clone())
     }
 
-    fn effective_metadata_state_labels(
-        &self,
-        now: Instant,
-        enforce_ttl: bool,
-    ) -> HashMap<String, String> {
-        let mut labels: Vec<_> = self
-            .valid_agent_metadata(now, enforce_ttl)
-            .flat_map(|metadata| {
-                metadata.state_labels.iter().filter_map(|(state, label)| {
-                    Some((
-                        *metadata.state_label_reported_at.get(state)?,
-                        state.clone(),
-                        label.clone(),
-                    ))
-                })
-            })
-            .collect();
-        labels.sort_by_key(|(reported_at, _, _)| *reported_at);
-        labels
-            .into_iter()
-            .map(|(_, state, label)| (state, label))
-            .collect()
-    }
-
     fn agent_metadata_is_valid(
         &self,
         metadata: &AgentMetadata,
         now: Instant,
         enforce_ttl: bool,
     ) -> bool {
-        if metadata.title.is_none()
-            && metadata.display_agent.is_none()
-            && metadata.state_labels.is_empty()
-        {
+        if metadata.title.is_none() && metadata.display_agent.is_none() {
             return false;
         }
         if enforce_ttl && self.agent_metadata_is_expired(metadata, now) {
@@ -586,9 +520,7 @@ impl TerminalState {
     }
 
     fn agent_metadata_is_visible_ignoring_ttl(&self, metadata: &AgentMetadata) -> bool {
-        (metadata.title.is_some()
-            || metadata.display_agent.is_some()
-            || !metadata.state_labels.is_empty())
+        (metadata.title.is_some() || metadata.display_agent.is_some())
             && self.agent_metadata_matches_guards(metadata)
     }
 
@@ -650,10 +582,8 @@ mod tests {
             applies_to_source: None,
             title: Some("title".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq,
         }
@@ -757,22 +687,6 @@ mod tests {
     }
 
     #[test]
-    fn partial_updates_cap_accumulated_state_labels() {
-        let mut terminal = test_terminal();
-        for index in 0..MAX_STATE_LABELS_PER_SOURCE * 2 {
-            let mut report = presentation_report("labels".into(), None);
-            report.title = None;
-            report.clear_title = true;
-            report.state_labels = HashMap::from([(format!("state-{index}"), "label".into())]);
-            terminal.set_agent_metadata(report);
-        }
-        assert_eq!(
-            terminal.agent_metadata["labels"].state_labels.len(),
-            MAX_STATE_LABELS_PER_SOURCE
-        );
-    }
-
-    #[test]
     fn token_sequences_are_bounded() {
         let mut terminal = test_terminal();
         for index in 0..=crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES {
@@ -811,10 +725,8 @@ mod tests {
             applies_to_source: None,
             title: Some("Pi task".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl,
             seq: Some(seq),
         };
@@ -872,10 +784,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Refactor auth".into()),
             display_agent: Some("Claude: auth".into()),
-            state_labels: HashMap::from([("working".into(), "deep in the mines".into())]),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq: None,
         });
@@ -885,10 +795,6 @@ mod tests {
         let presentation = terminal.effective_presentation();
         assert_eq!(presentation.title.as_deref(), Some("Refactor auth"));
         assert_eq!(presentation.display_agent.as_deref(), Some("Claude: auth"));
-        assert_eq!(
-            presentation.state_labels.get("working").map(String::as_str),
-            Some("deep in the mines")
-        );
         assert!(
             mutation
                 .expect("test precondition")
@@ -908,10 +814,8 @@ mod tests {
             applies_to_source: None,
             title: Some("Prompt title".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq: None,
         });
@@ -941,10 +845,8 @@ mod tests {
                 applies_to_source: Some("shepr:claude".into()),
                 title: Some(title.into()),
                 display_agent: None,
-                state_labels: HashMap::new(),
                 clear_title: false,
                 clear_display_agent: false,
-                clear_state_labels: false,
                 ttl: None,
                 seq: None,
             });
@@ -969,10 +871,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Prompt title".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq: Some(1),
         });
@@ -982,10 +882,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: None,
             display_agent: Some("Claude activity".into()),
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq: Some(1),
         });
@@ -1014,10 +912,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: None,
             display_agent: Some("First display".into()),
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq: Some(1),
         });
@@ -1027,10 +923,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Fresh title".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: true,
-            clear_state_labels: false,
             ttl: None,
             seq: Some(2),
         });
@@ -1056,10 +950,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Old title".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::from_millis(1)),
             seq: None,
         });
@@ -1073,10 +965,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Fresh title".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq: None,
         });
@@ -1110,11 +1000,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Prompt title".into()),
             display_agent: Some("Old display".into()),
-            state_labels: HashMap::new(),
             clear_title: false,
-            clear_display_agent: false,
-            clear_state_labels: false,
-            // Expiry is forced with the captured deadline below; keep the
+            clear_display_agent: false, // Expiry is forced with the captured deadline below; keep the
             // no-extension assertion independent of wall-clock scheduling.
             ttl: Some(Duration::from_secs(60)),
             seq: None,
@@ -1129,10 +1016,8 @@ mod tests {
             applies_to_source: None,
             title: None,
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: true,
-            clear_state_labels: false,
             ttl: None,
             seq: None,
         });
@@ -1168,10 +1053,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Activity".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::from_millis(1)),
             seq: None,
         });
@@ -1210,10 +1093,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Stale".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::from_millis(1)),
             seq: None,
         });
@@ -1258,10 +1139,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("First".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::from_millis(1)),
             seq: None,
         });
@@ -1274,10 +1153,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: None,
             display_agent: Some("Second".into()),
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::from_millis(2)),
             seq: None,
         });
@@ -1317,10 +1194,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Instant".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::ZERO),
             seq: None,
         });
@@ -1357,10 +1232,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Instant".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::ZERO),
             seq: None,
         });
@@ -1401,10 +1274,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: Some("Expired title".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: Some(Duration::ZERO),
             seq: None,
         });
@@ -1416,10 +1287,8 @@ mod tests {
             applies_to_source: Some("shepr:claude".into()),
             title: None,
             display_agent: Some("Fresh display".into()),
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             ttl: None,
             seq: None,
         });

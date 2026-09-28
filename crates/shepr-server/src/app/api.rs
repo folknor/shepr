@@ -553,7 +553,6 @@ mod tests {
         let presentation = shepr_mux::terminal::EffectivePresentation {
             title: None,
             display_agent: None,
-            state_labels: std::collections::HashMap::new(),
         };
         let update = crate::app::actions::PaneStateUpdate {
             pane_id,

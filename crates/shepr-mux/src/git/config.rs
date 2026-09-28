@@ -131,14 +131,16 @@ pub(super) fn read_config_with_user_paths(
 fn git_user_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let home = shepr_core::pathutil::home_dir().ok();
-    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute());
+    // This reads Git's user config, not a Shepr location. A refused
+    // `XDG_CONFIG_HOME` (relative, padded, non-UTF-8) already failed shepr's
+    // own launch, since shepr's config directory resolves from it; here it
+    // reads as unset, the spec's answer for an invalid value.
+    let xdg_config_home = shepr_core::env::read_path(shepr_core::env::EnvVar::XdgConfigHome)
+        .ok()
+        .flatten();
     if let Some(xdg_config_home) = xdg_config_home {
         paths.push(xdg_config_home.join("git/config"));
     } else if let Some(home) = &home {
-        // This reads Git's user config, not a Shepr location: invalid XDG
-        // values are ignored per spec and fall back under an absolute HOME.
         paths.push(home.join(".config/git/config"));
     }
     if let Some(home) = home {
@@ -272,8 +274,11 @@ fn collect_remote_urls(
                 remote_urls.push((remote.clone(), value));
             }
             ConfigSection::Include if key.eq_ignore_ascii_case("path") => {
+                let Some(include_path) = resolve_include_path(&path, &value) else {
+                    continue;
+                };
                 collect_remote_urls(
-                    &resolve_include_path(&path, &value),
+                    &include_path,
                     info,
                     branch,
                     remote_urls,
@@ -284,8 +289,11 @@ fn collect_remote_urls(
             ConfigSection::IncludeIf(IncludeIfMode::Enabled)
                 if key.eq_ignore_ascii_case("path") =>
             {
+                let Some(include_path) = resolve_include_path(&path, &value) else {
+                    continue;
+                };
                 collect_remote_urls(
-                    &resolve_include_path(&path, &value),
+                    &include_path,
                     info,
                     branch,
                     remote_urls,
@@ -342,7 +350,9 @@ fn merge_git_config(
                 config.remote_urls.push((remote.clone(), value));
             }
             ConfigSection::Include if key.eq_ignore_ascii_case("path") => {
-                let include_path = resolve_include_path(&path, &value);
+                let Some(include_path) = resolve_include_path(&path, &value) else {
+                    continue;
+                };
                 merge_git_config(
                     config,
                     &include_path,
@@ -356,7 +366,9 @@ fn merge_git_config(
             ConfigSection::IncludeIf(IncludeIfMode::Enabled)
                 if key.eq_ignore_ascii_case("path") =>
             {
-                let include_path = resolve_include_path(&path, &value);
+                let Some(include_path) = resolve_include_path(&path, &value) else {
+                    continue;
+                };
                 merge_git_config(
                     config,
                     &include_path,
@@ -370,7 +382,9 @@ fn merge_git_config(
             ConfigSection::IncludeIf(IncludeIfMode::HasConfig)
                 if key.eq_ignore_ascii_case("path") =>
             {
-                let include_path = resolve_include_path(&path, &value);
+                let Some(include_path) = resolve_include_path(&path, &value) else {
+                    continue;
+                };
                 if !included_config_defines_remote_url(
                     &include_path,
                     branch,
@@ -502,7 +516,9 @@ fn include_if_mode(
     } else {
         return IncludeIfMode::Disabled;
     };
-    let pattern = normalize_gitdir_include_pattern(pattern, config_path);
+    let Some(pattern) = normalize_gitdir_include_pattern(pattern, config_path) else {
+        return IncludeIfMode::Disabled;
+    };
     let candidates = [
         info.git_dir.display().to_string(),
         info.git_common_dir.display().to_string(),
@@ -554,7 +570,9 @@ fn included_config_defines_remote_url(
         let value = normalize_config_value(value);
         match &section {
             ConfigSection::Include if key.eq_ignore_ascii_case("path") => {
-                let include_path = resolve_include_path(&path, &value);
+                let Some(include_path) = resolve_include_path(&path, &value) else {
+                    continue;
+                };
                 if !included_config_defines_remote_url(
                     &include_path,
                     branch,
@@ -571,7 +589,9 @@ fn included_config_defines_remote_url(
             ConfigSection::IncludeIf(IncludeIfMode::Enabled | IncludeIfMode::HasConfig)
                 if key.eq_ignore_ascii_case("path") =>
             {
-                let include_path = resolve_include_path(&path, &value);
+                let Some(include_path) = resolve_include_path(&path, &value) else {
+                    continue;
+                };
                 if !included_config_defines_remote_url(
                     &include_path,
                     branch,
@@ -600,11 +620,13 @@ fn normalize_branch_include_pattern(pattern: &str) -> String {
     }
 }
 
-fn normalize_gitdir_include_pattern(pattern: &str, config_path: &Path) -> String {
+/// The `gitdir:` pattern as an absolute glob, or `None` when it starts with
+/// `~/` and `HOME` is unusable: the condition then names no directory, rather
+/// than one relative to wherever the server runs.
+fn normalize_gitdir_include_pattern(pattern: &str, config_path: &Path) -> Option<String> {
     let mut pattern = if let Some(rest) = pattern.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default()
+        shepr_core::pathutil::home_dir()
+            .ok()?
             .join(rest)
             .display()
             .to_string()
@@ -623,7 +645,7 @@ fn normalize_gitdir_include_pattern(pattern: &str, config_path: &Path) -> String
     if pattern.ends_with('/') {
         pattern.push_str("**");
     }
-    pattern
+    Some(pattern)
 }
 
 fn wildcard_match(pattern: &str, value: &str, case_insensitive: bool) -> bool {
@@ -665,24 +687,22 @@ fn quoted_config_subsection<'a>(section: &'a str, name: &str) -> Option<&'a str>
     section[prefix_len..].strip_suffix('"')
 }
 
-fn resolve_include_path(config_path: &Path, include_path: &str) -> PathBuf {
-    let include_path = include_path.strip_prefix("~/").map_or_else(
-        || PathBuf::from(include_path),
-        |rest| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(rest)
-        },
-    );
-    if include_path.is_absolute() {
+/// The file an `include.path` names, or `None` when it starts with `~/` and
+/// `HOME` is unusable: the include is then skipped, rather than read from a
+/// path relative to the including file.
+fn resolve_include_path(config_path: &Path, include_path: &str) -> Option<PathBuf> {
+    let include_path = match include_path.strip_prefix("~/") {
+        Some(rest) => shepr_core::pathutil::home_dir().ok()?.join(rest),
+        None => PathBuf::from(include_path),
+    };
+    Some(if include_path.is_absolute() {
         include_path
     } else {
         config_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(include_path)
-    }
+    })
 }
 
 fn normalize_config_value(value: &str) -> String {

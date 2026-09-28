@@ -8,6 +8,30 @@ exclude = ["crates/shepr-agent/src/detect/manifests"]
 [test]
 debug = true
 
+# The environment seal (`clippy.toml`, `shepr_core::env`). Every raw
+# `std::env` read or write outside the reader carries a scoped
+# `#[expect(clippy::disallowed_methods, reason = ..)]` naming why the site is
+# outside the policy. Adding a file to this exclude list is the review of its
+# escape.
+[[textlint]]
+name = "disallowed-escapes-are-allowlisted"
+pattern = '\bclippy::disallowed_methods\b'
+paths = ["crates/**/*.rs", "src/**/*.rs", "build.rs"]
+region = "code"
+exclude = [
+    "build.rs",
+    "crates/shepr-agent/src/integration/config_file/tests.rs",
+    "crates/shepr-agent/src/integration/env.rs",
+    "crates/shepr-agent/src/integration/opencode_config.rs",
+    "crates/shepr-core/src/env.rs",
+    "crates/shepr-mux/src/pane/terminal/migration_tests.rs",
+    "crates/shepr-platform/src/remote_bridge_tests.rs",
+    "crates/shepr-pty/src/command.rs",
+    "crates/shepr-test-support/src/lib.rs",
+    "src/test_support.rs",
+]
+message = "a new clippy seal escape; read or write through shepr_core::env, or add this file to the exclude list as the reviewed exception"
+
 # Name every package because an empty selection checks only a root package.
 [[check]]
 name = "workspace"
@@ -42,7 +66,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-platform-layer"
 from = "shepr-platform"
-allow = ["crossterm", "futures-util", "interprocess", "libc", "sha2", "time", "tokio", "tracing", "tracing-subscriber", "zbus"]
+allow = ["crossterm", "futures-util", "interprocess", "libc", "sha2", "shepr-core", "time", "tokio", "tracing", "tracing-subscriber", "zbus"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -57,10 +81,12 @@ from = "shepr-pty"
 allow = ["bytes", "libc", "shepr-core", "tokio", "tracing"]
 kinds = ["normal"]
 
+# `IsolatedEnv` isolates tests from `shepr_core::env`'s registry, so a
+# variable added there is isolated with no change in this crate.
 [[dependency_rule]]
 name = "shepr-test-support-layer"
 from = "shepr-test-support"
-allow = ["libc"]
+allow = ["libc", "shepr-core"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -90,7 +116,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-api-layer"
 from = "shepr-api"
-allow = ["interprocess", "regex", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-platform", "shepr-protocol", "shepr-vt", "tokio", "tracing"]
+allow = ["interprocess", "regex", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "tokio", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -102,7 +128,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-remote-layer"
 from = "shepr-remote"
-allow = ["interprocess", "libc", "serde", "serde_json", "sha2", "shepr-api", "shepr-config", "shepr-platform", "shepr-protocol", "tracing"]
+allow = ["interprocess", "libc", "serde", "serde_json", "sha2", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]

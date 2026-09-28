@@ -1,11 +1,7 @@
 use serde::{Deserialize, Serialize};
+use shepr_core::env::EnvVar;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-/// Environment variable for overriding the client socket path when
-/// `SHEPR_SOCKET_PATH` is not set.
-pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "SHEPR_CLIENT_SOCKET_PATH";
-pub const SOCKET_PATH_ENV_VAR: &str = "SHEPR_SOCKET_PATH";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServerAddress {
@@ -146,9 +142,9 @@ impl ServerAddress {
     ) -> String {
         format!(
             "{}={} {}={} {command}",
-            super::SESSION_ENV_VAR,
+            EnvVar::SheprSession,
             shell_quote(session.display_name()),
-            SOCKET_PATH_ENV_VAR,
+            EnvVar::SheprSocketPath,
             shell_quote(&api_socket.to_string_lossy())
         )
     }
@@ -161,9 +157,9 @@ impl ServerAddress {
     ) -> String {
         format!(
             "{}={} {}={} {command}",
-            super::SESSION_ENV_VAR,
+            EnvVar::SheprSession,
             shell_quote(session.display_name()),
-            CLIENT_SOCKET_PATH_ENV_VAR,
+            EnvVar::SheprClientSocketPath,
             shell_quote(&client_socket.to_string_lossy())
         )
     }
@@ -172,18 +168,18 @@ impl ServerAddress {
         match self.source {
             AddressSource::Session => {
                 command
-                    .env_remove(SOCKET_PATH_ENV_VAR)
-                    .env_remove(CLIENT_SOCKET_PATH_ENV_VAR);
+                    .env_remove(EnvVar::SheprSocketPath)
+                    .env_remove(EnvVar::SheprClientSocketPath);
             }
             AddressSource::ApiOverride => {
                 command
-                    .env(SOCKET_PATH_ENV_VAR, &self.api_socket)
-                    .env_remove(CLIENT_SOCKET_PATH_ENV_VAR);
+                    .env(EnvVar::SheprSocketPath, &self.api_socket)
+                    .env_remove(EnvVar::SheprClientSocketPath);
             }
             AddressSource::ClientOverride => {
                 command
-                    .env_remove(SOCKET_PATH_ENV_VAR)
-                    .env(CLIENT_SOCKET_PATH_ENV_VAR, &self.client_socket);
+                    .env_remove(EnvVar::SheprSocketPath)
+                    .env(EnvVar::SheprClientSocketPath, &self.client_socket);
             }
         }
     }

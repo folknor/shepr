@@ -18,8 +18,10 @@ use shepr_config::ValidatedTabBarRightEntry;
 impl App {
     /// Environment and working directory for tab bar status commands.
     fn status_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
+        use shepr_core::env::{ChildEnv, EnvVar};
+
         let mut env = vec![(
-            shepr_config::SOCKET_PATH_ENV_VAR.to_string(),
+            EnvVar::SheprSocketPath.name().to_string(),
             shepr_api::socket_path(&self.paths).display().to_string(),
         )];
         // Not raw `current_exe()`: after an install replaces the binary, Linux
@@ -27,7 +29,7 @@ impl App {
         // command cannot run.
         if let Ok(current_exe) = shepr_platform::launch_executable() {
             env.push((
-                "SHEPR_BIN_PATH".to_string(),
+                ChildEnv::SheprBinPath.name().to_string(),
                 current_exe.display().to_string(),
             ));
         }
@@ -35,23 +37,26 @@ impl App {
         let mut cwd = None;
         if let Some(ws_idx) = self.state.active_index() {
             env.push((
-                "SHEPR_ACTIVE_WORKSPACE_ID".to_string(),
+                ChildEnv::SheprActiveWorkspaceId.name().to_string(),
                 self.public_workspace_id(ws_idx),
             ));
             if let Some(workspace) = self.state.workspaces.get(ws_idx) {
                 let tab_idx = workspace.active_tab_index();
                 if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
-                    env.push(("SHEPR_ACTIVE_TAB_ID".to_string(), tab_id));
+                    env.push((ChildEnv::SheprActiveTabId.name().to_string(), tab_id));
                 }
                 if let Some(pane_id) = workspace.focused_pane_id() {
                     if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                        env.push(("SHEPR_ACTIVE_PANE_ID".to_string(), public_pane_id));
+                        env.push((
+                            ChildEnv::SheprActivePaneId.name().to_string(),
+                            public_pane_id,
+                        ));
                     }
                     if let Some(pane_cwd) = workspace.active_tab().and_then(|tab| {
                         tab.cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                     }) {
                         env.push((
-                            "SHEPR_ACTIVE_PANE_CWD".to_string(),
+                            ChildEnv::SheprActivePaneCwd.name().to_string(),
                             pane_cwd.display().to_string(),
                         ));
                         if pane_cwd.is_dir() {

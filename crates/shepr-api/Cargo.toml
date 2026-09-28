@@ -14,6 +14,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 shepr-agent = { path = "../shepr-agent" }
 shepr-config = { path = "../shepr-config" }
+shepr-core = { path = "../shepr-core" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-vt = { path = "../shepr-vt" }

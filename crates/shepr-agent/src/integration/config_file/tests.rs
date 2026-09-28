@@ -139,19 +139,18 @@ fn config_update_lock_covers_the_full_read_modify_write() {
 }
 
 #[test]
-fn config_update_lock_ignores_empty_or_relative_state_home() {
+fn config_update_lock_ignores_empty_and_refuses_relative_state_home() {
     let env = IsolatedEnv::new();
     let dir = Directory::new();
     let target = dir.0.join("settings.json");
     let default_dir = env.home().join(".local/state/shepr/integration-locks");
-    for value in ["", "relative/state"] {
-        env.set("XDG_STATE_HOME", value);
-        let lock_path = config_update_lock_path(&target).expect("test precondition");
-        assert!(
-            lock_path.starts_with(&default_dir),
-            "{value:?}: {lock_path:?}"
-        );
-    }
+    env.set("XDG_STATE_HOME", "");
+    let lock_path = config_update_lock_path(&target).expect("test precondition");
+    assert!(lock_path.starts_with(&default_dir), "{lock_path:?}");
+
+    env.set("XDG_STATE_HOME", "relative/state");
+    let error = config_update_lock_path(&target).expect_err("a relative state home is refused");
+    assert!(error.to_string().contains("XDG_STATE_HOME"), "{error}");
 }
 
 #[test]
@@ -322,6 +321,10 @@ fn existing_permissions_and_new_file_defaults_are_preserved() {
 
 #[cfg(unix)]
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "SHEPR_CONFIG_READ_ONLY_TEST is this test's own re-exec harness probe, not a shepr setting"
+)]
 fn writable_directory_does_not_bypass_read_only_config() {
     use std::os::unix::{fs::PermissionsExt, process::CommandExt};
     const CHILD: &str = "SHEPR_CONFIG_READ_ONLY_TEST";
@@ -358,6 +361,10 @@ fn writable_directory_does_not_bypass_read_only_config() {
 
 #[cfg(unix)]
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "SHEPR_CONFIG_PARTIAL_WRITE_TEST is this test's own re-exec harness probe, not a shepr setting"
+)]
 fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
     const CHILD: &str = "SHEPR_CONFIG_PARTIAL_WRITE_TEST";
     if let Some(path) = std::env::var_os(CHILD) {

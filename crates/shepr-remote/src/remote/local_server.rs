@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use shepr_core::env::EnvVar;
 use tracing::info;
 
 fn client_socket_path(paths: &shepr_config::AppPaths) -> std::path::PathBuf {
@@ -16,10 +17,6 @@ const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Timeout for checking the stable JSON API before attaching to the binary protocol socket.
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Private daemon-start hint used to seed a fresh headless server from the
-/// directory where the user ran `shepr`.
-pub const STARTUP_CWD_ENV_VAR: &str = "SHEPR_STARTUP_CWD";
 
 // ---------------------------------------------------------------------------
 // Server detection
@@ -138,10 +135,12 @@ fn build_server_daemon_command(
         .stderr(std::process::Stdio::null());
     shepr_platform::detach_server_daemon_command(&mut command);
 
+    // A private daemon-start hint that seeds a fresh headless server from the
+    // directory where the user ran `shepr`.
     if let Some(startup_cwd) = startup_cwd {
-        command.env(STARTUP_CWD_ENV_VAR, startup_cwd);
+        command.env(EnvVar::SheprStartupCwd, startup_cwd);
     } else {
-        command.env_remove(STARTUP_CWD_ENV_VAR);
+        command.env_remove(EnvVar::SheprStartupCwd);
     }
 
     paths.session_id().apply_to_child_command(&mut command);
@@ -243,8 +242,8 @@ mod tests {
     #[test]
     fn server_daemon_command_clears_socket_overrides_for_explicit_session() {
         let env = IsolatedEnv::new();
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
-        env.set("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock");
+        env.set(EnvVar::SheprSocketPath, "/tmp/inherited.sock");
+        env.set(EnvVar::SheprClientSocketPath, "/tmp/inherited-client.sock");
         let session = shepr_config::SessionId::parse("work").expect("test precondition");
         let paths = shepr_config::AppPaths::resolve_with_session(Some(session))
             .expect("isolated paths resolve");
@@ -257,13 +256,13 @@ mod tests {
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(shepr_config::SOCKET_PATH_ENV_VAR) && value.is_none()
+            *key == OsStr::new(EnvVar::SheprSocketPath.name()) && value.is_none()
         }));
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new("SHEPR_CLIENT_SOCKET_PATH") && value.is_none()
+            *key == OsStr::new(EnvVar::SheprClientSocketPath.name()) && value.is_none()
         }));
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(shepr_config::SESSION_ENV_VAR) && value == &Some(OsStr::new("work"))
+            *key == OsStr::new(EnvVar::SheprSession.name()) && value == &Some(OsStr::new("work"))
         }));
     }
 
@@ -276,7 +275,8 @@ mod tests {
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(STARTUP_CWD_ENV_VAR) && value == &Some(expected.as_os_str())
+            *key == OsStr::new(EnvVar::SheprStartupCwd.name())
+                && value == &Some(expected.as_os_str())
         }));
     }
 
@@ -422,7 +422,7 @@ test "$sid" = "$$"
     fn validate_running_server_compatibility_fails_when_status_api_missing() {
         let env = IsolatedEnv::new();
         let path = env.path().join("api.sock");
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, &path);
+        env.set(EnvVar::SheprSocketPath, &path);
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
@@ -436,7 +436,7 @@ test "$sid" = "$$"
     #[test]
     fn validate_running_server_compatibility_names_session_commands_for_build_mismatch() {
         let env = IsolatedEnv::new();
-        env.set(shepr_config::SESSION_ENV_VAR, "work");
+        env.set(EnvVar::SheprSession, "work");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         let path = shepr_api::session::api_socket_path_for(&paths, paths.session_id());
         std::fs::create_dir_all(path.parent().expect("test precondition"))

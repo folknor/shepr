@@ -2,10 +2,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use shepr_core::env::EnvVar;
 
 use super::{
-    CONFIG_PATH_ENV_VAR, Config, ConfigDiagnostic, ConfigProvenance, ConfigSource,
-    NewTerminalCwdConfig, ValidatedConfig, ValidatedTerminalConfig,
+    Config, ConfigDiagnostic, ConfigProvenance, ConfigSource, NewTerminalCwdConfig,
+    ValidatedConfig, ValidatedTerminalConfig,
     model::{ConfigDocumentState, LoadedConfig},
     validated::CwdCheck,
 };
@@ -236,46 +237,34 @@ impl AppPaths {
     }
 }
 
+/// An XDG base directory for shepr. Unset or empty falls back under `HOME`;
+/// a relative, padded or non-UTF-8 value is refused rather than ignored, so a
+/// mistyped variable fails the launch instead of silently moving shepr's
+/// config or state back under `HOME`.
 fn platform_xdg_dir(
-    variable: &str,
+    variable: EnvVar,
     home_suffix: &str,
     home_dir: Option<&Path>,
 ) -> io::Result<(PathBuf, ConfigSource)> {
-    if let Some(value) = std::env::var_os(variable) {
-        let directory = PathBuf::from(value);
-        if !directory.as_os_str().is_empty() && directory.is_absolute() {
-            return Ok((
-                directory.join(app_dir_name()),
-                ConfigSource::EnvironmentVariable(variable.to_owned()),
-            ));
-        }
+    if let Some(directory) = shepr_core::env::read_path(variable)? {
+        return Ok((
+            directory.join(app_dir_name()),
+            ConfigSource::EnvironmentVariable(variable.name().to_owned()),
+        ));
     }
 
-    let home_dir = home_dir.ok_or_else(|| {
-        io::Error::other("HOME must be set to a non-empty absolute path to locate home directory")
-    })?;
+    let home_dir = home_dir.ok_or_else(shepr_core::pathutil::missing_home_error)?;
     Ok((
         home_dir.join(home_suffix).join(app_dir_name()),
         ConfigSource::Default,
     ))
 }
 
-fn socket_path_override(variable: &str, diagnostics: &mut Vec<String>) -> Option<PathBuf> {
-    let value = std::env::var_os(variable)?;
-    if value.to_str().is_none() {
-        diagnostics.push(format!("{variable} must be valid UTF-8"));
-        return None;
-    }
-    let path = PathBuf::from(value);
-    if path.as_os_str().is_empty() {
-        diagnostics.push(format!("{variable} must not be empty"));
-        return None;
-    }
-    if !path.is_absolute() {
-        diagnostics.push(format!("{variable} must be an absolute path"));
-        return None;
-    }
-    Some(path)
+fn socket_path_override(variable: EnvVar, diagnostics: &mut Vec<String>) -> Option<PathBuf> {
+    shepr_core::env::read_path(variable).unwrap_or_else(|error| {
+        diagnostics.push(error.to_string());
+        None
+    })
 }
 
 fn resolve_paths_from_env(
@@ -290,25 +279,16 @@ fn resolve_paths_from_env(
             (None, None, None)
         } else {
             let api_socket_override =
-                socket_path_override(super::SOCKET_PATH_ENV_VAR, &mut target_env_diagnostics);
-            let client_socket_override = socket_path_override(
-                super::CLIENT_SOCKET_PATH_ENV_VAR,
-                &mut target_env_diagnostics,
-            );
+                socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
+            let client_socket_override =
+                socket_path_override(EnvVar::SheprClientSocketPath, &mut target_env_diagnostics);
             let inherited_session = if requested_session.is_some() {
                 None
             } else {
-                match std::env::var_os(super::SESSION_ENV_VAR) {
-                    None => None,
-                    Some(value) => match value.into_string() {
-                        Ok(value) => Some(value),
-                        Err(_) => {
-                            target_env_diagnostics
-                                .push(format!("{} must be valid UTF-8", super::SESSION_ENV_VAR));
-                            None
-                        }
-                    },
-                }
+                shepr_core::env::read_text(EnvVar::SheprSession).unwrap_or_else(|error| {
+                    target_env_diagnostics.push(error.to_string());
+                    None
+                })
             };
             (
                 api_socket_override,
@@ -329,47 +309,48 @@ fn resolve_paths_from_env(
     let home_dir = shepr_core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
     let current_dir = std::env::current_dir().ok();
     let (config_dir, config_dir_source) =
-        platform_xdg_dir("XDG_CONFIG_HOME", ".config", Some(&home_dir))
+        platform_xdg_dir(EnvVar::XdgConfigHome, ".config", Some(&home_dir))
             .map(|(path, source)| (Ok(path), source))
             .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
     let (state_dir, state_dir_source) =
-        platform_xdg_dir("XDG_STATE_HOME", ".local/state", Some(&home_dir))
+        platform_xdg_dir(EnvVar::XdgStateHome, ".local/state", Some(&home_dir))
             .map(|(path, source)| (Ok(path), source))
             .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
-    // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Empty
-    // and relative values count as unset, which is an error for shepr because
-    // its runtime sockets need a user-private runtime directory.
-    let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute());
-    let runtime_dir = xdg_runtime_dir
-        .as_ref()
-        .map(|path| path.join(app_dir_name()))
-        .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR must be set to an absolute path"));
+    // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Unset
+    // and empty are an error for shepr because its runtime sockets need a
+    // user-private runtime directory; a relative value is refused by the
+    // environment policy.
+    let xdg_runtime_dir = shepr_core::env::read_path(EnvVar::XdgRuntimeDir);
+    let runtime_dir = match &xdg_runtime_dir {
+        Ok(Some(path)) => Ok(path.join(app_dir_name())),
+        Ok(None) => Err(io::Error::other(
+            "XDG_RUNTIME_DIR must be set to an absolute path",
+        )),
+        Err(error) => Err(io::Error::other(error.to_string())),
+    };
+    let xdg_runtime_dir = xdg_runtime_dir.ok().flatten();
 
-    let config_path_override = std::env::var_os(CONFIG_PATH_ENV_VAR);
-    let config_file_source = if config_path_override.is_some() {
-        ConfigSource::EnvironmentVariable(CONFIG_PATH_ENV_VAR.to_owned())
+    let config_path_override = shepr_core::env::read_path(EnvVar::SheprConfigPath);
+    let config_file_source = if matches!(config_path_override, Ok(Some(_))) {
+        ConfigSource::EnvironmentVariable(EnvVar::SheprConfigPath.name().to_owned())
     } else {
         config_dir_source.clone()
     };
     let config_file = match config_path_override {
-        Some(path) if path.is_empty() => Err(io::Error::other(format!(
-            "{CONFIG_PATH_ENV_VAR} must not be empty"
-        ))),
-        Some(path) => {
-            let path = PathBuf::from(path);
+        Err(error) => Err(io::Error::from(error)),
+        Ok(Some(path)) => {
             if path.is_absolute() {
                 Ok(path)
             } else if let Some(current_dir) = current_dir.as_ref() {
                 Ok(current_dir.join(path))
             } else {
                 Err(io::Error::other(format!(
-                    "cannot resolve relative {CONFIG_PATH_ENV_VAR} without a current directory"
+                    "cannot resolve relative {} without a current directory",
+                    EnvVar::SheprConfigPath
                 )))
             }
         }
-        None => config_dir
+        Ok(None) => config_dir
             .as_ref()
             .map(|directory| directory.join("config.toml"))
             .map_err(|error| io::Error::other(error.to_string())),
@@ -429,20 +410,20 @@ fn resolve_paths_from_env(
                 api_socket_override.as_deref(),
                 client_socket_override.as_deref(),
             );
-            let home_dir_source = ConfigSource::EnvironmentVariable("HOME".to_owned());
+            let home_dir_source = ConfigSource::EnvironmentVariable(EnvVar::Home.name().to_owned());
             let runtime_dir_source =
-                ConfigSource::EnvironmentVariable("XDG_RUNTIME_DIR".to_owned());
+                ConfigSource::EnvironmentVariable(EnvVar::XdgRuntimeDir.name().to_owned());
             let session_source = if let Some(source) = requested_session_source {
                 source
             } else if inherited_session_accepted && !session_selection_was_forced {
-                ConfigSource::EnvironmentVariable(super::SESSION_ENV_VAR.to_owned())
+                ConfigSource::EnvironmentVariable(EnvVar::SheprSession.name().to_owned())
             } else {
                 ConfigSource::Default
             };
             let api_socket_source = if session_selection_was_forced {
                 session_source.clone()
             } else if api_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(super::SOCKET_PATH_ENV_VAR.to_owned())
+                ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
             } else if inherited_session_accepted {
                 session_source.clone()
             } else {
@@ -451,9 +432,9 @@ fn resolve_paths_from_env(
             let client_socket_source = if session_selection_was_forced {
                 session_source.clone()
             } else if api_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(super::SOCKET_PATH_ENV_VAR.to_owned())
+                ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
             } else if client_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(super::CLIENT_SOCKET_PATH_ENV_VAR.to_owned())
+                ConfigSource::EnvironmentVariable(EnvVar::SheprClientSocketPath.name().to_owned())
             } else if inherited_session_accepted {
                 session_source.clone()
             } else {
@@ -1131,7 +1112,7 @@ tab_bar_right = [
                 .as_path()
         );
         let custom = env.path().join("custom.toml");
-        env.set(CONFIG_PATH_ENV_VAR, &custom);
+        env.set(EnvVar::SheprConfigPath, &custom);
         assert_eq!(
             AppPaths::resolve()
                 .expect("override resolves")
@@ -1139,30 +1120,49 @@ tab_bar_right = [
             custom
         );
 
-        env.set(CONFIG_PATH_ENV_VAR, "");
-        assert!(AppPaths::resolve().is_err());
+        // Empty is unset: the default config file.
+        env.set(EnvVar::SheprConfigPath, "");
+        let paths = AppPaths::resolve().expect("an empty override reads as unset");
+        assert_eq!(
+            paths.config_file(),
+            env.home()
+                .join(".config")
+                .join(app_dir_name())
+                .join("config.toml")
+                .as_path()
+        );
+        assert_eq!(paths.provenance().config_file, ConfigSource::Default);
+
+        env.set(EnvVar::SheprConfigPath, format!("{} ", custom.display()));
+        let errors = AppPaths::resolve().expect_err("a padded override is refused");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("SHEPR_CONFIG_PATH") && error.contains("whitespace")),
+            "{errors:?}"
+        );
     }
 
     #[test]
     fn socket_path_provenance_is_tracked_independently() {
         let env = shepr_test_support::IsolatedEnv::new();
-        env.remove(crate::SOCKET_PATH_ENV_VAR);
-        env.remove(crate::CLIENT_SOCKET_PATH_ENV_VAR);
+        env.remove(EnvVar::SheprSocketPath);
+        env.remove(EnvVar::SheprClientSocketPath);
 
-        env.set(crate::SOCKET_PATH_ENV_VAR, env.path().join("api.sock"));
+        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
         let paths = AppPaths::resolve().expect("API socket override resolves");
         assert_eq!(
             paths.provenance().api_socket,
-            ConfigSource::EnvironmentVariable(crate::SOCKET_PATH_ENV_VAR.to_owned())
+            ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
         );
         assert_eq!(
             paths.provenance().client_socket,
-            ConfigSource::EnvironmentVariable(crate::SOCKET_PATH_ENV_VAR.to_owned())
+            ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
         );
 
-        env.remove(crate::SOCKET_PATH_ENV_VAR);
+        env.remove(EnvVar::SheprSocketPath);
         env.set(
-            crate::CLIENT_SOCKET_PATH_ENV_VAR,
+            EnvVar::SheprClientSocketPath,
             env.path().join("client.sock"),
         );
         let paths = AppPaths::resolve().expect("client socket override resolves");
@@ -1172,24 +1172,25 @@ tab_bar_right = [
         );
         assert_eq!(
             paths.provenance().client_socket,
-            ConfigSource::EnvironmentVariable(crate::CLIENT_SOCKET_PATH_ENV_VAR.to_owned())
+            ConfigSource::EnvironmentVariable(EnvVar::SheprClientSocketPath.name().to_owned())
         );
     }
 
     #[test]
     fn invalid_socket_and_session_environment_fails_resolution() {
         let env = shepr_test_support::IsolatedEnv::new();
-        for variable in [
-            crate::SOCKET_PATH_ENV_VAR,
-            crate::CLIENT_SOCKET_PATH_ENV_VAR,
-        ] {
-            for (value, expected) in [("", "must not be empty"), ("rel.sock", "absolute path")] {
+        for variable in [EnvVar::SheprSocketPath, EnvVar::SheprClientSocketPath] {
+            for (value, expected) in [
+                ("", "set but empty"),
+                ("rel.sock", "absolute path"),
+                (" /abs.sock", "whitespace"),
+            ] {
                 env.set(variable, value);
                 let errors = AppPaths::resolve().expect_err("invalid socket override");
                 assert!(
                     errors
                         .iter()
-                        .any(|error| error.contains(variable) && error.contains(expected)),
+                        .any(|error| error.contains(variable.name()) && error.contains(expected)),
                     "{variable}={value:?}: {errors:?}"
                 );
                 // Remote commands never consult the local target environment.
@@ -1198,9 +1199,19 @@ tab_bar_right = [
             env.remove(variable);
         }
 
+        // An empty inherited session is refused rather than read as default.
+        env.set(EnvVar::SheprSession, "");
+        let errors = AppPaths::resolve().expect_err("empty SHEPR_SESSION");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("SHEPR_SESSION") && error.contains("set but empty")),
+            "{errors:?}"
+        );
+
         // A socket override does not excuse a malformed inherited session.
-        env.set(crate::SOCKET_PATH_ENV_VAR, env.path().join("api.sock"));
-        env.set(crate::SESSION_ENV_VAR, "bad/name");
+        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
+        env.set(EnvVar::SheprSession, "bad/name");
         let errors = AppPaths::resolve().expect_err("malformed SHEPR_SESSION");
         assert!(
             errors
@@ -1213,7 +1224,7 @@ tab_bar_right = [
     #[test]
     fn path_provenance_distinguishes_cli_and_internal_session_selection() {
         let env = shepr_test_support::IsolatedEnv::new();
-        env.set(crate::SESSION_ENV_VAR, "inherited");
+        env.set(EnvVar::SheprSession, "inherited");
 
         let cli = AppPaths::resolve_with_session(Some(crate::SessionId::Default))
             .expect("CLI session paths resolve");
@@ -1331,7 +1342,7 @@ id = "example"
     }
 
     #[test]
-    fn xdg_paths_use_separate_roots_and_ignore_empty_or_relative_base_dirs() {
+    fn xdg_paths_use_separate_roots_ignore_empty_and_refuse_relative_base_dirs() {
         let env = shepr_test_support::IsolatedEnv::new();
         let paths = AppPaths::resolve().expect("default paths resolve");
         assert_eq!(
@@ -1352,16 +1363,22 @@ id = "example"
             ("XDG_CONFIG_HOME", ".config"),
             ("XDG_STATE_HOME", ".local/state"),
         ] {
-            for ignored in ["", "relative/path"] {
-                env.set(key, ignored);
-                let paths = AppPaths::resolve().expect("invalid XDG base is ignored");
-                let expected = env.home().join(suffix).join(app_dir_name());
-                let actual = if key == "XDG_CONFIG_HOME" {
-                    paths.config_dir()
-                } else {
-                    paths.state_dir()
-                };
-                assert_eq!(actual, expected, "{key}={ignored:?}");
+            env.set(key, "");
+            let paths = AppPaths::resolve().expect("an empty XDG base reads as unset");
+            let expected = env.home().join(suffix).join(app_dir_name());
+            let actual = if key == "XDG_CONFIG_HOME" {
+                paths.config_dir()
+            } else {
+                paths.state_dir()
+            };
+            assert_eq!(actual, expected, "{key} empty");
+            for refused in ["relative/path", " /padded"] {
+                env.set(key, refused);
+                let errors = AppPaths::resolve().expect_err("an invalid XDG base is refused");
+                assert!(
+                    errors.iter().any(|error| error.contains(key)),
+                    "{key}={refused:?}: {errors:?}"
+                );
             }
             env.set(key, env.path().join(key));
             let paths = AppPaths::resolve().expect("absolute XDG base is accepted");
@@ -1375,14 +1392,17 @@ id = "example"
             env.remove(key);
         }
 
-        for ignored in ["", "relative/path"] {
-            env.set("XDG_RUNTIME_DIR", ignored);
+        for (invalid, expected) in [
+            ("", "XDG_RUNTIME_DIR must be set"),
+            ("relative/path", "relative path"),
+        ] {
+            env.set("XDG_RUNTIME_DIR", invalid);
             let errors = AppPaths::resolve().expect_err("runtime dir has no XDG default");
             assert!(
                 errors
                     .iter()
-                    .any(|error| error.contains("XDG_RUNTIME_DIR must be set")),
-                "XDG_RUNTIME_DIR={ignored:?}: {errors:?}"
+                    .any(|error| error.contains("XDG_RUNTIME_DIR") && error.contains(expected)),
+                "XDG_RUNTIME_DIR={invalid:?}: {errors:?}"
             );
         }
         env.remove("XDG_RUNTIME_DIR");

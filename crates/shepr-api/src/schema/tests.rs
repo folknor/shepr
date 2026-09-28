@@ -727,7 +727,6 @@ fn create_response_round_trips_with_root_pane() {
                 terminal_title_stripped: None,
                 display_agent: None,
                 agent_status: AgentStatus::Idle,
-                state_labels: HashMap::new(),
                 tokens: HashMap::new(),
                 agent_session: None,
                 scroll: None,

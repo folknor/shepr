@@ -693,13 +693,9 @@ fn report_metadata_params(matches: &ArgMatches) -> Result<PaneReportMetadataPara
         applies_to_source,
         title: string(matches, "title"),
         display_agent: string(matches, "display-agent"),
-        state_labels: values::<(String, String)>(matches, "state-label")
-            .into_iter()
-            .collect::<HashMap<_, _>>(),
         tokens: super::matches::metadata_tokens(matches),
         clear_title: flag(matches, "clear-title"),
         clear_display_agent: flag(matches, "clear-display-agent"),
-        clear_state_labels: flag(matches, "clear-state-labels"),
         seq: value::<u64>(matches, "seq"),
         ttl_ms: value::<u64>(matches, "ttl-ms"),
     })
@@ -1404,9 +1400,6 @@ mod tests {
             "hook",
             "--title",
             "build",
-            "--state-label",
-            "Working=compiling",
-            "--state-label=idle=ready",
             "--token",
             "a=1",
             "--clear-token",
@@ -1416,14 +1409,6 @@ mod tests {
         ]))
         .expect("test precondition");
         assert_eq!(params.title.as_deref(), Some("build"));
-        assert_eq!(
-            params.state_labels.get("working").map(String::as_str),
-            Some("compiling")
-        );
-        assert_eq!(
-            params.state_labels.get("idle").map(String::as_str),
-            Some("ready")
-        );
         assert_eq!(params.tokens.get("a"), Some(&Some("1".to_string())));
         assert_eq!(params.tokens.get("b"), Some(&None));
         assert_eq!(params.ttl_ms, Some(50));
@@ -1437,14 +1422,6 @@ mod tests {
             "--title",
             "t",
             "--clear-title",
-        ]));
-        assert!(rejected(&[
-            "report-metadata",
-            "p1",
-            "--source",
-            "s",
-            "--state-label",
-            "nope",
         ]));
         assert!(
             report_metadata_params(&pane(&[

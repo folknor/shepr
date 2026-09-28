@@ -56,7 +56,6 @@ api_error_codes! {
     InvalidRegex => "invalid_regex",
     InvalidRequest => "invalid_request",
     InvalidSshAgent => "invalid_ssh_agent",
-    InvalidStateLabel => "invalid_state_label",
     InvalidTarget => "invalid_target",
     LayoutApplyFailed => "layout_apply_failed",
     LayoutNotFound => "layout_not_found",

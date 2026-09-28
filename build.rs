@@ -73,6 +73,10 @@ fn relative_name(root: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
     Ok(parts.join("/"))
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a build script reads cargo's own variables; shepr_core::env governs the variables shepr processes interpret"
+)]
 pub fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,

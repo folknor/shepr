@@ -827,15 +827,10 @@ impl App {
             }
             ResolvedPaneMoveDestination::NewWorkspace { .. } => true,
         };
-        if cross_workspace {
-            if let Some(ws) = self.state.workspaces.get_mut(source_ws_idx) {
-                ws.unregister_moved_pane(source_pane_id);
-            }
-            if let Ok(alias) = previous_pane_id.parse() {
-                self.state
-                    .public_pane_id_aliases
-                    .insert(alias, source_pane_id);
-            }
+        if cross_workspace && let Ok(alias) = previous_pane_id.parse() {
+            self.state
+                .public_pane_id_aliases
+                .insert(alias, source_pane_id);
         }
 
         let mut closed_workspace_id = None;

@@ -11,7 +11,21 @@ const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// leading up to it are not lost the moment the limit is hit.
 const DEFAULT_RETAINED_LOG_FILES: usize = 1;
 
-pub fn init_file_logging(dir: &Path, file_name: &str) {
+/// The filter every file log starts with when `SHEPR_LOG` is unset or empty.
+const DEFAULT_LOG_FILTER: &str = "shepr=info";
+
+/// Installs the file logger.
+///
+/// # Errors
+///
+/// A `SHEPR_LOG` the environment policy refuses, or one that is not valid
+/// `tracing` filter syntax, fails the launch rather than silently logging at
+/// the default level. A log file that cannot be opened is reported on stderr
+/// and the process runs without file logging.
+pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<()> {
+    let directives = shepr_core::env::read_text(shepr_core::env::EnvVar::SheprLog)?;
+    let filter = log_filter(directives.as_deref())?;
+
     let make_writer = match RotatingFileMakeWriter::new(
         dir,
         file_name,
@@ -24,12 +38,9 @@ pub fn init_file_logging(dir: &Path, file_name: &str) {
                 io::stderr().lock(),
                 "shepr: could not initialize file logging: {error}"
             );
-            return;
+            return Ok(());
         }
     };
-
-    let filter =
-        EnvFilter::try_from_env("SHEPR_LOG").unwrap_or_else(|_| EnvFilter::new("shepr=info"));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -37,6 +48,24 @@ pub fn init_file_logging(dir: &Path, file_name: &str) {
         .with_ansi(false)
         .with_target(true)
         .try_init();
+    Ok(())
+}
+
+/// The file-log filter from `SHEPR_LOG`'s value (already read under the
+/// environment policy), or the default when it is unset.
+fn log_filter(directives: Option<&str>) -> io::Result<EnvFilter> {
+    let Some(directives) = directives else {
+        return Ok(EnvFilter::new(DEFAULT_LOG_FILTER));
+    };
+    EnvFilter::try_new(directives).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} is {directives:?}, which is not a valid log filter: {error}",
+                shepr_core::env::EnvVar::SheprLog
+            ),
+        )
+    })
 }
 
 /// The log the headless server writes.
@@ -659,6 +688,15 @@ mod tests {
         shepr_test_support::ScratchDir::new(name)
             .keep_until_exit()
             .join("shepr.log")
+    }
+
+    #[test]
+    fn log_filter_defaults_when_unset_and_refuses_bad_directives() {
+        assert!(log_filter(None).is_ok());
+        assert!(log_filter(Some("shepr=debug")).is_ok());
+        let error = log_filter(Some("shepr=inof")).expect_err("an unknown level is not a filter");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("SHEPR_LOG"), "{error}");
     }
 
     #[test]

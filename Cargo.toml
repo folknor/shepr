@@ -89,6 +89,10 @@ cast_possible_wrap = "deny"
 dbg_macro = "deny"
 todo = "deny"
 
+# The environment seal: `clippy.toml` bans raw `std::env` reads and writes
+# outside `shepr_core::env`, and escapes carry a scoped `#[expect]`.
+disallowed_methods = "deny"
+
 [dependencies]
 clap = { workspace = true }
 serde = { workspace = true }

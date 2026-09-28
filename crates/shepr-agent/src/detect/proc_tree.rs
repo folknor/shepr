@@ -20,7 +20,6 @@ pub struct ForegroundJob {
     pub processes: Vec<ForegroundProcess>,
 }
 
-const PROCESS_DETECTION_ENV_VAR: &str = "SHEPR_PROCESS_DETECTION";
 const CHILD_GROUPS_SCAN_LIMIT: usize = 64;
 /// Upper bound on the number of processes visited while resolving a pane's
 /// foreground process-group tree. Foreground-job detection reads /proc/<pid>/stat
@@ -91,10 +90,14 @@ fn parse_process_detection_mode(value: Option<&str>) -> Result<ProcessDetectionM
 fn process_detection_mode() -> ProcessDetectionMode {
     static MODE: OnceLock<ProcessDetectionMode> = OnceLock::new();
     *MODE.get_or_init(|| {
-        let value = std::env::var(PROCESS_DETECTION_ENV_VAR).ok();
+        let variable = shepr_core::env::EnvVar::SheprProcessDetection;
+        let value = shepr_core::env::read_text(variable).unwrap_or_else(|error| {
+            tracing::warn!(%error, "using native process detection");
+            None
+        });
         parse_process_detection_mode(value.as_deref()).unwrap_or_else(|value| {
             tracing::warn!(
-                variable = PROCESS_DETECTION_ENV_VAR,
+                variable = variable.name(),
                 %value,
                 "unknown process detection mode; using native detection"
             );

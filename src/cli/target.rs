@@ -21,18 +21,25 @@ pub(super) struct CliContext {
     target: RefCell<ApiTarget>,
     build_checked: Cell<bool>,
     caller_pane_id: Option<String>,
-    caller_socket: Option<std::ffi::OsString>,
+    caller_socket: Option<std::path::PathBuf>,
 }
 
 impl CliContext {
-    pub(super) fn local(paths: shepr_config::AppPaths) -> Self {
-        Self {
+    /// A context for the local server, capturing the calling pane from the
+    /// environment once.
+    ///
+    /// # Errors
+    ///
+    /// A `SHEPR_PANE_ID` or `SHEPR_SOCKET_PATH` the environment policy refuses.
+    pub(super) fn local(paths: shepr_config::AppPaths) -> io::Result<Self> {
+        use shepr_core::env::{EnvVar, read_path, read_text};
+        Ok(Self {
             paths,
             target: RefCell::new(ApiTarget::Local),
             build_checked: Cell::new(false),
-            caller_pane_id: std::env::var(shepr_mux::pane::SHEPR_PANE_ID_ENV_VAR).ok(),
-            caller_socket: std::env::var_os(shepr_config::SOCKET_PATH_ENV_VAR),
-        }
+            caller_pane_id: read_text(EnvVar::SheprPaneId)?,
+            caller_socket: read_path(EnvVar::SheprSocketPath)?,
+        })
     }
 
     #[cfg(test)]
@@ -305,16 +312,14 @@ pub(super) fn caller_pane(context: &CliContext) -> CallerPane {
 
 fn caller_pane_from(
     pane_id: Option<String>,
-    pane_socket: Option<std::ffi::OsString>,
+    pane_socket: Option<std::path::PathBuf>,
     target_socket: &std::path::Path,
 ) -> CallerPane {
     let Some(pane_id) = pane_id.filter(|value| !value.trim().is_empty()) else {
         return CallerPane::Unset;
     };
     match pane_socket {
-        Some(socket) if std::path::Path::new(&socket) == target_socket => {
-            CallerPane::Known(pane_id)
-        }
+        Some(socket) if socket == target_socket => CallerPane::Known(pane_id),
         _ => CallerPane::OtherServer,
     }
 }

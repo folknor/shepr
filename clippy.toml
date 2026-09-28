@@ -1,1 +1,25 @@
 too-many-arguments-threshold = 11
+
+# The one environment reader (`shepr_core::env`). Every variable a shepr
+# process interprets is an `EnvVar` with a declared kind, read under one
+# policy: empty is unset (a selector refuses empty), surrounding whitespace
+# and non-UTF-8 refuse naming the variable, flags are exactly 1, 0, true or
+# false, and an absolute-path kind refuses a relative path. Outside that module
+# the raw sites that stay are the pane child's environment copied from the
+# server's, the `IsolatedEnv` test guard, and test harness probes, each under a
+# scoped `#[expect(clippy::disallowed_methods, reason = ..)]` naming why it is
+# outside the policy. `brokkr.toml`'s `disallowed-escapes-are-allowlisted`
+# textlint lists the files allowed to carry one. The lint is denied
+# workspace-wide in the root `Cargo.toml`.
+disallowed-methods = [
+  { path = "std::env::var", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
+  { path = "std::env::var_os", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
+  { path = "std::env::vars", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
+  { path = "std::env::vars_os", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
+  # The only process-environment writes are `shepr_core::env::remove` (a
+  # handoff variable consumed while the server is still single-threaded) and
+  # the `IsolatedEnv` guard, which holds the test environment lock and restores
+  # the prior values on drop.
+  { path = "std::env::set_var", reason = "write only through the IsolatedEnv test guard" },
+  { path = "std::env::remove_var", reason = "remove only through shepr_core::env::remove or the IsolatedEnv test guard" },
+]

@@ -651,13 +651,6 @@ fn report_metadata_command() -> Command {
         .arg(flag("clear-title"))
         .arg(free_text_option("display-agent", "TEXT").conflicts_with("clear-display-agent"))
         .arg(flag("clear-display-agent"))
-        .arg(
-            free_text_option("state-label", "STATUS=TEXT")
-                .action(ArgAction::Append)
-                .value_parser(state_label_assignment)
-                .conflicts_with("clear-state-labels"),
-        )
-        .arg(flag("clear-state-labels"))
         .arg(token_option())
         .arg(repeatable_option("clear-token", "NAME"))
         .arg(u64_option("seq", "N"))
@@ -669,8 +662,6 @@ fn report_metadata_command() -> Command {
                     "clear-title",
                     "display-agent",
                     "clear-display-agent",
-                    "state-label",
-                    "clear-state-labels",
                     "token",
                     "clear-token",
                 ])
@@ -900,19 +891,6 @@ fn env_assignment(value: &str) -> Result<(String, String), String> {
 
 fn token_assignment(value: &str) -> Result<(String, Option<String>), String> {
     super::parse_token_assignment(value)
-}
-
-fn state_label_assignment(value: &str) -> Result<(String, String), String> {
-    let Some((status, label)) = value.split_once('=') else {
-        return Err("expected STATUS=TEXT".to_string());
-    };
-    let status = status.trim().to_ascii_lowercase();
-    if !matches!(status.as_str(), "idle" | "working" | "blocked") {
-        return Err(format!(
-            "unknown state {status} (expected idle, working, or blocked)"
-        ));
-    }
-    Ok((status, label.to_string()))
 }
 
 const PANE_DIRECTIONS: &[(&str, PaneDirection)] = &[
@@ -1369,36 +1347,6 @@ mod tests {
                 "NaN",
             ],
             &["shepr", "workspace", "create", "--env", "NOVALUE"],
-            &[
-                "shepr",
-                "pane",
-                "report-metadata",
-                "p1",
-                "--source",
-                "s",
-                "--state-label",
-                "sleepy=zz",
-            ],
-            &[
-                "shepr",
-                "pane",
-                "report-metadata",
-                "p1",
-                "--source",
-                "s",
-                "--state-label",
-                "done=complete",
-            ],
-            &[
-                "shepr",
-                "pane",
-                "report-metadata",
-                "p1",
-                "--source",
-                "s",
-                "--state-label",
-                "unknown=unavailable",
-            ],
         ] {
             let error = super::command()
                 .try_get_matches_from(args)

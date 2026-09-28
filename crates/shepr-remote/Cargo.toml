@@ -15,6 +15,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 shepr-api = { path = "../shepr-api" }
 shepr-config = { path = "../shepr-config" }
+shepr-core = { path = "../shepr-core" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 tracing = { workspace = true }

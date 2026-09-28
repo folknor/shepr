@@ -40,7 +40,7 @@ pub(super) fn lock_config_for_update(path: &Path) -> io::Result<ConfigUpdateLock
 fn config_update_lock_path(target: &Path) -> io::Result<PathBuf> {
     // State storage keeps the lock identity stable across logins, so editors
     // running in separate sessions still serialize on the same inode.
-    let state_home = match super::env::absolute_xdg_home("XDG_STATE_HOME") {
+    let state_home = match super::env::absolute_xdg_home(shepr_core::env::EnvVar::XdgStateHome)? {
         Some(path) => path,
         None => super::env::home_dir()?.join(".local/state"),
     };

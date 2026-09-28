@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::agent::{KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER};
+use shepr_core::env::EnvVar;
 use shepr_test_support::IsolatedEnv;
 
 #[test]
@@ -92,29 +93,12 @@ fn enforce_agent_version_accepts_current_version() {
     assert!(result.is_none(), "matching version must not warn");
 }
 
-/// Clears every agent config-directory override, so paths resolve against
-/// `HOME` unless a test sets one. `IsolatedEnv` already clears the XDG base
-/// directories; this adds the agent-specific variables it does not know.
+/// Clears the one agent directory override outside the environment registry,
+/// so paths resolve against `HOME` unless a test sets one. `IsolatedEnv`
+/// already clears every registered variable, the agent config-directory
+/// overrides and the XDG base directories among them.
 fn clear_integration_path_env(env: &IsolatedEnv) {
-    for key in [
-        PI_CODING_AGENT_DIR_ENV_VAR,
-        OMP_CONFIG_DIR_ENV_VAR,
-        CLAUDE_CONFIG_DIR_ENV_VAR,
-        CODEX_HOME_ENV_VAR,
-        COPILOT_HOME_ENV_VAR,
-        KIMI_CODE_HOME_ENV_VAR,
-        "XDG_CONFIG_HOME",
-        "XDG_STATE_HOME",
-        QODERCLI_CONFIG_DIR_ENV_VAR,
-        QWEN_HOME_ENV_VAR,
-        CURSOR_CONFIG_DIR_ENV_VAR,
-        ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR,
-        GROK_CONFIG_DIR_ENV_VAR,
-        GROK_HOME_ENV_VAR,
-        HERMES_HOME_ENV_VAR,
-    ] {
-        env.remove(key);
-    }
+    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
 }
 
 fn kimi_hook_command(hook_path: &Path, action: &str) -> String {
@@ -202,7 +186,7 @@ fn install_pi_uses_pi_coding_agent_dir_env() {
     let agent_dir = base.join("custom-pi-agent");
     let ext_dir = agent_dir.join("extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
-    env.set(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir);
+    env.set(EnvVar::PiCodingAgentDir, &agent_dir);
 
     let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -220,7 +204,7 @@ fn install_pi_expands_tilde_in_pi_coding_agent_dir_env() {
     let ext_dir = home.join("custom-pi-agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set("HOME", &home);
-    env.set(PI_CODING_AGENT_DIR_ENV_VAR, "~/custom-pi-agent");
+    env.set(EnvVar::PiCodingAgentDir, "~/custom-pi-agent");
 
     let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -259,7 +243,7 @@ fn install_omp_uses_omp_config_dir_env() {
     let ext_dir = home.join("custom-omp/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set("HOME", &home);
-    env.set(OMP_CONFIG_DIR_ENV_VAR, "custom-omp");
+    env.set(EnvVar::PiConfigDir, "custom-omp");
 
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -285,8 +269,8 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     let omp_dir = home.join("ignored-omp-config/agent");
     fs::create_dir_all(&omp_dir).expect("test precondition");
     env.set("HOME", &home);
-    env.set(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir);
-    env.set(OMP_CONFIG_DIR_ENV_VAR, "ignored-omp-config");
+    env.set(EnvVar::PiCodingAgentDir, &agent_dir);
+    env.set(EnvVar::PiConfigDir, "ignored-omp-config");
 
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -498,7 +482,7 @@ fn install_claude_uses_claude_config_dir_env() {
     let base = unique_base(&env);
     let claude_dir = base.join("custom-claude");
     fs::create_dir_all(&claude_dir).expect("test precondition");
-    env.set(CLAUDE_CONFIG_DIR_ENV_VAR, &claude_dir);
+    env.set(EnvVar::ClaudeConfigDir, &claude_dir);
 
     let installed = install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -663,7 +647,7 @@ fn install_codex_uses_codex_home_env() {
     let codex_dir = base.join("custom-codex");
     fs::create_dir_all(&codex_dir).expect("test precondition");
     fs::write(codex_dir.join("config.toml"), "model = \"gpt-5.4\"\n").expect("test precondition");
-    env.set(CODEX_HOME_ENV_VAR, &codex_dir);
+    env.set(EnvVar::CodexHome, &codex_dir);
 
     let installed = install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -903,7 +887,7 @@ fn install_kimi_uses_kimi_code_home_env() {
     let base = unique_base(&env);
     let kimi_dir = base.join("custom-kimi");
     fs::create_dir_all(&kimi_dir).expect("test precondition");
-    env.set(KIMI_CODE_HOME_ENV_VAR, &kimi_dir);
+    env.set(EnvVar::KimiCodeHome, &kimi_dir);
 
     let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -1053,7 +1037,7 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
     let base = unique_base(&env);
     let copilot_dir = base.join("custom-copilot");
     fs::create_dir_all(&copilot_dir).expect("test precondition");
-    env.set(COPILOT_HOME_ENV_VAR, &copilot_dir);
+    env.set(EnvVar::CopilotHome, &copilot_dir);
 
     let installed = install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
     install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -2632,7 +2616,7 @@ fn install_qodercli_writes_hook_and_updates_settings() {
         r#"{"permissions":{"allow":["Read"]},"hooks":{}}"#,
     )
     .expect("test precondition");
-    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
+    env.set(EnvVar::QoderConfigDir, &qoder_dir);
 
     let installed = install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -2673,7 +2657,7 @@ fn install_qodercli_writes_hook_and_updates_settings() {
     // Pre-existing settings keys must be preserved.
     assert!(settings.get("permissions").is_some());
 
-    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::QoderConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2683,7 +2667,7 @@ fn install_qodercli_is_idempotent_for_hook_entries() {
     let base = unique_base(&env);
     let qoder_dir = base.join(".qoder");
     fs::create_dir_all(&qoder_dir).expect("test precondition");
-    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
+    env.set(EnvVar::QoderConfigDir, &qoder_dir);
 
     install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
     install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -2709,7 +2693,7 @@ fn install_qodercli_is_idempotent_for_hook_entries() {
         );
     }
 
-    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::QoderConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2719,7 +2703,7 @@ fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
     let base = unique_base(&env);
     let qoder_dir = base.join(".qoder");
     fs::create_dir_all(&qoder_dir).expect("test precondition");
-    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
+    env.set(EnvVar::QoderConfigDir, &qoder_dir);
 
     install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
     // Inject a foreign hook entry the user might have configured by hand.
@@ -2762,7 +2746,7 @@ fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
         .expect("test precondition");
     assert_eq!(cmd, "echo user-defined");
 
-    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::QoderConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2771,7 +2755,7 @@ fn install_qodercli_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let missing = base.join(".qoder");
-    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &missing);
+    env.set(EnvVar::QoderConfigDir, &missing);
 
     let err = install_qodercli(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
@@ -2781,7 +2765,7 @@ fn install_qodercli_errors_when_config_dir_missing() {
         "unexpected error: {err}"
     );
 
-    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::QoderConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2796,7 +2780,7 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
         r#"{"permissions":{"allow":["Read"]},"hooks":{}}"#,
     )
     .expect("test precondition");
-    env.set(QWEN_HOME_ENV_VAR, &qwen_dir);
+    env.set(EnvVar::QwenHome, &qwen_dir);
 
     let installed = install_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -2841,7 +2825,7 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
         1
     );
 
-    env.remove(QWEN_HOME_ENV_VAR);
+    env.remove(EnvVar::QwenHome);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2851,7 +2835,7 @@ fn uninstall_qwen_removes_only_shepr_hook() {
     let base = unique_base(&env);
     let qwen_dir = base.join(".qwen");
     fs::create_dir_all(&qwen_dir).expect("test precondition");
-    env.set(QWEN_HOME_ENV_VAR, &qwen_dir);
+    env.set(EnvVar::QwenHome, &qwen_dir);
 
     install_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings_path = qwen_dir.join("settings.json");
@@ -2884,7 +2868,7 @@ fn uninstall_qwen_removes_only_shepr_hook() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0]["hooks"][0]["command"], "echo user-defined");
 
-    env.remove(QWEN_HOME_ENV_VAR);
+    env.remove(EnvVar::QwenHome);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2893,14 +2877,14 @@ fn install_qwen_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let missing = base.join(".qwen");
-    env.set(QWEN_HOME_ENV_VAR, &missing);
+    env.set(EnvVar::QwenHome, &missing);
 
     let err = install_qwen(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
     assert!(err.contains("qwen code config directory not found"));
 
-    env.remove(QWEN_HOME_ENV_VAR);
+    env.remove(EnvVar::QwenHome);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3388,7 +3372,7 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
         r#"{"version":1,"hooks":{"stop":[{"command":"echo keep-me"}]}}"#,
     )
     .expect("test precondition");
-    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
+    env.set(EnvVar::CursorConfigDir, &cursor_dir);
 
     let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -3431,7 +3415,7 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
         Some("echo keep-me")
     );
 
-    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::CursorConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3441,7 +3425,7 @@ fn install_cursor_is_idempotent_for_hook_entries() {
     let base = unique_base(&env);
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
+    env.set(EnvVar::CursorConfigDir, &cursor_dir);
 
     install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
     install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -3460,7 +3444,7 @@ fn install_cursor_is_idempotent_for_hook_entries() {
         .expect("test precondition");
     assert_eq!(session_start.len(), 1);
 
-    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::CursorConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3470,7 +3454,7 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     let base = unique_base(&env);
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
+    env.set(EnvVar::CursorConfigDir, &cursor_dir);
 
     install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let mut hooks_file: Value = serde_json::from_str(
@@ -3500,7 +3484,7 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     assert!(!hooks.contains_key("sessionStart"));
     assert!(hooks.contains_key("beforeSubmitPrompt"));
 
-    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::CursorConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3510,7 +3494,7 @@ fn install_cursor_uses_cursor_config_dir_env() {
     let base = unique_base(&env);
     let cursor_dir = base.join("custom-cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
+    env.set(EnvVar::CursorConfigDir, &cursor_dir);
 
     let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -3530,7 +3514,7 @@ fn cursor_integration_status_is_current_after_install() {
     let base = unique_base(&env);
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
+    env.set(EnvVar::CursorConfigDir, &cursor_dir);
     // A hook script alone is not enough: the agent's hooks.json must also
     // register it, so install through the real path instead of hand-writing
     // just the script.
@@ -3553,7 +3537,7 @@ fn install_cursor_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let missing = base.join(".cursor");
-    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &missing);
+    env.set(EnvVar::CursorConfigDir, &missing);
 
     let err = install_cursor(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
@@ -3563,7 +3547,7 @@ fn install_cursor_errors_when_config_dir_missing() {
         "unexpected error: {err}"
     );
 
-    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::CursorConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3655,7 +3639,7 @@ fn install_grok_writes_hook_and_config() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
 
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -3684,7 +3668,7 @@ fn install_grok_writes_hook_and_config() {
     assert!(command.contains("shepr-agent-state.sh"));
     assert!(command.ends_with(" session"));
 
-    env.remove(GROK_CONFIG_DIR_ENV_VAR);
+    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3724,7 +3708,7 @@ fn install_grok_is_idempotent() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
 
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let first = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME))
@@ -3734,7 +3718,7 @@ fn install_grok_is_idempotent() {
         .expect("test precondition");
     assert_eq!(first, second);
 
-    env.remove(GROK_CONFIG_DIR_ENV_VAR);
+    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3827,7 +3811,7 @@ fn install_grok_errors_when_config_dir_missing() {
     // installer must refuse instead of conjuring a config dir for an agent
     // that is not installed.
     let missing = base.join(".grok");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &missing);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &missing);
 
     let err = install_grok(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
@@ -3837,7 +3821,7 @@ fn install_grok_errors_when_config_dir_missing() {
         "unexpected error: {err}"
     );
 
-    env.remove(GROK_CONFIG_DIR_ENV_VAR);
+    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3847,7 +3831,7 @@ fn uninstall_grok_removes_files() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
 
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let result = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -3861,7 +3845,7 @@ fn uninstall_grok_removes_files() {
     assert!(!again.removed_hook_file);
     assert!(!again.removed_config_file);
 
-    env.remove(GROK_CONFIG_DIR_ENV_VAR);
+    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3871,7 +3855,7 @@ fn install_grok_uses_grok_config_dir_env() {
     let base = unique_base(&env);
     let grok_dir = base.join("custom-grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
 
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -3939,7 +3923,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
         r#"{"lint-checker":{"PreInvocation":[{"type":"command","command":"echo keep-me"}]}}"#,
     )
     .expect("test precondition");
-    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
+    env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
 
     let installed =
         install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -4032,7 +4016,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
         Some("echo keep-me")
     );
 
-    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::AntigravityCliConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -4047,7 +4031,7 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
         r#"{"shepr":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"stale"}]}],"PostInvocation":[{"type":"command","command":"stale idle"}],"Legacy":[]}}"#,
     )
     .expect("test precondition");
-    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
+    env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
 
     install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -4079,7 +4063,7 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
             .is_some_and(|command| command != "stale" && command != "stale idle")
     );
 
-    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::AntigravityCliConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -4088,14 +4072,14 @@ fn install_antigravity_cli_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let agy_dir = base.join(".gemini").join("config");
-    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
+    env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
 
     let err =
         install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect_err("test precondition");
     assert!(err.to_string().contains("install antigravity cli first"));
     assert!(!agy_dir.exists(), "install must not create the config dir");
 
-    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::AntigravityCliConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -4105,7 +4089,7 @@ fn grok_integration_status_is_current_after_install() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
     // A real install writes both the hook script and hooks/shepr.json.
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -4127,7 +4111,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME);
 
@@ -4229,7 +4213,7 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
         r#"{"lint-checker":{"PreInvocation":[{"type":"command","command":"echo keep-me"}]}}"#,
     )
     .expect("test precondition");
-    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
+    env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
 
     // Install first
     let installed =
@@ -4253,7 +4237,7 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
     assert!(hooks.get(ANTIGRAVITY_CLI_HOOK_BLOCK_NAME).is_none());
     assert!(hooks.contains_key("lint-checker"));
 
-    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
+    env.remove(EnvVar::AntigravityCliConfigDir);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -4263,8 +4247,8 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     let base = unique_base(&env);
     let home_dir = base.join("grok-home");
     fs::create_dir_all(&home_dir).expect("test precondition");
-    env.remove(GROK_CONFIG_DIR_ENV_VAR);
-    env.set(GROK_HOME_ENV_VAR, &home_dir);
+    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
+    env.set(EnvVar::GrokHome, &home_dir);
 
     // The grok CLI reads its config (and hooks/) from $GROK_HOME, so the
     // integration must install there too.
@@ -4277,14 +4261,14 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     // The shepr-level test seam still wins over GROK_HOME when set.
     let seam_dir = base.join("seam");
     fs::create_dir_all(&seam_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_ENV_VAR, &seam_dir);
+    env.set(GROK_CONFIG_DIR_TEST_SEAM, &seam_dir);
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
         installed.hook_path,
         seam_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
     );
 
-    env.remove(GROK_HOME_ENV_VAR);
+    env.remove(EnvVar::GrokHome);
     clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
@@ -4319,7 +4303,7 @@ fn install_kimi_leaves_a_damaged_config_and_no_hook() {
     fs::create_dir_all(&kimi_dir).expect("test precondition");
     let damaged = format!("{KIMI_CONFIG_BLOCK_BEGIN}\n[user]\nkeep = true\n");
     fs::write(kimi_dir.join("config.toml"), &damaged).expect("test precondition");
-    env.set(KIMI_CODE_HOME_ENV_VAR, &kimi_dir);
+    env.set(EnvVar::KimiCodeHome, &kimi_dir);
 
     assert!(install_kimi(&AgentIntegrationPaths::resolve()).is_err());
     assert_eq!(
@@ -4377,4 +4361,101 @@ fn codex_features_hooks_follow_the_users_features_shape() {
 
     // Inline tables are refused rather than broken.
     assert!(build_codex_config_with_hooks("features = { web_search = true }\n").is_err());
+}
+
+/// `SHEPR_*` names the shipped assets spell that no shepr process reads or
+/// writes into a child, so they stay outside the environment registry. Each
+/// entry must still appear in some asset, or it is removed from this list.
+const ASSET_INTERNAL_SHEPR_NAMES: &[&str] = &[
+    // Header markers install and status code parse out of an asset's text
+    // (`INTEGRATION_VERSION_MARKER`); they are not environment variables.
+    "SHEPR_INTEGRATION_ID",
+    "SHEPR_INTEGRATION_VERSION",
+    // A hook script handing its arguments to the interpreter it runs.
+    "SHEPR_ACTION",
+    "SHEPR_HOOK_INPUT_FILE",
+    "SHEPR_HOOK_SEQ",
+    // Tunables only the omp extension reads.
+    "SHEPR_OMP_IDLE_DEBOUNCE_MS",
+    "SHEPR_OMP_RETRY_GRACE_MS",
+    // The devin hook's injection seam for its own tests.
+    "SHEPR_DEVIN_LIST_JSON",
+];
+
+fn collect_asset_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read an asset directory") {
+        let path = entry.expect("read an asset directory entry").path();
+        if path.is_dir() {
+            collect_asset_files(&path, files);
+        } else {
+            files.push(path);
+        }
+    }
+}
+
+/// The hook assets run inside other agents' runtimes and cannot link Rust
+/// constants, so they restate the pane environment contract by name. Every
+/// `SHEPR_*` name they spell must be one shepr owns (it reads the variable or
+/// writes it into the pane) or a named asset-internal one, so a renamed or
+/// removed variable cannot leave an asset reading a name nothing sets.
+#[test]
+fn every_shepr_name_in_the_shipped_assets_is_owned_or_asset_internal() {
+    let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/integration/assets");
+    let mut files = Vec::new();
+    collect_asset_files(&assets, &mut files);
+    assert!(!files.is_empty(), "no assets under {}", assets.display());
+
+    let owned: std::collections::BTreeSet<&str> = shepr_core::env::EnvVar::ALL
+        .iter()
+        .copied()
+        .map(shepr_core::env::EnvVar::name)
+        .chain(
+            shepr_core::env::ChildEnv::ALL
+                .iter()
+                .copied()
+                .map(shepr_core::env::ChildEnv::name),
+        )
+        .collect();
+    for internal in ASSET_INTERNAL_SHEPR_NAMES {
+        assert!(
+            !owned.contains(internal),
+            "{internal} is in the environment registry; drop it from the asset-internal list"
+        );
+    }
+    assert_eq!(
+        INTEGRATION_VERSION_MARKER.trim_end_matches('='),
+        "SHEPR_INTEGRATION_VERSION"
+    );
+
+    let name = regex::Regex::new(r"SHEPR_[A-Z_]+").expect("test precondition");
+    let mut seen = std::collections::BTreeSet::new();
+    for file in &files {
+        let text = String::from_utf8_lossy(&fs::read(file).expect("read an asset")).into_owned();
+        for found in name.find_iter(&text) {
+            let found = found.as_str().to_owned();
+            assert!(
+                owned.contains(found.as_str())
+                    || ASSET_INTERNAL_SHEPR_NAMES.contains(&found.as_str()),
+                "{} spells {found}, which no shepr process reads or writes into a pane; \
+                 register it in shepr_core::env or list it as asset-internal here",
+                file.display()
+            );
+            seen.insert(found);
+        }
+    }
+    for internal in ASSET_INTERNAL_SHEPR_NAMES {
+        assert!(
+            seen.contains(*internal),
+            "{internal} appears in no asset; drop it from the asset-internal list"
+        );
+    }
+    // The pane contract every hook depends on is spelled by the assets.
+    for contract in [
+        shepr_core::env::EnvVar::SheprEnv.name(),
+        shepr_core::env::EnvVar::SheprSocketPath.name(),
+        shepr_core::env::EnvVar::SheprPaneId.name(),
+        shepr_core::env::ChildEnv::SheprBinPath.name(),
+    ] {
+        assert!(seen.contains(contract), "no asset reads {contract}");
+    }
 }

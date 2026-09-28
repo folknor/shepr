@@ -124,12 +124,20 @@ impl ModifyOtherKeysMode {
     }
 }
 
-pub fn host_modify_other_keys_mode() -> Option<ModifyOtherKeysMode> {
-    host_modify_other_keys_mode_for_env(
-        std::env::var("TMUX").is_ok(),
-        std::env::var("TERM_PROGRAM").ok().as_deref(),
-        std::env::var_os("WEZTERM_PANE").is_some(),
-    )
+/// The modifyOtherKeys mode the host terminal wants, from `TMUX`,
+/// `TERM_PROGRAM` and `WEZTERM_PANE` read under the environment policy.
+///
+/// # Errors
+///
+/// A value the policy refuses (padded or non-UTF-8), naming the variable.
+pub fn host_modify_other_keys_mode()
+-> Result<Option<ModifyOtherKeysMode>, shepr_core::env::EnvError> {
+    use shepr_core::env::{EnvVar, read_present, read_text};
+    Ok(host_modify_other_keys_mode_for_env(
+        read_present(EnvVar::Tmux)?,
+        read_text(EnvVar::TermProgram)?.as_deref(),
+        read_present(EnvVar::WeztermPane)?,
+    ))
 }
 
 fn host_modify_other_keys_mode_for_env(

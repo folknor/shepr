@@ -79,11 +79,9 @@ fn metadata_params(pane_id: String) -> PaneReportMetadataParams {
         applies_to_source: None,
         title: Some("activity".into()),
         display_agent: None,
-        state_labels: std::collections::HashMap::new(),
         tokens: std::collections::HashMap::new(),
         clear_title: false,
         clear_display_agent: false,
-        clear_state_labels: false,
         seq: None,
         ttl_ms: None,
     }

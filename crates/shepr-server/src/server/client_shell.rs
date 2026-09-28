@@ -184,8 +184,6 @@ pub(super) fn snapshot_from_session(
         .filter_map(|agent| {
             let focused = focused_pane_id.as_deref() == Some(agent.pane_id.as_str());
             let pane_id = agent.pane_id.parse().ok()?;
-            let mut state_labels = agent.state_labels.into_iter().collect::<Vec<_>>();
-            state_labels.sort_by(|left, right| left.0.cmp(&right.0));
             let mut tokens = agent.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             Some(shepr_protocol::ClientShellAgent {
@@ -200,7 +198,6 @@ pub(super) fn snapshot_from_session(
                 terminal_title_stripped: agent.terminal_title_stripped,
                 agent_status: agent.agent_status,
                 state_change_seq: agent.state_change_seq,
-                state_labels,
                 tokens,
                 focused,
             })

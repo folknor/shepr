@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize, de::Visitor};
+use shepr_core::env::ChildEnv;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(usize)]
@@ -259,7 +260,7 @@ pub struct AgentDescriptor {
     pub session_ref_policy: Option<SessionRefPolicy>,
     pub resume_args: Option<ResumeArgs>,
     pub screen_manifest: bool,
-    pub env_to_scrub: &'static [&'static str],
+    pub env_to_scrub: &'static [ChildEnv],
     pub title_activity_glyphs: &'static str,
     pub prompt_observation: bool,
     pub integration_hook_events: &'static [IntegrationHookEvent],
@@ -300,10 +301,10 @@ pub const AGENTS: [AgentDescriptor; 24] = [
         resume_args: Some(ResumeArgs::FlagValue("--resume")),
         screen_manifest: true,
         env_to_scrub: &[
-            "CLAUDECODE",
-            "CLAUDE_CODE_CHILD_SESSION",
-            "CLAUDE_CODE_SESSION_ID",
-            "CLAUDE_CODE_MESSAGING_TOKEN",
+            ChildEnv::ClaudeCode,
+            ChildEnv::ClaudeCodeChildSession,
+            ChildEnv::ClaudeCodeSessionId,
+            ChildEnv::ClaudeCodeMessagingToken,
         ],
         title_activity_glyphs: CLAUDE_ACTIVITY_GLYPHS,
         prompt_observation: false,
@@ -323,7 +324,7 @@ pub const AGENTS: [AgentDescriptor; 24] = [
         session_ref_policy: Some(SessionRefPolicy::Id),
         resume_args: Some(ResumeArgs::Subcommand("resume")),
         screen_manifest: true,
-        env_to_scrub: &["CODEX_THREAD_ID"],
+        env_to_scrub: &[ChildEnv::CodexThreadId],
         title_activity_glyphs: "",
         prompt_observation: true,
         integration_hook_events: &[],
@@ -435,7 +436,7 @@ pub const AGENTS: [AgentDescriptor; 24] = [
         session_ref_policy: Some(SessionRefPolicy::IdOrPath),
         resume_args: Some(ResumeArgs::InlineFlag("--resume=")),
         screen_manifest: false,
-        env_to_scrub: &["OMPCODE"],
+        env_to_scrub: &[ChildEnv::Ompcode],
         title_activity_glyphs: "",
         prompt_observation: false,
         integration_hook_events: &[],
@@ -763,7 +764,7 @@ impl Agent {
         self.descriptor().screen_manifest
     }
 
-    pub const fn env_to_scrub(self) -> &'static [&'static str] {
+    pub const fn env_to_scrub(self) -> &'static [ChildEnv] {
         self.descriptor().env_to_scrub
     }
 
@@ -862,7 +863,7 @@ fn contains_recent_non_whitespace(content: &str, needle: &str) -> bool {
 }
 
 pub fn launch_env_to_scrub() -> impl Iterator<Item = &'static str> {
-    Agent::all().flat_map(|agent| agent.env_to_scrub().iter().copied())
+    Agent::all().flat_map(|agent| agent.env_to_scrub().iter().copied().map(ChildEnv::name))
 }
 
 fn agent_name_lookup() -> &'static HashMap<&'static str, Agent> {
@@ -1115,9 +1116,13 @@ mod tests {
         assert_eq!(Agent::Antigravity.label(), "agy");
         assert_eq!(Agent::Antigravity.integration_source(), Some("shepr:agy"));
         assert!(Agent::Claude.activity_glyphs().contains('◐'));
-        assert!(Agent::Claude.env_to_scrub().contains(&"CLAUDECODE"));
-        assert!(Agent::Codex.env_to_scrub().contains(&"CODEX_THREAD_ID"));
-        assert!(Agent::Omp.env_to_scrub().contains(&"OMPCODE"));
+        assert!(Agent::Claude.env_to_scrub().contains(&ChildEnv::ClaudeCode));
+        assert!(
+            Agent::Codex
+                .env_to_scrub()
+                .contains(&ChildEnv::CodexThreadId)
+        );
+        assert!(Agent::Omp.env_to_scrub().contains(&ChildEnv::Ompcode));
         assert!(Agent::Codex.prompt_ready("› Ask Codex to do anything"));
         assert!(Agent::Codex.prompt_ready("› Ask Codex to do\nanything"));
         assert!(!Agent::Codex.prompt_ready("› Ask Codex to do anything\nmodel:\nloading"));

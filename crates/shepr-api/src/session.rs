@@ -12,9 +12,9 @@ use shepr_platform::ipc::LocalStream;
 // on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
 
 use shepr_config::DEFAULT_SESSION_NAME;
-#[cfg(test)]
-use shepr_config::SESSION_ENV_VAR;
 use shepr_config::{SessionId, SessionName, SessionNameError};
+#[cfg(test)]
+use shepr_core::env::EnvVar;
 
 const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
@@ -681,8 +681,8 @@ mod tests {
     #[test]
     fn requested_session_does_not_mutate_the_parent_environment() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "inherited");
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(EnvVar::SheprSession, "inherited");
+        env.set(EnvVar::SheprSocketPath, "/tmp/inherited.sock");
         let requested = SessionId::parse("work").expect("test precondition");
 
         let (resolved, explicit) = SessionId::resolve(Some(requested.clone()), Some("bad/name"))
@@ -690,11 +690,20 @@ mod tests {
 
         assert_eq!(resolved, requested);
         assert!(explicit);
-        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("inherited"));
         assert_eq!(
-            std::env::var(shepr_config::SOCKET_PATH_ENV_VAR).as_deref(),
-            Ok("/tmp/inherited.sock")
+            env_text(&env, EnvVar::SheprSession).as_deref(),
+            Some("inherited")
         );
+        assert_eq!(
+            env_text(&env, EnvVar::SheprSocketPath).as_deref(),
+            Some("/tmp/inherited.sock")
+        );
+    }
+
+    /// A variable's raw value as text, for asserting what the environment
+    /// still carries.
+    fn env_text(env: &IsolatedEnv, var: EnvVar) -> Option<String> {
+        env.get(var).and_then(|value| value.into_string().ok())
     }
 
     #[test]
@@ -706,8 +715,8 @@ mod tests {
     #[test]
     fn requested_default_session_ignores_inherited_session_and_socket() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "work");
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(EnvVar::SheprSession, "work");
+        env.set(EnvVar::SheprSocketPath, "/tmp/inherited.sock");
         let paths = shepr_config::AppPaths::resolve_with_session(Some(SessionId::Default))
             .expect("isolated paths resolve");
 
@@ -717,8 +726,8 @@ mod tests {
             paths.runtime_dir().join("shepr.sock")
         );
         assert_eq!(
-            std::env::var(SESSION_ENV_VAR).as_deref(),
-            Ok("work"),
+            env_text(&env, EnvVar::SheprSession).as_deref(),
+            Some("work"),
             "resolving a target must leave the parent environment unchanged"
         );
     }
@@ -726,7 +735,7 @@ mod tests {
     #[test]
     fn inherited_session_is_resolved_into_paths_once() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "env-session");
+        env.set(EnvVar::SheprSession, "env-session");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(paths.session_id().name(), Some("env-session"));
@@ -762,7 +771,7 @@ mod tests {
     #[test]
     fn inherited_default_session_name_resolves_to_default_identity() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, DEFAULT_SESSION_NAME);
+        env.set(EnvVar::SheprSession, DEFAULT_SESSION_NAME);
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(paths.session_id(), &SessionId::Default);
@@ -771,8 +780,8 @@ mod tests {
             paths.runtime_dir().join("shepr.sock")
         );
         assert_eq!(
-            std::env::var(SESSION_ENV_VAR).as_deref(),
-            Ok(DEFAULT_SESSION_NAME)
+            env_text(&env, EnvVar::SheprSession).as_deref(),
+            Some(DEFAULT_SESSION_NAME)
         );
     }
 
@@ -801,7 +810,7 @@ mod tests {
     #[test]
     fn restart_after_update_guidance_respects_socket_override() {
         let env = IsolatedEnv::new();
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/custom-shepr.sock");
+        env.set(EnvVar::SheprSocketPath, "/tmp/custom-shepr.sock");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(
@@ -813,11 +822,8 @@ mod tests {
     #[test]
     fn restart_after_update_guidance_preserves_client_socket_override() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "work");
-        env.set(
-            shepr_config::CLIENT_SOCKET_PATH_ENV_VAR,
-            "/tmp/work-client.sock",
-        );
+        env.set(EnvVar::SheprSession, "work");
+        env.set(EnvVar::SheprClientSocketPath, "/tmp/work-client.sock");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(
@@ -829,8 +835,8 @@ mod tests {
     #[test]
     fn explicit_session_socket_ignores_inherited_socket_override() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "work");
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(EnvVar::SheprSession, "work");
+        env.set(EnvVar::SheprSocketPath, "/tmp/inherited.sock");
         let paths = shepr_config::AppPaths::resolve_with_session(Some(
             SessionId::parse("work").expect("test precondition"),
         ))
@@ -850,8 +856,8 @@ mod tests {
     #[test]
     fn env_socket_override_wins_without_explicit_session() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "work");
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/explicit.sock");
+        env.set(EnvVar::SheprSession, "work");
+        env.set(EnvVar::SheprSocketPath, "/tmp/explicit.sock");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(
@@ -863,8 +869,8 @@ mod tests {
     #[test]
     fn env_socket_override_does_not_excuse_invalid_env_session() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "bad/name");
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock");
+        env.set(EnvVar::SheprSession, "bad/name");
+        env.set(EnvVar::SheprSocketPath, "/tmp/shepr.sock");
         let errors = shepr_config::AppPaths::resolve()
             .expect_err("a malformed SHEPR_SESSION fails even with a socket override");
         assert!(
@@ -873,18 +879,24 @@ mod tests {
                 .any(|error| error.contains("session selection error")),
             "{errors:?}"
         );
-        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("bad/name"));
+        assert_eq!(
+            env_text(&env, EnvVar::SheprSession).as_deref(),
+            Some("bad/name")
+        );
     }
 
     #[test]
     fn invalid_inherited_session_without_api_override_is_rejected() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "bad/name");
+        env.set(EnvVar::SheprSession, "bad/name");
 
         let error = shepr_config::AppPaths::resolve().expect_err("invalid session name");
 
         assert!(error.join(" ").contains("session name may only contain"));
-        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("bad/name"));
+        assert_eq!(
+            env_text(&env, EnvVar::SheprSession).as_deref(),
+            Some("bad/name")
+        );
     }
 
     #[test]

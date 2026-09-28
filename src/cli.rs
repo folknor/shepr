@@ -408,7 +408,10 @@ pub(crate) fn print_help(requested_session: Option<shepr_config::SessionId>) {
             println!("Logs:   unavailable ({})", errors.join("; "));
         }
     }
-    println!("Env:    SHEPR_CONFIG_PATH overrides config file path");
+    println!(
+        "Env:    {} overrides config file path",
+        shepr_core::env::EnvVar::SheprConfigPath
+    );
 }
 
 pub(super) fn print_read_response(response: &serde_json::Value) -> CliResult<i32> {
@@ -437,7 +440,7 @@ pub(crate) fn run(
         return Ok(config_check(requested_session));
     }
     let paths = resolve_app_paths(requested_session)?;
-    let context = target::CliContext::local(paths);
+    let context = target::CliContext::local(paths).map_err(CliError::Io)?;
     dispatch_with_config(command, None, &context)
 }
 
@@ -1064,7 +1067,7 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("cli-invalid-config");
         let config_path = scratch.join("config.toml");
         std::fs::write(&config_path, "[").expect("write invalid config");
-        _env.set(shepr_config::CONFIG_PATH_ENV_VAR, &config_path);
+        _env.set(shepr_core::env::EnvVar::SheprConfigPath, &config_path);
 
         for args in [
             &["terminal", "attach", "terminal-1"][..],

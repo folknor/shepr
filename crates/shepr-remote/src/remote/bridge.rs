@@ -650,10 +650,16 @@ pub(super) fn run_client_process(
     let exe = shepr_platform::launch_executable()?;
     let status = Command::new(exe)
         .arg("client")
-        .env(shepr_config::CLIENT_SOCKET_PATH_ENV_VAR, local_socket)
-        .env(REATTACH_COMMAND_ENV_VAR, reattach_command)
-        .env(REMOTE_KEYBINDINGS_ENV_VAR, keybindings.as_str())
-        .env_remove(shepr_config::SOCKET_PATH_ENV_VAR)
+        .env(shepr_core::env::EnvVar::SheprClientSocketPath, local_socket)
+        .env(
+            shepr_core::env::EnvVar::SheprReattachCommand,
+            reattach_command,
+        )
+        .env(
+            shepr_core::env::EnvVar::SheprRemoteKeybindings,
+            keybindings.as_str(),
+        )
+        .env_remove(shepr_core::env::EnvVar::SheprSocketPath)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

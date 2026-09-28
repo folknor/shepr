@@ -36,7 +36,10 @@ mod tests {
     #[test]
     fn client_socket_path_derived_from_api_socket_override() {
         let env = IsolatedEnv::new();
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/test-shepr.sock");
+        env.set(
+            shepr_core::env::EnvVar::SheprSocketPath,
+            "/tmp/test-shepr.sock",
+        );
         let paths = shepr_config::AppPaths::resolve().expect("API socket override resolves");
         assert_eq!(
             paths.server_address().client_socket(),
@@ -47,8 +50,14 @@ mod tests {
     #[test]
     fn client_socket_path_api_override_takes_precedence_over_client_override() {
         let env = IsolatedEnv::new();
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/test-shepr.sock");
-        env.set(shepr_config::CLIENT_SOCKET_PATH_ENV_VAR, "/tmp/client.sock");
+        env.set(
+            shepr_core::env::EnvVar::SheprSocketPath,
+            "/tmp/test-shepr.sock",
+        );
+        env.set(
+            shepr_core::env::EnvVar::SheprClientSocketPath,
+            "/tmp/client.sock",
+        );
         let paths = shepr_config::AppPaths::resolve().expect("socket overrides resolve");
         assert_eq!(
             paths.server_address().client_socket(),
@@ -59,9 +68,12 @@ mod tests {
     #[test]
     fn explicit_session_address_ignores_both_socket_overrides() {
         let env = IsolatedEnv::new();
-        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/other-api.sock");
         env.set(
-            shepr_config::CLIENT_SOCKET_PATH_ENV_VAR,
+            shepr_core::env::EnvVar::SheprSocketPath,
+            "/tmp/other-api.sock",
+        );
+        env.set(
+            shepr_core::env::EnvVar::SheprClientSocketPath,
             "/tmp/other-client.sock",
         );
         let session = shepr_config::SessionId::parse("work").expect("test precondition");
@@ -83,7 +95,7 @@ mod tests {
     fn client_socket_path_respects_client_override_without_api_override() {
         let env = IsolatedEnv::new();
         env.set(
-            shepr_config::CLIENT_SOCKET_PATH_ENV_VAR,
+            shepr_core::env::EnvVar::SheprClientSocketPath,
             "/tmp/test-shepr-client.sock",
         );
         let paths = shepr_config::AppPaths::resolve().expect("client socket override resolves");

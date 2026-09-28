@@ -13,16 +13,15 @@ mod validated;
 mod window_title;
 mod wire;
 
+pub use self::address::ServerAddress;
 pub use self::address::derive_client_socket_from_api_socket;
-pub use self::address::{CLIENT_SOCKET_PATH_ENV_VAR, SOCKET_PATH_ENV_VAR, ServerAddress};
 pub use self::agent::ConfigAgent;
 #[cfg(feature = "test-support")]
 pub use self::model::Config;
 #[cfg(not(feature = "test-support"))]
 pub(crate) use self::model::Config;
 pub use self::session_id::{
-    DEFAULT_SESSION_NAME, SESSION_ENV_VAR, SessionId, SessionName, SessionNameError,
-    validate_session_name,
+    DEFAULT_SESSION_NAME, SessionId, SessionName, SessionNameError, validate_session_name,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use self::theme_config::CustomThemeColors;
@@ -58,7 +57,6 @@ pub use self::keybinds::parse_key_combo;
 pub use self::tab_bar::parse_tab_bar_right_entries as parse_validated_tab_bar_entries;
 pub use self::{tab_bar::ValidatedTabBarRightEntry, window_title::sanitize_window_title_text};
 
-pub const CONFIG_PATH_ENV_VAR: &str = "SHEPR_CONFIG_PATH";
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;

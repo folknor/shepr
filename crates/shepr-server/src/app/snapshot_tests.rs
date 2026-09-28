@@ -873,9 +873,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
     panes.insert(
         1,
         PaneSnapshot {
-            cwd: std::env::var("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("/tmp")),
+            cwd: shepr_core::pathutil::home_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
             label: None,
             agent_name: None,
             managed_agent_kind: None,

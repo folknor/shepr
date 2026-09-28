@@ -5507,10 +5507,8 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
             applies_to_source: Some("custom:pi".into()),
             title: Some("short lived".into()),
             display_agent: None,
-            state_labels: HashMap::new(),
             clear_title: false,
             clear_display_agent: false,
-            clear_state_labels: false,
             seq: None,
             // Expiry is advanced with the captured deadline below; keep the
             // pre-expiry assertion independent of wall-clock scheduling.

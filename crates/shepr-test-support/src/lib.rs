@@ -12,16 +12,22 @@
 //!   explicit-session flag) that another test changes, holds an
 //!   [`IsolatedEnv`] for its whole body. These tests serialize with one another
 //!   when they run in the same test process, whichever module they live in.
-//!   The guard also points `HOME` and `XDG_RUNTIME_DIR` at scratch and clears
-//!   the other XDG base directories and every inherited `SHEPR_*` variable,
-//!   so nothing under test
-//!   can reach the user's real config, state or agent directories, or the live
-//!   shepr server a test run was started from. It restores the whole
-//!   environment when dropped, including on panic.
+//!   The guard clears every variable in shepr's registry
+//!   (`shepr_core::env::EnvVar`), so a variable added there is isolated with
+//!   no change here, then points `HOME` and `XDG_RUNTIME_DIR` at scratch. It
+//!   also clears every other inherited `SHEPR_*` variable and the XDG base
+//!   directories shepr does not read but the tools tests spawn do. Nothing
+//!   under test can reach the user's real config, state or agent directories,
+//!   or the live shepr server a test run was started from. It restores the
+//!   whole environment when dropped, including on panic.
 //!
 //! Prefer passing a value in over setting an environment variable: code that
 //! takes the path or setting as an argument needs neither the lock nor the
 //! guard.
+//!
+//! This crate is where tests touch the process environment directly: the
+//! guard's snapshot, writes and restore, and [`IsolatedEnv::get`] for a test
+//! asserting what a variable holds. Each such site carries an `#[expect]`.
 
 use std::ffi::{OsStr, OsString};
 use std::ops::Deref;
@@ -30,6 +36,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
+use shepr_core::env::EnvVar;
+
 static SCRATCH_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static SCRATCH_ROOT_OWNER: AtomicU32 = AtomicU32::new(0);
 static SCRATCH_CLEANUP_REGISTERED: OnceLock<()> = OnceLock::new();
@@ -37,14 +45,19 @@ static KEPT_SCRATCH_DIRS: OnceLock<Mutex<Vec<(u32, PathBuf)>>> = OnceLock::new()
 static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// The XDG base directories cleared by [`IsolatedEnv`], so paths fall back to
-/// the scratch `HOME`.
-const XDG_BASE_DIR_VARS: [&str; 4] = [
-    "XDG_CONFIG_HOME",
-    "XDG_STATE_HOME",
-    "XDG_DATA_HOME",
-    "XDG_CACHE_HOME",
-];
+/// XDG base directories no shepr process reads, and so absent from the
+/// registry, that the tools tests spawn (Git among them) do read. Cleared so
+/// those tools fall back to the scratch `HOME` too.
+const FOREIGN_XDG_BASE_DIR_VARS: [&str; 2] = ["XDG_DATA_HOME", "XDG_CACHE_HOME"];
+
+/// The whole process environment, for the guard's snapshot and restore.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "IsolatedEnv snapshots and restores the raw environment; it is the test isolation guard, not a reader"
+)]
+fn environment_snapshot() -> Vec<(OsString, OsString)> {
+    std::env::vars_os().collect()
+}
 
 fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new().mode(0o700).create(path)
@@ -182,9 +195,10 @@ impl Drop for ScratchDir {
 /// Exclusive, restorable access to the process environment for one test.
 ///
 /// Holding it serializes the test against other tests in its process that hold
-/// one. On creation it snapshots the environment, sets `HOME` to a
-/// fresh scratch directory, removes the XDG base directory variables and every
-/// `SHEPR_*` variable. On drop it puts the snapshot back exactly.
+/// one. On creation it snapshots the environment, removes every registered
+/// variable, every other `SHEPR_*` variable and the foreign XDG base
+/// directories, then sets `HOME` and `XDG_RUNTIME_DIR` to fresh scratch
+/// directories. On drop it puts the snapshot back exactly.
 ///
 /// Change variables through [`IsolatedEnv::set`] and [`IsolatedEnv::remove`]:
 /// borrowing the guard is what proves the lock is held.
@@ -201,7 +215,7 @@ impl IsolatedEnv {
         // A test that panicked while holding the lock still restored the
         // environment on unwind, so a poisoned lock carries no bad state.
         let lock = ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-        let saved: Vec<_> = std::env::vars_os().collect();
+        let saved = environment_snapshot();
         let scratch = ScratchDir::new("env");
         let home = scratch.join("home");
         create_private_dir(&home).expect("create the scratch HOME");
@@ -210,24 +224,37 @@ impl IsolatedEnv {
             scratch,
             _lock: lock,
         };
-        env.set("HOME", &home);
-        for key in XDG_BASE_DIR_VARS {
-            env.remove(key);
+        create_private_dir(&env.runtime_dir()).expect("create the scratch runtime directory");
+        env.isolate();
+        env
+    }
+
+    /// Clears everything a test must not inherit and points `HOME` and
+    /// `XDG_RUNTIME_DIR` at this guard's scratch directories.
+    fn isolate(&self) {
+        for var in EnvVar::ALL {
+            self.remove(var);
         }
-        let runtime_dir = env.path().join("runtime");
-        create_private_dir(&runtime_dir).expect("create the scratch runtime directory");
-        env.set("XDG_RUNTIME_DIR", runtime_dir);
-        let inherited_shepr: Vec<OsString> = env
-            .saved
-            .iter()
+        for key in FOREIGN_XDG_BASE_DIR_VARS {
+            self.remove(key);
+        }
+        // Unregistered `SHEPR_*` names are test harness probes and variables
+        // only shipped hook assets read; none may leak in from the shell that
+        // started the test run either.
+        let inherited_shepr: Vec<OsString> = environment_snapshot()
+            .into_iter()
             .map(|(key, _)| key)
             .filter(|key| key.to_str().is_some_and(|key| key.starts_with("SHEPR_")))
-            .cloned()
             .collect();
         for key in inherited_shepr {
-            env.remove(key);
+            self.remove(key);
         }
-        env
+        self.set(EnvVar::Home, self.home());
+        self.set(EnvVar::XdgRuntimeDir, self.runtime_dir());
+    }
+
+    fn runtime_dir(&self) -> PathBuf {
+        self.scratch.join("runtime")
     }
 
     /// This test's scratch directory. `HOME` is its `home` subdirectory.
@@ -240,6 +267,12 @@ impl IsolatedEnv {
         self.scratch.join("home")
     }
 
+    /// Sets a variable. Takes a registry variant (`shepr_core::env::EnvVar`)
+    /// or any name, such as a test's own probe variable.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the isolation guard is the one place tests write the process environment"
+    )]
     pub fn set(&self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
         // SAFETY: set_var is unsafe because another thread may read the
         // environment at the same time. Every test that changes the
@@ -248,9 +281,24 @@ impl IsolatedEnv {
         unsafe { std::env::set_var(key, value) };
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the isolation guard is the one place tests write the process environment"
+    )]
     pub fn remove(&self, key: impl AsRef<OsStr>) {
         // SAFETY: as in `set`; `&self` proves the environment lock is held.
         unsafe { std::env::remove_var(key) };
+    }
+
+    /// The raw value a variable holds, for a test asserting what the
+    /// environment carries. Production code reads through
+    /// `shepr_core::env` instead.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a test assertion on the raw environment, made under the guard's lock"
+    )]
+    pub fn get(&self, key: impl AsRef<OsStr>) -> Option<OsString> {
+        std::env::var_os(key)
     }
 }
 
@@ -262,14 +310,17 @@ impl Default for IsolatedEnv {
 
 impl Drop for IsolatedEnv {
     fn drop(&mut self) {
-        let current: Vec<OsString> = std::env::vars_os().map(|(key, _)| key).collect();
+        let current: Vec<OsString> = environment_snapshot()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
         for key in current {
             if !self.saved.iter().any(|(saved, _)| *saved == key) {
                 self.remove(&key);
             }
         }
         for (key, value) in &self.saved {
-            if std::env::var_os(key).as_ref() != Some(value) {
+            if self.get(key).as_ref() != Some(value) {
                 self.set(key, value);
             }
         }
@@ -310,9 +361,41 @@ mod tests {
         assert!(metadata.is_dir());
         assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
         assert_eq!(
-            std::env::var_os("XDG_RUNTIME_DIR"),
+            env.get(EnvVar::XdgRuntimeDir),
             Some(runtime_dir.into_os_string())
         );
+    }
+
+    #[test]
+    fn isolated_env_clears_every_registered_variable_but_the_scratch_dirs() {
+        let env = IsolatedEnv::new();
+        // What a developer's shell could hand the test process.
+        for var in EnvVar::ALL {
+            env.set(var, "/leaked");
+        }
+        for key in FOREIGN_XDG_BASE_DIR_VARS {
+            env.set(key, "/leaked");
+        }
+        env.set("SHEPR_TEST_SUPPORT_UNREGISTERED", "leaked");
+
+        env.isolate();
+
+        for key in FOREIGN_XDG_BASE_DIR_VARS {
+            assert_eq!(env.get(key), None, "{key} leaked into an isolated test");
+        }
+        for var in EnvVar::ALL {
+            match var {
+                EnvVar::Home => assert_eq!(env.get(var), Some(env.home().into_os_string())),
+                EnvVar::XdgRuntimeDir => {
+                    assert_eq!(
+                        env.get(var),
+                        Some(env.path().join("runtime").into_os_string())
+                    );
+                }
+                _ => assert_eq!(env.get(var), None, "{var} leaked into an isolated test"),
+            }
+        }
+        assert_eq!(env.get("SHEPR_TEST_SUPPORT_UNREGISTERED"), None);
     }
 
     #[test]

@@ -240,15 +240,19 @@ impl Default for OscDebugTracker {
     }
 }
 
+/// `SHEPR_DEBUG_OSC_EVIDENCE`, read once per process under the environment
+/// policy (exactly `1`, `0`, `true` or `false`). Pane construction has no
+/// error path, so a refused value is logged and leaves the capture off.
 fn osc_debug_enabled_from_env() -> bool {
-    std::env::var("SHEPR_DEBUG_OSC_EVIDENCE")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        shepr_core::env::read_flag(shepr_core::env::EnvVar::SheprDebugOscEvidence)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "OSC evidence capture stays off");
+                None
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn parse_osc_debug_event(body: &[u8]) -> Option<OscDebugEvent> {

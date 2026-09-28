@@ -48,8 +48,8 @@ pub(super) struct ClipboardSession {
 impl ClipboardSession {
     fn from_env() -> Self {
         Self {
-            wayland: std::env::var_os("WAYLAND_DISPLAY").is_some(),
-            x11: std::env::var_os("DISPLAY").is_some(),
+            wayland: crate::env_present(shepr_core::env::EnvVar::WaylandDisplay),
+            x11: crate::env_present(shepr_core::env::EnvVar::Display),
         }
     }
 }

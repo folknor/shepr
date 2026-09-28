@@ -790,12 +790,6 @@ impl Workspace {
         self.tabs.len() - 1
     }
 
-    pub fn unregister_moved_pane(&mut self, _pane_id: PaneId) {
-        // `take_pane_for_move` removes the pane record and its public number
-        // together; the API still calls this to acknowledge that removal.
-        debug_assert!(self.pane_state(_pane_id).is_none());
-    }
-
     pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
         self.tabs
             .iter()

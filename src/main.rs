@@ -1,7 +1,7 @@
 use std::io;
 
-pub(crate) const SHEPR_ENV_VAR: &str = "SHEPR_ENV";
-pub(crate) const SHEPR_ENV_VALUE: &str = "1";
+use shepr_core::env::SHEPR_ENV_IN_PANE;
+
 const NESTED_SHEPR_MESSAGES: [&str; 6] = [
     "inception detected. we need to go deeper... said no one ever.",
     "recursion is a pathway to many abilities some consider to be... unnatural.",
@@ -18,15 +18,20 @@ mod netside_tests;
 #[cfg(test)]
 mod test_support;
 
-fn should_block_nested(config: &shepr_config::ValidatedConfig) -> bool {
-    should_block_nested_for_env(config, std::env::var(SHEPR_ENV_VAR).ok().as_deref())
+/// Whether this launch is inside a shepr pane that forbids nesting. `SHEPR_ENV`
+/// counts only when it is exactly [`SHEPR_ENV_IN_PANE`], the value shepr writes
+/// and the hook assets check; a value the environment policy refuses fails the
+/// launch.
+fn should_block_nested(config: &shepr_config::ValidatedConfig) -> io::Result<bool> {
+    let shepr_env = shepr_core::env::read_text(shepr_core::env::EnvVar::SheprEnv)?;
+    Ok(should_block_nested_for_env(config, shepr_env.as_deref()))
 }
 
 fn should_block_nested_for_env(
     config: &shepr_config::ValidatedConfig,
     shepr_env: Option<&str>,
 ) -> bool {
-    !config.experimental().allow_nested && shepr_env == Some(SHEPR_ENV_VALUE)
+    !config.experimental().allow_nested && shepr_env == Some(SHEPR_ENV_IN_PANE)
 }
 
 fn random_nested_message() -> &'static str {
@@ -41,7 +46,12 @@ fn random_nested_message() -> &'static str {
 }
 
 fn exit_if_nested_disabled(config: &shepr_config::ValidatedConfig) {
-    if should_block_nested(config) {
+    let blocked = should_block_nested(config).unwrap_or_else(|error| {
+        eprintln!("shepr: configuration error:");
+        eprintln!("  {error}");
+        std::process::exit(1);
+    });
+    if blocked {
         eprintln!("\x1b[1merror:\x1b[0m nested shepr is disabled by default.");
         eprintln!("see configuration if you want to enable it.");
         eprintln!();
@@ -294,7 +304,10 @@ mod tests {
     #[test]
     fn nested_shepr_blocks_when_env_is_set() {
         let config = shepr_config::ValidatedConfig::test_default();
-        assert!(should_block_nested_for_env(&config, Some(SHEPR_ENV_VALUE)));
+        assert!(should_block_nested_for_env(
+            &config,
+            Some(SHEPR_ENV_IN_PANE)
+        ));
     }
 
     #[test]
@@ -303,7 +316,10 @@ mod tests {
             toml::from_str("[experimental]\nallow_nested = true\n").expect("test precondition"),
             Some("[experimental]\nallow_nested = true\n"),
         );
-        assert!(!should_block_nested_for_env(&config, Some(SHEPR_ENV_VALUE)));
+        assert!(!should_block_nested_for_env(
+            &config,
+            Some(SHEPR_ENV_IN_PANE)
+        ));
     }
 
     #[test]

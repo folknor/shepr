@@ -1,6 +1,4 @@
-const SHEPR_ENV_VAR: &str = "SHEPR_ENV";
-const SHEPR_ENV_VALUE: &str = "1";
-
+use shepr_core::env::{ChildEnv, EnvVar};
 use shepr_protocol::PublicPaneId;
 use shepr_pty::PtyCommand;
 
@@ -8,7 +6,6 @@ use shepr_pty::PtyCommand;
 pub const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 const PANE_COLORTERM: &str = "truecolor";
-pub const SHEPR_PANE_ID_ENV_VAR: &str = "SHEPR_PANE_ID";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LaunchPurpose {
@@ -22,24 +19,27 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
     // that launched the app. Advertising the inherited TERM leaks the host terminal
     // identity into shells and across SSH, which breaks redraw and cursor movement
     // when the remote side lacks matching terminfo entries.
-    cmd.env("TERM", shepr_vt::PANE_TERM);
-    cmd.env("COLORTERM", PANE_COLORTERM);
-    cmd.env("TERM_PROGRAM", "shepr");
-    cmd.env("TERM_PROGRAM_VERSION", shepr_protocol::build_version());
+    cmd.env(ChildEnv::Term, shepr_vt::PANE_TERM);
+    cmd.env(ChildEnv::Colorterm, PANE_COLORTERM);
+    cmd.env(EnvVar::TermProgram, "shepr");
+    cmd.env(
+        ChildEnv::TermProgramVersion,
+        shepr_protocol::build_version(),
+    );
     // Host handles refer to the outer terminal, never to this pane.
     for key in [
-        "ITERM_SESSION_ID",
-        "LC_TERMINAL",
-        "LC_TERMINAL_VERSION",
-        "WEZTERM_PANE",
-        "KITTY_WINDOW_ID",
-        "WT_SESSION",
-        "TMUX",
-        "TMUX_PANE",
-        "STY",
-        "ZELLIJ",
-        "ZELLIJ_SESSION_NAME",
-        "ZELLIJ_PANE_ID",
+        ChildEnv::ItermSessionId.name(),
+        ChildEnv::LcTerminal.name(),
+        ChildEnv::LcTerminalVersion.name(),
+        EnvVar::WeztermPane.name(),
+        ChildEnv::KittyWindowId.name(),
+        ChildEnv::WtSession.name(),
+        EnvVar::Tmux.name(),
+        ChildEnv::TmuxPane.name(),
+        ChildEnv::Sty.name(),
+        ChildEnv::Zellij.name(),
+        ChildEnv::ZellijSessionName.name(),
+        ChildEnv::ZellijPaneId.name(),
     ] {
         cmd.env_remove(key);
     }
@@ -87,7 +87,7 @@ impl PaneLaunchEnv {
 
 pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
     if let Some(path) = shepr_platform::ssh_agent::pane_agent_socket(&launch_env.api_socket_path) {
-        cmd.env("SSH_AUTH_SOCK", path);
+        cmd.env(EnvVar::SshAuthSock, path);
     }
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
@@ -97,16 +97,13 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     for (key, value) in &launch_env.extra {
         cmd.env(key, value);
     }
-    cmd.env(SHEPR_ENV_VAR, SHEPR_ENV_VALUE);
-    cmd.env(
-        shepr_config::SOCKET_PATH_ENV_VAR,
-        &launch_env.api_socket_path,
-    );
+    cmd.env(EnvVar::SheprEnv, shepr_core::env::SHEPR_ENV_IN_PANE);
+    cmd.env(EnvVar::SheprSocketPath, &launch_env.api_socket_path);
     if let Ok(executable) = shepr_platform::launch_executable() {
-        cmd.env("SHEPR_BIN_PATH", executable);
+        cmd.env(ChildEnv::SheprBinPath, executable);
     }
     if let Some(pane_id) = &launch_env.pane_id {
-        cmd.env(SHEPR_PANE_ID_ENV_VAR, pane_id.to_string());
+        cmd.env(EnvVar::SheprPaneId, pane_id.to_string());
     }
 }
 

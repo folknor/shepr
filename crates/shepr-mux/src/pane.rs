@@ -10,7 +10,6 @@ mod state;
 mod teardown;
 mod terminal;
 
-pub use launch::SHEPR_PANE_ID_ENV_VAR;
 pub use launch::{MANAGED_AGENT_RESUME_TIMEOUT, PaneLaunchEnv, PaneShellConfig};
 pub use runtime::PaneRuntime;
 pub use runtime::WheelRouting;

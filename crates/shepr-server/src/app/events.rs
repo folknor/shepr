@@ -267,7 +267,6 @@ impl App {
                     agent: update.current.agent_label.clone(),
                     title: presentation.title,
                     display_agent: presentation.display_agent,
-                    state_labels: presentation.state_labels,
                 },
             });
         }

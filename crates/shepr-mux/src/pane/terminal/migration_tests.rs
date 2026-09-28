@@ -430,6 +430,10 @@ fn complete_history_replay_supports_plain_append() {
 }
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "SHEPR_MIGRATION_OBSERVATIONS is a test harness probe naming a dump file, not a shepr setting"
+)]
 fn capture_bounded_migration_observations() {
     let mut terminal = Harness::new(12, 5);
     let mut observations = Vec::new();

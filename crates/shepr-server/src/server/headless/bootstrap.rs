@@ -20,7 +20,7 @@ pub fn run_server(
     shepr_platform::logging::init_file_logging(
         &shepr_api::session::data_dir(paths),
         shepr_platform::logging::SERVER_LOG_FILE,
-    );
+    )?;
     // Compile the full registry off the tokio loop, and before App restores PTYs
     // whose detection workers can consult it. After logging starts, so manifest
     // override diagnostics reach the server log.
@@ -135,17 +135,26 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
 ///
 /// Must run while the process is still single-threaded; see `run_server`.
 fn take_startup_cwd() -> Option<PathBuf> {
-    let cwd = std::env::var_os(shepr_remote::local_server::STARTUP_CWD_ENV_VAR)?;
+    let var = shepr_core::env::EnvVar::SheprStartupCwd;
+    let cwd = startup_cwd_from_env_value(shepr_core::env::read_path(var));
     // SAFETY: `run_server` calls this before it starts the API server thread,
     // the tokio runtime or anything else that spawns threads, and `main` spawns
     // none before calling `run_server`, so no other thread can be reading the
     // environment concurrently.
-    unsafe { std::env::remove_var(shepr_remote::local_server::STARTUP_CWD_ENV_VAR) };
-    startup_cwd_from_env_value(cwd)
+    unsafe { shepr_core::env::remove(var) };
+    cwd
 }
 
-fn startup_cwd_from_env_value(value: std::ffi::OsString) -> Option<PathBuf> {
-    (!value.is_empty()).then(|| PathBuf::from(value))
+/// The startup cwd a handoff read produced. The variable is carried byte for
+/// byte, so only empty (unset) is ever absent; a refusal cannot happen for this
+/// kind, and would only mean no startup workspace.
+fn startup_cwd_from_env_value(
+    value: Result<Option<PathBuf>, shepr_core::env::EnvError>,
+) -> Option<PathBuf> {
+    value.unwrap_or_else(|error| {
+        warn!(%error, "ignoring the startup directory hint");
+        None
+    })
 }
 
 fn print_ready_message(api_socket: &Path, client_socket: &Path, session_data_dir: &Path) {
@@ -165,16 +174,34 @@ fn print_ready_message(api_socket: &Path, client_socket: &Path, session_data_dir
 mod startup_cwd_tests {
     use super::*;
 
+    fn resolve(raw: &std::ffi::OsStr) -> Option<PathBuf> {
+        startup_cwd_from_env_value(shepr_core::env::resolve_path(
+            shepr_core::env::EnvVar::SheprStartupCwd,
+            Some(raw),
+        ))
+    }
+
     #[test]
     fn empty_startup_cwd_is_ignored() {
-        assert_eq!(startup_cwd_from_env_value(std::ffi::OsString::new()), None);
+        assert_eq!(resolve(std::ffi::OsStr::new("")), None);
     }
 
     #[test]
     fn startup_cwd_value_becomes_path() {
         assert_eq!(
-            startup_cwd_from_env_value(std::ffi::OsString::from("/srv/project")),
+            resolve(std::ffi::OsStr::new("/srv/project")),
             Some(PathBuf::from("/srv/project"))
         );
+    }
+
+    #[test]
+    fn startup_cwd_is_carried_byte_for_byte() {
+        use std::os::unix::ffi::OsStrExt as _;
+        for raw in [
+            std::ffi::OsStr::from_bytes(b"/srv/caf\xe9"),
+            std::ffi::OsStr::new("/srv/trailing space "),
+        ] {
+            assert_eq!(resolve(raw), Some(PathBuf::from(raw)));
+        }
     }
 }

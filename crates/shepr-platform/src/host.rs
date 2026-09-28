@@ -135,7 +135,10 @@ pub(super) fn resolve_launch_executable(
     executable
 }
 
-const WSL_MARKER_ENV_VARS: &[&str] = &["WSL_DISTRO_NAME", "WSL_INTEROP"];
+const WSL_MARKER_ENV_VARS: &[shepr_core::env::EnvVar] = &[
+    shepr_core::env::EnvVar::WslDistroName,
+    shepr_core::env::EnvVar::WslInterop,
+];
 
 pub fn should_draw_host_cursor_by_default() -> bool {
     running_inside_wsl()
@@ -155,7 +158,7 @@ fn detect_running_inside_wsl() -> bool {
         || proc_file_indicates_wsl("/proc/version")
         || WSL_MARKER_ENV_VARS
             .iter()
-            .any(|key| std::env::var_os(key).is_some())
+            .any(|&var| crate::env_present(var))
         || Path::new("/run/WSL").exists()
 }
 

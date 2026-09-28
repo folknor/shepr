@@ -1322,6 +1322,7 @@ dependencies = [
  "serde_json",
  "shepr-agent",
  "shepr-config",
+ "shepr-core",
  "shepr-platform",
  "shepr-protocol",
  "shepr-test-support",
@@ -1417,6 +1418,7 @@ dependencies = [
  "interprocess",
  "libc",
  "sha2",
+ "shepr-core",
  "shepr-test-support",
  "time",
  "tokio",
@@ -1460,6 +1462,7 @@ dependencies = [
  "sha2",
  "shepr-api",
  "shepr-config",
+ "shepr-core",
  "shepr-platform",
  "shepr-protocol",
  "shepr-test-support",
@@ -1521,6 +1524,7 @@ name = "shepr-test-support"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shepr-core",
 ]
 
 [[package]]

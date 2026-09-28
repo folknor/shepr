@@ -31,7 +31,6 @@ fn agent(
         terminal_title_stripped: None,
         agent_status: status,
         state_change_seq,
-        state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
     }
