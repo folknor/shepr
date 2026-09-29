@@ -24,16 +24,13 @@ phantoms here.
 
 ---
 
-## HYGV-152 - Inert markers and thinned reasoning in the limits modules
+## HYGV-153 - Leftovers sized or kept for removed agent-driving features
 
-About 25 `limits-exempt:` markers sit inside `limits.rs` files (agent, config,
-core, mux, protocol, remote, vt), where `brokkr.toml` excludes the limits rules,
-so they suppress nothing and wrongly suggest the value belongs beside its code;
-remove them or turn them into doc text. Separately, some limits docs lost their
-reasoning in the prose-trimming pass, not just their restated numbers: for
-example `ORDINARY_REQUEST_TIMEOUT` no longer says why a minute covers the
-alt-screen read, and config's indexed-binding docs dropped "one-based". An
-editorial pass against the previous commits' wording would restore them.
+- `shepr-api` `WAIT_RESPONSE_GRACE` was sized for the removed chained
+  `agent.prompt --wait` path; only one app-probe overrun needs covering now, so
+  its value looks oversized. Resize it against `APP_RESPONSE_TIMEOUT`.
+- `RestoreFailure`'s `path` fields in `shepr-mux/src/terminal/state/mod.rs`
+  are never read except by `Debug`; drop them or show them.
 
 ## HYGV-087 - Identifier allocation reaches process-global counters and clocks directly, with no injection point and no owner of the format
 

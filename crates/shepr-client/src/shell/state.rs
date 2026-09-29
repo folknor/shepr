@@ -594,7 +594,9 @@ pub(super) struct ClientCopyModeState {
 
 pub struct ClientShellState {
     /// The client loop's time for the event being handled, set on each event,
-    /// so shell code that stamps deadlines never reads the clock itself.
+    /// so production shell code that stamps deadlines never reads the clock itself.
+    /// Tests that drive the shell without the client loop get a fresh reading at
+    /// the deadline-stamping boundaries instead (`refresh_now_for_test`).
     pub(crate) now: std::time::Instant,
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
@@ -684,6 +686,12 @@ pub struct ClientShellState {
 }
 
 impl ClientShellState {
+    #[cfg(test)]
+    pub(super) fn refresh_now_for_test(&mut self) {
+        // clock-io-ok: direct shell tests can bypass the client loop's event clock.
+        self.now = std::time::Instant::now();
+    }
+
     #[cfg(test)]
     pub fn new(config: ClientShellConfig) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
@@ -1308,8 +1316,18 @@ impl ClientShellState {
     /// Every assignment must go through this setter so a repeated identical
     /// message gets a fresh deadline instead of inheriting the previous one.
     pub(super) fn set_endpoint_error(&mut self, message: impl Into<String>) {
+        #[cfg(test)]
+        self.refresh_now_for_test();
+        self.set_endpoint_error_at(message, self.now);
+    }
+
+    pub(super) fn set_endpoint_error_at(
+        &mut self,
+        message: impl Into<String>,
+        now: std::time::Instant,
+    ) {
         self.endpoint_error = Some(message.into());
-        self.endpoint_error_deadline = Some(self.now + crate::limits::ENDPOINT_ERROR_TIMEOUT);
+        self.endpoint_error_deadline = Some(now + crate::limits::ENDPOINT_ERROR_TIMEOUT);
     }
 
     pub(crate) fn tick_endpoint_error(&mut self, now: std::time::Instant) -> bool {

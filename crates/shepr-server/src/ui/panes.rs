@@ -2,6 +2,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
+    text::{Line, Span, Text},
     widgets::{Borders, Paragraph, Wrap},
 };
 
@@ -22,18 +23,14 @@ pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
 }
 
-pub(crate) fn restore_failure_message(failure: &RestoreFailure) -> String {
-    match failure {
-        RestoreFailure::DirectoryUnavailable { .. } => {
-            "Saved directory is unavailable. Restore the directory and restart this session.".into()
-        }
-        RestoreFailure::DirectoryUnreadable { error, .. } => format!(
-            "Saved directory cannot be read ({error}). Fix its access and restart this session."
-        ),
-        RestoreFailure::ShellStartFailed { error } => format!(
-            "Could not start the saved shell: {error}. Fix the shell configuration and restart this session."
-        ),
+/// The unavailable-pane text: the guidance, then the error behind it on its
+/// own line. Both borrow from the failure, so a redraw formats nothing.
+fn restore_failure_text(failure: &RestoreFailure) -> Text<'_> {
+    let mut lines = vec![Line::raw(failure.guidance())];
+    if let Some(cause) = failure.cause() {
+        lines.push(Line::from(vec![Span::raw("Error: "), Span::raw(cause)]));
     }
+    Text::from(lines)
 }
 
 fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
@@ -202,7 +199,7 @@ pub(super) fn render_panes(
             .and_then(|terminal| terminal.restore_error.as_ref())
         {
             frame.render_widget(
-                Paragraph::new(restore_failure_message(reason)).wrap(Wrap { trim: false }),
+                Paragraph::new(restore_failure_text(reason)).wrap(Wrap { trim: false }),
                 info.inner_rect,
             );
         }
@@ -555,7 +552,23 @@ mod tests {
             .collect();
         assert!(text.contains("Saved directory is unavailable."));
         assert!(text.contains("Restore the directory and restart this session."));
+        assert!(!text.contains("Error:"));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
+    }
+
+    #[test]
+    fn restore_failure_text_shows_the_error_behind_a_failed_shell() {
+        let failure = RestoreFailure::shell_start_failed(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ));
+        let lines: Vec<String> = restore_failure_text(&failure)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("Could not start the saved shell."));
+        assert_eq!(lines[1], "Error: permission denied");
     }
 
     #[test]

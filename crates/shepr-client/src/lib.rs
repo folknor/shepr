@@ -1110,6 +1110,8 @@ impl ClientLoop<'_> {
                 let unavailable = state.mode.shell_mut().and_then(|shell| {
                     shell.set_endpoint_status(&endpoint_id, status);
                     shell.set_machine_diagnostic(&endpoint_id, &message);
+                    // Handshake diagnostics carry session context; the status line supplies
+                    // the configured endpoint label once.
                     (status == endpoint::ClientEndpointStatus::Attention
                         && shell.endpoint_is_active(&endpoint_id))
                     .then(|| format!("{}: {message}", shell.endpoint_label(&endpoint_id)))

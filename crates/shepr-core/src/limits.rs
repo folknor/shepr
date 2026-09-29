@@ -39,7 +39,6 @@ const _: () = assert!(
 
 /// Total share represented by both children of a normalized split, covering
 /// the full layout area.
-// limits-exempt: normalized layout shares represent the full split area.
 pub(crate) const SPLIT_RATIO_TOTAL: f32 = 1.0;
 /// Smallest permitted first-child share; this keeps an asymmetric split from
 /// collapsing either pane.

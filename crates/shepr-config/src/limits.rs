@@ -119,33 +119,30 @@ pub(crate) const MIN_MOUSE_SCROLL_LINES: u16 = 1;
 
 /// Lowest digit accepted for indexed workspace, tab, and agent bindings.
 ///
-/// Indexed actions use the digit keys shown by their visible labels.
-// limits-exempt: indexed action bindings use a fixed decimal key syntax.
+/// The first indexed shortcut matches the first visible item, keeping keys and
+/// labels aligned.
 pub(crate) const FIRST_INDEXED_BINDING_KEY: char = '1';
 
 /// Highest digit accepted for indexed workspace, tab, and agent bindings.
 ///
-/// This is the upper key in the fixed indexed-action range.
-// limits-exempt: indexed action bindings use a fixed decimal key syntax.
+/// The upper key keeps indexed shortcuts within the single-digit syntax.
 pub(crate) const LAST_INDEXED_BINDING_KEY: char = '9';
 
 /// Range token parsed by the keybinding config for all indexed digits.
 ///
-/// This spells the fixed range shown by indexed binding help.
-// limits-exempt: the config grammar uses this literal range token.
+/// Parser and help share this token so accepted shortcuts match the range they
+/// display.
 pub(crate) const INDEXED_BINDING_RANGE_SYNTAX: &str = "1..9";
 
-/// Lowest supported function-key number in config and API key names.
+/// Lowest supported function-key number in config key names.
 ///
 /// Function-key numbering starts with the first function key, so zero is invalid.
-// limits-exempt: function-key numbering follows the terminal key model.
 pub(crate) const MIN_FUNCTION_KEY_NUMBER: u8 = 1;
 
 /// Highest function-key number accepted by Crossterm's Unix keyboard parser.
 ///
-/// The parser supports extended function keys through its maximum, so larger names
-/// cannot be represented by the key event source used by Shepr.
-// limits-exempt: this upper function-key number follows Crossterm's Unix key model.
+/// Crossterm's Unix parser sets the upper bound because larger function-key
+/// names cannot be represented by its key events.
 pub(crate) const MAX_FUNCTION_KEY_NUMBER: u8 = 35;
 
 macro_rules! count_key_binding_fields {

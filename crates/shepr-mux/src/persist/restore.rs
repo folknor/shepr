@@ -530,10 +530,10 @@ fn restore_tab(
                     path: saved_pane.cwd.clone(),
                 })
             }
-            Err(error) => Some(RestoreFailure::DirectoryUnreadable {
-                path: saved_pane.cwd.clone(),
-                error,
-            }),
+            Err(error) => Some(RestoreFailure::directory_unreadable(
+                saved_pane.cwd.clone(),
+                &error,
+            )),
         };
         if let Some(reason) = cwd_unavailable {
             let terminal = restored_terminal(
@@ -650,7 +650,7 @@ fn restore_tab(
                 );
                 let terminal = restored_terminal(
                     saved_pane,
-                    RestoredPaneStart::Unavailable(RestoreFailure::ShellStartFailed { error: e }),
+                    RestoredPaneStart::Unavailable(RestoreFailure::shell_start_failed(&e)),
                     runtime_context.now,
                 );
                 runtime_context

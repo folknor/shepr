@@ -143,7 +143,11 @@ impl ClientShellState {
             self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface.is_none();
     }
 
-    pub(super) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {
+    pub(super) fn accept_navigate_workspace(
+        &mut self,
+        outcome: &mut ClientShellInput,
+        now: std::time::Instant,
+    ) {
         let Some(target) = self.navigate_workspace_id.clone() else {
             self.mode = self.copy_or_terminal_mode();
             outcome.repaint = true;
@@ -171,7 +175,7 @@ impl ClientShellState {
                     target,
                     request_id: request.id.clone().into(),
                     // A later focus can be coalesced with this one before a snapshot is sent.
-                    expires_at: self.now + crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT,
+                    expires_at: now + crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT,
                 });
                 self.reconcile_pending_workspace_highlight();
             }

@@ -317,7 +317,7 @@ impl ClientShellState {
             push_host_theme_update(&mut outcome.requests, update);
         }
         match event {
-            RawInputEvent::Key(key) => self.handle_key(key, outcome),
+            RawInputEvent::Key(key) => self.handle_key(key, now, outcome),
             RawInputEvent::Paste(text) => {
                 if self.prepare_committed_text(&text, outcome) {
                     return;
@@ -404,6 +404,7 @@ impl ClientShellState {
     pub(super) fn handle_key(
         &mut self,
         key: shepr_termio::input::TerminalKey,
+        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
         if self.copy_operation_in_flight {
@@ -418,7 +419,7 @@ impl ClientShellState {
         match key.kind {
             KeyEventKind::Press => {
                 let initial_context = self.input_context();
-                let target = self.route_key_press(&key, outcome);
+                let target = self.route_key_press(&key, now, outcome);
                 if let Some(target) = target.as_ref() {
                     self.push_pane_key(target.clone(), key.clone(), outcome);
                 }
@@ -431,14 +432,14 @@ impl ClientShellState {
                     target,
                     host_reports_all_keys,
                 );
-                self.execute_repeat_plan(lease_key, key, plan, outcome);
+                self.execute_repeat_plan(lease_key, key, plan, now, outcome);
             }
             KeyEventKind::Repeat => {
                 let context = self.input_context();
                 let plan = self
                     .input_leases
                     .plan_repeat(lease_key, &key, Some(&context));
-                self.execute_repeat_plan(lease_key, key, plan, outcome);
+                self.execute_repeat_plan(lease_key, key, plan, now, outcome);
             }
             KeyEventKind::Release => {
                 if let Some(lease) = self.input_leases.remove_forwarded(&lease_key) {
@@ -499,6 +500,7 @@ impl ClientShellState {
         lease_key: shepr_termio::input::InputLeaseKey<u8>,
         key: shepr_termio::input::TerminalKey,
         plan: shepr_termio::input::RepeatPlan<ClientInputContext, shepr_protocol::PublicPaneId>,
+        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
         match plan {
@@ -524,7 +526,7 @@ impl ClientShellState {
                         .clone()
                         .with_repeat_count(1)
                         .with_kind(KeyEventKind::Repeat);
-                    if let Some(target) = self.route_key_press(&repeated, outcome) {
+                    if let Some(target) = self.route_key_press(&repeated, now, outcome) {
                         self.push_pane_key(target, repeated, outcome);
                     }
                 }
@@ -584,6 +586,7 @@ impl ClientShellState {
     fn route_key_press(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
+        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) -> Option<shepr_protocol::PublicPaneId> {
         if self.handle_modal_paste_shortcut_with(key, outcome, read_clipboard_text_bounded) {
@@ -668,7 +671,7 @@ impl ClientShellState {
                 None
             }
             ClientShellMode::Navigate => {
-                self.route_navigate_key(key, outcome);
+                self.route_navigate_key(key, now, outcome);
                 None
             }
             ClientShellMode::Resize => {
@@ -718,6 +721,7 @@ impl ClientShellState {
     fn route_navigate_key(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
+        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
         use shepr_termio::input::{KeybindAction, KeybindDispatch, KeybindMatch};
@@ -749,7 +753,7 @@ impl ClientShellState {
                 return;
             }
             Some(NavigateAction::OpenWorkspace) => {
-                self.accept_navigate_workspace(outcome);
+                self.accept_navigate_workspace(outcome, now);
                 return;
             }
             _ => {}

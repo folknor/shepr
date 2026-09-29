@@ -75,8 +75,7 @@ impl App {
             | Method::ClientWindowTitleClear(_)
             | Method::ClientShellSurfaceSet(_)
             | Method::EventsSubscribe(_)
-            | Method::EventsWait(_)
-            | Method::PaneWaitForOutput(_) => {
+            | Method::EventsWait(_) => {
                 tracing::warn!(
                     method = method_name,
                     "api request routed to the app by mistake"
@@ -186,12 +185,7 @@ impl App {
             Method::PaneReleaseAgent(params) => {
                 return self.handle_pane_release_agent(params);
             }
-            Method::PaneSendText(params) => return self.handle_pane_send_text(params),
-            Method::PaneSendInput(params) => {
-                return self.handle_pane_send_input(&params);
-            }
             Method::PaneClose(target) => return self.handle_pane_close(&target),
-            Method::PaneSendKeys(params) => return self.handle_pane_send_keys(&params),
         };
 
         Ok(response)

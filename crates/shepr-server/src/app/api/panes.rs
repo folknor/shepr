@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 
 use crate::app::App;
@@ -13,18 +12,17 @@ use shepr_api::schema::{
     PaneProcessInfo, PaneProcessInfoParams, PaneProcessInfoProcess, PaneReadParams, PaneReadResult,
     PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
-    PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
-    PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneScrollParams, PaneSelectionReadParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
+    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
+    PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 
 use super::super::api_helpers::{
-    MAX_METADATA_TOKEN_KEYS_PER_RESOURCE, detect_state_from_api, encode_api_keys,
-    normalize_metadata_source, normalize_metadata_tokens, normalize_metadata_ttl,
-    normalize_reported_agent_label, pane_in_workspace_not_found, pane_not_found,
-    tab_for_pane_not_found, tab_not_found, target_pane_not_found, workspace_not_found,
+    MAX_METADATA_TOKEN_KEYS_PER_RESOURCE, detect_state_from_api, normalize_metadata_source,
+    normalize_metadata_tokens, normalize_metadata_ttl, normalize_reported_agent_label,
+    pane_in_workspace_not_found, pane_not_found, tab_for_pane_not_found, tab_not_found,
+    target_pane_not_found, workspace_not_found,
 };
 use super::responses::{failure, success};
 
@@ -346,36 +344,6 @@ impl App {
         })
     }
 
-    pub(super) fn handle_pane_send_text(&mut self, params: PaneSendTextParams) -> ApiResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
-            return failure(ApiErrorCode::PaneSendFailed, err.to_string());
-        }
-
-        success(ResponseResult::Ok {})
-    }
-
-    pub(super) fn handle_pane_send_input(&mut self, params: &PaneSendInputParams) -> ApiResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let bytes =
-            super::super::api_helpers::encode_api_input(runtime, &params.text, &params.keys)?;
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            return failure(ApiErrorCode::PaneSendFailed, err.to_string());
-        }
-
-        success(ResponseResult::Ok {})
-    }
-
     pub(super) fn handle_pane_close(&mut self, target: &PaneTarget) -> ApiResult {
         match self.close_pane(target) {
             Ok(()) => success(ResponseResult::Ok {}),
@@ -430,25 +398,6 @@ impl App {
         }
 
         Ok(())
-    }
-
-    pub(super) fn handle_pane_send_keys(&mut self, params: &PaneSendKeysParams) -> ApiResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let encoded_keys = encode_api_keys(runtime, &params.keys)?;
-        // One write for the whole sequence: per-key writes let backpressure
-        // reject a later key after earlier ones went out, leaving a partial
-        // chord sequence in the pane.
-        let bytes: Vec<u8> = encoded_keys.into_iter().flatten().collect();
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            return failure(ApiErrorCode::PaneSendFailed, err.to_string());
-        }
-
-        success(ResponseResult::Ok {})
     }
 }
 

@@ -45,8 +45,9 @@ pub(crate) const MIN_POLL_TIMEOUT_MS: u128 = 1;
 /// cap prevents continuous input from starving reads of child output.
 pub(crate) const MAX_WRITE_STEPS_PER_PUMP: usize = 64;
 
-/// Maximum PTY chunks drained after a write failure. The cap bounds this
-/// best-effort flush even while the child continues producing output.
+/// Maximum PTY chunks drained after a write failure. The budget lets pending
+/// output drain while stopping a continuously writing child from extending the
+/// best-effort flush indefinitely.
 pub(crate) const MAX_WRITE_FAILURE_DRAIN_CHUNKS: usize = 1_024;
 
 /// Bytes read from the PTY master per actor read step. The chunk amortizes

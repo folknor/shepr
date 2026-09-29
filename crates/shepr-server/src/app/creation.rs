@@ -305,10 +305,7 @@ impl App {
             foreground_cwd: tab
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            restore_error: terminal
-                .restore_error
-                .as_ref()
-                .map(crate::ui::restore_failure_message),
+            restore_error: terminal.restore_error.as_ref().map(ToString::to_string),
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,
@@ -332,15 +329,6 @@ impl App {
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
         Some((runtime, self.public_workspace_id(ws_idx)?))
-    }
-
-    pub(super) fn lookup_runtime_sender(
-        &self,
-        ws_idx: usize,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&shepr_mux::pane::PaneRuntime> {
-        self.state
-            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
     }
 
     /// `None` when `index` names no workspace, like `tab_info` and

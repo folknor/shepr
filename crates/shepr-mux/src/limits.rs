@@ -10,8 +10,8 @@ pub(crate) const SIMILAR_VIEWPORT_RATIO_PERCENT: usize = 70;
 /// upward history. A lower overlap tolerates pinned headers and changing status
 /// rows while still requiring more than an isolated accidental match.
 pub(crate) const MIN_ALIGNMENT_RATIO_PERCENT: usize = 30;
-/// Percent denominator shared by the two screen similarity thresholds.
-// limits-exempt: percentage values use the conventional hundred-point scale.
+/// Shared percent scale for both screen similarity thresholds, so ratios stay
+/// readable as whole percentages.
 pub(crate) const PERCENT_DENOMINATOR: usize = 100;
 
 /// Hook reports are ordered per source by the `seq` each hook process takes

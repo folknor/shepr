@@ -467,7 +467,7 @@ impl App {
                 );
                 if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                     terminal.abandon_agent_resume(
-                        shepr_mux::terminal::RestoreFailure::ShellStartFailed { error: err },
+                        shepr_mux::terminal::RestoreFailure::shell_start_failed(&err),
                         now,
                     );
                 }

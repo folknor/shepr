@@ -148,6 +148,8 @@ impl ClientShellState {
     }
 
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
+        #[cfg(test)]
+        self.refresh_now_for_test();
         self.last_composed_at = Some(self.now);
         self.selection_repaint_deadline = None;
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {

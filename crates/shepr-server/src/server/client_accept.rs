@@ -13,6 +13,7 @@ use shepr_platform::ipc::LocalListener;
 pub(crate) fn accept_pending_client_connections(
     listener: &LocalListener,
     clients: &mut ClientRegistry,
+    session: &shepr_config::SessionId,
     should_quit: &Arc<AtomicBool>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
@@ -44,15 +45,22 @@ pub(crate) fn accept_pending_client_connections(
                 }
 
                 let should_quit = Arc::clone(should_quit);
+                let session = (*session).clone();
                 let server_event_tx = server_event_tx.clone();
                 std::thread::spawn(move || {
                     if let Err(err) = client_transport::handle_client_handshake(
                         stream,
                         client_id,
+                        &session,
                         &server_event_tx,
                         &should_quit,
                     ) {
-                        debug!(?client_id, err = %err, "client handshake failed");
+                        debug!(
+                            ?client_id,
+                            session = %session.display_name(),
+                            err = %err,
+                            "client handshake failed"
+                        );
                     }
                 });
             }

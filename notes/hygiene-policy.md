@@ -33,11 +33,11 @@ textlint) now covers `shepr-server/src/app/`, the headless loop, mux
 deadline helpers, the client endpoint and activation paths, the agent version
 probe and the vt synchronized-update timeout. Open:
 
-- Textlints hold the headless loop, `shepr-platform`, `shepr-agent`,
-  `shepr-client` and the vt/pty timing paths. `ClientShellState` mixes explicit
-  `now` parameters with an ambient `self.now` that only the input and event
-  entry points refresh, so a test that bypasses them runs on the construction
-  time; pass `now` explicitly or refresh it in one place.
+- `shepr-client/src/shell/state.rs`: in test builds only,
+  `ClientShellState::set_endpoint_error` and `compose()` refresh `self.now`
+  from the wall clock, so tests behave unlike production and a pinned
+  `self.now` is silently overwritten. Thread an explicit `now` through the
+  remaining `set_endpoint_error` callers and drop the hook.
 - Other remaining reads: `shepr-config`'s `TerminalId::alloc` (HYGV-087),
   `shepr-server/src/server/client_transport.rs` and the `shepr-api` transport
   deadlines.

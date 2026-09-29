@@ -32,8 +32,8 @@ pub(crate) const MAX_TOTAL_MATCHERS: usize = 1024;
 /// compile work.
 pub(crate) const MAX_MATCHER_CHARS: usize = 512;
 
-/// Maximum characters retained in a manifest evidence preview. A short preview
-/// keeps explanations readable and output bounded.
+/// Maximum characters retained in a manifest evidence preview. A few readable
+/// lines preserve enough evidence to explain a detection without flooding output.
 pub(crate) const MAX_MANIFEST_PREVIEW_CHARS: usize = 240;
 
 /// Smallest accepted line count for a counted manifest region. Counted regions
@@ -118,5 +118,4 @@ pub(crate) const MAX_CONFIG_SYMLINK_DEPTH: usize = 40;
 
 /// Bytes reserved for the opening and closing quotes in a TOML basic string.
 /// Escapes may expand beyond this estimate and the string grows as needed.
-// limits-exempt: TOML basic strings require paired quote delimiters.
 pub(crate) const TOML_BASIC_STRING_DELIMITER_BYTES: usize = 2;

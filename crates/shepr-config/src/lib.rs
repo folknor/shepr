@@ -55,7 +55,7 @@ pub use self::{
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
-pub use self::keybinds::{parse_api_key_combo, parse_key_combo};
+pub use self::keybinds::parse_key_combo;
 pub use self::{tab_bar::ValidatedTabBarRightEntry, window_title::sanitize_window_title_text};
 
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");

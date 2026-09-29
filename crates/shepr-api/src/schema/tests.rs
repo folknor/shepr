@@ -156,54 +156,20 @@ fn unknown_method_is_rejected() {
 }
 
 #[test]
-fn missing_required_params_are_rejected() {
-    let json = r#"{"id":"req_1","method":"pane.send_text","params":{"pane_id":"p_1"}}"#;
-    let err = serde_json::from_str::<Request>(json)
-        .expect_err("test precondition")
-        .to_string();
-    assert!(err.contains("text"));
-}
-
-#[test]
-fn pane_send_input_defaults_to_empty_text_and_keys() {
-    let json = r#"
-    {
-        "id": "req_1",
-        "method": "pane.send_input",
-        "params": {
-            "pane_id": "p_1"
-        }
+fn removed_pane_driving_methods_are_rejected() {
+    for method in [
+        "pane.send_text",
+        "pane.send_keys",
+        "pane.send_input",
+        "pane.wait_for_output",
+    ] {
+        let request = serde_json::json!({"id": "req", "method": method, "params": {}});
+        let error = serde_json::from_value::<Request>(request).expect_err("removed method");
+        assert!(
+            error.to_string().contains("unknown variant"),
+            "{method}: {error}"
+        );
     }
-    "#;
-
-    let request: Request = serde_json::from_str(json).expect("test precondition");
-    let Method::PaneSendInput(params) = request.method else {
-        panic!("wrong method parsed");
-    };
-    assert_eq!(params.pane_id, "p_1");
-    assert!(params.text.is_empty());
-    assert!(params.keys.is_empty());
-}
-
-#[test]
-fn pane_wait_for_output_defaults_strip_ansi_to_true() {
-    let json = r#"
-    {
-        "id": "req_1",
-        "method": "pane.wait_for_output",
-        "params": {
-            "pane_id": "p_1",
-            "source": "recent",
-            "match": { "type": "substring", "value": "ready" }
-        }
-    }
-    "#;
-
-    let request: Request = serde_json::from_str(json).expect("test precondition");
-    let Method::PaneWaitForOutput(params) = request.method else {
-        panic!("wrong method parsed");
-    };
-    assert!(params.strip_ansi);
 }
 
 #[test]

@@ -52,8 +52,8 @@ pub(super) const REMOTE_BRIDGE_COPY_BUFFER_BYTES: usize = 16 * 1024;
 /// tying memory to the cap.
 pub(super) const LIMITED_READ_BUFFER_BYTES: usize = 8 * 1024;
 
-/// Read past a bounded child-output buffer to distinguish exact-cap output
-/// from oversized output with minimal work.
+/// Bytes read past a bounded child-output buffer's cap. The smallest possible
+/// probe distinguishes exact-cap output from oversized output with minimal work.
 pub(super) const LIMITED_READ_OVERFLOW_PROBE_BYTES: usize = 1;
 
 /// Smallest positive timeout passed to poll for a deadline that has not elapsed.

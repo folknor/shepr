@@ -1,135 +1,17 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use crate::limits::{APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL};
+use crate::limits::CONNECTION_POLL_INTERVAL;
 use crate::schema::{
-    ErrorResponse, EventData, EventEnvelope, EventMatch, EventsWaitParams, Method, Request,
-    ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
-    SuccessResponse,
+    ErrorResponse, EventData, EventEnvelope, EventMatch, EventsWaitParams, ResponseResult,
+    Subscription, SubscriptionEventData, SubscriptionEventEnvelope, SuccessResponse,
 };
 use crate::server::{
-    dispatch_to_app_with_timeout_result, error_response_json, server_is_stopping,
-    should_stop_connection, shutdown_wait_error,
+    error_response_json, server_is_stopping, should_stop_connection, shutdown_wait_error,
 };
 use crate::subscriptions::ActiveSubscription;
-use crate::subscriptions::{match_output, output_match_read_source};
 use crate::{ApiRequestSender, EventHub};
 use shepr_platform::ipc::LocalStream;
-
-pub(super) fn wait_for_output(
-    request_id: String,
-    params: &crate::schema::PaneWaitForOutputParams,
-    stream: &mut LocalStream,
-    api_tx: &ApiRequestSender,
-    running: &Arc<AtomicBool>,
-    server_stop: Option<&Arc<AtomicBool>>,
-) -> std::io::Result<Option<crate::error::EncodedApiResponse>> {
-    let deadline = match checked_timeout_deadline(params.timeout_ms) {
-        Ok(deadline) => deadline,
-        Err(error) => {
-            return Ok(Some(crate::error::encode_result_with_outcome(
-                request_id,
-                Err(error),
-            )));
-        }
-    };
-    crate::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
-
-    let regex = match &params.r#match {
-        crate::schema::OutputMatch::Regex { value } => {
-            match crate::subscriptions::compile_match_regex(value) {
-                Ok(regex) => Some(regex),
-                Err(error) => {
-                    return Ok(Some(crate::error::encode_result_with_outcome(
-                        request_id,
-                        Err(error),
-                    )));
-                }
-            }
-        }
-        crate::schema::OutputMatch::Substring { .. } => None,
-    };
-
-    loop {
-        if server_is_stopping(server_stop) {
-            crate::logging::api_wait_completed(&request_id, &params.pane_id, "server_stopping");
-            return Ok(Some(shutdown_response(request_id)));
-        }
-        if should_stop_connection(stream, running)? {
-            crate::logging::api_wait_completed(&request_id, &params.pane_id, "client_disconnected");
-            return Ok(None);
-        }
-
-        let read_request = Request {
-            id: format!("{request_id}:read"),
-            method: Method::PaneRead(crate::schema::PaneReadParams {
-                pane_id: params.pane_id.clone(),
-                source: output_match_read_source(&params.source),
-                lines: params.lines,
-                // `strip_ansi: false` switches the read to the ANSI renderer.
-                format: crate::schema::ReadFormat::Text,
-                strip_ansi: params.strip_ansi,
-                intent: crate::schema::ReadIntent::Passive,
-            }),
-        };
-        let response =
-            dispatch_to_app_with_timeout_result(read_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
-        let read = match response {
-            Ok(ResponseResult::PaneRead { read }) => read,
-            Err(error) => {
-                return Ok(Some(crate::error::encode_result_with_outcome(
-                    request_id,
-                    Err(error),
-                )));
-            }
-            Ok(_) => {
-                return Ok(Some(crate::error::encode_result_with_outcome(
-                    request_id,
-                    Err(crate::error::ApiError::new(
-                        crate::error::ApiErrorCode::InternalError,
-                        "app returned an unexpected pane read result",
-                    )),
-                )));
-            }
-        };
-
-        let matched_line = match_output(&read.text, &params.r#match, regex.as_ref());
-        if matched_line.is_some() {
-            let revision = read.revision;
-            crate::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
-            let response = SuccessResponse {
-                id: request_id,
-                result: ResponseResult::OutputMatched {
-                    pane_id: read.pane_id.clone(),
-                    revision,
-                    matched_line,
-                    read,
-                },
-            };
-            return Ok(Some(crate::serialize_response_or_error_with_outcome(
-                &response.id,
-                &response,
-            )));
-        }
-
-        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-            crate::logging::api_wait_timed_out(&request_id, &params.pane_id);
-            let response = ErrorResponse {
-                id: request_id,
-                error: crate::error::ApiError::new(
-                    crate::error::ApiErrorCode::Timeout,
-                    "timed out waiting for output match",
-                )
-                .into_body(),
-            };
-            return Ok(Some(crate::error::encode_error_response_with_outcome(
-                &response,
-            )));
-        }
-
-        std::thread::sleep(CONNECTION_POLL_INTERVAL);
-    }
-}
 
 /// The answer for a socket-thread wait cut short by server shutdown: every
 /// wait polls the stop flag, so none outlives the start of shutdown.

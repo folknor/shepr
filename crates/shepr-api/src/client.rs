@@ -180,7 +180,6 @@ pub(crate) fn response_timeout(request: &Request) -> Option<Duration> {
     };
     match &request.method {
         Method::EventsWait(params) => wait_bound(params.timeout_ms),
-        Method::PaneWaitForOutput(params) => wait_bound(params.timeout_ms),
         _ => Some(ORDINARY_RESPONSE_TIMEOUT),
     }
 }

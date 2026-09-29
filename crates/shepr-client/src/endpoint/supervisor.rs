@@ -569,7 +569,7 @@ fn establish(
         Some(deadline),
     )
     .map_err(|error| {
-        let error = handshake_error(error, mismatch_guidance, &endpoint_id, session);
+        let error = handshake_error(error, mismatch_guidance, session);
         // An SSH endpoint that closes before Welcome usually means ssh itself failed
         // (network drop, auth, remote server launch). The bridge holds the real stderr;
         // prefer it so both the diagnostic and the attention classification see it.
@@ -580,7 +580,7 @@ fn establish(
                 .map(|failure| {
                     let kind = failure.kind();
                     let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&failure)
-                        .with_context(handshake_context(&endpoint_id, session));
+                        .with_context(handshake_context(session));
                     std::io::Error::new(kind, diagnostic)
                 })
         {
@@ -612,7 +612,6 @@ fn establish(
 fn handshake_error(
     error: crate::ClientError,
     mismatch_guidance: Option<&str>,
-    endpoint_id: &ClientEndpointId,
     session: &str,
 ) -> std::io::Error {
     use crate::ClientError;
@@ -662,17 +661,14 @@ fn handshake_error(
     };
     let kind = error.kind();
     let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error)
-        .with_context(handshake_context(endpoint_id, session));
+        .with_context(handshake_context(session));
     std::io::Error::new(kind, diagnostic)
 }
 
-/// The prefix every handshake diagnostic carries, naming which endpoint and
-/// session failed.
-fn handshake_context(endpoint_id: &ClientEndpointId, session: &str) -> String {
-    format!(
-        "endpoint {} (session {session}) handshake failed",
-        endpoint_id.storage_key()
-    )
+/// The shell status line and machine notice title supply the endpoint label;
+/// keep only session context here so it is not repeated in the displayed error.
+fn handshake_context(session: &str) -> String {
+    format!("session {session} handshake failed")
 }
 
 /// The Local endpoint's build-mismatch diagnostic, on one line for the
@@ -963,7 +959,6 @@ mod tests {
                 "timed out",
             )),
             None,
-            &ClientEndpointId::Local,
             "work",
         );
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
@@ -974,7 +969,6 @@ mod tests {
                 ),
             },
             None,
-            &ClientEndpointId::Local,
             "work",
         );
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
@@ -986,7 +980,6 @@ mod tests {
         let eof = handshake_error(
             crate::ClientError::Protocol(shepr_protocol::FramingError::UnexpectedEof),
             None,
-            &ClientEndpointId::Local,
             "work",
         );
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
@@ -994,7 +987,6 @@ mod tests {
         let shutdown = handshake_error(
             crate::ClientError::ServerShutdown { reason: None },
             None,
-            &ClientEndpointId::Local,
             "work",
         );
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
@@ -1004,7 +996,6 @@ mod tests {
                 max: 1,
             }),
             None,
-            &ClientEndpointId::Local,
             "work",
         );
         assert!(shepr_remote::SshFailureDiagnostic::from_error(&malformed).needs_attention());
@@ -1048,7 +1039,6 @@ mod tests {
         let error = handshake_error(
             different_build(),
             Some(&**mismatch_guidance),
-            &ClientEndpointId::Local,
             paths.session_id().display_name(),
         );
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
@@ -1056,7 +1046,7 @@ mod tests {
         assert!(diagnostic.needs_attention());
         let message = diagnostic.to_string();
         for expected in [
-            "endpoint local (session work) handshake failed",
+            "session work handshake failed",
             "00000000deadbeef",
             shepr_protocol::BUILD_ID,
             "--session <name>",
@@ -1073,12 +1063,7 @@ mod tests {
     #[test]
     fn a_machine_build_mismatch_keeps_the_preamble_text() {
         let profile = profile();
-        let error = handshake_error(
-            different_build(),
-            None,
-            &ClientEndpointId::Ssh(profile.id),
-            &profile.session,
-        );
+        let error = handshake_error(different_build(), None, &profile.session);
         assert!(error.to_string().contains("Install the same shepr build"));
         assert!(error.to_string().contains("session agents"));
     }

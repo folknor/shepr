@@ -1060,19 +1060,7 @@ mod tests {
 
     #[test]
     fn launch_options_after_the_subcommand_are_not_launch_options() {
-        // Text for `pane run` passes through untouched, including words that
-        // look like launch options and a second `--`.
-        let invocation = parse(&["pane", "run", "p1", "foo", "--session", "work"]);
-        assert_eq!(invocation.session(), None);
-        let run = command_matches(&["pane", "run", "p1", "foo", "--remote", "x", "--", "y"]);
-        assert_eq!(
-            super::matches::words(&run, "command"),
-            "foo --remote x -- y"
-        );
-        let run = command_matches(&["pane", "run", "p1", "--", "--session", "work"]);
-        assert_eq!(super::matches::words(&run, "command"), "--session work");
-
-        // Elsewhere a trailing launch option is a usage error, not a silent
+        // A trailing launch option is a usage error, not a silent
         // retarget of the command.
         for args in [
             &["server", "stop", "--session=api"][..],

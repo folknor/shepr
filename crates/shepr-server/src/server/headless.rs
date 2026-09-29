@@ -912,6 +912,7 @@ impl HeadlessServer {
         accept_pending_client_connections(
             &self.client_listener,
             &mut self.clients,
+            self.app.paths.session_id(),
             self.lifecycle.stop_request_flag(),
             &self.server_event_tx,
         )

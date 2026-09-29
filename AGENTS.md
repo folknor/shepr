@@ -39,7 +39,10 @@ Kept:
 
 shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr (agent start, managed agents,
-agent prompt, agent send-keys and agent wait) is deliberately not kept.
+agent prompt, agent send-keys and agent wait) is deliberately not kept. Pane
+driving commands (send-text, send-keys, run, wait-for-output and input) and
+their JSON API methods are also not kept; pane.input.set remains for the TUI
+context menu.
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.

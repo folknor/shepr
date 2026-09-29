@@ -205,6 +205,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     }
     cmd.env(EnvVar::SheprEnv, shepr_core::env::SHEPR_ENV_IN_PANE);
     cmd.env(EnvVar::SheprSocketPath, &launch_env.api_socket_path);
+    cmd.env_remove(ChildEnv::SheprBinPath);
     if let Ok(executable) = shepr_platform::launch_executable() {
         cmd.env(ChildEnv::SheprBinPath, executable);
     }

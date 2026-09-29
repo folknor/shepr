@@ -455,7 +455,7 @@ impl ClientShellState {
         match pending.kind {
             PendingEndpointKind::Generic => {}
             PendingEndpointKind::PaneScroll { pane_id, serial } => {
-                let repaint = self.complete_pane_scroll(&pane_id, serial, result, outcome);
+                let repaint = self.complete_pane_scroll(&pane_id, serial, result, now, outcome);
                 return (repaint, Vec::new());
             }
             PendingEndpointKind::SelectionCopy => {
@@ -472,7 +472,10 @@ impl ClientShellState {
                         (false, Vec::new())
                     }
                     Ok(_) => {
-                        self.set_endpoint_error("endpoint returned an unexpected selection result");
+                        self.set_endpoint_error_at(
+                            "endpoint returned an unexpected selection result",
+                            now,
+                        );
                         (true, Vec::new())
                     }
                     Err(_) => (true, Vec::new()),
@@ -513,14 +516,15 @@ impl ClientShellState {
                     ),
                     Ok(shepr_api::schema::ResponseResult::PaneCopyMotion { .. }) => (false, false),
                     Ok(_) => {
-                        self.set_endpoint_error(
+                        self.set_endpoint_error_at(
                             "endpoint returned an unexpected copy-motion result",
+                            now,
                         );
                         (true, false)
                     }
                     Err(_) => (true, false),
                 };
-                self.complete_copy_operation(session_generation, continue_queue, outcome);
+                self.complete_copy_operation(session_generation, continue_queue, now, outcome);
                 return (repaint, Vec::new());
             }
             PendingEndpointKind::CopySearch {
@@ -568,8 +572,9 @@ impl ClientShellState {
                     }
                     Ok(_) => {
                         self.cancel_deferred_copy_after_search(generation);
-                        self.set_endpoint_error(
+                        self.set_endpoint_error_at(
                             "endpoint returned an unexpected copy-search result",
+                            now,
                         );
                         (true, false)
                     }
@@ -578,7 +583,7 @@ impl ClientShellState {
                         (true, false)
                     }
                 };
-                self.complete_copy_operation(session_generation, continue_queue, outcome);
+                self.complete_copy_operation(session_generation, continue_queue, now, outcome);
                 return (repaint, Vec::new());
             }
         }

@@ -86,20 +86,6 @@ pub struct EventsWaitParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneWaitForOutputParams {
-    pub pane_id: String,
-    pub source: ReadSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lines: Option<u32>,
-    pub r#match: OutputMatch,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-    /// `false` matches against the ANSI rendering, escape sequences included.
-    #[serde(default = "super::common::default_true")]
-    pub strip_ansi: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputMatch {
     Substring { value: String },
@@ -113,7 +99,7 @@ pub enum OutputMatch {
 /// `pane_output_changed`), all of which were then rejected at runtime with
 /// `unsupported_event_wait_match`; an unknown `event` is now a parse error
 /// (`invalid_request`) instead. For lifecycle events, use `events.subscribe`;
-/// for output, `pane.wait_for_output`.
+/// for output, use `pane.output_matched` subscriptions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventMatch {

@@ -3,13 +3,12 @@ use std::collections::HashMap;
 use clap::ArgMatches;
 
 use shepr_api::schema::{
-    Method, OutputMatch, PaneAgentState, PaneCurrentParams, PaneDirection, PaneEdgesParams,
-    PaneFocusDirectionParams, PaneInputSetParams, PaneLayoutParams, PaneListParams,
-    PaneMoveDestination, PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams, PaneReadParams,
+    Method, PaneAgentState, PaneCurrentParams, PaneDirection, PaneEdgesParams,
+    PaneFocusDirectionParams, PaneLayoutParams, PaneListParams, PaneMoveDestination,
+    PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams, PaneReadParams,
     PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
-    PaneReportMetadataParams, PaneResizeParams, PaneRightClickTarget, PaneSendInputParams,
-    PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTarget,
-    PaneWaitForOutputParams, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource, Request,
+    PaneReportMetadataParams, PaneResizeParams, PaneRightClickTarget, PaneSplitParams,
+    PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource, Request,
     SplitDirection,
 };
 
@@ -56,27 +55,16 @@ pub(crate) enum Command {
     },
     Read(PaneReadParams),
     Rename(PaneRenameParams),
-    Input {
-        selector: PaneSelectorArgs,
-        right_click: PaneRightClickTarget,
-    },
     Split(SplitArgs),
     Swap(SwapArgs),
     Move(Result<PaneMoveParams, String>),
     Close {
         pane_id: String,
     },
-    SendText(PaneSendTextParams),
-    SendKeys(PaneSendKeysParams),
-    WaitOutput(PaneWaitForOutputParams),
     ReportAgent(Result<PaneReportAgentParams, String>),
     ReportAgentSession(Result<PaneReportAgentSessionParams, String>),
     ReleaseAgent(Result<PaneReleaseAgentParams, String>),
     ReportMetadata(Result<PaneReportMetadataParams, String>),
-    Run {
-        pane_id: String,
-        command: String,
-    },
 }
 
 #[derive(Clone)]
@@ -120,19 +108,14 @@ impl Command {
             Self::Zoom { .. } => "zoom",
             Self::Read(_) => "read",
             Self::Rename(_) => "rename",
-            Self::Input { .. } => "input",
             Self::Split(_) => "split",
             Self::Swap(_) => "swap",
             Self::Move(_) => "move",
             Self::Close { .. } => "close",
-            Self::SendText(_) => "send-text",
-            Self::SendKeys(_) => "send-keys",
-            Self::WaitOutput(_) => "wait-output",
             Self::ReportAgent(_) => "report-agent",
             Self::ReportAgentSession(_) => "report-agent-session",
             Self::ReleaseAgent(_) => "release-agent",
             Self::ReportMetadata(_) => "report-metadata",
-            Self::Run { .. } => "run",
         }
     }
 
@@ -150,19 +133,14 @@ impl Command {
             | Self::Zoom { .. }
             | Self::Read(_)
             | Self::Rename(_)
-            | Self::Input { .. }
             | Self::Split(_)
             | Self::Swap(_)
             | Self::Move(_)
             | Self::Close { .. }
-            | Self::SendText(_)
-            | Self::SendKeys(_)
-            | Self::WaitOutput(_)
             | Self::ReportAgent(_)
             | Self::ReportAgentSession(_)
             | Self::ReleaseAgent(_)
-            | Self::ReportMetadata(_)
-            | Self::Run { .. } => true,
+            | Self::ReportMetadata(_) => true,
         }
     }
 }
@@ -209,28 +187,12 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
             pane_id: required(command, "pane_id")?,
             label: (!flag(command, "clear")).then(|| words(command, "label")),
         })),
-        Some(("input", command)) => {
-            let (selector, right_click) = input_args(command)?;
-            Some(Command::Input {
-                selector,
-                right_click,
-            })
-        }
         Some(("split", command)) => Some(Command::Split(split_args(command)?)),
         Some(("swap", command)) => Some(Command::Swap(swap_args(command))),
         Some(("move", command)) => Some(Command::Move(move_params(command))),
         Some(("close", command)) => Some(Command::Close {
             pane_id: required(command, "pane_id")?,
         }),
-        Some(("send-text", command)) => Some(Command::SendText(PaneSendTextParams {
-            pane_id: required(command, "pane_id")?,
-            text: words(command, "text"),
-        })),
-        Some(("send-keys", command)) => Some(Command::SendKeys(PaneSendKeysParams {
-            pane_id: required(command, "pane_id")?,
-            keys: values::<String>(command, "key"),
-        })),
-        Some(("wait-output", command)) => Some(Command::WaitOutput(wait_output_params(command)?)),
         Some(("report-agent", command)) => Some(Command::ReportAgent(report_agent_params(command))),
         Some(("report-agent-session", command)) => Some(Command::ReportAgentSession(
             report_agent_session_params(command),
@@ -241,10 +203,6 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
         Some(("report-metadata", command)) => {
             Some(Command::ReportMetadata(report_metadata_params(command)))
         }
-        Some(("run", command)) => Some(Command::Run {
-            pane_id: required(command, "pane_id")?,
-            command: words(command, "command"),
-        }),
         _ => None,
     }
 }
@@ -356,13 +314,6 @@ pub(super) fn run_pane_command(
             super::print_read_response(&response)
         }
         Command::Rename(params) => super::runtime::pane_rename(paths, params),
-        Command::Input {
-            selector,
-            right_click,
-        } => match input_params(&selector, right_click, &caller) {
-            Ok(params) => super::runtime::pane_input_set(paths, params),
-            Err(message) => Ok(super::usage_error(&message)),
-        },
         Command::Split(args) => match split_params(args, &caller, paths) {
             Ok(params) => super::runtime::pane_split(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
@@ -376,24 +327,6 @@ pub(super) fn run_pane_command(
             Err(message) => Ok(super::usage_error(&message)),
         },
         Command::Close { pane_id } => super::runtime::pane_close(paths, pane_id),
-        Command::SendText(params) => super::send_method_response(
-            paths,
-            "cli:request",
-            Method::PaneSendText(params),
-            super::MethodResponseMode::ErrorsOnly,
-        ),
-        Command::SendKeys(params) => super::send_method_response(
-            paths,
-            "cli:request",
-            Method::PaneSendKeys(params),
-            super::MethodResponseMode::ErrorsOnly,
-        ),
-        Command::WaitOutput(params) => super::send_method_response(
-            paths,
-            "cli:pane:wait-output",
-            Method::PaneWaitForOutput(params),
-            super::MethodResponseMode::Print,
-        ),
         Command::ReportAgent(result) => match result {
             Ok(params) => super::send_method_response(
                 paths,
@@ -430,16 +363,6 @@ pub(super) fn run_pane_command(
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Command::Run { pane_id, command } => super::send_method_response(
-            paths,
-            "cli:request",
-            Method::PaneSendInput(PaneSendInputParams {
-                pane_id,
-                text: command,
-                keys: vec!["Enter".into()],
-            }),
-            super::MethodResponseMode::ErrorsOnly,
-        ),
     }
 }
 
@@ -488,13 +411,6 @@ fn swap_args(matches: &ArgMatches) -> SwapArgs {
 
 fn zoom_args(matches: &ArgMatches) -> (PaneSelectorArgs, bool, bool) {
     (selector(matches), flag(matches, "on"), flag(matches, "off"))
-}
-
-fn input_args(matches: &ArgMatches) -> Option<(PaneSelectorArgs, PaneRightClickTarget)> {
-    Some((
-        selector(matches),
-        value::<PaneRightClickTarget>(matches, "right-click")?,
-    ))
 }
 
 fn selected_pane(
@@ -554,19 +470,6 @@ fn read_params(matches: &ArgMatches) -> Option<PaneReadParams> {
         // Same params as `agent read`: an ANSI read keeps its escapes.
         strip_ansi: format != ReadFormat::Ansi,
         intent: shepr_api::schema::ReadIntent::Interactive,
-    })
-}
-
-fn input_params(
-    selector: &PaneSelectorArgs,
-    right_click: PaneRightClickTarget,
-    caller: &CallerPane,
-) -> Result<PaneInputSetParams, String> {
-    // The spec requires exactly one selector, but preserve a usage error if
-    // this helper is called with matches that did not come from that spec.
-    Ok(PaneInputSetParams {
-        pane_id: selected_pane(selector, caller)?.ok_or("missing required pane selector")?,
-        right_click,
     })
 }
 
@@ -667,24 +570,6 @@ fn move_params(matches: &ArgMatches) -> Result<PaneMoveParams, String> {
         pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
         destination,
         focus: !flag(matches, "no-focus"),
-    })
-}
-
-fn wait_output_params(matches: &ArgMatches) -> Option<PaneWaitForOutputParams> {
-    // The spec requires exactly one of `--match` and `--regex`.
-    let matcher = match string(matches, "regex") {
-        Some(value) => OutputMatch::Regex { value },
-        None => OutputMatch::Substring {
-            value: required(matches, "match")?,
-        },
-    };
-    Some(PaneWaitForOutputParams {
-        pane_id: required(matches, "pane_id")?,
-        source: value::<ReadSource>(matches, "source").unwrap_or(ReadSource::Recent),
-        lines: value::<u32>(matches, "lines"),
-        r#match: matcher,
-        timeout_ms: value::<u64>(matches, "timeout"),
-        strip_ansi: !flag(matches, "raw"),
     })
 }
 
@@ -791,14 +676,6 @@ mod tests {
 
     fn swap_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneSwapParams, String> {
         super::swap_params(super::swap_args(matches), caller)
-    }
-
-    fn input_params(
-        matches: &ArgMatches,
-        caller: &CallerPane,
-    ) -> Result<PaneInputSetParams, String> {
-        let (selector, right_click) = super::input_args(matches).expect("test precondition");
-        super::input_params(&selector, right_click, caller)
     }
 
     fn zoom_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneZoomParams, String> {
@@ -970,60 +847,6 @@ mod tests {
             "--direction",
             "down"
         ]));
-    }
-
-    #[test]
-    fn input_requires_and_uses_calling_pane() {
-        let params = input_params(
-            &pane(&["input", "--current", "--right-click", "pane"]),
-            &known("issue-1:p1"),
-        )
-        .expect("test precondition");
-
-        assert_eq!(params.pane_id, "issue-1:p1");
-        assert_eq!(params.right_click, PaneRightClickTarget::Pane);
-        assert!(
-            input_params(
-                &pane(&["input", "--current", "--right-click", "pane"]),
-                &OUTSIDE
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::input_params(
-                &super::PaneSelectorArgs {
-                    pane_id: None,
-                    pane: None,
-                    current: false,
-                },
-                PaneRightClickTarget::Shepr,
-                &OUTSIDE,
-            )
-            .expect_err("no selector is a usage error"),
-            "missing required pane selector"
-        );
-    }
-
-    #[test]
-    fn input_rejects_conflicting_or_missing_selectors() {
-        assert!(rejected(&[
-            "input",
-            "pane-a",
-            "--pane",
-            "pane-b",
-            "--right-click",
-            "pane"
-        ]));
-        assert!(rejected(&[
-            "input",
-            "--pane",
-            "pane-a",
-            "--current",
-            "--right-click",
-            "pane"
-        ]));
-        assert!(rejected(&["input", "--right-click", "pane"]));
-        assert!(rejected(&["input", "pane-a"]));
     }
 
     /// Every command with a pane selector, with the arguments it needs besides it.
@@ -1305,79 +1128,6 @@ mod tests {
     }
 
     #[test]
-    fn wait_output_accepts_space_separated_options() {
-        let params = wait_output_params(&pane(&[
-            "wait-output",
-            "issue-1",
-            "--match",
-            "ready",
-            "--timeout",
-            "5000",
-        ]))
-        .expect("test precondition");
-
-        assert_eq!(params.pane_id, "issue-1");
-        assert_eq!(
-            params.r#match,
-            OutputMatch::Substring {
-                value: "ready".into()
-            }
-        );
-        assert_eq!(params.timeout_ms, Some(5000));
-        assert_eq!(params.source, ReadSource::Recent);
-        assert!(params.strip_ansi);
-    }
-
-    #[test]
-    fn wait_output_accepts_reordered_equals_and_hyphenated_patterns() {
-        let params = wait_output_params(&pane(&[
-            "wait-output",
-            "--match=a=b",
-            "--timeout=100",
-            "issue-1",
-        ]))
-        .expect("test precondition");
-        assert_eq!(params.pane_id, "issue-1");
-        assert_eq!(
-            params.r#match,
-            OutputMatch::Substring {
-                value: "a=b".into()
-            }
-        );
-        assert_eq!(params.timeout_ms, Some(100));
-
-        let params = wait_output_params(&pane(&["wait-output", "issue-1", "--regex", "-{3} done"]))
-            .expect("test precondition");
-        assert_eq!(
-            params.r#match,
-            OutputMatch::Regex {
-                value: "-{3} done".into()
-            }
-        );
-    }
-
-    #[test]
-    fn wait_output_requires_exactly_one_matcher() {
-        assert!(rejected(&["wait-output", "issue-1"]));
-        assert!(rejected(&[
-            "wait-output",
-            "issue-1",
-            "--match",
-            "a",
-            "--regex",
-            "b"
-        ]));
-        assert!(rejected(&[
-            "wait-output",
-            "issue-1",
-            "--match",
-            "a",
-            "--source",
-            "detection"
-        ]));
-    }
-
-    #[test]
     fn report_agent_reads_every_option_and_trims_source() {
         let params = report_agent_params(&pane(&[
             "report-agent",
@@ -1517,17 +1267,5 @@ mod tests {
         let rename = pane(&["rename", "p1", "--clear"]);
         assert!(flag(&rename, "clear"));
         assert!(rejected(&["rename", "p1"]));
-    }
-
-    #[test]
-    fn run_and_send_text_keep_their_words() {
-        let run = pane(&["run", "p1", "ls", "-la", "--session", "work"]);
-        assert_eq!(words(&run, "command"), "ls -la --session work");
-
-        let run = pane(&["run", "p1", "--", "-x"]);
-        assert_eq!(words(&run, "command"), "-x");
-
-        let text = pane(&["send-text", "p1", "echo", "--remote", "x"]);
-        assert_eq!(words(&text, "text"), "echo --remote x");
     }
 }

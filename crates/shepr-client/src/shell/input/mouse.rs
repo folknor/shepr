@@ -145,6 +145,7 @@ impl ClientShellState {
         pane_id: &shepr_protocol::PublicPaneId,
         serial: u64,
         result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
+        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) -> bool {
         if self.pane_scroll_in_flight.get(pane_id).copied() != Some(serial) {
@@ -168,7 +169,10 @@ impl ClientShellState {
             Ok(_) => {
                 self.pane_scroll_queued.remove(pane_id);
                 self.pane_scroll_targets.remove(pane_id);
-                self.set_endpoint_error("endpoint returned an unexpected pane-scroll result");
+                self.set_endpoint_error_at(
+                    "endpoint returned an unexpected pane-scroll result",
+                    now,
+                );
                 true
             }
             Err(_) => {

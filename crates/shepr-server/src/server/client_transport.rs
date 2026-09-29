@@ -566,6 +566,7 @@ fn set_client_recv_timeout(
 pub(crate) fn handle_client_handshake(
     mut stream: LocalStream,
     client_id: ClientId,
+    session: &shepr_config::SessionId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<AtomicBool>,
 ) -> io::Result<()> {
@@ -582,7 +583,12 @@ pub(crate) fn handle_client_handshake(
     // this side hangs up on it below. Probes that connect and close at once
     // (socket liveness checks) make this write fail; that is not an error.
     if let Err(error) = shepr_protocol::preamble::write_preamble(&mut stream) {
-        debug!(?client_id, %error, "client left before the build-identity preamble");
+        debug!(
+            ?client_id,
+            session = %session.display_name(),
+            %error,
+            "client left before the build-identity preamble"
+        );
         return Ok(());
     }
 
@@ -594,17 +600,31 @@ pub(crate) fn handle_client_handshake(
     match shepr_protocol::preamble::read_preamble(&mut reader) {
         Ok(()) => {}
         Err(shepr_protocol::preamble::PreambleError::UnexpectedEof) => {
-            debug!(?client_id, "client disconnected before handshake");
+            debug!(
+                ?client_id,
+                session = %session.display_name(),
+                "client disconnected before handshake"
+            );
             return Ok(());
         }
         Err(shepr_protocol::preamble::PreambleError::Io(error)) => {
-            debug!(?client_id, %error, "failed to read client preamble");
+            debug!(
+                ?client_id,
+                session = %session.display_name(),
+                %error,
+                "failed to read client preamble"
+            );
             return Ok(());
         }
         Err(error) => {
             // The client reports the mismatch from this server's preamble;
             // nothing it sends after a foreign preamble can be decoded.
-            warn!(?client_id, %error, "rejecting client connection");
+            warn!(
+                ?client_id,
+                session = %session.display_name(),
+                %error,
+                "rejecting client connection"
+            );
             return Ok(());
         }
     }
@@ -612,15 +632,30 @@ pub(crate) fn handle_client_handshake(
     let hello: ClientMessage = match hello {
         Ok(msg) => msg,
         Err(shepr_protocol::FramingError::UnexpectedEof) => {
-            debug!(?client_id, "client disconnected before handshake");
+            debug!(
+                ?client_id,
+                session = %session.display_name(),
+                "client disconnected before handshake"
+            );
             return Ok(());
         }
         Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
-            warn!(?client_id, claimed, max, "oversized handshake from client");
+            warn!(
+                ?client_id,
+                session = %session.display_name(),
+                claimed,
+                max,
+                "oversized handshake from client"
+            );
             return Ok(());
         }
         Err(err) => {
-            debug!(?client_id, err = %err, "failed to read client hello");
+            debug!(
+                ?client_id,
+                session = %session.display_name(),
+                err = %err,
+                "failed to read client hello"
+            );
             return Ok(());
         }
     };
@@ -676,12 +711,21 @@ pub(crate) fn handle_client_handshake(
             )
         }
         _ => {
-            debug!(?client_id, "first message was not a handshake, closing");
+            debug!(
+                ?client_id,
+                session = %session.display_name(),
+                "first message was not a handshake, closing"
+            );
             let welcome = ServerMessage::Welcome {
                 error: Some(shepr_protocol::HandshakeRefusal::ExpectedHello),
             };
             if let Err(err) = shepr_protocol::write_message(&mut stream, &welcome) {
-                debug!(?client_id, err = %err, "client left before its handshake refusal was written");
+                debug!(
+                    ?client_id,
+                    session = %session.display_name(),
+                    err = %err,
+                    "client left before its handshake refusal was written"
+                );
             }
             return Ok(());
         }
@@ -765,6 +809,7 @@ pub(crate) fn handle_client_handshake(
     client_read_loop_with_endpoint_controls(
         stream,
         client_id,
+        session,
         server_event_tx,
         should_quit,
         endpoint_control_writer.as_ref(),
@@ -852,6 +897,7 @@ fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
 fn client_read_loop_with_endpoint_controls(
     mut stream: LocalStream,
     client_id: ClientId,
+    session: &shepr_config::SessionId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<AtomicBool>,
     endpoint_control_writer: Option<&ClientControlWriter>,
@@ -869,13 +915,19 @@ fn client_read_loop_with_endpoint_controls(
             Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
                 warn!(
                     ?client_id,
+                    session = %session.display_name(),
                     claimed, max, "oversized message from client, closing"
                 );
                 send_client_disconnected(server_event_tx, client_id);
                 break;
             }
             Err(err) => {
-                debug!(?client_id, err = %err, "client read error, closing");
+                debug!(
+                    ?client_id,
+                    session = %session.display_name(),
+                    err = %err,
+                    "client read error, closing"
+                );
                 send_client_disconnected(server_event_tx, client_id);
                 break;
             }
@@ -1307,6 +1359,7 @@ mod tests {
         client_read_loop_with_endpoint_controls(
             stream,
             client_id,
+            &shepr_config::SessionId::default(),
             server_event_tx,
             should_quit,
             None,
@@ -1663,6 +1716,7 @@ mod tests {
             handle_client_handshake(
                 server_stream,
                 ClientId::test_new(44),
+                &shepr_config::SessionId::default(),
                 &server_event_tx,
                 &handshake_quit,
             )
@@ -1769,6 +1823,7 @@ mod tests {
             handle_client_handshake(
                 server_stream,
                 ClientId::test_new(45),
+                &shepr_config::SessionId::default(),
                 &server_event_tx,
                 &handshake_quit,
             )
@@ -1880,6 +1935,7 @@ mod tests {
             handle_client_handshake(
                 server_stream,
                 ClientId::test_new(42),
+                &shepr_config::SessionId::default(),
                 &server_event_tx,
                 &handshake_quit,
             )
@@ -1941,6 +1997,7 @@ mod tests {
             handle_client_handshake(
                 server_stream,
                 ClientId::test_new(43),
+                &shepr_config::SessionId::default(),
                 &server_event_tx,
                 &handshake_quit,
             )

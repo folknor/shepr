@@ -23,20 +23,18 @@ pub(crate) const HANDSHAKE_FRAME_SIZE: usize = 64 * 1024;
 ///
 /// The message enum has few enough variants that every index takes the
 /// shortest LEB128 encoding.
-// limits-exempt: this width is dictated by the positional protocol encoding.
 const TERMINAL_VARIANT_INDEX_BYTES: usize = 1;
 
 /// Maximum bytes used to encode the ANSI field length at the frame cap.
 ///
-/// The prefix accommodates a frame length at the current cap.
-// limits-exempt: this width is dictated by the positional protocol encoding.
+/// The positional codec's unsigned LEB128 encoding of a permitted frame length
+/// fits in this reserved prefix.
 const TERMINAL_ANSI_LENGTH_PREFIX_BYTES: usize = 3;
 
 /// Positional message overhead subtracted from the general frame budget.
 ///
 /// This combines the variant index and ANSI byte-length prefixes so the
 /// direct-terminal field cap is derived from its wire-format overhead.
-// limits-exempt: this overhead is dictated by the positional protocol encoding.
 const MAX_TERMINAL_ENVELOPE_BYTES: usize =
     TERMINAL_VARIANT_INDEX_BYTES + TERMINAL_ANSI_LENGTH_PREFIX_BYTES;
 
@@ -103,9 +101,9 @@ impl crate::ClientPaneInputEvent {
 
 /// Encoded bytes budgeted per cell of a full pane surface or terminal redraw.
 ///
-/// A typical cell includes RGB foreground and background, style flags, underline
-/// shape and a hyperlink. More complex styles or long
-/// graphemes can exceed it; the render path handles oversized frames.
+/// The allowance estimates a typical encoded cell with RGB colors, style flags,
+/// underline shape, and a hyperlink. More complex styles or long graphemes can
+/// exceed it; the render path handles oversized frames.
 pub const SURFACE_BYTES_PER_CELL: usize = 16;
 
 /// Largest grid, in cells, a client may request for a pane surface or a

@@ -211,8 +211,9 @@ impl ClientShellState {
             other => {
                 if matches!(other, Ok(value) if !matches!(value, shepr_api::schema::ResponseResult::PaneSelection { .. }))
                 {
-                    self.set_endpoint_error(
+                    self.set_endpoint_error_at(
                         "endpoint returned an unexpected word-selection result",
+                        now,
                     );
                 }
                 self.cancel_word_selection();

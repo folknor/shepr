@@ -49,16 +49,6 @@ fn pane_input_set_changes_only_the_target_pane() {
     );
 }
 
-fn app_with_send_key_runtime(
-    capacity: usize,
-) -> (App, String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
-    let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-    let (runtime, rx) = shepr_mux::pane::PaneRuntime::test_with_channel_capacity(80, 24, capacity);
-    app.insert_test_runtime(pane_id, runtime);
-    (app, public_pane_id, rx)
-}
-
 fn app_with_scrollback_runtime() -> (App, String, PaneId) {
     let (mut app, public_pane_id) = app_with_test_workspace();
     let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
@@ -93,76 +83,6 @@ fn metadata_error_code(response: &ApiResult) -> ApiErrorCode {
         .expect_err("request must fail")
         .code
         .clone()
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_accepts_control_navigation_chords() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(4);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec![
-                "ctrl+h".into(),
-                "ctrl+j".into(),
-                "ctrl+k".into(),
-                "ctrl+l".into(),
-            ],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from(vec![0x08, 0x0a, 0x0b, 0x0c])
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_writes_the_sequence_as_one_write() {
-    // A one-slot queue: per-key writes would fill it with the first key and
-    // reject the second after the first already reached the pane.
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec!["up".into(), "enter".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from_static(b"\x1b[A\r")
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_encodes_shift_tab_as_backtab() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec!["shift+tab".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from_static(b"\x1b[Z")
-    );
-    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -509,8 +429,9 @@ async fn api_pane_read_honours_strip_ansi_and_reports_content_revision() {
     assert_eq!(kept.format, shepr_api::schema::ReadFormat::Ansi);
     assert_eq!(
         kept.revision,
-        app.lookup_runtime_sender(0, pane_id)
+        app.lookup_runtime(0, pane_id)
             .expect("test precondition")
+            .0
             .content_seq()
     );
 
@@ -551,192 +472,6 @@ fn api_pane_rename_emits_pane_updated() {
                     if pane.pane_id == public_pane_id && pane.label.as_deref() == Some("build")
             ))
     );
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_preserves_legacy_control_c_aliases() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(3);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec!["C-c".into(), "c-c".into(), "ctrl+c".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from(vec![0x03, 0x03, 0x03])
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_preserves_super_chord_in_legacy_pane() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
-    let internal_pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-    assert_eq!(
-        app.lookup_runtime_sender(0, internal_pane_id)
-            .expect("test precondition")
-            .keyboard_protocol(),
-        shepr_termio::input::KeyboardProtocol::Legacy
-    );
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec!["cmd+c".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from_static(b"\x1b[99;9u")
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_accepts_literal_plus() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec!["+".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from_static(b"+")
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_sends_shifted_punctuation_as_text_in_kitty_mode() {
-    let (mut app, pane_id) = app_with_test_workspace();
-    let internal_pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-    let (runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-        80,
-        24,
-        0,
-        b"\x1b[>7u",
-        1,
-    );
-    app.insert_test_runtime(internal_pane_id, runtime);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec!["shift+?".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from_static(b"?")
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_input_brackets_text_and_enter_atomically() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
-    let internal_pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-    app.lookup_runtime_sender(0, internal_pane_id)
-        .expect("test precondition")
-        .test_process_pty_bytes(b"\x1b[?2004h");
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendInput(PaneSendInputParams {
-            pane_id,
-            text: "A != B".into(),
-            keys: vec!["Enter".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from_static(b"\x1b[200~A != B\x1b[201~\r")
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_input_keys_accept_key_combo_chords() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendInput(PaneSendInputParams {
-            pane_id,
-            text: String::new(),
-            keys: vec!["ctrl+j".into()],
-        }),
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert_eq!(success.result, ResponseResult::Ok {});
-    assert_eq!(
-        rx.try_recv().expect("test precondition"),
-        bytes::Bytes::from(vec![0x0a])
-    );
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_keys_rejects_invalid_keys_before_writing() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(2);
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendKeys(PaneSendKeysParams {
-            pane_id,
-            keys: vec!["ctrl+h".into(), "not-a-key".into()],
-        }),
-    });
-
-    let error: ErrorResponse = crate::test_support::test_error(&response);
-    assert_eq!(error.error.code, "invalid_key");
-    assert_eq!(error.error.message, "unsupported key not-a-key");
-    assert!(rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn api_pane_send_input_rejects_prefix_bindings_before_writing_text_or_keys() {
-    let (mut app, pane_id, mut rx) = app_with_send_key_runtime(4);
-    let raw_key = " prefix+h ".to_string();
-
-    let response = app.handle_api_request(shepr_api::schema::Request {
-        id: "req".into(),
-        method: shepr_api::schema::Method::PaneSendInput(PaneSendInputParams {
-            pane_id,
-            text: "hello".into(),
-            keys: vec!["ctrl+h".into(), raw_key.clone()],
-        }),
-    });
-
-    let error: ErrorResponse = crate::test_support::test_error(&response);
-    assert_eq!(error.error.code, "invalid_key");
-    assert_eq!(error.error.message, format!("unsupported key {raw_key}"));
-    assert!(rx.try_recv().is_err());
 }
 
 fn app_with_workspace() -> App {

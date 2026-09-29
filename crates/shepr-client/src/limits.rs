@@ -113,12 +113,13 @@ pub(super) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
 /// Time to wait for the server's complete Welcome reply during the handshake.
 /// This is an overall deadline for the frame, not a per-read idle timeout.
 ///
-/// A local client talks to an already-connected server. The remote bridge client
-/// (`shepr --remote`) performs a fresh SSH connection, including key exchange
-/// and authentication, inside this window, so it needs more room on high-latency
-/// links.
+/// A local client talks to an already-connected server, so this deadline only
+/// needs room for the welcome response. The remote bridge client (`shepr
+/// --remote`) also performs a fresh SSH connection, including key exchange and
+/// authentication, which needs more room on high-latency links.
 pub(super) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// Allows a fresh remote SSH connection to finish before the welcome reply is due.
+/// Allows a fresh remote SSH connection and its welcome reply to finish on
+/// high-latency links.
 pub(super) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Timeout for a client request sent to an endpoint.

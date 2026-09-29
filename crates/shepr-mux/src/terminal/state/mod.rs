@@ -134,20 +134,67 @@ pub struct TerminalStateMutation {
     pub agent_released: bool,
 }
 
-/// Why a saved pane has no running shell. Presentation belongs to the client
-/// surface and API boundary, so restore paths retain only the failure facts.
+/// Why a saved pane has no running shell. The pane surface and the API both
+/// present it: `guidance` says what to do, `cause` carries the OS error that
+/// tells the operator which fix applies (a missing shell binary and a denied
+/// directory need different ones). The error is rendered to text once, when
+/// the failure is recorded, so drawing an unavailable pane borrows it instead
+/// of formatting a message every frame.
 #[derive(Debug)]
 pub enum RestoreFailure {
-    DirectoryUnavailable {
-        path: PathBuf,
-    },
-    DirectoryUnreadable {
-        path: PathBuf,
-        error: std::io::Error,
-    },
-    ShellStartFailed {
-        error: std::io::Error,
-    },
+    DirectoryUnavailable { path: PathBuf },
+    DirectoryUnreadable { path: PathBuf, error: String },
+    ShellStartFailed { error: String },
+}
+
+impl RestoreFailure {
+    pub fn directory_unreadable(path: PathBuf, error: &std::io::Error) -> Self {
+        Self::DirectoryUnreadable {
+            path,
+            error: error.to_string(),
+        }
+    }
+
+    pub fn shell_start_failed(error: &std::io::Error) -> Self {
+        Self::ShellStartFailed {
+            error: error.to_string(),
+        }
+    }
+
+    /// What the operator should do about the failure.
+    pub fn guidance(&self) -> &'static str {
+        match self {
+            Self::DirectoryUnavailable { .. } => {
+                "Saved directory is unavailable. Restore the directory and restart this session."
+            }
+            Self::DirectoryUnreadable { .. } => {
+                "Saved directory cannot be read. Fix its access and restart this session."
+            }
+            Self::ShellStartFailed { .. } => {
+                "Could not start the saved shell. Fix the shell configuration and restart this session."
+            }
+        }
+    }
+
+    /// The error behind the failure, when there is one.
+    pub fn cause(&self) -> Option<&str> {
+        match self {
+            Self::DirectoryUnavailable { .. } => None,
+            Self::DirectoryUnreadable { error, .. } | Self::ShellStartFailed { error } => {
+                Some(error)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for RestoreFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.guidance())?;
+        if let Some(cause) = self.cause() {
+            write!(formatter, " Error: {cause}")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

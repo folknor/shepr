@@ -13,12 +13,15 @@ pub(crate) const SERVER_EVENT_CHANNEL_CAPACITY: usize = 64;
 /// connection limit bounds them too; this cap holds whatever that limit becomes.
 pub(crate) const AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY: usize = 64;
 
-/// How long server exit waits for pane teardowns: their signal budget plus
-/// additional time for the /proc session scans between signal rounds.
+/// How long server exit waits for pane teardowns: their signal budget, plus
+/// three more of it for the /proc session scans between signal rounds, which
+/// the signal budget does not count.
 pub(crate) const PANE_TEARDOWN_WAIT: Duration =
     shepr_mux::pane::PaneTeardownTracker::BUDGET.saturating_mul(4);
 
-/// Minimum spacing between renders to bound presentation work.
+/// Minimum spacing between renders, matching a typical display refresh
+/// cadence: rendering faster only produces frames no screen can show, while
+/// output bursts coalesce into the next frame.
 pub(crate) const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 /// Refresh Git ahead/behind status periodically while it is visible, keeping it
 /// fresh without probing on every render.
@@ -66,9 +69,15 @@ pub(crate) const INITIAL_QUIET: Duration = Duration::from_millis(10);
 pub(crate) const OUTPUT_QUIET: Duration = Duration::from_millis(10);
 /// A step deadline keeps an unresponsive scroll from stalling traversal.
 pub(crate) const STEP_TIMEOUT: Duration = Duration::from_millis(120);
-/// Bounds the total alt-screen history traversal.
+/// Bounds the total alt-screen history traversal, so an agent that keeps
+/// answering scroll steps cannot hold the read, and the agent's scrolled
+/// viewport, indefinitely; past it the harvest is abandoned and the read
+/// falls back.
 pub(crate) const MAX_DURATION: Duration = Duration::from_secs(15);
-/// Bounds viewport restoration after traversal stops.
+/// Bounds viewport restoration after traversal stops, separately from the
+/// traversal, so a read that used its whole traversal budget still gets time
+/// to put the user's viewport back, and an agent that never settles cannot
+/// leave it displaced.
 pub(crate) const MAX_RESTORE_DURATION: Duration = Duration::from_secs(5);
 /// Wheel events per step advance history without a large viewport jump.
 pub(crate) const WHEEL_STEP_EVENTS: usize = 3;

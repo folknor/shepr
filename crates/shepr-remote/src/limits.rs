@@ -168,17 +168,14 @@ pub(crate) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration =
 
 /// OpenSSH option limiting connection establishment. This
 /// leaves room for ordinary network setup while bounding unreachable hosts.
-// limits-exempt: OpenSSH's ConnectTimeout option is an external command-line format value.
 pub(crate) const SSH_CONNECT_TIMEOUT_OPTION: &str = "ConnectTimeout=10";
 
 /// OpenSSH option disabling internal retries. The surrounding shepr retry owns
 /// pacing, so SSH does not hide a failed attempt.
-// limits-exempt: OpenSSH's ConnectionAttempts option is an external command-line format value.
 pub(crate) const SSH_CONNECTION_ATTEMPTS_OPTION: &str = "ConnectionAttempts=1";
 
 /// OpenSSH option retaining an idle control master. This
 /// amortizes repeated SSH setup while bounding how long it remains available.
-// limits-exempt: OpenSSH's ControlPersist option is an external command-line format value.
 pub(crate) const SSH_CONTROL_PERSIST_OPTION: &str = "ControlPersist=600";
 
 /// OpenSSH option disabling password prompts in background SSH commands.
@@ -187,7 +184,6 @@ pub(crate) const SSH_NONINTERACTIVE_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPas
 
 /// OpenSSH option permitting authentication prompts for the foreground
 /// command, enough for ordinary interactive authentication flows.
-// limits-exempt: OpenSSH's NumberOfPasswordPrompts option is an external command-line format value.
 pub(crate) const SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPasswordPrompts=3";
 
 /// OpenSSH keepalive settings shared by command arguments and managed config.

@@ -48,53 +48,6 @@ pub(super) fn agent_target_not_found(target: &str) -> ApiError {
     ApiError::agent_not_found(target)
 }
 
-fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
-    let (code, modifiers) = shepr_config::parse_api_key_combo(key)?;
-    Some(crossterm::event::KeyEvent::new(code, modifiers))
-}
-
-pub(super) fn encode_api_text(runtime: &shepr_mux::pane::PaneRuntime, text: &str) -> Vec<u8> {
-    let bracketed = runtime.bracketed_paste_enabled();
-    if bracketed {
-        format!("\x1b[200~{text}\x1b[201~").into_bytes()
-    } else {
-        text.as_bytes().to_vec()
-    }
-}
-
-pub(super) fn encode_api_keys(
-    runtime: &shepr_mux::pane::PaneRuntime,
-    keys: &[String],
-) -> Result<Vec<Vec<u8>>, ApiError> {
-    let mut encoded_keys = Vec::with_capacity(keys.len());
-    for key in keys {
-        let Some(key_event) = parse_api_key(key) else {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidKey,
-                format!("unsupported key {key}"),
-            ));
-        };
-        encoded_keys.push(runtime.encode_terminal_key(key_event.into()));
-    }
-    Ok(encoded_keys)
-}
-
-pub(super) fn encode_api_input(
-    runtime: &shepr_mux::pane::PaneRuntime,
-    text: &str,
-    keys: &[String],
-) -> Result<Vec<u8>, ApiError> {
-    let mut bytes = if text.is_empty() {
-        Vec::new()
-    } else {
-        encode_api_text(runtime, text)
-    };
-    for encoded in encode_api_keys(runtime, keys)? {
-        bytes.extend_from_slice(&encoded);
-    }
-    Ok(bytes)
-}
-
 pub(super) fn detect_state_from_api(
     state: shepr_api::schema::PaneAgentState,
 ) -> shepr_agent::detect::AgentState {

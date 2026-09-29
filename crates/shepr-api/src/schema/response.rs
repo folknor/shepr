@@ -152,12 +152,6 @@ pub enum ResponseResult {
     WaitMatched {
         event: EventEnvelope,
     },
-    OutputMatched {
-        pane_id: String,
-        revision: u64,
-        matched_line: Option<String>,
-        read: PaneReadResult,
-    },
     ClientWindowTitle {
         changed: bool,
         reason: ClientWindowTitleReason,

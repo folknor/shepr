@@ -1,8 +1,8 @@
 use shepr_api::schema::{
-    EmptyParams, Method, PaneFocusDirectionParams, PaneInputSetParams, PaneMoveParams,
-    PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
-    PaneZoomParams, TabCreateParams, TabListParams, TabRenameParams, TabTarget,
-    WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
+    EmptyParams, Method, PaneFocusDirectionParams, PaneMoveParams, PaneRenameParams,
+    PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomParams, TabCreateParams,
+    TabListParams, TabRenameParams, TabTarget, WorkspaceCloseParams, WorkspaceCreateParams,
+    WorkspaceRenameParams, WorkspaceTarget,
 };
 
 pub(super) fn workspace_list(paths: &super::target::CliContext) -> super::CliResult<i32> {
@@ -187,18 +187,6 @@ pub(super) fn pane_rename(
         paths,
         "cli:pane:rename",
         Method::PaneRename(params),
-        super::MethodResponseMode::Print,
-    )
-}
-
-pub(super) fn pane_input_set(
-    paths: &super::target::CliContext,
-    params: PaneInputSetParams,
-) -> super::CliResult<i32> {
-    super::send_method_response(
-        paths,
-        "cli:pane:input:set",
-        Method::PaneInputSet(params),
         super::MethodResponseMode::Print,
     )
 }

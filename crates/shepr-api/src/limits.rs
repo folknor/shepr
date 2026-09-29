@@ -11,10 +11,14 @@ pub(crate) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100)
 /// Most requests are answered in the same loop turn. The slowest legitimate
 /// case is a `pane.read`/`agent.read` of alternate-screen history, which the
 /// server serves by scrolling the agent, harvesting output, and restoring the
-/// viewport. A second read of the same pane is parked until the first finishes,
-/// so the request deadline covers the full operation and queued read. Requests
-/// that carry their own timeout (events.wait and pane.wait_for_output) are
-/// dispatched on their own paths and are not subject to this bound.
+/// viewport, each phase under its own bound (`MAX_DURATION` and
+/// `MAX_RESTORE_DURATION` in shepr-server's limits). A second read of the same
+/// pane is parked until the first finishes, so a queued read can spend one
+/// full worst-case read waiting before its own begins. The deadline must
+/// cover both back to back with margin to spare, or a legitimate queued read
+/// is reported as a stalled main loop. Requests that carry their own timeout
+/// (`events.wait`) are dispatched on their own paths and are not subject to
+/// this bound.
 pub(crate) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Extra client-side allowance beyond the server request deadline, so the
@@ -76,7 +80,12 @@ pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// while keeping the shared history bounded.
 pub(crate) const MAX_EVENT_HISTORY: usize = 512;
 
-/// Slack past a wait deadline, allowing the final app probe to finish.
+/// Client-side slack past a wait's own `timeout_ms`. A wait checks its
+/// deadline only after each poll, and a poll can block on an app probe for up
+/// to [`APP_RESPONSE_TIMEOUT`], so the server's answer can trail the deadline
+/// by one such probe. The grace only has to exceed that overrun, so the
+/// server's own timeout response reaches the client first; it is not what
+/// normally ends a wait.
 pub(crate) const WAIT_RESPONSE_GRACE: Duration = Duration::from_secs(30);
 
 /// Maximum time a session stop waits for both session sockets to disappear,

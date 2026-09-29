@@ -24,8 +24,8 @@ mod machine;
 
 pub(super) fn command() -> Command {
     // Launch options are root arguments, not `global` ones: clap accepts them
-    // only before the subcommand, so text after `pane run` is never mistaken
-    // for `--session` or `--remote`.
+    // only before the subcommand, so a trailing `--session` or `--remote` is a
+    // usage error instead of a silent retarget.
     let command = Command::new(PROGRAM_NAME)
         .bin_name(PROGRAM_NAME)
         .about("terminal workspace manager for AI coding agents")
@@ -311,10 +311,6 @@ fn agent_command() -> Command {
         )
 }
 
-/// Key syntax for `pane send-keys`; the server parses
-/// each key with the keybinding parser's API entry (`config::parse_api_key_combo`).
-const SEND_KEYS_HELP: &str = "Each KEY is a key combo in keybinding syntax: ctrl/alt/shift/super modifiers joined with + (meta is an alias for alt), then a character or a key name: enter, tab, esc, backspace, space, up, down, left, right, home, end, pageup, pagedown, delete, insert, f1..f12. Use esc as the canonical Escape key name; escape is also accepted.";
-
 fn pane_command() -> Command {
     group("pane")
         .about("Control terminal panes")
@@ -417,14 +413,6 @@ fn pane_command() -> Command {
                 ),
         )
         .subcommand(
-            Command::new("input")
-                .about("Set pane input routing")
-                .arg(Arg::new("pane_id").value_name("PANE_ID"))
-                .args(current_pane_args())
-                .group(pane_selector(&["pane_id", "pane", "current"], true))
-                .arg(right_click_option().required(true)),
-        )
-        .subcommand(
             Command::new("split")
                 .about("Split a pane")
                 .arg(Arg::new("pane_id").value_name("PANE_ID"))
@@ -473,58 +461,6 @@ fn pane_command() -> Command {
                 ),
         )
         .subcommand(id_command("close", "pane_id", "Close a pane"))
-        .subcommand(
-            Command::new("send-text")
-                .about("Send literal text to a pane")
-                .arg(required("pane_id", "PANE_ID"))
-                .arg(text_words("text", "TEXT"))
-                .after_help(
-                    "Words after PANE_ID are joined with single spaces.\n\nnext: shepr pane run <PANE_ID> <COMMAND> sends text and Enter in one call",
-                ),
-        )
-        .subcommand(
-            Command::new("send-keys")
-                .about("Send key presses to a pane")
-                .arg(required("pane_id", "PANE_ID"))
-                .arg(text_words("key", "KEY"))
-                .after_help(SEND_KEYS_HELP),
-        )
-        .subcommand(
-            Command::new("wait-output")
-                .about("Wait for matching pane output")
-                .arg(required("pane_id", "PANE_ID"))
-                .arg(
-                    free_text_option("match", "TEXT")
-                        .conflicts_with("regex")
-                        .help("Match a literal substring"),
-                )
-                .arg(
-                    free_text_option("regex", "PATTERN")
-                        .conflicts_with("match")
-                        .help("Match a Rust regular expression"),
-                )
-                .arg(read_source_option(WAIT_READ_SOURCES))
-                .arg(u32_option("lines", "N").help("Restrict the searched snapshot to N lines"))
-                .arg(u64_option("timeout", "MS").help("Fail after this many milliseconds"))
-                .arg(flag("raw").help("Keep ANSI escape sequences while matching"))
-                .group(
-                    ArgGroup::new("matcher")
-                        .args(["match", "regex"])
-                        .required(true),
-                )
-                .after_help(
-                    "The selected snapshot is searched immediately, including existing output, then polled. Without --timeout, this waits indefinitely.",
-                ),
-        )
-        .subcommand(
-            Command::new("run")
-                .about("Run a command in a pane")
-                .arg(required("pane_id", "PANE_ID"))
-                .arg(text_words("command", "COMMAND"))
-                .after_help(
-                    "Everything after PANE_ID is the command text, including words that look like options; use -- before a command that starts with a dash.",
-                ),
-        )
         .subcommand(report_agent_command())
         .subcommand(report_agent_session_command())
         .subcommand(release_agent_command())
@@ -852,14 +788,6 @@ const READ_SOURCES: &[(&str, ReadSource)] = &[
     ("recent", ReadSource::Recent),
     ("recent-unwrapped", ReadSource::RecentUnwrapped),
     ("detection", ReadSource::Detection),
-];
-
-/// `wait-output` polls a terminal snapshot; the detection snapshot is not one
-/// of its sources.
-const WAIT_READ_SOURCES: &[(&str, ReadSource)] = &[
-    ("visible", ReadSource::Visible),
-    ("recent", ReadSource::Recent),
-    ("recent-unwrapped", ReadSource::RecentUnwrapped),
 ];
 
 const READ_FORMATS: &[(&str, ReadFormat)] =
@@ -1286,7 +1214,6 @@ mod tests {
             (&["pane", "focus"][..], &["direction"][..]),
             (&["pane", "resize"][..], &["direction"][..]),
             (&["pane", "split"][..], &["direction"][..]),
-            (&["pane", "input"][..], &["right-click"][..]),
             (
                 &["pane", "report-agent"][..],
                 &["source", "agent", "state"][..],
@@ -1331,11 +1258,11 @@ mod tests {
     }
 
     #[test]
-    fn spec_excludes_removed_agent_commands_and_keeps_pane_commands() {
+    fn spec_excludes_removed_agent_and_pane_commands() {
         let cmd = super::command();
         assert!(
             cmd.get_subcommands()
-                .all(|subcommand| subcommand.get_name() != "wait")
+                .all(|command| command.get_name() != "wait")
         );
 
         let agent = command_path(&cmd, &["agent"]);
@@ -1343,15 +1270,17 @@ mod tests {
             assert!(
                 agent
                     .get_subcommands()
-                    .all(|subcommand| subcommand.get_name() != removed)
+                    .all(|command| command.get_name() != removed)
             );
         }
 
         let pane = command_path(&cmd, &["pane"]);
-        assert!(
-            pane.get_subcommands()
-                .any(|subcommand| subcommand.get_name() == "wait-output")
-        );
+        for removed in ["send-text", "send-keys", "run", "wait-output", "input"] {
+            assert!(
+                pane.get_subcommands()
+                    .all(|command| command.get_name() != removed)
+            );
+        }
     }
 
     #[test]
@@ -1384,21 +1313,6 @@ mod tests {
             super::command()
                 .try_get_matches_from(["shepr", "workspace", "close", "w1", "--group"])
                 .is_err()
-        );
-    }
-
-    #[test]
-    fn next_step_hints_render_without_replacing_existing_after_help() {
-        let pane_send_text = long_help(&["pane", "send-text"]);
-        assert!(
-            pane_send_text.contains("Words after PANE_ID are joined with single spaces."),
-            "pane send-text dropped its existing after_help: {pane_send_text}"
-        );
-        assert!(
-            pane_send_text.contains(
-                "next: shepr pane run <PANE_ID> <COMMAND> sends text and Enter in one call"
-            ),
-            "pane send-text is missing its next-step hint: {pane_send_text}"
         );
     }
 

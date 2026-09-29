@@ -396,21 +396,6 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    PaneSendText(PaneSendTextParams) => "pane.send_text" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    PaneSendKeys(PaneSendKeysParams) => "pane.send_keys" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    PaneSendInput(PaneSendInputParams) => "pane.send_input" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     PaneRead(PaneReadParams) => "pane.read" {
         client_shell: false, mutates_ui: false, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
@@ -452,11 +437,6 @@ define_methods! {
         runs_on_socket_thread: true, routine: false,
     };
     EventsWait(EventsWaitParams) => "events.wait" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: true, routine: false,
-    };
-    PaneWaitForOutput(PaneWaitForOutputParams) => "pane.wait_for_output" {
         client_shell: false, mutates_ui: false, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: true, routine: false,

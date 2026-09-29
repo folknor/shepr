@@ -6,7 +6,6 @@ mod tab_surface;
 mod text;
 
 pub(crate) use self::panes::pane_is_scrolled_back;
-pub(crate) use self::panes::restore_failure_message;
 pub(crate) use self::scrollbar::render_pane_scrollbar_buffer;
 pub(crate) use self::tab_surface::{
     TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView, compute_tab_surface,

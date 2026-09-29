@@ -56,26 +56,6 @@ value the binary renders) plus a `clippy.toml disallowed_methods` entry for
 `eprintln!`/`io::stderr` outside that one module and `src/main.rs`. The wording
 and phrasing of the messages themselves cannot be held mechanically.
 
-## HYGC-053 - Two log facts that can be wrong after a disconnect or a failed probe
-
-- `shepr-api/src/server.rs::finish_api_response` writes through
-  `write_text_line_allow_disconnect`, which turns a disconnect into `Ok`, and
-  then logs `api.request.complete` with the response's own outcome (say "ok")
-  for a response that was never delivered. Match
-  `is_connection_closed_error` there and log a "client_disconnected" outcome.
-- `shepr-mux/src/pane/launch.rs`: `SHEPR_BIN_PATH` is allowed through and only
-  overwritten when `launch_executable()` succeeds, so if that fails a nested
-  server's pane keeps the outer server's stale value. Scrubbing it instead
-  would drop it in that case; the success case writes after the scrub and is
-  unaffected.
-
-## HYGC-054 - Handshake failure text may repeat the machine name
-
-Client handshake errors now read "endpoint local (session X) handshake failed:
-...". Nobody checked whether the endpoint status UI already prefixes the
-machine name, so an SSH endpoint may show it twice. Look at the rendered
-status line for a failing remote handshake and trim whichever side repeats.
-
 ## HYGC-013 - Structured field names for the same thing differ across sites
 
 `shepr-client` keys every failure field `error`. Every other crate mixes `err`
@@ -86,25 +66,3 @@ sources found both spellings in `shepr-agent`, `shepr-api`, `shepr-mux`,
 
 Enforcement named: a text rule on the field name, or funnelling failures through
 one helper.
-
-## HYGC-022 - Errors that reach an operator naming no subject
-
-Client-side decode, reader, config and handshake errors now carry their
-subject. Open: `shepr-server/src/server/client_transport.rs` framing read
-failures log the `client_id` but no session. The worker has no validated
-session (reading `SHEPR_SESSION` would be wrong when `--session` chose it), so
-the acceptor must pass it in.
-
-Enforcement named: partly. A typed error per module carrying the subject makes the
-subject impossible to omit; a lint cannot.
-
-## HYGC-050 - Pane restore failure wording is owned by the UI module and reached from the app layer
-
-The pane restore failure is now a typed `RestoreFailure`, worded by
-`shepr-server/src/ui/panes.rs::restore_failure_message`. Two costs came with
-that: `app/creation.rs` calls `crate::ui::restore_failure_message` to fill the
-API response, so the app layer reaches into the UI module for API text; and
-`render_panes` builds that `String` on every render for each pane with a
-restore failure, where it used to borrow a `&str`. Give the wording a neutral
-home both can use (a `Display` on the failure, or a presentation module outside
-`ui`), and let the render path borrow or cache it.

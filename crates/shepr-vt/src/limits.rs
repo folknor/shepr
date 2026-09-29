@@ -23,12 +23,11 @@ pub(crate) const MAX_XTGETTCAP_BYTES: usize = KIBIBYTE_BYTES;
 /// Maximum decimal digits accepted before parsing a terminal parameter as a
 /// `u16`; the limit covers its full range while rejecting longer spellings,
 /// including unnecessarily padded values.
-// limits-exempt: decimal syntax for the u16 terminal parameter has a fixed width.
 pub(crate) const MAX_U16_DECIMAL_DIGITS: usize = 5;
 
-/// Fixed framing bytes reserved when sizing an XTGETTCAP reply, including its
-/// prefix, value separator, and terminator.
-// limits-exempt: XTGETTCAP's response framing is part of the terminal protocol format.
+/// Fixed framing bytes reserved when sizing an XTGETTCAP reply. Keeping the
+/// prefix, value separator, and terminator outside the payload budget accounts
+/// for the bytes the wire format adds around capability data.
 pub(crate) const XTGETTCAP_REPLY_OVERHEAD_BYTES: usize = 8;
 
 /// Minimum columns used when converting a byte scrollback budget to lines, so
@@ -59,25 +58,22 @@ pub(crate) const MAX_CLIPBOARD_BYTES: usize = 192 * KIBIBYTE_BYTES;
 /// branch.
 pub(crate) const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = 4096;
 
-/// Maximum width in terminal cells for one Unicode codepoint. Terminal cells
-/// use the maximum width defined by Unicode display width.
-// limits-exempt: Unicode display width is fixed by the text-width model.
+/// Maximum width in terminal cells for one Unicode codepoint. The cap matches
+/// the widest category in Unicode display width, keeping cell accounting within
+/// that model.
 pub(crate) const MAX_UNICODE_CODEPOINT_WIDTH: u8 = 2;
 
 /// Red coefficient in the integer RGB luminance approximation used to infer
-/// whether a color is light. The standard weighted sum gives green the greatest
-/// contribution.
-// limits-exempt: fixed coefficient in the standard integer RGB luminance approximation.
+/// whether a color is light. The standard approximation weights green most
+/// heavily because it contributes most to perceived luminance.
 pub(crate) const LUMINANCE_RED_WEIGHT: u32 = 299;
 
 /// Green coefficient in the integer RGB luminance approximation; see
 /// `LUMINANCE_RED_WEIGHT` for the weighted-sum scale and rationale.
-// limits-exempt: fixed coefficient in the standard integer RGB luminance approximation.
 pub(crate) const LUMINANCE_GREEN_WEIGHT: u32 = 587;
 
 /// Blue coefficient in the integer RGB luminance approximation; see
 /// `LUMINANCE_RED_WEIGHT` for the weighted-sum scale and rationale.
-// limits-exempt: fixed coefficient in the standard integer RGB luminance approximation.
 pub(crate) const LUMINANCE_BLUE_WEIGHT: u32 = 114;
 
 /// Weighted luminance threshold for classifying an RGB color as light. The

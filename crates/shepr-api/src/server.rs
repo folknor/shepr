@@ -18,7 +18,7 @@ use crate::schema::{
     SuccessResponse,
 };
 use crate::subscriptions::{ActiveSubscription, SubscriptionStream};
-use crate::wait::{wait_for_event, wait_for_output};
+use crate::wait::wait_for_event;
 use crate::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
 use shepr_platform::ipc::{
     LocalStream, SocketFileIdentity, SocketStartupLock, bind_private_socket,
@@ -537,17 +537,6 @@ fn handle_connection_with_stop(
             )?;
             finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
-        Method::PaneWaitForOutput(params) => {
-            let response = wait_for_output(
-                request_id.clone(),
-                &params,
-                &mut stream,
-                api_tx,
-                running,
-                server_stop,
-            )?;
-            finish_wait_response(&mut stream, response, &request_id, method_traits)
-        }
         method_body => {
             let response = handle_request(
                 Request {
@@ -588,20 +577,24 @@ fn finish_api_response(
     method: MethodTraits,
     response: &crate::error::EncodedApiResponse,
 ) -> std::io::Result<()> {
-    let result = write_text_line_allow_disconnect(stream, &response.body);
-    match &result {
-        Ok(()) => crate::logging::api_request_completed(
-            request_id,
-            method.name,
-            method.mutates_ui,
-            method.routine,
-            response.outcome.as_str(),
-        ),
+    // A client that hung up before its answer is not a server failure, but
+    // the log must not claim the response's outcome for an answer nobody got.
+    let outcome = match write_text_line(stream, &response.body) {
+        Ok(()) => response.outcome.as_str(),
+        Err(err) if is_connection_closed_error(&err) => "client_disconnected",
         Err(err) => {
             crate::logging::api_request_failed(request_id, method.name, &err.to_string());
+            return Err(err);
         }
-    }
-    result
+    };
+    crate::logging::api_request_completed(
+        request_id,
+        method.name,
+        method.mutates_ui,
+        method.routine,
+        outcome,
+    );
+    Ok(())
 }
 
 fn handle_request(
@@ -1633,66 +1626,6 @@ mod tests {
         assert_eq!(response["error"]["code"], "pane_not_found");
         assert_eq!(response["error"]["message"], "pane pane_1 not found");
         drop(api_tx);
-        responder.join().expect("test precondition");
-    }
-
-    #[test]
-    fn wait_for_output_stops_when_client_disconnects() {
-        let (api_tx, mut api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let (first_read_tx, first_read_rx) = std::sync::mpsc::channel();
-        let responder = std::thread::spawn(move || {
-            let mut notified = false;
-            while let Some(msg) = api_rx.blocking_recv() {
-                assert!(matches!(msg.request.method, Method::PaneRead(_)));
-                if !notified {
-                    first_read_tx.send(()).expect("test precondition");
-                    notified = true;
-                }
-                msg.respond_to
-                    .send(Ok(ResponseResult::PaneRead {
-                        read: crate::schema::PaneReadResult {
-                            pane_id: "pane_1".into(),
-                            workspace_id: "ws_1".into(),
-                            tab_id: "tab_1".into(),
-                            source: crate::schema::ReadSource::RecentUnwrapped,
-                            format: crate::schema::ReadFormat::Text,
-                            text: String::new(),
-                            revision: 0,
-                            truncated: false,
-                        },
-                    }))
-                    .expect("test precondition");
-            }
-        });
-
-        let (mut client, server) = local_stream_pair("api-wait-disconnect");
-        client
-            .write_all(br#"{"id":"req_wait","method":"pane.wait_for_output","params":{"pane_id":"pane_1","source":"recent","match":{"type":"substring","value":"never"}}}"#)
-            .expect("test precondition");
-        client.write_all(b"\n").expect("test precondition");
-        client.flush().expect("test precondition");
-
-        let running = Arc::new(AtomicBool::new(true));
-        let server_running = Arc::clone(&running);
-        let event_hub = EventHub::default();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let server_thread = std::thread::spawn(move || {
-            let result = handle_connection(server, &api_tx, &event_hub, &server_running, None);
-            done_tx.send(result).expect("test precondition");
-        });
-
-        first_read_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("test precondition");
-        drop(client);
-
-        let result = done_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("test precondition");
-        assert!(result.is_ok());
-
-        server_thread.join().expect("test precondition");
-        drop(running);
         responder.join().expect("test precondition");
     }
 
