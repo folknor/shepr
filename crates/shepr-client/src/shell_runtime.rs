@@ -6,7 +6,7 @@ pub(super) fn dispatch_client_shell_actions(
     endpoints: &mut endpoint::EndpointRegistry,
     output_writer: &mut impl io::Write,
     prefers_osc52_clipboard: bool,
-    mut shell: Option<&mut shell::ClientShellState>,
+    shell: &mut shell::ClientShellState,
     scheduled_activation: &mut Option<ClientLoopEvent>,
     now: std::time::Instant,
 ) -> bool {
@@ -27,7 +27,7 @@ pub(super) fn dispatch_client_shell_actions(
                         boot_id,
                         request,
                     );
-                } else if let Some(shell) = shell.as_deref_mut() {
+                } else {
                     repaint |= shell.cancel_endpoint_request(&request.id);
                 }
             }
@@ -64,10 +64,8 @@ pub(super) fn dispatch_client_shell_actions(
     if endpoints.active_surface_available() {
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
-        if let Some(shell) = shell {
-            for request_id in cancelled {
-                repaint |= shell.cancel_endpoint_request(&request_id);
-            }
+        for request_id in cancelled {
+            repaint |= shell.cancel_endpoint_request(&request_id);
         }
     }
     repaint
@@ -98,14 +96,11 @@ pub(super) fn client_shell_resize_message(
 pub(super) fn sync_client_shell_keyboard_report_all(
     state: &mut ClientState,
 ) -> Result<(), ClientError> {
-    let Some(shell) = state.mode.shell() else {
-        return Ok(());
-    };
     state
         .host_modes
         .sync_shell_keyboard_report_all(
             &mut state.output_writer,
-            shell.host_keyboard_report_all_requested(),
+            state.shell.host_keyboard_report_all_requested(),
         )
         .map_err(ClientError::HostTerminal)
 }
@@ -118,14 +113,10 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(),
     state.host_modes.clear_mouse_endpoint_request();
     let mouse = state.host_modes.apply_mouse(
         &mut state.output_writer,
-        state.mode.is_shell(),
         state.reported_geometry.exact,
         false,
     );
-    let shell_requests_report_all = state
-        .mode
-        .shell()
-        .is_some_and(ShellSession::host_keyboard_report_all_requested);
+    let shell_requests_report_all = state.shell.host_keyboard_report_all_requested();
     let report_all = state.host_modes.set_pane_keyboard_report_all(
         &mut state.output_writer,
         false,
@@ -150,10 +141,8 @@ fn install_pending_activation(
     let retired = activation
         .source_command_lane()
         .map_or_default(|source| endpoint_commands.retire_lane(source));
-    if let Some(shell) = state.mode.shell_mut() {
-        for request_id in retired {
-            shell.cancel_endpoint_request(&request_id);
-        }
+    for request_id in retired {
+        state.shell.cancel_endpoint_request(&request_id);
     }
     *next_surface_serial = next_surface_serial.saturating_add(1);
     state.freeze_presentation();
@@ -167,14 +156,13 @@ fn local_activation_metadata_ready(
     endpoints
         .connection(&endpoint::ClientEndpointId::Local)
         .is_some_and(|connection| {
-            state.mode.shell().is_some_and(|shell| {
-                shell
-                    .endpoint_snapshot_identity(
-                        &endpoint::ClientEndpointId::Local,
-                        connection.generation.get(),
-                    )
-                    .is_some()
-            })
+            state
+                .shell
+                .endpoint_snapshot_identity(
+                    &endpoint::ClientEndpointId::Local,
+                    connection.generation.get(),
+                )
+                .is_some()
         })
 }
 
@@ -213,11 +201,9 @@ pub(super) fn begin_endpoint_activation(
             endpoint_id,
             target,
         });
-        if let Some(shell) = state.mode.shell_mut() {
-            shell.receive_endpoint_unavailable(
-                "Local is reconnecting; selection will resume when it is ready".into(),
-            );
-        }
+        state.shell.receive_endpoint_unavailable(
+            "Local is reconnecting; selection will resume when it is ready".into(),
+        );
         return Ok(());
     }
     let replace_pending = endpoint_id.is_local()
@@ -248,20 +234,20 @@ pub(super) fn begin_endpoint_activation(
             .connection(&endpoint_id)
             .is_some_and(|connection| connection.surface_active);
     if already_active {
-        if let (Some(shell), Some(target)) = (state.mode.shell_mut(), target) {
-            let actions = shell.focus_endpoint_target(target);
+        if let Some(target) = target {
+            let actions = state.shell.focus_endpoint_target(target);
             let repaint = dispatch_client_shell_actions(
                 actions,
                 endpoint_commands,
                 endpoints,
                 &mut state.output_writer,
                 state.settings.prefers_osc52_clipboard(),
-                Some(shell),
+                &mut state.shell,
                 scheduled_activation,
                 now,
             );
             if repaint
-                && let Some(frame) = shell.compose(
+                && let Some(frame) = state.shell.compose(
                     state.reported_geometry.cols(),
                     state.reported_geometry.rows(),
                 )
@@ -271,11 +257,8 @@ pub(super) fn begin_endpoint_activation(
         }
         return Ok(());
     }
-    let Some(shell) = state.mode.shell() else {
-        return Ok(());
-    };
     let resize = client_shell_resize_message(
-        shell,
+        &state.shell,
         state.reported_geometry.cols(),
         state.reported_geometry.rows(),
         state.reported_geometry.cell_width(),
@@ -283,7 +266,7 @@ pub(super) fn begin_endpoint_activation(
         state.reported_geometry.exact,
     );
     match endpoint::PendingEndpointActivation::prepare(
-        shell,
+        &state.shell,
         endpoints,
         &endpoint_id,
         target,
@@ -307,12 +290,8 @@ pub(super) fn begin_endpoint_activation(
             activation,
         ),
         Err(endpoint::ActivationBeginError::Preflight(error)) => {
-            if let Some(shell) = state.mode.shell_mut() {
-                shell.receive_endpoint_unavailable(format!(
-                    "{}: {error}",
-                    shell.endpoint_label(&endpoint_id)
-                ));
-            }
+            let message = format!("{}: {error}", state.shell.endpoint_label(&endpoint_id));
+            state.shell.receive_endpoint_unavailable(message);
         }
         Err(endpoint::ActivationBeginError::Partial { activation, error }) => {
             // A send error is not evidence that its peer did not observe the write. Freeze and
@@ -329,13 +308,7 @@ pub(super) fn begin_endpoint_activation(
                 state,
                 endpoints,
                 pending,
-                &format!(
-                    "{}: {error}",
-                    state.mode.shell().map_or_else(
-                        || format!("{endpoint_id:?}"),
-                        |shell| shell.endpoint_label(&endpoint_id).to_owned(),
-                    )
-                ),
+                &format!("{}: {error}", state.shell.endpoint_label(&endpoint_id)),
                 false,
                 now,
             );
@@ -362,13 +335,10 @@ pub(super) fn complete_endpoint_activation(
         let Some(activation) = pending.as_mut() else {
             return Ok(None);
         };
-        let Some(shell) = state.mode.shell_mut() else {
-            return Ok(None);
-        };
-        match activation.complete_at(shell, endpoints, now) {
+        match activation.complete_at(&mut state.shell, endpoints, now) {
             Ok(completion) => completion,
             Err(error) => {
-                shell.receive_endpoint_unavailable(error);
+                state.shell.receive_endpoint_unavailable(error);
                 return Ok(None);
             }
         }
@@ -381,12 +351,10 @@ pub(super) fn complete_endpoint_activation(
         // The coherent target frame can replace the frozen source now, but the registry keeps
         // pane input disabled until a second projection epoch has replayed host modes/effects.
         state.unfreeze_presentation();
-        let frame = state.mode.shell_mut().and_then(|shell| {
-            shell.compose(
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-            )
-        });
+        let frame = state.shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        );
         if let Some(frame) = frame {
             state.present_frame(frame);
         }
@@ -406,10 +374,8 @@ pub(super) fn complete_endpoint_activation(
             successor: next,
             ..
         } => {
-            if next.is_none()
-                && let Some(shell) = state.mode.shell_mut()
-            {
-                shell.receive_endpoint_unavailable(error);
+            if next.is_none() {
+                state.shell.receive_endpoint_unavailable(error);
             }
             next
         }
@@ -423,18 +389,14 @@ pub(super) fn complete_endpoint_activation(
         correct_committed_surface_size(state, endpoints, requested_surface_size);
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
-        if let Some(shell) = state.mode.shell_mut() {
-            for request_id in cancelled {
-                shell.cancel_endpoint_request(&request_id);
-            }
+        for request_id in cancelled {
+            state.shell.cancel_endpoint_request(&request_id);
         }
     }
-    let frame = state.mode.shell_mut().and_then(|shell| {
-        shell.compose(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        )
-    });
+    let frame = state.shell.compose(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    );
     if let Some(frame) = frame {
         state.present_frame(frame);
     }
@@ -471,7 +433,7 @@ fn committed_resize(
     state: &ClientState,
     requested: shepr_protocol::ClientSurfaceSize,
 ) -> Option<ClientMessage> {
-    let shell = state.mode.shell()?;
+    let shell = &state.shell;
     (shell.surface_size(
         state.reported_geometry.cols(),
         state.reported_geometry.rows(),
@@ -492,13 +454,11 @@ pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: Stri
     // An unavailable committed endpoint has no presentation lease. Keep all pane input and late
     // source output blocked, while allowing this client-owned chrome frame through the freeze.
     state.freeze_presentation();
-    let frame = state.mode.shell_mut().and_then(|shell| {
-        shell.receive_endpoint_unavailable(message);
-        shell.compose(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        )
-    });
+    state.shell.receive_endpoint_unavailable(message);
+    let frame = state.shell.compose(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    );
     if let Some(frame) = frame {
         state.present_frozen_chrome(frame);
     }
@@ -550,10 +510,7 @@ pub(super) fn handle_endpoint_disconnect(
         .as_mut()
         .filter(|pending| pending.involves_endpoint(endpoint_id))
     {
-        let label = state
-            .mode
-            .shell()
-            .map_or("Endpoint", |shell| shell.endpoint_label(endpoint_id));
+        let label = state.shell.endpoint_label(endpoint_id);
         let outcome = pending.endpoint_disconnected_at(
             endpoints,
             endpoint_id,
@@ -570,21 +527,18 @@ pub(super) fn handle_endpoint_disconnect(
     }
     let endpoint_was_active = endpoints.active_id() == endpoint_id;
     let cancelled = endpoint_commands.disconnect(endpoint_id);
-    let unavailable = state.mode.shell_mut().and_then(|shell| {
-        for request_id in cancelled {
-            shell.cancel_endpoint_request(&request_id);
-        }
-        shell.mark_endpoint_disconnected(endpoint_id);
-        endpoint_was_active.then(|| format!("{} {notice}", shell.endpoint_label(endpoint_id)))
-    });
+    for request_id in cancelled {
+        state.shell.cancel_endpoint_request(&request_id);
+    }
+    state.shell.mark_endpoint_disconnected(endpoint_id);
+    let unavailable = endpoint_was_active
+        .then(|| format!("{} {notice}", state.shell.endpoint_label(endpoint_id)));
     if let Some(message) = unavailable {
         present_handoff_unavailable(state, message);
-    } else if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
-        shell.compose(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        )
-    }) {
+    } else if let Some(frame) = state.shell.compose(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    ) {
         // A non-active machine going offline only changes its machine-list status.
         state.present_chrome(frame, pending_activation.is_some());
     }
@@ -617,7 +571,7 @@ pub(super) fn stale_freeze_recovery(
     if handoff_busy || endpoints.active_id() != selected {
         return None;
     }
-    let shell = state.mode.shell()?;
+    let shell = &state.shell;
     let generation = endpoints
         .connection(selected)
         .filter(|connection| connection.surface_active)?
@@ -681,20 +635,18 @@ pub(super) fn follow_endpoint_catalog(
         );
         endpoints.disconnect(&endpoint_id);
     }
-    if let Some(shell) = state.mode.shell_mut() {
-        // Retired machines are first dropped from the shell, which discards what it kept
-        // from them (status, snapshot, agents). A re-pointed machine is then shown afresh
-        // by the final catalog instead of with the old target's workspaces.
-        if !changes.retired.is_empty() {
-            let interim: Vec<_> = profiles
-                .iter()
-                .filter(|profile| !changes.retired.contains(&profile.id))
-                .cloned()
-                .collect();
-            shell.set_endpoint_catalog(&interim);
-        }
-        shell.set_endpoint_catalog(&profiles);
+    // Retired machines are first dropped from the shell, which discards what it kept
+    // from them (status, snapshot, agents). A re-pointed machine is then shown afresh
+    // by the final catalog instead of with the old target's workspaces.
+    if !changes.retired.is_empty() {
+        let interim: Vec<_> = profiles
+            .iter()
+            .filter(|profile| !changes.retired.contains(&profile.id))
+            .cloned()
+            .collect();
+        state.shell.set_endpoint_catalog(&interim);
     }
+    state.shell.set_endpoint_catalog(&profiles);
     for profile in &changes.started {
         supervisors.start_ssh(profile, now);
     }
@@ -713,12 +665,10 @@ pub(super) fn follow_endpoint_catalog(
             now,
         );
     }
-    if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
-        shell.compose(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        )
-    }) {
+    if let Some(frame) = state.shell.compose(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    ) {
         state.present_chrome(frame, pending_activation.is_some());
     }
     active_retired
@@ -743,46 +693,41 @@ pub(super) fn install_client_shell_snapshot(
         && !state.presentation_frozen
         && endpoints.active_id() == endpoint_id
         && connection.surface_active;
-    let (composed, resize) = if let Some(shell) = state.mode.shell_mut() {
-        let waits_for_selected_surface = projection_pending
-            || (endpoints.active_id() == endpoint_id
-                && !project_snapshot
-                && shell.has_presented_surface());
-        let previous_size = shell.surface_size(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        );
-        if !waits_for_selected_surface {
-            shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
-        }
-        if project_snapshot {
-            shell.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
-        } else {
-            shell.cache_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
-        }
-        let next_size = shell.surface_size(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        );
-        (
-            shell.compose(
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-            ),
-            (previous_size != next_size).then(|| {
-                client_shell_resize_message(
-                    shell,
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                    state.reported_geometry.cell_width(),
-                    state.reported_geometry.cell_height(),
-                    state.reported_geometry.exact,
-                )
-            }),
-        )
+    let shell = &mut state.shell;
+    let waits_for_selected_surface = projection_pending
+        || (endpoints.active_id() == endpoint_id
+            && !project_snapshot
+            && shell.has_presented_surface());
+    let previous_size = shell.surface_size(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    );
+    if !waits_for_selected_surface {
+        shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
+    }
+    if project_snapshot {
+        shell.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
     } else {
-        (None, None)
-    };
+        shell.cache_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
+    }
+    let next_size = shell.surface_size(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    );
+    let composed = shell.compose(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    );
+    let resize = (previous_size != next_size).then(|| {
+        client_shell_resize_message(
+            shell,
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+            state.reported_geometry.cell_width(),
+            state.reported_geometry.cell_height(),
+            state.reported_geometry.exact,
+        )
+    });
     if let Some(resize) = resize {
         endpoints.send_to(endpoint_id, &resize);
     }
@@ -819,11 +764,9 @@ pub(super) fn finish_client_shell_input(
         endpoints.send(&ClientMessage::Detach);
         return Ok(true);
     }
-    if outcome.resize
-        && let Some(shell) = state.mode.shell()
-    {
+    if outcome.resize {
         let resize = client_shell_resize_message(
-            shell,
+            &state.shell,
             state.reported_geometry.cols(),
             state.reported_geometry.rows(),
             state.reported_geometry.cell_width(),
@@ -865,24 +808,19 @@ pub(super) fn finish_client_shell_input(
         endpoints,
         &mut state.output_writer,
         state.settings.prefers_osc52_clipboard(),
-        state.mode.shell_mut(),
+        &mut state.shell,
         scheduled_activation,
         now,
     );
     let frame = if dispatch_repaint {
-        state.mode.shell_mut().and_then(|shell| {
-            shell.compose(
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-            )
-        })
+        state.shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        )
     } else {
         frame
     };
-    let active_endpoint_online = state
-        .mode
-        .shell()
-        .is_none_or(|shell| shell.endpoint_is_online(endpoints.active_id()))
+    let active_endpoint_online = state.shell.endpoint_is_online(endpoints.active_id())
         && endpoints.active_surface_available();
     for request in outcome.requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
@@ -952,7 +890,7 @@ mod tests {
     #[test]
     fn committed_handoff_resizes_only_when_its_requested_size_is_stale() {
         let state = ClientState::test_new();
-        let committed = state.mode.shell().expect("test shell").surface_size(
+        let committed = state.shell.surface_size(
             state.reported_geometry.cols(),
             state.reported_geometry.rows(),
         );
@@ -1045,9 +983,7 @@ mod tests {
                 state.reported_geometry.rows(),
             );
             state
-                .mode
-                .shell_mut()
-                .expect("test shell")
+                .shell
                 .compose(cols, rows)
                 .expect("test shell composes")
         };
@@ -1077,9 +1013,7 @@ mod tests {
         let local = endpoint::ClientEndpointId::Local;
         let mut state = ClientState::test_new();
         state
-            .mode
-            .shell_mut()
-            .expect("test shell")
+            .shell
             .set_endpoint_snapshot_for_generation(&local, 1, snapshot("local-boot"));
         let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
         let mut attempted = None;
@@ -1139,7 +1073,7 @@ mod tests {
         let local = endpoint::ClientEndpointId::Local;
 
         let mut state = ClientState::test_new();
-        let shell = state.mode.shell_mut().expect("test shell");
+        let shell = &mut state.shell;
         shell.set_endpoint_catalog(&catalog.ssh);
         let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
         endpoints.insert(
@@ -1202,7 +1136,7 @@ mod tests {
             state.presentation_frozen,
             "nothing owns presentation until Local commits"
         );
-        let shell = state.mode.shell().expect("test shell");
+        let shell = &state.shell;
         assert_eq!(
             shell.endpoint_status(&build_id),
             Some(endpoint::ClientEndpointStatus::Connecting),
@@ -1243,14 +1177,7 @@ mod tests {
         assert!(!supervisors.supervises(&docs_id));
         assert!(!supervisors.supervises(&build_id));
         assert!(!catalog.has_ssh());
-        assert!(
-            state
-                .mode
-                .shell()
-                .expect("test shell")
-                .endpoint_status(&docs_id)
-                .is_none()
-        );
+        assert!(state.shell.endpoint_status(&docs_id).is_none());
     }
 
     #[test]

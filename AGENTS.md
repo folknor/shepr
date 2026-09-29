@@ -38,13 +38,20 @@ Kept:
   CLI process and cannot be sent with `--machine`
 
 shepr is for overseeing agents across machines, not for driving them.
-Launching or steering agents through shepr (agent start, managed agents,
-agent prompt, agent send-keys and agent wait) is deliberately not kept. Pane
-driving commands (send-text, send-keys, run, wait-for-output and input) and
-their JSON API methods are also not kept; pane.input.set remains for the TUI
-context menu. Nor is the pane.output_matched subscription, which let a script
-wait for text to appear in a pane. Nor are local detection manifest overrides
-and their reload: a detection change ships as a new build.
+Launching or steering agents through shepr is deliberately not kept, and
+neither is driving panes: no CLI command or API method sends text or keys to
+a pane, waits for pane output or reads pane history, and there is no
+subscription that fires when text appears in a pane. The one pane input method
+the API keeps is pane.input.set, for the TUI context menu. Nor are local
+detection manifest overrides and their reload: a detection change ships as a
+new build.
+
+The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
+the subcommands are `status`, `machine`, `server`, `session`, `integration`
+and `detect`. Workspaces, tabs and panes are managed from the TUI only; there
+is no CLI group for them, and no CLI attach to a single terminal. `shepr
+detect capture <pane>` prints the text the detector evaluates for a pane, and
+`shepr detect explain <pane>` says which rule decided its state.
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.

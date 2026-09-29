@@ -11,7 +11,9 @@ use shepr_protocol::TerminalId;
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 
-pub struct MovedPane {
+/// A pane built outside a tab, for constructors that start a tab or workspace
+/// from one pane without spawning anything.
+pub struct ExistingPane {
     pub pane_id: PaneId,
     pub pane: TabPane,
 }
@@ -525,11 +527,11 @@ impl Tab {
     pub fn from_existing_pane(
         number: usize,
         custom_name: Option<String>,
-        moved: MovedPane,
+        existing: ExistingPane,
     ) -> Self {
         let mut panes = HashMap::new();
-        let pane_id = moved.pane_id;
-        panes.insert(pane_id, moved.pane);
+        let pane_id = existing.pane_id;
+        panes.insert(pane_id, existing.pane);
         Self {
             custom_name,
             number,
@@ -538,49 +540,6 @@ impl Tab {
             panes,
             zoomed: false,
         }
-    }
-
-    pub fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<MovedPane> {
-        if !self.has_consistent_panes() || !self.panes.contains_key(&pane_id) {
-            return None;
-        }
-
-        if self.panes.len() > 1 {
-            let next_root = self.promoted_root_if_needed(pane_id);
-            if !self.layout.close_pane(pane_id) {
-                return None;
-            }
-            if let Some(next_root) = next_root {
-                self.root_pane = next_root;
-            }
-        }
-
-        let pane = self.panes.remove(&pane_id)?;
-        self.zoomed = false;
-        Some(MovedPane { pane_id, pane })
-    }
-
-    pub(crate) fn insert_existing_pane(
-        &mut self,
-        target_pane_id: PaneId,
-        moved: MovedPane,
-        direction: Direction,
-        ratio: f32,
-        focus: bool,
-    ) -> Result<PaneId, MovedPane> {
-        if self.panes.contains_key(&moved.pane_id) || !self.has_consistent_panes() {
-            return Err(moved);
-        }
-        if !self
-            .layout
-            .insert_pane_near(target_pane_id, moved.pane_id, direction, ratio, focus)
-        {
-            return Err(moved);
-        }
-        let pane_id = moved.pane_id;
-        self.panes.insert(pane_id, moved.pane);
-        self.zoomed = false;
-        Ok(pane_id)
     }
 
     fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {

@@ -4,9 +4,7 @@
 
 use clap::ArgMatches;
 
-use shepr_api::schema::{
-    AgentReadParams, AgentTarget, ErrorBody, ErrorResponse, Method, ReadFormat, ReadSource, Request,
-};
+use shepr_api::schema::{ErrorBody, ErrorResponse, Method, PaneTarget, Request};
 
 use super::matches::{flag, required, string};
 
@@ -68,25 +66,31 @@ pub(super) fn run_detect_command(
     }
 }
 
-/// The request behind `detect capture`. The source, format and line limit are
-/// stated outright: `agent.read` defaults elsewhere to recent output, which is
-/// not what the detector sees.
+/// The request behind `detect capture`: the server answers with the exact text
+/// the detector evaluates for that pane, plain and whole, whether or not an
+/// agent is currently detected there.
 fn capture_request(pane: &str) -> Request {
     Request {
         id: "cli:detect:capture".into(),
-        method: Method::AgentRead(AgentReadParams {
-            target: pane.to_owned(),
-            source: ReadSource::Detection,
-            lines: None,
-            format: ReadFormat::Text,
-            strip_ansi: true,
+        method: Method::DetectCapture(PaneTarget {
+            pane_id: pane.to_owned(),
         }),
     }
 }
 
 fn capture(paths: &super::target::CliContext, pane: &str) -> super::CliResult<i32> {
     let response = super::send_request(paths, &capture_request(pane))?;
-    super::print_read_response(&response)
+    if response.get("error").is_some() {
+        eprintln!(
+            "{}",
+            serde_json::to_string(&response).map_err(std::io::Error::other)?
+        );
+        return Ok(1);
+    }
+    if let Some(text) = response["result"]["text"].as_str() {
+        print!("{text}");
+    }
+    Ok(0)
 }
 
 pub(super) fn explain(
@@ -106,7 +110,7 @@ pub(super) fn explain(
             paths,
             &Request {
                 id: "cli:detect:explain".into(),
-                method: Method::AgentExplain(AgentTarget { target }),
+                method: Method::DetectExplain(PaneTarget { pane_id: target }),
             },
         )?;
         if response.get("error").is_some() {
@@ -359,15 +363,15 @@ mod tests {
     }
 
     #[test]
-    fn capture_request_reads_the_detector_snapshot_as_plain_text() {
-        let Method::AgentRead(params) = capture_request("w1:p1").method else {
-            panic!("capture should use agent.read");
+    fn capture_request_names_the_pane_and_nothing_else() {
+        let request = capture_request("w1:p1");
+        let Method::DetectCapture(target) = request.method.clone() else {
+            panic!("capture should use detect.capture");
         };
-        assert_eq!(params.target, "w1:p1");
-        assert_eq!(params.source, ReadSource::Detection);
-        assert_eq!(params.format, ReadFormat::Text);
-        assert!(params.strip_ansi);
-        assert_eq!(params.lines, None);
+        assert_eq!(target.pane_id, "w1:p1");
+        let json = serde_json::to_value(&request).expect("test precondition");
+        assert_eq!(json["method"], "detect.capture");
+        assert_eq!(json["params"], serde_json::json!({ "pane_id": "w1:p1" }));
     }
 
     #[test]

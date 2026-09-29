@@ -1451,7 +1451,7 @@ mod tests {
         let rejected = handle_request(
             Request {
                 id: "after_stop".into(),
-                method: Method::WorkspaceList(crate::schema::EmptyParams::default()),
+                method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
             },
             &tx,
             None,
@@ -1468,7 +1468,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let request = Request {
             id: "req_2".into(),
-            method: Method::WorkspaceList(crate::schema::EmptyParams::default()),
+            method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
         };
 
         let request_for_thread = request.clone();

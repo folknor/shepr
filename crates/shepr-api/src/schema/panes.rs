@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use shepr_protocol::{PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
 
 use super::agents::AgentSessionInfo;
-use super::common::{AgentStatus, PaneAgentState, ReadFormat, ReadSource, SplitDirection};
+use super::common::{AgentStatus, PaneAgentState, SplitDirection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -60,39 +60,6 @@ pub struct PaneSwapParams {
     pub target_pane_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PaneMoveParams {
-    pub pane_id: String,
-    pub destination: PaneMoveDestination,
-    #[serde(default)]
-    pub focus: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PaneMoveDestination {
-    Tab {
-        tab_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target_pane_id: Option<String>,
-        split: SplitDirection,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ratio: Option<f32>,
-    },
-    NewTab {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-    },
-    NewWorkspace {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab_label: Option<String>,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PaneZoomParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,18 +75,6 @@ pub enum PaneZoomMode {
     Toggle,
     On,
     Off,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PaneLayoutParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PaneProcessInfoParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -181,8 +136,7 @@ pub enum LayoutNode {
 pub struct LayoutPane {
     /// Output only: `layout.export` names the live pane behind each leaf.
     /// `layout.apply` always spawns fresh panes and ignores it, so an exported
-    /// layout can be applied back unchanged; moving an existing pane into a
-    /// layout is `pane.move`.
+    /// layout can be applied back unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,19 +147,6 @@ pub struct LayoutPane {
     pub command: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneNeighborParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
-    pub direction: PaneDirection,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PaneEdgesParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,39 +242,11 @@ pub struct PaneCopySearchParams {
     pub previous: Option<PaneTextRange>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PaneListParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PaneCurrentParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller_pane_id: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneRenameParams {
     pub pane_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneReadParams {
-    pub pane_id: String,
-    pub source: ReadSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lines: Option<u32>,
-    #[serde(default)]
-    pub format: ReadFormat,
-    /// `false` keeps escape sequences: the read uses the ANSI renderer
-    /// whatever `format` says, and the result reports `format: ansi`.
-    #[serde(default = "super::default_true")]
-    pub strip_ansi: bool,
-    #[serde(skip)]
-    pub intent: super::common::ReadIntent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,31 +325,6 @@ pub struct PaneScrollInfo {
     pub viewport_rows: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneProcessInfo {
-    pub pane_id: PublicPaneId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shell_pid: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub foreground_process_group_id: Option<u32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub foreground_processes: Vec<PaneProcessInfoProcess>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneProcessInfoProcess {
-    pub pid: u32,
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub argv0: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub argv: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cmdline: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneSwapResult {
     pub changed: bool,
@@ -456,36 +344,6 @@ pub enum PaneSwapReason {
     SamePane,
     NotFound,
     CrossTab,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PaneMoveResult {
-    pub changed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<PaneMoveReason>,
-    pub previous_pane_id: PublicPaneId,
-    pub previous_workspace_id: WorkspaceId,
-    pub previous_tab_id: PublicTabId,
-    pub pane: Box<PaneInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_layout: Option<Box<PaneLayoutSnapshot>>,
-    pub target_layout: Box<PaneLayoutSnapshot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_workspace: Option<super::WorkspaceInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_tab: Option<super::TabInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_workspace_id: Option<WorkspaceId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_tab_id: Option<PublicTabId>,
-    pub focused_pane_id: PublicPaneId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PaneMoveReason {
-    SameTab,
-    ZoomedTab,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -544,25 +402,6 @@ pub struct PaneLayoutSplit {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PaneNeighborResult {
-    pub pane_id: PublicPaneId,
-    pub direction: PaneDirection,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub neighbor_pane_id: Option<PublicPaneId>,
-    pub layout: PaneLayoutSnapshot,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PaneEdgesResult {
-    pub pane_id: PublicPaneId,
-    pub left: bool,
-    pub right: bool,
-    pub up: bool,
-    pub down: bool,
-    pub layout: PaneLayoutSnapshot,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneFocusDirectionResult {
     pub changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -593,21 +432,4 @@ pub struct PaneResizeResult {
 #[serde(rename_all = "snake_case")]
 pub enum PaneResizeReason {
     Unchanged,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneReadResult {
-    pub pane_id: PublicPaneId,
-    pub workspace_id: WorkspaceId,
-    pub tab_id: PublicTabId,
-    pub source: ReadSource,
-    /// The format `text` is in, after `strip_ansi` has been applied.
-    pub format: ReadFormat,
-    pub text: String,
-    /// The pane's content revision, taken after the read: `text` holds
-    /// nothing newer. It is the counter `pane.copy_search` takes as
-    /// `content_revision` (odd while a write is in progress), and it differs
-    /// from `PaneInfo.revision`, which tracks pane metadata rather than output.
-    pub revision: u64,
-    pub truncated: bool,
 }

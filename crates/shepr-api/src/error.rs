@@ -33,14 +33,12 @@ macro_rules! api_error_codes {
 api_error_codes! {
     AgentExplainFileReadFailed => "agent_explain_file_read_failed",
     AgentExplainUnavailable => "agent_explain_unavailable",
-    AgentNotFound => "agent_not_found",
     CopyMotionUnavailable => "copy_motion_unavailable",
     InternalError => "internal_error",
     InvalidAgent => "invalid_agent",
     InvalidCwd => "invalid_cwd",
     InvalidEnv => "invalid_env",
     InvalidLayout => "invalid_layout",
-    InvalidLines => "invalid_lines",
     InvalidPaneSwap => "invalid_pane_swap",
     InvalidParams => "invalid_params",
     InvalidRatio => "invalid_ratio",
@@ -52,7 +50,6 @@ api_error_codes! {
     PaneClearFailed => "pane_clear_failed",
     PaneClosed => "pane_closed",
     PaneLayoutUnavailable => "pane_layout_unavailable",
-    PaneMoveFailed => "pane_move_failed",
     PaneNotFound => "pane_not_found",
     PaneSplitFailed => "pane_split_failed",
     QueryTooLarge => "query_too_large",
@@ -66,22 +63,16 @@ api_error_codes! {
     TabCreateFailed => "tab_create_failed",
     TabMoveFailed => "tab_move_failed",
     TabNotFound => "tab_not_found",
-    TargetPaneNotFound => "target_pane_not_found",
     Timeout => "timeout",
     UnsupportedEventWaitMatch => "unsupported_event_wait_match",
-    UnsupportedReadFormat => "unsupported_read_format",
     WorkspaceCreateFailed => "workspace_create_failed",
     WorkspaceMoveBlockFailed => "workspace_move_block_failed",
     WorkspaceMoveFailed => "workspace_move_failed",
     WorkspaceNotFound => "workspace_not_found",
-    AgentNameTaken => "agent_name_taken",
-    AgentNotIdle => "agent_not_idle",
-    AgentTargetAmbiguous => "agent_target_ambiguous",
     ClientMissing => "client_missing",
     ConnectionLocalOnly => "connection_local_only",
     EndpointBusy => "endpoint_busy",
     EventsLost => "events_lost",
-    InvalidAgentName => "invalid_agent_name",
     UnsupportedEndpointCommand => "unsupported_endpoint_command",
     UnsupportedMethod => "unsupported_method",
     StaleBoot => "stale_boot",
@@ -109,7 +100,6 @@ impl From<String> for ApiErrorCode {
 pub enum ApiErrorPayload {
     Message(String),
     PaneNotFound { pane_id: String },
-    AgentNotFound { target: String },
 }
 
 impl ApiErrorPayload {
@@ -117,7 +107,6 @@ impl ApiErrorPayload {
         match self {
             Self::Message(message) => message,
             Self::PaneNotFound { pane_id } => format!("pane {pane_id} not found"),
-            Self::AgentNotFound { target } => format!("agent target {target} not found"),
         }
     }
 }
@@ -141,15 +130,6 @@ impl ApiError {
             code: ApiErrorCode::PaneNotFound,
             payload: ApiErrorPayload::PaneNotFound {
                 pane_id: pane_id.into(),
-            },
-        }
-    }
-
-    pub fn agent_not_found(target: impl Into<String>) -> Self {
-        Self {
-            code: ApiErrorCode::AgentNotFound,
-            payload: ApiErrorPayload::AgentNotFound {
-                target: target.into(),
             },
         }
     }
@@ -269,10 +249,10 @@ mod tests {
     #[test]
     fn legacy_wire_codes_are_classified_before_internal_use() {
         let error = ApiError::from_body(ErrorBody {
-            code: "agent_target_ambiguous".into(),
-            message: "more than one agent matches".into(),
+            code: "stale_content".into(),
+            message: "the content changed".into(),
         });
-        assert_eq!(error.code, ApiErrorCode::AgentTargetAmbiguous);
+        assert_eq!(error.code, ApiErrorCode::StaleContent);
     }
 
     #[test]

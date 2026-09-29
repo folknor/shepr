@@ -1,16 +1,5 @@
 use std::io;
 
-/// All environment and target details needed to present a client failure.
-pub(crate) struct ClientErrorContext {
-    local_reattach: String,
-}
-
-impl ClientErrorContext {
-    pub(crate) fn new(local_reattach: String) -> Self {
-        Self { local_reattach }
-    }
-}
-
 /// What a finished client run leaves for the binary to print.
 ///
 /// By the time a run returns, the client has restored the host terminal,
@@ -18,24 +7,19 @@ impl ClientErrorContext {
 /// restored screen. The binary writes each one to stderr as `shepr: {line}`;
 /// a line may itself span several terminal lines.
 #[derive(Debug, Default)]
-#[must_use = "the lines carry forwarded notices and reattach guidance the operator must see"]
+#[must_use = "the lines carry the message that ended the session, which the operator must see"]
 pub struct ClientExit {
-    notices: Vec<String>,
     message: Option<String>,
 }
 
 impl ClientExit {
-    pub(crate) fn new(notices: Vec<String>, message: Option<String>) -> Self {
-        Self { notices, message }
+    pub(crate) fn new(message: Option<String>) -> Self {
+        Self { message }
     }
 
-    /// Notices collected while forwarding direct-attach input, then the
-    /// message that ended the session, in the order they are to be printed.
+    /// The message that ended the session, if any.
     pub fn lines(&self) -> impl Iterator<Item = &str> {
-        self.notices
-            .iter()
-            .map(String::as_str)
-            .chain(self.message.as_deref())
+        self.message.as_deref().into_iter()
     }
 }
 
@@ -97,7 +81,7 @@ pub enum ClientError {
     /// The peer did not send a valid build preamble.
     Preamble(shepr_protocol::preamble::PreambleError),
     /// The first framed reply had the wrong message kind.
-    UnexpectedWelcome { endpoint: bool },
+    UnexpectedWelcome,
     /// Server shut down.
     ServerShutdown {
         reason: Option<shepr_protocol::ShutdownReason>,
@@ -106,22 +90,6 @@ pub enum ClientError {
     ConnectionLost(io::Error),
     /// Protocol error (framing, deserialization).
     Protocol(shepr_protocol::FramingError),
-}
-
-impl ClientError {
-    pub(crate) fn display_with_context(&self, context: &ClientErrorContext) -> String {
-        match self {
-            Self::ServerShutdown {
-                reason: Some(shepr_protocol::ShutdownReason::Detached),
-            } => {
-                format!(
-                    "detached from server\nRun `{}` to reattach",
-                    context.local_reattach
-                )
-            }
-            _ => self.to_string(),
-        }
-    }
 }
 
 impl std::fmt::Display for ClientError {
@@ -147,23 +115,13 @@ impl std::fmt::Display for ClientError {
                 write!(f, "server rejected handshake: {error}")
             }
             ClientError::Preamble(error) => write!(f, "protocol error: {error}"),
-            ClientError::UnexpectedWelcome { endpoint: true } => {
+            ClientError::UnexpectedWelcome => {
                 write!(f, "protocol error: expected endpoint welcome")
             }
-            ClientError::UnexpectedWelcome { endpoint: false } => {
-                write!(f, "protocol error: expected Welcome message")
-            }
             ClientError::ServerShutdown { reason } => {
-                match reason {
-                    Some(shepr_protocol::ShutdownReason::Detached) => {
-                        write!(f, "detached from server")?;
-                    }
-                    _ => {
-                        write!(f, "server shut down")?;
-                        if let Some(reason) = reason {
-                            write!(f, ": {reason}")?;
-                        }
-                    }
+                write!(f, "server shut down")?;
+                if let Some(reason) = reason {
+                    write!(f, ": {reason}")?;
                 }
                 Ok(())
             }
@@ -193,29 +151,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exit_lines_put_forwarded_notices_before_the_ending_message() {
-        let exit = ClientExit::new(
-            vec!["first notice".into(), "second notice".into()],
-            Some("detached from server\nRun `shepr` to reattach".into()),
-        );
+    fn exit_lines_carry_the_ending_message() {
+        let exit = ClientExit::new(Some("server shut down: updating".into()));
         assert_eq!(
             exit.lines().collect::<Vec<_>>(),
-            [
-                "first notice",
-                "second notice",
-                "detached from server\nRun `shepr` to reattach"
-            ]
+            ["server shut down: updating"]
         );
         let failure = ClientRunError::Session(exit);
-        assert_eq!(
-            failure.to_string(),
-            "first notice\nsecond notice\ndetached from server\nRun `shepr` to reattach"
-        );
+        assert_eq!(failure.to_string(), "server shut down: updating");
     }
 
     #[test]
-    fn a_clean_exit_without_notices_prints_nothing() {
-        let exit = ClientExit::new(Vec::new(), None);
+    fn a_clean_exit_prints_nothing() {
+        let exit = ClientExit::new(None);
         assert_eq!(exit.lines().count(), 0);
     }
 }

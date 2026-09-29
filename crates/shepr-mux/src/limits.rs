@@ -5,17 +5,6 @@ use std::time::Duration;
 /// The public number of the first workspace a process allocates. Public
 /// numbers are one-based; zero spells no workspace ID.
 pub(crate) const FIRST_WORKSPACE_NUMBER: usize = 1;
-/// Heuristic fraction of comparable viewport rows needed to reuse a read
-/// snapshot. A high overlap tolerates a small changing status area while
-/// rejecting a substantially different screen; it is not a measured rate.
-pub(crate) const SIMILAR_VIEWPORT_RATIO_PERCENT: usize = 70;
-/// Heuristic minimum fraction of overlapping nonblank rows needed to align
-/// upward history. A lower overlap tolerates pinned headers and changing status
-/// rows while still requiring more than an isolated accidental match.
-pub(crate) const MIN_ALIGNMENT_RATIO_PERCENT: usize = 30;
-/// Shared percent scale for both screen similarity thresholds, so ratios stay
-/// readable as whole percentages.
-pub(crate) const PERCENT_DENOMINATOR: usize = 100;
 
 /// Hook reports are ordered per source by the `seq` each hook process takes
 /// from its own wall clock (nanoseconds for the shell/python hooks,
@@ -77,16 +66,13 @@ pub(crate) const STABLE_VISIBLE_SIGNAL_REFRESH: Duration = Duration::from_millis
 /// Startup grace for the first agent signal while a launched shell settles.
 pub(crate) const AGENT_STARTUP_GRACE_WINDOW: Duration = Duration::from_secs(3);
 /// Time allowed for a restored agent to appear after its resume launch.
-pub const AGENT_RESUME_DETECTION_HOLD: Duration = Duration::from_secs(30);
+pub(crate) const AGENT_RESUME_DETECTION_HOLD: Duration = Duration::from_secs(30);
 /// A restored pane holds absence for the same interval as agent resume, so
 /// detection cannot clear the agent before its process has time to appear.
 pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = AGENT_RESUME_DETECTION_HOLD;
 /// Delay before the detector first polls a newly launched pane, giving the
 /// shell time to put initial output on the screen.
 pub(crate) const INITIAL_DETECTION_DELAY: Duration = Duration::from_millis(50);
-/// Tries to read a stable screen snapshot across concurrent PTY updates.
-/// Retries tolerate a brief write without spinning indefinitely.
-pub(crate) const SCREEN_SNAPSHOT_READ_ATTEMPTS: usize = 3;
 
 /// Default screen depth sampled for agent detection when no caller supplies
 /// one; it covers a conventional terminal viewport.

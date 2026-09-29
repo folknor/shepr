@@ -1,15 +1,13 @@
 //! Virtual rendering helpers for headless client frame streaming.
 
-use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
-use ratatui::layout::{Position, Rect, Size};
+use ratatui::backend::TestBackend;
+use ratatui::layout::Rect;
 
 use crate::app::state::AppState;
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_protocol::{
-    CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
-    SurfaceRevision, TerminalFrame,
+    CursorState, PaneSurfaceFrame, PaneSurfacePatch, ServerMessage, SurfaceRevision,
 };
-use shepr_termio::blit::{BlitEncoder, EncodedBlit};
 
 fn warn_surface_encoding_failure(
     encoding: &'static str,
@@ -31,119 +29,48 @@ fn warn_surface_encoding_failure(
     );
 }
 
-/// Per-client render baseline for the selected render encoding.
-pub(crate) enum ClientRenderState {
-    /// Semantic clients compare full frame data and skip identical frames.
-    Semantic {
-        last_surface: Option<Box<PaneSurfaceFrame>>,
-        surface_revision: SurfaceRevision,
-        recompute_pending: bool,
-    },
-    /// Terminal-ANSI clients keep a terminal diff encoder.
-    TerminalAnsi {
-        blit_encoder: BlitEncoder,
-        repaint_pending: bool,
-    },
+/// Per-client render baseline: the last surface sent and its revision. The
+/// client-owned shell compares full frame data and skips identical frames.
+pub(crate) struct ClientRenderState {
+    last_surface: Option<Box<PaneSurfaceFrame>>,
+    surface_revision: SurfaceRevision,
+    recompute_pending: bool,
 }
 
 impl ClientRenderState {
-    pub(crate) fn new(render_encoding: RenderEncoding) -> Self {
-        match render_encoding {
-            RenderEncoding::SemanticFrame => Self::Semantic {
-                last_surface: None,
-                surface_revision: SurfaceRevision::ZERO,
-                recompute_pending: false,
-            },
-            RenderEncoding::TerminalAnsi => Self::TerminalAnsi {
-                blit_encoder: BlitEncoder::new(),
-                repaint_pending: false,
-            },
+    pub(crate) fn new() -> Self {
+        Self {
+            last_surface: None,
+            surface_revision: SurfaceRevision::ZERO,
+            recompute_pending: false,
         }
     }
 
     pub(crate) fn request_recompute(&mut self) {
-        if let Self::Semantic {
-            recompute_pending, ..
-        } = self
-        {
-            *recompute_pending = true;
-        }
+        self.recompute_pending = true;
     }
 
     pub(crate) fn requires_recompute(&self) -> bool {
-        matches!(
-            self,
-            Self::Semantic {
-                recompute_pending: true,
-                ..
-            }
-        )
-    }
-
-    pub(crate) fn reset_baseline(&mut self) {
-        match self {
-            Self::Semantic { last_surface, .. } => *last_surface = None,
-            Self::TerminalAnsi {
-                blit_encoder,
-                repaint_pending,
-                ..
-            } => {
-                *blit_encoder = BlitEncoder::new();
-                *repaint_pending = false;
-            }
-        }
+        self.recompute_pending
     }
 
     pub(crate) fn request_repaint(&mut self) {
-        match self {
-            Self::Semantic { last_surface, .. } => *last_surface = None,
-            Self::TerminalAnsi {
-                repaint_pending, ..
-            } => *repaint_pending = true,
-        }
-    }
-
-    pub(crate) fn prepare_frame(&mut self, frame: FrameData) -> Option<PreparedRender> {
-        match self {
-            Self::Semantic { .. } => None,
-            Self::TerminalAnsi {
-                blit_encoder,
-                repaint_pending,
-            } => {
-                if !*repaint_pending && blit_encoder.is_current(&frame) {
-                    return None;
-                }
-                let encoded = blit_encoder.encode(&frame, *repaint_pending);
-                Some(PreparedRender::TerminalAnsi {
-                    message: ServerMessage::Terminal(TerminalFrame {
-                        bytes: encoded.bytes.clone(),
-                    }),
-                    frame,
-                    encoded: Some(encoded),
-                })
-            }
-        }
+        self.last_surface = None;
     }
 
     pub(crate) fn last_pane_surface(&self) -> Option<&PaneSurfaceFrame> {
-        match self {
-            Self::Semantic { last_surface, .. } => last_surface.as_deref(),
-            Self::TerminalAnsi { .. } => None,
-        }
+        self.last_surface.as_deref()
     }
 
     pub(crate) fn prepare_pane_surface(
         &mut self,
         mut surface: PaneSurfaceFrame,
     ) -> Option<PreparedRender> {
-        let Self::Semantic {
+        let Self {
             last_surface,
             surface_revision,
             recompute_pending,
-        } = self
-        else {
-            return None;
-        };
+        } = self;
         if !*recompute_pending
             && last_surface.as_deref().is_some_and(|last| {
                 last.projection_revision == surface.projection_revision
@@ -203,14 +130,11 @@ impl ClientRenderState {
         &self,
         mut patch: PaneSurfacePatch,
     ) -> Option<PreparedRender> {
-        let Self::Semantic {
+        let Self {
             last_surface,
             surface_revision,
             ..
-        } = self
-        else {
-            return None;
-        };
+        } = self;
         if self.requires_recompute() {
             return None;
         }
@@ -260,60 +184,30 @@ impl ClientRenderState {
     }
 
     pub(crate) fn commit_sent_frame(&mut self, prepared: PreparedRender) {
-        match (self, prepared) {
-            (
-                Self::Semantic {
-                    last_surface,
-                    surface_revision,
-                    recompute_pending,
-                    ..
-                },
-                PreparedRender::Semantic {
-                    committed_surface, ..
-                },
-            ) => {
-                *surface_revision = committed_surface.surface_revision;
-                *last_surface = Some(committed_surface);
-                *recompute_pending = false;
+        match prepared {
+            PreparedRender::Semantic {
+                committed_surface, ..
+            } => {
+                self.surface_revision = committed_surface.surface_revision;
+                self.last_surface = Some(committed_surface);
+                self.recompute_pending = false;
             }
-            (
-                Self::Semantic {
-                    last_surface,
-                    surface_revision,
-                    ..
-                },
-                PreparedRender::SemanticPatch { patch, .. },
-            ) => {
+            PreparedRender::SemanticPatch { patch, .. } => {
                 // Planning checked the baseline and the server does not yield
                 // between planning and commit, so neither branch below should
                 // run. If one does, the client holds a surface this side can no
                 // longer reproduce: drop the baseline so the next render sends a
                 // full surface rather than diffing against a wrong grid.
-                let applied = match last_surface.as_deref_mut() {
+                let applied = match self.last_surface.as_deref_mut() {
                     Some(surface) => apply_pane_surface_patch(surface, &patch),
                     None => Err("no committed surface"),
                 };
                 if let Err(reason) = applied {
                     tracing::warn!(reason, "sent surface patch did not apply to its baseline");
-                    *last_surface = None;
+                    self.last_surface = None;
                 }
-                *surface_revision = patch.surface_revision;
+                self.surface_revision = patch.surface_revision;
             }
-            (
-                Self::TerminalAnsi {
-                    blit_encoder,
-                    repaint_pending,
-                },
-                PreparedRender::TerminalAnsi {
-                    frame,
-                    encoded: Some(encoded),
-                    ..
-                },
-            ) => {
-                blit_encoder.commit(frame, &encoded);
-                *repaint_pending = false;
-            }
-            _ => {}
         }
     }
 }
@@ -389,103 +283,13 @@ pub(crate) enum PreparedRender {
         message: ServerMessage,
         patch: PaneSurfacePatch,
     },
-    TerminalAnsi {
-        message: ServerMessage,
-        frame: FrameData,
-        encoded: Option<EncodedBlit>,
-    },
 }
 
 impl PreparedRender {
     pub(crate) fn message(&self) -> &ServerMessage {
         match self {
-            Self::Semantic { message, .. }
-            | Self::SemanticPatch { message, .. }
-            | Self::TerminalAnsi { message, .. } => message,
+            Self::Semantic { message, .. } | Self::SemanticPatch { message, .. } => message,
         }
-    }
-}
-
-struct CursorTrackingBackend {
-    inner: TestBackend,
-    rendered_cursor: Option<Position>,
-}
-
-impl CursorTrackingBackend {
-    fn new(width: u16, height: u16) -> Self {
-        Self {
-            inner: TestBackend::new(width, height),
-            rendered_cursor: None,
-        }
-    }
-
-    fn buffer(&self) -> &ratatui::buffer::Buffer {
-        self.inner.buffer()
-    }
-
-    fn rendered_cursor(&self) -> Option<CursorState> {
-        self.rendered_cursor.map(|pos| CursorState {
-            x: pos.x,
-            y: pos.y,
-            visible: true,
-            shape: shepr_protocol::CursorShapeParam::Default,
-        })
-    }
-}
-
-impl Backend for CursorTrackingBackend {
-    type Error = std::convert::Infallible;
-
-    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
-    where
-        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
-    {
-        self.inner.draw(content)
-    }
-
-    fn append_lines(&mut self, n: u16) -> Result<(), Self::Error> {
-        self.inner.append_lines(n)
-    }
-
-    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
-        self.inner.hide_cursor()?;
-        self.rendered_cursor = None;
-        Ok(())
-    }
-
-    fn show_cursor(&mut self) -> Result<(), Self::Error> {
-        self.inner.show_cursor()
-    }
-
-    fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
-        self.inner.get_cursor_position()
-    }
-
-    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> Result<(), Self::Error> {
-        let position = position.into();
-        self.inner.set_cursor_position(position)?;
-        self.rendered_cursor = Some(position);
-        Ok(())
-    }
-
-    fn clear(&mut self) -> Result<(), Self::Error> {
-        self.inner.clear()
-    }
-
-    fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
-        self.inner.clear_region(clear_type)
-    }
-
-    fn size(&self) -> Result<Size, Self::Error> {
-        self.inner.size()
-    }
-
-    fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
-        self.inner.window_size()
-    }
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        self.inner.flush()
     }
 }
 
@@ -511,7 +315,7 @@ pub(crate) fn render_tab_surface_virtual(
     let cursor = crate::ui::tab_surface_cursor(app_state, terminal_runtimes, surface);
     let hyperlinks = crate::ui::tab_surface_hyperlinks(app_state, terminal_runtimes, surface);
 
-    let backend = CursorTrackingBackend::new(area.width, area.height);
+    let backend = TestBackend::new(area.width, area.height);
     // The backend's error type is `Infallible`, so these patterns are irrefutable.
     let Ok(mut terminal) = ratatui::Terminal::new(backend);
     let Ok(_) = terminal.draw(|frame| {
@@ -526,41 +330,18 @@ pub(crate) fn render_tab_surface_virtual(
     )
 }
 
-/// Renders one server-owned terminal directly for `terminal attach` clients.
-pub(crate) fn render_terminal_virtual(
-    runtime: &shepr_mux::pane::PaneRuntime,
-    area: Rect,
-) -> (ratatui::buffer::Buffer, Option<CursorState>) {
-    let suppress_cursor = runtime.synchronized_output_active();
-    let backend = CursorTrackingBackend::new(area.width, area.height);
-    // The backend's error type is `Infallible`, so these patterns are irrefutable.
-    let Ok(mut terminal) = ratatui::Terminal::new(backend);
-    let Ok(_) = terminal.draw(|frame| {
-        runtime.render(frame, area, true);
-    });
-
-    let buffer = terminal.backend().buffer().clone();
-    let cursor = (!suppress_cursor)
-        .then(|| runtime.cursor_state(area, true))
-        .flatten()
-        .map(|cursor| CursorState {
-            x: cursor.x,
-            y: cursor.y,
-            visible: cursor.visible && !crate::ui::pane_is_scrolled_back(runtime),
-            shape: cursor.shape,
-        })
-        .or_else(|| {
-            (!suppress_cursor)
-                .then(|| terminal.backend().rendered_cursor())
-                .flatten()
-        });
-
-    (buffer, cursor)
+#[cfg(test)]
+impl ClientRenderState {
+    /// The last sent surface, mutable, so tests can stage a stale baseline.
+    pub(crate) fn last_surface_mut(&mut self) -> Option<&mut PaneSurfaceFrame> {
+        self.last_surface.as_deref_mut()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_protocol::FrameData;
 
     fn test_surface(content: &str) -> PaneSurfaceFrame {
         let pane = ratatui::buffer::Buffer::with_lines([content]);
@@ -576,7 +357,7 @@ mod tests {
 
     #[test]
     fn surface_delta_recompute_preserves_wire_baseline_but_epoch_reset_drops_it() {
-        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let mut state = ClientRenderState::new();
         let mut surface = test_surface("popup");
         surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
             &ratatui::buffer::Buffer::empty(Rect::new(0, 0, 120, 40)),
@@ -617,7 +398,7 @@ mod tests {
 
     #[test]
     fn surface_encodings_preserve_projection_and_patch_baselines() {
-        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let mut state = ClientRenderState::new();
         let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
         let mut surface = test_surface("popup");
         let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 240, 100));
@@ -725,7 +506,7 @@ mod tests {
 
     #[test]
     fn surface_update_keeps_large_metadata_within_the_frame_limit() {
-        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let mut state = ClientRenderState::new();
         let mut surface = test_surface("popup");
         surface.frame.hyperlinks = vec!["\"".repeat(shepr_protocol::MAX_FRAME_SIZE / 2)];
         let initial = state
@@ -772,7 +553,7 @@ mod tests {
         assert!(apply_pane_surface_patch(&mut surface, &stale_patch).is_err());
         assert_eq!(surface, before, "a stale patch changes nothing");
 
-        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let mut state = ClientRenderState::new();
         let initial = state
             .prepare_pane_surface(test_surface("abc"))
             .expect("test precondition");
@@ -793,7 +574,7 @@ mod tests {
 
     #[test]
     fn changed_frame_content_is_not_deduplicated() {
-        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let mut state = ClientRenderState::new();
         let prepared = state
             .prepare_pane_surface(test_surface("first"))
             .expect("initial surface");
@@ -804,7 +585,7 @@ mod tests {
 
     #[test]
     fn forced_full_surface_keeps_the_connection_revision_monotonic() {
-        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let mut state = ClientRenderState::new();
         let prepared = state
             .prepare_pane_surface(test_surface("first"))
             .expect("initial surface");

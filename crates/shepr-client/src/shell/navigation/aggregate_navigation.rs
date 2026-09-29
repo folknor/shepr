@@ -179,10 +179,7 @@ pub(super) fn navigator_rows(
                             agent.agent_status
                         });
                         let agent_kind = agent.and_then(|agent| agent.agent.as_deref());
-                        let name = pane
-                            .label
-                            .as_deref()
-                            .or_else(|| agent.and_then(|agent| agent.name.as_deref()));
+                        let name = pane.label.as_deref();
                         let title =
                             agent.and_then(|agent| agent.terminal_title_stripped.as_deref());
                         let tab_name = (tab.custom_label || tab.label.parse::<usize>().is_err())

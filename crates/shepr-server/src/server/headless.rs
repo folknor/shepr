@@ -38,21 +38,15 @@ use crate::server::client_shell::{
     render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
 };
 use crate::server::client_transport::ServerEvent;
-use crate::server::clients::{
-    AttachClaim, ClientConnection, ClientConnectionMode, ClientRegistry, render_targets,
-    terminal_stream_client_ids,
-};
-use crate::server::pane_input::{
-    apply_client_pane_input_events, apply_terminal_attach_input, apply_terminal_attach_scroll,
-    terminal_attach_mouse_position,
-};
+use crate::server::clients::{ClientConnection, ClientRegistry, ClientShellState, render_targets};
+use crate::server::pane_input::apply_client_pane_input_events;
 use crate::server::socket_paths::client_socket_path;
 use shepr_mux::events::AppEvent;
 use shepr_platform::ipc::{
     LocalListener, SocketFileIdentity, SocketStartupLock, bind_private_socket,
     remove_socket_file_if_owned,
 };
-use shepr_protocol::{AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
+use shepr_protocol::{FrameData, ServerMessage};
 
 mod api_dispatcher;
 mod bootstrap;
@@ -64,7 +58,6 @@ mod render;
 mod retained_surface;
 mod surface_interest;
 
-use api_dispatcher::AltScreenReadConflict;
 pub use bootstrap::{RunServerError, ServerReady, ServerSocket, run_server};
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
@@ -91,35 +84,6 @@ enum LoopEvent {
     ServerEvent(ServerEvent),
     RenderRequested,
     ClientListenerReady,
-}
-
-/// Whether one direct terminal-attach input reached the pane, for
-/// `report_terminal_attach_input`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AttachInputDelivery {
-    Delivered,
-    /// Dropped because the pane's PTY input queue is full.
-    Dropped,
-    /// Failed for another reason (pane closing, input not encodable).
-    Failed,
-}
-
-impl AttachInputDelivery {
-    fn of(result: &Result<(), crate::server::pane_input::PaneInputError>) -> Self {
-        match result {
-            Ok(()) => Self::Delivered,
-            Err(crate::server::pane_input::PaneInputError::Backpressure(_)) => Self::Dropped,
-            Err(_) => Self::Failed,
-        }
-    }
-
-    fn of_batch(result: &Result<(), crate::server::pane_input::PaneInputFailures>) -> Self {
-        match result {
-            Ok(()) => Self::Delivered,
-            Err(failures) if failures.dropped_for_backpressure() > 0 => Self::Dropped,
-            Err(_) => Self::Failed,
-        }
-    }
 }
 
 struct ListenerFd(RawFd);
@@ -158,23 +122,10 @@ pub struct HeadlessServer {
     /// last projected.
     shell_session_generation: u64,
     /// Outer window title last pushed, paired with the client that received it.
-    /// Keying on the client means a newly attached terminal is written to even
+    /// Keying on the client means a newly attached client is written to even
     /// when the title itself has not changed, without every code path that
     /// changes the foreground client having to remember to invalidate this.
     sent_window_title: Option<(ClientId, Option<String>)>,
-    /// Window title set through `client.window_title.set`. While present it wins
-    /// over the configured `ui.window_title` until the API clears it again.
-    api_window_title: Option<String>,
-    /// Pending API work lives with the server state it routes and mutates.
-    /// Each retained item belongs to an API request awaiting its response.
-    /// The API listener's active-connection limit, with one request per
-    /// connection, bounds these queues together. The manifest reload queue
-    /// also has a cap of its own (`AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY`,
-    /// answered with `EndpointBusy`), so it stays bounded independently of
-    /// how the API admits connections.
-    /// Alternate-screen reads that are being captured without an attached client.
-    pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
-    deferred_alt_screen_reads: Vec<shepr_api::ApiRequestMessage>,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
     /// the clients and on workspace/tab/pane topology, which change only while
@@ -185,7 +136,7 @@ pub struct HeadlessServer {
     /// visibility at render time is computed fresh.
     immediate_pty_sources_dirty: bool,
     /// Whether the host mouse-capture and keyboard modes pushed to clients
-    /// (`stream_host_mouse_capture_mode`, `stream_direct_terminal_keyboard_mode`)
+    /// (`stream_host_mouse_capture_mode`, `stream_shell_keyboard_mode`)
     /// may be stale. They follow the focused pane's terminal modes, which only
     /// PTY output changes, plus the same client/topology changes as above. Set
     /// whenever a render request carrying PTY sources is taken; every render
@@ -273,9 +224,6 @@ impl HeadlessServer {
             shell_session_cache: None,
             shell_session_generation: 0,
             sent_window_title: None,
-            api_window_title: None,
-            pending_alt_screen_reads: Vec::new(),
-            deferred_alt_screen_reads: Vec::new(),
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
             retained_surface_fallback_reason: None,
@@ -392,12 +340,6 @@ impl HeadlessServer {
                 render_demand.join(RenderDemand::Full);
             }
 
-            self.poll_pending_alt_screen_reads(now);
-            if self.process_deferred_alt_screen_reads() {
-                self.app.state.mark_shell_projection_dirty();
-                render_demand.join(RenderDemand::Full);
-            }
-
             if self.clients.latest_shell_client().is_some() && self.app.ensure_default_workspace() {
                 self.immediate_pty_sources_dirty = true;
                 render_demand.join(RenderDemand::Full);
@@ -414,7 +356,7 @@ impl HeadlessServer {
             // runs on the iteration right after the render that took it.
             if std::mem::take(&mut self.host_input_modes_dirty) {
                 self.stream_host_mouse_capture_mode();
-                self.stream_direct_terminal_keyboard_mode();
+                self.stream_shell_keyboard_mode();
             }
 
             // 6. Render virtually and stream frames. Hidden-only PTY work keeps a
@@ -476,11 +418,6 @@ impl HeadlessServer {
                 self.has_app_client(),
             );
             let next_deadline = self
-                .next_pending_alt_screen_read_deadline()
-                .map_or(next_deadline, |pending| {
-                    Some(next_deadline.map_or(pending, |current| current.min(pending)))
-                });
-            let next_deadline = self
                 .shell_cwd_refresh_deadline()
                 .map_or(next_deadline, |cwd| {
                     Some(next_deadline.map_or(cwd, |current| current.min(cwd)))
@@ -526,14 +463,11 @@ impl HeadlessServer {
                     LoopEvent::Internal(ev) => {
                         self.handle_internal_event_with_forwarding(ev);
                     }
-                    LoopEvent::ServerEvent(
-                        ServerEvent::ClientConnected {
-                            client_id, writer, ..
-                        }
-                        | ServerEvent::ClientShellConnected {
-                            client_id, writer, ..
-                        },
-                    ) => {
+                    LoopEvent::ServerEvent(ServerEvent::ClientShellConnected {
+                        client_id,
+                        writer,
+                        ..
+                    }) => {
                         if let Ok(message) =
                             Self::frame_server_message(&ServerMessage::ServerShutdown {
                                 reason: Some(shepr_protocol::ShutdownReason::Message(
@@ -710,8 +644,7 @@ impl HeadlessServer {
     }
 
     fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
-        // Only an active shell connection may drive session-wide presentation;
-        // a direct terminal stream never becomes the foreground client.
+        // Only an active shell connection may drive session-wide presentation.
         let changed = self.clients.promote_to_foreground(client_id);
         if !self
             .clients
@@ -765,12 +698,6 @@ impl HeadlessServer {
         if let Some(mut removed) = removed {
             let held_inputs = removed.drain_shell_held_inputs();
             self.release_client_shell_inputs(client_id, held_inputs);
-            if let ClientConnectionMode::TerminalAttach { terminal_id, .. } = removed.mode {
-                self.app
-                    .state
-                    .direct_attach_resize_locks
-                    .remove(&terminal_id);
-            }
         }
         if should_release_focus && let Some(target) = disconnected_focus.as_ref() {
             self.send_shell_focus_target(target, shepr_vt::FocusEvent::Lost);
@@ -834,34 +761,20 @@ impl HeadlessServer {
     }
 
     fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) {
-        let was_terminal_attach = self.clients.get(&client_id).is_some_and(|client| {
-            matches!(
-                &client.mode,
-                crate::server::clients::ClientConnectionMode::TerminalAttach { .. }
-            )
-        });
-        let restore_shell_controller = self.clients.get(&client_id).and_then(|client| {
-            let ClientConnectionMode::TerminalAttach { terminal_id, .. } = &client.mode else {
-                return None;
-            };
-            self.shell_geometry_controller_for_terminal(terminal_id.as_str())
-        });
         let was_shell_client = self
             .clients
             .get(&client_id)
             .is_some_and(crate::server::clients::ClientConnection::is_active_shell_client);
         self.remove_client(client_id);
-        if let Some((controller_id, target)) = restore_shell_controller {
-            self.restore_shell_tab_geometry(controller_id, target);
-        } else if self.has_app_client() {
+        if self.has_app_client() {
             // Removing the client dropped its geometry controller mappings.
             // Hand each tab it controlled to a remaining viewer and resize
             // to that viewer, so no pane keeps the departed client's size.
             self.reapply_controlled_shell_tab_geometry(true);
-        } else if was_shell_client || was_terminal_attach {
-            // With no shell surfaces, every departing client releases its
-            // geometry. Only a shell departure also settles pending resumes.
-            self.resize_tabs_to_headless_size(was_shell_client);
+        } else if was_shell_client {
+            // With no shell surfaces, a departing shell releases its geometry
+            // and settles pending resumes.
+            self.resize_tabs_to_headless_size();
         }
     }
 
@@ -891,10 +804,7 @@ impl HeadlessServer {
     async fn reject_late_client_connections(&mut self) {
         self.server_event_rx.close();
         while let Some(event) = self.server_event_rx.recv().await {
-            if let ServerEvent::ClientConnected {
-                client_id, writer, ..
-            }
-            | ServerEvent::ClientShellConnected {
+            if let ServerEvent::ClientShellConnected {
                 client_id, writer, ..
             } = event
                 && let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
@@ -912,137 +822,6 @@ impl HeadlessServer {
                 }
             }
         }
-    }
-
-    fn handle_terminal_attach_scroll(
-        &mut self,
-        client_id: ClientId,
-        source: AttachScrollSource,
-        direction: AttachScrollDirection,
-        lines: u16,
-        column: Option<u16>,
-        row: Option<u16>,
-        modifiers: shepr_protocol::WireModifiers,
-    ) -> bool {
-        let Some(ClientConnection {
-            mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
-            ..
-        }) = self.clients.get(&client_id)
-        else {
-            return false;
-        };
-        let Some(runtime) = self.app.terminal_runtimes.get(terminal_id) else {
-            return false;
-        };
-
-        let result = apply_terminal_attach_scroll(
-            runtime,
-            source,
-            direction,
-            lines,
-            column,
-            row,
-            modifiers.bits(),
-        );
-        if let Err(err) = &result {
-            warn!(?client_id, terminal_id = %terminal_id, error = %err, "terminal attach scroll failed");
-        }
-        self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
-        true
-    }
-
-    fn handle_terminal_attach_mouse(
-        &mut self,
-        client_id: ClientId,
-        kind: shepr_protocol::ClientMouseKind,
-        position: shepr_protocol::ClientMousePosition,
-        geometry: Option<shepr_protocol::ClientMouseGeometry>,
-        modifiers: shepr_protocol::WireModifiers,
-        lines: u16,
-    ) -> bool {
-        let Some(client) = self.clients.get(&client_id) else {
-            return false;
-        };
-        let ClientConnectionMode::TerminalAttach { terminal_id, .. } = &client.mode else {
-            return false;
-        };
-        let terminal_id = terminal_id.clone();
-        let terminal_size = client.terminal_size;
-        let cell_size = client.cell_size;
-        let pixel_mouse = client.pixel_mouse;
-        let host_sgr_pixels_active = client.host_sgr_pixels_active == Some(true);
-        let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) else {
-            return false;
-        };
-        let Some(position) = terminal_attach_mouse_position(
-            runtime,
-            terminal_size,
-            cell_size,
-            pixel_mouse,
-            host_sgr_pixels_active,
-            position,
-            geometry,
-        ) else {
-            return false;
-        };
-        let event = shepr_protocol::ClientPaneInputEvent::Mouse {
-            kind,
-            position,
-            geometry: None,
-            modifiers,
-            lines: lines.max(1),
-        };
-        let result = apply_client_pane_input_events(runtime, &[event]);
-        if let Err(err) = &result {
-            warn!(?client_id, terminal_id = %terminal_id, error = %err, "terminal attach mouse input failed");
-        }
-        self.report_terminal_attach_input(client_id, AttachInputDelivery::of_batch(&result));
-        true
-    }
-
-    /// Tells a direct terminal-attach client when its input stops reaching
-    /// the pane because the pane's PTY queue is full (the child is not
-    /// reading). Losing keystrokes silently is worse than a visible notice,
-    /// but one is enough: the notice is sent on the first drop and re-armed
-    /// by the next input that gets through. Runs per attach input event, so
-    /// the delivered case is one map lookup and a flag store.
-    fn report_terminal_attach_input(&mut self, client_id: ClientId, delivery: AttachInputDelivery) {
-        let Some(client) = self.clients.get_mut(&client_id) else {
-            return;
-        };
-        let terminal_id = match &client.mode {
-            ClientConnectionMode::TerminalAttach { terminal_id, .. } => terminal_id.clone(),
-            ClientConnectionMode::ClientShell(_) | ClientConnectionMode::TerminalPending => {
-                return;
-            }
-        };
-        match delivery {
-            AttachInputDelivery::Delivered => {
-                if let Some(state) = client.terminal_attach_state_mut() {
-                    state.input_drop_reported = false;
-                }
-                return;
-            }
-            // The pane is going away or the input was malformed; the log at
-            // the call site covers it, and a closing pane ends the attach
-            // with its own shutdown message.
-            AttachInputDelivery::Failed => return,
-            AttachInputDelivery::Dropped => {}
-        }
-        let Some(state) = client.terminal_attach_state_mut() else {
-            return;
-        };
-        if std::mem::replace(&mut state.input_drop_reported, true) {
-            return;
-        }
-        self.send_to_client(
-            client_id,
-            &ServerMessage::DirectTerminalNotice {
-                kind: shepr_protocol::NoticeKind::InputDropped {
-                    terminal_id: terminal_id.clone(),
-                },
-            },
-        );
     }
 
     /// Pulls only titles reported dirty by the PTY parser. A focused pane title
@@ -1114,11 +893,10 @@ impl HeadlessServer {
     /// the host terminal title never follows the session - which is what window
     /// managers read for tab and group bar labels.
     fn sync_window_title(&mut self) {
-        let title = match &self.api_window_title {
-            Some(title) => Some(title.clone()),
-            None if self.app.window_title_configured() => self.configured_window_title(),
-            None => return,
-        };
+        if !self.app.window_title_configured() {
+            return;
+        }
+        let title = self.configured_window_title();
         if let (Some(client_id), Some((sent_client_id, sent_title))) = (
             self.clients.foreground_client_id(),
             self.sent_window_title.as_ref(),
@@ -1147,38 +925,6 @@ impl HeadlessServer {
         );
         self.sent_window_title = sent.then_some((client_id, title));
         sent
-    }
-
-    fn handle_client_window_title_api(
-        &mut self,
-        title: Option<String>,
-    ) -> shepr_api::error::ApiResult {
-        use shepr_api::schema::{ClientWindowTitleReason, ResponseResult};
-
-        let title = match title {
-            Some(title) => match shepr_config::sanitize_window_title_text(&title) {
-                Some(title) => Some(title),
-                None => {
-                    return Err(shepr_api::error::ApiError::new(
-                        shepr_api::error::ApiErrorCode::InvalidParams,
-                        "window title is empty",
-                    ));
-                }
-            },
-            None => None,
-        };
-        let set_title = title.is_some();
-        // An explicit title suppresses `ui.window_title` until it is cleared,
-        // and clearing restores the configured title rather than only "shepr".
-        self.api_window_title = title.clone();
-        let title = title.or_else(|| self.configured_window_title());
-        let changed = self.send_window_title(title);
-        let reason = match (changed, set_title) {
-            (true, true) => ClientWindowTitleReason::Set,
-            (true, false) => ClientWindowTitleReason::Cleared,
-            (false, _) => ClientWindowTitleReason::NoForegroundClient,
-        };
-        Ok(ResponseResult::ClientWindowTitle { changed, reason })
     }
 
     /// Encodes a server message into a length-prefixed frame.
@@ -1264,197 +1010,10 @@ impl HeadlessServer {
         true
     }
 
-    fn shutdown_terminal_stream_clients(
-        &mut self,
-        terminal_id: &shepr_protocol::TerminalId,
-        reason: &str,
-    ) {
-        let client_ids = terminal_stream_client_ids(&self.clients, terminal_id);
-
-        for client_id in client_ids {
-            self.send_to_client(
-                client_id,
-                &ServerMessage::ServerShutdown {
-                    reason: Some(shepr_protocol::ShutdownReason::Message(reason.to_owned())),
-                },
-            );
-            self.remove_client_and_resize_if_needed(client_id);
-        }
-    }
-
-    fn send_terminal_stream_detach_shutdown(&mut self, client_id: ClientId) {
-        if matches!(
-            self.clients.get(&client_id).map(|client| &client.mode),
-            Some(ClientConnectionMode::TerminalAttach { .. })
-        ) {
-            self.send_to_client(
-                client_id,
-                &ServerMessage::ServerShutdown {
-                    reason: Some(shepr_protocol::ShutdownReason::Detached),
-                },
-            );
-        }
-    }
-
-    fn attach_terminal_client(
-        &mut self,
-        client_id: ClientId,
-        terminal_id: &shepr_protocol::TerminalId,
-        takeover: bool,
-    ) -> bool {
-        if !self.client_is_pending_terminal_mode(client_id) {
-            self.send_to_client(
-                client_id,
-                &ServerMessage::ServerShutdown {
-                    reason: Some(shepr_protocol::ShutdownReason::Message(
-                        "terminal attach failed: connection is not pending terminal attach"
-                            .to_owned(),
-                    )),
-                },
-            );
-            self.remove_client_and_resize_if_needed(client_id);
-            return false;
-        }
-
-        if !self.app.state.terminals.contains_key(terminal_id) {
-            self.send_to_client(
-                client_id,
-                &ServerMessage::ServerShutdown {
-                    reason: Some(shepr_protocol::ShutdownReason::Message(format!(
-                        "terminal attach failed: terminal {terminal_id} not found"
-                    ))),
-                },
-            );
-            self.remove_client_and_resize_if_needed(client_id);
-            return false;
-        }
-
-        let real_terminal_id = terminal_id.clone();
-
-        if self.has_pending_read_for(real_terminal_id.as_str()) {
-            self.send_to_client(
-                client_id,
-                &ServerMessage::ServerShutdown {
-                    reason: Some(shepr_protocol::ShutdownReason::Message(format!(
-                        "terminal attach failed: terminal {terminal_id} has a read in progress; retry"
-                    ))),
-                },
-            );
-            self.remove_client_and_resize_if_needed(client_id);
-            return false;
-        }
-
-        match self
-            .clients
-            .attach_claim(&real_terminal_id, client_id, takeover)
-        {
-            AttachClaim::Reject { .. } => {
-                self.send_to_client(
-                    client_id,
-                    &ServerMessage::ServerShutdown {
-                        reason: Some(shepr_protocol::ShutdownReason::Message(format!(
-                            "terminal attach failed: terminal {terminal_id} already has an attached client; retry with --takeover"
-                        ))),
-                    },
-                );
-                self.remove_client_and_resize_if_needed(client_id);
-                return false;
-            }
-            AttachClaim::Takeover { owner } => {
-                self.send_to_client(
-                    owner,
-                    &ServerMessage::ServerShutdown {
-                        reason: Some(shepr_protocol::ShutdownReason::Message(
-                            "terminal attach taken over".to_owned(),
-                        )),
-                    },
-                );
-                self.remove_client_and_resize_if_needed(owner);
-            }
-            AttachClaim::Available | AttachClaim::AlreadyOwned => {}
-        }
-
-        let stamp = self.clients.allocate_activity_stamp();
-        let was_foreground = self.clients.foreground_client_id() == Some(client_id);
-        let Some(client) = self.clients.get_mut(&client_id) else {
-            return false;
-        };
-        let (cols, rows) = (
-            client.terminal_size.cols.get(),
-            client.terminal_size.rows.get(),
-        );
-        let cell_size = client.cell_size;
-        let transitioned = client.attach_to_terminal(real_terminal_id.clone());
-        if !transitioned {
-            return false;
-        }
-        client.render_state.reset_baseline();
-        client.last_activity = stamp;
-        if was_foreground {
-            self.promote_latest_remaining_client();
-        }
-
-        info!(?client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
-        self.clients
-            .set_attach_owner(real_terminal_id.clone(), client_id);
-        self.app
-            .state
-            .direct_attach_resize_locks
-            .insert(real_terminal_id.clone());
-        self.app
-            .start_pending_agent_resume_for_terminal(&real_terminal_id, rows, cols, true);
-        if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
-            runtime.resize(shepr_core::geometry::PaneGeometry::new(
-                cols,
-                rows,
-                cell_size.width_px,
-                cell_size.height_px,
-            ));
-        }
-        true
-    }
-
-    fn client_is_pending_terminal_mode(&self, client_id: ClientId) -> bool {
-        self.clients
-            .get(&client_id)
-            .is_some_and(|client| matches!(client.mode, ClientConnectionMode::TerminalPending))
-    }
-
     /// Handles a server event. Returns true if the event requires a re-render.
     fn handle_server_event(&mut self, ev: ServerEvent) -> bool {
         self.immediate_pty_sources_dirty = true;
         match ev {
-            ServerEvent::ClientConnected {
-                client_id,
-                cols,
-                rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
-                writer,
-            } => {
-                info!(
-                    ?client_id,
-                    cols, rows, cell_width_px, cell_height_px, "direct terminal client connected"
-                );
-                let last_activity = self.clients.allocate_activity_stamp();
-                let observed = shepr_termio::host_term::cell_size::HostCellSize {
-                    width_px: cell_width_px,
-                    height_px: cell_height_px,
-                };
-                let pixel_mouse = pixel_mouse && observed.is_known();
-                let mut connection = ClientConnection::new_with_mode(
-                    ClientConnectionMode::TerminalPending,
-                    shepr_core::geometry::GridSize::clamped(cols, rows),
-                    observed,
-                    last_activity,
-                    shepr_protocol::RenderEncoding::TerminalAnsi,
-                    Some(writer),
-                );
-                connection.pixel_mouse = pixel_mouse;
-                self.clients.insert(client_id, connection);
-                false
-            }
             ServerEvent::ClientShellConnected {
                 client_id,
                 surface_cols,
@@ -1473,7 +1032,6 @@ impl HeadlessServer {
                     cell_width_px,
                     cell_height_px,
                     surface_active,
-                    render_encoding = ?shepr_protocol::RenderEncoding::SemanticFrame,
                     "client connected"
                 );
                 self.app.ensure_default_workspace();
@@ -1483,19 +1041,15 @@ impl HeadlessServer {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
                 };
-                let mut connection = ClientConnection::new_with_mode(
-                    ClientConnectionMode::shell(),
+                let mut connection = ClientConnection::with_shell(
+                    ClientShellState::active(),
                     shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows),
                     observed,
                     last_activity,
-                    shepr_protocol::RenderEncoding::SemanticFrame,
                     Some(writer),
                 );
                 connection.pixel_mouse = pixel_mouse && observed.is_known();
-                let Some(shell) = connection.shell_state_mut() else {
-                    warn!(?client_id, "created shell connection without shell state");
-                    return false;
-                };
+                let shell = &mut connection.shell;
                 shell.mouse_capture = mouse_capture;
                 shell.surface_active = surface_active;
                 shell.projection_revision = shepr_protocol::ProjectionRevision::new(1);
@@ -1528,140 +1082,19 @@ impl HeadlessServer {
                 self.claim_unowned_shell_tab_geometry(client_id, true);
                 true
             }
-            ServerEvent::ClientAttachTerminal {
-                client_id,
-                terminal_id,
-                takeover,
-            } => self.attach_terminal_client(client_id, &terminal_id, takeover),
-            ServerEvent::ClientAttachScroll {
-                client_id,
-                source,
-                direction,
-                lines,
-                column,
-                row,
-                modifiers,
-            } => self.handle_terminal_attach_scroll(
-                client_id, source, direction, lines, column, row, modifiers,
-            ),
-            ServerEvent::ClientAttachMouse {
-                client_id,
-                kind,
-                position,
-                geometry,
-                modifiers,
-                lines,
-            } => self.handle_terminal_attach_mouse(
-                client_id, kind, position, geometry, modifiers, lines,
-            ),
-            ServerEvent::ClientInput { client_id, data } => {
-                let Some(ClientConnection {
-                    mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
-                    ..
-                }) = self.clients.get(&client_id)
-                else {
-                    return false;
-                };
-                let Some(runtime) = self.app.terminal_runtimes.get(terminal_id) else {
-                    return true;
-                };
-                let result = apply_terminal_attach_input(runtime, data);
-                if let Err(err) = &result {
-                    warn!(?client_id, terminal_id = %terminal_id, error = %err, "terminal attach input failed");
-                }
-                self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
-                true
-            }
             ServerEvent::ClientPasteRejected {
                 client_id,
                 size,
                 max,
             } => {
-                let detail = format!("Input message is {size} bytes; Shepr's limit is {max} bytes");
-                if matches!(
-                    self.clients.get(&client_id).map(|client| &client.mode),
-                    Some(ClientConnectionMode::ClientShell(_))
-                ) {
-                    self.send_to_client(
-                        client_id,
-                        &ServerMessage::ClientShellError {
-                            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
-                        },
-                    );
-                } else {
-                    // Direct attach has no shell chrome, so it gets its own
-                    // notice; every rejection is a separate user action, so
-                    // each one is reported.
-                    warn!(client = ?client_id, %detail, "paste rejected for direct terminal client");
-                    self.send_to_client(
-                        client_id,
-                        &ServerMessage::DirectTerminalNotice {
-                            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
-                        },
-                    );
-                }
-                false
-            }
-            ServerEvent::ClientResize {
-                client_id,
-                cols,
-                rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
-            } => {
-                info!(
-                    ?client_id,
-                    cols, rows, cell_width_px, cell_height_px, pixel_mouse, "client resize"
+                // Every rejection is a separate user action, so each one is
+                // reported.
+                self.send_to_client(
+                    client_id,
+                    &ServerMessage::ClientShellError {
+                        kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
+                    },
                 );
-                let observed = shepr_termio::host_term::cell_size::HostCellSize {
-                    width_px: cell_width_px,
-                    height_px: cell_height_px,
-                };
-                let pixel_mouse = pixel_mouse && observed.is_known();
-                let direct_terminal_id = if let Some(ClientConnection {
-                    mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
-                    terminal_size,
-                    cell_size,
-                    pixel_mouse: client_pixel_mouse,
-                    render_state,
-                    ..
-                }) = self.clients.get_mut(&client_id)
-                {
-                    *terminal_size = shepr_core::geometry::GridSize::clamped(cols, rows);
-                    *cell_size = observed;
-                    *client_pixel_mouse = pixel_mouse;
-                    render_state.request_repaint();
-                    Some((terminal_id.clone(), *cell_size))
-                } else {
-                    None
-                };
-                if let Some((terminal_id, cell_size)) = direct_terminal_id {
-                    if let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) {
-                        runtime.resize(shepr_core::geometry::PaneGeometry::new(
-                            cols,
-                            rows,
-                            cell_size.width_px,
-                            cell_size.height_px,
-                        ));
-                    }
-                    return true;
-                }
-                if let Some(ClientConnection {
-                    mode: ClientConnectionMode::TerminalPending,
-                    terminal_size,
-                    cell_size,
-                    pixel_mouse: client_pixel_mouse,
-                    render_state,
-                    ..
-                }) = self.clients.get_mut(&client_id)
-                {
-                    *terminal_size = shepr_core::geometry::GridSize::clamped(cols, rows);
-                    *cell_size = observed;
-                    *client_pixel_mouse = pixel_mouse;
-                    render_state.request_repaint();
-                    return true;
-                }
                 false
             }
             ServerEvent::ClientShellResize {
@@ -1675,9 +1108,6 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                if !matches!(client.mode, ClientConnectionMode::ClientShell(_)) {
-                    return false;
-                }
                 client.terminal_size =
                     shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows);
                 let observed = shepr_termio::host_term::cell_size::HostCellSize {
@@ -1701,9 +1131,6 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                if !client.is_shell_client() {
-                    return false;
-                }
                 if !client.update_host_theme(&update) {
                     return false;
                 }
@@ -1785,7 +1212,7 @@ impl HeadlessServer {
                 }
                 self.sent_window_title = None;
                 self.stream_host_mouse_capture_mode();
-                self.stream_direct_terminal_keyboard_mode();
+                self.stream_shell_keyboard_mode();
                 self.sync_window_title();
                 self.send_to_client(client_id, &ServerMessage::PresentationReady(token))
             }
@@ -1878,12 +1305,8 @@ impl HeadlessServer {
                 code,
                 message,
             } => {
-                let Some(client) = self.clients.get(&client_id) else {
+                if self.clients.get(&client_id).is_none() {
                     return false;
-                };
-                if !matches!(client.mode, ClientConnectionMode::ClientShell(_)) {
-                    self.remove_client_and_resize_if_needed(client_id);
-                    return true;
                 }
                 let message = crate::server::client_commands::error_message(
                     boot_id, request_id, code, message,
@@ -1906,10 +1329,9 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                if !matches!(client.mode, ClientConnectionMode::ClientShell(_))
-                    || !client
-                        .shell_state()
-                        .is_some_and(|shell| shell.endpoint_command_in_flight)
+                if !client
+                    .shell_state()
+                    .is_some_and(|shell| shell.endpoint_command_in_flight)
                     || boot_id != self.client_shell_boot_id
                 {
                     return false;
@@ -1930,7 +1352,6 @@ impl HeadlessServer {
             }
             ServerEvent::ClientDetach { client_id } => {
                 info!(?client_id, "client detached");
-                self.send_terminal_stream_detach_shutdown(client_id);
                 self.remove_client_and_resize_if_needed(client_id);
                 true
             }
@@ -1980,29 +1401,6 @@ impl HeadlessServer {
         let method = msg.request.method.traits().name;
         self.immediate_pty_sources_dirty = true;
 
-        let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {
-            AltScreenReadConflict::None => None,
-            AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
-            AltScreenReadConflict::Defer => {
-                self.defer_alt_screen_read_request(msg);
-                return false;
-            }
-        };
-
-        match &msg.request.method {
-            shepr_api::schema::Method::ClientWindowTitleSet(params) => {
-                let response = self.handle_client_window_title_api(Some(params.title.clone()));
-                shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
-                return true;
-            }
-            shepr_api::schema::Method::ClientWindowTitleClear(_) => {
-                let response = self.handle_client_window_title_api(None);
-                shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
-                return true;
-            }
-            _ => {}
-        }
-
         let mut changed = self.drain_all_internal_events_with_forwarding();
 
         // The full sync (including the view recompute) stays on this path:
@@ -2010,21 +1408,8 @@ impl HeadlessServer {
         // resume geometry, and an earlier request may have changed the layout
         // without anything cheaper recording that it did.
         self.sync_foreground_client_state();
-        if let Some(error) = self.agent_read_not_idle_error(&msg.request) {
-            let response = Err(shepr_api::error::ApiError::from_body(error));
-            shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
-            return changed;
-        }
-        let alt_screen_read_spec = self.alt_screen_read_spec(&msg.request);
-        if self
-            .clients
-            .foreground_client_id()
-            .is_some_and(|client_id| {
-                self.clients.get(&client_id).is_some_and(|client| {
-                    matches!(client.mode, ClientConnectionMode::ClientShell(_))
-                })
-            })
-        {
+        // The foreground client is always an active shell connection.
+        if self.clients.foreground_client_id().is_some() {
             self.app.state.view.terminal_area = Rect::new(
                 0,
                 0,
@@ -2034,32 +1419,7 @@ impl HeadlessServer {
         }
         let outcome = self.app.handle_api_request_with_render(msg.request);
         changed |= outcome.render != RenderDemand::None;
-        let mut response = outcome.response;
-        if let Some(snapshot) = frozen_alt_screen_read
-            && let Ok(shepr_api::schema::ResponseResult::PaneRead { read }) = &mut response
-        {
-            read.text = snapshot.text;
-            read.truncated = snapshot.truncated;
-        }
-        if let Some(spec) = alt_screen_read_spec
-            && let Ok(shepr_api::schema::ResponseResult::PaneRead { read }) = &response
-        {
-            let pending = crate::server::alt_screen_read::PendingAltScreenRead::start(
-                spec.terminal_id,
-                request_id.clone().into(),
-                msg.respond_to,
-                response.clone(),
-                read.clone(),
-                spec.lines,
-                spec.unwrap,
-                spec.initial,
-                spec.content_seq,
-                self.app.clock.now,
-            );
-            self.push_pending_alt_screen_read(pending);
-            return changed;
-        }
-        shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
+        shepr_api::send_api_response(&msg.respond_to, &request_id, method, outcome.response);
 
         if self.clients.latest_shell_client().is_some() {
             changed |= self.app.ensure_default_workspace();
@@ -2107,7 +1467,6 @@ impl HeadlessServer {
         // pane printing at least every theme-wait interval postponed the first
         // restored agent indefinitely.
         self.app.sync_pending_agent_resume_deadline(now);
-        changed |= self.app.expire_due_agent_resume_names(now);
         changed |= self
             .app
             .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now));

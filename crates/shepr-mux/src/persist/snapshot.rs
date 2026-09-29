@@ -240,8 +240,6 @@ pub struct PaneSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
@@ -367,7 +365,6 @@ fn capture_tab(
             .or_else(|| terminal.map(|terminal| terminal.cwd().to_path_buf()))
             .unwrap_or_else(|| fallback_cwd.to_path_buf());
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
-        let agent_name = terminal.and_then(|terminal| terminal.agent_name.clone());
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
         let agent_session = terminal.and_then(|terminal| {
             let hook_session = terminal.hook_authority.as_ref().and_then(|authority| {
@@ -399,7 +396,6 @@ fn capture_tab(
             PaneSnapshot {
                 cwd,
                 label,
-                agent_name,
                 agent_session,
                 launch_argv,
             },

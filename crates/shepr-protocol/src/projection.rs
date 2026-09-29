@@ -76,7 +76,6 @@ pub struct ClientShellAgent {
     pub pane_id: PublicPaneId,
     pub workspace_id: WorkspaceId,
     pub tab_id: PublicTabId,
-    pub name: Option<String>,
     pub agent: Option<String>,
     pub terminal_title: Option<String>,
     pub terminal_title_stripped: Option<String>,

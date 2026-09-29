@@ -136,16 +136,6 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: true, routine: false,
     };
-    ClientWindowTitleSet(ClientWindowTitleSetParams) => "client.window_title.set" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    ClientWindowTitleClear(EmptyParams) => "client.window_title.clear" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     ClientShellSurfaceSet(ClientShellSurfaceSetParams) => "client_shell.surface.set" {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
@@ -159,16 +149,6 @@ define_methods! {
     WorkspaceCreate(WorkspaceCreateParams) => "workspace.create" {
         client_shell: true, mutates_ui: true, changes_topology: true,
         changes_geometry: true, claims_shell_geometry: true,
-        runs_on_socket_thread: false, routine: false,
-    };
-    WorkspaceList(EmptyParams) => "workspace.list" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: true,
-    };
-    WorkspaceGet(WorkspaceTarget) => "workspace.get" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: false,
     };
     WorkspaceFocus(WorkspaceTarget) => "workspace.focus" {
@@ -201,16 +181,6 @@ define_methods! {
         changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    TabList(TabListParams) => "tab.list" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: true,
-    };
-    TabGet(TabTarget) => "tab.get" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     TabFocus(TabTarget) => "tab.focus" {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: true, claims_shell_geometry: true,
@@ -231,34 +201,14 @@ define_methods! {
         changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    AgentList(EmptyParams) => "agent.list" {
+    DetectCapture(PaneTarget) => "detect.capture" {
         client_shell: false, mutates_ui: false, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: false,
     };
-    AgentGet(AgentTarget) => "agent.get" {
+    DetectExplain(PaneTarget) => "detect.explain" {
         client_shell: false, mutates_ui: false, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    AgentRead(AgentReadParams) => "agent.read" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    AgentExplain(AgentTarget) => "agent.explain" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    AgentRename(AgentRenameParams) => "agent.rename" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    AgentFocus(AgentTarget) => "agent.focus" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
     PaneSplit(PaneSplitParams) => "pane.split" {
@@ -271,24 +221,9 @@ define_methods! {
         changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    PaneMove(PaneMoveParams) => "pane.move" {
-        client_shell: false, mutates_ui: true, changes_topology: true,
-        changes_geometry: true, claims_shell_geometry: true,
-        runs_on_socket_thread: false, routine: false,
-    };
     PaneZoom(PaneZoomParams) => "pane.zoom" {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: true, claims_shell_geometry: true,
-        runs_on_socket_thread: false, routine: false,
-    };
-    PaneLayout(PaneLayoutParams) => "pane.layout" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    PaneProcessInfo(PaneProcessInfoParams) => "pane.process_info" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: false,
     };
     LayoutExport(LayoutExportParams) => "layout.export" {
@@ -304,16 +239,6 @@ define_methods! {
     LayoutSetSplitRatio(LayoutSetSplitRatioParams) => "layout.set_split_ratio" {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: true, claims_shell_geometry: true,
-        runs_on_socket_thread: false, routine: false,
-    };
-    PaneNeighbor(PaneNeighborParams) => "pane.neighbor" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    PaneEdges(PaneEdgesParams) => "pane.edges" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: false,
     };
     PaneFocusDirection(PaneFocusDirectionParams) => "pane.focus_direction" {
@@ -351,16 +276,8 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    PaneList(PaneListParams) => "pane.list" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: true,
-    };
-    PaneCurrent(PaneCurrentParams) => "pane.current" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
+    // Kept for `events.subscribe`, whose status and scroll subscriptions
+    // sample the pane through this request.
     PaneGet(PaneTarget) => "pane.get" {
         client_shell: false, mutates_ui: false, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
@@ -380,11 +297,6 @@ define_methods! {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
-    };
-    PaneRead(PaneReadParams) => "pane.read" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: true,
     };
     PaneReportAgent(PaneReportAgentParams) => "pane.report_agent" {
         client_shell: false, mutates_ui: true, changes_topology: false,

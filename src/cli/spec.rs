@@ -1,19 +1,12 @@
 //! The clap model of the whole command line. This is the only argv parser:
 //! `main` parses argv with [`command`] once, then `cli` converts command
 //! matches into typed arguments before dispatching to a handler. Value
-//! validation (numbers, enums, `KEY=VALUE` pairs) lives here as value parsers,
-//! so a bad value is a usage error (exit 2) instead of a transport error.
+//! validation lives here as value parsers, so a bad value is a usage error
+//! (exit 2) instead of a transport error.
 
-use std::ffi::OsStr;
+use clap::builder::NonEmptyStringValueParser;
+use clap::{Arg, ArgAction, Command, ValueHint};
 
-use clap::builder::{
-    NonEmptyStringValueParser, PossibleValue, PossibleValuesParser, TypedValueParser,
-};
-use clap::{Arg, ArgAction, ArgGroup, Command, ValueHint};
-
-use shepr_api::schema::{
-    PaneAgentState, PaneDirection, PaneRightClickTarget, ReadFormat, ReadSource, SplitDirection,
-};
 use shepr_remote::{
     COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
     COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_JSON, FLAG_SESSION, PROGRAM_NAME,
@@ -52,12 +45,7 @@ pub(super) fn command() -> Command {
         .subcommand(status_command())
         .subcommand(machine::command())
         .subcommand(server_command())
-        .subcommand(workspace_command())
-        .subcommand(tab_command())
-        .subcommand(agent_command())
         .subcommand(detect_command())
-        .subcommand(pane_command())
-        .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(integration_command())
         .subcommand(
@@ -141,131 +129,10 @@ fn server_command() -> Command {
         )
 }
 
-fn workspace_command() -> Command {
-    group("workspace")
-        .about("Manage workspaces over the socket API")
-        .subcommand(Command::new("list").about("List workspaces"))
-        .subcommand(
-            Command::new("create")
-                .about("Create a workspace")
-                .arg(path_option("cwd", "PATH"))
-                .arg(option("label", "TEXT"))
-                .arg(env_option())
-                .args(focus_flags()),
-        )
-        .subcommand(id_command("get", "workspace_id", "Show a workspace"))
-        .subcommand(id_command("focus", "workspace_id", "Focus a workspace"))
-        .subcommand(
-            Command::new("rename")
-                .about("Rename a workspace")
-                .arg(required("workspace_id", "WORKSPACE_ID"))
-                .arg(text_words("label", "LABEL")),
-        )
-        .subcommand(id_command("close", "workspace_id", "Close a workspace"))
-}
-
-fn tab_command() -> Command {
-    group("tab")
-        .about("Manage tabs over the socket API")
-        .subcommand(
-            Command::new("list")
-                .about("List tabs")
-                .arg(option("workspace", "WORKSPACE_ID")),
-        )
-        .subcommand(
-            Command::new("create")
-                .about("Create a tab")
-                .arg(option("workspace", "WORKSPACE_ID"))
-                .arg(path_option("cwd", "PATH"))
-                .arg(option("label", "TEXT"))
-                .arg(env_option())
-                .args(focus_flags()),
-        )
-        .subcommand(id_command("get", "tab_id", "Show a tab"))
-        .subcommand(id_command("focus", "tab_id", "Focus a tab"))
-        .subcommand(
-            Command::new("rename")
-                .about("Rename a tab")
-                .arg(required("tab_id", "TAB_ID"))
-                .arg(text_words("label", "LABEL")),
-        )
-        .subcommand(id_command("close", "tab_id", "Close a tab"))
-}
-
-fn agent_command() -> Command {
-    group("agent")
-        .about("Inspect and navigate agent panes")
-        .after_help("Targets accept unique agent names and pane ids that currently host agents.")
-        .subcommand(Command::new("list").about("List agents"))
-        .subcommand(id_command("get", "target", "Show an agent"))
-        .subcommand(
-            Command::new("read")
-                .about("Read agent terminal output")
-                .override_usage("shepr agent read <TARGET> [OPTIONS]")
-                .arg(required("target", "TARGET"))
-                .arg(read_source_option(READ_SOURCES))
-                .arg(u32_option("lines", "N"))
-                .arg(read_format_option())
-                .arg(flag("ansi").conflicts_with("format")),
-        )
-        .subcommand(
-            Command::new("rename")
-                .about("Rename an agent")
-                .override_usage("shepr agent rename <TARGET> <NAME>|--clear")
-                .arg(required("target", "TARGET"))
-                .arg(Arg::new("name").value_name("NAME"))
-                .arg(flag("clear"))
-                .group(
-                    ArgGroup::new("rename")
-                        .args(["name", "clear"])
-                        .required(true),
-                ),
-        )
-        .subcommand(id_command("focus", "target", "Focus an agent"))
-        .subcommand(
-            Command::new("attach")
-                .about("Attach directly to an agent terminal")
-                .override_usage("shepr agent attach <TARGET> [OPTIONS]")
-                .arg(required("target", "TARGET"))
-                .arg(flag("takeover")),
-        )
-        .subcommand(
-            Command::new("explain")
-                .about("Explain agent detection state")
-                .override_usage(
-                    "shepr agent explain <TARGET> [OPTIONS]\n       shepr agent explain --file <PATH> --agent <LABEL> [OPTIONS]",
-                )
-                .arg(
-                    Arg::new("target")
-                        .value_name("TARGET")
-                        .required_unless_present("file")
-                        .conflicts_with("file"),
-                )
-                .arg(
-                    path_option("file", "PATH")
-                        .requires("agent")
-                        .help("Evaluate a saved screen capture locally"),
-                )
-                .arg(
-                    option("agent", "LABEL")
-                        .requires("file")
-                        .help("Agent manifest to evaluate the --file capture against"),
-                )
-                .arg(json_flag().conflicts_with("format"))
-                .arg(text_json_format_option())
-                .arg(
-                    Arg::new("verbose")
-                        .short('v')
-                        .long("verbose")
-                        .action(ArgAction::SetTrue),
-                ),
-        )
-}
-
 fn detect_command() -> Command {
     group("detect")
         .about("Capture and explain what the agent detector sees")
-        .after_help("PANE is a pane id such as w1:p1; agent names are not accepted.")
+        .after_help("PANE is a pane id such as w1:p1.")
         .subcommand(
             Command::new("capture")
                 .about("Print the plain text the detector evaluates for a pane")
@@ -304,8 +171,8 @@ fn detect_command() -> Command {
         )
 }
 
-/// A live detection target: a pane id, never an agent name. Rejected by the
-/// parser so a typo cannot fall through to name resolution on the server.
+/// A live detection target: a pane id. Malformed values are rejected by the
+/// parser, before any request is sent.
 fn pane_id_argument() -> Arg {
     Arg::new("pane").value_name("PANE").value_parser(pane_id)
 }
@@ -314,216 +181,7 @@ fn pane_id(value: &str) -> Result<String, String> {
     value
         .parse::<shepr_protocol::PublicPaneId>()
         .map(|_| value.to_owned())
-        .map_err(|_| {
-            format!(
-                "{value:?} is not a pane id (expected e.g. w1:p1); agent names are not accepted"
-            )
-        })
-}
-
-fn pane_command() -> Command {
-    group("pane")
-        .about("Control terminal panes")
-        .after_help(
-            "Commands that take --pane/--current act on the calling pane when neither is given, and on the server's focused pane when run outside a pane of that server.",
-        )
-        .subcommand(
-            Command::new("list")
-                .about("List panes")
-                .arg(option("workspace", "WORKSPACE_ID")),
-        )
-        .subcommand(
-            Command::new("current")
-                .about("Show the current pane")
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false)),
-        )
-        .subcommand(id_command("get", "pane_id", "Show a pane"))
-        .subcommand(
-            Command::new("layout")
-                .about("Show pane layout information")
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false)),
-        )
-        .subcommand(
-            Command::new("process-info")
-                .about("Show pane process information")
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false)),
-        )
-        .subcommand(
-            Command::new("neighbor")
-                .about("Find a pane neighbor")
-                .arg(direction_option().required(true))
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false)),
-        )
-        .subcommand(
-            Command::new("edges")
-                .about("Show pane edge information")
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false)),
-        )
-        .subcommand(
-            Command::new("focus")
-                .about("Focus a neighboring pane")
-                .arg(direction_option().required(true))
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false)),
-        )
-        .subcommand(
-            Command::new("resize")
-                .about("Resize a pane split")
-                .arg(direction_option().required(true))
-                .arg(
-                    option("amount", "FLOAT")
-                        .allow_negative_numbers(true)
-                        .value_parser(finite_f32),
-                )
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false)),
-        )
-        .subcommand(
-            Command::new("zoom")
-                .about("Toggle or set pane zoom")
-                .arg(Arg::new("pane_id").value_name("PANE_ID"))
-                .args(current_pane_args())
-                .group(pane_selector(&["pane_id", "pane", "current"], false))
-                .arg(flag("toggle"))
-                .arg(flag("on"))
-                .arg(flag("off"))
-                .group(ArgGroup::new("mode").args(["toggle", "on", "off"])),
-        )
-        .subcommand(
-            Command::new("read")
-                .about("Read pane terminal output")
-                .arg(required("pane_id", "PANE_ID"))
-                .arg(read_source_option(READ_SOURCES))
-                .arg(u32_option("lines", "N"))
-                .arg(read_format_option())
-                // No `--raw`: there is no raw PTY byte history, so it could
-                // only repeat `--ansi`.
-                .arg(
-                    flag("ansi")
-                        .conflicts_with("format")
-                        .help("Same as --format ansi"),
-                ),
-        )
-        .subcommand(
-            Command::new("rename")
-                .about("Rename a pane")
-                .override_usage("shepr pane rename <PANE_ID> <LABEL>...|--clear")
-                .arg(required("pane_id", "PANE_ID"))
-                .arg(text_words("label", "LABEL").required(false))
-                .arg(flag("clear"))
-                .group(
-                    ArgGroup::new("rename")
-                        .args(["label", "clear"])
-                        .required(true),
-                ),
-        )
-        .subcommand(
-            Command::new("split")
-                .about("Split a pane")
-                .arg(Arg::new("pane_id").value_name("PANE_ID"))
-                .args(current_pane_args())
-                .group(pane_selector(&["pane_id", "pane", "current"], false))
-                .arg(split_direction_option("direction").required(true))
-                .arg(option("ratio", "FLOAT").value_parser(finite_f32))
-                .arg(path_option("cwd", "PATH"))
-                .arg(env_option())
-                .arg(right_click_option())
-                .args(focus_flags()),
-        )
-        .subcommand(
-            Command::new("swap")
-                .about("Swap panes")
-                .override_usage(
-                    "shepr pane swap --direction <DIRECTION> [--pane <ID>|--current]\n       shepr pane swap --source-pane <ID> --target-pane <ID>",
-                )
-                .arg(direction_option())
-                .args(current_pane_args())
-                .group(pane_selector(&["pane", "current"], false))
-                .arg(option("source-pane", "ID"))
-                .arg(option("target-pane", "ID")),
-        )
-        .subcommand(
-            Command::new("move")
-                .about("Move a pane")
-                .override_usage(
-                    "shepr pane move <PANE_ID> --tab <TAB_ID> --split <DIRECTION> [--target-pane <ID>] [--ratio <FLOAT>] [--focus|--no-focus]\n       shepr pane move <PANE_ID> --new-tab [--workspace <ID>] [--label <TEXT>] [--focus|--no-focus]\n       shepr pane move <PANE_ID> --new-workspace [--label <TEXT>] [--tab-label <TEXT>] [--focus|--no-focus]",
-                )
-                .arg(required("pane_id", "PANE_ID"))
-                .arg(option("tab", "TAB_ID"))
-                .arg(split_direction_option("split"))
-                .arg(option("target-pane", "ID"))
-                .arg(option("ratio", "FLOAT").value_parser(finite_f32))
-                .arg(flag("new-tab"))
-                .arg(option("workspace", "ID"))
-                .arg(flag("new-workspace"))
-                .arg(option("label", "TEXT"))
-                .arg(option("tab-label", "TEXT"))
-                .args(focus_flags())
-                .group(
-                    ArgGroup::new("destination")
-                        .args(["tab", "new-tab", "new-workspace"])
-                        .required(true),
-                ),
-        )
-        .subcommand(id_command("close", "pane_id", "Close a pane"))
-        .subcommand(report_agent_command())
-        .subcommand(report_agent_session_command())
-}
-
-fn report_agent_command() -> Command {
-    Command::new("report-agent")
-        .about("Report pane agent lifecycle state")
-        .arg(required("pane_id", "PANE_ID"))
-        .arg(option("source", "ID").required(true))
-        .arg(option("agent", "LABEL").required(true))
-        .arg(
-            option("state", "STATUS")
-                .required(true)
-                .value_parser(Choice(PANE_AGENT_STATES)),
-        )
-        .arg(free_text_option("message", "TEXT"))
-        .arg(u64_option("seq", "N"))
-        .arg(option("agent-session-id", "ID"))
-        .arg(path_option("agent-session-path", "PATH"))
-}
-
-fn report_agent_session_command() -> Command {
-    Command::new("report-agent-session")
-        .about("Report pane agent session identity")
-        .arg(required("pane_id", "PANE_ID"))
-        .arg(option("source", "ID").required(true))
-        .arg(option("agent", "LABEL").required(true))
-        .arg(u64_option("seq", "N"))
-        .arg(option("agent-session-id", "ID"))
-        .arg(path_option("agent-session-path", "PATH"))
-        .arg(option("session-start-source", "SOURCE"))
-}
-
-fn terminal_command() -> Command {
-    group("terminal")
-        .about("Attach to or observe raw terminal streams")
-        .subcommand(
-            Command::new("attach")
-                .about("Attach directly to a terminal stream")
-                .arg(required("terminal_id", "TERMINAL_ID"))
-                .arg(flag("takeover"))
-                .after_help("Detach with ctrl+b q; send a literal ctrl+b with ctrl+b ctrl+b."),
-        )
-        .subcommand(
-            group("title")
-                .about("Manage the outer terminal title")
-                .subcommand(
-                    Command::new("set")
-                        .about("Set the outer terminal title")
-                        .arg(required("title", "TITLE").allow_hyphen_values(true)),
-                )
-                .subcommand(Command::new("clear").about("Clear the outer terminal title")),
-        )
+        .map_err(|_| format!("{value:?} is not a pane id (expected e.g. w1:p1)"))
 }
 
 fn session_command() -> Command {
@@ -571,31 +229,6 @@ fn integration_command() -> Command {
         )
 }
 
-/// Resolved by `selected_pane` in `pane.rs`, the same way for every command.
-fn current_pane_args() -> [Arg; 2] {
-    [
-        option("pane", "ID").help("Act on this pane"),
-        flag("current").help(
-            "Act on the calling pane (SHEPR_PANE_ID); an error outside a pane of the targeted server",
-        ),
-    ]
-}
-
-/// At most one way of naming the pane (`required` makes it exactly one).
-fn pane_selector(args: &[&'static str], required: bool) -> ArgGroup {
-    ArgGroup::new("pane_selector")
-        .args(args.iter().copied())
-        .required(required)
-}
-
-fn focus_flags() -> [Arg; 2] {
-    // The later of the two wins, as with any repeated switch.
-    [
-        flag("focus").overrides_with("no-focus"),
-        flag("no-focus").overrides_with("focus"),
-    ]
-}
-
 fn integration_target_arg() -> Arg {
     Arg::new("target")
         .value_name("TARGET")
@@ -608,36 +241,6 @@ fn integration_target_values() -> Vec<&'static str> {
         .map(shepr_agent::integration::integration_target_label)
         .collect();
     values
-}
-
-fn id_command(name: &'static str, id: &'static str, about: &'static str) -> Command {
-    Command::new(name).about(about).arg(required(id, id))
-}
-
-fn direction_option() -> Arg {
-    option("direction", "DIRECTION").value_parser(Choice(PANE_DIRECTIONS))
-}
-
-fn split_direction_option(name: &'static str) -> Arg {
-    option(name, "DIRECTION").value_parser(Choice(SPLIT_DIRECTIONS))
-}
-
-fn right_click_option() -> Arg {
-    option("right-click", "TARGET").value_parser(Choice(RIGHT_CLICK_TARGETS))
-}
-
-fn read_source_option(values: &'static [(&'static str, ReadSource)]) -> Arg {
-    option("source", "SOURCE")
-        .value_parser(Choice(values))
-        .help("Terminal snapshot source (default: recent)")
-}
-
-fn read_format_option() -> Arg {
-    option("format", "FORMAT").value_parser(Choice(READ_FORMATS))
-}
-
-fn text_json_format_option() -> Arg {
-    option("format", "FORMAT").value_parser(["text", "json"])
 }
 
 fn json_flag() -> Arg {
@@ -663,12 +266,6 @@ fn help_flag() -> Arg {
         .help("Show help")
 }
 
-fn env_option() -> Arg {
-    repeatable_option("env", "KEY=VALUE")
-        .value_parser(env_assignment)
-        .help("Set an environment variable for the launched process")
-}
-
 fn flag(name: &'static str) -> Arg {
     Arg::new(name).long(name).action(ArgAction::SetTrue)
 }
@@ -680,115 +277,12 @@ fn option(name: &'static str, value_name: &'static str) -> Arg {
         .action(ArgAction::Set)
 }
 
-/// An option whose value is free text, so a value that starts with `-` is
-/// taken as the value rather than as the next option.
-fn free_text_option(name: &'static str, value_name: &'static str) -> Arg {
-    option(name, value_name).allow_hyphen_values(true)
-}
-
-fn repeatable_option(name: &'static str, value_name: &'static str) -> Arg {
-    option(name, value_name).action(ArgAction::Append)
-}
-
 fn path_option(name: &'static str, value_name: &'static str) -> Arg {
     option(name, value_name).value_hint(ValueHint::AnyPath)
 }
 
-fn u64_option(name: &'static str, value_name: &'static str) -> Arg {
-    option(name, value_name).value_parser(clap::value_parser!(u64))
-}
-
-fn u32_option(name: &'static str, value_name: &'static str) -> Arg {
-    option(name, value_name).value_parser(clap::value_parser!(u32))
-}
-
 fn required(name: &'static str, value_name: &'static str) -> Arg {
     Arg::new(name).value_name(value_name).required(true)
-}
-
-/// The trailing words of a command (a label, text, a command line, keys).
-/// Once the first word is seen, every remaining argument belongs to it, even
-/// ones that look like options.
-fn text_words(name: &'static str, value_name: &'static str) -> Arg {
-    required(name, value_name)
-        .num_args(1..)
-        .allow_hyphen_values(true)
-        .trailing_var_arg(true)
-}
-
-fn finite_f32(value: &str) -> Result<f32, String> {
-    match value.parse::<f32>() {
-        Ok(parsed) if parsed.is_finite() => Ok(parsed),
-        _ => Err("expected a finite number".to_string()),
-    }
-}
-
-fn env_assignment(value: &str) -> Result<(String, String), String> {
-    super::parse_env_assignment(value)
-}
-
-const PANE_DIRECTIONS: &[(&str, PaneDirection)] = &[
-    ("left", PaneDirection::Left),
-    ("right", PaneDirection::Right),
-    ("up", PaneDirection::Up),
-    ("down", PaneDirection::Down),
-];
-
-const SPLIT_DIRECTIONS: &[(&str, SplitDirection)] = &[
-    ("right", SplitDirection::Right),
-    ("down", SplitDirection::Down),
-];
-
-const RIGHT_CLICK_TARGETS: &[(&str, PaneRightClickTarget)] = &[
-    ("shepr", PaneRightClickTarget::Shepr),
-    ("pane", PaneRightClickTarget::Pane),
-];
-
-const READ_SOURCES: &[(&str, ReadSource)] = &[
-    ("visible", ReadSource::Visible),
-    ("recent", ReadSource::Recent),
-    ("recent-unwrapped", ReadSource::RecentUnwrapped),
-    ("detection", ReadSource::Detection),
-];
-
-const READ_FORMATS: &[(&str, ReadFormat)] =
-    &[("text", ReadFormat::Text), ("ansi", ReadFormat::Ansi)];
-
-const PANE_AGENT_STATES: &[(&str, PaneAgentState)] = &[
-    ("idle", PaneAgentState::Idle),
-    ("working", PaneAgentState::Working),
-    ("blocked", PaneAgentState::Blocked),
-    ("unknown", PaneAgentState::Unknown),
-];
-
-/// Parses one of a fixed set of names straight into its API value, and
-/// reports the names as possible values for help and validation.
-#[derive(Clone)]
-struct Choice<T: 'static>(&'static [(&'static str, T)]);
-
-impl<T: Clone + Send + Sync + 'static> TypedValueParser for Choice<T> {
-    type Value = T;
-
-    fn parse_ref(
-        &self,
-        cmd: &Command,
-        arg: Option<&Arg>,
-        value: &OsStr,
-    ) -> Result<Self::Value, clap::Error> {
-        let name = PossibleValuesParser::new(self.0.iter().map(|(name, _)| *name))
-            .parse_ref(cmd, arg, value)?;
-        self.0
-            .iter()
-            .find(|(candidate, _)| *candidate == name)
-            .map(|(_, value)| value.clone())
-            .ok_or_else(|| clap::Error::new(clap::error::ErrorKind::InvalidValue).with_cmd(cmd))
-    }
-
-    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
-        Some(Box::new(
-            self.0.iter().map(|(name, _)| PossibleValue::new(*name)),
-        ))
-    }
 }
 
 #[cfg(test)]
@@ -804,30 +298,6 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing command path segment {name}"));
         }
         current
-    }
-
-    fn option_values(cmd: &Command, option: &str) -> Vec<String> {
-        let arg = cmd
-            .get_arguments()
-            .find(|arg| arg.get_long() == Some(option))
-            .unwrap_or_else(|| panic!("missing --{option}"));
-        arg.get_value_parser()
-            .possible_values()
-            .into_iter()
-            .flatten()
-            .map(|value| value.get_name().to_string())
-            .collect()
-    }
-
-    fn has_option(cmd: &Command, option: &str) -> bool {
-        cmd.get_arguments()
-            .any(|arg| arg.get_long() == Some(option))
-    }
-
-    fn option_arg<'a>(cmd: &'a Command, option: &str) -> &'a Arg {
-        cmd.get_arguments()
-            .find(|arg| arg.get_long() == Some(option))
-            .unwrap_or_else(|| panic!("missing --{option}"))
     }
 
     fn argument<'a>(cmd: &'a Command, id: &str) -> &'a Arg {
@@ -945,11 +415,8 @@ mod tests {
             append_required_arguments(subcommand, &mut args);
             current = subcommand;
         }
-        // `agent explain` accepts either a target or a local file and requires
+        // `detect explain` accepts either a pane or a local file and requires
         // one through a conditional argument rule rather than an ArgGroup.
-        if path.iter().map(String::as_str).eq(["agent", "explain"]) {
-            args.push("target".to_string());
-        }
         if path.iter().map(String::as_str).eq(["detect", "explain"]) {
             args.push("w1:p1".to_string());
         }
@@ -986,11 +453,6 @@ mod tests {
             path.join(" ")
         );
         error.render().to_string()
-    }
-
-    fn long_help(path: &[&str]) -> String {
-        let path: Vec<String> = path.iter().map(ToString::to_string).collect();
-        rendered_help(&path, "--help")
     }
 
     #[test]
@@ -1144,166 +606,35 @@ mod tests {
     }
 
     #[test]
-    fn spec_marks_runtime_required_options_as_required() {
-        for (path, options) in [
-            (&["pane", "neighbor"][..], &["direction"][..]),
-            (&["pane", "focus"][..], &["direction"][..]),
-            (&["pane", "resize"][..], &["direction"][..]),
-            (&["pane", "split"][..], &["direction"][..]),
-            (
-                &["pane", "report-agent"][..],
-                &["source", "agent", "state"][..],
-            ),
-            (
-                &["pane", "report-agent-session"][..],
-                &["source", "agent"][..],
-            ),
-        ] {
-            let cmd = command_path(&super::command(), path).clone();
-            for option in options {
-                assert!(
-                    option_arg(&cmd, option).is_required_set(),
-                    "shepr {} --{option} should be required",
-                    path.join(" ")
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn agent_rename_requires_exactly_one_name_or_clear() {
-        for valid in [
-            &["shepr", "agent", "rename", "reviewer", "worker"][..],
-            &["shepr", "agent", "rename", "reviewer", "--clear"][..],
-        ] {
-            assert!(super::command().try_get_matches_from(valid).is_ok());
-        }
-        for invalid in [
-            &["shepr", "agent", "rename", "reviewer"][..],
-            &["shepr", "agent", "rename", "reviewer", "worker", "--clear"][..],
-        ] {
-            assert!(super::command().try_get_matches_from(invalid).is_err());
-        }
-
-        assert!(
-            long_help(&["agent", "rename"])
-                .contains("Usage: shepr agent rename <TARGET> <NAME>|--clear")
-        );
-    }
-
-    #[test]
-    fn spec_excludes_removed_agent_and_pane_commands() {
+    fn spec_has_only_the_kept_command_groups() {
         let cmd = super::command();
-        assert!(
-            cmd.get_subcommands()
-                .all(|command| command.get_name() != "wait")
-        );
-
-        let agent = command_path(&cmd, &["agent"]);
-        for removed in ["prompt", "send-keys", "wait"] {
-            assert!(
-                agent
-                    .get_subcommands()
-                    .all(|command| command.get_name() != removed)
-            );
-        }
-
-        let pane = command_path(&cmd, &["pane"]);
-        for removed in ["send-text", "send-keys", "run", "wait-output", "input"] {
-            assert!(
-                pane.get_subcommands()
-                    .all(|command| command.get_name() != removed)
-            );
-        }
-    }
-
-    #[test]
-    fn spec_pane_read_has_ansi_and_no_raw_alias() {
-        let cmd = super::command();
-        let pane_read = command_path(&cmd, &["pane", "read"]);
-        assert!(has_option(pane_read, "ansi"));
-        assert!(!has_option(pane_read, "raw"));
+        let mut names = cmd
+            .get_subcommands()
+            .map(Command::get_name)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
         assert_eq!(
-            option_values(pane_read, "source"),
-            ["visible", "recent", "recent-unwrapped", "detection"]
-        );
-    }
-
-    #[test]
-    fn spec_matches_pane_split_direction_flag() {
-        let cmd = super::command();
-        let pane_split = command_path(&cmd, &["pane", "split"]);
-        assert!(has_option(pane_split, "direction"));
-        assert!(!has_option(pane_split, "split"));
-        assert_eq!(option_values(pane_split, "direction"), ["right", "down"]);
-    }
-
-    #[test]
-    fn spec_has_no_workspace_group_close() {
-        let cmd = super::command();
-        let close = command_path(&cmd, &["workspace", "close"]);
-        assert!(!has_option(close, "group"));
-        assert!(
-            super::command()
-                .try_get_matches_from(["shepr", "workspace", "close", "w1", "--group"])
-                .is_err()
+            names,
+            [
+                "client",
+                "detect",
+                "integration",
+                "machine",
+                "remote-api-bridge",
+                "remote-client-bridge",
+                "server",
+                "session",
+                "status",
+            ]
         );
     }
 
     #[test]
     fn bad_values_are_usage_errors() {
         for args in [
-            &[
-                "shepr",
-                "pane",
-                "report-agent",
-                "p1",
-                "--source",
-                "s",
-                "--agent",
-                "a",
-                "--state",
-                "idle",
-                "--seq",
-                "x",
-            ][..],
-            &[
-                "shepr",
-                "pane",
-                "report-agent",
-                "p1",
-                "--source",
-                "s",
-                "--agent",
-                "a",
-                "--state",
-                "sleepy",
-            ],
-            &[
-                "shepr",
-                "pane",
-                "report-agent-session",
-                "p1",
-                "--source",
-                "s",
-                "--agent",
-                "a",
-                "--seq",
-                "-1",
-            ],
-            &["shepr", "agent", "read", "t", "--lines", "many"],
-            &["shepr", "agent", "read", "t", "--source", "everywhere"],
-            &["shepr", "pane", "split", "--direction", "left"],
-            &[
-                "shepr",
-                "pane",
-                "resize",
-                "--direction",
-                "up",
-                "--amount",
-                "NaN",
-            ],
-            &["shepr", "workspace", "create", "--env", "NOVALUE"],
+            &["shepr", "detect", "capture", "agent-name"][..],
+            &["shepr", "detect", "explain", "not-a-pane"],
+            &["shepr", "detect", "explain", "--file", "screen.txt"],
         ] {
             let error = super::command()
                 .try_get_matches_from(args)

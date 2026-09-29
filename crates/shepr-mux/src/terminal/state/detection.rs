@@ -6,15 +6,13 @@ impl TerminalState {
         agent: Agent,
         now: Instant,
     ) -> TerminalStateMutation {
-        let mutation = self.set_detected_state_with_screen_signals_at(
+        self.set_detected_state_with_screen_signals_at(
             Some(agent),
             AgentState::Unknown,
             false,
             false,
             now,
-        );
-        self.confirm_agent_resume_process(agent);
-        mutation
+        )
     }
 
     pub fn terminal_title_stripped(&self) -> Option<String> {
@@ -58,8 +56,8 @@ impl TerminalState {
     /// seeded for the resumed agent: no runtime ever existed here, so that
     /// detection is only the seed, and with no detector to ever report the
     /// pane empty it would show an idle agent on a dead pane indefinitely.
-    /// The saved name and session stay, as for any unavailable
-    /// restored pane, so a later save writes them back.
+    /// The saved session stays, as for any unavailable restored pane, so a
+    /// later save writes it back.
     pub fn abandon_agent_resume(&mut self, error: super::RestoreFailure, now: Instant) {
         self.pending_agent_resume_plan = None;
         self.restore_error = Some(error);
@@ -75,12 +73,15 @@ impl TerminalState {
         self.bump_revision();
     }
 
-    /// Returns the content revision used to reject stale pane reads.
+    /// Returns the pane's metadata revision, reported as `revision` in the
+    /// API's pane and agent info. It advances when the stripped terminal
+    /// title changes or an agent resume is abandoned; nothing in shepr
+    /// compares it, so it only lets an API consumer tell that those changed.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// Advances the content revision, preserving monotonicity at exhaustion.
+    /// Advances the revision, preserving monotonicity at exhaustion.
     /// Saturation avoids wrapping an old revision back into a current value.
     pub fn bump_revision(&mut self) {
         self.revision = self.revision.saturating_add(1);
@@ -108,9 +109,8 @@ impl TerminalState {
                     )
                     && authority.reported_at > now
             });
-        let agent_released = process_exited
-            && !newer_custom_authority
-            && (previous_agent_label.is_some() || self.agent_name.is_some());
+        let agent_released =
+            process_exited && !newer_custom_authority && previous_agent_label.is_some();
         if self.should_ignore_detected_state_under_full_lifecycle_hook(agent, process_exited) {
             if self.hook_authority.as_ref().and_then(|authority| {
                 shepr_agent::detect::parse_agent_label(&authority.agent_label)
@@ -147,10 +147,6 @@ impl TerminalState {
             };
         }
         self.detected_agent = agent;
-        if let Some(agent) = agent {
-            let agent_label = shepr_agent::detect::agent_label(agent);
-            self.reconcile_agent_name_owner(agent_label, None);
-        }
         if !process_exited {
             self.clear_full_lifecycle_hook_suppression_for_detected_agent(
                 if replacement_process_detected {
@@ -300,14 +296,6 @@ impl TerminalState {
             );
             self.hook_authority = None;
             self.persisted_agent_session = durable_session;
-        }
-        // Observing a process exit is not the same as the agent being gone: the
-        // observation can be wrong while the agent keeps running, and the name
-        // is the only handle its owner has on the pane. Detection uncertainty
-        // already keeps the name, so free it at the point the agent actually
-        // leaves the pane - a recorded exit with no agent detected any more.
-        if agent.is_none() && self.recent_agent_process_exit.is_some() {
-            self.clear_agent_name();
         }
         let effective_state_change = self.recompute_effective_state(
             previous_agent_label,

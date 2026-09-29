@@ -175,10 +175,6 @@ impl AppState {
             if still_attached {
                 continue;
             }
-            // A direct-attach client normally releases its resize lock on
-            // disconnect, but once the terminal is gone the lock guards
-            // nothing; drop it here so it cannot outlive the terminal.
-            self.direct_attach_resize_locks.remove(&terminal_id);
             if self.terminals.remove(&terminal_id).is_some() {
                 detached.push(terminal_id);
             }
@@ -237,7 +233,6 @@ impl AppState {
             });
         }
 
-        self.remove_pane_aliases(&removal.pane_ids);
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
@@ -314,7 +309,6 @@ impl AppState {
         if self.active_index() == Some(plan.workspace_index) {
             self.refresh_active_tab_id();
         }
-        self.remove_pane_aliases(&removal.pane_ids);
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
@@ -345,12 +339,6 @@ impl AppState {
         }
     }
 
-    /// Drops the public pane-id aliases that point at any of `pane_ids`.
-    pub(crate) fn remove_pane_aliases(&mut self, pane_ids: &[PaneId]) {
-        self.public_pane_id_aliases
-            .retain(|_, alias| !pane_ids.contains(alias));
-    }
-
     /// Closes the workspace at `ws_idx` and everything it owns.
     ///
     /// Focus stays on the previously active workspace and the sidebar cursor
@@ -367,7 +355,6 @@ impl AppState {
         let active_workspace_id = self.active.clone();
         let selected_workspace_id = self.selected.clone();
 
-        self.remove_pane_aliases(&pane_ids);
         self.clear_stale_previous_pane_focus(pane_ids.iter().copied());
         self.workspaces.remove(ws_idx);
         let detached_terminal_ids =

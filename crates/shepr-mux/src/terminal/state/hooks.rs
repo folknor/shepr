@@ -77,7 +77,6 @@ impl TerminalState {
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
         let previous_session = self.current_session_identity_for_persistence();
-        self.reconcile_agent_name_owner(&agent_label, session_ref.as_ref());
         if foreground_takeover_allowed {
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,
@@ -535,7 +534,6 @@ impl TerminalState {
             .retain(|source, _| sequences.contains_key(source));
         for (source, agent_label, session_ref, pending) in validated_replacement_sessions {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
-            self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
             let Some(persisted_session) =
                 shepr_agent::agent::resume::PersistedAgentSession::from_report(
                     &source,

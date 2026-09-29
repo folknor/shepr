@@ -1,6 +1,5 @@
 use super::*;
 use crate::server::ClientId;
-use crate::server::clients::RenderTargetMode;
 
 fn writer_gone(client_id: ClientId) {
     debug!(?client_id, "client writer channel closed");
@@ -98,33 +97,21 @@ impl HeadlessServer {
         let requested = self
             .clients
             .iter()
-            .filter_map(|(&client_id, client)| match &client.mode {
-                ClientConnectionMode::ClientShell(shell) => {
-                    let focused = shell
-                        .surface_active
-                        .then(|| self.shell_focused_runtime(client_id))
-                        .flatten();
-                    let child_requests_mouse =
-                        focused.is_some_and(|(runtime, _)| runtime.mouse_reporting_enabled());
-                    let sgr_pixels = client.pixel_mouse
-                        && focused.is_some_and(|(runtime, _)| runtime.sgr_pixel_mouse_enabled());
-                    Some((
-                        client_id,
-                        shell.surface_active && (shell.mouse_capture || child_requests_mouse),
-                        shell.surface_active && sgr_pixels,
-                    ))
-                }
-                ClientConnectionMode::TerminalAttach { terminal_id, .. } => {
-                    let runtime = self.app.terminal_runtimes.get(terminal_id);
-                    let child_requests_mouse =
-                        runtime.is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
-                    let sgr_pixels = child_requests_mouse
-                        && client.pixel_mouse
-                        && runtime
-                            .is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
-                    Some((client_id, child_requests_mouse, sgr_pixels))
-                }
-                ClientConnectionMode::TerminalPending => None,
+            .filter_map(|(&client_id, client)| {
+                let shell = client.shell_state()?;
+                let focused = shell
+                    .surface_active
+                    .then(|| self.shell_focused_runtime(client_id))
+                    .flatten();
+                let child_requests_mouse =
+                    focused.is_some_and(|(runtime, _)| runtime.mouse_reporting_enabled());
+                let sgr_pixels = client.pixel_mouse
+                    && focused.is_some_and(|(runtime, _)| runtime.sgr_pixel_mouse_enabled());
+                Some((
+                    client_id,
+                    shell.surface_active && (shell.mouse_capture || child_requests_mouse),
+                    shell.surface_active && sgr_pixels,
+                ))
             })
             .collect::<Vec<_>>();
 
@@ -165,11 +152,10 @@ impl HeadlessServer {
         }
     }
 
-    pub(super) fn stream_direct_terminal_keyboard_mode(&mut self) {
+    pub(super) fn stream_shell_keyboard_mode(&mut self) {
         let shell_modes = self
             .clients
             .iter()
-            .filter(|(_, client)| client.is_shell_client())
             .map(|(&client_id, client)| {
                 let report_all = client.is_active_shell_client()
                     && self
@@ -218,63 +204,6 @@ impl HeadlessServer {
             }
         }
 
-        let requested = self
-            .clients
-            .iter()
-            .filter_map(|(&client_id, client)| {
-                let ClientConnectionMode::TerminalAttach { terminal_id, .. } = &client.mode else {
-                    return None;
-                };
-                let (flags, modify_other_keys_level) = self
-                    .app
-                    .terminal_runtimes
-                    .get(terminal_id)
-                    .map_or((0, 0), |runtime| {
-                        let flags = match runtime.keyboard_protocol() {
-                            shepr_termio::input::KeyboardProtocol::Legacy => 0,
-                            shepr_termio::input::KeyboardProtocol::Kitty { flags } => flags,
-                        };
-                        (flags, runtime.modify_other_keys_level())
-                    });
-                Some((client_id, flags, modify_other_keys_level))
-            })
-            .collect::<Vec<_>>();
-
-        for (client_id, flags, modify_other_keys_level) in requested {
-            let Some(client) = self.clients.get_mut(&client_id) else {
-                continue;
-            };
-            if client.terminal_attach_state().is_some_and(|state| {
-                state.host_keyboard_protocol_active == Some((flags, modify_other_keys_level))
-            }) {
-                continue;
-            }
-            let Some(writer) = &client.writer else {
-                continue;
-            };
-            let serialized =
-                match Self::frame_server_message(&ServerMessage::DirectTerminalKeyboardProtocol {
-                    flags: shepr_protocol::KittyKeyboardFlags::from_bits_retain(flags),
-                    modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel::from_parameter(
-                        u16::from(modify_other_keys_level),
-                    ),
-                }) {
-                    Ok(framed) => framed,
-                    Err(err) => {
-                        warn!(error = %err, "failed to serialize direct terminal keyboard mode");
-                        continue;
-                    }
-                };
-            if writer.control.send(serialized).is_err() {
-                writer_gone(client_id);
-                broken_clients.push(client_id);
-                continue;
-            }
-            if let Some(state) = client.terminal_attach_state_mut() {
-                state.host_keyboard_protocol_active = Some((flags, modify_other_keys_level));
-            }
-        }
-
         for client_id in broken_clients {
             self.remove_client_and_resize_if_needed(client_id);
         }
@@ -285,96 +214,46 @@ impl HeadlessServer {
     }
 
     pub(super) fn sync_immediate_pty_sources(&self) {
-        let (has_app_target, direct_terminal_targets) = self.pty_render_targets();
         let mut pane_ids = HashSet::new();
-        if has_app_target {
-            for (&client_id, client) in &self.clients {
-                if !client.is_active_shell_client() || client.writer.is_none() {
-                    continue;
-                }
-                let Some(target) = self.shell_target_for_client(client_id) else {
-                    continue;
-                };
-                let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
-                    continue;
-                };
-                let Some(tab) = self
-                    .app
-                    .state
-                    .workspaces
-                    .get(workspace_index)
-                    .and_then(|workspace| workspace.tabs().get(tab_index))
-                else {
-                    continue;
-                };
-                if tab.zoomed() {
-                    pane_ids.insert(tab.layout().focused());
-                } else {
-                    pane_ids.extend(tab.layout().pane_ids());
-                }
+        for (&client_id, client) in &self.clients {
+            if !client.is_active_shell_client() || client.writer.is_none() {
+                continue;
             }
-        }
-        if !direct_terminal_targets.is_empty() {
-            for workspace in &self.app.state.workspaces {
-                for tab in workspace.tabs() {
-                    pane_ids.extend(tab.panes().iter().filter_map(|(&pane_id, pane)| {
-                        direct_terminal_targets
-                            .contains(pane.attached_terminal_id.as_str())
-                            .then_some(pane_id)
-                    }));
-                }
+            let Some(target) = self.shell_target_for_client(client_id) else {
+                continue;
+            };
+            let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
+                continue;
+            };
+            let Some(tab) = self
+                .app
+                .state
+                .workspaces
+                .get(workspace_index)
+                .and_then(|workspace| workspace.tabs().get(tab_index))
+            else {
+                continue;
+            };
+            if tab.zoomed() {
+                pane_ids.insert(tab.layout().focused());
+            } else {
+                pane_ids.extend(tab.layout().pane_ids());
             }
         }
         self.app.render_dirty.set_immediate_pty_sources(pane_ids);
-    }
-
-    fn pty_render_targets(&self) -> (bool, HashSet<&str>) {
-        let mut has_app_target = false;
-        let mut direct_terminal_targets = HashSet::new();
-        for client in self
-            .clients
-            .values()
-            .filter(|client| client.writer.is_some())
-        {
-            match &client.mode {
-                ClientConnectionMode::ClientShell(shell) if shell.surface_active => {
-                    has_app_target = true;
-                }
-                ClientConnectionMode::TerminalAttach { terminal_id, .. } => {
-                    direct_terminal_targets.insert(terminal_id.as_str());
-                }
-                ClientConnectionMode::ClientShell(_) | ClientConnectionMode::TerminalPending => {}
-            }
-        }
-        (has_app_target, direct_terminal_targets)
-    }
-
-    fn pty_source_visible_to_render_targets(
-        &self,
-        pane_id: shepr_core::layout::PaneId,
-        has_app_target: bool,
-        direct_terminal_targets: &HashSet<&str>,
-    ) -> bool {
-        let terminal_id = self.terminal_id_for_pane(pane_id);
-        (has_app_target && (terminal_id.is_none() || self.any_shell_surface_contains_pane(pane_id)))
-            || terminal_id.is_none_or(|source| direct_terminal_targets.contains(source.as_str()))
     }
 
     pub(super) fn pty_sources_visible_to_any_render_target(
         &self,
         sources: &HashSet<shepr_core::layout::PaneId>,
     ) -> bool {
-        let (has_app_target, direct_terminal_targets) = self.pty_render_targets();
-        if !has_app_target && direct_terminal_targets.is_empty() {
+        if !self.has_app_client() {
             return false;
         }
 
         sources.iter().copied().any(|pane_id| {
-            self.pty_source_visible_to_render_targets(
-                pane_id,
-                has_app_target,
-                &direct_terminal_targets,
-            )
+            self.terminal_id_for_pane(pane_id).is_none()
+                || self.any_shell_surface_contains_pane(pane_id)
         })
     }
 
@@ -516,15 +395,11 @@ impl HeadlessServer {
         }
 
         let mut broken_clients: Vec<ClientId> = Vec::new();
-        let shell_clients = render_targets
-            .iter()
-            .filter(|target| matches!(&target.mode, RenderTargetMode::Shell))
-            .count();
         // Rebuild the shared session only when application state that feeds
         // it changed. `/proc`-derived fields are rechecked by the headless
         // loop's timer (`refresh_shell_projection_sources`), not here.
         let app_revision = self.app.state.shell_projection_revision;
-        let refresh_session = shell_clients > 0
+        let refresh_session = !render_targets.is_empty()
             && self
                 .shell_session_cache
                 .as_ref()
@@ -533,8 +408,8 @@ impl HeadlessServer {
             self.rebuild_shell_session_cache();
             self.shell_session_generation = self.shell_session_generation.saturating_add(1);
         }
-        // (client, is shell client, claimed bytes, frame limit)
-        let mut oversized_notices: Vec<(ClientId, bool, usize, usize)> = Vec::new();
+        // (client, claimed bytes, frame limit)
+        let mut oversized_notices: Vec<(ClientId, usize, usize)> = Vec::new();
         for target in render_targets {
             let client_id = target.client_id;
             let (cols, rows) = (
@@ -542,15 +417,12 @@ impl HeadlessServer {
                 target.terminal_size.rows.get(),
             );
             let cell_size = target.cell_size;
-            let mode = target.mode;
-            let is_shell = matches!(&mode, RenderTargetMode::Shell);
             let area = Rect::new(0, 0, cols, rows);
             let shell_target = self.shell_target_for_client(client_id);
-            let shell_render = if is_shell
-                && self
-                    .clients
-                    .get(&client_id)
-                    .is_some_and(ClientConnection::is_active_shell_client)
+            let shell_render = if self
+                .clients
+                .get(&client_id)
+                .is_some_and(ClientConnection::is_active_shell_client)
             {
                 let render_cell_size = cell_size.or_default();
                 let result = render_client_shell_pane_surface(
@@ -577,158 +449,103 @@ impl HeadlessServer {
             } else {
                 None
             };
-            let mut shell_projection_revision = shepr_protocol::ProjectionRevision::ZERO;
-            if is_shell {
-                let Some(client) = self.clients.get_mut(&client_id) else {
+            let Some(client) = self.clients.get_mut(&client_id) else {
+                continue;
+            };
+            let needs_projection = client.shell_state().is_some_and(|shell| {
+                shell.session_generation != self.shell_session_generation
+                    || shell.snapshot.is_none()
+            });
+            if needs_projection {
+                let Some(cache) = self.shell_session_cache.as_ref() else {
                     continue;
                 };
-                let needs_projection = client.shell_state().is_some_and(|shell| {
-                    shell.session_generation != self.shell_session_generation
-                        || shell.snapshot.is_none()
-                });
-                if needs_projection {
-                    let Some(cache) = self.shell_session_cache.as_ref() else {
-                        continue;
-                    };
-                    let mut candidate = crate::server::client_shell::snapshot_from_session(
-                        &self.app,
-                        // Focus and active-tab cwd differ per client. Copy only
-                        // when the shared source generation changed.
-                        cache.session.clone(),
-                        &[],
-                        &self.client_shell_boot_id,
-                        client
-                            .shell_state()
-                            .map_or(0, |shell| shell.projection_revision.get()),
-                        client
-                            .shell_state()
-                            .and_then(|shell| shell.location.as_ref()),
-                    );
-                    let snapshot_changed = client
+                let mut candidate = crate::server::client_shell::snapshot_from_session(
+                    &self.app,
+                    // Focus and active-tab cwd differ per client. Copy only
+                    // when the shared source generation changed.
+                    cache.session.clone(),
+                    &[],
+                    &self.client_shell_boot_id,
+                    client
                         .shell_state()
-                        .is_some_and(|shell| shell.snapshot.as_ref() != Some(&candidate));
-                    if snapshot_changed {
-                        let Some(shell) = client.shell_state_mut() else {
-                            continue;
-                        };
-                        // The counter is per connection and steps once per
-                        // changed snapshot, so exhaustion is unreachable in
-                        // practice. Should it happen, drop the client: it
-                        // reconnects with a fresh counter instead of receiving
-                        // a snapshot that repeats a revision.
-                        let Some(revision) = shell.projection_revision.checked_next() else {
-                            warn!(
-                                ?client_id,
-                                "projection revisions exhausted; dropping client"
-                            );
-                            broken_clients.push(client_id);
-                            continue;
-                        };
-                        shell.projection_revision = revision;
-                        candidate.revision = revision;
-                        let snapshot_message =
-                            shepr_protocol::endpoint::snapshot_message(&candidate);
-                        let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
-                            Ok(framed) => framed,
-                            Err(err) => {
-                                warn!(?client_id, error = %err, "failed to frame endpoint snapshot");
-                                broken_clients.push(client_id);
-                                continue;
-                            }
-                        };
-                        let Some(writer) = client.writer.as_ref().cloned() else {
-                            broken_clients.push(client_id);
-                            continue;
-                        };
-                        if writer.control.send(snapshot_framed).is_err() {
-                            writer_gone(client_id);
-                            broken_clients.push(client_id);
-                            continue;
-                        }
-                        if let Some(shell) = client.shell_state_mut() {
-                            shell.snapshot = Some(candidate);
-                        }
-                    }
-                    if let Some(shell) = client.shell_state_mut() {
-                        shell.session_generation = self.shell_session_generation;
-                    }
-                }
-                let Some(shell) = client.shell_state() else {
-                    continue;
-                };
-                shell_projection_revision = shell.projection_revision;
-                if !shell.surface_active {
-                    client.clear_deferred_render();
-                    continue;
-                }
-            }
-            let mut surface_parts = None;
-            let frame = match mode {
-                RenderTargetMode::Shell => {
-                    // Rendered above for every active shell client, and
-                    // inactive ones were skipped just before this match, so
-                    // there is always a surface here; without one there is
-                    // nothing to send.
-                    let Some(crate::server::client_shell::RenderedPaneSurface {
-                        frame,
-                        panes,
-                        splits,
-                    }) = shell_render
-                    else {
+                        .map_or(0, |shell| shell.projection_revision.get()),
+                    client
+                        .shell_state()
+                        .and_then(|shell| shell.location.as_ref()),
+                );
+                let snapshot_changed = client
+                    .shell_state()
+                    .is_some_and(|shell| shell.snapshot.as_ref() != Some(&candidate));
+                if snapshot_changed {
+                    let Some(shell) = client.shell_state_mut() else {
                         continue;
                     };
-                    surface_parts = Some((panes, splits));
-                    frame
-                }
-                RenderTargetMode::TerminalAttach { terminal_id } => {
-                    let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) else {
-                        self.send_to_client(
-                            client_id,
-                            &ServerMessage::ServerShutdown {
-                                // Include the id because this is the attach client's only
-                                // diagnostic when its server-side terminal runtime disappears.
-                                reason: Some(shepr_protocol::ShutdownReason::Message(format!(
-                                    "terminal attach ended: terminal {terminal_id} not found"
-                                ))),
-                            },
+                    // The counter is per connection and steps once per
+                    // changed snapshot, so exhaustion is unreachable in
+                    // practice. Should it happen, drop the client: it
+                    // reconnects with a fresh counter instead of receiving
+                    // a snapshot that repeats a revision.
+                    let Some(revision) = shell.projection_revision.checked_next() else {
+                        warn!(
+                            ?client_id,
+                            "projection revisions exhausted; dropping client"
                         );
                         broken_clients.push(client_id);
                         continue;
                     };
-                    // A poisoned core (`None`) defers like a synchronized
-                    // update: the PTY actor closes that pane shortly.
-                    let Some((false, epoch)) = runtime.synchronized_output_state() else {
-                        if let Some(client) = self.clients.get_mut(&client_id) {
-                            client.render_state.request_recompute();
+                    shell.projection_revision = revision;
+                    candidate.revision = revision;
+                    let snapshot_message = shepr_protocol::endpoint::snapshot_message(&candidate);
+                    let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
+                        Ok(framed) => framed,
+                        Err(err) => {
+                            warn!(?client_id, error = %err, "failed to frame endpoint snapshot");
+                            broken_clients.push(client_id);
+                            continue;
                         }
+                    };
+                    let Some(writer) = client.writer.as_ref().cloned() else {
+                        broken_clients.push(client_id);
                         continue;
                     };
-                    let (buffer, cursor) =
-                        crate::server::render_stream::render_terminal_virtual(runtime, area);
-                    let hyperlinks = runtime.visible_hyperlinks(area);
-                    let after = runtime.synchronized_output_state();
-                    if after != Some((false, epoch)) {
-                        if let Some(client) = self.clients.get_mut(&client_id) {
-                            client.render_state.request_recompute();
-                        }
-                        // Content changed under the render: render again. A
-                        // synchronized update or a poisoned core waits instead.
-                        if matches!(after, Some((false, _))) {
-                            self.app.render_dirty.request_generic();
-                        }
+                    if writer.control.send(snapshot_framed).is_err() {
+                        writer_gone(client_id);
+                        broken_clients.push(client_id);
                         continue;
                     }
-                    FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &hyperlinks)
+                    if let Some(shell) = client.shell_state_mut() {
+                        shell.snapshot = Some(candidate);
+                    }
                 }
-            };
-
-            let Some(client) = self.clients.get_mut(&client_id) else {
+                if let Some(shell) = client.shell_state_mut() {
+                    shell.session_generation = self.shell_session_generation;
+                }
+            }
+            let Some(shell) = client.shell_state() else {
                 continue;
             };
+            let shell_projection_revision = shell.projection_revision;
+            if !shell.surface_active {
+                client.clear_deferred_render();
+                continue;
+            }
+            // Rendered above for every active shell client, and inactive ones
+            // were skipped just before this, so there is always a surface
+            // here; without one there is nothing to send.
+            let Some(crate::server::client_shell::RenderedPaneSurface {
+                frame,
+                panes,
+                splits,
+            }) = shell_render
+            else {
+                continue;
+            };
+
             let Some(writer) = client.writer.as_ref().cloned() else {
                 continue;
             };
-            let prepared = if let Some((panes, splits)) = surface_parts {
+            let prepared =
                 client
                     .render_state
                     .prepare_pane_surface(shepr_protocol::PaneSurfaceFrame {
@@ -738,10 +555,7 @@ impl HeadlessServer {
                         frame,
                         panes,
                         splits,
-                    })
-            } else {
-                client.render_state.prepare_frame(frame)
-            };
+                    });
             let Some(prepared) = prepared else {
                 client.clear_deferred_render();
                 continue;
@@ -767,7 +581,7 @@ impl HeadlessServer {
                             claimed, max, "skipping oversized frame for client"
                         );
                         client.oversized_frame_reported = true;
-                        oversized_notices.push((client_id, client.is_shell_client(), claimed, max));
+                        oversized_notices.push((client_id, claimed, max));
                     }
                     continue;
                 }
@@ -793,18 +607,12 @@ impl HeadlessServer {
             }
         }
 
-        for (client_id, shell, claimed, max) in oversized_notices {
+        for (client_id, claimed, max) in oversized_notices {
             if broken_clients.contains(&client_id) {
                 continue;
             }
-            let notice = if shell {
-                ServerMessage::ClientShellError {
-                    kind: shepr_protocol::NoticeKind::OversizedFrame { claimed, max },
-                }
-            } else {
-                ServerMessage::DirectTerminalNotice {
-                    kind: shepr_protocol::NoticeKind::OversizedFrame { claimed, max },
-                }
+            let notice = ServerMessage::ClientShellError {
+                kind: shepr_protocol::NoticeKind::OversizedFrame { claimed, max },
             };
             self.send_to_client(client_id, &notice);
         }

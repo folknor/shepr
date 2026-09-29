@@ -1,5 +1,5 @@
-mod agents;
 mod cwd;
+mod detect;
 mod env;
 mod layouts;
 mod panes;
@@ -52,14 +52,11 @@ impl App {
             // Every one of these is answered before a request reaches the app:
             // the API server handles ping, SSH agent leases, subscriptions and
             // waits on the connection thread and rejects
-            // `client_shell.surface.set`; the headless server intercepts window
-            // titles before calling this function.
+            // `client_shell.surface.set`.
             // Reaching here is a routing bug, reported as such.
             Method::Ping(_)
             | Method::ServerStop(_)
             | Method::ServerSshAgentRegister(_)
-            | Method::ClientWindowTitleSet(_)
-            | Method::ClientWindowTitleClear(_)
             | Method::ClientShellSurfaceSet(_)
             | Method::EventsSubscribe(_)
             | Method::EventsWait(_) => {
@@ -73,38 +70,25 @@ impl App {
                 )
             }
             Method::SessionSnapshot(_) => self.handle_session_snapshot(),
-            Method::WorkspaceList(_) => self.handle_workspace_list(),
-            Method::WorkspaceGet(target) => self.handle_workspace_get(&target),
             Method::WorkspaceCreate(params) => self.handle_workspace_create(params),
             Method::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
             Method::WorkspaceRename(params) => self.handle_workspace_rename(params),
             Method::WorkspaceMove(params) => self.handle_workspace_move(&params),
             Method::WorkspaceMoveBlock(params) => self.handle_workspace_move_block(params),
             Method::WorkspaceClose(target) => self.handle_workspace_close(&target),
-            Method::TabList(params) => self.handle_tab_list(params),
-            Method::TabGet(target) => self.handle_tab_get(&target),
             Method::TabCreate(params) => self.handle_tab_create(params),
             Method::TabFocus(target) => self.handle_tab_focus(&target),
             Method::TabRename(params) => self.handle_tab_rename(params),
             Method::TabMove(params) => self.handle_tab_move(&params),
             Method::TabClose(target) => self.handle_tab_close(&target),
-            Method::AgentList(_) => self.handle_agent_list(),
-            Method::AgentGet(target) => self.handle_agent_get(&target),
-            Method::AgentFocus(target) => self.handle_agent_focus(&target),
-            Method::AgentRename(params) => self.handle_agent_rename(params),
-            Method::AgentRead(params) => self.handle_agent_read(&params),
-            Method::AgentExplain(target) => self.handle_agent_explain(&target),
+            Method::DetectCapture(target) => self.handle_detect_capture(&target),
+            Method::DetectExplain(target) => self.handle_detect_explain(&target),
             Method::PaneSplit(params) => self.handle_pane_split(params),
             Method::PaneSwap(params) => self.handle_pane_swap(params),
-            Method::PaneMove(params) => self.handle_pane_move(params),
             Method::PaneZoom(params) => self.handle_pane_zoom(&params),
-            Method::PaneLayout(params) => self.handle_pane_layout(&params),
-            Method::PaneProcessInfo(params) => self.handle_pane_process_info(&params),
             Method::LayoutExport(params) => self.handle_layout_export(&params),
             Method::LayoutApply(params) => self.handle_layout_apply(&params),
             Method::LayoutSetSplitRatio(params) => self.handle_layout_set_split_ratio(params),
-            Method::PaneNeighbor(params) => self.handle_pane_neighbor(&params),
-            Method::PaneEdges(params) => self.handle_pane_edges(&params),
             Method::PaneFocusDirection(params) => self.handle_pane_focus_direction(&params),
             Method::PaneResize(params) => self.handle_pane_resize(&params),
             Method::PaneScroll(params) => self.handle_pane_scroll(&params),
@@ -112,13 +96,10 @@ impl App {
             Method::PaneSelectionRead(params) => self.handle_pane_selection_read(params),
             Method::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
             Method::PaneCopySearch(params) => self.handle_pane_copy_search(params),
-            Method::PaneList(params) => self.handle_pane_list(&params),
-            Method::PaneCurrent(params) => self.handle_pane_current(&params),
             Method::PaneGet(target) => self.handle_pane_get(&target),
             Method::PaneFocus(target) => self.handle_pane_focus(&target),
             Method::PaneInputSet(params) => self.handle_pane_input_set(&params),
             Method::PaneRename(params) => self.handle_pane_rename(params),
-            Method::PaneRead(params) => self.handle_pane_read(&params),
             Method::PaneReportAgent(params) => self.handle_pane_report_agent(params),
             Method::PaneReportAgentSession(params) => self.handle_pane_report_agent_session(params),
             Method::PaneClearAgentAuthority(params) => {
@@ -166,206 +147,6 @@ mod tests {
     use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
 
-    #[tokio::test]
-    async fn agent_explain_evaluates_with_server_manifest_cache() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &shepr_config::Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("agent-explain")];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .detected_agent = Some(Agent::Codex);
-        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
-            80,
-            24,
-            b"press enter to confirm or esc to cancel",
-        );
-        app.terminal_runtimes.insert(terminal_id, runtime);
-        let target = app.public_pane_id(0, pane_id).expect("test precondition");
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "agent_explain".into(),
-            method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
-                target: target.to_string(),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&crate::test_support::test_json(&response))
-                .expect("test precondition");
-
-        assert_eq!(response["result"]["type"], "agent_explain");
-        assert_eq!(response["result"]["explain"]["state"], "blocked");
-        assert_eq!(
-            response["result"]["explain"]["matched_rule"]["id"],
-            "live_strong_blocker"
-        );
-    }
-
-    #[tokio::test]
-    async fn detect_capture_reads_the_snapshot_that_explain_evaluates() {
-        // `detect capture` is `agent.read` with the detection source, plain
-        // text and no line limit; `detect explain` is `agent.explain`. Both must
-        // see the same pane's detector input.
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &shepr_config::Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("detect-capture")];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .detected_agent = Some(Agent::Codex);
-        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
-            80,
-            24,
-            b"press enter to confirm or esc to cancel",
-        );
-        let detection_text = runtime.detection_text();
-        app.terminal_runtimes.insert(terminal_id, runtime);
-        let target = app
-            .public_pane_id(0, pane_id)
-            .expect("test precondition")
-            .to_string();
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "detect_capture".into(),
-            method: shepr_api::schema::Method::AgentRead(shepr_api::schema::AgentReadParams {
-                target: target.clone(),
-                source: shepr_api::schema::ReadSource::Detection,
-                lines: None,
-                format: shepr_api::schema::ReadFormat::Text,
-                strip_ansi: true,
-            }),
-        });
-        let capture: serde_json::Value =
-            serde_json::from_str(&crate::test_support::test_json(&response))
-                .expect("test precondition");
-        assert_eq!(capture["result"]["type"], "pane_read");
-        assert_eq!(capture["result"]["read"]["source"], "detection");
-        assert_eq!(
-            capture["result"]["read"]["text"].as_str(),
-            Some(detection_text.as_str())
-        );
-        assert!(
-            detection_text.contains("press enter to confirm"),
-            "{detection_text:?}"
-        );
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "detect_explain".into(),
-            method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
-                target,
-            }),
-        });
-        let explain: serde_json::Value =
-            serde_json::from_str(&crate::test_support::test_json(&response))
-                .expect("test precondition");
-        assert_eq!(explain["result"]["explain"]["state"], "blocked");
-    }
-
-    #[tokio::test]
-    async fn agent_explain_rejects_hook_only_full_lifecycle_authority() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &shepr_config::Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new(
-            "agent-explain-omp",
-        )];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .set_hook_authority(
-                "shepr:omp".to_string(),
-                "omp".to_string(),
-                AgentState::Working,
-                None,
-                Some(1),
-            );
-        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
-        app.terminal_runtimes.insert(terminal_id, runtime);
-        let target = app.public_pane_id(0, pane_id).expect("test precondition");
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "agent_explain_omp".into(),
-            method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
-                target: target.to_string(),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&crate::test_support::test_json(&response))
-                .expect("test precondition");
-
-        assert_eq!(response["error"]["code"], "agent_not_found");
-    }
-
-    #[tokio::test]
-    async fn pane_process_info_returns_response_for_existing_pane() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &shepr_config::Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("process-info")];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let (runtime, _rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
-        app.terminal_runtimes.insert(terminal_id, runtime);
-        let target = app.public_pane_id(0, pane_id).expect("test precondition");
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "process_info".into(),
-            method: shepr_api::schema::Method::PaneProcessInfo(
-                shepr_api::schema::PaneProcessInfoParams {
-                    pane_id: Some(target.clone().to_string()),
-                },
-            ),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&crate::test_support::test_json(&response))
-                .expect("test precondition");
-
-        assert_eq!(response["result"]["type"], "pane_process_info");
-        assert_eq!(
-            response["result"]["process_info"]["pane_id"],
-            target.as_str()
-        );
-    }
-
     #[test]
     fn methods_answered_before_the_app_are_reported_as_misrouted() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -377,9 +158,7 @@ mod tests {
         );
 
         for method in [
-            shepr_api::schema::Method::ClientWindowTitleClear(
-                shepr_api::schema::EmptyParams::default(),
-            ),
+            shepr_api::schema::Method::ServerStop(shepr_api::schema::EmptyParams::default()),
             shepr_api::schema::Method::Ping(shepr_api::schema::PingParams::default()),
         ] {
             let name = shepr_api::api_method_name(&method);
@@ -567,58 +346,46 @@ mod tests {
 
     #[test]
     fn idle_agent_exit_emits_release_event_without_a_state_change() {
-        for agent_name in [None, Some("reviewer")] {
-            let event_hub = shepr_api::EventHub::default();
-            let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-            let mut app = App::new(
-                &shepr_config::Config::default(),
-                crate::app::AppPolicy::Test,
-                api_rx,
-                event_hub.clone(),
-            );
-            let workspace = shepr_mux::workspace::Workspace::test_new("idle-agent-exit");
-            let pane_id = workspace.tabs()[0].root_pane();
-            let terminal_id = workspace
-                .terminal_id(pane_id)
-                .cloned()
-                .expect("test precondition");
-            app.state.workspaces = vec![workspace];
-            app.state.ensure_test_terminals();
-            let terminal = app
-                .state
-                .terminals
-                .get_mut(&terminal_id)
-                .expect("test precondition");
-            terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-            if let Some(agent_name) = agent_name {
-                terminal.set_agent_name(agent_name.into());
+        let event_hub = shepr_api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &shepr_config::Config::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+            event_hub.clone(),
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("idle-agent-exit");
+        let pane_id = workspace.tabs()[0].root_pane();
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+
+        app.handle_internal_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            process_exited: true,
+            observed_at: std::time::Instant::now(),
+        });
+
+        assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
+            &event.data,
+            shepr_api::schema::EventData::PaneAgentDetected {
+                released: true,
+                final_status: Some(shepr_api::schema::AgentStatus::Idle),
+                ..
             }
-
-            app.handle_internal_event(AppEvent::StateChanged {
-                pane_id,
-                agent: Some(Agent::Pi),
-                state: AgentState::Idle,
-                visible_blocker: false,
-                process_exited: true,
-                observed_at: std::time::Instant::now(),
-            });
-
-            // The release event is this test's subject; the name outliving the
-            // observation is pinned by
-            // `a_process_exit_observation_alone_does_not_free_the_name`.
-            assert_eq!(
-                app.state.terminals[&terminal_id].agent_name.as_deref(),
-                agent_name
-            );
-            assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
-                &event.data,
-                shepr_api::schema::EventData::PaneAgentDetected {
-                    released: true,
-                    final_status: Some(shepr_api::schema::AgentStatus::Idle),
-                    ..
-                }
-            )));
-        }
+        )));
     }
 
     #[test]
@@ -657,7 +424,6 @@ mod tests {
                 observed_at + std::time::Duration::from_secs(1),
             )
             .expect("test precondition");
-        terminal.set_agent_name("reviewer".into());
 
         app.handle_internal_event(AppEvent::StateChanged {
             pane_id,
@@ -670,9 +436,6 @@ mod tests {
 
         let terminal = &app.state.terminals[&terminal_id];
         assert_eq!(terminal.state, AgentState::Idle);
-        // Releasing the registration does not free the name yet; a wrong
-        // observation must not cost a live agent the handle its owner gave it.
-        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
         assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
             event.data,
             shepr_api::schema::EventData::PaneAgentDetected { released: true, .. }

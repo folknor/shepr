@@ -243,7 +243,6 @@ impl TerminalState {
             );
             self.hook_authority = None;
         }
-        self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
         let persisted_session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
             &source,
             &agent_label,

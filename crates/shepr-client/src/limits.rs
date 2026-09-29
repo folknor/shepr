@@ -80,10 +80,6 @@ pub(super) const ENDPOINT_ERROR_TIMEOUT: Duration = Duration::from_secs(5);
 /// it sooner; the timeout is what dismisses it when `ui.mouse_capture` is off.
 /// The timeout keeps a notice available through a short recovery without leaving stale cards up.
 pub(super) const ENDPOINT_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Retain recent direct-attach notices while startup or forwarding is failing.
-///
-/// This preserves a useful burst of recent errors while bounding memory per client.
-pub(super) const MAX_NOTICES: usize = 64;
 /// How long one endpoint frame write, or an input flush, may block.
 ///
 /// The timeout absorbs short socket stalls and fails a wedged endpoint promptly.

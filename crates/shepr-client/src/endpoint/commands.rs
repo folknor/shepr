@@ -633,7 +633,7 @@ mod tests {
                 boot_id: boot_a(),
                 request: Box::new(Request {
                     id: "queued-source".into(),
-                    method: shepr_api::schema::Method::WorkspaceList(
+                    method: shepr_api::schema::Method::SessionSnapshot(
                         shepr_api::schema::EmptyParams::default(),
                     ),
                 }),
@@ -646,7 +646,7 @@ mod tests {
                     boot_id: boot_b(),
                     request: Box::new(Request {
                         id: "request-b".into(),
-                        method: shepr_api::schema::Method::WorkspaceList(
+                        method: shepr_api::schema::Method::SessionSnapshot(
                             shepr_api::schema::EmptyParams::default(),
                         ),
                     }),
@@ -698,7 +698,7 @@ mod tests {
                 boot_id: boot_a(),
                 request: Box::new(Request {
                     id: "queued-a".into(),
-                    method: shepr_api::schema::Method::WorkspaceList(
+                    method: shepr_api::schema::Method::SessionSnapshot(
                         shepr_api::schema::EmptyParams::default(),
                     ),
                 }),

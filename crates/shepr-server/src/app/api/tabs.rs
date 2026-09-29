@@ -2,49 +2,14 @@ use shepr_api::error::{ApiErrorCode, ApiResult};
 
 use crate::app::App;
 use shepr_api::schema::{
-    EventData, EventEnvelope, ResponseResult, TabCreateParams, TabListParams, TabMoveParams,
-    TabRenameParams, TabTarget,
+    EventData, EventEnvelope, ResponseResult, TabCreateParams, TabMoveParams, TabRenameParams,
+    TabTarget,
 };
 
 use super::super::api_helpers::{active_workspace_not_found, tab_not_found, workspace_not_found};
 use super::responses::{failure, success};
 
 impl App {
-    pub(super) fn handle_tab_list(&mut self, params: TabListParams) -> ApiResult {
-        let tabs = if let Some(workspace_id) = params.workspace_id {
-            let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                return Err(workspace_not_found(&workspace_id));
-            };
-            let Some(_) = self.state.workspaces.get(ws_idx) else {
-                return Err(workspace_not_found(&workspace_id));
-            };
-            self.tab_list_info(ws_idx)
-        } else {
-            let mut tabs = Vec::new();
-            for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
-                for tab_idx in 0..ws.tabs().len() {
-                    if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
-                        tabs.push(tab);
-                    }
-                }
-            }
-            tabs
-        };
-
-        success(ResponseResult::TabList { tabs })
-    }
-
-    pub(super) fn handle_tab_get(&mut self, target: &TabTarget) -> ApiResult {
-        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
-            return Err(tab_not_found(&target.tab_id));
-        };
-        let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
-            return Err(tab_not_found(&target.tab_id));
-        };
-
-        success(ResponseResult::TabInfo { tab })
-    }
-
     pub(super) fn handle_tab_create(&mut self, params: TabCreateParams) -> ApiResult {
         let TabCreateParams {
             workspace_id,
@@ -347,14 +312,6 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs()[0].root_pane();
-        app.state.public_pane_id_aliases.insert(
-            shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 1),
-            root,
-        );
-        app.state.public_pane_id_aliases.insert(
-            shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 2),
-            split,
-        );
         let closed_panes = [
             app.public_pane_id(0, root).expect("test precondition"),
             app.public_pane_id(0, split).expect("test precondition"),
@@ -368,12 +325,6 @@ mod tests {
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);
-        assert!(!app.state.public_pane_id_aliases.contains_key(
-            &shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 1)
-        ));
-        assert!(!app.state.public_pane_id_aliases.contains_key(
-            &shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 2)
-        ));
         let events = event_hub.events_after(0);
         let mut pane_closed = events
             .iter()

@@ -1,4 +1,3 @@
-pub use crate::limits::AGENT_RESUME_DETECTION_HOLD;
 use shepr_core::env::{ChildEnv, EnvVar};
 use shepr_protocol::PublicPaneId;
 use shepr_pty::PtyCommand;

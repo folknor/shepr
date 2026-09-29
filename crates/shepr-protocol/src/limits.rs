@@ -10,7 +10,7 @@ include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 /// reject larger length prefixes to prevent denial-of-service, and
 /// `write_message` refuses to produce them, so an oversized message fails at
 /// the sender instead of making the peer tear the connection down. The cap
-/// carries ordinary surfaces and terminal output while bounding one allocation.
+/// carries ordinary surfaces while bounding one allocation.
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 
 /// Largest client hello accepted before authentication.
@@ -18,29 +18,6 @@ pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 /// A hello is only a few hundred bytes; the cap leaves ample room for future
 /// fields while keeping the unauthenticated handshake allocation small.
 pub(crate) const HANDSHAKE_FRAME_SIZE: usize = 64 * 1024;
-
-/// Bytes used by a direct-terminal message's fixed positional variant index.
-///
-/// The message enum has few enough variants that every index takes the
-/// shortest LEB128 encoding.
-const TERMINAL_VARIANT_INDEX_BYTES: usize = 1;
-
-/// Maximum bytes used to encode the ANSI field length at the frame cap.
-///
-/// The positional codec's unsigned LEB128 encoding of a permitted frame length
-/// fits in this reserved prefix.
-const TERMINAL_ANSI_LENGTH_PREFIX_BYTES: usize = 3;
-
-/// Positional message overhead subtracted from the general frame budget.
-///
-/// This combines the variant index and ANSI byte-length prefixes so the
-/// direct-terminal field cap is derived from its wire-format overhead.
-const MAX_TERMINAL_ENVELOPE_BYTES: usize =
-    TERMINAL_VARIANT_INDEX_BYTES + TERMINAL_ANSI_LENGTH_PREFIX_BYTES;
-
-/// Largest direct-terminal ANSI byte field that fits with the current wire
-/// envelope at the general frame cap.
-pub const MAX_TERMINAL_FRAME_BYTES: usize = MAX_FRAME_SIZE - MAX_TERMINAL_ENVELOPE_BYTES;
 
 /// Largest client-shell endpoint response chunk emitted by the server.
 ///
@@ -60,8 +37,8 @@ pub const fn frame_payload_fits(size: usize) -> bool {
 /// wire envelope while limiting client-controlled request buffers.
 pub const MAX_CLIENT_REQUEST_BYTES: usize = 1024 * 1024;
 /// Maximum text payload (bytes) the server accepts in one input message: the
-/// data of one `ClientMessage::Input`, or the summed paste, committed text and
-/// generated key text of one `ClientShellPaneInput` batch.
+/// summed paste, committed text and generated key text of one
+/// `ClientShellPaneInput` batch.
 ///
 /// Kept well below `MAX_FRAME_SIZE` so an input message at the limit still fits
 /// in one frame with its envelope. The server answers an oversized paste with a
@@ -106,8 +83,8 @@ impl crate::ClientPaneInputEvent {
 /// exceed it; the render path handles oversized frames.
 pub const SURFACE_BYTES_PER_CELL: usize = 16;
 
-/// Largest grid, in cells, a client may request for a pane surface or a
-/// direct terminal attach: what one `MAX_FRAME_SIZE` frame carries at
+/// Largest grid, in cells, a client may request for a pane surface: what one
+/// `MAX_FRAME_SIZE` frame carries at
 /// `SURFACE_BYTES_PER_CELL`. The server enforces it; a client of the same
 /// build can clamp to it before asking.
 pub const MAX_SURFACE_CELLS: usize = MAX_FRAME_SIZE / SURFACE_BYTES_PER_CELL;

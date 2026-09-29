@@ -1,10 +1,9 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-/// Why a client connection ended. Detach is a normal exit for an attached terminal.
+/// Why a client connection ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShutdownReason {
-    Detached,
     Message(String),
 }
 
@@ -27,9 +26,6 @@ impl std::error::Error for HandshakeRefusal {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoticeKind {
-    InputDropped {
-        terminal_id: TerminalId,
-    },
     PaneInputDropped {
         pane_id: PublicPaneId,
         events: usize,
@@ -47,10 +43,6 @@ pub enum NoticeKind {
 impl std::fmt::Display for NoticeKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InputDropped { terminal_id } => write!(
-                f,
-                "Input to terminal {terminal_id} dropped: the pane is not reading its input"
-            ),
             Self::PaneInputDropped { pane_id, events } => {
                 let unit = if *events == 1 { "event" } else { "events" };
                 write!(
@@ -73,39 +65,22 @@ impl std::fmt::Display for NoticeKind {
 impl std::fmt::Display for ShutdownReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Detached => f.write_str("detached"),
             Self::Message(message) => f.write_str(message),
         }
     }
 }
 
-/// Terminal ANSI bytes encoded by the server for direct terminal-attach clients.
-///
-/// The client writes `bytes` straight to stdout and needs nothing else, so the
-/// frame carries no sequence number, size or full-redraw flag.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TerminalFrame {
-    /// Terminal escape bytes ready to write directly to stdout.
-    #[serde(
-        serialize_with = "codec::serialize_bounded_bytes::<MAX_TERMINAL_FRAME_BYTES, _>",
-        deserialize_with = "codec::deserialize_bounded_bytes::<MAX_TERMINAL_FRAME_BYTES, _>"
-    )]
-    pub bytes: Vec<u8>,
-}
-
 /// Messages sent from the server to the client over the client protocol socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
-    /// Direct-terminal handshake response. The hello variant already selects
-    /// terminal ANSI frames; errors report why the server rejected the hello.
+    /// Terminal-client handshake response. A client-owned shell is answered
+    /// with `EndpointWelcome` instead; errors report why the server rejected
+    /// the hello.
     Welcome {
         /// If present, the handshake failed and this describes why.
         /// The client should exit with a clear error message.
         error: Option<HandshakeRefusal>,
     },
-
-    /// Terminal bytes to write directly for a terminal-ANSI client.
-    Terminal(TerminalFrame),
 
     /// Server is shutting down. Clients should exit gracefully.
     ServerShutdown {
@@ -139,13 +114,6 @@ pub enum ServerMessage {
     /// Immediate endpoint error that the client-rendered shell must show.
     ClientShellError { kind: NoticeKind },
 
-    /// Exact Kitty keyboard flags requested by a directly attached terminal.
-    /// Zero restores the host terminal's previous keyboard mode.
-    DirectTerminalKeyboardProtocol {
-        flags: KittyKeyboardFlags,
-        modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel,
-    },
-
     /// Whether the focused pane needs the shell host to report every key.
     ClientShellKeyboardReportAll { enabled: bool },
 
@@ -172,18 +140,6 @@ pub enum ServerMessage {
     PresentationReady(String),
     /// Response to a connection health probe.
     HealthPong,
-
-    /// Something a direct terminal-attach client must tell its user because
-    /// the server could not do what the user asked: input dropped because the
-    /// pane stopped reading, a paste over the input limit rejected, or a
-    /// screen too large to send in one frame. The client formats the cause
-    /// for its terminal after receiving it.
-    ///
-    /// The server rate-limits it: a repeating condition (dropped input,
-    /// oversized frames) is sent once until it clears, a rejected paste once
-    /// per paste. The connection stays up either way, so the client must not
-    /// treat this as fatal and must keep the attached terminal usable.
-    DirectTerminalNotice { kind: NoticeKind },
 
     /// Client-side result of applying `SurfaceUpdate`, carried in the shared
     /// message pipeline but never sent. Keep it skipped so framing it fails.

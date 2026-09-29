@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 
 use shepr_api::client::{ApiClient, ApiClientError};
-use shepr_api::schema::{ClientWindowTitleSetParams, EmptyParams, Method, Request};
+use shepr_api::schema::Request;
 use shepr_remote::{
     COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
     COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_SESSION, option_name_from_flag,
@@ -21,35 +21,21 @@ macro_rules! println {
     }};
 }
 
-mod agent;
 mod detect;
 mod error;
 mod integration;
 mod machine;
 mod matches;
 pub(crate) mod operator;
-mod pane;
-mod runtime;
 mod server;
 mod server_not_running;
 mod spec;
 mod status;
-mod tab;
 mod target;
-mod workspace;
 
 use error::SessionCliError;
 pub(crate) use error::{CliError, finish_client, print_notice};
 pub(crate) type CliResult<T> = Result<T, CliError>;
-
-pub(crate) fn parse_env_assignment(raw: &str) -> Result<(String, String), String> {
-    let Some((key, value)) = raw.split_once('=') else {
-        return Err("env must use KEY=VALUE".into());
-    };
-    shepr_api::launch_env::validate_launch_env([(key, value)])
-        .map_err(shepr_api::error::ApiError::into_message)?;
-    Ok((key.to_string(), value.to_string()))
-}
 
 /// A top-level command after clap has parsed argv once. Launch modes and CLI
 /// command groups are explicit, and CLI groups already contain typed values.
@@ -66,12 +52,7 @@ pub(crate) enum CliCommand {
     Status(status::Command),
     Machine(machine::Command),
     Server(server::Command),
-    Workspace(workspace::Command),
-    Tab(tab::Command),
-    Agent(agent::Command),
     Detect(detect::Command),
-    Pane(pane::Command),
-    Terminal(TerminalCommand),
     Session(SessionCommand),
     Integration(integration::Command),
 }
@@ -82,12 +63,7 @@ impl CliCommand {
             COMMAND_STATUS => Self::Status(status::parse(matches)?),
             "machine" => Self::Machine(machine::parse(matches)?),
             COMMAND_SERVER => Self::Server(server::parse(matches)?),
-            "workspace" => Self::Workspace(workspace::parse(matches)?),
-            "tab" => Self::Tab(tab::parse(matches)?),
-            "agent" => Self::Agent(agent::parse(matches)?),
             "detect" => Self::Detect(detect::parse(matches)?),
-            "pane" => Self::Pane(pane::parse(matches)?),
-            "terminal" => Self::Terminal(TerminalCommand::parse(matches)?),
             "session" => Self::Session(SessionCommand::parse(matches)?),
             "integration" => Self::Integration(integration::parse(matches)?),
             _ => return None,
@@ -99,12 +75,7 @@ impl CliCommand {
             Self::Status(_) => COMMAND_STATUS,
             Self::Machine(_) => "machine",
             Self::Server(_) => COMMAND_SERVER,
-            Self::Workspace(_) => "workspace",
-            Self::Tab(_) => "tab",
-            Self::Agent(_) => "agent",
             Self::Detect(_) => "detect",
-            Self::Pane(_) => "pane",
-            Self::Terminal(_) => "terminal",
             Self::Session(_) => "session",
             Self::Integration(_) => "integration",
         }
@@ -117,12 +88,7 @@ impl CliCommand {
             Self::Status(command) => command.name(),
             Self::Machine(command) => Some(command.name()),
             Self::Server(command) => Some(command.name()),
-            Self::Workspace(command) => Some(command.name()),
-            Self::Tab(command) => Some(command.name()),
-            Self::Agent(command) => Some(command.name()),
             Self::Detect(command) => Some(command.name()),
-            Self::Pane(command) => Some(command.name()),
-            Self::Terminal(command) => Some(command.name()),
             Self::Session(command) => Some(command.name()),
             Self::Integration(command) => Some(command.name()),
         }
@@ -133,54 +99,9 @@ impl CliCommand {
             Self::Status(command) => command.can_run_on_machine(),
             Self::Machine(command) => command.can_run_on_machine(),
             Self::Server(command) => command.can_run_on_machine(),
-            Self::Workspace(command) => command.can_run_on_machine(),
-            Self::Tab(command) => command.can_run_on_machine(),
-            Self::Pane(command) => command.can_run_on_machine(),
-            Self::Agent(command) => command.can_run_on_machine(),
             Self::Detect(command) => command.can_run_on_machine(),
-            Self::Terminal(command) => command.can_run_on_machine(),
             Self::Session(command) => command.can_run_on_machine(),
             Self::Integration(command) => command.can_run_on_machine(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TerminalCommand {
-    Attach { terminal_id: String, takeover: bool },
-    TitleSet { title: String },
-    TitleClear,
-}
-
-impl TerminalCommand {
-    fn parse(matches: &ArgMatches) -> Option<Self> {
-        match matches.subcommand() {
-            Some(("attach", command)) => Some(Self::Attach {
-                terminal_id: matches::required(command, "terminal_id")?,
-                takeover: matches::flag(command, "takeover"),
-            }),
-            Some(("title", title)) => match title.subcommand() {
-                Some(("set", command)) => Some(Self::TitleSet {
-                    title: matches::required(command, "title")?,
-                }),
-                Some(("clear", _)) => Some(Self::TitleClear),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Attach { .. } => "attach",
-            Self::TitleSet { .. } | Self::TitleClear => "title",
-        }
-    }
-
-    fn can_run_on_machine(&self) -> bool {
-        match self {
-            Self::TitleSet { .. } | Self::TitleClear => true,
-            Self::Attach { .. } => false,
         }
     }
 }
@@ -383,16 +304,6 @@ pub(crate) fn print_help(requested_session: Option<shepr_config::SessionId>) {
     );
 }
 
-pub(super) fn print_read_response(response: &serde_json::Value) -> CliResult<i32> {
-    if print_response_error(response)? {
-        return Ok(1);
-    }
-    if let Some(text) = response["result"]["read"]["text"].as_str() {
-        print!("{text}");
-    }
-    Ok(0)
-}
-
 /// Runs the invocation's subcommand against the saved machine named by
 /// `--machine`.
 pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> CliResult<i32> {
@@ -406,27 +317,16 @@ pub(crate) fn run(
     requested_session: Option<shepr_config::SessionId>,
 ) -> CliResult<i32> {
     let paths = resolve_app_paths(requested_session)?;
-    let context = target::CliContext::local(paths).map_err(CliError::Io)?;
-    dispatch_with_config(command, None, &context)
+    let context = target::CliContext::local(paths);
+    dispatch(command, &context)
 }
 
-fn dispatch_with_config(
-    command: &CliCommand,
-    config: Option<shepr_config::ValidatedConfig>,
-    context: &target::CliContext,
-) -> CliResult<i32> {
+fn dispatch(command: &CliCommand, context: &target::CliContext) -> CliResult<i32> {
     match command {
         CliCommand::Status(command) => status::run_status_command(*command, context),
         CliCommand::Machine(command) => machine::run_machine_command(command.clone(), context),
         CliCommand::Server(command) => server::run_server_command(*command, context),
-        CliCommand::Workspace(command) => {
-            workspace::run_workspace_command(command.clone(), context)
-        }
-        CliCommand::Tab(command) => tab::run_tab_command(command.clone(), context),
-        CliCommand::Agent(command) => agent::run_agent_command(command.clone(), config, context),
         CliCommand::Detect(command) => detect::run_detect_command(command.clone(), context),
-        CliCommand::Pane(command) => pane::run_pane_command(command.clone(), context),
-        CliCommand::Terminal(command) => run_terminal_command(command.clone(), config, context),
         CliCommand::Session(command) => run_session_command(command.clone(), context),
         CliCommand::Integration(command) => {
             integration::run_integration_command(command.clone(), context)
@@ -454,14 +354,6 @@ fn resolve_machine_app_paths() -> CliResult<shepr_config::AppPaths> {
     })
 }
 
-/// A usage error found after clap accepted the arguments (a combination the
-/// spec cannot express). Same exit code as clap's own usage errors.
-pub(super) fn usage_error(message: &str) -> i32 {
-    let error = CliError::Usage(message.into());
-    error.print();
-    error.exit_code()
-}
-
 fn load_validated_config(
     paths: &shepr_config::AppPaths,
 ) -> CliResult<shepr_config::ValidatedConfig> {
@@ -475,50 +367,6 @@ fn load_validated_config(
                 .join("\n  ")
         )))
     })
-}
-
-fn run_terminal_command(
-    command: TerminalCommand,
-    config: Option<shepr_config::ValidatedConfig>,
-    context: &target::CliContext,
-) -> CliResult<i32> {
-    match command {
-        TerminalCommand::Attach {
-            terminal_id,
-            takeover,
-        } => {
-            let Ok(terminal_id) = terminal_id.parse::<shepr_protocol::TerminalId>() else {
-                return Err(CliError::Usage(format!(
-                    "invalid terminal id {terminal_id:?}"
-                )));
-            };
-            let config = match config {
-                Some(config) => config,
-                None => load_validated_config(context)?,
-            };
-            crate::init_client_logging(context)?;
-            finish_client(shepr_client::run_terminal_attach(
-                &config,
-                context,
-                terminal_id,
-                takeover,
-            ))
-        }
-        TerminalCommand::TitleSet { title } => print_response(&send_request(
-            context,
-            &Request {
-                id: "cli:terminal:title:set".into(),
-                method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams { title }),
-            },
-        )?),
-        TerminalCommand::TitleClear => print_response(&send_request(
-            context,
-            &Request {
-                id: "cli:terminal:title:clear".into(),
-                method: Method::ClientWindowTitleClear(EmptyParams::default()),
-            },
-        )?),
-    }
 }
 
 fn run_session_command(command: SessionCommand, paths: &target::CliContext) -> CliResult<i32> {
@@ -590,50 +438,6 @@ fn session_delete(name: &str, json: bool, paths: &shepr_config::AppPaths) -> Cli
             Ok(0)
         }
         Err(error) => Err(CliError::Session(SessionCliError::Delete(error))),
-    }
-}
-
-pub(super) fn print_response(response: &serde_json::Value) -> CliResult<i32> {
-    if print_response_error(response)? {
-        return Ok(1);
-    }
-
-    println!(
-        "{}",
-        serde_json::to_string(response).map_err(std::io::Error::other)?
-    );
-    Ok(0)
-}
-
-#[derive(Clone, Copy)]
-enum MethodResponseMode {
-    Print,
-    ErrorsOnly,
-}
-
-fn send_method_response(
-    context: &target::CliContext,
-    id: &'static str,
-    method: Method,
-    mode: MethodResponseMode,
-) -> CliResult<i32> {
-    let response = send_request(
-        context,
-        &Request {
-            id: id.into(),
-            method,
-        },
-    )?;
-
-    match mode {
-        MethodResponseMode::Print => print_response(&response),
-        MethodResponseMode::ErrorsOnly => {
-            if print_response_error(&response)? {
-                Ok(1)
-            } else {
-                Ok(0)
-            }
-        }
     }
 }
 
@@ -816,16 +620,11 @@ mod tests {
 
     #[test]
     fn every_cli_spec_root_has_typed_parser() {
-        let samples: [(&str, &[&str]); 11] = [
+        let samples: [(&str, &[&str]); 6] = [
             ("status", &["status"]),
             ("machine", &["machine", "list"]),
             ("server", &["server", "stop"]),
-            ("workspace", &["workspace", "list"]),
-            ("tab", &["tab", "list"]),
-            ("agent", &["agent", "list"]),
             ("detect", &["detect", "capture", "w1:p1"]),
-            ("pane", &["pane", "list"]),
-            ("terminal", &["terminal", "title", "clear"]),
             ("session", &["session", "list"]),
             ("integration", &["integration", "status"]),
         ];
@@ -877,11 +676,11 @@ mod tests {
 
     #[test]
     fn launch_options_are_read_before_the_subcommand() {
-        let invocation = parse(&["--session", "work", "workspace", "list"]);
+        let invocation = parse(&["--session", "work", "session", "list"]);
         assert_eq!(invocation.session().as_deref(), Some("work"));
         assert!(matches!(
             invocation.launch,
-            Launch::Cli(command) if matches!(*command, CliCommand::Workspace(_))
+            Launch::Cli(command) if matches!(*command, CliCommand::Session(_))
         ));
 
         let invocation = parse(&["--session=api", "server", "stop"]);
@@ -898,9 +697,9 @@ mod tests {
         // retarget of the command.
         for args in [
             &["server", "stop", "--session=api"][..],
-            &["workspace", "list", "--session", "work"],
-            &["pane", "list", "--remote", "host"],
-            &["agent", "list", "--machine", "mac"],
+            &["session", "list", "--session", "work"],
+            &["status", "--remote", "host"],
+            &["detect", "capture", "w1:p1", "--machine", "mac"],
         ] {
             assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }
@@ -973,54 +772,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_and_agent_attach_reject_invalid_config_before_connecting() {
-        let env = crate::test_support::IsolatedEnv::new();
-        let scratch = crate::test_support::ScratchDir::new("cli-invalid-config");
-        let config_path = scratch.join("config.toml");
-        std::fs::write(&config_path, "[").expect("write invalid config");
-        env.set(shepr_core::env::EnvVar::SheprConfigPath, &config_path);
-
-        for args in [
-            &["terminal", "attach", "term_1_1"][..],
-            &["agent", "attach", "agent-1"],
-        ] {
-            let invocation = parse(args);
-            let Launch::Cli(command) = invocation.launch else {
-                panic!("{args:?} is not a CLI command");
-            };
-            let error = match super::run(command.as_ref(), None) {
-                Err(error) => error,
-                Ok(code) => {
-                    panic!("{args:?} unexpectedly returned exit code {code}")
-                }
-            };
-            assert!(
-                error.to_string().contains("configuration error"),
-                "{args:?} should fail on invalid config before connecting: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn terminal_attach_refuses_an_id_the_server_never_issues() {
-        // `run` resolves the application paths from the environment before
-        // it reaches the command.
-        let _env = crate::test_support::IsolatedEnv::new();
-        let invocation = parse(&["terminal", "attach", "terminal-1"]);
-        let Launch::Cli(command) = invocation.launch else {
-            panic!("terminal attach is not a CLI command");
-        };
-        let error = match super::run(command.as_ref(), None) {
-            Err(error) => error,
-            Ok(code) => panic!("terminal attach unexpectedly returned exit code {code}"),
-        };
-        assert!(
-            matches!(&error, super::CliError::Usage(message) if message.contains("invalid terminal id")),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn session_name_accepts_option_terminator() {
         for name in ["-h", "--json"] {
             let stop = command_matches(&["session", "stop", "--", name]);
@@ -1034,27 +785,15 @@ mod tests {
 
     #[test]
     fn equals_form_works_for_every_value_option() {
-        let split = command_matches(&[
-            "pane",
-            "split",
-            "--direction=right",
-            "--cwd=/shepr-test/cwd",
-            "--ratio=0.5",
-        ]);
+        let explain =
+            command_matches(&["detect", "explain", "--file=screen.txt", "--agent=claude"]);
         assert_eq!(
-            super::matches::string(&split, "cwd").as_deref(),
-            Some("/shepr-test/cwd")
-        );
-        assert_eq!(super::matches::value::<f32>(&split, "ratio"), Some(0.5));
-
-        let create = command_matches(&["workspace", "create", "--label=dev", "--env=A=b"]);
-        assert_eq!(
-            super::matches::string(&create, "label").as_deref(),
-            Some("dev")
+            super::matches::string(&explain, "file").as_deref(),
+            Some("screen.txt")
         );
         assert_eq!(
-            super::matches::values::<(String, String)>(&create, "env"),
-            vec![("A".to_string(), "b".to_string())]
+            super::matches::string(&explain, "agent").as_deref(),
+            Some("claude")
         );
     }
 
@@ -1080,7 +819,12 @@ mod tests {
             &["frobnicate"][..],
             &["--bogus"],
             &["api", "snapshot"],
-            &["pane"],
+            &["workspace", "list"],
+            &["tab", "list"],
+            &["pane", "list"],
+            &["agent", "list"],
+            &["terminal", "attach", "term_1_1"],
+            &["terminal", "title", "clear"],
             &["config", "reset-keys"],
             &["config", "check"],
             &["config"],
@@ -1091,38 +835,6 @@ mod tests {
         ] {
             assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }
-    }
-
-    #[test]
-    fn parse_env_assignment_accepts_empty_values() {
-        assert_eq!(
-            super::parse_env_assignment("ROLE=").expect("test precondition"),
-            ("ROLE".to_string(), String::new())
-        );
-    }
-
-    #[test]
-    fn parse_env_assignment_requires_key_value_separator() {
-        assert_eq!(
-            super::parse_env_assignment("ROLE").expect_err("test precondition"),
-            "env must use KEY=VALUE"
-        );
-    }
-
-    #[test]
-    fn parse_env_assignment_reports_the_rejected_key_or_value() {
-        assert_eq!(
-            super::parse_env_assignment("=value").expect_err("empty key is invalid"),
-            "env key \"\" must not be empty"
-        );
-        assert_eq!(
-            super::parse_env_assignment("BAD\0KEY=value").expect_err("NUL key is invalid"),
-            "env key \"BAD\\0KEY\" must not contain NUL bytes"
-        );
-        assert_eq!(
-            super::parse_env_assignment("NAME=BAD\0VALUE").expect_err("NUL value is invalid"),
-            "env value for key \"NAME\" must not contain NUL bytes"
-        );
     }
 
     #[test]
@@ -1139,13 +851,13 @@ mod tests {
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
-            "cli:workspace:create",
+            "cli:detect:capture",
             &client,
         );
 
         let response = super::server_not_running::reported_response(&mapped)
             .expect("dead-server connect failure should carry a server_not_running response");
-        assert_eq!(response.id, "cli:workspace:create");
+        assert_eq!(response.id, "cli:detect:capture");
         assert_eq!(
             response.error.code,
             shepr_api::error::ApiErrorCode::ServerNotRunning.as_str()
@@ -1185,7 +897,7 @@ mod tests {
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
-            "cli:workspace:create",
+            "cli:detect:capture",
             &client,
         );
         assert!(!super::server_not_running::was_reported(&mapped));

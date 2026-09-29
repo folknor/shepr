@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 
 use super::App;
 
-use crate::limits::{AGENT_RESUME_NAME_HOLD_TIMEOUT, PENDING_AGENT_RESUME_RETRY_INTERVAL};
+use crate::limits::PENDING_AGENT_RESUME_RETRY_INTERVAL;
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
@@ -45,66 +45,6 @@ impl App {
     pub(crate) fn pending_agent_resume_due(&self, now: Instant) -> bool {
         self.pending_agent_resume_deadline
             .is_some_and(|deadline| now >= deadline)
-    }
-
-    /// Releases the held name of every restored agent whose typed resume
-    /// never produced the agent by its deadline. The loop wakes at
-    /// `AppState::next_agent_resume_name_deadline`, but nothing else
-    /// reconciles a pane that produces no events, and a deadline left in the
-    /// past makes every loop wakeup immediate. Reconciling a due hold always
-    /// ends it, so this cannot keep firing.
-    pub(crate) fn expire_due_agent_resume_names(&mut self, now: Instant) -> bool {
-        if self
-            .state
-            .next_agent_resume_name_deadline()
-            .is_none_or(|deadline| now < deadline)
-        {
-            return false;
-        }
-        let due: Vec<shepr_protocol::TerminalId> = self
-            .state
-            .terminals
-            .iter()
-            .filter(|(_, terminal)| {
-                terminal
-                    .agent_resume_name_deadline()
-                    .is_some_and(|deadline| now >= deadline)
-            })
-            .map(|(terminal_id, _)| terminal_id.clone())
-            .collect();
-        let mut changed = false;
-        for terminal_id in due {
-            let reconciled = self
-                .state
-                .terminals
-                .get_mut(&terminal_id)
-                .is_some_and(|terminal| terminal.reconcile_agent_resume_name(now));
-            if !reconciled {
-                continue;
-            }
-            changed = true;
-            let pane = self
-                .state
-                .workspaces
-                .iter()
-                .enumerate()
-                .find_map(|(ws_idx, ws)| {
-                    ws.tabs().iter().find_map(|tab| {
-                        tab.panes()
-                            .iter()
-                            .find(|(_, pane)| pane.attached_terminal_id == terminal_id)
-                            .map(|(pane_id, _)| (ws_idx, *pane_id))
-                    })
-                });
-            if let Some((ws_idx, pane_id)) = pane {
-                self.emit_pane_updated(ws_idx, pane_id);
-            }
-        }
-        if changed {
-            self.state.mark_session_dirty();
-            self.schedule_session_save();
-        }
-        changed
     }
 
     pub(crate) fn start_pending_agent_resumes(
@@ -324,54 +264,6 @@ impl App {
         pane_infos
     }
 
-    pub(crate) fn start_pending_agent_resume_for_terminal(
-        &mut self,
-        terminal_id: &shepr_protocol::TerminalId,
-        rows: u16,
-        cols: u16,
-        allow_empty_theme: bool,
-    ) -> bool {
-        if self.terminal_runtimes.get(terminal_id).is_some() {
-            return false;
-        }
-        let Some((pane_id, cwd, plan)) = self.state.workspaces.iter().find_map(|ws| {
-            ws.tabs().iter().find_map(|tab| {
-                tab.layout().pane_ids().into_iter().find_map(|pane_id| {
-                    let pane = tab.panes().get(&pane_id)?;
-                    if &pane.attached_terminal_id != terminal_id {
-                        return None;
-                    }
-                    let terminal = self.state.terminals.get(terminal_id)?;
-                    Some((
-                        pane_id,
-                        terminal.cwd().to_path_buf(),
-                        terminal.pending_agent_resume_plan.clone()?,
-                    ))
-                })
-            })
-        }) else {
-            return false;
-        };
-
-        let changed = self.start_pending_agent_resume(
-            pane_id,
-            terminal_id,
-            &cwd,
-            &plan,
-            rows,
-            cols,
-            allow_empty_theme,
-            self.clock.now,
-        );
-        if changed {
-            self.schedule_session_save();
-        }
-        if !self.has_pending_agent_resumes() {
-            self.pending_agent_resume_deadline = None;
-        }
-        changed
-    }
-
     fn start_pending_agent_resume(
         &mut self,
         pane_id: shepr_core::layout::PaneId,
@@ -492,14 +384,6 @@ impl App {
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.pending_agent_resume_plan = None;
-            // A restored name now waits for the agent to appear and
-            // is released at the deadline if it never does. The paths above
-            // that return early leave it awaiting the resume: a retried
-            // launch starts the clock then, and a resume that can never run
-            // (missing directory, unstartable shell) leaves a pane with no
-            // runtime at all, where the name is kept like any unavailable
-            // restored pane's so a later save writes it back.
-            terminal.begin_agent_resume_name_hold(now, AGENT_RESUME_NAME_HOLD_TIMEOUT);
         }
         true
     }
@@ -551,6 +435,57 @@ fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
         pane_inner.width.saturating_sub(1),
         pane_inner.height,
     )
+}
+
+#[cfg(test)]
+impl App {
+    pub(crate) fn start_pending_agent_resume_for_terminal(
+        &mut self,
+        terminal_id: &shepr_protocol::TerminalId,
+        rows: u16,
+        cols: u16,
+        allow_empty_theme: bool,
+    ) -> bool {
+        if self.terminal_runtimes.get(terminal_id).is_some() {
+            return false;
+        }
+        let Some((pane_id, cwd, plan)) = self.state.workspaces.iter().find_map(|ws| {
+            ws.tabs().iter().find_map(|tab| {
+                tab.layout().pane_ids().into_iter().find_map(|pane_id| {
+                    let pane = tab.panes().get(&pane_id)?;
+                    if &pane.attached_terminal_id != terminal_id {
+                        return None;
+                    }
+                    let terminal = self.state.terminals.get(terminal_id)?;
+                    Some((
+                        pane_id,
+                        terminal.cwd().to_path_buf(),
+                        terminal.pending_agent_resume_plan.clone()?,
+                    ))
+                })
+            })
+        }) else {
+            return false;
+        };
+
+        let changed = self.start_pending_agent_resume(
+            pane_id,
+            terminal_id,
+            &cwd,
+            &plan,
+            rows,
+            cols,
+            allow_empty_theme,
+            self.clock.now,
+        );
+        if changed {
+            self.schedule_session_save();
+        }
+        if !self.has_pending_agent_resumes() {
+            self.pending_agent_resume_deadline = None;
+        }
+        changed
+    }
 }
 
 #[cfg(test)]
@@ -797,8 +732,7 @@ mod tests {
                 "resume-test",
                 long_running_test_argv(),
             ));
-            // Restore seeds the resumed agent as detected and names it.
-            terminal.hold_agent_name_for_resume("worker".into(), shepr_agent::detect::Agent::Codex);
+            // Restore seeds the resumed agent as detected.
             let _ = terminal.set_detected_state_with_screen_signals_at(
                 Some(shepr_agent::detect::Agent::Codex),
                 shepr_agent::detect::AgentState::Idle,
@@ -812,11 +746,9 @@ mod tests {
             assert!(terminal.pending_agent_resume_plan.is_none());
             assert_eq!(terminal.persisted_agent_session.as_ref(), Some(&session));
             assert!(terminal.restore_error.is_some());
-            // No process will ever run here: the seeded detection goes, the
-            // name stays for the next save.
+            // No process will ever run here: the seeded detection goes.
             assert_eq!(terminal.detected_agent, None);
             assert_eq!(terminal.effective_known_agent(), None);
-            assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
             assert!(!app.has_pending_agent_resumes());
             assert!(!app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
         }
@@ -937,62 +869,6 @@ mod tests {
         assert!(!app.start_pending_agent_resumes(Instant::now(), false));
         assert!(app.start_pending_agent_resumes(Instant::now(), true));
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
-
-        for (_, runtime) in app.terminal_runtimes.drain() {
-            drop(runtime);
-        }
-    }
-
-    #[tokio::test]
-    async fn a_launched_resume_releases_its_saved_name_when_the_agent_never_appears() {
-        let mut app = test_app();
-        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs()[0].root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test precondition");
-        app.state.view.pane_infos = workspace.tabs()[0]
-            .layout()
-            .panes(shepr_core::geometry::Rect::new(0, 0, 100, 30))
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
-        app.state.workspaces = vec![workspace];
-        app.state.set_active_index(Some(0));
-        app.state.ensure_test_terminals();
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist");
-        terminal.hold_agent_name_for_resume("worker".into(), shepr_agent::detect::Agent::Codex);
-        // A resume command that runs, but never becomes the agent.
-        terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
-            "shepr:codex\0codex\0Id\0never-appears",
-            long_running_test_argv(),
-        ));
-        assert_eq!(app.state.next_agent_resume_name_deadline(), None);
-
-        let launched_at = Instant::now();
-        assert!(app.start_pending_agent_resumes(launched_at, true));
-        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
-        let deadline = app
-            .state
-            .next_agent_resume_name_deadline()
-            .expect("a launched resume waits for its agent until a deadline");
-        assert!(deadline >= launched_at + AGENT_RESUME_NAME_HOLD_TIMEOUT);
-        assert_eq!(
-            app.state.terminals[&terminal_id].agent_name.as_deref(),
-            Some("worker")
-        );
-
-        assert!(!app.expire_due_agent_resume_names(deadline - std::time::Duration::from_millis(1)));
-        assert!(app.expire_due_agent_resume_names(deadline));
-        assert_eq!(app.state.terminals[&terminal_id].agent_name, None);
-        assert_eq!(app.state.next_agent_resume_name_deadline(), None);
-        assert!(!app.expire_due_agent_resume_names(deadline));
 
         for (_, runtime) in app.terminal_runtimes.drain() {
             drop(runtime);

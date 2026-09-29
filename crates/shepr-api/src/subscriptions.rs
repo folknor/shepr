@@ -74,7 +74,6 @@ impl ActiveSubscription {
             Subscription::PaneClosed {} => Ok(event_subscription(EventKind::PaneClosed)),
             Subscription::PaneUpdated {} => Ok(event_subscription(EventKind::PaneUpdated)),
             Subscription::PaneFocused {} => Ok(event_subscription(EventKind::PaneFocused)),
-            Subscription::PaneMoved {} => Ok(event_subscription(EventKind::PaneMoved)),
             Subscription::PaneExited {} => Ok(event_subscription(EventKind::PaneExited)),
             Subscription::PaneAgentDetected {} => {
                 Ok(event_subscription(EventKind::PaneAgentDetected))

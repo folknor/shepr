@@ -50,7 +50,7 @@ impl App {
             focused_pane_id,
             workspaces,
             tabs,
-            panes: self.collect_panes_for_workspace(None).unwrap_or_default(),
+            panes: self.collect_panes(),
             layouts,
             agents: self.collect_agent_infos(),
         }

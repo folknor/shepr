@@ -45,45 +45,7 @@ pub(crate) const CHECKPOINT_MAX_FAILURES: u8 = 3;
 /// Retry a restored agent launch when it has not consumed its plan;
 /// this bounds both launch latency and repeated work.
 pub(crate) const PENDING_AGENT_RESUME_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-/// How long a restored agent name waits, once its resume command is
-/// typed, for the agent's process (or a hook report from it) to appear. Only
-/// the process has to show up, not reach a prompt, so this is generous. It is
-/// the same hold the mux uses for detecting that agent during startup.
-pub(crate) const AGENT_RESUME_NAME_HOLD_TIMEOUT: Duration =
-    shepr_mux::pane::AGENT_RESUME_DETECTION_HOLD;
 
-// Alt-screen history reads: the read first waits for the pane to stop
-// changing, then sends scroll steps of `WHEEL_STEP_EVENTS` wheel events. Each
-// step may take `STEP_TIMEOUT` and needs `OUTPUT_QUIET` of quiet output before
-// harvesting. `MAX_DURATION` caps the traversal; restoration has its own
-// `MAX_RESTORE_DURATION` so failure to settle cannot leave the user's viewport
-// displaced indefinitely.
-
-/// Initial settling time; avoids scrolling through a still-changing pane.
-pub(crate) const INITIAL_QUIET: Duration = Duration::from_millis(10);
-/// A quiet output window avoids harvesting an incomplete wheel response.
-pub(crate) const OUTPUT_QUIET: Duration = Duration::from_millis(10);
-/// A step deadline keeps an unresponsive scroll from stalling traversal.
-pub(crate) const STEP_TIMEOUT: Duration = Duration::from_millis(120);
-/// Bounds the total alt-screen history traversal, so an agent that keeps
-/// answering scroll steps cannot hold the read, and the agent's scrolled
-/// viewport, indefinitely; past it the harvest is abandoned and the read
-/// falls back.
-pub(crate) const MAX_DURATION: Duration = Duration::from_secs(15);
-/// Bounds viewport restoration after traversal stops, separately from the
-/// traversal, so a read that used its whole traversal budget still gets time
-/// to put the user's viewport back, and an agent that never settles cannot
-/// leave it displaced.
-pub(crate) const MAX_RESTORE_DURATION: Duration = Duration::from_secs(5);
-/// Wheel events per step advance history without a large viewport jump.
-pub(crate) const WHEEL_STEP_EVENTS: usize = 3;
-
-/// Largest `lines` a read accepts. Larger requests are rejected rather than
-/// quietly shortened, so a caller never mistakes a capped read for the whole
-/// history it asked for.
-pub(crate) const MAX_READ_LINES: u32 = 1000;
-/// Recent reads default to approximately one tall terminal screen.
-pub(crate) const DEFAULT_RECENT_READ_LINES: usize = 80;
 /// A layout accepts a bounded number of panes to limit each apply operation's work.
 pub(crate) const MAX_LAYOUT_PANES: usize = 24;
 /// A layout accepts a bounded split depth to limit recursive walks.
@@ -108,14 +70,6 @@ pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-/// Minimum accepted attached client size.
-///
-/// Narrow observers must be allowed to drive narrow renders, otherwise the
-/// server wraps pane content against a wider width and the client sees the
-/// right edge clipped.
-pub(crate) const MIN_CLIENT_COLS: u16 = 1;
-/// The row counterpart of `MIN_CLIENT_COLS`.
-pub(crate) const MIN_CLIENT_ROWS: u16 = 1;
 /// Bound expanded input events per batch to limit dispatch work.
 pub(crate) const MAX_INPUT_EVENT_BATCH: usize = 4096;
 /// Endpoint request bound is the protocol's shared payload bound.
@@ -145,8 +99,6 @@ pub(crate) const TAB_BAR_COMMAND_SHELL: &str = "/bin/sh";
 /// supplies its command environment, and execute the configured text (`-c`).
 pub(crate) const TAB_BAR_COMMAND_SHELL_ARGS: &str = "-lc";
 
-/// Cap agent labels to keep sidebar names compact.
-pub(crate) const MAX_AGENT_NAME_LEN: usize = 32;
 /// Resize by a small visible step when the caller omits an amount.
 pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: f32 = 0.05;
 /// Bound the requested resize fraction to avoid extreme pane jumps.

@@ -336,7 +336,7 @@ mod tests {
         let client = ApiClient::for_socket(path.clone());
         let request = Request {
             id: "stalled".into(),
-            method: Method::WorkspaceList(crate::schema::EmptyParams::default()),
+            method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
         };
         let error = client
             .request_value_with_timeout(&request, Duration::from_millis(100))
@@ -375,7 +375,7 @@ mod tests {
         let client = ApiClient::for_socket(path.clone());
         let request = Request {
             id: "partial".into(),
-            method: Method::WorkspaceList(crate::schema::EmptyParams::default()),
+            method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
         };
         let error = client
             .request_value_with_timeout(&request, Duration::from_millis(120))
@@ -394,7 +394,7 @@ mod tests {
             id: "timeout".into(),
             method,
         };
-        let ordinary = response_timeout(&request(Method::WorkspaceList(
+        let ordinary = response_timeout(&request(Method::SessionSnapshot(
             crate::schema::EmptyParams::default(),
         )))
         .expect("ordinary requests are bounded");

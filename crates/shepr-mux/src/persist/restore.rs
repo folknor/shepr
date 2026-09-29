@@ -387,11 +387,6 @@ fn restore_workspace(
 /// - cwd, label and launch argv: always kept.
 /// - agent session: always kept, except by a running duplicate whose session
 ///   an earlier pane of this restore resumes.
-/// - agent name: a running shell is a plain shell, so it carries none until
-///   detection or a hook reports an agent. A pending resume keeps its saved
-///   agent name (its resumed process will own it, and the name is released
-///   if that process never appears). An unavailable pane keeps
-///   whatever name it had, so a later save writes it back unchanged.
 fn restored_terminal(
     pane: &super::snapshot::PaneSnapshot,
     start: RestoredPaneStart,
@@ -418,9 +413,6 @@ fn restored_terminal(
         RestoredPaneStart::PendingResume(plan) => {
             let plan_agent = plan.agent;
             terminal = terminal.with_pending_agent_resume_plan(plan);
-            if let Some(name) = pane.agent_name.clone() {
-                terminal.hold_agent_name_for_resume(name, plan_agent);
-            }
             // Seeded so the sidebar shows the agent while its resume waits to
             // launch and while the resumed process starts. Once the shell
             // runs, the pane's detector holds back its "no agent" report
@@ -446,9 +438,6 @@ fn restored_terminal(
                 "preserving unavailable restored pane"
             );
             terminal.restore_error = Some(reason);
-            if let Some(name) = pane.agent_name.clone() {
-                terminal.set_agent_name(name);
-            }
         }
     }
     terminal
@@ -1292,7 +1281,6 @@ mod tests {
         super::super::snapshot::PaneSnapshot {
             cwd,
             label: None,
-            agent_name: None,
             agent_session: None,
             launch_argv: None,
         }
@@ -1943,7 +1931,6 @@ mod tests {
                         super::super::snapshot::PaneSnapshot {
                             cwd,
                             label: Some("reviewer".into()),
-                            agent_name: Some("reviewer".into()),
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "shepr:opencode".into(),
                                 agent: shepr_agent::agent::Agent::OpenCode,
@@ -1991,7 +1978,6 @@ mod tests {
             .values()
             .next()
             .expect("restored terminal should exist");
-        assert_eq!(terminal.agent_name, None);
         assert_eq!(terminal.manual_label.as_deref(), Some("reviewer"));
         let session = terminal
             .persisted_agent_session
@@ -2031,7 +2017,6 @@ mod tests {
                             super::super::snapshot::PaneSnapshot {
                                 cwd: cwd.clone(),
                                 label: None,
-                                agent_name: None,
                                 agent_session: None,
                                 launch_argv: None,
                             },
@@ -2041,7 +2026,6 @@ mod tests {
                             super::super::snapshot::PaneSnapshot {
                                 cwd: cwd.clone(),
                                 label: None,
-                                agent_name: None,
                                 agent_session: None,
                                 launch_argv: None,
                             },
@@ -2097,7 +2081,6 @@ mod tests {
         let pane = || super::super::snapshot::PaneSnapshot {
             cwd: PathBuf::from("/"),
             label: None,
-            agent_name: None,
             agent_session: None,
             launch_argv: None,
         };
@@ -2165,7 +2148,6 @@ mod tests {
                     super::super::snapshot::PaneSnapshot {
                         cwd: PathBuf::from("/"),
                         label: None,
-                        agent_name: None,
                         agent_session: None,
                         launch_argv: None,
                     },
@@ -2195,7 +2177,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cold_restore_with_gapped_public_tab_numbers_drops_a_plain_shells_agent_name() {
+    async fn cold_restore_with_gapped_public_tab_numbers_starts_a_plain_shell_without_an_agent() {
         let scratch = crate::test_support::ScratchDir::new("restore-public-tab-cwd");
         let cwd = scratch.to_path_buf();
         let pane_snap = |id: &str| {
@@ -2204,7 +2186,6 @@ mod tests {
                 super::super::snapshot::PaneSnapshot {
                     cwd: cwd.clone(),
                     label: None,
-                    agent_name: None,
                     agent_session: None,
                     launch_argv: None,
                 },
@@ -2213,7 +2194,6 @@ mod tests {
         let final_pane = super::super::snapshot::PaneSnapshot {
             cwd: cwd.clone(),
             label: Some("planner".into()),
-            agent_name: Some("planner".into()),
             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "shepr:codex".into(),
                 agent: shepr_agent::agent::Agent::Codex,
@@ -2300,7 +2280,6 @@ mod tests {
         assert_eq!(workspace.tabs()[3].number, 5);
         let agent_pane = workspace.tabs()[3].root_pane;
         let terminal_id = &workspace.tabs()[3].panes[&agent_pane].attached_terminal_id;
-        assert!(terminals[terminal_id].agent_name.is_none());
         assert!(terminals[terminal_id].effective_agent_label().is_none());
     }
 
@@ -2327,7 +2306,6 @@ mod tests {
                         super::super::snapshot::PaneSnapshot {
                             cwd,
                             label: None,
-                            agent_name: Some("reviewer".into()),
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "shepr:codex".into(),
                                 agent: shepr_agent::agent::Agent::Codex,
@@ -2383,8 +2361,6 @@ mod tests {
             // test `headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client`).
             "restored native agent panes should defer resume to the event loop"
         );
-        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-        assert_eq!(terminal.agent_resume_name_deadline(), None);
         assert!(
             runtimes.is_empty(),
             "native agent restore should not spawn a fallback-size runtime during snapshot restore"
@@ -2531,7 +2507,6 @@ mod tests {
             super::super::snapshot::PaneSnapshot {
                 cwd: cwd.clone(),
                 label: None,
-                agent_name: None,
                 agent_session: None,
                 launch_argv: None,
             },

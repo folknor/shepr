@@ -213,22 +213,6 @@ impl EndpointRegistry {
         self.send_to(&endpoint_id, message)
     }
 
-    pub(crate) fn flush_active(&mut self, deadline: Instant) -> EndpointSendOutcome {
-        let endpoint_id = self.active.clone();
-        let result = self
-            .connections
-            .get_mut(&endpoint_id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "endpoint is unavailable"))
-            .and_then(|connection| connection.transport.flush(deadline));
-        match result {
-            Ok(()) => EndpointSendOutcome::Sent,
-            Err(error) => {
-                self.record_failure(&endpoint_id, &error);
-                EndpointSendOutcome::NotSent
-            }
-        }
-    }
-
     pub(crate) fn send_to(
         &mut self,
         endpoint_id: &ClientEndpointId,

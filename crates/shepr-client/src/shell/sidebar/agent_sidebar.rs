@@ -401,7 +401,7 @@ impl<'a> AgentRowIndex<'a> {
         let tab_label = tab
             .filter(|tab| tab_count > 1 || tab.custom_label)
             .map(|tab| tab.label.as_str());
-        let agent_label = agent.name.as_deref().or(agent.agent.as_deref());
+        let agent_label = agent.agent.as_deref();
         let state_text = status_text(agent.agent_status);
         let canonical_agent = agent
             .agent

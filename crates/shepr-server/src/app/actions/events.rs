@@ -209,23 +209,15 @@ impl AppState {
             .pane_state(pane_id)?
             .attached_terminal_id
             .clone();
-        let now = self.clock_now;
-        let (mutation, resume_name_changed, agent_name_changed, unchanged_change) = {
+        let (mutation, unchanged_change) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
-            let previous_agent_name = terminal.agent_name.clone();
             let mutation = update(terminal)?;
-            let resume_name_changed = terminal.reconcile_agent_resume_name(now);
-            let agent_name_changed = terminal.agent_name != previous_agent_name;
-            let unchanged_change = (mutation.agent_released || agent_name_changed)
+            let unchanged_change = mutation
+                .agent_released
                 .then(|| terminal.unchanged_effective_state_change());
-            (
-                mutation,
-                resume_name_changed,
-                agent_name_changed,
-                unchanged_change,
-            )
+            (mutation, unchanged_change)
         };
-        if mutation.session_ref_changed || resume_name_changed || agent_name_changed {
+        if mutation.session_ref_changed {
             self.mark_session_dirty();
         }
         let agent_released = mutation.agent_released;
@@ -252,11 +244,10 @@ impl AppState {
                 },
                 state: change.state,
             },
-            cause: match (agent_name_changed, agent_released) {
-                (false, false) => PaneStateCause::StateChanged,
-                (true, false) => PaneStateCause::NameChanged,
-                (false, true) => PaneStateCause::Released,
-                (true, true) => PaneStateCause::NameChangedAndReleased,
+            cause: if agent_released {
+                PaneStateCause::Released
+            } else {
+                PaneStateCause::StateChanged
             },
         };
         Some(update)
@@ -279,13 +270,6 @@ impl AppState {
         if let Some(terminal) = self.terminals.get_mut(terminal_id) {
             terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
         }
-    }
-
-    pub(crate) fn next_agent_resume_name_deadline(&self) -> Option<Instant> {
-        self.terminals
-            .values()
-            .filter_map(shepr_mux::terminal::TerminalState::agent_resume_name_deadline)
-            .min()
     }
 
     pub(crate) fn publish_pane_process_exit_if_agent(

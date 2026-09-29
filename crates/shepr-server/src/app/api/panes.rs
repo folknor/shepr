@@ -4,23 +4,19 @@ use crate::app::App;
 use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand, PaneZoomNoopReason};
 use shepr_api::schema::{
     EventData, EventEnvelope, PaneClearAgentAuthorityParams, PaneCopyMotion, PaneCopyMotionParams,
-    PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams, PaneDirection,
-    PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams, PaneFocusDirectionReason,
-    PaneFocusDirectionResult, PaneInfo, PaneInputSetParams, PaneLayoutPane, PaneLayoutParams,
-    PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneListParams, PaneMoveDestination,
-    PaneMoveParams, PaneMoveReason, PaneMoveResult, PaneNeighborParams, PaneNeighborResult,
-    PaneProcessInfo, PaneProcessInfoParams, PaneProcessInfoProcess, PaneReadParams, PaneReadResult,
-    PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams, PaneResizeParams,
-    PaneResizeReason, PaneResizeResult, PaneScrollParams, PaneSelectionReadParams, PaneSplitParams,
-    PaneSwapParams, PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange,
-    PaneZoomMode, PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
+    PaneCopySearchDirection, PaneCopySearchParams, PaneDirection, PaneFocusDirectionParams,
+    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInputSetParams, PaneLayoutPane,
+    PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneRenameParams, PaneReportAgentParams,
+    PaneReportAgentSessionParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
+    PaneScrollParams, PaneSelectionReadParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
+    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
+    PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 
 use super::super::api_helpers::{
     detect_state_from_api, normalize_reported_agent_label, pane_in_workspace_not_found,
-    pane_not_found, tab_for_pane_not_found, tab_not_found, target_pane_not_found,
-    workspace_not_found,
+    pane_not_found, workspace_not_found,
 };
 use super::responses::{failure, success};
 
@@ -188,32 +184,6 @@ impl App {
         success(ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_list(&mut self, params: &PaneListParams) -> ApiResult {
-        match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
-            Ok(panes) => success(ResponseResult::PaneList { panes }),
-            Err(error) => Err(error),
-        }
-    }
-
-    pub(super) fn handle_pane_current(&mut self, params: &PaneCurrentParams) -> ApiResult {
-        let target = match params.caller_pane_id.as_deref() {
-            Some(caller_pane_id) => self.parse_pane_id(caller_pane_id),
-            None => self.resolve_optional_pane(None),
-        };
-        let Some((ws_idx, pane_id)) = target else {
-            return Err(pane_not_found(params.caller_pane_id.as_deref()));
-        };
-        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return Err(pane_not_found(
-                self.public_pane_id(ws_idx, pane_id)
-                    .as_deref()
-                    .or(params.caller_pane_id.as_deref()),
-            ));
-        };
-
-        success(ResponseResult::PaneCurrent { pane })
-    }
-
     pub(super) fn handle_pane_get(&mut self, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
@@ -285,61 +255,13 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
-        // The label is part of `PaneInfo`, so subscribers see the rename the
-        // same way they see agent renames and metadata changes.
+        // The label is part of `PaneInfo`, so subscribers see the rename as a
+        // pane update.
         self.emit_event(EventEnvelope {
             data: EventData::PaneUpdated { pane: pane.clone() },
         });
 
         success(ResponseResult::PaneInfo { pane })
-    }
-
-    pub(super) fn handle_pane_read(&mut self, params: &PaneReadParams) -> ApiResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let Some((pane, workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let Some(tab_idx) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.find_tab_index_for_pane(pane_id))
-        else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        let format =
-            crate::app::api_helpers::effective_read_format(params.format, params.strip_ansi);
-        // Capture the revision before reading. A PTY write racing with the
-        // snapshot may advance it; reporting the later value would claim that
-        // the returned text included output it never observed.
-        let revision = pane.content_seq();
-        let snapshot = crate::app::api_helpers::read_terminal_snapshot(
-            pane,
-            params.source,
-            format,
-            params.lines,
-        )?;
-        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
-            return Err(tab_for_pane_not_found(&params.pane_id));
-        };
-
-        success(ResponseResult::PaneRead {
-            read: PaneReadResult {
-                pane_id: public_pane_id,
-                workspace_id,
-                tab_id,
-                source: params.source,
-                format,
-                text: snapshot.text,
-                revision,
-                truncated: snapshot.truncated,
-            },
-        })
     }
 
     pub(super) fn handle_pane_close(&mut self, target: &PaneTarget) -> ApiResult {
@@ -459,8 +381,8 @@ impl App {
         // The layout reports what is on screen: a zoomed tab shows only its
         // focused pane over the whole area and no split lines, so its hidden
         // panes and the split tree under them are left out (`zoomed` says the
-        // tree exists; `pane.list` still enumerates every pane of the tab and
-        // the layout description still carries the full split tree).
+        // tree exists; the layout description still carries the full split
+        // tree).
         // `tab_panes` is the one place the zoom rule lives, shared with view
         // computation and spawn sizing.
         let panes = self
@@ -529,70 +451,6 @@ fn nav_direction(direction: PaneDirection) -> NavDirection {
         PaneDirection::Right => NavDirection::Right,
         PaneDirection::Up => NavDirection::Up,
         PaneDirection::Down => NavDirection::Down,
-    }
-}
-
-enum ResolvedPaneMoveDestination {
-    ExistingTab {
-        tab_id: shepr_protocol::PublicTabId,
-        target_pane_id: PaneId,
-        split: shepr_api::schema::SplitDirection,
-        ratio: f32,
-        cross_workspace: bool,
-    },
-    NewTab {
-        workspace_id: shepr_protocol::WorkspaceId,
-        label: Option<String>,
-    },
-    NewWorkspace {
-        label: Option<String>,
-        tab_label: Option<String>,
-    },
-}
-
-struct PaneMoveRecoveryContext {
-    source_ws_idx: usize,
-    previous_workspace_id: shepr_protocol::WorkspaceId,
-    previous_workspace_label: Option<String>,
-    previous_tab_label: Option<String>,
-    identity_cwd: std::path::PathBuf,
-}
-
-fn encode_unchanged_pane_move(
-    reason: PaneMoveReason,
-    previous_pane_id: shepr_protocol::PublicPaneId,
-    previous_workspace_id: shepr_protocol::WorkspaceId,
-    previous_tab_id: shepr_protocol::PublicTabId,
-    pane: PaneInfo,
-    source_layout: Option<PaneLayoutSnapshot>,
-    target_layout: PaneLayoutSnapshot,
-) -> ApiResult {
-    let focused_pane_id = target_layout.focused_pane_id.clone();
-    success(ResponseResult::PaneMove {
-        move_result: PaneMoveResult {
-            changed: false,
-            reason: Some(reason),
-            previous_pane_id,
-            previous_workspace_id,
-            previous_tab_id,
-            pane: Box::new(pane),
-            source_layout: source_layout.map(Box::new),
-            target_layout: Box::new(target_layout),
-            created_workspace: None,
-            created_tab: None,
-            closed_workspace_id: None,
-            closed_tab_id: None,
-            focused_pane_id,
-        },
-    })
-}
-
-fn split_direction_to_layout(
-    direction: &shepr_api::schema::SplitDirection,
-) -> shepr_core::layout::Direction {
-    match direction {
-        shepr_api::schema::SplitDirection::Right => shepr_core::layout::Direction::Horizontal,
-        shepr_api::schema::SplitDirection::Down => shepr_core::layout::Direction::Vertical,
     }
 }
 

@@ -11,7 +11,7 @@ use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::{Direction, PaneId};
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
 use shepr_mux::terminal::{EffectiveStateChange, TerminalState};
-use shepr_mux::workspace::{MovedPane, PaneRemoval, PaneRemovalScope, Tab, TabPane, Workspace};
+use shepr_mux::workspace::{ExistingPane, PaneRemoval, PaneRemovalScope, Tab, TabPane, Workspace};
 use shepr_protocol::TerminalId;
 use tokio::sync::{Notify, mpsc};
 
@@ -21,12 +21,6 @@ pub(crate) use shepr_test_support::{IsolatedEnv, ScratchDir};
 /// Pane runtimes with no child: what the pane writes to its child arrives on
 /// the returned receiver (`shepr_test_fixtures::ChannelChildIo`).
 pub(crate) trait PaneRuntimeFixture: Sized {
-    fn test_with_channel(cols: u16, rows: u16) -> (Self, mpsc::Receiver<Bytes>);
-    fn test_with_channel_capacity(
-        cols: u16,
-        rows: u16,
-        capacity: usize,
-    ) -> (Self, mpsc::Receiver<Bytes>);
     fn test_with_screen_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Self;
     fn test_with_scrollback_bytes(
         cols: u16,
@@ -57,18 +51,6 @@ pub(crate) trait PaneRuntimeFixture: Sized {
 }
 
 impl PaneRuntimeFixture for PaneRuntime {
-    fn test_with_channel(cols: u16, rows: u16) -> (Self, mpsc::Receiver<Bytes>) {
-        Self::test_with_channel_and_scrollback_bytes(cols, rows, 0, &[], 4)
-    }
-
-    fn test_with_channel_capacity(
-        cols: u16,
-        rows: u16,
-        capacity: usize,
-    ) -> (Self, mpsc::Receiver<Bytes>) {
-        Self::test_with_channel_and_scrollback_bytes(cols, rows, 0, &[], capacity)
-    }
-
     fn test_with_screen_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Self {
         Self::test_with_scrollback_bytes(cols, rows, 0, bytes)
     }
@@ -152,8 +134,7 @@ impl PaneRuntimeRegistryFixture for PaneRuntimeRegistry {
     }
 }
 
-/// Workspaces built without spawning a pane, through the same calls restore
-/// and pane moves use.
+/// Workspaces built without spawning a pane.
 pub(crate) trait WorkspaceFixture: Sized {
     /// One tab with one pane, named `name`, rooted at `/`: a directory that
     /// exists on every host, so tests that launch the pane can, and that is
@@ -174,11 +155,11 @@ pub(crate) trait WorkspaceFixture: Sized {
 impl WorkspaceFixture for Workspace {
     fn test_new(name: &str) -> Self {
         let identity_cwd = PathBuf::from("/");
-        let moved = MovedPane {
+        let existing = ExistingPane {
             pane_id: PaneId::alloc(),
             pane: TabPane::new(PaneState::new(TerminalId::alloc())),
         };
-        Self::from_existing_pane(Some(name.to_string()), None, &identity_cwd, moved)
+        Self::from_existing_pane(Some(name.to_string()), None, &identity_cwd, existing)
     }
 
     fn test_split(&mut self, direction: Direction) -> PaneId {

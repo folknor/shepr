@@ -2,7 +2,7 @@ pub(crate) use crate::limits::HOOK_SEQUENCE_REANCHOR_AFTER;
 use crate::limits::{MAX_HOOK_REPORT_SOURCES, MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // Effective state arbitration is intentionally centralized here. Full lifecycle
 // Shepr hook integrations are hook-authoritative while live; screen recovery
@@ -78,12 +78,6 @@ enum FullLifecycleHookReportRoute {
 struct StaleFullLifecycleHookSession {
     agent_label: String,
     session_ref: shepr_agent::agent::resume::AgentSessionRef,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ResumeNameHold {
-    kind: Agent,
-    deadline: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,12 +172,6 @@ impl std::fmt::Display for RestoreFailure {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AgentNameOwner {
-    agent_label: String,
-    session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecentAgentProcessExit {
     agent: Agent,
@@ -205,9 +193,6 @@ pub struct TerminalState {
     pub persisted_agent_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
-    pub agent_name: Option<String>,
-    agent_name_owner: Option<AgentNameOwner>,
-    resume_name_hold: Option<ResumeNameHold>,
     hook_report_sequences: HashMap<String, u64>,
     /// When each source's entry in `hook_report_sequences` was last
     /// accepted; see [`HOOK_SEQUENCE_REANCHOR_AFTER`].

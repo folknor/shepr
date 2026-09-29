@@ -97,14 +97,12 @@ pub(super) fn resize_pane_infos(
         let Some(rt) = resizer.runtime(terminal_id) else {
             continue;
         };
-        if !app.direct_attach_resize_locks.contains(terminal_id) {
-            rt.resize(shepr_core::geometry::PaneGeometry::new(
-                info.inner_rect.width,
-                info.inner_rect.height,
-                cell_size.width_px,
-                cell_size.height_px,
-            ));
-        }
+        rt.resize(shepr_core::geometry::PaneGeometry::new(
+            info.inner_rect.width,
+            info.inner_rect.height,
+            cell_size.width_px,
+            cell_size.height_px,
+        ));
     }
 }
 

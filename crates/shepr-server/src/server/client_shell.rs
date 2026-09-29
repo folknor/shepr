@@ -167,7 +167,6 @@ pub(super) fn snapshot_from_session(
                 pane_id: agent.pane_id,
                 workspace_id: agent.workspace_id,
                 tab_id: agent.tab_id,
-                name: agent.name,
                 agent: agent.agent,
                 terminal_title: agent.terminal_title,
                 terminal_title_stripped: agent.terminal_title_stripped,

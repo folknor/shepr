@@ -23,7 +23,7 @@ pub use self::geometry::apply_pane_chrome;
 pub use self::tab::{NewPane, Tab, TabPane};
 pub use self::{
     geometry::{PaneChromeInfo, PaneGeometry, layout_rect, pane_inner_rect, terminal_content_rect},
-    tab::MovedPane,
+    tab::ExistingPane,
 };
 
 /// The channels a pane runtime reports through once it is spawned, plus the
@@ -176,10 +176,6 @@ impl FocusedTabs {
         self.items.get_mut(index)
     }
 
-    fn first(&self) -> Option<&Tab> {
-        self.items.first()
-    }
-
     fn focused_index(&self) -> usize {
         self.focused
     }
@@ -202,11 +198,6 @@ impl FocusedTabs {
         let index = self.items.len();
         self.items.push(tab);
         index
-    }
-
-    fn replace(&mut self, index: usize, tab: Tab) -> Option<Tab> {
-        let slot = self.items.get_mut(index)?;
-        Some(std::mem::replace(slot, tab))
     }
 
     fn remove(&mut self, index: usize) -> Option<Tab> {
@@ -427,10 +418,10 @@ impl Workspace {
         label: Option<String>,
         tab_label: Option<String>,
         identity_cwd: &Path,
-        moved: MovedPane,
+        existing: ExistingPane,
     ) -> Self {
-        let root_pane = moved.pane_id;
-        let tab = Tab::from_existing_pane(1, tab_label, moved);
+        let root_pane = existing.pane_id;
+        let tab = Tab::from_existing_pane(1, tab_label, existing);
         Self::with_first_tab(generate_workspace_id(), label, identity_cwd, tab, root_pane)
     }
 
@@ -916,122 +907,6 @@ impl Workspace {
         Some(())
     }
 
-    /// Takes `pane_id` out of its tab, closing the tab when it was the tab's
-    /// only pane. Refuses the workspace's only pane, since taking it would
-    /// leave the workspace without a live tab: move that pane with
-    /// `into_only_pane` (the workspace goes away) or `move_pane_to_new_tab`.
-    pub fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
-        if self.pane_count() <= 1 {
-            return None;
-        }
-        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        if self.tabs[tab_idx].panes.len() <= 1 {
-            // Another tab holds the remaining panes, so this one can close
-            // before its pane leaves it.
-            let mut tab = self.tabs.remove(tab_idx)?;
-            let moved = tab.take_pane_for_move(pane_id)?;
-            return Some(TakenPane {
-                moved,
-                removed_tab_idx: Some(tab_idx),
-            });
-        }
-
-        let moved = self.tabs.get_mut(tab_idx)?.take_pane_for_move(pane_id)?;
-        Some(TakenPane {
-            moved,
-            removed_tab_idx: None,
-        })
-    }
-
-    /// Consumes a workspace holding a single pane and returns that pane, for a
-    /// move that takes the workspace's last pane elsewhere. A workspace with
-    /// more panes comes back unchanged.
-    pub fn into_only_pane(mut self) -> Result<MovedPane, Box<Self>> {
-        if self.pane_count() != 1 || self.tabs.len() != 1 {
-            return Err(Box::new(self));
-        }
-        let Some(pane_id) = self
-            .tabs
-            .first()
-            .and_then(|tab| tab.panes.keys().next().copied())
-        else {
-            return Err(Box::new(self));
-        };
-        match self
-            .tabs
-            .get_mut(0)
-            .and_then(|tab| tab.take_pane_for_move(pane_id))
-        {
-            Some(moved) => Ok(moved),
-            None => Err(Box::new(self)),
-        }
-    }
-
-    /// Moves `pane_id` into a new tab of this workspace. The workspace's only
-    /// pane gets a new tab in place of its old one, so the workspace is never
-    /// seen without a live tab.
-    pub fn move_pane_to_new_tab(
-        &mut self,
-        pane_id: PaneId,
-        label: Option<String>,
-    ) -> Option<NewTabMove> {
-        if self.pane_count() > 1 {
-            let taken = self.take_pane_for_move(pane_id)?;
-            let tab_idx = self.create_tab_from_existing_pane(taken.moved, label);
-            return Some(NewTabMove {
-                removed_tab_idx: taken.removed_tab_idx,
-                tab_idx,
-            });
-        }
-        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        let moved = self.tabs.get_mut(tab_idx)?.take_pane_for_move(pane_id)?;
-        let number = self.next_public_tab_number;
-        self.next_public_tab_number += 1;
-        let _old_tab = self
-            .tabs
-            .replace(tab_idx, Tab::from_existing_pane(number, label, moved))?;
-        self.ensure_inserted_pane_number(pane_id);
-        Some(NewTabMove {
-            removed_tab_idx: Some(tab_idx),
-            tab_idx,
-        })
-    }
-
-    pub fn insert_moved_pane_into_tab(
-        &mut self,
-        tab_idx: usize,
-        target_pane_id: PaneId,
-        moved: MovedPane,
-        direction: Direction,
-        ratio: f32,
-        focus: bool,
-    ) -> Result<PaneId, MovedPane> {
-        let inserted = {
-            let Some(tab) = self.tabs.get_mut(tab_idx) else {
-                return Err(moved);
-            };
-            tab.insert_existing_pane(target_pane_id, moved, direction, ratio, focus)
-        };
-        let pane_id = inserted?;
-        self.ensure_inserted_pane_number(pane_id);
-        Ok(pane_id)
-    }
-
-    pub fn create_tab_from_existing_pane(
-        &mut self,
-        moved: MovedPane,
-        label: Option<String>,
-    ) -> usize {
-        let number = self.next_public_tab_number;
-        self.next_public_tab_number += 1;
-        let pane_id = moved.pane_id;
-        let tab_index = self
-            .tabs
-            .push(Tab::from_existing_pane(number, label, moved));
-        self.ensure_inserted_pane_number(pane_id);
-        tab_index
-    }
-
     pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
         self.tabs
             .iter()
@@ -1082,7 +957,7 @@ impl Workspace {
         terminal_runtimes: &PaneRuntimeRegistry,
     ) -> Option<PathBuf> {
         self.tabs
-            .first()
+            .get(0)
             .and_then(|tab| tab.cwd_for_pane(tab.root_pane, terminals, terminal_runtimes))
             .or_else(|| Some(self.identity_cwd.clone()))
     }
@@ -1228,43 +1103,6 @@ impl Workspace {
         pane.public_number = number;
         self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
     }
-
-    fn ensure_inserted_pane_number(&mut self, pane_id: PaneId) {
-        let Some(number) = self.public_pane_number(pane_id) else {
-            tracing::error!(?pane_id, "inserted pane is missing from its tab");
-            return;
-        };
-        let duplicate = self.tabs.iter().any(|tab| {
-            tab.panes
-                .iter()
-                .any(|(other_id, pane)| *other_id != pane_id && pane.public_number == number)
-        });
-        let number = if number == 0 || duplicate {
-            self.next_public_pane_number
-        } else {
-            number
-        };
-        if let Some(pane) = self
-            .tabs
-            .iter_mut()
-            .find_map(|tab| tab.panes.get_mut(&pane_id))
-        {
-            pane.public_number = number;
-        }
-        self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
-    }
-}
-
-pub struct TakenPane {
-    pub moved: MovedPane,
-    pub removed_tab_idx: Option<usize>,
-}
-
-/// Where `Workspace::move_pane_to_new_tab` put a pane.
-pub struct NewTabMove {
-    /// The index the pane's old tab had, when the move closed it.
-    pub removed_tab_idx: Option<usize>,
-    pub tab_idx: usize,
 }
 
 #[cfg(test)]
@@ -1697,24 +1535,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_moved_pane_insert_returns_pane_for_recovery() {
-        let source = Workspace::test_new("source");
-        let source_pane = source.tabs[0].root_pane;
-        let Ok(moved) = source.into_only_pane() else {
-            panic!("source pane should be movable");
-        };
-        let mut target = Workspace::test_new("target");
-        let missing_target = PaneId::alloc();
-
-        let recovered = target
-            .insert_moved_pane_into_tab(0, missing_target, moved, Direction::Horizontal, 0.5, true)
-            .expect_err("invalid target should return the moved pane");
-
-        assert_eq!(recovered.pane_id, source_pane);
-        assert!(!target.tabs[0].panes.contains_key(&source_pane));
-    }
-
-    #[test]
     fn linked_worktree_auto_label_uses_checkout_name_not_repo_name() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let (_, repo, checkout) =
@@ -1825,16 +1645,16 @@ mod tests {
     }
 
     #[test]
-    fn workspace_built_from_a_moved_pane_does_not_discover_git_identity() {
-        let source = Workspace::test_new("source");
-        let pane = source.tabs[0].root_pane;
-        let Ok(moved) = source.into_only_pane() else {
-            panic!("test precondition");
+    fn workspace_built_from_an_existing_pane_does_not_discover_git_identity() {
+        let pane = PaneId::alloc();
+        let existing = ExistingPane {
+            pane_id: pane,
+            pane: TabPane::new(PaneState::new(TerminalId::alloc())),
         };
         // A path that cannot exist: discovery would have to stat it.
         let cwd = PathBuf::from("/shepr-test-nonexistent/repo/sub");
 
-        let ws = Workspace::from_existing_pane(None, None, &cwd, moved);
+        let ws = Workspace::from_existing_pane(None, None, &cwd, existing);
 
         assert_eq!(ws.display_name(), "sub");
         assert!(ws.cached_identity_cwd.as_os_str().is_empty());
@@ -1929,89 +1749,5 @@ mod tests {
         let mut ws = workspace_with_tabs(2);
         assert!(!ws.move_tab(2, 0));
         assert!(!ws.move_tab(0, 3));
-    }
-
-    #[test]
-    fn a_workspace_only_pane_is_never_taken_in_place() {
-        let mut ws = Workspace::test_new("only");
-        let pane = ws.tabs[0].root_pane;
-
-        assert!(ws.take_pane_for_move(pane).is_none());
-        assert_eq!(ws.tabs[0].panes.len(), 1);
-        ws.assert_invariants_for_test();
-
-        let Ok(moved) = ws.into_only_pane() else {
-            panic!("a single-pane workspace yields its pane");
-        };
-        assert_eq!(moved.pane_id, pane);
-
-        let mut split = Workspace::test_new("split");
-        split.test_split(Direction::Vertical);
-        let Err(split) = split.into_only_pane() else {
-            panic!("a workspace with two panes is not consumed");
-        };
-        assert_eq!(split.pane_count(), 2);
-    }
-
-    #[test]
-    fn a_tab_only_pane_closes_its_tab_when_another_tab_remains() {
-        let mut ws = workspace_with_tabs(2);
-        ws.switch_tab(1);
-        let pane = ws.tabs[0].root_pane;
-        let survivor = ws.tabs[1].number;
-
-        let taken = ws.take_pane_for_move(pane).expect("pane is movable");
-
-        assert_eq!(taken.moved.pane_id, pane);
-        assert_eq!(taken.removed_tab_idx, Some(0));
-        assert_eq!(ws.tabs.len(), 1);
-        assert_eq!(ws.active_tab().number, survivor);
-        ws.assert_invariants_for_test();
-    }
-
-    #[test]
-    fn moving_the_only_pane_to_a_new_tab_replaces_its_tab() {
-        let mut ws = Workspace::test_new("only");
-        let pane = ws.tabs[0].root_pane;
-        let old_number = ws.tabs[0].number;
-
-        let placed = ws
-            .move_pane_to_new_tab(pane, Some("moved".into()))
-            .expect("pane is movable");
-
-        assert_eq!(placed.removed_tab_idx, Some(0));
-        assert_eq!(placed.tab_idx, 0);
-        assert_eq!(ws.tabs.len(), 1);
-        assert_ne!(ws.tabs[0].number, old_number);
-        assert_eq!(ws.tabs[0].custom_name.as_deref(), Some("moved"));
-        assert_eq!(ws.tabs[0].root_pane, pane);
-        assert!(ws.tabs[0].panes.contains_key(&pane));
-        assert_eq!(ws.active_tab_index(), 0);
-        ws.assert_invariants_for_test();
-    }
-
-    #[test]
-    fn moving_a_pane_to_a_new_tab_appends_the_tab() {
-        let mut ws = workspace_with_tabs(2);
-        let pane = ws.tabs[0].root_pane;
-        let kept = ws.tabs[1].number;
-
-        let placed = ws
-            .move_pane_to_new_tab(pane, None)
-            .expect("pane is movable");
-
-        assert_eq!(placed.removed_tab_idx, Some(0));
-        assert_eq!(placed.tab_idx, 1);
-        assert_eq!(ws.tabs.len(), 2);
-        assert_eq!(ws.tabs[0].number, kept);
-        assert_eq!(ws.tabs[1].root_pane, pane);
-
-        let split_pane = ws.test_split(Direction::Vertical);
-        let placed = ws
-            .move_pane_to_new_tab(split_pane, None)
-            .expect("pane is movable");
-        assert_eq!(placed.removed_tab_idx, None);
-        assert_eq!(placed.tab_idx, 2);
-        ws.assert_invariants_for_test();
     }
 }

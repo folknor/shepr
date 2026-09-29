@@ -63,7 +63,7 @@ pub fn restore_host_keyboard_protocol<W: Write>(
 /// entry recorded in `active`.
 pub fn set_host_kitty_keyboard_report_all<W: Write>(
     writer: &mut W,
-    active: &mut DirectHostKeyboardState,
+    active: &mut HostKeyboardState,
     report_all_keys: bool,
 ) -> io::Result<()> {
     let mut flags = ime_compatible_keyboard_enhancement_flags();
@@ -76,7 +76,7 @@ pub fn set_host_kitty_keyboard_report_all<W: Write>(
         );
     }
     let modify_other_keys_level = active.modify_other_keys_level;
-    set_direct_host_keyboard_protocol(
+    set_host_keyboard_protocol(
         writer,
         active,
         KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits())),
@@ -86,11 +86,11 @@ pub fn set_host_kitty_keyboard_report_all<W: Write>(
 
 pub fn set_host_modify_other_keys<W: Write>(
     writer: &mut W,
-    active: &mut DirectHostKeyboardState,
+    active: &mut HostKeyboardState,
     level: ModifyOtherKeysLevel,
 ) -> io::Result<()> {
     let flags = active.kitty_flags.unwrap_or(KittyKeyboardFlags::NONE);
-    set_direct_host_keyboard_protocol(writer, active, flags, level)
+    set_host_keyboard_protocol(writer, active, flags, level)
 }
 
 pub fn ime_compatible_keyboard_enhancement_flags() -> crossterm::event::KeyboardEnhancementFlags {
@@ -99,12 +99,12 @@ pub fn ime_compatible_keyboard_enhancement_flags() -> crossterm::event::Keyboard
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DirectHostKeyboardState {
+pub struct HostKeyboardState {
     kitty_flags: Option<KittyKeyboardFlags>,
     modify_other_keys_level: ModifyOtherKeysLevel,
 }
 
-impl DirectHostKeyboardState {
+impl HostKeyboardState {
     pub fn has_kitty_keyboard_entry(&self) -> bool {
         self.kitty_flags.is_some()
     }
@@ -114,9 +114,9 @@ impl DirectHostKeyboardState {
     }
 }
 
-pub fn set_direct_host_keyboard_protocol<W: Write>(
+pub fn set_host_keyboard_protocol<W: Write>(
     writer: &mut W,
-    active: &mut DirectHostKeyboardState,
+    active: &mut HostKeyboardState,
     next_flags: KittyKeyboardFlags,
     next_modify_other_keys_level: ModifyOtherKeysLevel,
 ) -> io::Result<()> {
@@ -143,7 +143,7 @@ pub fn set_direct_host_keyboard_protocol<W: Write>(
         }
     }
     writer.flush()?;
-    *active = DirectHostKeyboardState {
+    *active = HostKeyboardState {
         kitty_flags: next_kitty_flags,
         modify_other_keys_level: next_modify_other_keys_level,
     };
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn host_keyboard_report_all_replaces_the_current_shepr_stack_entry() {
         let mut output = Vec::new();
-        let mut active = DirectHostKeyboardState::default();
+        let mut active = HostKeyboardState::default();
 
         set_host_kitty_keyboard_report_all(&mut output, &mut active, true)
             .expect("test precondition");
@@ -178,25 +178,25 @@ mod tests {
     }
 
     #[test]
-    fn direct_keyboard_protocol_owns_exactly_one_stack_entry_and_modify_other_keys() {
+    fn keyboard_protocol_owns_exactly_one_stack_entry_and_modify_other_keys() {
         let mut output = Vec::new();
-        let mut active = DirectHostKeyboardState::default();
+        let mut active = HostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(
+        set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(3),
             ModifyOtherKeysLevel::from_parameter(0),
         )
         .expect("test precondition");
-        set_direct_host_keyboard_protocol(
+        set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(15),
             ModifyOtherKeysLevel::from_parameter(2),
         )
         .expect("test precondition");
-        set_direct_host_keyboard_protocol(
+        set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
@@ -208,29 +208,29 @@ mod tests {
             output,
             b"\x1b[>3u\x1b[<1u\x1b[>15u\x1b[>4;2m\x1b[<1u\x1b[>4;0m"
         );
-        assert_eq!(active, DirectHostKeyboardState::default());
+        assert_eq!(active, HostKeyboardState::default());
     }
 
     #[test]
-    fn direct_modify_other_keys_works_without_kitty_flags() {
+    fn modify_other_keys_works_without_kitty_flags() {
         let mut output = Vec::new();
-        let mut active = DirectHostKeyboardState::default();
+        let mut active = HostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(
+        set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
             ModifyOtherKeysLevel::from_parameter(1),
         )
         .expect("test precondition");
-        set_direct_host_keyboard_protocol(
+        set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
             ModifyOtherKeysLevel::from_parameter(2),
         )
         .expect("test precondition");
-        set_direct_host_keyboard_protocol(
+        set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
@@ -239,15 +239,15 @@ mod tests {
         .expect("test precondition");
 
         assert_eq!(output, b"\x1b[>4;1m\x1b[>4;2m\x1b[>4;0m");
-        assert_eq!(active, DirectHostKeyboardState::default());
+        assert_eq!(active, HostKeyboardState::default());
     }
 
     #[test]
-    fn direct_legacy_keyboard_mode_does_not_pop_the_host_stack() {
+    fn legacy_keyboard_mode_does_not_pop_the_host_stack() {
         let mut output = Vec::new();
-        let mut active = DirectHostKeyboardState::default();
+        let mut active = HostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(
+        set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
@@ -256,7 +256,7 @@ mod tests {
         .expect("test precondition");
 
         assert!(output.is_empty());
-        assert_eq!(active, DirectHostKeyboardState::default());
+        assert_eq!(active, HostKeyboardState::default());
     }
 
     #[test]

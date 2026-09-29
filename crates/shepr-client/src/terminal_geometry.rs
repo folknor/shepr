@@ -68,9 +68,8 @@ fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
 
 type TerminalGeometry = shepr_core::geometry::HostGeometry;
 
-/// Host grid size as reported by the client. A client-owned shell must keep
-/// its full grid within one surface frame; a direct terminal client reports
-/// the host grid unchanged.
+/// Host grid size as reported by the client. The client-owned shell must keep
+/// its full grid within one surface frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ClientHostSize {
     pub(super) cols: u16,
@@ -78,9 +77,8 @@ pub(super) struct ClientHostSize {
 }
 
 impl ClientHostSize {
-    pub(super) fn new(cols: u16, rows: u16, client_shell: bool) -> Self {
-        let size = shepr_protocol::ClientSurfaceSize { cols, rows };
-        let size = if client_shell { size.clamped() } else { size };
+    pub(super) fn new(cols: u16, rows: u16) -> Self {
+        let size = shepr_protocol::ClientSurfaceSize { cols, rows }.clamped();
         Self {
             cols: size.cols,
             rows: size.rows,
@@ -102,7 +100,6 @@ pub(super) fn bounded_cell_geometry(
 }
 
 pub(super) fn current_terminal_geometry_with(
-    pixel_geometry_fallback: bool,
     reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<(u32, u32)>,
     exact_geometry: Option<(u16, u16, u32, u32)>,
@@ -118,9 +115,6 @@ pub(super) fn current_terminal_geometry_with(
         ));
     }
     let (cols, rows) = terminal_grid_size()?;
-    if !pixel_geometry_fallback {
-        return Ok(TerminalGeometry::new(cols, rows, 0, 0, false));
-    }
     let (cell_width_px, cell_height_px) = reported_cell_size
         .load()
         .or(last_cell_size
@@ -136,12 +130,10 @@ pub(super) fn current_terminal_geometry_with(
 }
 
 fn current_terminal_geometry(
-    pixel_geometry_fallback: bool,
     reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<(u32, u32)>,
 ) -> io::Result<TerminalGeometry> {
     current_terminal_geometry_with(
-        pixel_geometry_fallback,
         reported_cell_size,
         last_cell_size,
         ioctl_terminal_geometry(),
@@ -149,12 +141,10 @@ fn current_terminal_geometry(
     )
 }
 
-/// Reads terminal geometry before the handshake. Pixel input and direct graphics
-/// are eligible only when one ioctl supplied a coherent exact geometry snapshot.
-pub(super) fn initial_terminal_geometry(
-    pixel_geometry_fallback: bool,
-) -> io::Result<TerminalGeometry> {
-    current_terminal_geometry(pixel_geometry_fallback, &AtomicCellSize::new(), None)
+/// Reads terminal geometry before the handshake. Pixel input is eligible only
+/// when one ioctl supplied a coherent exact geometry snapshot.
+pub(super) fn initial_terminal_geometry() -> io::Result<TerminalGeometry> {
+    current_terminal_geometry(&AtomicCellSize::new(), None)
 }
 
 pub(super) fn resize_report_required(
@@ -173,7 +163,6 @@ pub(super) fn resize_report_required(
 pub(super) fn resize_poll_loop(
     resize_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     initial: TerminalGeometry,
-    pixel_geometry_fallback: bool,
     reported_cell_size: &AtomicCellSize,
     should_quit: &Arc<AtomicBool>,
 ) {
@@ -183,7 +172,6 @@ pub(super) fn resize_poll_loop(
         std::thread::sleep(TERMINAL_RESIZE_POLL_INTERVAL);
         let signalled = shepr_platform::take_terminal_resize_signal();
         let new_size = match current_terminal_geometry(
-            pixel_geometry_fallback,
             reported_cell_size,
             Some((last_size.cell_width(), last_size.cell_height())),
         ) {

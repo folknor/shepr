@@ -48,8 +48,6 @@ pub enum Subscription {
     PaneUpdated {},
     #[serde(rename = "pane.focused")]
     PaneFocused {},
-    #[serde(rename = "pane.moved")]
-    PaneMoved {},
     #[serde(rename = "pane.exited")]
     PaneExited {},
     #[serde(rename = "pane.agent_detected")]
@@ -113,7 +111,6 @@ pub enum EventKind {
     PaneClosed,
     PaneUpdated,
     PaneFocused,
-    PaneMoved,
     PaneExited,
     PaneAgentDetected,
     PaneAgentStatusChanged,
@@ -227,20 +224,6 @@ pub enum EventData {
         pane_id: PublicPaneId,
         workspace_id: WorkspaceId,
     },
-    PaneMoved {
-        previous_pane_id: PublicPaneId,
-        previous_workspace_id: WorkspaceId,
-        previous_tab_id: PublicTabId,
-        pane: Box<PaneInfo>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        created_workspace: Option<WorkspaceInfo>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        created_tab: Option<TabInfo>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        closed_workspace_id: Option<WorkspaceId>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        closed_tab_id: Option<PublicTabId>,
-    },
     PaneExited {
         pane_id: PublicPaneId,
         workspace_id: WorkspaceId,
@@ -285,7 +268,6 @@ impl EventData {
             Self::PaneClosed { .. } => EventKind::PaneClosed,
             Self::PaneUpdated { .. } => EventKind::PaneUpdated,
             Self::PaneFocused { .. } => EventKind::PaneFocused,
-            Self::PaneMoved { .. } => EventKind::PaneMoved,
             Self::PaneExited { .. } => EventKind::PaneExited,
             Self::PaneAgentDetected { .. } => EventKind::PaneAgentDetected,
             Self::PaneAgentStatusChanged { .. } => EventKind::PaneAgentStatusChanged,

@@ -293,19 +293,6 @@ pub(super) fn terminal_visible_text(core: &mut PaneTerminalCore) -> String {
     lines_to_text(&lines)
 }
 
-pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, shepr_vt::Error> {
-    let rows = core.terminal.rows();
-    let cols = core.terminal.cols();
-    if rows == 0 || cols == 0 {
-        return Ok(String::new());
-    }
-    core.terminal.read_ansi_viewport(
-        Point::new(ViewportRow(0), 0),
-        Point::new(ViewportRow(rows.saturating_sub(1)), cols.saturating_sub(1)),
-        false,
-    )
-}
-
 /// The detector's snapshot: the active screen's rows up to the last content
 /// (or cursor) row, never anything above the screen. After ED2, Ctrl-L or an
 /// agent redrawing from the top, alacritty has pushed the previous frame into
@@ -321,34 +308,6 @@ pub(super) fn terminal_detection_text(
     };
     let screen_start = terminal.total_rows().saturating_sub(screen_rows);
     terminal_text_rows(terminal, start.max(screen_start), end, screen_rows)
-}
-
-pub(super) fn terminal_recent_text_snapshot(
-    core: &mut PaneTerminalCore,
-    lines: usize,
-) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
-    let terminal = &core.terminal;
-    let Some((start, end, _)) = terminal_recent_read_range(terminal, lines)? else {
-        return Ok(TerminalReadSnapshot::default());
-    };
-    let text = terminal_text_rows(terminal, start, end, lines)?;
-    Ok(finish_recent_snapshot(text, start))
-}
-
-pub(super) fn terminal_recent_text_unwrapped_snapshot(
-    core: &mut PaneTerminalCore,
-    lines: usize,
-) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
-    let terminal = &core.terminal;
-    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
-        return Ok(TerminalReadSnapshot::default());
-    };
-    let text = terminal.read_text_screen(
-        Point::new(ScreenRow(start), 0),
-        Point::new(ScreenRow(end), cols.saturating_sub(1)),
-        false,
-    )?;
-    Ok(finish_recent_snapshot(text, start))
 }
 
 pub(super) fn terminal_recent_ansi_snapshot(
@@ -804,6 +763,50 @@ pub(super) fn should_probe_host_terminal_theme_restore(core: &PaneTerminalCore) 
     }
 
     core.terminal.active_screen() != shepr_vt::ActiveScreen::Alternate
+}
+
+#[cfg(test)]
+pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, shepr_vt::Error> {
+    let rows = core.terminal.rows();
+    let cols = core.terminal.cols();
+    if rows == 0 || cols == 0 {
+        return Ok(String::new());
+    }
+    core.terminal.read_ansi_viewport(
+        Point::new(ViewportRow(0), 0),
+        Point::new(ViewportRow(rows.saturating_sub(1)), cols.saturating_sub(1)),
+        false,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn terminal_recent_text_snapshot(
+    core: &mut PaneTerminalCore,
+    lines: usize,
+) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
+    let terminal = &core.terminal;
+    let Some((start, end, _)) = terminal_recent_read_range(terminal, lines)? else {
+        return Ok(TerminalReadSnapshot::default());
+    };
+    let text = terminal_text_rows(terminal, start, end, lines)?;
+    Ok(finish_recent_snapshot(text, start))
+}
+
+#[cfg(test)]
+pub(super) fn terminal_recent_text_unwrapped_snapshot(
+    core: &mut PaneTerminalCore,
+    lines: usize,
+) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
+    let terminal = &core.terminal;
+    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
+        return Ok(TerminalReadSnapshot::default());
+    };
+    let text = terminal.read_text_screen(
+        Point::new(ScreenRow(start), 0),
+        Point::new(ScreenRow(end), cols.saturating_sub(1)),
+        false,
+    )?;
+    Ok(finish_recent_snapshot(text, start))
 }
 
 #[cfg(test)]

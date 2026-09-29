@@ -402,7 +402,7 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
         })
     );
     let _ = client_shell_snapshot(&control_rx);
-    server.api_window_title = Some("target title".into());
+    server.app.configure_window_title("target title");
     {
         let client = server
             .clients
@@ -433,7 +433,7 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
         .recv()
         .expect("typed surface reassertion acknowledgement");
     server.stream_host_mouse_capture_mode();
-    server.stream_direct_terminal_keyboard_mode();
+    server.stream_shell_keyboard_mode();
     server.sync_window_title();
     assert_eq!(
         server.clients[&client_id].host_mouse_capture_active,

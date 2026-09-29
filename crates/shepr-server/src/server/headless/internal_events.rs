@@ -49,13 +49,6 @@ impl HeadlessServer {
                 let focus_before = self.shell_focus_targets();
                 let focused_tabs_before = self.focused_shell_tabs();
                 let pane_id_val = *pane_id;
-                let terminal_id = self.app.state.workspaces.iter().find_map(|ws| {
-                    ws.tabs().iter().find_map(|tab| {
-                        tab.panes()
-                            .get(pane_id)
-                            .map(|pane| pane.attached_terminal_id.clone())
-                    })
-                });
                 if let Some(update) = self
                     .app
                     .state
@@ -85,15 +78,6 @@ impl HeadlessServer {
                 self.reconcile_client_shell_locations();
                 self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
                 self.reapply_controlled_shell_tab_geometry(false);
-
-                if self.app.find_pane(pane_id_val).is_none()
-                    && let Some(terminal_id) = terminal_id
-                {
-                    self.shutdown_terminal_stream_clients(
-                        &terminal_id,
-                        &format!("terminal {terminal_id} exited"),
-                    );
-                }
 
                 true
             }

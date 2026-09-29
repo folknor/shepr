@@ -3,9 +3,11 @@
 //! The client:
 //! - Connects to `shepr-client.sock`, checks the build preamble, then sends terminal geometry
 //! - Sets up the real terminal (raw mode, mouse capture, keyboard enhancements)
-//! - Receives Frame messages and blits them to the terminal (diff against last frame)
-//! - Reads stdin events (keystrokes, mouse, paste) and sends them as ClientMessage::Input
-//! - Detects terminal resize and sends ClientMessage::Resize
+//! - Receives surface messages, composes them with the client shell chrome and blits the
+//!   result to the terminal (diff against last frame)
+//! - Reads stdin events (keystrokes, mouse, paste), routes them through the client shell and
+//!   sends pane input as ClientMessage::ClientShellPaneInput
+//! - Detects terminal resize and sends ClientMessage::ClientShellResize
 //! - Restores terminal on exit (normal or error)
 //! - Handles ServerShutdown gracefully (clean exit, informative message returned for the
 //!   binary to print once the terminal is restored)
@@ -15,7 +17,6 @@
 //! The binary launcher installs process-wide file logging before calling the
 //! client; client startup reuses that subscriber instead of installing one.
 
-mod attach;
 mod clipboard_forwarding;
 pub mod endpoint;
 mod errors;
@@ -41,11 +42,11 @@ use clipboard_forwarding::forward_clipboard;
 use events::{ClientLoopEvent, ParsedHostInput};
 use loop_config::{ClientLoopConfig, ClientSettings};
 use shell_runtime::*;
-use state::{AttachSession, ClientState, HostWriteFailure, SessionMode, ShellSession};
+use state::{ClientState, HostWriteFailure};
 use transport::*;
 
 pub use shell::{ClientShellConfig, ClientShellState};
-pub use startup::{run_client, run_terminal_attach};
+pub use startup::run_client;
 
 use terminal_geometry::query_host_terminal_appearance;
 use terminal_geometry::{AtomicCellSize, reported_cell_size_from_events, store_reported_cell_size};
@@ -53,20 +54,12 @@ use terminal_geometry::{
     host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
     query_host_terminal_theme, resize_poll_loop,
 };
-use terminal_setup::{
-    HostMouseMode, TerminalGuard, setup_direct_attach_terminal, setup_terminal,
-    should_draw_host_cursor,
-};
+use terminal_setup::{HostMouseMode, TerminalGuard, setup_terminal, should_draw_host_cursor};
 
-use attach::AttachEscapeState;
-use attach::direct_attach_pixel_mouse;
-use attach::{AttachInputAction, attach_semantic_message};
-use errors::ClientErrorContext;
 pub use errors::{ClientError, ClientExit, ClientRunError};
 use handshake::do_handshake;
 use limits::{CLIENT_EVENT_QUEUE_CAPACITY, ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY};
 
-use std::collections::VecDeque;
 use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,31 +72,6 @@ use shepr_platform::ipc::LocalStream;
 use shepr_protocol::{ClientMessage, ServerMessage};
 use shepr_termio::blit as render_ansi;
 
-fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
-    if notices.len() == limits::MAX_NOTICES {
-        let _ = notices.pop_front();
-    }
-    notices.push_back(message);
-}
-
-enum ClientLaunchMode {
-    Shell,
-    Attach {
-        terminal_id: shepr_protocol::TerminalId,
-        takeover: bool,
-        escape: AttachEscapeState,
-    },
-}
-
-fn run_client_with_mode(
-    config: &shepr_config::ValidatedConfig,
-    paths: &shepr_config::AppPaths,
-    mode: ClientLaunchMode,
-    log_message: &'static str,
-) -> Result<ClientExit, ClientRunError> {
-    run_client_with_launch_state(config, paths, mode, log_message, None)
-}
-
 /// Runs the local shell client with startup settings already loaded by the
 /// launch coordinator. The binary launcher installs the process-wide file
 /// logger before calling this function.
@@ -112,66 +80,33 @@ pub fn run_client_with_launch_config(
     paths: &shepr_config::AppPaths,
     endpoint_catalog: endpoint::EndpointCatalog,
 ) -> Result<ClientExit, ClientRunError> {
-    run_client_with_launch_state(
-        config,
-        paths,
-        ClientLaunchMode::Shell,
-        "connecting to server",
-        Some(endpoint_catalog),
-    )
+    run_client_with_launch_state(config, paths, Some(endpoint_catalog))
 }
 
 fn run_client_with_launch_state(
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
-    mode: ClientLaunchMode,
-    log_message: &'static str,
     initial_catalog: Option<endpoint::EndpointCatalog>,
 ) -> Result<ClientExit, ClientRunError> {
-    let settings = ClientSettings::resolve(config, &mode).map_err(io::Error::from)?;
-    let (attach_request, attach_escape) = match mode {
-        ClientLaunchMode::Shell => (None, None),
-        ClientLaunchMode::Attach {
-            terminal_id,
-            takeover,
-            escape,
-        } => (Some((terminal_id, takeover)), Some(escape)),
-    };
-    let client_rendered_shell = attach_request.is_none();
+    let settings = ClientSettings::resolve(config).map_err(io::Error::from)?;
     let socket_path = paths.server_address().client_socket().to_path_buf();
-    let error_context =
-        ClientErrorContext::new(paths.server_address().attach_command(paths.session_id()));
-    let shell_config = if client_rendered_shell {
-        Some(
-            shell::ClientShellConfig::from_validated_config(config)
-                .with_local_endpoint(paths.state_dir(), &socket_path)?,
-        )
-    } else {
-        None
-    };
+    let shell_config = shell::ClientShellConfig::from_validated_config(config)
+        .with_local_endpoint(paths.state_dir(), &socket_path)?;
     let mouse_capture = settings.mouse_capture_active();
-    let pixel_geometry_fallback = settings.pixel_geometry_fallback();
     let mut loop_config = ClientLoopConfig {
         settings,
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
         paths: paths.clone(),
         local_socket_path: socket_path.clone(),
-        shell_config,
     };
 
     crate::logging::startup("client");
-    info!(path = %socket_path.display(), "{log_message}");
+    info!(path = %socket_path.display(), "connecting to server");
 
-    let endpoint_catalog = if client_rendered_shell {
-        match initial_catalog {
-            Some(catalog) => catalog,
-            None => {
-                endpoint::EndpointCatalog::load(paths).map_err(ClientRunError::LaunchCatalog)?
-            }
-        }
-    } else {
-        endpoint::EndpointCatalog::default()
+    let endpoint_catalog = match initial_catalog {
+        Some(catalog) => catalog,
+        None => endpoint::EndpointCatalog::load(paths).map_err(ClientRunError::LaunchCatalog)?,
     };
     let local_failure_policy = endpoint::LocalFailurePolicy::for_catalog(&endpoint_catalog);
 
@@ -189,13 +124,11 @@ fn run_client_with_launch_state(
     };
 
     // Get the terminal geometry before handshake (before raw mode).
-    let geometry = initial_terminal_geometry(pixel_geometry_fallback)?;
+    let geometry = initial_terminal_geometry()?;
     let (cols, rows) = (geometry.cols(), geometry.rows());
 
-    let shell_surface_size = loop_config.shell_config.as_ref().map(|shell| {
-        let host_size = terminal_geometry::ClientHostSize::new(cols, rows, true);
-        shell.initial_surface_size(host_size.cols, host_size.rows)
-    });
+    let host_size = terminal_geometry::ClientHostSize::new(cols, rows);
+    let shell_surface_size = shell_config.initial_surface_size(host_size.cols, host_size.rows);
     // Healthy Local attaches directly; only an actual failure enters background recovery.
     let initial = initial_stream
         .map(|mut stream| {
@@ -213,15 +146,6 @@ fn run_client_with_launch_state(
                     paths.session_id().display_name()
                 ))
             })?;
-            if let Some((terminal_id, takeover)) = attach_request {
-                write_to_server(
-                    &mut stream,
-                    &ClientMessage::AttachTerminal {
-                        terminal_id,
-                        takeover,
-                    },
-                )?;
-            }
             Ok(stream)
         })
         .transpose();
@@ -235,13 +159,10 @@ fn run_client_with_launch_state(
     };
 
     // A shell with saved machines can show connection notices without a server snapshot.
-    let direct_attach = attach_escape.is_some();
-    let (mut terminal_guard, output_writer) = if direct_attach {
-        setup_direct_attach_terminal(mouse_capture)
-    } else {
-        setup_terminal(mouse_capture, loop_config.settings.modify_other_keys_mode())
-    }
-    .map_err(|err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")))?;
+    let (mut terminal_guard, output_writer) =
+        setup_terminal(mouse_capture, loop_config.settings.modify_other_keys_mode()).map_err(
+            |err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")),
+        )?;
     loop_config.host_escape_disambiguation_active =
         terminal_guard.host_escape_disambiguation_active();
     loop_config.initial_host_input = terminal_guard.take_buffered_host_input();
@@ -271,7 +192,6 @@ fn run_client_with_launch_state(
         warn!(error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
     }
 
-    let mut direct_notices = VecDeque::new();
     let result = rt.block_on(async {
         run_client_loop(
             initial,
@@ -280,8 +200,7 @@ fn run_client_with_launch_state(
             geometry,
             should_quit,
             loop_config,
-            attach_escape,
-            &mut direct_notices,
+            shell_config,
             output_writer,
             &terminal_guard,
         )
@@ -294,21 +213,13 @@ fn run_client_with_launch_state(
     shepr_remote::release_ssh_resources_before_exit(limits::SSH_RESOURCE_RELEASE_TIMEOUT);
     crate::logging::shutdown("client");
 
-    // A later successful detach does not erase notices collected while forwarding earlier input.
-    let notices = Vec::from(direct_notices);
     let Err(err) = result else {
-        return Ok(ClientExit::new(notices, None));
+        return Ok(ClientExit::new(None));
     };
-    let detached = matches!(
-        &err,
-        ClientError::ServerShutdown {
-            reason: Some(reason)
-        } if *reason == shepr_protocol::ShutdownReason::Detached
-    );
     let connection_lost_during_terminal_hangup =
         terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
-    let exit = ClientExit::new(notices, Some(err.display_with_context(&error_context)));
-    if detached || connection_lost_during_terminal_hangup {
+    let exit = ClientExit::new(Some(err.to_string()));
+    if connection_lost_during_terminal_hangup {
         Ok(exit)
     } else {
         Err(ClientRunError::Session(exit))
@@ -318,7 +229,7 @@ fn run_client_with_launch_state(
 /// The main client event loop.
 ///
 /// Uses a threaded architecture:
-/// - stdin reader thread → sends parsed input events with raw bytes retained for attach
+/// - stdin reader thread → sends parsed input events
 /// - resize poller thread → sends resize events to main loop
 /// - server reader thread → reads ServerMessages and sends to main loop
 /// - main loop: coordinates input, output, and server communication
@@ -329,8 +240,7 @@ async fn run_client_loop(
     initial_geometry: shepr_core::geometry::HostGeometry,
     should_quit: Arc<AtomicBool>,
     mut config: ClientLoopConfig,
-    attach_escape: Option<AttachEscapeState>,
-    direct_notices: &mut VecDeque<String>,
+    shell_config: shell::ClientShellConfig,
     output_writer: terminal_setup::HostTerminalWriter,
     terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
@@ -340,8 +250,7 @@ async fn run_client_loop(
         initial_geometry.cell_height(),
         initial_geometry.exact,
     );
-    let draw_host_cursor =
-        attach_escape.is_none() && should_draw_host_cursor(config.settings.host_cursor());
+    let draw_host_cursor = should_draw_host_cursor(config.settings.host_cursor());
     let local_unavailable = initial.is_none();
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
         terminal_geometry::bounded_cell_geometry(
@@ -352,7 +261,6 @@ async fn run_client_loop(
 
     let host_modes = terminal_guard.host_modes();
     host_modes.configure_mouse_mode(HostMouseMode::new(
-        attach_escape.is_some() && config.settings.mouse_capture_active(),
         config.settings.mouse_capture_active(),
         config.settings.mouse_capture_active(),
     ));
@@ -371,16 +279,7 @@ async fn run_client_loop(
             initial_pixel_geometry_exact,
         ),
         settings: config.settings,
-        mode: match config
-            .shell_config
-            .take()
-            .map(|config| shell::ClientShellState::new_at(config, launch_now))
-        {
-            Some(shell) => SessionMode::Shell(Box::new(shell)),
-            None => SessionMode::DirectAttach(AttachSession {
-                escape: attach_escape,
-            }),
-        },
+        shell: Box::new(shell::ClientShellState::new_at(shell_config, launch_now)),
         repaint_pending: false,
         presentation_frozen: false,
         deferred_local_activation: None,
@@ -389,21 +288,17 @@ async fn run_client_loop(
         title_write_failure: HostWriteFailure::default(),
     };
     state.set_host_size(cols, rows);
-    // Only a client that loaded the saved machines follows them; attach
-    // processes run with an empty catalog.
-    let catalog_watch = state
-        .mode
-        .is_shell()
-        .then(|| endpoint::EndpointCatalogWatch::new(&config.paths, launch_now));
+    let catalog_watch = Some(endpoint::EndpointCatalogWatch::new(
+        &config.paths,
+        launch_now,
+    ));
     let freeze_recovery_attempted = None;
-    if let Some(shell) = state.mode.shell_mut() {
-        shell.set_endpoint_catalog(&endpoint_catalog.ssh);
-        if local_unavailable {
-            shell.set_endpoint_status(
-                &endpoint::ClientEndpointId::Local,
-                endpoint::ClientEndpointStatus::Connecting,
-            );
-        }
+    state.shell.set_endpoint_catalog(&endpoint_catalog.ssh);
+    if local_unavailable {
+        state.shell.set_endpoint_status(
+            &endpoint::ClientEndpointId::Local,
+            endpoint::ClientEndpointStatus::Connecting,
+        );
     }
     // Cell size reported by the host terminal, packed as width<<32 | height.
     // Zero means the host has not reported one.
@@ -422,18 +317,12 @@ async fn run_client_loop(
     let endpoint_commands = endpoint::commands::EndpointCommands::default();
 
     // Arm reply tracking only after the corresponding query was written successfully.
-    let should_query_host_terminal_theme = !state.mode.is_escape_attach();
-    let host_color_query_sent =
-        should_query_host_terminal_theme && query_host_terminal_theme(&mut state.output_writer);
-    if should_query_host_terminal_theme && state.mode.is_shell() {
-        query_host_terminal_appearance(&mut state.output_writer);
-    }
+    let host_color_query_sent = query_host_terminal_theme(&mut state.output_writer);
+    query_host_terminal_appearance(&mut state.output_writer);
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
-    let should_query_host_cell_size =
-        !state.mode.is_escape_attach() && host_cell_size_query_required();
     let will_query_host_cell_size =
-        should_query_host_cell_size && query_host_cell_size(&mut state.output_writer);
+        host_cell_size_query_required() && query_host_cell_size(&mut state.output_writer);
 
     // Spawn the stdin reader after query writes so a failed write does not make
     // its parser wait for a host reply that cannot arrive.
@@ -457,7 +346,6 @@ async fn run_client_loop(
     let resize_quit = Arc::clone(&should_quit);
     let resize_tx = event_tx.clone();
     let resize_cell_size = Arc::clone(&reported_cell_size);
-    let pixel_geometry_fallback = state.settings.pixel_geometry_fallback();
     std::thread::spawn(move || {
         resize_poll_loop(
             &resize_tx,
@@ -468,7 +356,6 @@ async fn run_client_loop(
                 initial_cell_height_px,
                 initial_pixel_geometry_exact,
             ),
-            pixel_geometry_fallback,
             &resize_cell_size,
             &resize_quit,
         );
@@ -485,9 +372,7 @@ async fn run_client_loop(
             surface_decoder,
         )?;
         let mut registry = endpoint::EndpointRegistry::new_at(transport, 1, launch_now);
-        if state.mode.is_shell() {
-            registry.send(&ClientMessage::ClientShellFocus { focused: true });
-        }
+        registry.send(&ClientMessage::ClientShellFocus { focused: true });
         registry
     } else {
         endpoint::EndpointRegistry::empty()
@@ -511,12 +396,10 @@ async fn run_client_loop(
         );
     }
     if local_unavailable
-        && let Some(frame) = state.mode.shell_mut().and_then(|shell| {
-            shell.compose(
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-            )
-        })
+        && let Some(frame) = state.shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        )
     {
         state.present_frame(frame);
     }
@@ -532,7 +415,6 @@ async fn run_client_loop(
         local_failure_policy,
         should_quit,
         config,
-        direct_notices,
         write_stream,
         supervisors,
         endpoint_commands,
@@ -579,13 +461,12 @@ fn spawn_workspace_label_lookup(
     });
 }
 
-struct ClientLoop<'a> {
+struct ClientLoop {
     state: ClientState,
     endpoint_catalog: endpoint::EndpointCatalog,
     local_failure_policy: endpoint::LocalFailurePolicy,
     should_quit: Arc<AtomicBool>,
     config: ClientLoopConfig,
-    direct_notices: &'a mut VecDeque<String>,
     write_stream: endpoint::EndpointRegistry,
     supervisors: endpoint::EndpointSupervisors,
     endpoint_commands: endpoint::commands::EndpointCommands,
@@ -604,7 +485,7 @@ struct ClientLoop<'a> {
     will_query_host_cell_size: bool,
 }
 
-impl ClientLoop<'_> {
+impl ClientLoop {
     async fn run(&mut self) -> Result<(), ClientError> {
         while !self.should_quit.load(Ordering::Acquire) {
             // client-clock-sample-ok: the pre-wait sample for supervisors and timers.
@@ -631,38 +512,30 @@ impl ClientLoop<'_> {
                     &mut self.freeze_recovery_attempted,
                 );
             }
-            if let Some(shell) = self.state.mode.shell() {
-                let cell = shepr_protocol::ProtocolCellSize::from_host(
-                    self.state.reported_geometry.cell_width(),
-                    self.state.reported_geometry.cell_height(),
-                    self.state.reported_geometry.exact,
-                );
-                self.supervisors.spawn_due(
-                    loop_now,
-                    endpoint::EndpointConnectOptions {
-                        geometry: shepr_core::geometry::HostGeometry::new(
-                            self.state.reported_geometry.cols(),
-                            self.state.reported_geometry.rows(),
-                            cell.width(),
-                            cell.height(),
-                            cell.exact,
-                        ),
-                        surface_size: shell.surface_size(
-                            self.state.reported_geometry.cols(),
-                            self.state.reported_geometry.rows(),
-                        ),
-                        mouse_capture: self.state.host_modes.mouse_shell_preference(),
-                    },
-                    &self.supervisor_tx,
-                );
-            }
-            let timer_delay = self
-                .state
-                .mode
-                .shell()
-                .map_or(limits::MAX_CLIENT_TIMER_DELAY, |shell| {
-                    shell.timer_delay(loop_now)
-                });
+            let cell = shepr_protocol::ProtocolCellSize::from_host(
+                self.state.reported_geometry.cell_width(),
+                self.state.reported_geometry.cell_height(),
+                self.state.reported_geometry.exact,
+            );
+            self.supervisors.spawn_due(
+                loop_now,
+                endpoint::EndpointConnectOptions {
+                    geometry: shepr_core::geometry::HostGeometry::new(
+                        self.state.reported_geometry.cols(),
+                        self.state.reported_geometry.rows(),
+                        cell.width(),
+                        cell.height(),
+                        cell.exact,
+                    ),
+                    surface_size: self.state.shell.surface_size(
+                        self.state.reported_geometry.cols(),
+                        self.state.reported_geometry.rows(),
+                    ),
+                    mouse_capture: self.state.host_modes.mouse_shell_preference(),
+                },
+                &self.supervisor_tx,
+            );
+            let timer_delay = self.state.shell.timer_delay(loop_now);
             let timer_deadline = self.client_timer.deadline(loop_now, timer_delay);
             let event = if let Some(event) = self.scheduled_activation.take() {
                 event
@@ -695,9 +568,7 @@ impl ClientLoop<'_> {
         event: ClientLoopEvent,
         now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
-        if let Some(shell) = self.state.mode.shell_mut() {
-            shell.now = now;
-        }
+        self.state.shell.now = now;
         match event {
             ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs, now),
             ClientLoopEvent::TerminalUnavailable(err) => self.handle_terminal_unavailable(&err),
@@ -741,12 +612,11 @@ impl ClientLoop<'_> {
     ) -> Result<ClientLoopAction, ClientError> {
         let cols = self.state.reported_geometry.cols();
         let rows = self.state.reported_geometry.rows();
-        let frame = self.state.mode.shell_mut().and_then(|shell| {
-            shell
-                .apply_workspace_label_lookup(id, label)
-                .then(|| shell.compose(cols, rows))
-                .flatten()
-        });
+        let shell = &mut self.state.shell;
+        let frame = shell
+            .apply_workspace_label_lookup(id, label)
+            .then(|| shell.compose(cols, rows))
+            .flatten();
         if let Some(frame) = frame {
             self.state
                 .present_chrome(frame, self.pending_activation.is_some());
@@ -766,187 +636,52 @@ impl ClientLoop<'_> {
             endpoint_commands,
             scheduled_activation,
             event_tx,
-            direct_notices,
             reported_cell_size,
             will_query_host_cell_size,
             ..
         } = self;
-        let shell_mode = state.mode.is_shell();
-        if shell_mode {
-            let raw_events = inputs.iter().map(|input| &input.event);
-            if *will_query_host_cell_size
-                && let Some((width_px, height_px)) = reported_cell_size_from_events(raw_events)
-            {
-                store_reported_cell_size(reported_cell_size, width_px, height_px);
-            }
-            if shepr_termio::input::raw_input::events_require_host_mode_refresh(
-                inputs.iter().map(|input| &input.event),
-            ) && let Err(err) = state.host_modes.apply_mouse(
-                &mut state.output_writer,
-                shell_mode,
-                state.reported_geometry.exact,
-                true,
-            ) {
-                warn!(error = %err, "failed to re-assert host mouse capture");
-            }
-            let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
-            let Some(shell) = state.mode.shell_mut() else {
-                return Ok(ClientLoopAction::NextEvent);
-            };
-            let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
-            let label_lookup = shell.take_workspace_label_lookup();
-            let frame = outcome
-                .repaint
-                .then(|| {
-                    shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    )
-                })
-                .flatten();
-            if finish_client_shell_input(
-                state,
-                outcome,
-                frame,
-                write_stream,
-                pending_activation,
-                endpoint_commands,
-                scheduled_activation,
-                now,
-            )? {
-                return Ok(ClientLoopAction::Exit);
-            }
-            if let Some(request) = label_lookup {
-                spawn_workspace_label_lookup(request, event_tx.clone());
-            }
-            return Ok(ClientLoopAction::NextEvent);
-        }
-        if let Some(attach_escape) = state.mode.attach_escape_mut() {
-            // Palette replies are deliberately grouped by the reader. They cannot
-            // contain attach keys or mouse events, so retain that transport batch.
-            if inputs.len() > 1 {
-                let mut data = attach_escape.take_pending_prefix().unwrap_or_default();
-                data.extend(inputs.into_iter().flat_map(|input| input.raw));
-                if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
-                    remember_direct_notice(direct_notices, notice);
-                }
-                return Ok(ClientLoopAction::NextEvent);
-            }
-            let Some(input) = inputs.into_iter().next() else {
-                return Ok(ClientLoopAction::NextEvent);
-            };
-            if let Some(pixels) = input.pixel_mouse {
-                if let Some(prefix) = attach_escape.take_pending_prefix()
-                    && let Some(notice) = attach::forward_input(write_stream, &prefix, now).notice()
-                {
-                    remember_direct_notice(direct_notices, notice);
-                }
-                if let Some((kind, position, modifiers)) =
-                    direct_attach_pixel_mouse(&input.event, pixels)
-                {
-                    let geometry = pixels.geometry;
-                    let message = ClientMessage::AttachMouse {
-                        kind,
-                        position,
-                        geometry: Some(shepr_protocol::ClientMouseGeometry {
-                            cols: geometry.cols(),
-                            rows: geometry.rows(),
-                            width_px: geometry.width_px,
-                            height_px: geometry.height_px,
-                        }),
-                        modifiers: shepr_protocol::WireModifiers::from_bits_retain(modifiers),
-                        lines: state.settings.mouse_scroll_lines(),
-                    };
-                    write_stream.send(&message);
-                }
-                return Ok(ClientLoopAction::NextEvent);
-            }
-            let action = attach_escape.filter_parsed_input(
-                input.raw,
-                &input.event,
-                state.reported_geometry.rows(),
-                state.settings.mouse_scroll_lines(),
-            );
-            match action {
-                AttachInputAction::Forward(data) => {
-                    if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
-                        remember_direct_notice(direct_notices, notice);
-                    }
-                }
-                // Registry sends cannot fail here: a failed write is recorded against
-                // its endpoint; the timer applies LocalFailurePolicy if Local broke.
-                AttachInputAction::ForwardPair(first, second) => {
-                    for data in [first, second] {
-                        if let Some(notice) =
-                            attach::forward_input(write_stream, &data, now).notice()
-                        {
-                            remember_direct_notice(direct_notices, notice);
-                        }
-                    }
-                }
-                AttachInputAction::Semantic(action) => {
-                    if let Some(message) = attach_semantic_message(action) {
-                        write_stream.send(&message);
-                    }
-                }
-                AttachInputAction::ForwardThenSemantic(prefix, action) => {
-                    if let Some(notice) = attach::forward_input(write_stream, &prefix, now).notice()
-                    {
-                        remember_direct_notice(direct_notices, notice);
-                    }
-                    if let Some(message) = attach_semantic_message(action) {
-                        write_stream.send(&message);
-                    }
-                }
-                AttachInputAction::Detach => {
-                    // A failed send is recorded against the endpoint, and the registry's
-                    // Drop sends Detach again on the way out.
-                    write_stream.send(&ClientMessage::Detach);
-                    return Ok(ClientLoopAction::Exit);
-                }
-                AttachInputAction::ForwardThenDetach(data) => {
-                    if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
-                        remember_direct_notice(direct_notices, notice);
-                    }
-                    // As for Detach above: failure is recorded, and Drop resends.
-                    write_stream.send(&ClientMessage::Detach);
-                    return Ok(ClientLoopAction::Exit);
-                }
-                AttachInputAction::None => {}
-            }
-            return Ok(ClientLoopAction::NextEvent);
-        }
-
-        if inputs.iter().any(|input| input.pixel_mouse.is_some()) {
-            return Ok(ClientLoopAction::NextEvent);
-        }
-        if shepr_termio::input::raw_input::events_require_host_surface_redraw(
-            inputs.iter().map(|input| &input.event),
-            state.settings.redraw_on_focus_gained(),
-        ) {
-            state.request_repaint();
-        }
-        if shepr_termio::input::raw_input::events_require_host_terminal_appearance_query(
-            inputs.iter().map(|input| &input.event),
-        ) {
-            query_host_terminal_appearance(&mut state.output_writer);
-        }
-        if shepr_termio::input::raw_input::events_require_host_terminal_theme_query(
-            inputs.iter().map(|input| &input.event),
-        ) {
-            query_host_terminal_theme(&mut state.output_writer);
-        }
-        if let Some((width_px, height_px)) =
-            reported_cell_size_from_events(inputs.iter().map(|input| &input.event))
+        let raw_events = inputs.iter().map(|input| &input.event);
+        if *will_query_host_cell_size
+            && let Some((width_px, height_px)) = reported_cell_size_from_events(raw_events)
         {
             store_reported_cell_size(reported_cell_size, width_px, height_px);
         }
-        let data = inputs
-            .into_iter()
-            .flat_map(|input| input.raw)
-            .collect::<Vec<_>>();
-        if let Some(notice) = attach::forward_input(write_stream, &data, now).notice() {
-            remember_direct_notice(direct_notices, notice);
+        if shepr_termio::input::raw_input::events_require_host_mode_refresh(
+            inputs.iter().map(|input| &input.event),
+        ) && let Err(err) = state.host_modes.apply_mouse(
+            &mut state.output_writer,
+            state.reported_geometry.exact,
+            true,
+        ) {
+            warn!(error = %err, "failed to re-assert host mouse capture");
+        }
+        let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
+        let shell = &mut state.shell;
+        let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
+        let label_lookup = shell.take_workspace_label_lookup();
+        let frame = outcome
+            .repaint
+            .then(|| {
+                shell.compose(
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                )
+            })
+            .flatten();
+        if finish_client_shell_input(
+            state,
+            outcome,
+            frame,
+            write_stream,
+            pending_activation,
+            endpoint_commands,
+            scheduled_activation,
+            now,
+        )? {
+            return Ok(ClientLoopAction::Exit);
+        }
+        if let Some(request) = label_lookup {
+            spawn_workspace_label_lookup(request, event_tx.clone());
         }
         Ok(ClientLoopAction::NextEvent)
     }
@@ -993,12 +728,7 @@ impl ClientLoop<'_> {
         );
         state
             .host_modes
-            .apply_mouse(
-                &mut state.output_writer,
-                state.mode.is_shell(),
-                pixel_geometry_exact,
-                false,
-            )
+            .apply_mouse(&mut state.output_writer, pixel_geometry_exact, false)
             .map_err(ClientError::HostTerminal)?;
         state.set_host_size(new_cols, new_rows);
         // Resizing invalidates the host-side blit baseline. The retained pane surface
@@ -1006,26 +736,14 @@ impl ClientLoop<'_> {
         // pane area (with pane hits clipped to match) instead of dropping to the
         // machine-list placeholder.
         state.request_repaint();
-        let msg = if let Some(shell) = state.mode.shell() {
-            client_shell_resize_message(
-                shell,
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-                cell_width_px,
-                cell_height_px,
-                pixel_geometry_exact,
-            )
-        } else {
-            ClientMessage::Resize {
-                geometry: shepr_protocol::TerminalGeometry::new(
-                    new_cols,
-                    new_rows,
-                    cell_width_px,
-                    cell_height_px,
-                    pixel_geometry_exact,
-                ),
-            }
-        };
+        let msg = client_shell_resize_message(
+            &state.shell,
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+            cell_width_px,
+            cell_height_px,
+            pixel_geometry_exact,
+        );
         if let Some(activation) = pending_activation.as_mut() {
             if let Err(error) = activation.update_resize_at(&msg, write_stream, now) {
                 rollback_endpoint_activation(
@@ -1046,12 +764,10 @@ impl ClientLoop<'_> {
         // the retained surface (clipped), so this is chrome and passes a freeze left by
         // an unavailable handoff; otherwise the wrongly sized frame would stay up until
         // that freeze ended.
-        if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
-            shell.compose(
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-            )
-        }) {
+        if let Some(frame) = state.shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        ) {
             state.present_chrome(frame, pending_activation.is_some());
         }
         Ok(ClientLoopAction::NextEvent)
@@ -1085,23 +801,20 @@ impl ClientLoop<'_> {
                 if status == endpoint::ClientEndpointStatus::Attention {
                     warn!(endpoint = %endpoint_id.storage_key(), generation, error = %message, "endpoint needs attention");
                 }
-                let unavailable = state.mode.shell_mut().and_then(|shell| {
-                    shell.set_endpoint_status(&endpoint_id, status);
-                    shell.set_machine_diagnostic(&endpoint_id, &message);
-                    // Handshake diagnostics carry session context; the status line supplies
-                    // the configured endpoint label once.
-                    (status == endpoint::ClientEndpointStatus::Attention
-                        && shell.endpoint_is_active(&endpoint_id))
-                    .then(|| format!("{}: {message}", shell.endpoint_label(&endpoint_id)))
-                });
+                let shell = &mut state.shell;
+                shell.set_endpoint_status(&endpoint_id, status);
+                shell.set_machine_diagnostic(&endpoint_id, &message);
+                // Handshake diagnostics carry session context; the status line supplies
+                // the configured endpoint label once.
+                let unavailable = (status == endpoint::ClientEndpointStatus::Attention
+                    && shell.endpoint_is_active(&endpoint_id))
+                .then(|| format!("{}: {message}", shell.endpoint_label(&endpoint_id)));
                 if let Some(message) = unavailable {
                     present_handoff_unavailable(state, message);
-                } else if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
-                    shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    )
-                }) {
+                } else if let Some(frame) = state.shell.compose(
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                ) {
                     // A status change is machine-list chrome; it must show even while
                     // no endpoint owns presentation.
                     state.present_chrome(frame, pending_activation.is_some());
@@ -1123,12 +836,10 @@ impl ClientLoop<'_> {
                 ) {
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                let frame = state.mode.shell_mut().and_then(|shell| {
-                    shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    )
-                });
+                let frame = state.shell.compose(
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                );
                 let reader_quit = writer.stop_handle();
                 write_stream.insert(endpoint_id.clone(), writer, generation, false, now);
                 if let Some(frame) = frame {
@@ -1203,7 +914,6 @@ impl ClientLoop<'_> {
             endpoint_commands,
             state,
             scheduled_activation,
-            direct_notices,
             local_failure_policy,
             selection,
             ..
@@ -1256,35 +966,26 @@ impl ClientLoop<'_> {
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                let composed = if let Some(shell) = state.mode.shell_mut() {
-                    shell.set_pane_surface(surface);
-                    shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    )
-                } else {
-                    None
-                };
+                state.shell.set_pane_surface(surface);
+                let composed = state.shell.compose(
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                );
                 if let Some(frame) = composed {
                     state.present_frame(frame);
                 }
             }
             ServerMessage::PaneSurfacePatch(patch) => {
-                let outcome = state
-                    .mode
-                    .shell_mut()
-                    .map(|shell| shell.apply_pane_surface_patch(&patch));
+                let outcome = state.shell.apply_pane_surface_patch(&patch);
                 let compose_fallback = match outcome {
-                    Some(shell::ClientPaneSurfacePatchOutcome::Applied(Some(composed))) => {
+                    shell::ClientPaneSurfacePatchOutcome::Applied(Some(composed)) => {
                         match state.present_surface_patch(composed) {
                             Ok(presented) => !presented,
                             Err(error) => {
                                 // Once per cause: a patch arrives with every pane update.
                                 // The full repaint that follows reports the recovery.
-                                let mut context = state.presentation_log_context();
-                                if let Some(context) = context.as_mut()
-                                    && !patch.panes.is_empty()
-                                {
+                                let mut context = state.shell.presentation_log_context();
+                                if !patch.panes.is_empty() {
                                     context.pane_ids = patch
                                         .panes
                                         .iter()
@@ -1294,38 +995,25 @@ impl ClientLoop<'_> {
                                 state.frame_write_failure.observe(
                                     "pane surface patch",
                                     &Err(error),
-                                    context.as_ref(),
+                                    Some(&context),
                                 );
                                 state.request_repaint();
                                 false
                             }
                         }
                     }
-                    Some(shell::ClientPaneSurfacePatchOutcome::Applied(None)) => true,
-                    Some(shell::ClientPaneSurfacePatchOutcome::Rejected) | None => false,
+                    shell::ClientPaneSurfacePatchOutcome::Applied(None) => true,
+                    shell::ClientPaneSurfacePatchOutcome::Rejected => false,
                 };
                 if compose_fallback {
-                    let composed = state.mode.shell_mut().and_then(|shell| {
-                        shell.compose(
-                            state.reported_geometry.cols(),
-                            state.reported_geometry.rows(),
-                        )
-                    });
+                    let composed = state.shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    );
                     if let Some(frame) = composed {
                         state.present_frame(frame);
                     }
                 }
-            }
-            ServerMessage::Terminal(frame) => {
-                // Direct attach passes the pane's byte stream straight through with no
-                // repaint to fall back on, so a lost write leaves the host terminal out of
-                // step with the pane for the rest of the session. End it like the other
-                // host terminal write failures on this path.
-                let output_result = {
-                    let writer = &mut state.output_writer;
-                    writer.write_all(&frame.bytes).and_then(|()| writer.flush())
-                };
-                output_result.map_err(ClientError::HostTerminal)?;
             }
             ServerMessage::ServerShutdown { reason } => {
                 if local_failure_policy.ends_client_for(endpoint_id) {
@@ -1340,9 +1028,8 @@ impl ClientLoop<'_> {
                 );
             }
             ServerMessage::ClientShellError { kind } => {
-                if let Some(shell) = state.mode.shell_mut()
-                    && shell.receive_endpoint_error(kind.to_string())
-                    && let Some(frame) = shell.compose(
+                if state.shell.receive_endpoint_error(kind.to_string())
+                    && let Some(frame) = state.shell.compose(
                         state.reported_geometry.cols(),
                         state.reported_geometry.rows(),
                     )
@@ -1432,36 +1119,31 @@ impl ClientLoop<'_> {
                 // copy-mode response replays keys queued while it was in flight,
                 // and those can carry pane input, a resize or a detach. It also
                 // releases the next queued command in this endpoint's lane.
-                let (outcome, frame) = match state.mode.shell_mut() {
-                    Some(shell) => {
-                        let outcome = if completed.generation == generation
-                            && shell.endpoint_is_active(&completed.endpoint_id)
-                        {
-                            shell.handle_endpoint_result_at(
-                                &completed.boot_id,
-                                &completed.request_id,
-                                completed.result,
-                                now,
-                            )
-                        } else {
-                            shell::ClientShellInput {
-                                repaint: shell.cancel_endpoint_request(&completed.request_id),
-                                ..Default::default()
-                            }
-                        };
-                        let frame = outcome
-                            .repaint
-                            .then(|| {
-                                shell.compose(
-                                    state.reported_geometry.cols(),
-                                    state.reported_geometry.rows(),
-                                )
-                            })
-                            .flatten();
-                        (outcome, frame)
+                let shell = &mut state.shell;
+                let outcome = if completed.generation == generation
+                    && shell.endpoint_is_active(&completed.endpoint_id)
+                {
+                    shell.handle_endpoint_result_at(
+                        &completed.boot_id,
+                        &completed.request_id,
+                        completed.result,
+                        now,
+                    )
+                } else {
+                    shell::ClientShellInput {
+                        repaint: shell.cancel_endpoint_request(&completed.request_id),
+                        ..Default::default()
                     }
-                    None => (shell::ClientShellInput::default(), None),
                 };
+                let frame = outcome
+                    .repaint
+                    .then(|| {
+                        shell.compose(
+                            state.reported_geometry.cols(),
+                            state.reported_geometry.rows(),
+                        )
+                    })
+                    .flatten();
                 if finish_client_shell_input(
                     state,
                     outcome,
@@ -1473,11 +1155,6 @@ impl ClientLoop<'_> {
                     now,
                 )? {
                     return Ok(ClientLoopAction::Exit);
-                }
-            }
-            ServerMessage::DirectTerminalNotice { kind } => {
-                if state.mode.is_escape_attach() {
-                    remember_direct_notice(direct_notices, kind.to_string());
                 }
             }
             ServerMessage::Clipboard { data } => {
@@ -1523,42 +1200,21 @@ impl ClientLoop<'_> {
                     .host_modes
                     .apply_mouse(
                         &mut state.output_writer,
-                        state.mode.is_shell(),
                         state.reported_geometry.exact,
                         false,
                     )
                     .map_err(ClientError::HostTerminal)?;
             }
-            ServerMessage::DirectTerminalKeyboardProtocol {
-                flags,
-                modify_other_keys_level,
-            } => {
-                if state.mode.is_escape_attach() {
-                    state
-                        .host_modes
-                        .set_direct_keyboard_protocol(
-                            &mut state.output_writer,
-                            flags,
-                            modify_other_keys_level,
-                        )
-                        .map_err(ClientError::HostTerminal)?;
-                }
-            }
             ServerMessage::ClientShellKeyboardReportAll { enabled } => {
-                if state.mode.is_shell() {
-                    let shell_requests_report_all = state
-                        .mode
-                        .shell()
-                        .is_some_and(ShellSession::host_keyboard_report_all_requested);
-                    state
-                        .host_modes
-                        .set_pane_keyboard_report_all(
-                            &mut state.output_writer,
-                            enabled,
-                            shell_requests_report_all,
-                        )
-                        .map_err(ClientError::HostTerminal)?;
-                }
+                let shell_requests_report_all = state.shell.host_keyboard_report_all_requested();
+                state
+                    .host_modes
+                    .set_pane_keyboard_report_all(
+                        &mut state.output_writer,
+                        enabled,
+                        shell_requests_report_all,
+                    )
+                    .map_err(ClientError::HostTerminal)?;
             }
             ServerMessage::PresentationReady(data) => {
                 let progress = pending_activation.as_mut().map(|activation| {
@@ -1616,13 +1272,14 @@ impl ClientLoop<'_> {
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 let selected_endpoint = selection.selected_endpoint();
-                let activation_ready = state.mode.shell().is_some_and(|shell| {
-                    shell.endpoint_has_snapshot(&selected_endpoint)
-                        && (!write_stream
-                            .connection(write_stream.active_id())
-                            .is_some_and(|connection| connection.surface_active)
-                            || shell.endpoint_boot_id(write_stream.active_id()).is_some())
-                });
+                let activation_ready = state.shell.endpoint_has_snapshot(&selected_endpoint)
+                    && (!write_stream
+                        .connection(write_stream.active_id())
+                        .is_some_and(|connection| connection.surface_active)
+                        || state
+                            .shell
+                            .endpoint_boot_id(write_stream.active_id())
+                            .is_some());
                 let selected_connection = write_stream.connection(&selected_endpoint);
                 let needs_surface =
                     selected_connection.is_some_and(|connection| !connection.surface_active);
@@ -1755,10 +1412,7 @@ impl ClientLoop<'_> {
             .filter(|activation| activation.expired(now))
             .map(|activation| activation.target().clone())
         {
-            let label = state.mode.shell().map_or_else(
-                || "Endpoint".into(),
-                |shell| shell.endpoint_label(&endpoint_id).to_owned(),
-            );
+            let label = state.shell.endpoint_label(&endpoint_id).to_owned();
             rollback_endpoint_activation(
                 state,
                 write_stream,
@@ -1809,56 +1463,52 @@ impl ClientLoop<'_> {
             }
             None => {}
         }
-        if state.mode.is_shell() {
-            let expired_endpoints = endpoint_commands
-                .expire(now)
-                .into_iter()
-                .filter(|expired| write_stream.accepts(&expired.endpoint_id, expired.generation))
-                .collect::<Vec<_>>();
-            let Some(shell) = state.mode.shell_mut() else {
-                return Ok(ClientLoopAction::NextEvent);
-            };
-            let (outcome, frame) = {
-                let mut outcome = shell.tick_selection_autoscroll(now);
-                for expired in expired_endpoints {
-                    if !shell.endpoint_is_active(&expired.endpoint_id) {
-                        continue;
-                    }
-                    let expired_outcome = shell.handle_endpoint_result_at(
-                        &expired.boot_id,
-                        &expired.request_id,
-                        expired.result,
-                        now,
-                    );
-                    outcome.merge(expired_outcome);
+        let expired_endpoints = endpoint_commands
+            .expire(now)
+            .into_iter()
+            .filter(|expired| write_stream.accepts(&expired.endpoint_id, expired.generation))
+            .collect::<Vec<_>>();
+        let shell = &mut state.shell;
+        let (outcome, frame) = {
+            let mut outcome = shell.tick_selection_autoscroll(now);
+            for expired in expired_endpoints {
+                if !shell.endpoint_is_active(&expired.endpoint_id) {
+                    continue;
                 }
-                outcome.repaint |= shell.tick_selection_highlight(now)
-                    | shell.tick_workspace_highlight(now)
-                    | shell.tick_endpoint_error(now)
-                    | shell.tick_transient_banners(now);
-                let frame = outcome
-                    .repaint
-                    .then(|| {
-                        shell.compose(
-                            state.reported_geometry.cols(),
-                            state.reported_geometry.rows(),
-                        )
-                    })
-                    .flatten();
-                (outcome, frame)
-            };
-            if finish_client_shell_input(
-                state,
-                outcome,
-                frame,
-                write_stream,
-                pending_activation,
-                endpoint_commands,
-                scheduled_activation,
-                now,
-            )? {
-                return Ok(ClientLoopAction::Exit);
+                let expired_outcome = shell.handle_endpoint_result_at(
+                    &expired.boot_id,
+                    &expired.request_id,
+                    expired.result,
+                    now,
+                );
+                outcome.merge(expired_outcome);
             }
+            outcome.repaint |= shell.tick_selection_highlight(now)
+                | shell.tick_workspace_highlight(now)
+                | shell.tick_endpoint_error(now)
+                | shell.tick_transient_banners(now);
+            let frame = outcome
+                .repaint
+                .then(|| {
+                    shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    )
+                })
+                .flatten();
+            (outcome, frame)
+        };
+        if finish_client_shell_input(
+            state,
+            outcome,
+            frame,
+            write_stream,
+            pending_activation,
+            endpoint_commands,
+            scheduled_activation,
+            now,
+        )? {
+            return Ok(ClientLoopAction::Exit);
         }
         Ok(ClientLoopAction::NextEvent)
     }
@@ -1874,8 +1524,8 @@ use terminal_geometry::{
 };
 #[cfg(test)]
 use terminal_setup::{
-    HostModes, effective_mouse_capture, effective_sgr_pixel_mouse,
-    write_host_color_scheme_report_mode, write_terminal_restore_postlude,
+    HostModes, effective_sgr_pixel_mouse, write_host_color_scheme_report_mode,
+    write_terminal_restore_postlude,
 };
 #[cfg(test)]
 mod tests;

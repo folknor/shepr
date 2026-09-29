@@ -1,34 +1,11 @@
 use serde::{Deserialize, Serialize};
 use shepr_protocol::{PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
 
-use super::common::{AgentStatus, ReadFormat, ReadSource};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentReadParams {
-    pub target: String,
-    pub source: ReadSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lines: Option<u32>,
-    #[serde(default)]
-    pub format: ReadFormat,
-    /// `false` keeps escape sequences: the read uses the ANSI renderer
-    /// whatever `format` says, and the result reports `format: ansi`.
-    #[serde(default = "super::common::default_true")]
-    pub strip_ansi: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentRenameParams {
-    pub target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
+use super::common::AgentStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub terminal_id: TerminalId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

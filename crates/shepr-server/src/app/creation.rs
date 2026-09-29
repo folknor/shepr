@@ -1,10 +1,6 @@
 use std::path::PathBuf;
 
-use super::{
-    App,
-    api_helpers::{pane_agent_status, workspace_not_found},
-};
-use shepr_api::error::ApiError;
+use super::{App, api_helpers::pane_agent_status};
 use shepr_api::schema::{EventData, EventEnvelope};
 use shepr_config::NewTerminalCwd;
 use shepr_mux::workspace::Workspace;
@@ -139,37 +135,18 @@ impl App {
         Ok(outcome.workspace_index)
     }
 
-    pub(super) fn collect_panes_for_workspace(
-        &self,
-        workspace_id: Option<&str>,
-    ) -> Result<Vec<shepr_api::schema::PaneInfo>, ApiError> {
-        if let Some(workspace_id) = workspace_id {
-            let Some(ws_idx) = self.parse_workspace_id(workspace_id) else {
-                return Err(workspace_not_found(workspace_id));
-            };
-            let Some(ws) = self.state.workspaces.get(ws_idx) else {
-                return Err(workspace_not_found(workspace_id));
-            };
-            Ok(ws
-                .tabs()
-                .iter()
-                .flat_map(|tab| tab.layout().pane_ids().into_iter())
-                .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
-                .collect())
-        } else {
-            Ok(self
-                .state
-                .workspaces
-                .iter()
-                .enumerate()
-                .flat_map(|(ws_idx, ws)| {
-                    ws.tabs()
-                        .iter()
-                        .flat_map(|tab| tab.layout().pane_ids().into_iter())
-                        .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
-                })
-                .collect())
-        }
+    pub(super) fn collect_panes(&self) -> Vec<shepr_api::schema::PaneInfo> {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(ws_idx, ws)| {
+                ws.tabs()
+                    .iter()
+                    .flat_map(|tab| tab.layout().pane_ids().into_iter())
+                    .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
+            })
+            .collect()
     }
 
     pub(super) fn tab_info(
@@ -298,7 +275,7 @@ impl App {
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             // Runs on the server main loop once per pane for every `pane.get`,
-            // `pane.list`, `session.snapshot` and `pane.updated` event, so the
+            // `session.snapshot` and `pane.updated` event, so the
             // runtime accessor behind it must stay a few /proc reads and never
             // wait on the PTY actor thread.
             foreground_cwd: tab

@@ -29,30 +29,8 @@ pub(super) fn setup_terminal(
     mouse_capture: bool,
     modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
-    setup_terminal_with_capabilities(true, mouse_capture, modify_other_keys_mode)
-}
-
-/// Sets up a direct attach terminal.
-///
-/// Direct attach forwards stdin to the attached PTY. When configured, mouse
-/// capture lets wheel events drive the attached viewport or reach child
-/// programs that requested mouse input.
-pub(super) fn setup_direct_attach_terminal(
-    mouse_capture: bool,
-) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
-    setup_terminal_with_capabilities(false, mouse_capture, None)
-}
-
-pub(super) fn setup_terminal_with_capabilities(
-    enable_client_protocols: bool,
-    mouse_capture: bool,
-    modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
-) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
-    let modify_other_keys_mode = enable_client_protocols
-        .then_some(modify_other_keys_mode)
-        .flatten();
     let output_writer = HostTerminalWriter::from_stdout()?;
-    let host_modes = HostModes::new(false, false, mouse_capture);
+    let host_modes = HostModes::new(false, mouse_capture);
     // Built before raw mode so a failure anywhere below still restores through Drop. Raw mode
     // and the alternate screen go through crossterm and this writer directly rather than
     // `ratatui::init`, whose own panic hook would restore through `io::stdout()`.
@@ -67,25 +45,16 @@ pub(super) fn setup_terminal_with_capabilities(
     crossterm::terminal::enable_raw_mode()?;
     let mut output = output_writer.clone();
     execute!(output, EnterAlternateScreen)?;
-    let (host_escape_disambiguation_active, buffered_host_input) = if enable_client_protocols {
-        host_modes.set_keyboard_enhancement_flags(
-            &mut output,
-            shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
-        )?;
-        let (active, buffered_input) = query_host_escape_disambiguation(&mut output);
-        host_modes.apply_mouse(&mut output, true, false, true)?;
-        host_modes.enable_bracketed_paste(&mut output)?;
-        host_modes.enable_focus_change(&mut output)?;
-        host_modes.enable_color_scheme_reports(&mut output)?;
-        (active, buffered_input)
-    } else {
-        // Keep color-scheme reports out of the attached PTY's input. Direct
-        // attach never enables them, so there is nothing to restore on exit.
-        write_host_color_scheme_report_mode(&mut output, false)?;
-        host_modes.apply_mouse(&mut output, false, false, true)?;
-        host_modes.enable_bracketed_paste(&mut output)?;
-        (false, Vec::new())
-    };
+    host_modes.set_keyboard_enhancement_flags(
+        &mut output,
+        shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
+    )?;
+    let (host_escape_disambiguation_active, buffered_host_input) =
+        query_host_escape_disambiguation(&mut output);
+    host_modes.apply_mouse(&mut output, false, true)?;
+    host_modes.enable_bracketed_paste(&mut output)?;
+    host_modes.enable_focus_change(&mut output)?;
+    host_modes.enable_color_scheme_reports(&mut output)?;
 
     if let Some(mode) = modify_other_keys_mode {
         host_modes.set_modify_other_keys(&mut output, mode)?;
@@ -227,13 +196,6 @@ pub(super) fn should_draw_host_cursor(mode: shepr_config::HostCursorModeConfig) 
     }
 }
 
-pub(super) fn effective_mouse_capture(
-    server_enabled: bool,
-    direct_attach_preference: bool,
-) -> bool {
-    server_enabled || direct_attach_preference
-}
-
 pub(super) fn effective_sgr_pixel_mouse(
     enabled: bool,
     requested: bool,
@@ -251,7 +213,6 @@ struct EndpointMouseRequest {
 /// Tracks endpoint mouse requests, local preferences, and mirrors read by stdin.
 /// The containing `HostModes` owner performs terminal teardown.
 pub(super) struct HostMouseMode {
-    direct_preference: bool,
     shell_preference: bool,
     endpoint_request: Option<EndpointMouseRequest>,
     use_preference: bool,
@@ -260,13 +221,8 @@ pub(super) struct HostMouseMode {
 }
 
 impl HostMouseMode {
-    pub(super) fn new(
-        direct_preference: bool,
-        shell_preference: bool,
-        initially_active: bool,
-    ) -> Self {
+    pub(super) fn new(shell_preference: bool, initially_active: bool) -> Self {
         Self {
-            direct_preference,
             shell_preference,
             endpoint_request: None,
             use_preference: false,
@@ -307,21 +263,11 @@ impl HostMouseMode {
         self.use_preference = true;
     }
 
-    pub(super) fn desired(&self, client_shell: bool) -> (bool, bool) {
+    pub(super) fn desired(&self) -> (bool, bool) {
         let (enabled, sgr_pixels_requested) = if let Some(request) = self.endpoint_request {
-            (
-                effective_mouse_capture(request.enabled, self.direct_preference),
-                request.sgr_pixels,
-            )
+            (request.enabled, request.sgr_pixels)
         } else if self.use_preference {
-            (
-                if client_shell {
-                    self.shell_preference
-                } else {
-                    self.direct_preference
-                },
-                false,
-            )
+            (self.shell_preference, false)
         } else {
             (self.capture_active(), self.sgr_pixels_active())
         };
@@ -331,11 +277,10 @@ impl HostMouseMode {
     fn apply(
         &self,
         writer: &mut impl io::Write,
-        client_shell: bool,
         exact_geometry: bool,
         reassert: bool,
     ) -> io::Result<()> {
-        let (enabled, sgr_pixels_requested) = self.desired(client_shell);
+        let (enabled, sgr_pixels_requested) = self.desired();
         let sgr_pixels = effective_sgr_pixel_mouse(enabled, sgr_pixels_requested, exact_geometry);
         let changed = host_mouse_capture_update(
             self.capture_active(),
@@ -371,34 +316,23 @@ const RESTORE_KEYBOARD_MASK: u8 = RESTORE_KITTY_KEYBOARD_ENTRY | RESTORE_MODIFY_
 
 struct HostModesState {
     mouse: HostMouseMode,
-    keyboard: shepr_termio::host_term::modes::DirectHostKeyboardState,
+    keyboard: shepr_termio::host_term::modes::HostKeyboardState,
     pane_keyboard_report_all: bool,
     keyboard_report_all_active: bool,
 }
 
 enum HostKeyboardUpdate {
     EnhancementFlags(shepr_protocol::KittyKeyboardFlags),
-    Protocol {
-        flags: shepr_protocol::KittyKeyboardFlags,
-        modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel,
-    },
     ModifyOtherKeys(shepr_vt::ModifyOtherKeysLevel),
 }
 
 impl HostKeyboardUpdate {
     fn restore_state(
         &self,
-        keyboard: &shepr_termio::host_term::modes::DirectHostKeyboardState,
+        keyboard: &shepr_termio::host_term::modes::HostKeyboardState,
     ) -> (bool, bool) {
         match self {
             Self::EnhancementFlags(flags) => (!flags.is_empty(), false),
-            Self::Protocol {
-                flags,
-                modify_other_keys_level,
-            } => (
-                !flags.is_empty(),
-                *modify_other_keys_level != shepr_vt::ModifyOtherKeysLevel::Off,
-            ),
             Self::ModifyOtherKeys(level) => (
                 keyboard.has_kitty_keyboard_entry(),
                 *level != shepr_vt::ModifyOtherKeysLevel::Off,
@@ -409,26 +343,17 @@ impl HostKeyboardUpdate {
     fn apply<W: io::Write>(
         self,
         writer: &mut W,
-        keyboard: &mut shepr_termio::host_term::modes::DirectHostKeyboardState,
+        keyboard: &mut shepr_termio::host_term::modes::HostKeyboardState,
     ) -> io::Result<()> {
         match self {
             Self::EnhancementFlags(flags) => {
-                shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
+                shepr_termio::host_term::modes::set_host_keyboard_protocol(
                     writer,
                     keyboard,
                     flags,
                     shepr_vt::ModifyOtherKeysLevel::Off,
                 )
             }
-            Self::Protocol {
-                flags,
-                modify_other_keys_level,
-            } => shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
-                writer,
-                keyboard,
-                flags,
-                modify_other_keys_level,
-            ),
             Self::ModifyOtherKeys(level) => {
                 shepr_termio::host_term::modes::set_host_modify_other_keys(writer, keyboard, level)
             }
@@ -454,20 +379,12 @@ pub(super) struct HostModes {
 }
 
 impl HostModes {
-    pub(super) fn new(
-        direct_preference: bool,
-        shell_preference: bool,
-        initially_active: bool,
-    ) -> Self {
+    pub(super) fn new(shell_preference: bool, initially_active: bool) -> Self {
         Self {
             inner: Arc::new(HostModesInner {
                 state: Mutex::new(HostModesState {
-                    mouse: HostMouseMode::new(
-                        direct_preference,
-                        shell_preference,
-                        initially_active,
-                    ),
-                    keyboard: shepr_termio::host_term::modes::DirectHostKeyboardState::default(),
+                    mouse: HostMouseMode::new(shell_preference, initially_active),
+                    keyboard: shepr_termio::host_term::modes::HostKeyboardState::default(),
                     pane_keyboard_report_all: false,
                     keyboard_report_all_active: false,
                 }),
@@ -556,17 +473,14 @@ impl HostModes {
     pub(super) fn apply_mouse(
         &self,
         writer: &mut impl io::Write,
-        client_shell: bool,
         exact_geometry: bool,
         reassert: bool,
     ) -> io::Result<()> {
         let state = self.state();
-        if state.mouse.desired(client_shell).0 {
+        if state.mouse.desired().0 {
             self.record_restore_flag(RESTORE_MOUSE_CAPTURE);
         }
-        state
-            .mouse
-            .apply(writer, client_shell, exact_geometry, reassert)
+        state.mouse.apply(writer, exact_geometry, reassert)
     }
 
     pub(super) fn set_keyboard_enhancement_flags(
@@ -576,21 +490,6 @@ impl HostModes {
     ) -> io::Result<()> {
         let flags = shepr_protocol::KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits()));
         self.set_keyboard_protocol(writer, HostKeyboardUpdate::EnhancementFlags(flags))
-    }
-
-    pub(super) fn set_direct_keyboard_protocol(
-        &self,
-        writer: &mut impl io::Write,
-        flags: shepr_protocol::KittyKeyboardFlags,
-        modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel,
-    ) -> io::Result<()> {
-        self.set_keyboard_protocol(
-            writer,
-            HostKeyboardUpdate::Protocol {
-                flags,
-                modify_other_keys_level,
-            },
-        )
     }
 
     pub(super) fn set_modify_other_keys(
@@ -1039,15 +938,18 @@ mod tests {
     }
 
     #[test]
-    fn host_modes_restore_undoes_direct_keyboard_protocol_and_title_once() {
-        let modes = HostModes::new(false, false, false);
+    fn host_modes_restore_undoes_keyboard_protocol_and_title_once() {
+        let modes = HostModes::new(false, false);
         let mut output = Vec::new();
         modes
-            .set_direct_keyboard_protocol(
+            .set_keyboard_enhancement_flags(
                 &mut output,
-                shepr_protocol::KittyKeyboardFlags::from_bits_retain(3),
-                shepr_vt::ModifyOtherKeysLevel::from_parameter(2),
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
             )
+            .expect("write to a Vec");
+        modes
+            .set_modify_other_keys(&mut output, shepr_vt::ModifyOtherKeysLevel::All)
             .expect("write to a Vec");
         modes
             .write_window_title(&mut output, Some("agent"))
@@ -1065,7 +967,7 @@ mod tests {
 
     #[test]
     fn host_modes_report_all_without_a_prior_entry_pushes_and_restore_pops_it() {
-        let modes = HostModes::new(false, false, false);
+        let modes = HostModes::new(false, false);
         let mut output = Vec::new();
         modes
             .set_pane_keyboard_report_all(&mut output, true, false)
@@ -1079,12 +981,12 @@ mod tests {
 
     #[test]
     fn host_modes_restores_mouse_capture_enabled_without_reassertion() {
-        let modes = HostModes::new(false, false, false);
+        let modes = HostModes::new(false, false);
         modes.set_mouse_endpoint_request(true, false);
 
         let mut setup_output = Vec::new();
         modes
-            .apply_mouse(&mut setup_output, false, false, false)
+            .apply_mouse(&mut setup_output, false, false)
             .expect("write to a Vec");
         assert!(!setup_output.is_empty());
         assert!(modes.state().mouse.capture_active());
@@ -1108,7 +1010,7 @@ mod tests {
                 b"\x1b[>4;1m",
             ),
         ] {
-            let modes = HostModes::new(false, false, false);
+            let modes = HostModes::new(false, false);
             let mut output = Vec::new();
             modes
                 .set_keyboard_enhancement_flags(
@@ -1179,13 +1081,12 @@ mod tests {
 
     #[test]
     fn host_mouse_mode_owns_request_and_preference_resolution() {
-        let mut mode = HostMouseMode::new(false, true, true);
+        let mut mode = HostMouseMode::new(true, true);
 
-        assert_eq!(mode.desired(true), (true, false));
+        assert_eq!(mode.desired(), (true, false));
         mode.set_endpoint_request(false, true);
-        assert_eq!(mode.desired(true), (false, true));
+        assert_eq!(mode.desired(), (false, true));
         mode.clear_endpoint_request();
-        assert_eq!(mode.desired(true), (true, false));
-        assert_eq!(mode.desired(false), (false, false));
+        assert_eq!(mode.desired(), (true, false));
     }
 }

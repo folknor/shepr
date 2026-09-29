@@ -5,10 +5,8 @@ use crate::app::RenderDemand;
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
 use shepr_protocol::PublicTabId;
-use shepr_protocol::TerminalId;
 use shepr_protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientPaneInputEvent,
-    RenderEncoding,
 };
 
 /// Identity of a connection accepted by this server. Only the registry's
@@ -20,22 +18,10 @@ pub struct ClientId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ActivityStamp(u64);
 
-impl ClientId {}
-
 impl std::fmt::Display for ClientId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum ClientConnectionMode {
-    ClientShell(Box<ClientShellState>),
-    TerminalPending,
-    TerminalAttach {
-        terminal_id: TerminalId,
-        state: TerminalAttachState,
-    },
 }
 
 #[derive(Debug, Default)]
@@ -130,40 +116,12 @@ impl ClientShellState {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct TerminalAttachState {
-    /// Last keyboard protocol state sent to a directly attached terminal.
-    pub(crate) host_keyboard_protocol_active: Option<(u16, u8)>,
-    /// Whether a drop notice is owed until the next input reaches the pane.
-    pub(crate) input_drop_reported: bool,
-}
-
-impl ClientConnectionMode {
-    pub(crate) fn shell() -> Self {
-        Self::ClientShell(Box::new(ClientShellState::active()))
-    }
-
-    pub(crate) fn terminal_attach(terminal_id: TerminalId) -> Self {
-        Self::TerminalAttach {
-            terminal_id,
-            state: TerminalAttachState::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RenderTargetMode {
-    Shell,
-    TerminalAttach { terminal_id: TerminalId },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderTarget {
     pub(crate) client_id: ClientId,
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
     pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     pub(crate) is_foreground: bool,
-    pub(crate) mode: RenderTargetMode,
 }
 
 /// Pure client identity and ownership state for one headless server.
@@ -176,16 +134,7 @@ pub(crate) struct ClientRegistry {
     next_client_id: u64,
     foreground_client_id: Option<ClientId>,
     geometry_controllers: HashMap<PublicTabId, ClientId>,
-    attach_owners: HashMap<TerminalId, ClientId>,
     next_activity_stamp: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AttachClaim {
-    Available,
-    AlreadyOwned,
-    Reject { owner: ClientId },
-    Takeover { owner: ClientId },
 }
 
 impl Default for ClientRegistry {
@@ -195,7 +144,6 @@ impl Default for ClientRegistry {
             next_client_id: 1,
             foreground_client_id: None,
             geometry_controllers: HashMap::new(),
-            attach_owners: HashMap::new(),
             next_activity_stamp: 1,
         }
     }
@@ -326,12 +274,6 @@ impl ClientRegistry {
         let was_foreground = self.foreground_client_id == Some(client_id);
         let removed = self.connections.remove(&client_id);
         self.remove_geometry_controllers_for(client_id);
-        if let Some(ClientConnectionMode::TerminalAttach { terminal_id, .. }) =
-            removed.as_ref().map(|client| &client.mode)
-            && self.attach_owners.get(terminal_id) == Some(&client_id)
-        {
-            self.attach_owners.remove(terminal_id);
-        }
         if was_foreground {
             self.foreground_client_id = None;
         }
@@ -342,7 +284,6 @@ impl ClientRegistry {
         self.connections.clear();
         self.foreground_client_id = None;
         self.geometry_controllers.clear();
-        self.attach_owners.clear();
     }
 
     pub(crate) fn geometry_controllers(&self) -> &HashMap<PublicTabId, ClientId> {
@@ -402,32 +343,6 @@ impl ClientRegistry {
     pub(crate) fn remove_geometry_controllers_for(&mut self, client_id: ClientId) {
         self.geometry_controllers
             .retain(|_, controller_id| *controller_id != client_id);
-    }
-
-    pub(crate) fn attach_owner(&self, terminal_id: &TerminalId) -> Option<ClientId> {
-        self.attach_owners.get(terminal_id).copied()
-    }
-
-    pub(crate) fn attach_claim(
-        &self,
-        terminal_id: &TerminalId,
-        client_id: ClientId,
-        takeover: bool,
-    ) -> AttachClaim {
-        match self.attach_owner(terminal_id) {
-            None => AttachClaim::Available,
-            Some(owner) if owner == client_id => AttachClaim::AlreadyOwned,
-            Some(owner) if takeover => AttachClaim::Takeover { owner },
-            Some(owner) => AttachClaim::Reject { owner },
-        }
-    }
-
-    pub(crate) fn set_attach_owner(&mut self, terminal_id: TerminalId, client_id: ClientId) {
-        self.attach_owners.insert(terminal_id, client_id);
-    }
-
-    pub(crate) fn has_attach_owner(&self, terminal_id: &TerminalId) -> bool {
-        self.attach_owners.contains_key(terminal_id)
     }
 }
 
@@ -519,8 +434,8 @@ impl ClientShellLocation {
 
 /// A connected client tracked by the server.
 pub(crate) struct ClientConnection {
-    /// State carried by this connection's current client mode.
-    pub(crate) mode: ClientConnectionMode,
+    /// Shell state of this connection; every client is a shell.
+    pub(crate) shell: ClientShellState,
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
     /// Pixel size of one client terminal cell.
@@ -553,20 +468,19 @@ pub(crate) struct ClientConnection {
 }
 
 impl ClientConnection {
-    pub(crate) fn new_with_mode(
-        mode: ClientConnectionMode,
+    pub(crate) fn with_shell(
+        shell: ClientShellState,
         terminal_size: shepr_core::geometry::GridSize,
         cell_size: shepr_termio::host_term::cell_size::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
-        render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
     ) -> Self {
         Self {
-            mode,
+            shell,
             terminal_size,
             cell_size,
             last_activity: last_activity.into(),
-            render_state: ClientRenderState::new(render_encoding),
+            render_state: ClientRenderState::new(),
             pixel_mouse: false,
             render_pending: RenderDemand::None,
             oversized_frame_reported: false,
@@ -577,43 +491,11 @@ impl ClientConnection {
     }
 
     pub(crate) fn shell_state(&self) -> Option<&ClientShellState> {
-        match &self.mode {
-            ClientConnectionMode::ClientShell(state) => Some(state),
-            ClientConnectionMode::TerminalPending | ClientConnectionMode::TerminalAttach { .. } => {
-                None
-            }
-        }
+        Some(&self.shell)
     }
 
     pub(crate) fn shell_state_mut(&mut self) -> Option<&mut ClientShellState> {
-        match &mut self.mode {
-            ClientConnectionMode::ClientShell(state) => Some(state),
-            ClientConnectionMode::TerminalPending | ClientConnectionMode::TerminalAttach { .. } => {
-                None
-            }
-        }
-    }
-
-    pub(crate) fn terminal_attach_state(&self) -> Option<&TerminalAttachState> {
-        match &self.mode {
-            ClientConnectionMode::TerminalAttach { state, .. } => Some(state),
-            ClientConnectionMode::ClientShell(_) | ClientConnectionMode::TerminalPending => None,
-        }
-    }
-
-    pub(crate) fn terminal_attach_state_mut(&mut self) -> Option<&mut TerminalAttachState> {
-        match &mut self.mode {
-            ClientConnectionMode::TerminalAttach { state, .. } => Some(state),
-            ClientConnectionMode::ClientShell(_) | ClientConnectionMode::TerminalPending => None,
-        }
-    }
-
-    pub(crate) fn attach_to_terminal(&mut self, terminal_id: TerminalId) -> bool {
-        if !matches!(self.mode, ClientConnectionMode::TerminalPending) {
-            return false;
-        }
-        self.mode = ClientConnectionMode::terminal_attach(terminal_id);
-        true
+        Some(&mut self.shell)
     }
 
     pub(crate) fn request_repaint(&mut self) {
@@ -758,10 +640,6 @@ impl ClientConnection {
         deferred
     }
 
-    pub(crate) fn is_shell_client(&self) -> bool {
-        matches!(self.mode, ClientConnectionMode::ClientShell(_))
-    }
-
     pub(crate) fn is_active_shell_client(&self) -> bool {
         self.shell_state().is_some_and(|state| state.surface_active)
     }
@@ -777,50 +655,18 @@ pub(crate) fn latest_shell_client(
         .map(|(&client_id, _)| client_id)
 }
 
-pub(crate) fn terminal_stream_client_ids(
-    clients: &ClientRegistry,
-    terminal_id: &TerminalId,
-) -> Vec<ClientId> {
-    clients
-        .iter()
-        .filter_map(|(&client_id, client)| match &client.mode {
-            ClientConnectionMode::TerminalAttach {
-                terminal_id: attached,
-                ..
-            } if attached == terminal_id => Some(client_id),
-            _ => None,
-        })
-        .collect()
-}
-
 pub(crate) fn render_targets(
     clients: &ClientRegistry,
     foreground_client_id: Option<ClientId>,
 ) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
-        .filter(|(_, client)| {
-            client.writer.is_some()
-                && (client.is_shell_client()
-                    || matches!(client.mode, ClientConnectionMode::TerminalAttach { .. }))
-        })
-        .filter_map(|(&client_id, client)| {
-            let mode = match &client.mode {
-                ClientConnectionMode::ClientShell(_) => RenderTargetMode::Shell,
-                ClientConnectionMode::TerminalAttach { terminal_id, .. } => {
-                    RenderTargetMode::TerminalAttach {
-                        terminal_id: terminal_id.clone(),
-                    }
-                }
-                ClientConnectionMode::TerminalPending => return None,
-            };
-            Some(RenderTarget {
-                client_id,
-                terminal_size: client.terminal_size,
-                cell_size: client.cell_size,
-                is_foreground: foreground_client_id == Some(client_id),
-                mode,
-            })
+        .filter(|(_, client)| client.writer.is_some())
+        .map(|(&client_id, client)| RenderTarget {
+            client_id,
+            terminal_size: client.terminal_size,
+            cell_size: client.cell_size,
+            is_foreground: foreground_client_id == Some(client_id),
         })
         .collect();
 
@@ -882,10 +728,6 @@ impl ClientRegistry {
     pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
         self.connections.contains_key(&(*client_id).into())
     }
-
-    pub(crate) fn attach_owners(&self) -> &HashMap<TerminalId, ClientId> {
-        &self.attach_owners
-    }
 }
 
 #[cfg(test)]
@@ -894,15 +736,13 @@ impl ClientConnection {
         terminal_size: (u16, u16),
         cell_size: shepr_termio::host_term::cell_size::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
-        render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
     ) -> Self {
-        Self::new_with_mode(
-            ClientConnectionMode::shell(),
+        Self::with_shell(
+            ClientShellState::active(),
             shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
             cell_size,
             last_activity,
-            render_encoding,
             writer,
         )
     }
@@ -917,37 +757,12 @@ mod tests {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            shepr_protocol::RenderEncoding::SemanticFrame,
             None,
         )
     }
 
     #[test]
-    fn only_shell_connections_start_with_an_active_surface() {
-        let connection = |mode| {
-            ClientConnection::new_with_mode(
-                mode,
-                shepr_core::geometry::GridSize::clamped(80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
-                1,
-                shepr_protocol::RenderEncoding::TerminalAnsi,
-                None,
-            )
-        };
-        assert!(connection(ClientConnectionMode::shell()).is_active_shell_client());
-        let pending = connection(ClientConnectionMode::TerminalPending);
-        assert!(!pending.is_active_shell_client());
-        let attached = connection(ClientConnectionMode::terminal_attach(TerminalId::alloc()));
-        assert!(!attached.is_active_shell_client());
-
-        let mut clients = HashMap::new();
-        clients.insert(ClientId::test_new(1), pending);
-        clients.insert(ClientId::test_new(2), attached);
-        assert_eq!(latest_shell_client(&clients), None);
-    }
-
-    #[test]
-    fn registry_owns_foreground_and_attach_arbitration() {
+    fn registry_owns_foreground_and_geometry_arbitration() {
         let mut registry = ClientRegistry::default();
         let first_id = registry.allocate_client_id();
         let second_id = registry.allocate_client_id();
@@ -955,19 +770,13 @@ mod tests {
             (first_id, second_id),
             (ClientId::test_new(1), ClientId::test_new(2))
         );
-        let first = ClientConnection::new(
-            (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
-            registry.allocate_activity_stamp(),
-            shepr_protocol::RenderEncoding::SemanticFrame,
-            None,
-        );
-        let second = ClientConnection::new_with_mode(
-            ClientConnectionMode::TerminalPending,
+        let first = shell_client();
+        // A shell whose surface is not active never becomes the foreground.
+        let second = ClientConnection::with_shell(
+            ClientShellState::default(),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
-            shepr_protocol::RenderEncoding::TerminalAnsi,
             None,
         );
         registry.insert(first_id, first);
@@ -981,22 +790,6 @@ mod tests {
         assert!(!registry.claim_unowned_geometry(tab_id.clone(), first_id));
         assert_eq!(registry.geometry_controller(&tab_id), Some(first_id));
 
-        let terminal_id = TerminalId::alloc();
-        registry.set_attach_owner(terminal_id.clone(), second_id);
-        assert_eq!(registry.attach_owner(&terminal_id), Some(second_id));
-        assert_eq!(
-            registry.attach_claim(&terminal_id, first_id, false),
-            AttachClaim::Reject { owner: second_id }
-        );
-        assert_eq!(
-            registry.attach_claim(&terminal_id, first_id, true),
-            AttachClaim::Takeover { owner: second_id }
-        );
-        assert!(
-            registry
-                .get_mut(&second_id)
-                .is_some_and(|client| client.attach_to_terminal(terminal_id.clone()))
-        );
         let (_, was_foreground) = registry.remove_client(first_id);
         assert!(was_foreground);
         assert_eq!(registry.geometry_controller(&tab_id), None);
@@ -1005,7 +798,6 @@ mod tests {
         let (removed, was_foreground) = registry.remove_client(second_id);
         assert!(removed.is_some());
         assert!(!was_foreground);
-        assert_eq!(registry.attach_owner(&terminal_id), None);
     }
 
     #[test]

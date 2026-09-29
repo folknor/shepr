@@ -112,16 +112,6 @@ mod tests {
         };
 
         assert!(
-            request(Method::ClientWindowTitleSet(
-                crate::schema::ClientWindowTitleSetParams {
-                    title: "title".into(),
-                },
-            ))
-            .method
-            .traits()
-            .mutates_ui
-        );
-        assert!(
             request(Method::PaneRename(crate::schema::PaneRenameParams {
                 pane_id: "w1:p1".into(),
                 label: Some("name".into()),
@@ -131,13 +121,8 @@ mod tests {
             .mutates_ui
         );
         assert!(
-            !request(Method::PaneRead(crate::schema::PaneReadParams {
+            !request(Method::DetectCapture(crate::schema::PaneTarget {
                 pane_id: "w1:p1".into(),
-                source: crate::schema::ReadSource::Recent,
-                format: crate::schema::ReadFormat::Text,
-                lines: None,
-                strip_ansi: false,
-                intent: crate::schema::ReadIntent::Passive,
             },))
             .method
             .traits()
@@ -162,12 +147,14 @@ mod tests {
         assert!(!pane_get.mutates_ui);
         assert!(pane_get.routine);
 
-        let title_clear =
-            Method::ClientWindowTitleClear(crate::schema::EmptyParams::default()).traits();
-        assert_eq!(title_clear.name, "client.window_title.clear");
-        assert!(!title_clear.runs_on_socket_thread);
-        assert!(title_clear.mutates_ui);
-        assert!(!title_clear.routine);
+        let pane_clear = Method::PaneClear(crate::schema::PaneTarget {
+            pane_id: "w1:p1".into(),
+        })
+        .traits();
+        assert_eq!(pane_clear.name, "pane.clear");
+        assert!(!pane_clear.runs_on_socket_thread);
+        assert!(pane_clear.mutates_ui);
+        assert!(!pane_clear.routine);
     }
 
     #[test]
@@ -177,7 +164,7 @@ mod tests {
         send_api_response(
             &respond_to,
             "request-1",
-            "pane.read",
+            "detect.capture",
             Ok(schema::ResponseResult::Ok {}),
         );
         assert_eq!(

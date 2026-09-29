@@ -2,7 +2,7 @@ use crate::server::input_wire::WirePaneInput;
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use shepr_protocol::{AttachScrollDirection, AttachScrollSource, ClientPaneInputEvent};
+use shepr_protocol::ClientPaneInputEvent;
 
 /// Why one piece of pane input did not reach the PTY.
 ///
@@ -131,120 +131,24 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
     }
 }
 
-pub(super) fn terminal_attach_mouse_position(
-    runtime: &shepr_mux::pane::PaneRuntime,
-    terminal_size: shepr_core::geometry::GridSize,
-    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
-    pixel_mouse: bool,
-    host_sgr_pixels_active: bool,
-    position: shepr_protocol::ClientMousePosition,
-    geometry: Option<shepr_protocol::ClientMouseGeometry>,
-) -> Option<shepr_protocol::ClientMousePosition> {
-    let runtime_size = runtime.grid_size();
-    let cell_fallback = |column, row| {
-        (column < runtime_size.cols.get() && row < runtime_size.rows.get())
-            .then_some(shepr_protocol::ClientMousePosition::Cell { column, row })
-    };
-    let (x, y, column, row) = match position {
-        shepr_protocol::ClientMousePosition::Cell { column, row } => {
-            return cell_fallback(column, row);
-        }
-        shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => (x, y, column, row),
-    };
-    let Some(geometry) = geometry else {
-        return cell_fallback(column, row);
-    };
-    let host_geometry = shepr_termio::input::mouse::HostPixelExtent::new(
-        geometry.cols,
-        geometry.rows,
-        geometry.width_px,
-        geometry.height_px,
-    )?;
-    if host_geometry.cell(x, y) != Some((column, row)) {
-        return None;
-    }
-    let exact = (|| {
-        let average_width = (geometry.width_px / u32::from(geometry.cols)).max(1);
-        let average_height = (geometry.height_px / u32::from(geometry.rows)).max(1);
-        let (child_width_px, child_height_px) = runtime.pixel_size()?;
-        if !pixel_mouse
-            || !host_sgr_pixels_active
-            || !runtime.sgr_pixel_mouse_enabled()
-            || terminal_size
-                != shepr_core::geometry::GridSize::clamped(geometry.cols, geometry.rows)
-            || runtime_size != shepr_core::geometry::GridSize::clamped(geometry.cols, geometry.rows)
-            || !cell_size.is_known()
-            || average_width != cell_size.width_px
-            || average_height != cell_size.height_px
-        {
-            return None;
-        }
-        let shepr_termio::input::mouse::Position::Pixels { x, y } =
-            (shepr_termio::input::mouse::HostPixels {
-                x,
-                y,
-                geometry: host_geometry,
-            })
-            .pane_position(
-                ratatui::layout::Rect::new(0, 0, geometry.cols, geometry.rows),
-                child_width_px,
-                child_height_px,
-            )?
-        else {
-            return None;
-        };
-        Some(shepr_protocol::ClientMousePosition::Pixels { x, y, column, row })
-    })();
-    exact.or_else(|| cell_fallback(column, row))
-}
-
-pub(super) fn apply_terminal_attach_scroll(
-    runtime: &shepr_mux::pane::PaneRuntime,
-    source: AttachScrollSource,
-    direction: AttachScrollDirection,
-    lines: u16,
-    column: Option<u16>,
-    row: Option<u16>,
-    modifiers: u8,
-) -> Result<(), PaneInputError> {
-    apply_scroll(
-        runtime,
-        source,
-        direction,
-        lines,
-        shepr_termio::input::mouse::Position::Cell {
-            column: column.unwrap_or(0),
-            row: row.unwrap_or(0),
-        },
-        modifiers,
-    )
+/// Which way a wheel event scrolls.
+#[derive(Clone, Copy)]
+enum ScrollDirection {
+    Up,
+    Down,
 }
 
 fn apply_scroll(
     runtime: &shepr_mux::pane::PaneRuntime,
-    source: AttachScrollSource,
-    direction: AttachScrollDirection,
+    direction: ScrollDirection,
     lines: u16,
     position: shepr_termio::input::mouse::Position,
     modifiers: u8,
 ) -> Result<(), PaneInputError> {
     let wheel_kind = match direction {
-        AttachScrollDirection::Up => MouseEventKind::ScrollUp,
-        AttachScrollDirection::Down => MouseEventKind::ScrollDown,
+        ScrollDirection::Up => MouseEventKind::ScrollUp,
+        ScrollDirection::Down => MouseEventKind::ScrollDown,
     };
-    if let AttachScrollSource::PageKey { input } = source {
-        let host_scroll = runtime
-            .plain_page_keys_use_host_scrollback()
-            .unwrap_or(false);
-        if host_scroll {
-            match direction {
-                AttachScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
-                AttachScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
-            }
-            return Ok(());
-        }
-        return apply_terminal_attach_input(runtime, input);
-    }
 
     match runtime.wheel_routing() {
         Some(shepr_mux::pane::WheelRouting::MouseReport) => {
@@ -269,23 +173,11 @@ fn apply_scroll(
             send_input(runtime, Bytes::from(bytes), "alternate scroll input")?;
         }
         Some(shepr_mux::pane::WheelRouting::HostScroll) | None => match direction {
-            AttachScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
-            AttachScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
+            ScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
+            ScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
         },
     }
     Ok(())
-}
-
-pub(super) fn apply_terminal_attach_input(
-    runtime: &shepr_mux::pane::PaneRuntime,
-    data: Vec<u8>,
-) -> Result<(), PaneInputError> {
-    runtime.scroll_reset();
-    if let Some(text) = shepr_termio::input::raw_input::complete_text_bracketed_paste(&data) {
-        send_paste(runtime, text.to_owned(), "terminal attach paste")
-    } else {
-        send_input(runtime, Bytes::from(data), "terminal attach input")
-    }
 }
 
 /// Applies a batch of client pane input events in order.
@@ -345,13 +237,12 @@ fn apply_client_pane_input_event(
         let bytes = match kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let direction = if kind == MouseEventKind::ScrollUp {
-                    AttachScrollDirection::Up
+                    ScrollDirection::Up
                 } else {
-                    AttachScrollDirection::Down
+                    ScrollDirection::Down
                 };
                 return apply_scroll(
                     runtime,
-                    AttachScrollSource::Wheel,
                     direction,
                     (*lines).max(1),
                     position,
@@ -505,75 +396,6 @@ mod tests {
         assert_eq!(failures.dropped_for_backpressure(), 3);
         let logged = failures.to_string();
         assert!(!logged.contains(secret), "{logged}");
-    }
-
-    #[tokio::test]
-    async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {
-        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
-        let position = shepr_protocol::ClientMousePosition::Pixels {
-            x: 121,
-            y: 81,
-            column: 12,
-            row: 4,
-        };
-
-        assert_eq!(
-            terminal_attach_mouse_position(
-                &runtime,
-                shepr_core::geometry::GridSize::clamped(20, 5),
-                shepr_termio::host_term::cell_size::HostCellSize {
-                    width_px: 10,
-                    height_px: 20,
-                },
-                true,
-                false,
-                position,
-                Some(shepr_protocol::ClientMouseGeometry {
-                    cols: 20,
-                    rows: 5,
-                    width_px: 200,
-                    height_px: 100,
-                }),
-            ),
-            Some(shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 })
-        );
-        assert_eq!(
-            terminal_attach_mouse_position(
-                &runtime,
-                shepr_core::geometry::GridSize::clamped(20, 5),
-                shepr_termio::host_term::cell_size::HostCellSize {
-                    width_px: 10,
-                    height_px: 20,
-                },
-                true,
-                false,
-                shepr_protocol::ClientMousePosition::Pixels {
-                    x: 120,
-                    y: 80,
-                    column: 12,
-                    row: 4,
-                },
-                Some(shepr_protocol::ClientMouseGeometry {
-                    cols: 20,
-                    rows: 5,
-                    width_px: 200,
-                    height_px: 100,
-                }),
-            ),
-            None
-        );
-        assert_eq!(
-            terminal_attach_mouse_position(
-                &runtime,
-                shepr_core::geometry::GridSize::clamped(80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
-                false,
-                false,
-                shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 },
-                None,
-            ),
-            Some(shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 })
-        );
     }
 
     #[test]

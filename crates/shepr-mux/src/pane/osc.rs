@@ -109,7 +109,7 @@ impl OscStreamCollector {
 }
 
 /// Retains the latest window title and OSC 9;4 progress payload emitted by
-/// the child process, for agent detection, the agent read API and the pane
+/// the child process, for agent detection, `detect.explain` and the pane
 /// title. Both come from the terminal core ([`apply_terminal_updates`]):
 /// the title is whatever the parser made of OSC 0/2, the CSI 22/23 t title
 /// stack and RIS; progress is the ConEmu `OSC 9 ; 4 ; ...` payload only, so

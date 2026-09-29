@@ -319,9 +319,7 @@ mod tests {
             done.send(result).expect("test precondition");
         });
         let mut registry = super::super::EndpointRegistry::new(transport, 1);
-        let input = ClientMessage::Input {
-            data: b"queued input".to_vec(),
-        };
+        let input = ClientMessage::PresentationSync("queued input".to_owned());
         assert_eq!(
             registry.send(&input),
             super::super::EndpointSendOutcome::Sent
@@ -366,11 +364,11 @@ mod tests {
                 shepr_protocol::read_message(&mut peer).expect("test precondition");
             done.send((first, second)).expect("test precondition");
         });
-        let input = ClientMessage::Input {
+        let input = ClientMessage::PresentationSync(
             // Comfortably above MAX_BATCH_BYTES, but small enough that the peer drains it
             // well within the flush deadline under CI load.
-            data: vec![b'x'; 256 * 1024],
-        };
+            "x".repeat(256 * 1024),
+        );
         transport.send(&input).expect("test precondition");
         transport
             .send(&ClientMessage::Detach)
@@ -403,10 +401,10 @@ mod tests {
         let mut transport = NativeEndpointTransport::with_lifetime(stream, Lifetime(done))
             .expect("test precondition");
         transport
-            .send(&ClientMessage::Input {
+            .send(&ClientMessage::PresentationSync(
                 // Large enough to overrun the socket buffer, small enough to fit one frame.
-                data: vec![b'x'; shepr_protocol::MAX_FRAME_SIZE - 64],
-            })
+                "x".repeat(shepr_protocol::MAX_FRAME_SIZE - 64),
+            ))
             .expect("test precondition");
         drop(transport);
         dropped
@@ -488,15 +486,10 @@ mod tests {
     #[test]
     fn stdin_burst_is_queued_in_order_without_worker_progress() {
         let (mut transport, receiver) = queued_transport(MAX_QUEUED_BATCHES);
-        let input = (0..128)
-            .map(|index| format!("{index:04}: ordered input burst\n"))
-            .collect::<String>();
-        let mut framer = shepr_termio::input::raw_input::RawInputByteFramer::<
-            shepr_termio::input::raw_input::NoHostReplies,
-        >::for_host_input();
         let mut expected = Vec::new();
-        for data in framer.push(input.as_bytes()) {
-            let message = ClientMessage::Input { data };
+        for index in 0..128 {
+            let message =
+                ClientMessage::PresentationSync(format!("{index:04}: ordered input burst\n"));
             shepr_protocol::write_message(&mut expected, &message).expect("test precondition");
             transport
                 .send(&message)
@@ -583,9 +576,9 @@ mod tests {
     fn an_oversized_frame_is_refused_before_it_is_queued() {
         let (mut transport, receiver) = queued_transport(MAX_QUEUED_BATCHES);
         let error = transport
-            .send(&ClientMessage::Input {
-                data: vec![b'x'; shepr_protocol::MAX_FRAME_SIZE],
-            })
+            .send(&ClientMessage::PresentationSync(
+                "x".repeat(shepr_protocol::MAX_FRAME_SIZE),
+            ))
             .expect_err("a frame over the cap must not be sent");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(transport.queued_bytes.load(Ordering::Acquire), 0);
@@ -596,9 +589,9 @@ mod tests {
     fn a_full_queue_is_a_connection_failure_not_silent_input_loss() {
         let (mut transport, _receiver) = queued_transport(1);
         transport
-            .send(&ClientMessage::Input {
-                data: vec![b'x'; MAX_BATCH_BYTES],
-            })
+            .send(&ClientMessage::PresentationSync(
+                "x".repeat(MAX_BATCH_BYTES),
+            ))
             .expect("test precondition");
         let queued = transport.queued_bytes.load(Ordering::Acquire);
         assert_eq!(

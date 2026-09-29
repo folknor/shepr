@@ -310,9 +310,8 @@ impl ClientShellState {
             RawInputEvent::HostColorSchemeChanged(_) => {
                 // A dark/light switch changes the host's default and palette
                 // colours too. Re-query them so panes and the selection
-                // highlight (`host_background`) follow. Direct attach does the
-                // same; the stdin framer arms itself for the replies whenever
-                // it tracks scheme changes.
+                // highlight (`host_background`) follow. The stdin framer arms
+                // itself for the replies whenever it tracks scheme changes.
                 outcome.query_host_theme = true;
             }
             RawInputEvent::HostDefaultColor { .. }
@@ -978,7 +977,7 @@ impl ClientShellState {
     fn push_focused_paste(&mut self, text: String, outcome: &mut ClientShellInput) {
         let size = text.len();
         if size > shepr_protocol::MAX_INPUT_PAYLOAD {
-            outcome.repaint |= self.receive_endpoint_error(crate::attach::paste_rejected_notice(
+            outcome.repaint |= self.receive_endpoint_error(paste_rejected_notice(
                 size,
                 shepr_protocol::MAX_INPUT_PAYLOAD,
             ));
@@ -1006,6 +1005,11 @@ impl ClientShellState {
             super::push_target_event(pane_id, event, outcome);
         }
     }
+}
+
+/// The notice shown for a paste over the server's per-message input limit.
+fn paste_rejected_notice(size: usize, max: usize) -> String {
+    format!("Paste is {size} bytes; Shepr's limit is {max} bytes")
 }
 
 #[cfg(test)]

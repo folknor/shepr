@@ -39,15 +39,6 @@ mod tests {
     // ---- Round-trip: ClientMessage ----
 
     #[test]
-    fn client_hello_roundtrip() -> TestResult {
-        let msg = ClientMessage::TerminalHello {
-            geometry: super::TerminalGeometry::new(80, 24, 8, 16, true),
-        };
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
     fn endpoint_hello_roundtrip() -> TestResult {
         let msg = ClientMessage::EndpointHello(crate::endpoint::EndpointClientHello {
             geometry: super::TerminalGeometry::new(80, 24, 8, 16, true),
@@ -62,15 +53,6 @@ mod tests {
     fn client_shell_resize_roundtrip() -> TestResult {
         let msg = ClientMessage::ClientShellResize {
             geometry: super::TerminalGeometry::new(74, 29, 8, 16, true),
-        };
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
-    fn client_input_roundtrip() -> TestResult {
-        let msg = ClientMessage::Input {
-            data: vec![0x1b, 0x5b, 0x41], // ESC [ A (up arrow)
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -170,59 +152,8 @@ mod tests {
     }
 
     #[test]
-    fn client_input_large_multilingual_payload_roundtrip() -> TestResult {
-        let text =
-            "你好，今天我们测试一段比较长的语音输入。こんにちは。안녕하세요.\u{1F642}".repeat(1024);
-        assert!(text.len() > 64 * 1024);
-        assert!(text.len() < MAX_FRAME_SIZE);
-        let msg = ClientMessage::Input {
-            data: text.as_bytes().to_vec(),
-        };
-
-        let encoded = codec::to_vec(&msg)?;
-        let (decoded, consumed): (ClientMessage, _) = codec::from_slice(&encoded)?;
-
-        assert_eq!(consumed, encoded.len());
-        assert_eq!(decoded, msg);
-        Ok(())
-    }
-
-    #[test]
-    fn client_resize_roundtrip() -> TestResult {
-        let msg = ClientMessage::Resize {
-            geometry: super::TerminalGeometry::new(80, 24, 8, 16, true),
-        };
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
     fn client_detach_roundtrip() -> TestResult {
         let msg = ClientMessage::Detach;
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
-    fn client_attach_terminal_roundtrip() -> TestResult {
-        let msg = ClientMessage::AttachTerminal {
-            terminal_id: "term_123_1".parse()?,
-            takeover: true,
-        };
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
-    fn client_attach_scroll_roundtrip() -> TestResult {
-        let msg = ClientMessage::AttachScroll {
-            source: AttachScrollSource::Wheel,
-            direction: AttachScrollDirection::Up,
-            lines: 3,
-            column: Some(12),
-            row: Some(7),
-            modifiers: crate::WireModifiers::from_bits_retain(4),
-        };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
     }
@@ -443,7 +374,6 @@ mod tests {
                     .map_err(|_| std::io::Error::other("invalid test pane id"))?,
                 workspace_id: "w1".into(),
                 tab_id: "w1:t1".into(),
-                name: Some("codex".into()),
                 agent: Some("codex".into()),
                 terminal_title: None,
                 terminal_title_stripped: None,
@@ -463,10 +393,6 @@ mod tests {
             reason: Some(crate::ShutdownReason::Message("updating".to_owned())),
         };
         assert_eq!(roundtrip(&msg)?, msg);
-        let detached = ServerMessage::ServerShutdown {
-            reason: Some(crate::ShutdownReason::Detached),
-        };
-        assert_eq!(roundtrip(&detached)?, detached);
         Ok(())
     }
 
@@ -489,41 +415,29 @@ mod tests {
     }
 
     #[test]
-    fn server_terminal_frame_roundtrip() -> TestResult {
-        let msg = ServerMessage::Terminal(TerminalFrame {
-            bytes: b"\x1b[1;1Hhello".to_vec(),
-        });
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
     fn byte_fields_encode_as_length_then_raw_bytes() -> TestResult {
         // The byte-buffer fields must keep the plain `Vec<u8>` wire layout
         // (varint length, raw bytes) while decoding in one copy.
         let data = vec![0u8, 1, 0x7f, 0x80, 0xff];
-        let encoded = codec::to_vec(&ClientMessage::Input { data: data.clone() })?;
-        assert_eq!(encoded.first(), Some(&1), "Input is variant 1");
-        assert_eq!(encoded.get(1), Some(&5), "length prefix");
-        assert_eq!(encoded.get(2..), Some(data.as_slice()));
-        assert_eq!(codec::to_vec(&data)?, encoded.get(1..).unwrap_or_default());
-
-        let large = ClientMessage::Input {
-            data: (0..=255u8).cycle().take(300_000).collect(),
+        let chunk = |data: Vec<u8>| ServerMessage::ClientShellEndpointResponseChunk {
+            boot_id: "1-1".into(),
+            request_id: "request-a".into(),
+            final_chunk: true,
+            data,
         };
+        let encoded = codec::to_vec(&chunk(data.clone()))?;
+        // The data field is last: varint length, then the raw bytes.
+        assert_eq!(
+            encoded.get(encoded.len() - 6..),
+            Some([&[5u8][..], data.as_slice()].concat().as_slice())
+        );
+        assert_eq!(
+            codec::to_vec(&data)?.as_slice(),
+            encoded.get(encoded.len() - 6..).unwrap_or_default()
+        );
+
+        let large = chunk((0..=255u8).cycle().take(300_000).collect());
         assert_eq!(roundtrip(&large)?, large);
-
-        let page_key = ClientMessage::AttachScroll {
-            source: AttachScrollSource::PageKey {
-                input: b"\x1b[5~".to_vec(),
-            },
-            direction: AttachScrollDirection::Up,
-            lines: 1,
-            column: None,
-            row: None,
-            modifiers: crate::WireModifiers::NONE,
-        };
-        assert_eq!(roundtrip(&page_key)?, page_key);
 
         Ok(())
     }
@@ -546,18 +460,8 @@ mod tests {
     }
 
     #[test]
-    fn direct_terminal_keyboard_mode_roundtrip() -> TestResult {
-        let msg = ServerMessage::DirectTerminalKeyboardProtocol {
-            flags: KittyKeyboardFlags::from_bits_retain(15),
-            modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined,
-        };
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
-    fn direct_terminal_notice_roundtrip() -> TestResult {
-        let msg = ServerMessage::DirectTerminalNotice {
+    fn client_shell_error_roundtrip() -> TestResult {
+        let msg = ServerMessage::ClientShellError {
             kind: crate::NoticeKind::PasteRejected { size: 20, max: 10 },
         };
         assert_eq!(roundtrip(&msg)?, msg);
@@ -568,7 +472,7 @@ mod tests {
 
     #[test]
     fn framing_small_message_roundtrip() {
-        let msg = ClientMessage::TerminalHello {
+        let msg = ClientMessage::ClientShellResize {
             geometry: super::TerminalGeometry::new(80, 24, 8, 16, false),
         };
         let mut buf = Vec::new();
@@ -648,8 +552,8 @@ mod tests {
         let mut expected = Vec::new();
 
         for i in 0..150u32 {
-            let msg = match i % 5 {
-                0 => ClientMessage::TerminalHello {
+            let msg = match i % 4 {
+                0 => ClientMessage::ClientShellResize {
                     geometry: super::TerminalGeometry::new(
                         80 + u16::try_from(i % 40).unwrap_or(u16::MAX),
                         24 + u16::try_from(i % 20).unwrap_or(u16::MAX),
@@ -658,22 +562,11 @@ mod tests {
                         i % 2 == 0,
                     ),
                 },
-                1 => ClientMessage::Input {
-                    data: vec![u8::try_from(i % 256).unwrap_or(u8::MAX); (i as usize % 50) + 1],
-                },
+                1 => ClientMessage::PresentationSync("x".repeat((i as usize % 50) + 1)),
                 2 => ClientMessage::ClientShellFocus {
                     focused: i % 2 == 0,
                 },
-                3 => ClientMessage::Resize {
-                    geometry: super::TerminalGeometry::new(
-                        100 + u16::try_from(i % 30).unwrap_or(u16::MAX),
-                        30 + u16::try_from(i % 10).unwrap_or(u16::MAX),
-                        8,
-                        16,
-                        i % 2 == 0,
-                    ),
-                },
-                4 => ClientMessage::Detach,
+                3 => ClientMessage::Detach,
                 _ => unreachable!(),
             };
             write_message(&mut buf, &msg).expect("test precondition");
@@ -757,9 +650,7 @@ mod tests {
     #[test]
     fn framing_partial_read_reassembly() {
         // Simulate partial reads by using a reader that yields small chunks.
-        let msg = ClientMessage::Input {
-            data: vec![42; 500], // 500-byte input payload
-        };
+        let msg = ClientMessage::PresentationSync("x".repeat(500));
         let mut full_buf = Vec::new();
         write_message(&mut full_buf, &msg).expect("test precondition");
 
@@ -1098,7 +989,7 @@ mod tests {
     #[test]
     fn read_message_accepts_exact_payload() {
         // A normally-framed message should decode without error.
-        let msg = ClientMessage::TerminalHello {
+        let msg = ClientMessage::ClientShellResize {
             geometry: super::TerminalGeometry::new(80, 24, 8, 16, false),
         };
         let mut buf = Vec::new();
@@ -1109,13 +1000,11 @@ mod tests {
 
     #[test]
     fn write_message_rejects_oversized_payload() {
-        // Input is variant 1 (one byte) followed by a 3-byte varint length for
-        // payloads this size, so `data` of MAX_FRAME_SIZE - 4 bytes encodes to
-        // exactly MAX_FRAME_SIZE.
+        // PresentationSync is one variant-index byte followed by a 3-byte
+        // varint length for payloads this size, so a string of
+        // MAX_FRAME_SIZE - 4 bytes encodes to exactly MAX_FRAME_SIZE.
         let envelope = 4;
-        let at_limit = ClientMessage::Input {
-            data: vec![b'x'; MAX_FRAME_SIZE - envelope],
-        };
+        let at_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - envelope));
         assert_eq!(
             codec::encoded_len(&at_limit).expect("test precondition"),
             MAX_FRAME_SIZE
@@ -1125,9 +1014,7 @@ mod tests {
         let decoded: ClientMessage = read_message(&mut buf.as_slice()).expect("test precondition");
         assert_eq!(decoded, at_limit);
 
-        let over_limit = ClientMessage::Input {
-            data: vec![b'x'; MAX_FRAME_SIZE - envelope + 1],
-        };
+        let over_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - envelope + 1));
         let mut buf = Vec::new();
         match write_message(&mut buf, &over_limit) {
             Err(FramingError::Oversized { claimed, max }) => {
@@ -1152,9 +1039,7 @@ mod tests {
             read_message(&mut frame.as_slice()).expect("test precondition");
         assert_eq!(decoded, msg);
 
-        let over_limit = ClientMessage::Input {
-            data: vec![b'x'; MAX_FRAME_SIZE],
-        };
+        let over_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE));
         assert!(matches!(
             encode_frame(&over_limit),
             Err(FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
@@ -1170,13 +1055,11 @@ mod tests {
         let (mut a, mut b) = UnixStream::pair().expect("socketpair");
 
         let messages = vec![
-            ClientMessage::TerminalHello {
+            ClientMessage::ClientShellResize {
                 geometry: super::TerminalGeometry::new(200, 60, 8, 16, true),
             },
-            ClientMessage::Input {
-                data: b"hello world".to_vec(),
-            },
-            ClientMessage::Resize {
+            ClientMessage::PresentationSync("hello world".to_owned()),
+            ClientMessage::ClientShellResize {
                 geometry: super::TerminalGeometry::new(100, 30, 8, 16, true),
             },
             ClientMessage::Detach,

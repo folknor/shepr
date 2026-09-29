@@ -7,27 +7,7 @@ use std::time::Duration;
 use crate::server::client_transport::{ClientWriter, RenderLaneReceiver};
 use bytes::Bytes;
 use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
-use shepr_protocol::{MAX_FRAME_SIZE, RenderEncoding};
-
-impl HeadlessServer {
-    /// Resolves a terminal id string to the live `TerminalId`.
-    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&shepr_protocol::TerminalId> {
-        let terminal_id = terminal_id.parse().ok()?;
-        self.app
-            .state
-            .terminals
-            .get_key_value(&terminal_id)
-            .map(|(id, _)| id)
-    }
-
-    fn runtime_for_terminal_id_string(
-        &self,
-        terminal_id: &str,
-    ) -> Option<&shepr_mux::pane::PaneRuntime> {
-        let terminal_id = self.terminal_id_by_string(terminal_id)?;
-        self.app.terminal_runtimes.get(terminal_id)
-    }
-}
+use shepr_protocol::MAX_FRAME_SIZE;
 
 pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
@@ -90,9 +70,6 @@ pub(crate) fn dispatch_lifecycle_messages(
 #[cfg(test)]
 #[path = "already_running.rs"]
 mod already_running_tests;
-#[cfg(test)]
-#[path = "pane_move.rs"]
-mod pane_move_tests;
 #[path = "server_stop.rs"]
 mod server_stop_tests;
 #[cfg(test)]
@@ -177,9 +154,6 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         shell_session_cache: None,
         shell_session_generation: 0,
         sent_window_title: None,
-        api_window_title: None,
-        pending_alt_screen_reads: Vec::new(),
-        deferred_alt_screen_reads: Vec::new(),
         immediate_pty_sources_dirty: true,
         host_input_modes_dirty: true,
         retained_surface_fallback_reason: None,
@@ -217,13 +191,6 @@ fn frame_text(frame: &FrameData) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn read_server_shutdown_reason(bytes: Vec<u8>) -> Option<String> {
-    match read_server_message(bytes) {
-        ServerMessage::ServerShutdown { reason } => reason.map(|reason| reason.to_string()),
-        other => panic!("expected shutdown, got {other:?}"),
-    }
 }
 
 #[test]
@@ -358,8 +325,8 @@ fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::Pan
     server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
         request: shepr_api::schema::Request {
             id: "list-titles".into(),
-            method: shepr_api::schema::Method::PaneList(
-                shepr_api::schema::PaneListParams::default(),
+            method: shepr_api::schema::Method::SessionSnapshot(
+                shepr_api::schema::EmptyParams::default(),
             ),
         },
         respond_to,
@@ -368,10 +335,10 @@ fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::Pan
         &crate::test_support::test_json(&response_rx.recv().expect("test precondition")),
     )
     .expect("test precondition");
-    let shepr_api::schema::ResponseResult::PaneList { panes } = response.result else {
-        panic!("expected pane list");
+    let shepr_api::schema::ResponseResult::SessionSnapshot { snapshot } = response.result else {
+        panic!("expected session snapshot");
     };
-    panes
+    snapshot.panes
 }
 
 fn pane_updated_events(event_hub: &shepr_api::EventHub) -> usize {
@@ -438,15 +405,13 @@ fn assert_server_unavailable(
 }
 
 #[tokio::test]
-async fn complete_shutdown_answers_queued_and_deferred_requests_and_closes_the_channel() {
+async fn complete_shutdown_answers_queued_requests_and_closes_the_channel() {
     let mut server = test_headless_server();
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     server.app.api_rx = api_rx;
 
     let (queued, queued_rx) = shutdown_test_request("queued");
     api_tx.send(queued).expect("test precondition");
-    let (deferred, deferred_rx) = shutdown_test_request("deferred");
-    server.defer_alt_screen_read_request(deferred);
 
     server.initiate_shutdown();
     server
@@ -455,8 +420,6 @@ async fn complete_shutdown_answers_queued_and_deferred_requests_and_closes_the_c
         .expect("shutdown completes");
 
     assert_server_unavailable(&queued_rx, "queued");
-    assert_server_unavailable(&deferred_rx, "deferred");
-    assert!(!server.has_deferred_alt_screen_read_requests());
     // A request dispatched after cleanup fails at the sender, which the API
     // thread turns into `server_unavailable` at once.
     let (late, _late_rx) = shutdown_test_request("late");
@@ -496,7 +459,7 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
     server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
         request: shepr_api::schema::Request {
             id: "headless_list_after_events".into(),
-            method: shepr_api::schema::Method::WorkspaceList(
+            method: shepr_api::schema::Method::SessionSnapshot(
                 shepr_api::schema::EmptyParams::default(),
             ),
         },
@@ -509,7 +472,7 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
         serde_json::from_str(&crate::test_support::test_json(&response))
             .expect("test precondition");
 
-    assert_eq!(response["result"]["type"], "workspace_list");
+    assert_eq!(response["result"]["type"], "session_snapshot");
     assert!(server.app.event_rx.try_recv().is_err());
 }
 
@@ -526,7 +489,6 @@ fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             Some(client_tx),
         ),
     );
@@ -582,7 +544,6 @@ fn window_title_waits_for_a_foreground_client_to_exist() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             Some(client_tx),
         ),
     );
@@ -606,7 +567,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
         Some(Some("herd".to_string()))
     );
 
-    // ClientConnected assigns the foreground client directly rather than
+    // ClientShellConnected assigns the foreground client directly rather than
     // going through promote_client_to_foreground, so the cache must notice
     // the new client on its own.
     let (client_tx, second_control_rx, _render_rx) = test_client_writer();
@@ -616,7 +577,6 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            RenderEncoding::SemanticFrame,
             Some(client_tx),
         ),
     );
@@ -743,56 +703,6 @@ fn empty_window_title_config_leaves_the_outer_title_alone() {
 }
 
 #[test]
-fn api_window_title_wins_until_it_is_cleared() {
-    let (mut server, control_rx) = window_title_test_server();
-    server.app.configure_window_title("{workspace}");
-
-    server
-        .handle_client_window_title_api(Some("shepr api".into()))
-        .expect("test precondition");
-    assert_eq!(
-        next_window_title(&control_rx),
-        Some(Some("shepr api".to_string()))
-    );
-
-    server.app.state.workspaces[0].custom_name = Some("ops".into());
-    server.sync_window_title();
-    assert!(no_window_title(&control_rx));
-
-    // Clearing hands the title back to ui.window_title, not to "shepr".
-    server
-        .handle_client_window_title_api(None)
-        .expect("test precondition");
-    assert_eq!(
-        next_window_title(&control_rx),
-        Some(Some("ops".to_string()))
-    );
-
-    shutdown_test_runtimes(&mut server);
-}
-
-#[test]
-fn clearing_the_api_title_falls_back_to_shepr_when_window_titles_are_disabled() {
-    let (mut server, control_rx) = window_title_test_server();
-    server.app.configure_window_title("");
-
-    server
-        .handle_client_window_title_api(Some("shepr api".into()))
-        .expect("test precondition");
-    assert_eq!(
-        next_window_title(&control_rx),
-        Some(Some("shepr api".to_string()))
-    );
-
-    server
-        .handle_client_window_title_api(None)
-        .expect("test precondition");
-    assert_eq!(next_window_title(&control_rx), Some(None));
-
-    shutdown_test_runtimes(&mut server);
-}
-
-#[test]
 fn a_newly_promoted_client_gets_the_window_title_again() {
     let (mut server, first_control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}");
@@ -810,7 +720,6 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            RenderEncoding::SemanticFrame,
             Some(client_tx),
         ),
     );
@@ -1096,33 +1005,6 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
         other => panic!("expected client shell endpoint response, got {other:?}"),
     }
     shutdown_test_runtimes(&mut server);
-}
-
-#[test]
-fn terminal_client_endpoint_request_error_removes_client() {
-    let mut server = test_headless_server();
-    let (writer, _control_rx, _render_rx) = test_client_writer();
-    let client_id = ClientId::test_new(42);
-    assert!(!server.handle_server_event(ServerEvent::ClientConnected {
-        client_id,
-        cols: 80,
-        rows: 24,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-        writer,
-    }));
-
-    assert!(
-        server.handle_server_event(ServerEvent::ClientShellEndpointRequestError {
-            client_id,
-            boot_id: shepr_test_fixtures::fixed_boot_id(2),
-            request_id: "request".into(),
-            code: "unsupported_method",
-            message: "unsupported".into(),
-        })
-    );
-    assert!(!server.clients.contains_key(&client_id));
 }
 
 #[tokio::test]
@@ -2173,16 +2055,13 @@ async fn late_retained_fallback_leaves_all_client_baselines_unchanged() {
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(8)));
-    let crate::server::render_stream::ClientRenderState::Semantic { last_surface, .. } =
-        &mut server
-            .clients
-            .get_mut(&8)
-            .expect("test precondition")
-            .render_state
-    else {
-        panic!("semantic client");
-    };
-    let linked = last_surface.as_mut().expect("test precondition");
+    let linked = server
+        .clients
+        .get_mut(&8)
+        .expect("test precondition")
+        .render_state
+        .last_surface_mut()
+        .expect("test precondition");
     linked.frame.hyperlinks.push("https://example.com".into());
     linked.frame.cells[0].hyperlink = Some(0);
     let before = [7, 8].map(|id| {
@@ -3238,7 +3117,7 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
 }
 
 #[tokio::test]
-async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
+async fn public_pane_focus_replaces_a_diverged_client_shell_projection() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("first");
     let first_pane = first.tabs()[0].root_pane();
@@ -3290,34 +3169,25 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     let diverged_surface = recv_pane_surface(&mut render_rx, "diverged surface");
     assert!(frame_text(&diverged_surface.frame).contains("SECOND_WORKSPACE"));
 
-    server
-        .app
-        .event_tx
-        .try_send(AppEvent::AgentProcessDetected {
-            pane_id: first_pane,
-            agent: shepr_agent::detect::Agent::Claude,
-            observed_at: Instant::now(),
-        })
-        .expect("test precondition");
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
         request: shepr_api::schema::Request {
-            id: "focus-first-agent".into(),
-            method: shepr_api::schema::Method::AgentFocus(shepr_api::schema::AgentTarget {
-                target: first_pane_id.clone().to_string(),
+            id: "focus-first-pane".into(),
+            method: shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
+                pane_id: first_pane_id.clone().to_string(),
             }),
         },
         respond_to,
     });
     let response: shepr_api::schema::SuccessResponse = serde_json::from_str(
-        &crate::test_support::test_json(&response_rx.recv().expect("agent focus response")),
+        &crate::test_support::test_json(&response_rx.recv().expect("pane focus response")),
     )
     .expect("test precondition");
-    let shepr_api::schema::ResponseResult::AgentInfo { agent } = response.result else {
-        panic!("expected agent info");
+    let shepr_api::schema::ResponseResult::PaneInfo { pane } = response.result else {
+        panic!("expected pane info");
     };
-    assert_eq!(agent.pane_id, first_pane_id);
-    assert!(agent.focused);
+    assert_eq!(pane.pane_id, first_pane_id);
+    assert!(pane.focused);
     assert_eq!(server.app.state.active_index(), Some(0));
     let location = server.clients[&9]
         .shell_state()
@@ -3338,7 +3208,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         replacement.focused_workspace_id.as_deref(),
         Some(first_workspace_id.as_str())
     );
-    let replacement_surface = recv_pane_surface(&mut render_rx, "agent focus replacement surface");
+    let replacement_surface = recv_pane_surface(&mut render_rx, "pane focus replacement surface");
     assert!(frame_text(&replacement_surface.frame).contains("FIRST_AGENT"));
     assert!(!frame_text(&replacement_surface.frame).contains("SECOND_WORKSPACE"));
     shutdown_test_runtimes(&mut server);
@@ -3413,12 +3283,11 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         .expect("test precondition");
     server.clients.insert(
         11,
-        ClientConnection::new_with_mode(
-            ClientConnectionMode::shell(),
+        ClientConnection::with_shell(
+            ClientShellState::active(),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             None,
         ),
     );
@@ -3533,7 +3402,6 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             None,
         ),
     );
@@ -3596,12 +3464,11 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         .expect("test precondition");
     server.clients.insert(
         11,
-        ClientConnection::new_with_mode(
-            ClientConnectionMode::shell(),
+        ClientConnection::with_shell(
+            ClientShellState::active(),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             None,
         ),
     );
@@ -3660,12 +3527,11 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         .expect("test precondition");
     server.clients.insert(
         11,
-        ClientConnection::new_with_mode(
-            ClientConnectionMode::shell(),
+        ClientConnection::with_shell(
+            ClientShellState::active(),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             None,
         ),
     );
@@ -3706,12 +3572,11 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
         .expect("test precondition");
     server.clients.insert(
         11,
-        ClientConnection::new_with_mode(
-            ClientConnectionMode::shell(),
+        ClientConnection::with_shell(
+            ClientShellState::active(),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             None,
         ),
     );
@@ -3758,7 +3623,6 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             Some(writer),
         ),
     );
@@ -3846,7 +3710,6 @@ fn retained_test_server_with_control(
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             Some(client_tx),
         ),
     );
@@ -3868,7 +3731,6 @@ fn client_shell_host_theme_follows_foreground_client() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             None,
         ),
     );
@@ -3878,7 +3740,6 @@ fn client_shell_host_theme_follows_foreground_client() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            RenderEncoding::SemanticFrame,
             None,
         ),
     );
@@ -3965,81 +3826,40 @@ fn client_shell_host_theme_follows_foreground_client() {
     assert!(!server.app.state.host_terminal_appearance_explicit);
 }
 
-#[test]
-fn terminal_clients_store_known_cell_geometry_independently_of_pixel_mouse() {
+#[tokio::test]
+async fn every_rejected_paste_is_reported_to_the_client_shell() {
     let mut server = test_headless_server();
-
-    let (writer, _control_rx, _render_rx) = test_client_writer();
-    assert!(!server.handle_server_event(ServerEvent::ClientConnected {
-        client_id: ClientId::test_new(7),
-        cols: 80,
-        rows: 24,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: true,
-        writer,
-    }));
-    assert!(!server.clients[&7].pixel_mouse);
-    assert_eq!(
-        server.clients[&7].cell_size,
-        shepr_termio::host_term::cell_size::HostCellSize::default()
-    );
-
-    let (writer, _control_rx, _render_rx) = test_client_writer();
-    assert!(!server.handle_server_event(ServerEvent::ClientConnected {
-        client_id: ClientId::test_new(8),
-        cols: 80,
-        rows: 24,
-        cell_width_px: 10,
-        cell_height_px: 20,
-        pixel_mouse: false,
-        writer,
-    }));
-    assert!(!server.clients[&8].pixel_mouse);
-    assert_eq!(
-        server.clients[&8].cell_size,
-        shepr_termio::host_term::cell_size::HostCellSize {
-            width_px: 10,
-            height_px: 20,
-        }
-    );
-}
-
-#[test]
-fn terminal_attach_rejects_missing_terminal_and_removes_client() {
-    let mut server = test_headless_server();
-    let (writer, control_rx, _render_rx) = test_client_writer();
-
-    assert!(!server.handle_server_event(ServerEvent::ClientConnected {
-        client_id: ClientId::test_new(7),
-        cols: 80,
-        rows: 24,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-        writer,
-    }));
-    assert!(matches!(
-        server.clients.get(&7).map(|client| &client.mode),
-        Some(ClientConnectionMode::TerminalPending)
-    ));
-
-    let missing = shepr_protocol::TerminalId::alloc();
-    assert!(
-        !server.handle_server_event(ServerEvent::ClientAttachTerminal {
-            client_id: ClientId::test_new(7),
-            terminal_id: missing.clone(),
-            takeover: false,
+    let (control_rx, _render_rx) = connect_test_shell(&mut server, 7, 80, 23);
+    let notices = || {
+        std::iter::from_fn(|| {
+            control_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .ok()
         })
+        .map(read_server_message)
+        .filter_map(|message| match message {
+            ServerMessage::ClientShellError { kind } => Some(kind.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+    };
+
+    // Every rejected paste is its own user action and is reported.
+    for _ in 0..2 {
+        server.handle_server_event(ServerEvent::ClientPasteRejected {
+            client_id: ClientId::test_new(7),
+            size: 2_000_000,
+            max: 1_048_576,
+        });
+    }
+    let pastes = notices();
+    assert_eq!(pastes.len(), 2);
+    assert!(pastes[0].starts_with("Paste rejected"));
+    assert!(
+        server.clients.contains_key(&7),
+        "notices never end the connection"
     );
-    assert!(!server.clients.contains_key(&7));
-    let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
-    assert_eq!(
-        reason,
-        Some(format!(
-            "terminal attach failed: terminal {missing} not found"
-        ))
-    );
+    shutdown_test_runtimes(&mut server);
 }
 
 fn with_terminal_session_test_server(
@@ -4068,400 +3888,6 @@ fn with_terminal_session_test_server(
     drop(server);
     drop(_runtime_guard);
     rt.shutdown_timeout(Duration::from_millis(100));
-}
-
-fn connect_pending_terminal_client(server: &mut HeadlessServer, client_id: u64) {
-    let _control_rx = connect_pending_terminal_client_with_control_rx(server, client_id);
-}
-
-fn connect_pending_terminal_client_with_control_rx(
-    server: &mut HeadlessServer,
-    client_id: u64,
-) -> std::sync::mpsc::Receiver<Vec<u8>> {
-    let (writer, control_rx, _render_rx) = test_client_writer();
-    assert!(!server.handle_server_event(ServerEvent::ClientConnected {
-        client_id: client_id.into(),
-        cols: 100,
-        rows: 30,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-        writer,
-    }));
-    assert!(matches!(
-        server.clients.get(&client_id).map(|client| &client.mode),
-        Some(ClientConnectionMode::TerminalPending)
-    ));
-    control_rx
-}
-
-#[test]
-fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
-    with_terminal_session_test_server(
-        |server, terminal_id, _terminal_id_string, public_pane_id| {
-            let terminal = server
-                .app
-                .state
-                .terminals
-                .get_mut(&terminal_id)
-                .expect("terminal");
-            terminal.detected_agent = Some(shepr_agent::detect::Agent::Claude);
-            terminal.state = shepr_agent::detect::AgentState::Working;
-            server.app.terminal_runtimes.insert(
-                terminal_id,
-                shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"\x1b[?1049hworking"),
-            );
-            let request = shepr_api::schema::Request {
-                id: "read".into(),
-                method: shepr_api::schema::Method::AgentRead(shepr_api::schema::AgentReadParams {
-                    target: public_pane_id.clone(),
-                    source: shepr_api::schema::ReadSource::Recent,
-                    lines: Some(200),
-                    format: shepr_api::schema::ReadFormat::Text,
-                    strip_ansi: true,
-                }),
-            };
-
-            assert_eq!(
-                server.agent_read_not_idle_error(&request),
-                Some(shepr_api::schema::ErrorBody {
-                    code: "agent_not_idle".into(),
-                    message: format!(
-                        "cannot read 200 lines while {public_pane_id} is working: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible"
-                    ),
-                })
-            );
-
-            let mut default_request = request.clone();
-            let shepr_api::schema::Method::AgentRead(params) = &mut default_request.method else {
-                unreachable!();
-            };
-            params.lines = None;
-            assert_eq!(server.agent_read_not_idle_error(&default_request), None);
-
-            let mut visible_request = request;
-            let shepr_api::schema::Method::AgentRead(params) = &mut visible_request.method else {
-                unreachable!();
-            };
-            params.source = shepr_api::schema::ReadSource::Visible;
-            assert_eq!(server.agent_read_not_idle_error(&visible_request), None);
-        },
-    );
-}
-
-#[test]
-fn terminal_attach_disconnect_restores_client_shell_pane_size() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime");
-    let _runtime_guard = rt.enter();
-    let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("test");
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let pane_id = workspace.tabs()[0].root_pane();
-    let terminal_id = workspace.terminal_id(pane_id).expect("terminal id").clone();
-    let terminal_id_string = terminal_id.to_string();
-    server.app.state.workspaces = vec![workspace];
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_active_index(Some(0));
-    server.app.state.set_selected_index(Some(0));
-    let second_tab_id = server
-        .app
-        .public_tab_id(0, second_tab)
-        .expect("second tab id");
-    server.app.terminal_runtimes.insert(
-        terminal_id.clone(),
-        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
-    );
-    server.clients.insert(
-        1,
-        ClientConnection::new(
-            (120, 40),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
-            RenderEncoding::SemanticFrame,
-            None,
-        ),
-    );
-    server
-        .clients
-        .set_foreground_client_id(Some(ClientId::test_new(1)));
-    server.sync_foreground_client_state();
-    server.reconcile_client_shell_locations();
-    assert!(server.claim_unowned_shell_tab_geometry(ClientId::test_new(1), true));
-    let expected_shell_size = server
-        .app
-        .terminal_runtimes
-        .get(&terminal_id)
-        .expect("runtime")
-        .current_size();
-
-    connect_pending_terminal_client(&mut server, 2);
-    assert!(
-        server.handle_server_event(ServerEvent::ClientAttachTerminal {
-            client_id: ClientId::test_new(2),
-            terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-            takeover: false,
-        })
-    );
-    assert_eq!(
-        server.clients.foreground_client_id(),
-        Some(ClientId::test_new(1))
-    );
-    assert!(
-        server
-            .app
-            .state
-            .direct_attach_resize_locks
-            .contains(&terminal_id)
-    );
-    assert_eq!(
-        server
-            .app
-            .terminal_runtimes
-            .get(&terminal_id)
-            .expect("runtime")
-            .current_size(),
-        (30, 100)
-    );
-
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(1), &second_tab_id));
-    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
-        client_id: ClientId::test_new(2)
-    }));
-    assert!(
-        !server
-            .app
-            .state
-            .direct_attach_resize_locks
-            .contains(&terminal_id)
-    );
-    assert_eq!(
-        server
-            .app
-            .terminal_runtimes
-            .get(&terminal_id)
-            .expect("runtime")
-            .current_size(),
-        expected_shell_size
-    );
-
-    drop(server);
-    drop(_runtime_guard);
-    rt.shutdown_timeout(Duration::from_millis(100));
-}
-
-#[test]
-fn terminal_attach_is_rejected_during_alt_screen_read() {
-    with_terminal_session_test_server(|server, terminal_id, terminal_id_string, _| {
-        let (respond_to, _response_rx) = std::sync::mpsc::channel();
-        server.push_pending_alt_screen_read(
-            crate::server::alt_screen_read::PendingAltScreenRead::start(
-                terminal_id,
-                "read".into(),
-                respond_to,
-                Ok(shepr_api::schema::ResponseResult::Ok {}),
-                shepr_api::schema::PaneReadResult {
-                    pane_id: shepr_test_fixtures::id("w1:p1"),
-                    workspace_id: shepr_test_fixtures::id("w1"),
-                    tab_id: shepr_test_fixtures::id("w1:t1"),
-                    source: shepr_api::schema::ReadSource::Recent,
-                    format: shepr_api::schema::ReadFormat::Text,
-                    text: String::new(),
-                    revision: 0,
-                    truncated: false,
-                },
-                120,
-                false,
-                shepr_mux::terminal::ScreenSnapshot {
-                    cols: 80,
-                    rows: Vec::new(),
-                },
-                0,
-                Instant::now(),
-            ),
-        );
-        let control_rx = connect_pending_terminal_client_with_control_rx(server, 7);
-
-        assert!(
-            !server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-                takeover: false,
-            })
-        );
-        assert!(!server.clients.contains_key(&7));
-        assert!(
-            !server.clients.has_attach_owner(
-                &terminal_id_string
-                    .parse::<shepr_protocol::TerminalId>()
-                    .expect("allocated terminal id")
-            )
-        );
-        let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
-        assert_eq!(
-            reason,
-            Some(format!(
-                "terminal attach failed: terminal {terminal_id_string} has a read in progress; retry"
-            ))
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_rejects_second_client_without_takeover() {
-    with_terminal_session_test_server(|server, _terminal_id, terminal_id_string, _| {
-        connect_pending_terminal_client(server, 7);
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-                takeover: false,
-            })
-        );
-
-        connect_pending_terminal_client(server, 8);
-        assert!(
-            !server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: ClientId::test_new(8),
-                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-                takeover: false,
-            })
-        );
-
-        assert!(server.clients.contains_key(&7));
-        assert!(!server.clients.contains_key(&8));
-        assert_eq!(
-            server.clients.attach_owners().get(
-                &terminal_id_string
-                    .parse::<shepr_protocol::TerminalId>()
-                    .expect("allocated terminal id")
-            ),
-            Some(&ClientId::test_new(7))
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_takeover_replaces_existing_client() {
-    with_terminal_session_test_server(|server, _terminal_id, terminal_id_string, _| {
-        connect_pending_terminal_client(server, 7);
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-                takeover: false,
-            })
-        );
-
-        connect_pending_terminal_client(server, 8);
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: ClientId::test_new(8),
-                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-                takeover: true,
-            })
-        );
-
-        assert!(!server.clients.contains_key(&7));
-        assert!(server.clients.contains_key(&8));
-        assert_eq!(
-            server.clients.attach_owners().get(
-                &terminal_id_string
-                    .parse::<shepr_protocol::TerminalId>()
-                    .expect("allocated terminal id")
-            ),
-            Some(&ClientId::test_new(8))
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_detach_sends_shutdown_before_removal() {
-    with_terminal_session_test_server(|server, _terminal_id, terminal_id_string, _| {
-        let control_rx = connect_pending_terminal_client_with_control_rx(server, 7);
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-                takeover: false,
-            })
-        );
-
-        assert!(server.handle_server_event(ServerEvent::ClientDetach {
-            client_id: ClientId::test_new(7)
-        }));
-
-        assert!(!server.clients.contains_key(&7));
-        assert!(
-            !server.clients.has_attach_owner(
-                &terminal_id_string
-                    .parse::<shepr_protocol::TerminalId>()
-                    .expect("allocated terminal id")
-            )
-        );
-        let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
-        assert_eq!(reason, Some("detached".to_owned()));
-    });
-}
-
-#[test]
-fn terminal_attach_is_told_about_rejected_pastes_and_dropped_input_once() {
-    with_terminal_session_test_server(|server, _terminal_id, terminal_id_string, _| {
-        let control_rx = connect_pending_terminal_client_with_control_rx(server, 7);
-        assert!(
-            server.handle_server_event(ServerEvent::ClientAttachTerminal {
-                client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
-                takeover: false,
-            })
-        );
-        let notices = || {
-            std::iter::from_fn(|| {
-                control_rx
-                    .recv_timeout(std::time::Duration::from_millis(300))
-                    .ok()
-            })
-            .map(read_server_message)
-            .filter_map(|message| match message {
-                ServerMessage::DirectTerminalNotice { kind } => Some(kind.to_string()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-        };
-
-        // Every rejected paste is its own user action and is reported.
-        for _ in 0..2 {
-            server.handle_server_event(ServerEvent::ClientPasteRejected {
-                client_id: ClientId::test_new(7),
-                size: 2_000_000,
-                max: 1_048_576,
-            });
-        }
-        let pastes = notices();
-        assert_eq!(pastes.len(), 2);
-        assert!(pastes[0].starts_with("Paste rejected"));
-
-        // Dropped input is reported once until input gets through again.
-        server.report_terminal_attach_input(ClientId::test_new(7), AttachInputDelivery::Dropped);
-        server.report_terminal_attach_input(ClientId::test_new(7), AttachInputDelivery::Dropped);
-        server.report_terminal_attach_input(ClientId::test_new(7), AttachInputDelivery::Failed);
-        let dropped = notices();
-        assert_eq!(dropped.len(), 1);
-        assert!(dropped[0].contains(&terminal_id_string));
-        server.report_terminal_attach_input(ClientId::test_new(7), AttachInputDelivery::Delivered);
-        server.report_terminal_attach_input(ClientId::test_new(7), AttachInputDelivery::Dropped);
-        assert_eq!(
-            notices().len(),
-            1,
-            "a new streak of drops is reported again"
-        );
-        assert!(
-            server.clients.contains_key(&7),
-            "notices never end the attach"
-        );
-    });
 }
 
 #[test]
@@ -4896,49 +4322,6 @@ async fn pane_death_reapplies_controller_geometry() {
 }
 
 #[test]
-fn terminal_attach_scroll_moves_attached_runtime_viewport() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime");
-    let _runtime_guard = rt.enter();
-    let mut bytes = Vec::new();
-    for line in 0..80 {
-        bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
-    }
-    let runtime = shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 4096, &bytes);
-
-    apply_terminal_attach_scroll(
-        &runtime,
-        AttachScrollSource::Wheel,
-        AttachScrollDirection::Up,
-        3,
-        None,
-        None,
-        0,
-    )
-    .expect("scroll up");
-    let metrics = runtime.scroll_metrics().expect("scroll metrics");
-    assert_eq!(metrics.offset_from_bottom, 3);
-
-    apply_terminal_attach_scroll(
-        &runtime,
-        AttachScrollSource::Wheel,
-        AttachScrollDirection::Down,
-        2,
-        None,
-        None,
-        0,
-    )
-    .expect("scroll down");
-    let metrics = runtime.scroll_metrics().expect("scroll metrics");
-    assert_eq!(metrics.offset_from_bottom, 1);
-    drop(runtime);
-    drop(_runtime_guard);
-    rt.shutdown_timeout(Duration::from_millis(100));
-}
-
-#[test]
 fn client_pane_pixel_mouse_uses_runtime_pixel_encoding() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -5169,50 +4552,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
     rt.shutdown_timeout(Duration::from_millis(100));
 }
 
-#[test]
-fn terminal_attach_input_resets_scrolled_viewport() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime");
-    let _runtime_guard = rt.enter();
-    let mut bytes = Vec::new();
-    for line in 0..80 {
-        bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
-    }
-    let (runtime, mut input_rx) =
-        shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-            20, 5, 4096, &bytes, 4,
-        );
-
-    runtime.scroll_up(4);
-    assert_eq!(
-        runtime
-            .scroll_metrics()
-            .expect("scroll metrics")
-            .offset_from_bottom,
-        4
-    );
-
-    apply_terminal_attach_input(&runtime, b"x".to_vec()).expect("attach input");
-    assert_eq!(
-        runtime
-            .scroll_metrics()
-            .expect("scroll metrics")
-            .offset_from_bottom,
-        0
-    );
-    assert_eq!(
-        input_rx.try_recv().expect("forwarded input"),
-        Bytes::from("x")
-    );
-
-    drop(runtime);
-    drop(_runtime_guard);
-    rt.shutdown_timeout(Duration::from_millis(100));
-}
-
-fn with_terminal_attach_runtime(
+fn with_scrollback_test_runtime(
     initial_bytes: &[u8],
     initial_scroll: usize,
     test: impl FnOnce(&shepr_mux::pane::PaneRuntime, &mut mpsc::Receiver<Bytes>),
@@ -5241,21 +4581,6 @@ fn with_terminal_attach_runtime(
     rt.shutdown_timeout(Duration::from_millis(100));
 }
 
-fn apply_terminal_attach_page_up(runtime: &shepr_mux::pane::PaneRuntime) {
-    apply_terminal_attach_scroll(
-        runtime,
-        AttachScrollSource::PageKey {
-            input: b"\x1b[5~".to_vec(),
-        },
-        AttachScrollDirection::Up,
-        4,
-        None,
-        None,
-        0,
-    )
-    .expect("page key");
-}
-
 fn client_page_key(
     code: shepr_protocol::ClientKeyCode,
     modifiers: crossterm::event::KeyModifiers,
@@ -5273,7 +4598,7 @@ fn client_page_key(
 
 #[test]
 fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
-    with_terminal_attach_runtime(b"", 0, |runtime, input_rx| {
+    with_scrollback_test_runtime(b"", 0, |runtime, input_rx| {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
@@ -5330,7 +4655,7 @@ fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
 
 #[test]
 fn client_page_keys_forward_when_modified_or_owned_by_application() {
-    with_terminal_attach_runtime(b"", 0, |runtime, input_rx| {
+    with_scrollback_test_runtime(b"", 0, |runtime, input_rx| {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
@@ -5353,7 +4678,7 @@ fn client_page_keys_forward_when_modified_or_owned_by_application() {
         );
     });
 
-    with_terminal_attach_runtime(b"\x1b[?1h", 0, |runtime, input_rx| {
+    with_scrollback_test_runtime(b"\x1b[?1h", 0, |runtime, input_rx| {
         apply_client_pane_input_events(
             runtime,
             &[client_page_key(
@@ -5373,121 +4698,6 @@ fn client_page_keys_forward_when_modified_or_owned_by_application() {
                 .expect("scroll metrics")
                 .offset_from_bottom,
             0
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_paste_uses_plain_text_when_runtime_did_not_enable_brackets() {
-    with_terminal_attach_runtime(b"", 0, |runtime, input_rx| {
-        apply_terminal_attach_input(runtime, b"\x1b[200~line one\nline two\x1b[201~".to_vec())
-            .expect("attach paste");
-
-        assert_eq!(
-            input_rx.try_recv().expect("forwarded paste"),
-            Bytes::from_static(b"line one\nline two")
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_paste_preserves_brackets_when_runtime_enabled_them() {
-    with_terminal_attach_runtime(b"\x1b[?2004h", 0, |runtime, input_rx| {
-        apply_terminal_attach_input(runtime, b"\x1b[200~line one\nline two\x1b[201~".to_vec())
-            .expect("attach paste");
-
-        assert_eq!(
-            input_rx.try_recv().expect("forwarded paste"),
-            Bytes::from_static(b"\x1b[200~line one\nline two\x1b[201~")
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_page_key_host_scrolls_plain_terminal() {
-    with_terminal_attach_runtime(b"", 0, |runtime, input_rx| {
-        apply_terminal_attach_page_up(runtime);
-
-        assert_eq!(
-            runtime
-                .scroll_metrics()
-                .expect("scroll metrics")
-                .offset_from_bottom,
-            4
-        );
-        assert!(input_rx.try_recv().is_err());
-    });
-}
-
-#[test]
-fn terminal_attach_page_key_forwards_when_mouse_reporting() {
-    with_terminal_attach_runtime(b"\x1b[?1000h", 3, |runtime, input_rx| {
-        apply_terminal_attach_page_up(runtime);
-
-        assert_eq!(
-            runtime
-                .scroll_metrics()
-                .expect("scroll metrics")
-                .offset_from_bottom,
-            0
-        );
-        assert_eq!(
-            input_rx.try_recv().expect("forwarded page key"),
-            Bytes::from_static(b"\x1b[5~")
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_page_key_forwards_when_application_cursor() {
-    with_terminal_attach_runtime(b"\x1b[?1h", 3, |runtime, input_rx| {
-        apply_terminal_attach_page_up(runtime);
-
-        assert_eq!(
-            runtime
-                .scroll_metrics()
-                .expect("scroll metrics")
-                .offset_from_bottom,
-            0
-        );
-        assert_eq!(
-            input_rx.try_recv().expect("forwarded page key"),
-            Bytes::from_static(b"\x1b[5~")
-        );
-    });
-}
-
-#[test]
-fn terminal_attach_page_key_host_scrolls_shell_like_decckm_with_bracketed_paste() {
-    with_terminal_attach_runtime(b"\x1b[?1h\x1b[?2004h", 0, |runtime, input_rx| {
-        apply_terminal_attach_page_up(runtime);
-
-        assert_eq!(
-            runtime
-                .scroll_metrics()
-                .expect("scroll metrics")
-                .offset_from_bottom,
-            4
-        );
-        assert!(input_rx.try_recv().is_err());
-    });
-}
-
-#[test]
-fn terminal_attach_page_key_forwards_in_alternate_screen_without_mouse_reporting() {
-    with_terminal_attach_runtime(b"\x1b[?1049h", 3, |runtime, input_rx| {
-        apply_terminal_attach_page_up(runtime);
-
-        assert_eq!(
-            runtime
-                .scroll_metrics()
-                .expect("scroll metrics")
-                .offset_from_bottom,
-            0
-        );
-        assert_eq!(
-            input_rx.try_recv().expect("forwarded page key"),
-            Bytes::from_static(b"\x1b[5~")
         );
     });
 }
@@ -5596,152 +4806,8 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
 }
 
 #[test]
-fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
-    with_terminal_session_test_server(|server, _other_terminal_id, terminal_id, _pane_id| {
-        let mut client = ClientConnection::new(
-            (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
-            RenderEncoding::SemanticFrame,
-            None,
-        );
-        client.mode = ClientConnectionMode::terminal_attach(
-            terminal_id.parse().expect("allocated terminal id"),
-        );
-        server.clients.insert(1, client);
-
-        assert!(server.handle_server_event(ServerEvent::ClientResize {
-            client_id: ClientId::test_new(1),
-            cols: 100,
-            rows: 30,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: false,
-        }));
-        assert_eq!(
-            server
-                .runtime_for_terminal_id_string(&terminal_id)
-                .expect("test precondition")
-                .pixel_size(),
-            Some((800, 480))
-        );
-        assert_eq!(
-            server.clients[&1].cell_size,
-            shepr_termio::host_term::cell_size::HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            }
-        );
-        assert!(!server.clients[&1].pixel_mouse);
-
-        assert!(server.handle_server_event(ServerEvent::ClientResize {
-            client_id: ClientId::test_new(1),
-            cols: 100,
-            rows: 30,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
-        }));
-        assert_eq!(
-            server
-                .runtime_for_terminal_id_string(&terminal_id)
-                .expect("test precondition")
-                .pixel_size(),
-            None
-        );
-        assert_eq!(
-            server.clients[&1].cell_size,
-            shepr_termio::host_term::cell_size::HostCellSize::default()
-        );
-        assert!(!server.clients[&1].pixel_mouse);
-    });
-}
-
-#[test]
-fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
-    let mut server = test_headless_server();
-    server.clients.insert(
-        1,
-        ClientConnection::new(
-            (100, 30),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
-            2,
-            RenderEncoding::SemanticFrame,
-            None,
-        ),
-    );
-    server.clients.insert(
-        2,
-        ClientConnection::new_with_mode(
-            ClientConnectionMode::TerminalPending,
-            shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
-            RenderEncoding::TerminalAnsi,
-            None,
-        ),
-    );
-    server
-        .clients
-        .set_foreground_client_id(Some(ClientId::test_new(1)));
-    server.sync_foreground_client_state();
-    let shell_size = server.effective_size;
-
-    assert!(server.handle_server_event(ServerEvent::ClientResize {
-        client_id: ClientId::test_new(2),
-        cols: 200,
-        rows: 60,
-        cell_width_px: 10,
-        cell_height_px: 20,
-        pixel_mouse: false,
-    }));
-
-    assert_eq!(
-        server.clients.foreground_client_id(),
-        Some(ClientId::test_new(1))
-    );
-    assert_eq!(server.effective_size, shell_size);
-    assert_eq!(
-        server.clients[&2].terminal_size,
-        shepr_core::geometry::GridSize::clamped(200, 60)
-    );
-}
-
-#[tokio::test]
-async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry() {
-    let mut server = test_headless_server();
-    let _input_rx = install_focused_test_runtime(&mut server, b"");
-    for (client_id, mode) in [
-        (1, ClientConnectionMode::TerminalPending),
-        (
-            2,
-            ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::alloc()),
-        ),
-    ] {
-        server.clients.insert(
-            client_id,
-            ClientConnection::new_with_mode(
-                mode,
-                shepr_core::geometry::GridSize::clamped(80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
-                1,
-                RenderEncoding::TerminalAnsi,
-                None,
-            ),
-        );
-        assert!(!server.promote_client_to_foreground(client_id.into()));
-        assert!(!server.claim_shell_tab_geometry(client_id.into(), false));
-        assert!(!server.claim_unowned_shell_tab_geometry(client_id.into(), false));
-        assert!(!server.resize_shell_tab_if_controller(client_id.into(), false));
-    }
-    assert_eq!(server.clients.foreground_client_id(), None);
-    assert!(server.clients.geometry_controllers().is_empty());
-    shutdown_test_runtimes(&mut server);
-}
-
-#[test]
 fn client_shell_streams_focused_pane_report_all_demand() {
-    with_terminal_session_test_server(|server, _other_terminal_id, terminal_id, _pane_id| {
+    with_terminal_session_test_server(|server, terminal_id, _terminal_id_string, _pane_id| {
         let (client_tx, client_control_rx, _client_rx) = test_client_writer();
         server.clients.insert(
             1,
@@ -5749,17 +4815,18 @@ fn client_shell_streams_focused_pane_report_all_demand() {
                 (80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
-                RenderEncoding::SemanticFrame,
                 Some(client_tx),
             ),
         );
         server.app.state.set_active_index(Some(0));
         server
-            .runtime_for_terminal_id_string(&terminal_id)
+            .app
+            .terminal_runtimes
+            .get(&terminal_id)
             .expect("focused runtime")
             .test_process_pty_bytes(b"\x1b[>15u");
 
-        server.stream_direct_terminal_keyboard_mode();
+        server.stream_shell_keyboard_mode();
 
         assert!(matches!(
             read_server_message(
@@ -5788,7 +4855,6 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
                 (80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 client_id,
-                RenderEncoding::SemanticFrame,
                 None,
             ),
         );
@@ -5864,7 +4930,6 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             Some(writer),
         ),
     );
@@ -5916,7 +4981,6 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 (80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
-                RenderEncoding::SemanticFrame,
                 None,
             ),
         );
@@ -5926,7 +4990,6 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 (100, 30),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 2,
-                RenderEncoding::SemanticFrame,
                 None,
             ),
         );
@@ -5997,318 +5060,6 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
 }
 
 #[test]
-fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
-    with_terminal_session_test_server(|server, _other_terminal_id, terminal_id, _pane_id| {
-        let (client_tx, client_control_rx, _client_rx) = test_client_writer();
-        server.clients.insert(
-            1,
-            ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(
-                    terminal_id.parse().expect("allocated terminal id"),
-                ),
-                shepr_core::geometry::GridSize::clamped(80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
-                1,
-                RenderEncoding::TerminalAnsi,
-                Some(client_tx),
-            ),
-        );
-        server
-            .clients
-            .get_mut(&1)
-            .expect("direct attach client")
-            .pixel_mouse = true;
-        server
-            .runtime_for_terminal_id_string(&terminal_id)
-            .expect("attached runtime")
-            .test_process_pty_bytes(b"\x1b[>15u\x1b[?1000h");
-
-        server.stream_direct_terminal_keyboard_mode();
-        assert!(matches!(
-            read_server_message(
-                client_control_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .expect("keyboard mode message")
-            ),
-            ServerMessage::DirectTerminalKeyboardProtocol {
-                flags,
-                modify_other_keys_level
-            } if flags.bits() == 15 && modify_other_keys_level.as_u8() == 0
-        ));
-
-        server
-            .runtime_for_terminal_id_string(&terminal_id)
-            .expect("attached runtime")
-            .test_process_pty_bytes(b"\x1b[<u\x1b[>3u\x1b[>4;1m");
-        server.stream_direct_terminal_keyboard_mode();
-        assert!(matches!(
-            read_server_message(
-                client_control_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .expect("modifyOtherKeys mode-one keyboard message")
-            ),
-            ServerMessage::DirectTerminalKeyboardProtocol {
-                flags,
-                modify_other_keys_level
-            } if flags.bits() == 3 && modify_other_keys_level.as_u8() == 1
-        ));
-
-        server
-            .runtime_for_terminal_id_string(&terminal_id)
-            .expect("attached runtime")
-            .test_process_pty_bytes(b"\x1b[>4;2m");
-        server.stream_direct_terminal_keyboard_mode();
-        assert!(matches!(
-            read_server_message(
-                client_control_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .expect("modifyOtherKeys mode-two keyboard message")
-            ),
-            ServerMessage::DirectTerminalKeyboardProtocol {
-                flags,
-                modify_other_keys_level
-            } if flags.bits() == 3 && modify_other_keys_level.as_u8() == 2
-        ));
-
-        server
-            .runtime_for_terminal_id_string(&terminal_id)
-            .expect("attached runtime")
-            .test_process_pty_bytes(b"\x1b[<u");
-        server.stream_direct_terminal_keyboard_mode();
-        assert!(matches!(
-            read_server_message(
-                client_control_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .expect("modifyOtherKeys-only keyboard mode message")
-            ),
-            ServerMessage::DirectTerminalKeyboardProtocol {
-                flags,
-                modify_other_keys_level
-            } if flags.bits() == 0 && modify_other_keys_level.as_u8() == 2
-        ));
-
-        server.stream_host_mouse_capture_mode();
-        assert!(matches!(
-            read_server_message(
-                client_control_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .expect("mouse capture message")
-            ),
-            ServerMessage::MouseCapture {
-                enabled: true,
-                sgr_pixels: false
-            }
-        ));
-
-        server
-            .runtime_for_terminal_id_string(&terminal_id)
-            .expect("attached runtime")
-            .test_process_pty_bytes(b"\x1b[?1016h");
-        server.stream_host_mouse_capture_mode();
-        assert!(matches!(
-            read_server_message(
-                client_control_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .expect("pixel mouse capture message")
-            ),
-            ServerMessage::MouseCapture {
-                enabled: true,
-                sgr_pixels: true
-            }
-        ));
-
-        server
-            .runtime_for_terminal_id_string(&terminal_id)
-            .expect("attached runtime")
-            .test_process_pty_bytes(b"\x1b[?1000l\x1b[?1016l");
-        server.stream_host_mouse_capture_mode();
-        assert!(matches!(
-            read_server_message(
-                client_control_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .expect("child mouse disable message")
-            ),
-            ServerMessage::MouseCapture {
-                enabled: false,
-                sgr_pixels: false
-            }
-        ));
-    });
-}
-
-#[test]
-fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
-    with_terminal_session_test_server(|server, runtime_terminal_id, terminal_id, _pane_id| {
-        let (runtime, mut input_rx) =
-            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-                80,
-                24,
-                0,
-                b"\x1b[?1000h\x1b[?1006h",
-                4,
-            );
-        server
-            .app
-            .terminal_runtimes
-            .insert(runtime_terminal_id, runtime);
-        server.clients.insert(
-            1,
-            ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(
-                    terminal_id.parse().expect("allocated terminal id"),
-                ),
-                shepr_core::geometry::GridSize::clamped(80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
-                1,
-                RenderEncoding::TerminalAnsi,
-                None,
-            ),
-        );
-
-        assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
-            client_id: ClientId::test_new(1),
-            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
-            position: shepr_protocol::ClientMousePosition::Cell { column: 10, row: 5 },
-            geometry: None,
-            modifiers: shepr_protocol::WireModifiers::NONE,
-            lines: 1,
-        }));
-        assert_eq!(
-            input_rx.try_recv().expect("encoded direct mouse input"),
-            Bytes::from_static(b"\x1b[<0;11;6M")
-        );
-    });
-}
-
-#[test]
-fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
-    with_terminal_session_test_server(|server, runtime_terminal_id, terminal_id, _pane_id| {
-        let (runtime, mut input_rx) =
-            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
-                80,
-                24,
-                0,
-                b"\x1b[?1000h\x1b[?1006h\x1b[?1016h",
-                4,
-            );
-        runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 10, 20));
-        server
-            .app
-            .terminal_runtimes
-            .insert(runtime_terminal_id, runtime);
-        server.clients.insert(
-            1,
-            ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(
-                    terminal_id.parse().expect("allocated terminal id"),
-                ),
-                shepr_core::geometry::GridSize::clamped(80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize {
-                    width_px: 10,
-                    height_px: 20,
-                },
-                1,
-                RenderEncoding::TerminalAnsi,
-                None,
-            ),
-        );
-        let client = server.clients.get_mut(&1).expect("direct attach client");
-        client.pixel_mouse = true;
-        client.host_sgr_pixels_active = Some(true);
-
-        assert!(!server.handle_server_event(ServerEvent::ClientAttachMouse {
-            client_id: ClientId::test_new(1),
-            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
-            position: shepr_protocol::ClientMousePosition::Pixels {
-                x: 21,
-                y: 22,
-                column: 3,
-                row: 1,
-            },
-            geometry: Some(shepr_protocol::ClientMouseGeometry {
-                cols: 80,
-                rows: 24,
-                width_px: 800,
-                height_px: 480,
-            }),
-            modifiers: shepr_protocol::WireModifiers::NONE,
-            lines: 1,
-        }));
-        assert!(input_rx.try_recv().is_err());
-
-        assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
-            client_id: ClientId::test_new(1),
-            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
-            position: shepr_protocol::ClientMousePosition::Pixels {
-                x: 21,
-                y: 22,
-                column: 2,
-                row: 1,
-            },
-            geometry: Some(shepr_protocol::ClientMouseGeometry {
-                cols: 80,
-                rows: 24,
-                width_px: 805,
-                height_px: 485,
-            }),
-            modifiers: shepr_protocol::WireModifiers::NONE,
-            lines: 1,
-        }));
-        assert_eq!(
-            input_rx
-                .try_recv()
-                .expect("proportionally mapped direct pixel mouse input"),
-            Bytes::from_static(b"\x1b[<0;21;22M")
-        );
-
-        assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
-            client_id: ClientId::test_new(1),
-            kind: shepr_protocol::ClientMouseKind::Moved,
-            position: shepr_protocol::ClientMousePosition::Pixels {
-                x: 21,
-                y: 22,
-                column: 2,
-                row: 1,
-            },
-            geometry: Some(shepr_protocol::ClientMouseGeometry {
-                cols: 80,
-                rows: 24,
-                width_px: 800,
-                height_px: 480,
-            }),
-            modifiers: shepr_protocol::WireModifiers::NONE,
-            lines: 1,
-        }));
-        assert!(input_rx.try_recv().is_err());
-
-        assert!(server.handle_server_event(ServerEvent::ClientAttachMouse {
-            client_id: ClientId::test_new(1),
-            kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
-            position: shepr_protocol::ClientMousePosition::Pixels {
-                x: 21,
-                y: 22,
-                column: 2,
-                row: 1,
-            },
-            geometry: Some(shepr_protocol::ClientMouseGeometry {
-                cols: 80,
-                rows: 24,
-                width_px: 800,
-                height_px: 480,
-            }),
-            modifiers: shepr_protocol::WireModifiers::NONE,
-            lines: 1,
-        }));
-        assert_eq!(
-            input_rx
-                .try_recv()
-                .expect("encoded direct pixel mouse input"),
-            Bytes::from_static(b"\x1b[<0;21;22M")
-        );
-    });
-}
-
-#[test]
 fn clipboard_write_targets_foreground_client_only() {
     let mut server = test_headless_server();
     let (background_tx, background_control_rx, _background_rx) = test_client_writer();
@@ -6320,7 +5071,6 @@ fn clipboard_write_targets_foreground_client_only() {
             (120, 40),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             Some(background_tx),
         ),
     );
@@ -6330,7 +5080,6 @@ fn clipboard_write_targets_foreground_client_only() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            RenderEncoding::SemanticFrame,
             Some(foreground_tx),
         ),
     );
@@ -6385,7 +5134,6 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            RenderEncoding::SemanticFrame,
             Some(foreground_tx),
         ),
     );

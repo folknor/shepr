@@ -339,17 +339,12 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     healthy.assert_renames(640..641, Instant::now() + RESPONSE_TIMEOUT);
 
     let mut ordinary = test.connect();
-    ordinary.send(&json!({"id": "ordinary", "method": "workspace.list", "params": {}}));
+    ordinary.send(&json!({"id": "ordinary", "method": "session.snapshot", "params": {}}));
     let request = test.app_request();
     assert_eq!(request.request.id, "ordinary");
-    assert!(matches!(request.request.method, Method::WorkspaceList(_)));
-    reply(
-        &request,
-        ResponseResult::WorkspaceList {
-            workspaces: Vec::new(),
-        },
-    );
+    assert!(matches!(request.request.method, Method::SessionSnapshot(_)));
+    reply(&request, ResponseResult::Ok {});
     let response = ordinary.response();
     assert_eq!(response["id"], "ordinary");
-    assert_eq!(response["result"]["type"], "workspace_list");
+    assert_eq!(response["result"]["type"], "ok");
 }

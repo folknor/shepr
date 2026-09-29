@@ -839,7 +839,6 @@ mod tests {
         let pane = || PaneSnapshot {
             cwd: scratch.join("missing-cwd"),
             label: None,
-            agent_name: None,
             agent_session: None,
             launch_argv: None,
         };

@@ -1292,7 +1292,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
         }
         local_sent.lock().expect("test precondition").clear();
         let mut state = ClientState::test_new();
-        state.mode = crate::state::SessionMode::Shell(Box::new(shell));
+        *state.shell = shell;
         let mut commands = EndpointCommands::default();
         let mut pending = Some(abandoned);
         let mut serial = 31;
@@ -1352,7 +1352,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             Box::new(test_snapshot("local-boot", 1)),
         );
         let mut state = ClientState::test_new();
-        state.mode = crate::state::SessionMode::Shell(Box::new(shell));
+        *state.shell = shell;
         let mut commands = EndpointCommands::default();
         let mut pending = None;
         let mut serial = 40;
@@ -1420,15 +1420,11 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             );
         }
         assert!(take_ready_local_activation(&mut state, &endpoints).is_none());
-        state
-            .mode
-            .shell_mut()
-            .expect("test precondition")
-            .cache_endpoint_snapshot_for_generation(
-                &ClientEndpointId::Local,
-                2,
-                Box::new(test_snapshot("local-boot", 1)),
-            );
+        state.shell.cache_endpoint_snapshot_for_generation(
+            &ClientEndpointId::Local,
+            2,
+            Box::new(test_snapshot("local-boot", 1)),
+        );
         let event = take_ready_local_activation(&mut state, &endpoints).expect("test precondition");
         let ClientLoopEvent::ActivateEndpoint {
             endpoint_id,
@@ -1475,7 +1471,7 @@ fn newer_remote_selection_cancels_deferred_local_selection() {
     };
     let (shell, mut endpoints, _, _) = shell_and_registry();
     let mut state = ClientState::test_new();
-    state.mode = crate::state::SessionMode::Shell(Box::new(shell));
+    *state.shell = shell;
     let mut commands = EndpointCommands::default();
     let mut pending = None;
     let mut serial = 50;

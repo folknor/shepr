@@ -17,8 +17,7 @@ pub const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
 /// the rest of it is dropped up to the terminator, so a paste that never ends
 /// cannot grow the buffer without bound. It is far above the server's
 /// per-message input limit, which rejects such a paste in the client shell
-/// anyway (with a visible notice), so the cut only matters to direct attach,
-/// which streams large pastes through.
+/// anyway (with a visible notice), so the cut only bounds the buffer.
 pub(crate) const MAX_PENDING_PASTE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How long a held, unterminated bracketed paste may go without receiving a

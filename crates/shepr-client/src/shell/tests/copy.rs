@@ -1332,7 +1332,6 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         pane_id: test_pane_id("w1:p1"),
         workspace_id: test_workspace_id("w1"),
         tab_id: test_tab_id("w1:t1"),
-        name: Some("writer".into()),
         agent: Some("pi".into()),
         terminal_title: None,
         terminal_title_stripped: None,
@@ -1342,7 +1341,6 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     };
     let mut second_agent = first_agent.clone();
     second_agent.pane_id = "w1:p2".parse().expect("test precondition");
-    second_agent.name = Some("reviewer".into());
     second_agent.agent = Some("claude".into());
     second_agent.terminal_title_stripped = Some("checking navigation".into());
     second_agent.agent_status = AgentStatus::Blocked;
@@ -1416,8 +1414,8 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         .collect::<Vec<_>>();
     assert_eq!(pane_rows.len(), 2);
     for ((rect, _), (name, kind, status)) in pane_rows.iter().zip([
-        ("writer", "pi", "working"),
-        ("reviewer", "claude", "blocked"),
+        ("review", "pi", "working"),
+        ("review", "claude", "blocked"),
     ]) {
         cell_symbol_position(&frame, *rect, name);
         cell_symbol_position(&frame, *rect, kind);

@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::*;
 use ratatui::layout::Rect;
+use std::time::Instant;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::Direction;
 use shepr_mux::workspace::Workspace;
@@ -561,11 +562,6 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
     let terminal_id = state
         .terminal_id_for_pane(1, pane_id)
         .expect("test precondition");
-    state.public_pane_id_aliases.insert(
-        shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 9),
-        pane_id,
-    );
-    state.direct_attach_resize_locks.insert(terminal_id.clone());
     state.session_dirty = false;
 
     let detached = state.handle_pane_died(pane_id);
@@ -581,8 +577,6 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
     );
     assert!(!state.terminals.contains_key(&terminal_id));
     assert_eq!(detached, std::slice::from_ref(&terminal_id));
-    assert!(!state.direct_attach_resize_locks.contains(&terminal_id));
-    assert!(state.public_pane_id_aliases.is_empty());
     assert!(state.session_dirty);
     state.assert_invariants_for_test();
 }
@@ -1139,56 +1133,6 @@ fn close_tab_removes_unattached_terminal_states() {
     ));
 
     assert!(!state.terminals.contains_key(&terminal_id));
-    state.assert_invariants_for_test();
-}
-
-#[test]
-fn close_workspace_prunes_aliases_and_resize_locks_of_its_panes() {
-    let mut state = app_with_workspaces(&["closing", "kept"]);
-    let closing_pane = state.workspaces[0].tabs()[0].root_pane();
-    let kept_pane = state.workspaces[1].tabs()[0].root_pane();
-    let closing_terminal = state
-        .terminal_id_for_pane(0, closing_pane)
-        .expect("test precondition");
-    let kept_terminal = state
-        .terminal_id_for_pane(1, kept_pane)
-        .expect("test precondition");
-    state.public_pane_id_aliases.insert(
-        shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 1),
-        closing_pane,
-    );
-    state.public_pane_id_aliases.insert(
-        shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 2),
-        kept_pane,
-    );
-    state
-        .direct_attach_resize_locks
-        .insert(closing_terminal.clone());
-    state
-        .direct_attach_resize_locks
-        .insert(kept_terminal.clone());
-
-    state.close_workspace_at(0);
-
-    assert!(
-        !state
-            .public_pane_id_aliases
-            .contains_key(&shepr_protocol::PublicPaneId::new(
-                &crate::test_support::retired_workspace_id(),
-                1
-            ))
-    );
-    assert_eq!(
-        state
-            .public_pane_id_aliases
-            .get(&shepr_protocol::PublicPaneId::new(
-                &crate::test_support::retired_workspace_id(),
-                2
-            )),
-        Some(&kept_pane)
-    );
-    assert!(!state.direct_attach_resize_locks.contains(&closing_terminal));
-    assert!(state.direct_attach_resize_locks.contains(&kept_terminal));
     state.assert_invariants_for_test();
 }
 

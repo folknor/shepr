@@ -1,4 +1,3 @@
-mod alt_screen_read;
 pub(crate) mod client_accept;
 pub(crate) mod client_commands;
 pub(crate) mod client_shell;

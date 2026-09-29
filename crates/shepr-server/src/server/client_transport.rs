@@ -9,7 +9,6 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
 
 use interprocess::TryClone as _;
 use interprocess::local_socket::traits::Stream as _;
@@ -18,20 +17,16 @@ use tracing::{debug, warn};
 
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::endpoint::EndpointServerWelcome;
-use shepr_protocol::{
-    self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
-    MAX_INPUT_PAYLOAD, ServerMessage,
-};
+use shepr_protocol::{self, ClientMessage, ClientPaneInputEvent, MAX_INPUT_PAYLOAD, ServerMessage};
 
 use crate::limits::{
-    HANDSHAKE_TIMEOUT, MAX_INPUT_EVENT_BATCH, MIN_CLIENT_COLS, MIN_CLIENT_ROWS,
-    UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
+    HANDSHAKE_TIMEOUT, MAX_INPUT_EVENT_BATCH, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
 };
 
 /// Why a client shell's geometry is refused, if it is. The limits are the
-/// protocol's own, shared with `clamp_terminal_size`: the cell limit is what
-/// one frame can carry (see `MAX_SURFACE_CELLS`), not an arbitrary safety
-/// number, since a grid past it renders frames that can never be sent.
+/// protocol's own: the cell limit is what one frame can carry (see
+/// `MAX_SURFACE_CELLS`), not an arbitrary safety number, since a grid past it
+/// renders frames that can never be sent.
 fn client_shell_geometry_error(
     surface_size: shepr_protocol::ClientSurfaceSize,
     cell_width_px: u32,
@@ -53,29 +48,6 @@ fn client_shell_geometry_error(
         return Some("client shell cell pixel size exceeds the safe geometry limit");
     }
     None
-}
-
-/// Direct-attach geometry as the server will use it.
-type TerminalGeometry = shepr_core::geometry::HostGeometry;
-
-/// Bounds a direct-attach client's reported geometry.
-///
-/// The terminal is the client's real window, so an oversized one is clamped
-/// rather than refused: the attach renders into the largest grid one frame
-/// can carry (rows are cut first, keeping full-width lines) and the rest of
-/// the window stays blank. A cell pixel size past the limit is treated as
-/// unknown, which also turns off pixel mouse reporting.
-fn bound_terminal_geometry(
-    cols: u16,
-    rows: u16,
-    cell_width_px: u32,
-    cell_height_px: u32,
-    pixel_mouse: bool,
-) -> TerminalGeometry {
-    let (cols, rows) = clamp_terminal_size(cols, rows);
-    let cell =
-        shepr_protocol::ProtocolCellSize::from_wire(cell_width_px, cell_height_px, pixel_mouse);
-    TerminalGeometry::new(cols, rows, cell.width(), cell.height(), cell.exact)
 }
 
 #[derive(serde::Deserialize)]
@@ -358,16 +330,6 @@ impl ClientWriterQueue {
 /// Internal event sent from client transport threads to the main event loop.
 #[derive(Debug)]
 pub(crate) enum ServerEvent {
-    /// A new client completed the handshake.
-    ClientConnected {
-        client_id: ClientId,
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        pixel_mouse: bool,
-        writer: ClientWriter,
-    },
     /// A client-owned shell completed its dedicated handshake.
     ClientShellConnected {
         client_id: ClientId,
@@ -380,47 +342,11 @@ pub(crate) enum ServerEvent {
         surface_active: bool,
         writer: ClientWriter,
     },
-    /// A client sent an input message.
-    ClientInput { client_id: ClientId, data: Vec<u8> },
     /// A fully decoded interactive paste exceeded the text-input limit.
     ClientPasteRejected {
         client_id: ClientId,
         size: usize,
         max: usize,
-    },
-    /// A client requested direct attach to one terminal.
-    ClientAttachTerminal {
-        client_id: ClientId,
-        terminal_id: shepr_protocol::TerminalId,
-        takeover: bool,
-    },
-    /// A direct terminal attach client requested scrollback movement.
-    ClientAttachScroll {
-        client_id: ClientId,
-        source: AttachScrollSource,
-        direction: AttachScrollDirection,
-        lines: u16,
-        column: Option<u16>,
-        row: Option<u16>,
-        modifiers: shepr_protocol::WireModifiers,
-    },
-    /// A direct terminal attach client delivered one structured mouse event.
-    ClientAttachMouse {
-        client_id: ClientId,
-        kind: shepr_protocol::ClientMouseKind,
-        position: shepr_protocol::ClientMousePosition,
-        geometry: Option<shepr_protocol::ClientMouseGeometry>,
-        modifiers: shepr_protocol::WireModifiers,
-        lines: u16,
-    },
-    /// A client sent a resize message.
-    ClientResize {
-        client_id: ClientId,
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        pixel_mouse: bool,
     },
     /// A client-owned shell recomputed its pane viewport.
     ClientShellResize {
@@ -476,17 +402,6 @@ pub(crate) enum ServerEvent {
     ClientWriterDrained { client_id: ClientId },
     /// Ctrl+C or external shutdown signal received.
     QuitSignal,
-}
-
-/// Clamp client-reported terminal dimensions into the accepted range: at
-/// least the minimum viable size, at most `MAX_SURFACE_DIMENSION` per side and
-/// `MAX_SURFACE_CELLS` in total (rows give way first).
-pub(crate) fn clamp_terminal_size(cols: u16, rows: u16) -> (u16, u16) {
-    let cols = cols.clamp(MIN_CLIENT_COLS, shepr_protocol::MAX_SURFACE_DIMENSION);
-    let rows = rows.clamp(MIN_CLIENT_ROWS, shepr_protocol::MAX_SURFACE_DIMENSION);
-    let max_rows = shepr_protocol::MAX_SURFACE_CELLS / usize::from(cols);
-    let rows = u16::try_from(max_rows).map_or(rows, |max_rows| rows.min(max_rows.max(1)));
-    (cols, rows)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -549,19 +464,11 @@ fn classify_input_event_size(
     }
 }
 
-fn set_client_recv_timeout(
-    stream: &LocalStream,
-    timeout: Option<Duration>,
-    _context: &'static str,
-    _client_id: ClientId,
-) -> io::Result<()> {
-    stream.set_recv_timeout(timeout)
-}
-
 /// Handles the client handshake on a blocking thread.
 ///
-/// Reads the `TerminalHello` or endpoint hello, validates its terminal geometry,
-/// sends the welcome, and then forwards client messages to the server event channel.
+/// Reads the endpoint hello, validates its surface geometry, sends the welcome,
+/// and then forwards client messages to the server event channel. Any other
+/// first message is refused.
 pub(crate) fn handle_client_handshake(
     mut stream: LocalStream,
     client_id: ClientId,
@@ -660,95 +567,50 @@ pub(crate) fn handle_client_handshake(
         }
     };
 
-    let (
-        client_cols,
-        client_rows,
-        cell_width_px,
-        cell_height_px,
-        terminal_pixel_mouse,
-        shell_options,
-    ) = match hello {
-        ClientMessage::TerminalHello { geometry } => {
-            let geometry = bound_terminal_geometry(
-                geometry.cols(),
-                geometry.rows(),
-                geometry.width(),
-                geometry.height(),
-                geometry.pixel_mouse,
-            );
-            (
-                geometry.cols(),
-                geometry.rows(),
-                geometry.cell_width(),
-                geometry.cell_height(),
-                geometry.exact,
-                None,
-            )
-        }
-        ClientMessage::EndpointHello(hello) => {
-            let cell = shepr_protocol::ProtocolCellSize::from_wire(
-                hello.geometry.width(),
-                hello.geometry.height(),
-                hello.geometry.pixel_mouse,
-            );
-            let incompatibility = client_shell_geometry_error(
-                hello.geometry.surface_size(),
-                hello.geometry.width(),
-                hello.geometry.height(),
-            )
-            .map(|reason| shepr_protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
-            if let Some(reason) = incompatibility {
-                write_endpoint_rejection(&mut stream, client_id, reason);
-                return Ok(());
-            }
-            (
-                hello.geometry.cols(),
-                hello.geometry.rows(),
-                cell.width(),
-                cell.height(),
-                false,
-                Some((cell.exact, hello.mouse_capture, hello.surface_active)),
-            )
-        }
-        _ => {
+    let ClientMessage::EndpointHello(hello) = hello else {
+        debug!(
+            ?client_id,
+            session = %session.display_name(),
+            "first message was not a handshake, closing"
+        );
+        let welcome = ServerMessage::Welcome {
+            error: Some(shepr_protocol::HandshakeRefusal::ExpectedHello),
+        };
+        if let Err(err) = shepr_protocol::write_message(&mut stream, &welcome) {
             debug!(
                 ?client_id,
                 session = %session.display_name(),
-                "first message was not a handshake, closing"
+                error = %err,
+                "client left before its handshake refusal was written"
             );
-            let welcome = ServerMessage::Welcome {
-                error: Some(shepr_protocol::HandshakeRefusal::ExpectedHello),
-            };
-            if let Err(err) = shepr_protocol::write_message(&mut stream, &welcome) {
-                debug!(
-                    ?client_id,
-                    session = %session.display_name(),
-                    error = %err,
-                    "client left before its handshake refusal was written"
-                );
-            }
-            return Ok(());
         }
+        return Ok(());
     };
+    let cell = shepr_protocol::ProtocolCellSize::from_wire(
+        hello.geometry.width(),
+        hello.geometry.height(),
+        hello.geometry.pixel_mouse,
+    );
+    let incompatibility = client_shell_geometry_error(
+        hello.geometry.surface_size(),
+        hello.geometry.width(),
+        hello.geometry.height(),
+    )
+    .map(|reason| shepr_protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
+    if let Some(reason) = incompatibility {
+        write_endpoint_rejection(&mut stream, client_id, reason);
+        return Ok(());
+    }
 
     if should_quit.is_requested() {
         return Ok(());
     }
 
-    let welcome = if shell_options.is_some() {
-        ServerMessage::EndpointWelcome(EndpointServerWelcome::compatible())
-    } else {
-        ServerMessage::Welcome { error: None }
-    };
+    let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::compatible());
     shepr_protocol::write_message(&mut stream, &welcome)
         .map_err(|e| io::Error::other(e.to_string()))?;
 
-    set_client_recv_timeout(
-        &stream,
-        None,
-        "failed to clear client handshake read timeout",
-        client_id,
-    )?;
+    stream.set_recv_timeout(None)?;
 
     // Create separate channels for reliable control messages and droppable renders.
     let writer_queue = ClientWriterQueue::new();
@@ -770,39 +632,23 @@ pub(crate) fn handle_client_handshake(
     }
 
     // Notify the main loop about the new client.
-    let endpoint_control_writer = shell_options.as_ref().map(|_| writer.control.clone());
-    let connected = if let Some((pixel_mouse, mouse_capture, surface_active)) = shell_options {
-        // The exact-build preamble guarantees support for semantic surfaces.
-        ServerEvent::ClientShellConnected {
-            client_id,
-            surface_cols: client_cols,
-            surface_rows: client_rows,
-            cell_width_px,
-            cell_height_px,
-            pixel_mouse,
-            mouse_capture,
-            surface_active,
-            writer,
-        }
-    } else {
-        ServerEvent::ClientConnected {
-            client_id,
-            cols: client_cols,
-            rows: client_rows,
-            cell_width_px,
-            cell_height_px,
-            pixel_mouse: terminal_pixel_mouse,
-            writer,
-        }
+    let endpoint_control_writer = writer.control.clone();
+    // The exact-build preamble guarantees support for semantic surfaces.
+    let connected = ServerEvent::ClientShellConnected {
+        client_id,
+        surface_cols: hello.geometry.cols(),
+        surface_rows: hello.geometry.rows(),
+        cell_width_px: cell.width(),
+        cell_height_px: cell.height(),
+        pixel_mouse: cell.exact,
+        mouse_capture: hello.mouse_capture,
+        surface_active: hello.surface_active,
+        writer,
     };
-    if let Err(err) = server_event_tx.blocking_send(connected) {
-        match err.0 {
-            ServerEvent::ClientConnected { writer, .. }
-            | ServerEvent::ClientShellConnected { writer, .. } => {
-                send_shutdown_to_unregistered_client(&writer);
-            }
-            _ => {}
-        }
+    if let Err(err) = server_event_tx.blocking_send(connected)
+        && let ServerEvent::ClientShellConnected { writer, .. } = err.0
+    {
+        send_shutdown_to_unregistered_client(&writer);
     }
 
     // Enter read loop - read client messages and forward to main loop.
@@ -812,7 +658,7 @@ pub(crate) fn handle_client_handshake(
         session,
         server_event_tx,
         should_quit,
-        endpoint_control_writer.as_ref(),
+        Some(&endpoint_control_writer),
     )
 }
 
@@ -938,51 +784,6 @@ fn client_read_loop_with_endpoint_controls(
         };
 
         let event = match msg {
-            ClientMessage::Input { data } => {
-                // Validate input size.
-                if data.len() > MAX_INPUT_PAYLOAD {
-                    if shepr_termio::input::raw_input::is_complete_text_bracketed_paste(&data) {
-                        warn!(
-                            ?client_id,
-                            size = data.len(),
-                            max = MAX_INPUT_PAYLOAD,
-                            "oversized bracketed paste from client, rejecting"
-                        );
-                        ServerEvent::ClientPasteRejected {
-                            client_id,
-                            size: data.len(),
-                            max: MAX_INPUT_PAYLOAD,
-                        }
-                    } else {
-                        warn!(
-                            ?client_id,
-                            size = data.len(),
-                            "oversized input from client, closing"
-                        );
-                        send_client_disconnected(server_event_tx, client_id);
-                        break;
-                    }
-                } else {
-                    ServerEvent::ClientInput { client_id, data }
-                }
-            }
-            ClientMessage::Resize { geometry } => {
-                let geometry = bound_terminal_geometry(
-                    geometry.cols(),
-                    geometry.rows(),
-                    geometry.width(),
-                    geometry.height(),
-                    geometry.pixel_mouse,
-                );
-                ServerEvent::ClientResize {
-                    client_id,
-                    cols: geometry.cols(),
-                    rows: geometry.rows(),
-                    cell_width_px: geometry.cell_width(),
-                    cell_height_px: geometry.cell_height(),
-                    pixel_mouse: geometry.exact,
-                }
-            }
             ClientMessage::ClientShellResize { geometry } => {
                 let surface_size = geometry.surface_size();
                 let cell = shepr_protocol::ProtocolCellSize::from_wire(
@@ -1147,46 +948,10 @@ fn client_read_loop_with_endpoint_controls(
                 );
                 break;
             }
-            ClientMessage::AttachTerminal {
-                terminal_id,
-                takeover,
-            } => ServerEvent::ClientAttachTerminal {
-                client_id,
-                terminal_id,
-                takeover,
-            },
-            ClientMessage::AttachScroll {
-                source,
-                direction,
-                lines,
-                column,
-                row,
-                modifiers,
-            } => ServerEvent::ClientAttachScroll {
-                client_id,
-                source,
-                direction,
-                lines,
-                column,
-                row,
-                modifiers,
-            },
-            ClientMessage::AttachMouse {
-                kind,
-                position,
-                geometry,
-                modifiers,
-                lines,
-            } => ServerEvent::ClientAttachMouse {
-                client_id,
-                kind,
-                position,
-                geometry,
-                modifiers,
-                lines,
-            },
-            ClientMessage::TerminalHello { .. } | ClientMessage::EndpointHello(_) => {
-                // Duplicate handshake - ignore.
+            // A duplicate handshake, or a message only a direct terminal
+            // client sent, means nothing to a client shell.
+            _ => {
+                debug!(?client_id, "ignoring a message no client shell sends");
                 continue;
             }
         };
@@ -1208,6 +973,7 @@ mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     /// How often a test reader re-checks the queue. The queue's condvar wakes one
     /// waiter, and a test can have two (the control drain and a render read), so
@@ -1432,16 +1198,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{context}: channel closed"))
     }
 
-    fn bracketed_paste_with_total_len(total_len: usize) -> Vec<u8> {
-        const DELIMITER_BYTES: usize = b"\x1b[200~".len() + b"\x1b[201~".len();
-        assert!(total_len >= DELIMITER_BYTES);
-        let mut data = Vec::with_capacity(total_len);
-        data.extend_from_slice(b"\x1b[200~");
-        data.resize(total_len - b"\x1b[201~".len(), b'x');
-        data.extend_from_slice(b"\x1b[201~");
-        data
-    }
-
     fn test_queue_writer() -> (ClientWriter, Arc<ClientWriterQueue>) {
         let queue = ClientWriterQueue::new();
         (
@@ -1655,166 +1411,6 @@ mod tests {
     }
 
     #[test]
-    fn clamp_terminal_size_zero_zero() {
-        assert_eq!(clamp_terminal_size(0, 0), (1, 1));
-    }
-
-    #[test]
-    fn clamp_terminal_size_one_one() {
-        assert_eq!(clamp_terminal_size(1, 1), (1, 1));
-    }
-
-    #[test]
-    fn clamp_terminal_size_preserves_narrow_client_size() {
-        assert_eq!(clamp_terminal_size(40, 12), (40, 12));
-    }
-
-    #[test]
-    fn clamp_terminal_size_valid() {
-        assert_eq!(clamp_terminal_size(120, 40), (120, 40));
-    }
-
-    #[test]
-    fn clamp_terminal_size_bounds_the_grid_to_one_frame() {
-        assert_eq!(
-            clamp_terminal_size(u16::MAX, u16::MAX),
-            (
-                shepr_protocol::MAX_SURFACE_DIMENSION,
-                u16::try_from(
-                    shepr_protocol::MAX_SURFACE_CELLS
-                        / usize::from(shepr_protocol::MAX_SURFACE_DIMENSION)
-                )
-                .expect("test precondition"),
-            )
-        );
-        for (cols, rows) in [(u16::MAX, 1), (1, u16::MAX), (1000, 1000), (512, 256)] {
-            let (cols, rows) = clamp_terminal_size(cols, rows);
-            assert!(cols >= MIN_CLIENT_COLS && rows >= MIN_CLIENT_ROWS);
-            assert!(
-                cols <= shepr_protocol::MAX_SURFACE_DIMENSION
-                    && rows <= shepr_protocol::MAX_SURFACE_DIMENSION
-            );
-            assert!(usize::from(cols) * usize::from(rows) <= shepr_protocol::MAX_SURFACE_CELLS);
-        }
-        // Full width is kept; rows give way.
-        assert_eq!(clamp_terminal_size(1000, 1000).0, 1000);
-    }
-
-    #[test]
-    fn terminal_geometry_drops_implausible_pixel_sizes() {
-        let geometry = bound_terminal_geometry(80, 24, 8, 16, true);
-        assert_eq!(geometry, TerminalGeometry::new(80, 24, 8, 16, true));
-        let geometry = bound_terminal_geometry(80, 24, u32::MAX, 16, true);
-        assert_eq!((geometry.cell_width(), geometry.cell_height()), (0, 0));
-        assert!(!geometry.exact);
-    }
-
-    #[test]
-    fn oversized_terminal_hello_is_clamped_to_one_frame() {
-        let (mut client_stream, server_stream, _path) =
-            local_stream_pair("client-handshake-oversized-terminal");
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
-        let handshake_quit = Arc::clone(&should_quit);
-        let handle = std::thread::spawn(move || {
-            handle_client_handshake(
-                server_stream,
-                ClientId::test_new(44),
-                &shepr_config::SessionId::default(),
-                &server_event_tx,
-                &handshake_quit,
-            )
-        });
-
-        open_as_client(
-            &mut client_stream,
-            &ClientMessage::TerminalHello {
-                geometry: shepr_protocol::TerminalGeometry::new(
-                    u16::MAX,
-                    u16::MAX,
-                    u32::MAX,
-                    u32::MAX,
-                    true,
-                ),
-            },
-        );
-        let _welcome: ServerMessage =
-            shepr_protocol::read_message(&mut client_stream).expect("read welcome");
-        match recv_server_event(&mut server_event_rx, "oversized terminal connect") {
-            ServerEvent::ClientConnected {
-                cols,
-                rows,
-                cell_width_px,
-                pixel_mouse,
-                writer,
-                ..
-            } => {
-                assert!(usize::from(cols) * usize::from(rows) <= shepr_protocol::MAX_SURFACE_CELLS);
-                assert!(cols <= shepr_protocol::MAX_SURFACE_DIMENSION);
-                assert_eq!(cell_width_px, 0);
-                assert!(!pixel_mouse);
-                drop(writer);
-            }
-            other => panic!("expected ClientConnected, got {other:?}"),
-        }
-
-        drop(client_stream);
-        should_quit.request();
-        handle
-            .join()
-            .expect("handshake thread join")
-            .expect("handshake thread result");
-    }
-
-    #[test]
-    fn oversized_terminal_resize_is_clamped_to_one_frame() {
-        let (mut client_stream, server_stream, _path) =
-            local_stream_pair("client-read-oversized-resize");
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
-        let read_quit = Arc::clone(&should_quit);
-        let handle = std::thread::spawn(move || {
-            client_read_loop(
-                server_stream,
-                ClientId::test_new(7),
-                &server_event_tx,
-                &read_quit,
-            )
-        });
-
-        shepr_protocol::write_message(
-            &mut client_stream,
-            &ClientMessage::Resize {
-                geometry: shepr_protocol::TerminalGeometry::new(u16::MAX, u16::MAX, 8, 16, true),
-            },
-        )
-        .expect("test precondition");
-        match recv_server_event(&mut server_event_rx, "oversized resize") {
-            ServerEvent::ClientResize {
-                cols,
-                rows,
-                pixel_mouse,
-                ..
-            } => {
-                assert!(usize::from(cols) * usize::from(rows) <= shepr_protocol::MAX_SURFACE_CELLS);
-                assert!(pixel_mouse);
-            }
-            other => panic!("expected ClientResize, got {other:?}"),
-        }
-
-        shepr_protocol::write_message(&mut client_stream, &ClientMessage::Detach)
-            .expect("write detach");
-        assert!(matches!(
-            recv_server_event(&mut server_event_rx, "detach event"),
-            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
-        ));
-        handle
-            .join()
-            .expect("read thread join")
-            .expect("read thread result");
-    }
-
-    #[test]
     fn foreign_build_preamble_gets_the_server_identity_and_no_session() {
         use std::io::Read as _;
 
@@ -1927,68 +1523,6 @@ mod tests {
                 ..
             } if request_id == "req-2"
         ));
-    }
-
-    #[test]
-    fn direct_terminal_hello_selects_terminal_ansi_stream() {
-        let (mut client_stream, server_stream, _path) = local_stream_pair("client-handshake-ansi");
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
-        let handshake_quit = Arc::clone(&should_quit);
-        let handle = std::thread::spawn(move || {
-            handle_client_handshake(
-                server_stream,
-                ClientId::test_new(42),
-                &shepr_config::SessionId::default(),
-                &server_event_tx,
-                &handshake_quit,
-            )
-        });
-
-        open_as_client(
-            &mut client_stream,
-            &ClientMessage::TerminalHello {
-                geometry: shepr_protocol::TerminalGeometry::new(100, 30, 8, 16, true),
-            },
-        );
-
-        let welcome: ServerMessage =
-            shepr_protocol::read_message(&mut client_stream).expect("read welcome");
-        match welcome {
-            ServerMessage::Welcome { error } => {
-                assert_eq!(error, None);
-            }
-            other => panic!("expected Welcome, got {other:?}"),
-        }
-
-        match server_event_rx
-            .blocking_recv()
-            .expect("client connected event")
-        {
-            ServerEvent::ClientConnected {
-                client_id,
-                cols,
-                rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
-                writer,
-            } => {
-                assert_eq!(client_id, 42);
-                assert_eq!((cols, rows), (100, 30));
-                assert_eq!((cell_width_px, cell_height_px), (8, 16));
-                assert!(pixel_mouse);
-                drop(writer);
-            }
-            other => panic!("expected ClientConnected, got {other:?}"),
-        }
-
-        drop(client_stream);
-        should_quit.request();
-        handle
-            .join()
-            .expect("handshake thread join")
-            .expect("handshake thread result");
     }
 
     #[test]
@@ -2163,170 +1697,6 @@ mod tests {
             recv_server_event(&mut server_event_rx, "unsafe resize disconnect"),
             ServerEvent::ClientDisconnected { client_id } if client_id == ClientId::test_new(7)
         ));
-        handle
-            .join()
-            .expect("read thread join")
-            .expect("read thread result");
-    }
-
-    #[test]
-    fn client_read_loop_rejects_oversized_bracketed_paste_without_disconnect() {
-        let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-oversized");
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
-        let read_quit = Arc::clone(&should_quit);
-        let handle = std::thread::spawn(move || {
-            client_read_loop(
-                server_stream,
-                ClientId::test_new(7),
-                &server_event_tx,
-                &read_quit,
-            )
-        });
-
-        shepr_protocol::write_message(
-            &mut client_stream,
-            &ClientMessage::Input {
-                data: bracketed_paste_with_total_len(MAX_INPUT_PAYLOAD),
-            },
-        )
-        .expect("write maximum-size bracketed paste");
-
-        match recv_server_event(&mut server_event_rx, "maximum-size paste event") {
-            ServerEvent::ClientInput { client_id, data } => {
-                assert_eq!(client_id, 7);
-                assert_eq!(data.len(), MAX_INPUT_PAYLOAD);
-            }
-            other => panic!("expected maximum-size ClientInput, got {other:?}"),
-        }
-
-        shepr_protocol::write_message(
-            &mut client_stream,
-            &ClientMessage::Input {
-                data: bracketed_paste_with_total_len(MAX_INPUT_PAYLOAD + 1),
-            },
-        )
-        .expect("write oversized bracketed paste");
-
-        match recv_server_event(&mut server_event_rx, "oversized paste rejection") {
-            ServerEvent::ClientPasteRejected {
-                client_id,
-                size,
-                max,
-            } => {
-                assert_eq!(client_id, 7);
-                assert_eq!(size, MAX_INPUT_PAYLOAD + 1);
-                assert_eq!(max, MAX_INPUT_PAYLOAD);
-            }
-            ServerEvent::ClientDisconnected { .. } => {
-                panic!("oversized input must be rejected without disconnecting the client")
-            }
-            other => panic!("expected ClientPasteRejected, got {other:?}"),
-        }
-
-        shepr_protocol::write_message(
-            &mut client_stream,
-            &ClientMessage::Input {
-                data: b"still connected".to_vec(),
-            },
-        )
-        .expect("write valid input after rejection");
-
-        match recv_server_event(&mut server_event_rx, "valid input after rejection") {
-            ServerEvent::ClientInput { client_id, data } => {
-                assert_eq!(client_id, 7);
-                assert_eq!(data, b"still connected");
-            }
-            other => panic!("expected ClientInput after rejection, got {other:?}"),
-        }
-
-        drop(client_stream);
-        should_quit.request();
-        handle
-            .join()
-            .expect("read thread join")
-            .expect("read thread result");
-    }
-
-    #[test]
-    fn client_read_loop_disconnects_oversized_non_paste_input() {
-        let (mut client_stream, server_stream, _path) =
-            local_stream_pair("client-read-oversized-non-paste");
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
-        let read_quit = Arc::clone(&should_quit);
-        let handle = std::thread::spawn(move || {
-            client_read_loop(
-                server_stream,
-                ClientId::test_new(7),
-                &server_event_tx,
-                &read_quit,
-            )
-        });
-
-        shepr_protocol::write_message(
-            &mut client_stream,
-            &ClientMessage::Input {
-                data: vec![b'x'; MAX_INPUT_PAYLOAD + 1],
-            },
-        )
-        .expect("write oversized non-paste input");
-
-        assert!(matches!(
-            recv_server_event(&mut server_event_rx, "oversized non-paste disconnect"),
-            ServerEvent::ClientDisconnected { client_id } if client_id == ClientId::test_new(7)
-        ));
-
-        drop(client_stream);
-        should_quit.request();
-        handle
-            .join()
-            .expect("read thread join")
-            .expect("read thread result");
-    }
-
-    #[test]
-    fn client_read_loop_rejects_marker_wrapped_invalid_utf8_without_disconnect() {
-        let (mut client_stream, server_stream, _path) =
-            local_stream_pair("client-read-invalid-utf8-paste");
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
-        let read_quit = Arc::clone(&should_quit);
-        let handle = std::thread::spawn(move || {
-            client_read_loop(
-                server_stream,
-                ClientId::test_new(7),
-                &server_event_tx,
-                &read_quit,
-            )
-        });
-        let mut data = bracketed_paste_with_total_len(MAX_INPUT_PAYLOAD + 1);
-        let marker_len = b"\x1b[200~".len();
-        let expected_size = data.len();
-        data[marker_len] = 0xff;
-
-        shepr_protocol::write_message(&mut client_stream, &ClientMessage::Input { data })
-            .expect("write marker-wrapped invalid UTF-8 input");
-
-        // Only the bracketed-paste framing decides whether oversized input is
-        // recoverable; a paste whose body is not valid UTF-8 is still a
-        // paste, and must be forwarded as raw bytes elsewhere rather than
-        // disconnecting the client.
-        match recv_server_event(&mut server_event_rx, "invalid UTF-8 paste rejection") {
-            ServerEvent::ClientPasteRejected {
-                client_id,
-                size,
-                max,
-            } => {
-                assert_eq!(client_id, 7);
-                assert_eq!(size, expected_size);
-                assert_eq!(max, MAX_INPUT_PAYLOAD);
-            }
-            other => panic!("expected ClientPasteRejected, got {other:?}"),
-        }
-
-        drop(client_stream);
-        should_quit.request();
         handle
             .join()
             .expect("read thread join")

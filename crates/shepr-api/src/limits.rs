@@ -8,18 +8,13 @@ pub(crate) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100)
 /// app main loop to answer. Without one, a stalled main loop hangs every CLI
 /// call and every agent hook that shells out to the CLI.
 ///
-/// Most requests are answered in the same loop turn. The slowest legitimate
-/// case is a `pane.read`/`agent.read` of alternate-screen history, which the
-/// server serves by scrolling the agent, harvesting output, and restoring the
-/// viewport, each phase under its own bound (`MAX_DURATION` and
-/// `MAX_RESTORE_DURATION` in shepr-server's limits). A second read of the same
-/// pane is parked until the first finishes, so a queued read can spend one
-/// full worst-case read waiting before its own begins. The deadline must
-/// cover both back to back with margin to spare, or a legitimate queued read
-/// is reported as a stalled main loop. Requests that carry their own timeout
-/// (`events.wait`) are dispatched on their own paths and are not subject to
-/// this bound.
-pub(crate) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Every remaining ordinary request (status, session snapshot, detection
+/// capture and explain, hook reports, stop) is answered within a loop turn or
+/// two and returns a bounded response, so this only has to sit comfortably
+/// above [`APP_RESPONSE_TIMEOUT`] and one slow turn while still failing a
+/// stalled loop promptly. Requests that carry their own timeout (`events.wait`)
+/// are dispatched on their own paths and are not subject to this bound.
+pub(crate) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Extra client-side allowance beyond the server request deadline, so the
 /// server can return its more specific timeout response first.

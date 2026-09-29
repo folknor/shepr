@@ -116,8 +116,8 @@ impl App {
         Some((ws_idx, tab_idx))
     }
 
-    /// Resolves a public pane id (`<workspace_id>:p<n>`, or the pre-move id of
-    /// a pane that moved to another workspace) to (workspace index, pane).
+    /// Resolves a public pane id (`<workspace_id>:p<n>`) to (workspace index,
+    /// pane).
     ///
     /// Raw internal pane ids (`p_<raw>`) are not accepted: they restart every
     /// process, so after a server restart they name a different pane. The
@@ -132,25 +132,10 @@ impl App {
         &self,
         public_id: &shepr_protocol::PublicPaneId,
     ) -> Option<(usize, shepr_core::layout::PaneId)> {
-        let current_id = (|| {
-            let ws_idx = self.resolve_workspace_id(public_id.workspace_id())?;
-            let pane_number = public_id.number();
-            let ws = self.state.workspaces.get(ws_idx)?;
-            let pane_id = ws.pane_id_for_public_number(pane_number)?;
-            Some((ws_idx, pane_id))
-        })();
-        current_id.or_else(|| {
-            let alias = self.state.public_pane_id_aliases.get(public_id).copied()?;
-            self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias))
-        })
-    }
-
-    pub(crate) fn parse_current_public_pane_id(
-        &self,
-        id: &str,
-    ) -> Option<(usize, shepr_core::layout::PaneId)> {
-        let (ws_idx, pane_id) = self.parse_pane_id(id)?;
-        (self.public_pane_id(ws_idx, pane_id).as_deref() == Some(id)).then_some((ws_idx, pane_id))
+        let ws_idx = self.resolve_workspace_id(public_id.workspace_id())?;
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let pane_id = ws.pane_id_for_public_number(public_id.number())?;
+        Some((ws_idx, pane_id))
     }
 }
 
@@ -194,25 +179,11 @@ mod tests {
     }
 
     #[test]
-    fn canonical_public_pane_id_wins_over_a_colliding_alias() {
-        let mut app = test_app_with_workspaces(&["a", "b"]);
-        let current_pane = app.state.workspaces[0].tabs()[0].root_pane();
-        let moved_pane = app.state.workspaces[1].tabs()[0].root_pane();
-        let current_id = app
-            .public_pane_id(0, current_pane)
-            .expect("test precondition");
-        app.state
-            .public_pane_id_aliases
-            .insert(current_id.parse().expect("test precondition"), moved_pane);
-
-        assert_eq!(app.parse_pane_id(&current_id), Some((0, current_pane)));
+    fn unknown_public_pane_id_does_not_resolve() {
+        let app = test_app_with_workspaces(&["a", "b"]);
         let retired_id = shepr_protocol::PublicPaneId::new(&retired_workspace_id(), 9);
-        assert_eq!(app.parse_pane_id(&retired_id), None);
 
-        app.state
-            .public_pane_id_aliases
-            .insert(retired_id.clone(), moved_pane);
-        assert_eq!(app.parse_pane_id(&retired_id), Some((1, moved_pane)));
+        assert_eq!(app.parse_pane_id(&retired_id), None);
     }
 
     #[test]

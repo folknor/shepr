@@ -161,7 +161,6 @@ fn round_trip_full_workspace_snapshot() {
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/shepr"),
             label: None,
-            agent_name: None,
             agent_session: None,
             launch_argv: None,
         },
@@ -171,7 +170,6 @@ fn round_trip_full_workspace_snapshot() {
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/website"),
             label: Some("website".into()),
-            agent_name: None,
             agent_session: None,
             launch_argv: None,
         },
@@ -768,15 +766,7 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         std::time::Instant::now(),
     );
 
-    terminal.set_agent_name("reviewer".into());
-
     let snapshot = capture_from_state(&state);
-    assert_eq!(
-        snapshot.workspaces[0].tabs[0].panes[&root.raw()]
-            .agent_name
-            .as_deref(),
-        Some("reviewer")
-    );
     let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
         .agent_session
         .as_ref()
@@ -863,7 +853,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
         PaneSnapshot {
             cwd: missing_cwd.clone(),
             label: None,
-            agent_name: None,
             agent_session: None,
             launch_argv: None,
         },
@@ -873,7 +862,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
         PaneSnapshot {
             cwd: existing_cwd.clone(),
             label: None,
-            agent_name: None,
             agent_session: None,
             launch_argv: None,
         },

@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use super::agents::AgentInfo;
-use super::common::ClientWindowTitleReason;
+use shepr_protocol::PublicPaneId;
+
 use super::events::EventEnvelope;
 use super::panes::{
-    LayoutDescription, PaneEdgesResult, PaneFocusDirectionResult, PaneInfo, PaneLayoutSnapshot,
-    PaneMoveResult, PaneNeighborResult, PaneProcessInfo, PaneReadResult, PaneResizeResult,
-    PaneSwapResult, PaneTextPoint, PaneTextRange, PaneZoomResult,
+    LayoutDescription, PaneFocusDirectionResult, PaneInfo, PaneResizeResult, PaneSwapResult,
+    PaneTextPoint, PaneTextRange, PaneZoomResult,
 };
 use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
@@ -72,35 +71,14 @@ pub enum ResponseResult {
     TabList {
         tabs: Vec<TabInfo>,
     },
-    AgentInfo {
-        agent: AgentInfo,
-    },
-    AgentList {
-        agents: Vec<AgentInfo>,
-    },
     PaneInfo {
-        pane: PaneInfo,
-    },
-    PaneList {
-        panes: Vec<PaneInfo>,
-    },
-    PaneCurrent {
         pane: PaneInfo,
     },
     PaneSwap {
         swap: PaneSwapResult,
     },
-    PaneMove {
-        move_result: PaneMoveResult,
-    },
     PaneZoom {
         zoom: PaneZoomResult,
-    },
-    PaneLayout {
-        layout: PaneLayoutSnapshot,
-    },
-    PaneProcessInfo {
-        process_info: PaneProcessInfo,
     },
     LayoutExport {
         layout: LayoutDescription,
@@ -111,20 +89,11 @@ pub enum ResponseResult {
     LayoutSplitRatioSet {
         layout: LayoutDescription,
     },
-    PaneNeighbor {
-        neighbor: PaneNeighborResult,
-    },
-    PaneEdges {
-        edges: PaneEdgesResult,
-    },
     PaneFocusDirection {
         focus: PaneFocusDirectionResult,
     },
     PaneResize {
         resize: PaneResizeResult,
-    },
-    PaneRead {
-        read: PaneReadResult,
     },
     PaneSelection {
         pane_id: String,
@@ -145,16 +114,17 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         current_global: Option<u64>,
     },
-    AgentExplain {
+    /// The detector's input for one pane: the detection-source screen text.
+    DetectCapture {
+        pane_id: PublicPaneId,
+        text: String,
+    },
+    DetectExplain {
         explain: serde_json::Value,
     },
     SubscriptionStarted {},
     WaitMatched {
         event: EventEnvelope,
-    },
-    ClientWindowTitle {
-        changed: bool,
-        reason: ClientWindowTitleReason,
     },
     /// Acknowledgement for the client-shell surface interest lease. Its revision-bearing
     /// result can establish an activation floor.

@@ -43,10 +43,8 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
 ///
 /// The connection opens with the raw build-identity preamble in both
 /// directions (`shepr_protocol::preamble`), so a server of any other build is
-/// reported as a mismatch before either side decodes a codec frame. Direct
-/// terminal clients then send `TerminalHello`; client-owned shells send a JSON
-/// endpoint hello. The hello variant selects terminal ANSI or semantic surface
-/// delivery, so the welcome does not negotiate an encoding.
+/// reported as a mismatch before either side decodes a codec frame. The client
+/// then sends its endpoint hello, and the welcome does not negotiate an encoding.
 ///
 /// `deadline`, when given, caps the wait for the reply below the usual read timeout: the
 /// saved-machine endpoint supervisor bounds each whole connection attempt by its
@@ -54,12 +52,11 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
     geometry: shepr_core::geometry::HostGeometry,
-    shell_surface_size: Option<shepr_protocol::ClientSurfaceSize>,
+    surface_size: shepr_protocol::ClientSurfaceSize,
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), ClientError> {
-    let (cols, rows) = (geometry.cols(), geometry.rows());
     let (cell_width_px, cell_height_px, exact_cell_size) =
         super::terminal_geometry::bounded_cell_geometry(
             geometry.cell_width(),
@@ -70,31 +67,17 @@ pub(super) fn do_handshake(
         .set_nonblocking(false)
         .map_err(ClientError::ConnectionFailed)?;
 
-    let endpoint_shell = shell_surface_size.is_some();
-    let hello = if let Some(surface_size) = shell_surface_size {
-        let hello = EndpointClientHello {
-            geometry: shepr_protocol::TerminalGeometry::new(
-                surface_size.cols,
-                surface_size.rows,
-                cell_width_px,
-                cell_height_px,
-                exact_cell_size,
-            ),
-            mouse_capture,
-            surface_active,
-        };
-        ClientMessage::EndpointHello(hello)
-    } else {
-        ClientMessage::TerminalHello {
-            geometry: shepr_protocol::TerminalGeometry::new(
-                cols,
-                rows,
-                cell_width_px,
-                cell_height_px,
-                exact_cell_size,
-            ),
-        }
-    };
+    let hello = ClientMessage::EndpointHello(EndpointClientHello {
+        geometry: shepr_protocol::TerminalGeometry::new(
+            surface_size.cols,
+            surface_size.rows,
+            cell_width_px,
+            cell_height_px,
+            exact_cell_size,
+        ),
+        mouse_capture,
+        surface_active,
+    });
     // Preamble and hello go out together; the server's preamble is read back
     // before its welcome, so a different build is named even if its welcome
     // would not decode.
@@ -108,10 +91,10 @@ pub(super) fn do_handshake(
             .map_err(|error| hello_write_error(shepr_protocol::FramingError::Io(error)))?;
     }
 
-    let read_timeout = if endpoint_shell && !surface_active {
-        REMOTE_HANDSHAKE_READ_TIMEOUT
-    } else {
+    let read_timeout = if surface_active {
         LOCAL_HANDSHAKE_READ_TIMEOUT
+    } else {
+        REMOTE_HANDSHAKE_READ_TIMEOUT
     };
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
@@ -138,27 +121,14 @@ pub(super) fn do_handshake(
         welcome => welcome,
     };
 
-    if endpoint_shell {
-        let ServerMessage::EndpointWelcome(welcome) = welcome else {
-            return Err(ClientError::UnexpectedWelcome { endpoint: true });
-        };
-        if let Some(error) = welcome.error {
-            return Err(ClientError::HandshakeRejected { error });
-        }
-        info!("endpoint handshake succeeded");
-        return Ok(());
+    let ServerMessage::EndpointWelcome(welcome) = welcome else {
+        return Err(ClientError::UnexpectedWelcome);
+    };
+    if let Some(error) = welcome.error {
+        return Err(ClientError::HandshakeRejected { error });
     }
-
-    match welcome {
-        ServerMessage::Welcome { error } => {
-            if let Some(error) = error {
-                return Err(ClientError::HandshakeRejected { error });
-            }
-            info!("terminal handshake succeeded");
-            Ok(())
-        }
-        _ => Err(ClientError::UnexpectedWelcome { endpoint: false }),
-    }
+    info!("endpoint handshake succeeded");
+    Ok(())
 }
 
 /// Keeps the socket error itself, kind included: the endpoint supervisor decides
@@ -187,12 +157,8 @@ mod tests {
         (client, server)
     }
 
-    fn handshake_against_shutdown(endpoint_shell: bool) -> ClientError {
-        let (mut client, mut server) = socket_pair(if endpoint_shell {
-            "shutdown-endpoint"
-        } else {
-            "shutdown-terminal"
-        });
+    fn handshake_against_shutdown() -> ClientError {
+        let (mut client, mut server) = socket_pair("shutdown-endpoint");
         let peer = std::thread::spawn(move || {
             shepr_protocol::preamble::write_preamble(&mut server).expect("test precondition");
             shepr_protocol::preamble::read_preamble(&mut server).expect("client preamble");
@@ -206,12 +172,10 @@ mod tests {
             )
             .expect("test precondition");
         });
-        let surface =
-            endpoint_shell.then_some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 });
         let error = do_handshake(
             &mut client,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            surface,
+            shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
             false,
             true,
             None,
@@ -223,16 +187,14 @@ mod tests {
 
     #[test]
     fn shutdown_in_place_of_welcome_is_reported_as_a_shutdown() {
-        for endpoint_shell in [true, false] {
-            match handshake_against_shutdown(endpoint_shell) {
-                ClientError::ServerShutdown { reason } => {
-                    assert_eq!(
-                        reason,
-                        Some(shepr_protocol::ShutdownReason::Message("restarting".into()))
-                    );
-                }
-                other => panic!("endpoint_shell={endpoint_shell}: {other}"),
+        match handshake_against_shutdown() {
+            ClientError::ServerShutdown { reason } => {
+                assert_eq!(
+                    reason,
+                    Some(shepr_protocol::ShutdownReason::Message("restarting".into()))
+                );
             }
+            other => panic!("{other}"),
         }
     }
 
@@ -261,7 +223,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
+            shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
             false,
             true,
             None,
@@ -283,7 +245,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
+            shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
             false,
             false,
             Some(deadline),

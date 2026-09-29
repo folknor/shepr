@@ -35,21 +35,6 @@ fn classify_shell_focus_transition<'a>(
     (lost, gained)
 }
 
-pub(super) fn forward_proxied_api_response(
-    proxy: Option<(
-        String,
-        &'static str,
-        std::sync::mpsc::Sender<shepr_api::error::ApiResult>,
-        std::sync::mpsc::Receiver<shepr_api::error::ApiResult>,
-    )>,
-) -> Option<shepr_api::schema::ResponseResult> {
-    let (request_id, method, respond_to, response_rx) = proxy?;
-    let response = response_rx.recv().ok()?;
-    let result = response.clone().ok();
-    shepr_api::send_api_response(&respond_to, &request_id, method, response);
-    result
-}
-
 impl HeadlessServer {
     pub(super) fn default_shell_target(&self) -> Option<crate::ui::TabSurfaceTarget> {
         let workspace_index = self.app.state.active_index()?;
@@ -561,7 +546,7 @@ impl HeadlessServer {
     }
 
     /// Resize unlocked panes to headless geometry when no shell controls their size.
-    pub(super) fn resize_tabs_to_headless_size(&mut self, start_pending_agent_resumes: bool) {
+    pub(super) fn resize_tabs_to_headless_size(&mut self) {
         self.sync_foreground_client_state();
         let area = self.app.state.settings.headless_rect();
         crate::ui::resize_all_tab_surfaces(
@@ -570,14 +555,7 @@ impl HeadlessServer {
             area,
             shepr_termio::host_term::cell_size::HostCellSize::default(),
         );
-        if start_pending_agent_resumes {
-            self.finish_shell_tab_geometry_change(true);
-        } else {
-            // An attach departure leaves pending agent resumes as they are.
-            for client in self.clients.values_mut() {
-                client.request_recompute();
-            }
-        }
+        self.finish_shell_tab_geometry_change(true);
     }
 
     pub(super) fn reapply_controlled_shell_tab_geometry(
@@ -704,43 +682,5 @@ impl HeadlessServer {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
-    }
-
-    pub(super) fn shell_geometry_controller_for_terminal(
-        &self,
-        terminal_id: &str,
-    ) -> Option<(ClientId, crate::ui::TabSurfaceTarget)> {
-        let target = self.app.state.workspaces.iter().enumerate().find_map(
-            |(workspace_index, workspace)| {
-                workspace
-                    .tabs()
-                    .iter()
-                    .enumerate()
-                    .find_map(|(tab_index, tab)| {
-                        tab.panes()
-                            .values()
-                            .any(|pane| pane.attached_terminal_id.as_str() == terminal_id)
-                            .then(|| {
-                                crate::ui::TabSurfaceTarget::from_indices(
-                                    &self.app.state,
-                                    workspace_index,
-                                    tab_index,
-                                )
-                            })
-                            .flatten()
-                    })
-            },
-        )?;
-        self.clients
-            .geometry_controller(&target.tab_id)
-            .map(|client_id| (client_id, target))
-    }
-
-    pub(super) fn restore_shell_tab_geometry(
-        &mut self,
-        client_id: ClientId,
-        target: crate::ui::TabSurfaceTarget,
-    ) -> bool {
-        self.apply_shell_tab_geometry_to_target(client_id, target, true)
     }
 }

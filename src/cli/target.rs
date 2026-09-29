@@ -29,27 +29,17 @@ enum ApiTarget {
 pub(super) struct CliContext {
     paths: shepr_config::AppPaths,
     target: RefCell<ApiTarget>,
-    caller_pane_id: Option<String>,
-    caller_socket: Option<std::path::PathBuf>,
 }
 
 impl CliContext {
-    /// A context for the local server, capturing the calling pane from the
-    /// environment once.
-    ///
-    /// # Errors
-    ///
-    /// A `SHEPR_PANE_ID` or `SHEPR_SOCKET_PATH` the environment policy refuses.
-    pub(super) fn local(paths: shepr_config::AppPaths) -> io::Result<Self> {
-        use shepr_core::env::{EnvVar, read_path, read_text};
-        Ok(Self {
+    /// A context for the local server.
+    pub(super) fn local(paths: shepr_config::AppPaths) -> Self {
+        Self {
             paths,
             target: RefCell::new(ApiTarget::Local {
                 build_checked: false,
             }),
-            caller_pane_id: read_text(EnvVar::SheprPaneId)?,
-            caller_socket: read_path(EnvVar::SheprSocketPath)?,
-        })
+        }
     }
 
     fn machine(
@@ -64,8 +54,6 @@ impl CliContext {
                 bridge: None,
                 ssh_settings,
             }))),
-            caller_pane_id: None,
-            caller_socket: None,
         }
     }
 
@@ -124,7 +112,7 @@ pub(super) fn run_on_machine(
         Err(error) => return usage_error(&error),
     };
     let context = CliContext::machine(paths.clone(), profile, ssh_settings);
-    super::dispatch_with_config(command, Some(config), &context)
+    super::dispatch(command, &context)
 }
 
 fn usage_error(error: &str) -> super::CliResult<i32> {
@@ -294,83 +282,6 @@ pub(super) fn socket_label(context: &CliContext) -> String {
     }
 }
 
-/// The pane this CLI process runs in, as far as the targeted server is
-/// concerned.
-///
-/// Every pane's environment carries `SHEPR_PANE_ID` together with
-/// `SHEPR_SOCKET_PATH`, the API socket of the server that owns the pane. The
-/// pane id only means something to that server, so it is used only when the
-/// command goes to the same socket: `--session` naming another session, a
-/// socket override that differs from the pane's, or `--machine` all make the
-/// id foreign. (A pane shell that re-exports `SHEPR_SOCKET_PATH` itself
-/// cannot be told apart from the pane's own value; nothing else records which
-/// server a pane belongs to.)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum CallerPane {
-    /// The command runs in this pane of the targeted server.
-    Known(String),
-    /// `SHEPR_PANE_ID` is unset: the command does not run inside a pane.
-    Unset,
-    /// `SHEPR_PANE_ID` names a pane of a different server than the target.
-    OtherServer,
-    /// `--machine`: the caller's pane can never be on that machine's server.
-    Remote,
-}
-
-impl CallerPane {
-    /// The pane id when it belongs to the targeted server.
-    pub(super) fn id(&self) -> Option<String> {
-        match self {
-            Self::Known(pane_id) => Some(pane_id.clone()),
-            Self::Unset | Self::OtherServer | Self::Remote => None,
-        }
-    }
-
-    /// The pane id for `--current`, which has no fallback.
-    pub(super) fn require(&self) -> Result<String, String> {
-        match self {
-            Self::Known(pane_id) => Ok(pane_id.clone()),
-            Self::Unset => Err(
-                "--current needs the calling pane, but SHEPR_PANE_ID is not set; run it inside a shepr pane or name the pane with --pane"
-                    .into(),
-            ),
-            Self::OtherServer => Err(
-                "--current names the calling pane, which belongs to a different server than this command targets (--session or SHEPR_SOCKET_PATH); name the pane with --pane"
-                    .into(),
-            ),
-            Self::Remote => Err(
-                "--current cannot be used with --machine: the calling pane is not on that machine; name the pane with --pane"
-                    .into(),
-            ),
-        }
-    }
-}
-
-pub(super) fn caller_pane(context: &CliContext) -> CallerPane {
-    if context.is_remote() {
-        return CallerPane::Remote;
-    }
-    caller_pane_from(
-        context.caller_pane_id.clone(),
-        context.caller_socket.clone(),
-        &shepr_api::socket_path(context),
-    )
-}
-
-fn caller_pane_from(
-    pane_id: Option<String>,
-    pane_socket: Option<std::path::PathBuf>,
-    target_socket: &std::path::Path,
-) -> CallerPane {
-    let Some(pane_id) = pane_id.filter(|value| !value.trim().is_empty()) else {
-        return CallerPane::Unset;
-    };
-    match pane_socket {
-        Some(socket) if socket == target_socket => CallerPane::Known(pane_id),
-        _ => CallerPane::OtherServer,
-    }
-}
-
 pub(super) fn resolve_machine<'a>(
     profiles: &'a [SavedSshEndpoint],
     selector: &str,
@@ -414,14 +325,7 @@ fn validate_machine_command(command: &super::CliCommand) -> Result<(), String> {
 #[cfg(test)]
 impl CliContext {
     pub(super) fn test_local(paths: shepr_config::AppPaths) -> Self {
-        Self {
-            paths,
-            target: RefCell::new(ApiTarget::Local {
-                build_checked: false,
-            }),
-            caller_pane_id: None,
-            caller_socket: None,
-        }
+        Self::local(paths)
     }
 }
 
@@ -440,29 +344,26 @@ mod tests {
     fn machine_prefix_routes_without_consuming_command_payload() {
         for prefix in [&["--machine", "mac"][..], &["--machine=mac"]] {
             let mut input = prefix.to_vec();
-            input.extend_from_slice(&["terminal", "title", "set", "--machine"]);
+            input.extend_from_slice(&["session", "stop", "--", "--machine"]);
             let matches = parse(&input).expect("test precondition");
             assert_eq!(
                 super::super::matches::string(&matches, "machine").as_deref(),
                 Some("mac")
             );
-            let Some(("terminal", terminal)) = matches.subcommand() else {
-                panic!("terminal command did not parse");
+            let Some(("session", session)) = matches.subcommand() else {
+                panic!("session command did not parse");
             };
-            let Some(("title", title)) = terminal.subcommand() else {
-                panic!("terminal title did not parse");
-            };
-            let Some(("set", set)) = title.subcommand() else {
-                panic!("terminal title set did not parse");
+            let Some(("stop", stop)) = session.subcommand() else {
+                panic!("session stop did not parse");
             };
             assert_eq!(
-                super::super::matches::required(set, "title").as_deref(),
+                super::super::matches::required(stop, "name").as_deref(),
                 Some("--machine")
             );
         }
 
         let matches =
-            parse(&["terminal", "title", "set", "--machine=mac"]).expect("test precondition");
+            parse(&["session", "stop", "--", "--machine=mac"]).expect("test precondition");
         assert_eq!(super::super::matches::string(&matches, "machine"), None);
     }
 
@@ -486,53 +387,14 @@ mod tests {
     }
 
     #[test]
-    fn caller_pane_is_known_only_on_the_pane_s_own_server() {
-        let own = std::path::Path::new("/run/shepr/shepr.sock");
-        assert_eq!(
-            caller_pane_from(Some("w1:p2".into()), Some(own.into()), own),
-            CallerPane::Known("w1:p2".into())
-        );
-        // `--session other` or a different socket override.
-        let other = std::path::Path::new("/run/shepr/sessions/other/shepr.sock");
-        assert_eq!(
-            caller_pane_from(Some("w1:p2".into()), Some(own.into()), other),
-            CallerPane::OtherServer
-        );
-        // A pane id without the socket it belongs to cannot be placed.
-        assert_eq!(
-            caller_pane_from(Some("w1:p2".into()), None, own),
-            CallerPane::OtherServer
-        );
-        assert_eq!(
-            caller_pane_from(None, Some(own.into()), own),
-            CallerPane::Unset
-        );
-        assert_eq!(
-            caller_pane_from(Some("  ".into()), Some(own.into()), own),
-            CallerPane::Unset
-        );
-
-        assert_eq!(CallerPane::Known("p".into()).id().as_deref(), Some("p"));
-        assert_eq!(CallerPane::Known("p".into()).require().as_deref(), Ok("p"));
-        for unknown in [
-            CallerPane::Unset,
-            CallerPane::OtherServer,
-            CallerPane::Remote,
-        ] {
-            assert_eq!(unknown.id(), None);
-            assert!(unknown.require().is_err());
-        }
-    }
-
-    #[test]
     fn machine_prefix_rejects_missing_target_and_conflicting_global_options() {
         for input in [
             &["--machine"][..],
             &["--machine="],
             &["--machine", "--help"],
-            &["--machine", "mac", "--machine", "other", "agent", "list"],
-            &["--machine", "mac", "--session", "other", "agent", "list"],
-            &["--session", "other", "--machine", "mac", "agent", "list"],
+            &["--machine", "mac", "--machine", "other", "status"],
+            &["--machine", "mac", "--session", "other", "status"],
+            &["--session", "other", "--machine", "mac", "status"],
             &["--machine", "mac", "--version"],
         ] {
             assert!(parse(input).is_err(), "{input:?}");
@@ -602,15 +464,6 @@ mod tests {
             &["machine", "list"],
             &["session", "list"],
             &["session", "delete", "default"],
-            &["agent", "attach", "w4:p1"],
-            &[
-                "agent",
-                "explain",
-                "--file",
-                "screen.txt",
-                "--agent",
-                "claude",
-            ],
             &[
                 "detect",
                 "explain",
@@ -619,7 +472,6 @@ mod tests {
                 "--agent",
                 "claude",
             ],
-            &["terminal", "attach", "w4:p1"],
             &["integration", "install", "pi"],
             &["integration", "status"],
             &["status", "client"],
@@ -627,13 +479,8 @@ mod tests {
             assert!(!machine_command_allowed(command), "{command:?}");
         }
         for command in [
-            &["agent", "list"][..],
-            &["agent", "explain", "w4:p1"],
-            &["detect", "capture", "w4:p1"],
+            &["detect", "capture", "w4:p1"][..],
             &["detect", "explain", "w4:p1"],
-            &["pane", "split", "w4:p1", "--direction", "right"],
-            &["workspace", "list"],
-            &["tab", "list"],
             &["status"],
             &["status", "server"],
             &["server", "stop"],

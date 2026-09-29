@@ -206,9 +206,8 @@ fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32>
 }
 
 /// Installs the process-wide client logger before client or bridge code logs.
-/// Every path into `shepr_client` (the TUI launch, `--client`, and the
-/// terminal and agent attach commands) and both bridges call it once; the
-/// client library installs none of its own. Bridges write to the host's
+/// Every path into `shepr_client` (the TUI launch and the `client` command)
+/// and both bridges call it once; the client library installs none of its own. Bridges write to the host's
 /// client log, never stdout, which carries the relayed stream. A log file
 /// that cannot be opened is reported on stderr.
 fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {

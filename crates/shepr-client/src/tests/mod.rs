@@ -81,7 +81,7 @@ fn resize_signal_reports_even_when_polled_size_is_unchanged() {
 #[test]
 fn unavailable_terminal_grid_is_not_fabricated() {
     let reported_cell_size = AtomicCellSize::new();
-    let err = current_terminal_geometry_with(false, &reported_cell_size, None, None, || {
+    let err = current_terminal_geometry_with(&reported_cell_size, None, None, || {
         Err(io::Error::new(
             io::ErrorKind::NotConnected,
             "terminal is gone",
@@ -96,10 +96,8 @@ fn unavailable_terminal_grid_is_not_fabricated() {
 fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
     let reported_cell_size = AtomicCellSize::new();
     let geometry =
-        current_terminal_geometry_with(true, &reported_cell_size, Some((9, 18)), None, || {
-            Ok((80, 24))
-        })
-        .expect("grid geometry remains valid without pixel dimensions");
+        current_terminal_geometry_with(&reported_cell_size, Some((9, 18)), None, || Ok((80, 24)))
+            .expect("grid geometry remains valid without pixel dimensions");
 
     assert_eq!(
         geometry,
@@ -108,18 +106,11 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 }
 
 #[test]
-fn client_host_size_clamps_only_client_shell_grids() {
-    let shell = terminal_geometry::ClientHostSize::new(0, u16::MAX, true);
+fn client_host_size_clamps_the_grid_to_one_surface() {
+    let shell = terminal_geometry::ClientHostSize::new(0, u16::MAX);
     assert_eq!(shell.cols, 1);
     assert!((1..=shepr_protocol::MAX_SURFACE_DIMENSION).contains(&shell.rows));
     assert!(usize::from(shell.cols) * usize::from(shell.rows) <= shepr_protocol::MAX_SURFACE_CELLS);
-    assert_eq!(
-        terminal_geometry::ClientHostSize::new(0, u16::MAX, false),
-        terminal_geometry::ClientHostSize {
-            cols: 0,
-            rows: u16::MAX,
-        },
-    );
 }
 
 #[test]
@@ -137,21 +128,6 @@ fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
             shepr_protocol::MAX_CELL_SIZE_PX,
             false,
         )
-    );
-}
-
-#[test]
-fn direct_notices_keep_only_the_most_recent_bounded_history() {
-    let mut notices = std::collections::VecDeque::new();
-    for index in 0..(crate::limits::MAX_NOTICES + 6) {
-        remember_direct_notice(&mut notices, index.to_string());
-    }
-
-    assert_eq!(notices.len(), crate::limits::MAX_NOTICES);
-    assert_eq!(notices.front().map(String::as_str), Some("6"));
-    assert_eq!(
-        notices.back().cloned(),
-        Some((crate::limits::MAX_NOTICES + 5).to_string())
     );
 }
 
@@ -208,13 +184,6 @@ fn write_host_color_scheme_report_mode_emits_mode_sequences() {
 }
 
 #[test]
-fn color_scheme_change_event_requests_host_theme_query() {
-    let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
-
-    assert!(shepr_termio::input::raw_input::events_require_host_terminal_theme_query(&events));
-}
-
-#[test]
 fn write_host_cell_size_query_emits_xtwinops_request() {
     let mut output = Vec::new();
     write_host_cell_size_query(&mut output).expect("test precondition");
@@ -257,10 +226,7 @@ fn terminal_restore_postlude_restores_visible_default_cursor() {
 }
 
 #[test]
-fn direct_attach_mouse_capture_combines_local_preference_with_child_demand() {
-    assert!(effective_mouse_capture(false, true));
-    assert!(effective_mouse_capture(true, false));
-    assert!(!effective_mouse_capture(false, false));
+fn sgr_pixel_mouse_needs_capture_a_request_and_exact_geometry() {
     assert!(effective_sgr_pixel_mouse(true, true, true));
     assert!(!effective_sgr_pixel_mouse(true, true, false));
 }
@@ -268,7 +234,7 @@ fn direct_attach_mouse_capture_combines_local_preference_with_child_demand() {
 #[test]
 fn host_modes_restore_color_scheme_reports_when_enabled() {
     let mut output = Vec::new();
-    let host_modes = HostModes::new(false, false, false);
+    let host_modes = HostModes::new(false, false);
     host_modes
         .enable_color_scheme_reports(&mut output)
         .expect("test precondition");
@@ -349,36 +315,6 @@ fn client_error_display_server_shutdown_no_reason() {
     assert!(
         msg.contains("server shut down"),
         "should mention shutdown: {msg}"
-    );
-}
-
-#[test]
-fn client_error_display_detached_default_session_reattach_hint() {
-    let err = ClientError::ServerShutdown {
-        reason: Some(shepr_protocol::ShutdownReason::Detached),
-    };
-    let paths = shepr_config::AppPaths::test_default();
-    let context =
-        ClientErrorContext::new(paths.server_address().attach_command(paths.session_id()));
-    let msg = err.display_with_context(&context);
-    assert!(
-        msg.contains("Run `shepr` to reattach"),
-        "should suggest default reattach command: {msg}"
-    );
-}
-
-#[test]
-fn client_error_display_detached_named_session_reattach_hint() {
-    let err = ClientError::ServerShutdown {
-        reason: Some(shepr_protocol::ShutdownReason::Detached),
-    };
-    let session = shepr_config::SessionId::parse("work").expect("test precondition");
-    let paths = shepr_config::AppPaths::test_default();
-    let context = ClientErrorContext::new(paths.server_address().attach_command(&session));
-    let msg = err.display_with_context(&context);
-    assert!(
-        msg.contains("Run `shepr session attach work` to reattach"),
-        "should suggest named session reattach command: {msg}"
     );
 }
 

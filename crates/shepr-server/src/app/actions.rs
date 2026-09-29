@@ -1,8 +1,6 @@
 //! Pure state mutations on AppState.
 //! These don't need channels, async, or PTY runtime.
 
-use std::time::Instant;
-
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 use shepr_mux::events::AppEvent;
@@ -32,18 +30,12 @@ pub struct PaneStateSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneStateCause {
     StateChanged,
-    NameChanged,
     Released,
-    NameChangedAndReleased,
 }
 
 impl PaneStateCause {
-    pub fn name_changed(self) -> bool {
-        matches!(self, Self::NameChanged | Self::NameChangedAndReleased)
-    }
-
     pub fn released(self) -> bool {
-        matches!(self, Self::Released | Self::NameChangedAndReleased)
+        matches!(self, Self::Released)
     }
 }
 

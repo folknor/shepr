@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use shepr_core::geometry::{CellPx, GridSize};
 
-/// Coherent geometry carried by a direct terminal client.
+/// Coherent geometry carried by a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "ReceivedTerminalGeometry")]
 pub struct TerminalGeometry {

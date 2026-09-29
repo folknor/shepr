@@ -215,10 +215,6 @@ impl App {
         };
         let workspace_id = update.workspace_id.clone();
 
-        if update.cause.name_changed() {
-            self.emit_pane_updated(ws_idx, update.pane_id);
-        }
-
         if update.previous.agent_label != update.current.agent_label || update.cause.released() {
             self.emit_event(shepr_api::schema::EventEnvelope {
                 data: shepr_api::schema::EventData::PaneAgentDetected {

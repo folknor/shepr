@@ -23,7 +23,6 @@ use super::*;
 use crate::UsableCwd;
 use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
-use crate::terminal::TerminalReadSnapshot;
 use shepr_core::layout::PaneId;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
 use shepr_pty::{ChildIo, PtyCommand};
@@ -1486,14 +1485,6 @@ impl PaneRuntime {
         self.terminal.synchronized_output_state()
     }
 
-    pub fn visible_text(&self) -> String {
-        self.terminal.visible_text()
-    }
-
-    pub fn visible_ansi(&self) -> String {
-        self.terminal.visible_ansi()
-    }
-
     pub fn detection_text(&self) -> String {
         self.terminal.detection_text()
     }
@@ -1508,22 +1499,6 @@ impl PaneRuntime {
 
     pub fn agent_osc_progress(&self) -> String {
         self.terminal.agent_osc_progress()
-    }
-
-    pub fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.terminal.recent_text_snapshot(lines)
-    }
-
-    pub fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.terminal.recent_ansi_snapshot(lines)
-    }
-
-    pub fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.terminal.recent_unwrapped_text_snapshot(lines)
-    }
-
-    pub fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.terminal.recent_unwrapped_ansi_snapshot(lines)
     }
 
     pub fn snapshot_history(&self) -> Option<String> {
@@ -1620,30 +1595,6 @@ impl PaneRuntime {
 
     pub fn wheel_routing(&self) -> Option<WheelRouting> {
         self.terminal.wheel_routing()
-    }
-
-    pub fn screen_text_snapshot(
-        &self,
-    ) -> Option<(shepr_vt::ActiveScreen, crate::terminal::ScreenSnapshot)> {
-        let (screen, cols, rows) = self.terminal.screen_text_snapshot()?;
-        Some((screen, crate::terminal::ScreenSnapshot { cols, rows }))
-    }
-
-    pub fn screen_text_snapshot_with_seq(
-        &self,
-    ) -> Option<(shepr_vt::ActiveScreen, crate::terminal::ScreenSnapshot, u64)> {
-        for _ in 0..crate::limits::SCREEN_SNAPSHOT_READ_ATTEMPTS {
-            let before = self.content_seq();
-            if !before.is_multiple_of(2) {
-                continue;
-            }
-            let (screen, snapshot) = self.screen_text_snapshot()?;
-            let after = self.content_seq();
-            if before == after {
-                return Some((screen, snapshot, after));
-            }
-        }
-        None
     }
 
     pub fn encode_mouse_button(
@@ -1800,6 +1751,17 @@ impl PaneRuntime {
     pub fn current_size(&self) -> (u16, u16) {
         let grid = self.grid_size();
         (grid.rows.get(), grid.cols.get())
+    }
+
+    pub fn visible_text(&self) -> String {
+        self.terminal.visible_text()
+    }
+
+    pub fn recent_unwrapped_text_snapshot(
+        &self,
+        lines: usize,
+    ) -> crate::terminal::TerminalReadSnapshot {
+        self.terminal.recent_unwrapped_text_snapshot(lines)
     }
 
     pub fn recent_unwrapped_text(&self, lines: usize) -> String {

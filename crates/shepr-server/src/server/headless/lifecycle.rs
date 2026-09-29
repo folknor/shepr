@@ -365,10 +365,8 @@ impl HeadlessServer {
         info!("completing server shutdown");
         self.reject_late_client_connections().await;
 
-        // Close the request channel and answer what is left in it, then the
-        // reads parked on alternate-screen traversals that no loop will drive.
+        // Close the request channel and answer what is left in it.
         self.reject_queued_api_requests_for_shutdown();
-        self.finish_alt_screen_reads_for_shutdown();
 
         // Close all client connections.
         self.clients.clear();

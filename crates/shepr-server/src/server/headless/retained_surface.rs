@@ -1,6 +1,5 @@
 use super::*;
 use crate::server::ClientId;
-use crate::server::clients::RenderTargetMode;
 
 fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
     rect.x.saturating_add(rect.width) <= frame.width
@@ -252,20 +251,12 @@ impl HeadlessServer {
         }
         let mut targets = render_targets(&self.clients, self.clients.foreground_client_id());
         targets.retain(|target| {
-            !matches!(&target.mode, RenderTargetMode::Shell)
-                || self
-                    .clients
-                    .get(&target.client_id)
-                    .is_some_and(ClientConnection::is_active_shell_client)
+            self.clients
+                .get(&target.client_id)
+                .is_some_and(ClientConnection::is_active_shell_client)
         });
         if targets.is_empty() {
             success!("no_active_surface");
-        }
-        if targets
-            .iter()
-            .any(|target| !matches!(&target.mode, RenderTargetMode::Shell))
-        {
-            fallback!("non_shell_target");
         }
 
         let mut recipients = Vec::with_capacity(targets.len());

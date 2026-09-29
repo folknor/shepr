@@ -830,7 +830,7 @@ pub fn agent_state_label(state: AgentState) -> &'static str {
 }
 
 pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
-    // The server uses this payload for explicit agent.explain requests. Its
+    // The server uses this payload for explicit detect.explain requests. Its
     // bounded preview contains pane text, which helps the caller diagnose the
     // selected rule. Keep this diagnostic payload out of logs and unsolicited
     // broadcasts.

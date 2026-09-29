@@ -782,68 +782,10 @@ impl PaneTerminal {
         shepr_termio::input::encode_mouse_event(kind, x, y, modifiers, mode, encoding)
     }
 
-    /// The active screen, its width and, on the alternate screen only, its
-    /// rows as owned text. Every caller (the alt-screen history read and its
-    /// guards) falls back as soon as it sees the primary screen, where the
-    /// retained rows are the whole scrollback: copying them cell by cell under
-    /// the core lock only to be dropped is pure waste, so the rows come back
-    /// empty there.
-    pub(crate) fn screen_text_snapshot(
-        &self,
-    ) -> Option<(shepr_vt::ActiveScreen, u16, Vec<shepr_vt::ScreenTextRow>)> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        let screen = core.terminal.active_screen();
-        let rows = match screen {
-            shepr_vt::ActiveScreen::Alternate => core.terminal.screen_text_rows(),
-            shepr_vt::ActiveScreen::Primary => Vec::new(),
-        };
-        Some((screen, core.terminal.cols(), rows))
-    }
-
-    pub(crate) fn visible_text(&self) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
-            .map_or_default(|mut core| terminal_visible_text(&mut core))
-    }
-
-    pub(crate) fn visible_ansi(&self) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .and_then(|core| terminal_visible_ansi(&core).ok())
-            .unwrap_or_default()
-    }
-
     pub(crate) fn detection_text(&self) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| terminal_detection_text(&mut core).ok())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .and_then(|mut core| terminal_recent_text_snapshot(&mut core, lines).ok())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, false).ok())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .and_then(|mut core| terminal_recent_text_unwrapped_snapshot(&mut core, lines).ok())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, true).ok())
             .unwrap_or_default()
     }
 
@@ -996,6 +938,62 @@ impl PaneTerminal {
 
 #[cfg(test)]
 impl PaneTerminal {
+    /// The active screen, its width and, on the alternate screen only, its
+    /// rows as owned text. On the primary screen the retained rows are the
+    /// whole scrollback, so the rows come back empty there rather than being
+    /// copied cell by cell under the core lock.
+    pub(crate) fn screen_text_snapshot(
+        &self,
+    ) -> Option<(shepr_vt::ActiveScreen, u16, Vec<shepr_vt::ScreenTextRow>)> {
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let screen = core.terminal.active_screen();
+        let rows = match screen {
+            shepr_vt::ActiveScreen::Alternate => core.terminal.screen_text_rows(),
+            shepr_vt::ActiveScreen::Primary => Vec::new(),
+        };
+        Some((screen, core.terminal.cols(), rows))
+    }
+
+    pub(crate) fn visible_text(&self) -> String {
+        shepr_vt::lock_terminal_core(&self.core)
+            .map_or_default(|mut core| terminal_visible_text(&mut core))
+    }
+
+    pub(crate) fn visible_ansi(&self) -> String {
+        shepr_vt::lock_terminal_core(&self.core)
+            .ok()
+            .and_then(|core| terminal_visible_ansi(&core).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+        shepr_vt::lock_terminal_core(&self.core)
+            .ok()
+            .and_then(|mut core| terminal_recent_text_snapshot(&mut core, lines).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+        shepr_vt::lock_terminal_core(&self.core)
+            .ok()
+            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, false).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+        shepr_vt::lock_terminal_core(&self.core)
+            .ok()
+            .and_then(|mut core| terminal_recent_text_unwrapped_snapshot(&mut core, lines).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+        shepr_vt::lock_terminal_core(&self.core)
+            .ok()
+            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, true).ok())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesResult {
         self.process_pty_bytes_at(pane_id, bytes, Instant::now())
     }

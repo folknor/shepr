@@ -43,12 +43,6 @@ pub struct AppState {
     pub(crate) clock_now: std::time::Instant,
     pub terminals:
         std::collections::HashMap<shepr_protocol::TerminalId, shepr_mux::terminal::TerminalState>,
-    /// Terminal ids whose size is currently owned by a direct attach client.
-    pub direct_attach_resize_locks: std::collections::HashSet<shepr_protocol::TerminalId>,
-    /// Keeps a pane's pre-move public id (`<old workspace>:p<n>`) resolving
-    /// after a cross-workspace pane move.
-    pub(crate) public_pane_id_aliases:
-        std::collections::HashMap<shepr_protocol::PublicPaneId, PaneId>,
     pub workspaces: Vec<Workspace>,
     pub active: Option<shepr_protocol::WorkspaceId>,
     pub(crate) active_tab_id: Option<shepr_protocol::PublicTabId>,
@@ -264,8 +258,6 @@ impl AppState {
         Self {
             clock_now: super::tests::test_clock().now,
             terminals: std::collections::HashMap::new(),
-            direct_attach_resize_locks: std::collections::HashSet::new(),
-            public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces: Vec::new(),
             active: None,
             active_tab_id: None,
@@ -334,10 +326,6 @@ impl AppState {
                 "empty app state must not have a selected workspace"
             );
             assert!(
-                self.public_pane_id_aliases.is_empty(),
-                "empty app state must not keep public pane aliases"
-            );
-            assert!(
                 self.previous_pane_focus.is_none(),
                 "empty app state must not keep previous pane focus"
             );
@@ -403,12 +391,6 @@ impl AppState {
             }
         }
 
-        let assert_live_pane = |pane_id: PaneId, context: &str| {
-            assert!(
-                pane_ids.contains(&pane_id),
-                "{context} references missing pane {pane_id:?}"
-            );
-        };
         let assert_workspace_pane = |workspace_id: &shepr_protocol::WorkspaceId,
                                      pane_id: PaneId,
                                      context: &str| {
@@ -421,9 +403,6 @@ impl AppState {
                 "{context} references pane {pane_id:?} outside workspace {workspace_id}"
             );
         };
-        for (public_id, &pane_id) in &self.public_pane_id_aliases {
-            assert_live_pane(pane_id, &format!("public pane alias {public_id}"));
-        }
         if let Some(focus) = &self.previous_pane_focus {
             assert_workspace_pane(&focus.workspace_id, focus.pane_id, "previous pane focus");
         }

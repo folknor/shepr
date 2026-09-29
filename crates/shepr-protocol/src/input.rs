@@ -3,19 +3,6 @@ use serde::{Deserialize, Serialize};
 use shepr_core::limits::PALETTE_COLOR_COUNT;
 
 // ---------------------------------------------------------------------------
-// Server-side client render mode
-// ---------------------------------------------------------------------------
-
-/// Render pipeline selected by the kind of client handshake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderEncoding {
-    /// Send semantic surfaces for a client-owned shell.
-    SemanticFrame,
-    /// Send terminal ANSI frames to a direct terminal client.
-    TerminalAnsi,
-}
-
-// ---------------------------------------------------------------------------
 // Client → Server messages
 // ---------------------------------------------------------------------------
 
@@ -369,50 +356,8 @@ pub enum ClientPaneInputEvent {
 /// Messages sent from the client to the server over the client protocol socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
-    /// Direct terminal handshake: selects terminal ANSI frames and announces terminal dimensions.
-    TerminalHello { geometry: super::TerminalGeometry },
-
-    /// Raw input bytes read from the client's stdin.
-    Input {
-        /// Raw terminal input (possibly multi-byte escape sequences).
-        /// The server enforces `MAX_INPUT_PAYLOAD` after decoding so it can
-        /// distinguish a recoverable oversized paste from invalid input.
-        #[serde(
-            serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
-            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
-        )]
-        data: Vec<u8>,
-    },
-
-    /// Terminal resize notification from the client.
-    Resize { geometry: super::TerminalGeometry },
-
     /// Graceful disconnect request.
     Detach,
-
-    /// Switch this connection into direct terminal attach mode.
-    AttachTerminal {
-        /// Terminal id to attach to.
-        terminal_id: TerminalId,
-        /// Replace an existing writable attach owner for this terminal.
-        takeover: bool,
-    },
-
-    /// Scroll input handled by a direct terminal attach client.
-    AttachScroll {
-        /// Original input source for routing.
-        source: AttachScrollSource,
-        /// Scroll direction.
-        direction: AttachScrollDirection,
-        /// Number of terminal rows to move when using host scrollback.
-        lines: u16,
-        /// Mouse column relative to the attached terminal, when available.
-        column: Option<u16>,
-        /// Mouse row relative to the attached terminal, when available.
-        row: Option<u16>,
-        /// Crossterm-compatible modifier bits for forwarded mouse wheel events.
-        modifiers: WireModifiers,
-    },
 
     /// Resize the pane viewport of a client-owned shell.
     ClientShellResize { geometry: super::TerminalGeometry },
@@ -425,15 +370,6 @@ pub enum ClientMessage {
 
     /// Invoke one endpoint operation through this client shell's selected connection.
     ClientShellEndpointRequest { boot_id: BootId, request: String },
-
-    /// Deliver one structured mouse event to a directly attached terminal.
-    AttachMouse {
-        kind: ClientMouseKind,
-        position: ClientMousePosition,
-        geometry: Option<ClientMouseGeometry>,
-        modifiers: WireModifiers,
-        lines: u16,
-    },
 
     /// Publish one host terminal color or appearance update observed by a client-owned shell.
     ClientShellHostTheme { update: ClientHostThemeUpdate },
@@ -482,25 +418,6 @@ pub enum ClientHostThemeUpdate {
         Vec<(u8, ClientHostColor)>,
     ),
     Appearance(ClientHostAppearance),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttachScrollDirection {
-    Up,
-    Down,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttachScrollSource {
-    Wheel,
-    PageKey {
-        /// Original key bytes to forward when the child application owns page keys.
-        #[serde(
-            serialize_with = "codec::serialize_bounded_bytes::<MAX_INPUT_PAYLOAD, _>",
-            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_INPUT_PAYLOAD, _>"
-        )]
-        input: Vec<u8>,
-    },
 }
 
 #[cfg(test)]

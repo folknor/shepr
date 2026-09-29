@@ -57,6 +57,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     tx.try_send(ClientLoopEvent::Timer)
         .expect("test precondition");
     let mut scheduled = None;
+    let mut shell = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     crate::shell_runtime::dispatch_client_shell_actions(
         vec![ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
@@ -68,7 +69,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
         &mut endpoints,
         &mut std::io::sink(),
         false,
-        None,
+        &mut shell,
         &mut scheduled,
         std::time::Instant::now(),
     );
@@ -97,7 +98,7 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
             &mut endpoints,
             &mut std::io::sink(),
             false,
-            Some(&mut state),
+            &mut state,
             &mut scheduled,
             std::time::Instant::now(),
         );

@@ -14,8 +14,10 @@ fn remote_profile() -> SavedSshEndpoint {
     }
 }
 
+/// The first argument only documents which agent a test means; agents carry
+/// no name of their own.
 fn agent(
-    name: &str,
+    _description: &str,
     status: shepr_api::schema::AgentStatus,
     state_change_seq: u64,
 ) -> ClientShellAgent {
@@ -23,7 +25,6 @@ fn agent(
         pane_id: "w1:p1".parse().expect("test precondition"),
         workspace_id: test_workspace_id("w1"),
         tab_id: test_tab_id("w1:t1"),
-        name: Some(name.into()),
         agent: Some("pi".into()),
         terminal_title: None,
         terminal_title_stripped: None,
@@ -1016,8 +1017,8 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("○ Local · local agent"), "frame: {text}");
-    assert!(text.contains("× Build · remote agent"), "frame: {text}");
+    assert!(text.contains("○ Local · pi"), "frame: {text}");
+    assert!(text.contains("× Build · pi"), "frame: {text}");
     assert!(text.contains("grouped"), "frame: {text}");
     let toggle = state.hits.agent_sort_toggle;
     assert!(!toggle.is_empty());
@@ -1086,24 +1087,24 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     };
     let text = frame_text(&mut state);
     assert!(
-        text.find("Local · local agent").expect("local agent")
-            < text.find("Build · remote agent").expect("remote agent")
+        text.find("Local · pi").expect("local agent")
+            < text.find("Build · pi").expect("remote agent")
     );
 
     remote.agents = vec![agent("remote agent", AgentStatus::Working, 2)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
     let text = frame_text(&mut state);
     assert!(
-        text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+        text.find("Build · pi").expect("remote agent")
+            < text.find("Local · pi").expect("local agent")
     );
 
     remote.agents = vec![agent("remote agent", AgentStatus::Idle, 3)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     let text = frame_text(&mut state);
     assert!(
-        text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+        text.find("Build · pi").expect("remote agent")
+            < text.find("Local · pi").expect("local agent")
     );
     let mut outcome = ClientShellInput::default();
     assert!(state.handle_endpoint_navigation(
@@ -1612,7 +1613,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         Some(ClientEndpointStatus::Reconnecting)
     );
     assert!(text.contains("◐ reconnecting"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(text.contains("Build · pi"), "frame: {text}");
     assert!(
         text.contains("LIVE"),
         "frozen surface should remain: {text}"

@@ -8,7 +8,6 @@ mod agent_resume;
 mod agents;
 mod api;
 pub(crate) mod api_helpers;
-pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
 mod events;
 mod git_refresh;
@@ -18,7 +17,6 @@ mod runtime;
 mod session;
 pub mod state;
 mod tab_bar_status;
-mod terminal_targets;
 mod terminal_titles;
 mod window_title;
 
@@ -243,8 +241,6 @@ impl App {
         let mut state = AppState {
             clock_now: clock.now,
             terminals: std::collections::HashMap::new(),
-            direct_attach_resize_locks: std::collections::HashSet::new(),
-            public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces,
             active: active_id,
             active_tab_id: None,
@@ -631,14 +627,14 @@ mod tests {
 
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_workspace_list_after_events".into(),
-            method: shepr_api::schema::Method::WorkspaceList(
+            method: shepr_api::schema::Method::SessionSnapshot(
                 shepr_api::schema::EmptyParams::default(),
             ),
         });
         let response: serde_json::Value =
             serde_json::from_str(&response).expect("test precondition");
 
-        assert_eq!(response["result"]["type"], "workspace_list");
+        assert_eq!(response["result"]["type"], "session_snapshot");
         assert!(app.event_rx.try_recv().is_err());
     }
 
@@ -713,7 +709,7 @@ mod tests {
     fn read_only_api_requests_do_not_force_rerender() {
         let read_only = shepr_api::schema::Request {
             id: "req_1".into(),
-            method: shepr_api::schema::Method::WorkspaceList(
+            method: shepr_api::schema::Method::SessionSnapshot(
                 shepr_api::schema::EmptyParams::default(),
             ),
         };
@@ -965,14 +961,14 @@ mod tests {
 
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_workspace_list".into(),
-            method: shepr_api::schema::Method::WorkspaceList(
+            method: shepr_api::schema::Method::SessionSnapshot(
                 shepr_api::schema::EmptyParams::default(),
             ),
         });
         let response: serde_json::Value =
             serde_json::from_str(&response).expect("test precondition");
 
-        assert_eq!(response["result"]["type"], "workspace_list");
+        assert_eq!(response["result"]["type"], "session_snapshot");
         assert!(!app.state.should_quit);
     }
 
@@ -1034,253 +1030,6 @@ mod tests {
                 .manual_label
                 .is_none()
         );
-    }
-
-    #[test]
-    fn terminal_and_agent_targets_treat_terminal_ids_differently() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("terminal-target-id");
-        let pane = workspace.tabs()[0].root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane)
-            .expect("test precondition")
-            .to_string();
-        app.state.workspaces = vec![workspace];
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-
-        let resolved = app
-            .resolve_terminal_target(&terminal_id)
-            .expect("test precondition");
-        assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id.as_str(), terminal_id);
-
-        assert!(matches!(
-            app.resolve_agent_target(resolved.terminal_id.as_str()),
-            Err(crate::app::terminal_targets::TerminalTargetError::NotFound { .. })
-        ));
-    }
-
-    #[test]
-    fn agent_target_rejects_a_pane_that_only_has_a_launch_command() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("terminal-target-command");
-        let pane = workspace.tabs()[0].root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane)
-            .expect("test precondition")
-            .clone();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .launch_argv = Some(vec!["just".into(), "dev".into()]);
-        let pane_id = app.public_pane_id(0, pane).expect("test precondition");
-
-        assert!(app.resolve_terminal_target(&pane_id).is_ok());
-        assert!(matches!(
-            app.resolve_agent_target(&pane_id),
-            Err(crate::app::terminal_targets::TerminalTargetError::NotFound { .. })
-        ));
-    }
-
-    #[test]
-    fn terminal_target_resolves_pane_id_for_an_agent() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("terminal-target-pane");
-        let pane = workspace.tabs()[0].root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane)
-            .expect("test precondition")
-            .to_string();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        let attached_terminal_id = app.state.workspaces[0]
-            .terminal_id(pane)
-            .cloned()
-            .expect("test precondition");
-        app.state
-            .terminals
-            .get_mut(&attached_terminal_id)
-            .expect("test precondition")
-            .set_detected_state(
-                Some(shepr_agent::detect::Agent::Pi),
-                shepr_agent::detect::AgentState::Idle,
-            );
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-        let pane_id = app.public_pane_id(0, pane).expect("test precondition");
-
-        let resolved = app
-            .resolve_terminal_target(&pane_id)
-            .expect("test precondition");
-
-        assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id.as_str(), terminal_id);
-    }
-
-    #[test]
-    fn terminal_target_resolves_unique_agent_name() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("terminal-target-name");
-        let pane = workspace.tabs()[0].root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane)
-            .expect("test precondition")
-            .to_string();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        let attached_terminal_id = app.state.workspaces[0]
-            .pane_state(pane)
-            .expect("test precondition")
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&attached_terminal_id)
-            .expect("test precondition")
-            .set_agent_name("reviewer".into());
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-
-        let resolved = app
-            .resolve_terminal_target("reviewer")
-            .expect("test precondition");
-
-        assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id.as_str(), terminal_id);
-    }
-
-    #[test]
-    fn terminal_target_matches_detected_agent_but_agent_target_needs_name() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("terminal-target-detected-agent");
-        let pane = workspace.tabs()[0].root_pane();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        let terminal_id = app.state.workspaces[0]
-            .terminal_id(pane)
-            .cloned()
-            .expect("test precondition");
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .set_detected_state(
-                Some(shepr_agent::detect::Agent::Pi),
-                shepr_agent::detect::AgentState::Idle,
-            );
-
-        let resolved = app
-            .resolve_terminal_target("pi")
-            .expect("detected label resolves to terminal");
-        assert_eq!(resolved.pane_id, pane);
-        assert!(matches!(
-            app.resolve_agent_target("pi"),
-            Err(crate::app::terminal_targets::TerminalTargetError::NotFound { .. })
-        ));
-    }
-
-    #[test]
-    fn agent_target_treats_legacy_pane_syntax_as_a_name() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("agent-target-name");
-        let pane = workspace.tabs()[0].root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane)
-            .expect("test precondition")
-            .clone();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
-        terminal.set_detected_state(
-            Some(shepr_agent::detect::Agent::Pi),
-            shepr_agent::detect::AgentState::Idle,
-        );
-        terminal.set_agent_name("p_1".into());
-
-        let resolved = app.resolve_agent_target("p_1").expect("test precondition");
-
-        assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id, terminal_id);
-    }
-
-    #[test]
-    fn terminal_target_reports_missing_target() {
-        let mut app = test_app();
-        app.state.workspaces = vec![Workspace::test_new("terminal-target-missing")];
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-
-        let err = app
-            .resolve_terminal_target("missing-agent")
-            .expect_err("test precondition");
-
-        assert_eq!(
-            err,
-            crate::app::terminal_targets::TerminalTargetError::NotFound {
-                target: "missing-agent".into()
-            }
-        );
-    }
-
-    #[test]
-    fn terminal_target_reports_ambiguous_duplicate_agent_name() {
-        let mut app = test_app();
-        let mut workspace = Workspace::test_new("terminal-target-ambiguous");
-        let first = workspace.tabs()[0].root_pane();
-        let second = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        let first_terminal_id = app.state.workspaces[0]
-            .pane_state(first)
-            .expect("test precondition")
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&first_terminal_id)
-            .expect("test precondition")
-            .set_agent_name("worker".into());
-        let second_terminal_id = app.state.workspaces[0]
-            .pane_state(second)
-            .expect("test precondition")
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&second_terminal_id)
-            .expect("test precondition")
-            .set_agent_name("worker".into());
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-
-        let err = app
-            .resolve_terminal_target("worker")
-            .expect_err("test precondition");
-
-        let crate::app::terminal_targets::TerminalTargetError::Ambiguous { target, candidates } =
-            err
-        else {
-            panic!("expected ambiguous terminal target");
-        };
-        assert_eq!(target, "worker");
-        assert_eq!(candidates.len(), 2);
-        assert!(candidates.iter().all(|candidate| {
-            candidate.terminal_id.as_str().starts_with("term_")
-                && candidate
-                    .pane_id
-                    .to_string()
-                    .starts_with(app.state.workspaces[0].id.as_str())
-                && candidate.workspace_id == app.state.workspaces[0].id
-                && candidate.cwd.is_some()
-        }));
     }
 
     #[tokio::test]

@@ -182,7 +182,7 @@ pub struct TileLayout {
     focus: PaneId,
     /// Pane focused before `focus`, used by `close_focused`. Only a real focus
     /// move writes it; tree edits go through the target-taking primitives
-    /// (`split_pane`, `close_pane`, unfocused `insert_pane_near`) so internal
+    /// (`split_pane`, `close_pane`) so internal
     /// focus excursions never corrupt it.
     prev_focus: Option<PaneId>,
 }
@@ -213,8 +213,8 @@ impl TileLayout {
         )
     }
 
-    /// Rebuild a one-pane layout for a pane detached from a valid live layout.
-    /// The source layout has already established that this ID is nonzero and unique.
+    /// A one-pane layout around a pane id the caller already owns.
+    /// The caller has already established that this ID is nonzero and unique.
     pub fn from_live_pane(pane_id: PaneId) -> Self {
         Self {
             root: Node::Pane(pane_id),
@@ -293,33 +293,6 @@ impl TileLayout {
         let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
         self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
         Some(new_id)
-    }
-
-    /// Insert an existing pane id next to a target pane without allocating a new
-    /// pane or spawning a terminal runtime. When `focus` is false, focus and its
-    /// history are left untouched.
-    pub fn insert_pane_near(
-        &mut self,
-        target: PaneId,
-        moved: PaneId,
-        direction: Direction,
-        ratio: f32,
-        focus: bool,
-    ) -> bool {
-        if target == moved {
-            return false;
-        }
-        let ids = self.pane_ids();
-        if !ids.contains(&target) || ids.contains(&moved) {
-            return false;
-        }
-
-        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
-        self.root = split_at(old, target, direction, moved, SplitRatio::clamped(ratio));
-        if focus {
-            self.set_focus(moved);
-        }
-        true
     }
 
     /// Close the focused pane, returning focus to the pane it came from when
@@ -1028,22 +1001,6 @@ mod tests {
     }
 
     #[test]
-    fn insert_existing_pane_near_target_preserves_existing_ids_and_focuses_moved_pane() {
-        let (mut layout, root) = TileLayout::new();
-        let moved = pane(99);
-
-        assert!(layout.insert_pane_near(root, moved, Direction::Horizontal, 0.25, true));
-
-        assert_eq!(layout.pane_count(), 2);
-        assert_eq!(layout.pane_ids(), vec![root, moved]);
-        assert_eq!(layout.focused(), moved);
-        let splits = split_snapshot(&layout);
-        assert_eq!(splits, vec![(Direction::Horizontal, 0.25)]);
-        assert_eq!(pane_rect(&layout, root), Rect::new(0, 0, 25, 40));
-        assert_eq!(pane_rect(&layout, moved), Rect::new(25, 0, 75, 40));
-    }
-
-    #[test]
     fn split_focused_with_ratio_sets_new_split_ratio() {
         let (mut layout, root) = TileLayout::new();
         layout.focus_pane(root);
@@ -1345,18 +1302,6 @@ mod tests {
         );
 
         assert_eq!(layout.pane_ids(), ids);
-    }
-
-    #[test]
-    fn insert_pane_near_unfocused_keeps_focus_and_history() {
-        let mut layout = sample_layout();
-        layout.focus_pane(pane(4));
-
-        assert!(layout.insert_pane_near(pane(1), pane(9), Direction::Horizontal, 0.5, false));
-
-        assert_eq!(layout.focused(), pane(4));
-        assert!(layout.close_focused());
-        assert_eq!(layout.focused(), pane(2));
     }
 
     #[test]

@@ -17,35 +17,6 @@ pub const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = b"\x1b[?997;2n";
 pub const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
 pub const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
-/// The body of `data` when it is exactly one complete bracketed paste.
-fn complete_bracketed_paste_payload(data: &[u8]) -> Option<&[u8]> {
-    if !data.starts_with(BRACKETED_PASTE_START) {
-        return None;
-    }
-    let end = find_subsequence(data, BRACKETED_PASTE_END)?;
-    if end + BRACKETED_PASTE_END.len() != data.len() {
-        return None;
-    }
-    Some(&data[BRACKETED_PASTE_START.len()..end])
-}
-
-/// Returns the UTF-8 payload when `data` is exactly one complete bracketed paste.
-///
-/// A paste whose body is not valid UTF-8 returns `None`, so callers forward it
-/// as raw bytes instead of losing it.
-pub fn complete_text_bracketed_paste(data: &[u8]) -> Option<&str> {
-    std::str::from_utf8(complete_bracketed_paste_payload(data)?).ok()
-}
-
-/// Client transport uses this to distinguish recoverable oversized interactive
-/// pastes from generic oversized input, which remains a protocol violation.
-///
-/// Only the framing is checked: a paste carrying invalid UTF-8 is still a
-/// paste, and must get the paste treatment rather than a disconnect.
-pub fn is_complete_text_bracketed_paste(data: &[u8]) -> bool {
-    complete_bracketed_paste_payload(data).is_some()
-}
-
 /// Length of the longest proper prefix of `needle` that `haystack` ends with,
 /// so a terminator split across reads is not lost when the rest is dropped.
 fn partial_suffix_len(haystack: &[u8], needle: &[u8]) -> usize {
@@ -865,38 +836,12 @@ fn plausible_control_string_tail(family: ControlStringFamily, buffer: &[u8]) -> 
     }
 }
 
-pub fn events_require_host_surface_redraw<'a>(
-    events: impl IntoIterator<Item = &'a RawInputEvent>,
-    redraw_on_focus_gained: bool,
-) -> bool {
-    redraw_on_focus_gained
-        && events
-            .into_iter()
-            .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
-}
-
 pub fn events_require_host_mode_refresh<'a>(
     events: impl IntoIterator<Item = &'a RawInputEvent>,
 ) -> bool {
     events
         .into_iter()
         .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
-}
-
-pub fn events_require_host_terminal_appearance_query<'a>(
-    events: impl IntoIterator<Item = &'a RawInputEvent>,
-) -> bool {
-    events
-        .into_iter()
-        .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
-}
-
-pub fn events_require_host_terminal_theme_query<'a>(
-    events: impl IntoIterator<Item = &'a RawInputEvent>,
-) -> bool {
-    events
-        .into_iter()
-        .any(|event| matches!(event, RawInputEvent::HostColorSchemeChanged(_)))
 }
 
 fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
@@ -1707,28 +1652,6 @@ mod tests {
     }
 
     #[test]
-    fn complete_text_bracketed_paste_requires_one_exact_utf8_sequence() {
-        assert_eq!(
-            complete_text_bracketed_paste(b"\x1b[200~hello\x1b[201~"),
-            Some("hello")
-        );
-        assert!(!is_complete_text_bracketed_paste(b"\x1b[200~hello"));
-        assert!(!is_complete_text_bracketed_paste(
-            b"\x1b[200~hello\x1b[201~rest"
-        ));
-        assert!(!is_complete_text_bracketed_paste(
-            b"\x1b[200~one\x1b[201~\x1b[200~two\x1b[201~"
-        ));
-        // Invalid UTF-8 has no text payload, but it is still one complete
-        // paste and must get the paste treatment rather than a disconnect.
-        assert_eq!(
-            complete_text_bracketed_paste(b"\x1b[200~\xff\x1b[201~"),
-            None
-        );
-        assert!(is_complete_text_bracketed_paste(b"\x1b[200~\xff\x1b[201~"));
-    }
-
-    #[test]
     fn parses_sgr_mouse() {
         let (RawInputEvent::Mouse(mouse), consumed) =
             extract_one_event(b"\x1b[<0;20;10M").expect("test precondition")
@@ -1973,16 +1896,6 @@ mod tests {
     }
 
     #[test]
-    fn outer_focus_gained_requests_host_surface_redraw() {
-        let events = parse_raw_input_bytes_sync(b"\x1b[I");
-        assert!(events_require_host_surface_redraw(&events, true));
-        assert!(!events_require_host_surface_redraw(&events, false));
-
-        let events = parse_raw_input_bytes_sync(b"\x1b[O");
-        assert!(!events_require_host_surface_redraw(&events, true));
-    }
-
-    #[test]
     fn outer_focus_gained_requests_host_mode_refresh() {
         assert!(events_require_host_mode_refresh(
             &parse_raw_input_bytes_sync(b"\x1b[I")
@@ -1990,20 +1903,6 @@ mod tests {
         assert!(!events_require_host_mode_refresh(
             &parse_raw_input_bytes_sync(b"\x1b[O")
         ));
-    }
-
-    #[test]
-    fn outer_focus_gained_requests_host_appearance_query() {
-        let gained = parse_raw_input_bytes_sync(b"\x1b[I");
-        let lost = parse_raw_input_bytes_sync(b"\x1b[O");
-        let scheme_report = parse_raw_input_bytes_sync(b"\x1b[?997;1n");
-
-        assert!(events_require_host_terminal_appearance_query(&gained));
-        assert!(!events_require_host_terminal_appearance_query(&lost));
-        assert!(!events_require_host_terminal_appearance_query(
-            &scheme_report
-        ));
-        assert!(events_require_host_terminal_theme_query(&scheme_report));
     }
 
     #[test]
@@ -2018,7 +1917,6 @@ mod tests {
                 events[0],
                 RawInputEvent::HostColorSchemeChanged(HostAppearance::Dark | HostAppearance::Light)
             ));
-            assert!(events_require_host_terminal_theme_query(&events));
         }
     }
 
@@ -2032,7 +1930,6 @@ mod tests {
             let events = parse_raw_input_bytes_sync(bytes);
             assert_eq!(events.len(), 1, "bytes: {bytes:?}");
             assert!(matches!(events[0], RawInputEvent::Unsupported));
-            assert!(!events_require_host_terminal_theme_query(&events));
         }
     }
 

@@ -10,23 +10,6 @@ use super::super::api_helpers::workspace_not_found;
 use super::responses::{failure, success};
 
 impl App {
-    pub(super) fn handle_workspace_list(&mut self) -> ApiResult {
-        success(ResponseResult::WorkspaceList {
-            workspaces: self.workspace_list_info(),
-        })
-    }
-
-    pub(super) fn handle_workspace_get(&mut self, target: &WorkspaceTarget) -> ApiResult {
-        let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
-            return Err(workspace_not_found(&target.workspace_id));
-        };
-        let Some(workspace) = self.workspace_info(index) else {
-            return Err(workspace_not_found(&target.workspace_id));
-        };
-
-        success(ResponseResult::WorkspaceInfo { workspace })
-    }
-
     pub(super) fn handle_workspace_create(&mut self, params: WorkspaceCreateParams) -> ApiResult {
         let explicit_cwd = params
             .cwd

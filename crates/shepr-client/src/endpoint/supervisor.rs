@@ -562,7 +562,7 @@ fn establish(
     super::super::do_handshake(
         &mut stream,
         options.geometry,
-        Some(options.surface_size),
+        options.surface_size,
         options.mouse_capture,
         false,
         Some(deadline),
@@ -636,9 +636,9 @@ fn handshake_error(
             error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
         ) => std::io::Error::new(std::io::ErrorKind::Unsupported, error),
         ClientError::Preamble(error) => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-        ClientError::UnexpectedWelcome { endpoint } => std::io::Error::new(
+        ClientError::UnexpectedWelcome => std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            crate::ClientError::UnexpectedWelcome { endpoint },
+            crate::ClientError::UnexpectedWelcome,
         ),
         // A peer that closes before Welcome is a server restarting, a dropped SSH link or a
         // remote launch that failed: all transient, so this must stay out of InvalidData,

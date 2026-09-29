@@ -82,42 +82,32 @@ fn request_round_trips_for_server_stop() {
 }
 
 #[test]
-fn request_round_trips_for_agent_explain() {
-    let request = Request {
-        id: "req_agent_explain".into(),
-        method: Method::AgentExplain(AgentTarget {
-            target: "agent-1".into(),
-        }),
-    };
+fn detect_requests_take_a_pane_id_and_round_trip() {
+    for (name, method) in [
+        (
+            "detect.capture",
+            Method::DetectCapture(PaneTarget {
+                pane_id: "w1:p1".into(),
+            }),
+        ),
+        (
+            "detect.explain",
+            Method::DetectExplain(PaneTarget {
+                pane_id: "w1:p1".into(),
+            }),
+        ),
+    ] {
+        let request = Request {
+            id: "req_detect".into(),
+            method,
+        };
 
-    let json = serde_json::to_value(&request).expect("test precondition");
-    assert_eq!(json["method"], "agent.explain");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, request);
-}
-
-#[test]
-fn client_window_title_requests_round_trip() {
-    let set = Request {
-        id: "req_title_set".into(),
-        method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
-            title: "shepr api".into(),
-        }),
-    };
-    let json = serde_json::to_value(&set).expect("test precondition");
-    assert_eq!(json["method"], "client.window_title.set");
-    assert_eq!(json["params"]["title"], "shepr api");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, set);
-
-    let clear = Request {
-        id: "req_title_clear".into(),
-        method: Method::ClientWindowTitleClear(EmptyParams::default()),
-    };
-    let json = serde_json::to_value(&clear).expect("test precondition");
-    assert_eq!(json["method"], "client.window_title.clear");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, clear);
+        let json = serde_json::to_value(&request).expect("test precondition");
+        assert_eq!(json["method"], name);
+        assert_eq!(json["params"]["pane_id"], "w1:p1");
+        let restored: Request = serde_json::from_value(json).expect("test precondition");
+        assert_eq!(restored, request);
+    }
 }
 
 #[test]
@@ -138,6 +128,26 @@ fn removed_methods_are_rejected() {
         "pane.wait_for_output",
         "server.agent_manifests",
         "server.reload_agent_manifests",
+        "agent.read",
+        "agent.explain",
+        "agent.list",
+        "agent.get",
+        "agent.rename",
+        "agent.focus",
+        "workspace.list",
+        "workspace.get",
+        "tab.list",
+        "tab.get",
+        "pane.list",
+        "pane.current",
+        "pane.read",
+        "pane.layout",
+        "pane.process_info",
+        "pane.neighbor",
+        "pane.edges",
+        "pane.move",
+        "client.window_title.set",
+        "client.window_title.clear",
     ] {
         let request = serde_json::json!({"id": "req", "method": method, "params": {}});
         let error = serde_json::from_value::<Request>(request).expect_err("removed method");
@@ -146,61 +156,6 @@ fn removed_methods_are_rejected() {
             "{method}: {error}"
         );
     }
-}
-
-#[test]
-fn pane_read_defaults_to_text_format() {
-    let json = r#"
-    {
-        "id": "req_1",
-        "method": "pane.read",
-        "params": {
-            "pane_id": "w1:p1",
-            "source": "visible"
-        }
-    }
-    "#;
-
-    let request: Request = serde_json::from_str(json).expect("test precondition");
-    let serialized = serde_json::to_value(&request).expect("test precondition");
-    assert!(serialized["params"].get("intent").is_none());
-    let Method::PaneRead(params) = request.method else {
-        panic!("wrong method parsed");
-    };
-    assert_eq!(params.format, ReadFormat::Text);
-    assert_eq!(params.intent, ReadIntent::Interactive);
-}
-
-#[test]
-fn pane_current_request_round_trips() {
-    let request = Request {
-        id: "req_current".into(),
-        method: Method::PaneCurrent(PaneCurrentParams {
-            caller_pane_id: Some("w1:p1".into()),
-        }),
-    };
-
-    let json = serde_json::to_value(&request).expect("test precondition");
-    assert_eq!(json["method"], "pane.current");
-    assert_eq!(json["params"]["caller_pane_id"], "w1:p1");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, request);
-}
-
-#[test]
-fn pane_process_info_request_round_trips() {
-    let request = Request {
-        id: "req_process_info".into(),
-        method: Method::PaneProcessInfo(PaneProcessInfoParams {
-            pane_id: Some("w1:p1".into()),
-        }),
-    };
-
-    let json = serde_json::to_value(&request).expect("test precondition");
-    assert_eq!(json["method"], "pane.process_info");
-    assert_eq!(json["params"]["pane_id"], "w1:p1");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, request);
 }
 
 #[test]

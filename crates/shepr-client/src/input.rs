@@ -1,8 +1,7 @@
 //! Stdin input reading for the thin client.
 //!
 //! Reads and classifies stdin on a dedicated blocking thread, then sends parsed
-//! events with their original bytes to the main loop. The client shell consumes
-//! typed events; direct attach forwards the retained bytes.
+//! events to the main loop. The client shell consumes typed events.
 
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
@@ -21,12 +20,12 @@ use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
 /// Reads host input, frames and parses it once, then sends it to the main loop.
 ///
 /// This runs on a dedicated thread because stdin reading is blocking.
-/// The raw bytes stay attached for direct attach; the client shell uses the
-/// parsed event and pixel hit-test metadata without reparsing those bytes.
+/// The client shell uses the parsed event and pixel hit-test metadata without
+/// reparsing the bytes.
 ///
 /// These bytes are keystrokes and paste contents (passwords included). Neither this loop
 /// nor the client loop that consumes them logs them; keep it that way, and log sizes or
-/// errors only (the oversized-paste warning in `attach::forward_input` logs the length).
+/// errors only.
 pub(crate) fn stdin_reader_loop(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
@@ -263,7 +262,6 @@ fn classify_unix_input(
         None
     };
     Some(ParsedHostInput {
-        raw: input.raw,
         event: input.event,
         pixel_mouse,
     })
@@ -324,13 +322,12 @@ mod tests {
     }
 
     #[test]
-    fn stdin_input_event_carries_raw_bytes() {
+    fn stdin_input_event_is_classified_from_framed_bytes() {
         let raw = vec![0x1b, b'[', b'A']; // Up arrow escape sequence
         let inputs = framed(&raw);
         let [input] = inputs.as_slice() else {
             panic!("expected one framed input event");
         };
-        assert_eq!(input.raw, raw);
         assert!(matches!(
             &input.event,
             shepr_termio::input::raw_input::RawInputEvent::Key(_)
@@ -347,7 +344,6 @@ mod tests {
         let report_event = report_events.pop().expect("one framed mouse event");
         let input =
             classify_unix_input(report_event, true, Some(geometry)).expect("pixel mouse event");
-        assert_eq!(input.raw, report);
         assert_eq!(
             input.pixel_mouse,
             Some(shepr_termio::input::mouse::HostPixels {
@@ -370,13 +366,7 @@ mod tests {
                         .expect("unrelated input must remain available")
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(
-                inputs
-                    .iter()
-                    .flat_map(|input| input.raw.iter().copied())
-                    .collect::<Vec<_>>(),
-                raw
-            );
+            assert!(!inputs.is_empty());
             assert!(inputs.iter().all(|input| input.pixel_mouse.is_none()));
         }
     }
