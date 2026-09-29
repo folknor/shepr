@@ -964,7 +964,7 @@ fn read_clipboard_text_with_command_rejects_oversized_output() {
     // Two bytes past the one-mebibyte cap.
     let command = fixture_clipboard_command(&[Step::Fill {
         byte: b'x',
-        count: crate::clipboard::MAX_CLIPBOARD_TEXT_BYTES + 2,
+        count: crate::limits::MAX_CLIPBOARD_TEXT_BYTES + 2,
     }]);
 
     assert_eq!(

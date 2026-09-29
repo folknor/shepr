@@ -118,7 +118,7 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
         }
     }
 
-    let mut best: Option<(u8, Agent, String)> = None;
+    let mut best: Option<(ProcessPriority, Agent, String)> = None;
 
     for process in &job.processes {
         let candidate = normalized_process_name(process);
@@ -600,15 +600,23 @@ fn path_basename(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn process_priority(process: &ForegroundProcess, normalized_name: &str) -> u8 {
+/// Candidate preference from weakest to strongest; declaration order is rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProcessPriority {
+    GenericRuntime,
+    AgentExecutable,
+    NormalizedAlias,
+}
+
+fn process_priority(process: &ForegroundProcess, normalized_name: &str) -> ProcessPriority {
     let lower_name = normalized_name.to_lowercase();
     if lower_name != process.name.to_lowercase() {
-        return 3;
+        return ProcessPriority::NormalizedAlias;
     }
     if !is_generic_runtime_or_shell(&lower_name) {
-        return 2;
+        return ProcessPriority::AgentExecutable;
     }
-    1
+    ProcessPriority::GenericRuntime
 }
 
 fn is_generic_runtime_or_shell(name: &str) -> bool {

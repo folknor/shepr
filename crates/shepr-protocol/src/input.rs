@@ -29,7 +29,9 @@ impl ClientSurfaceSize {
     /// Fit a requested grid into one ordinary surface frame. Keep its width
     /// first so the shell layout tracks the host; trim excess height.
     pub fn clamped(self) -> Self {
-        let cols = self.cols.clamp(1, MAX_SURFACE_DIMENSION);
+        let cols = self
+            .cols
+            .clamp(MIN_SURFACE_DIMENSION, MAX_SURFACE_DIMENSION);
         #[expect(
             clippy::cast_possible_truncation,
             reason = "bounded by MAX_SURFACE_DIMENSION (a u16) via .min(...), so this never truncates"
@@ -38,7 +40,7 @@ impl ClientSurfaceSize {
             (MAX_SURFACE_CELLS / usize::from(cols)).min(usize::from(MAX_SURFACE_DIMENSION)) as u16;
         Self {
             cols,
-            rows: self.rows.clamp(1, max_rows),
+            rows: self.rows.clamp(MIN_SURFACE_DIMENSION, max_rows),
         }
     }
 }
@@ -473,8 +475,8 @@ pub enum ClientHostThemeUpdate {
     },
     PaletteColors(
         #[serde(
-            serialize_with = "codec::serialize_bounded_vec::<256, _, _>",
-            deserialize_with = "codec::deserialize_bounded_vec::<256, _, _>"
+            serialize_with = "codec::serialize_bounded_vec::<MAX_CLIENT_HOST_PALETTE_COLORS, _, _>",
+            deserialize_with = "codec::deserialize_bounded_vec::<MAX_CLIENT_HOST_PALETTE_COLORS, _, _>"
         )]
         Vec<(u8, ClientHostColor)>,
     ),

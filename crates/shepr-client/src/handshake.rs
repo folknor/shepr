@@ -9,17 +9,7 @@ use shepr_protocol::{ClientMessage, ServerMessage};
 
 use super::{ClientError, shell};
 use crate::limits::Deadline;
-
-/// Time to wait for the server's complete Welcome reply during the handshake.
-/// This is an overall deadline for the frame, not a per-read idle timeout.
-///
-/// A local client talks to an already-connected server, so 5s is plenty. The
-/// remote bridge client (`shepr --remote`) sits behind a fresh per-attach ssh
-/// connection whose cold-connect (TCP + key exchange + auth) happens inside this
-/// window; on a high-latency link that easily exceeds 5s, so it gets a far
-/// larger budget.
-pub(super) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-pub(super) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) use crate::limits::{LOCAL_HANDSHAKE_READ_TIMEOUT, REMOTE_HANDSHAKE_READ_TIMEOUT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientProcessRole {

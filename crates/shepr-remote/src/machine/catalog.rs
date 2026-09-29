@@ -5,15 +5,13 @@ use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use super::{IntoSshTarget, ProfileId, ProfileIdError, SshTarget, SshTargetError};
+use crate::limits::{CATALOG_POLL_INTERVAL, MAX_CATALOG_BYTES, MAX_LABEL_BYTES, MAX_PROFILES};
 
-const MAX_CATALOG_BYTES: u64 = 64 * 1024;
-const MAX_PROFILES: usize = 64;
-const MAX_LABEL_BYTES: usize = 128;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -430,9 +428,6 @@ impl EndpointCatalog {
     }
 }
 
-/// How often an open client looks at the saved-machine catalog file for changes.
-const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
 /// Identity of the catalog file as last seen. Writers replace the file by rename, so a
 /// change shows up as a new inode even when size and mtime happen to match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -726,6 +721,7 @@ fn private_json_temp_path(path: &Path, token: u64, sequence: u64) -> Result<Path
     })?;
     let mut temp_name = std::ffi::OsString::from(".");
     temp_name.push(file_name);
+    // Keep the random token at its full fixed width hexadecimal representation.
     temp_name.push(format!("-{token:016x}-{sequence}.tmp"));
     Ok(parent.join(temp_name))
 }

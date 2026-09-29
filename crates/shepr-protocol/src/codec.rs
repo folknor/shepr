@@ -42,16 +42,11 @@ use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Visitor};
 use serde::ser::{self, Serialize};
 
-/// Default maximum nesting depth of compound values accepted by the decoder.
-pub const DEFAULT_MAX_DEPTH: usize = 128;
+pub use crate::limits::{DEFAULT_MAX_DEPTH, MAX_COLLECTION_ITEMS};
 
-/// Maximum number of items in any sequence or map encoded by this codec.
-///
-/// Wire fields with a tighter protocol-specific cap apply it through
-/// `serialize_bounded_vec` / `deserialize_bounded_vec` as well.
-pub const MAX_COLLECTION_ITEMS: usize = 131_072;
-
+// limits-exempt: canonical u64 LEB128 values use at most ten bytes by the wire format.
 const MAX_VARINT_U64_BYTES: usize = 10;
+// limits-exempt: canonical u128 LEB128 values use at most nineteen bytes by the wire format.
 const MAX_VARINT_U128_BYTES: usize = 19;
 
 /// Errors produced while encoding or decoding the wire format.

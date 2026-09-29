@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize, de::Visitor};
 use shepr_core::env::ChildEnv;
 
+use crate::limits::{MAX_PROMPT_READY_NEEDLE_CHARS, PROMPT_READY_LOOKBACK_LINES};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Agent {
@@ -896,8 +898,6 @@ fn is_braille_activity_glyph(glyph: char) -> bool {
 }
 
 fn contains_recent_non_whitespace(content: &str, needle: &str) -> bool {
-    const MAX_PROMPT_READY_NEEDLE_CHARS: usize = 32;
-
     let mut needle_chars = ['\0'; MAX_PROMPT_READY_NEEDLE_CHARS];
     let mut needle_len = 0;
     for character in needle.chars().rev() {
@@ -924,8 +924,8 @@ fn contains_recent_non_whitespace(content: &str, needle: &str) -> bool {
         prefix[index] = matched;
     }
 
-    // Reverse both streams so the last twelve lines can be searched without buffering.
-    let recent_lines = content.lines().rev().take(12);
+    // Reverse both streams so the bounded lookback can be searched without buffering.
+    let recent_lines = content.lines().rev().take(PROMPT_READY_LOOKBACK_LINES);
     let mut matched = 0;
     for character in recent_lines.flat_map(|line| line.chars().rev()) {
         if character.is_whitespace() {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::limits::{MAX_QUERY_BYTES, MAX_RETURNED_MATCHES};
 
 impl App {
     pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> shepr_api::error::ApiResult {
@@ -217,8 +218,6 @@ impl App {
         else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
-        const MAX_QUERY_BYTES: usize = 4096;
-        const MAX_RETURNED_MATCHES: usize = 1024;
         if params.query.len() > MAX_QUERY_BYTES {
             return failure(
                 shepr_api::error::ApiErrorCode::QueryTooLarge,

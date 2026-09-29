@@ -13,6 +13,7 @@ use super::{
     window_title::WindowTitleTemplate,
     wire::WireConfig,
 };
+use crate::limits::{MAX_MOUSE_SCROLL_LINES, MIN_MOUSE_SCROLL_LINES};
 
 /// The source that selected a resolved configuration value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +634,7 @@ impl ConfigResolution {
             ValidatedTerminalConfig::parse(&config.terminal, paths, cwd_check, shell_check);
         let mouse_scroll_lines = u16::try_from(config.ui.mouse_scroll_lines())
             .ok()
+            .filter(|lines| *lines >= MIN_MOUSE_SCROLL_LINES)
             .and_then(std::num::NonZeroU16::new);
 
         let mut diagnostics = keybind_validation.diagnostics.clone();
@@ -659,8 +661,7 @@ impl ConfigResolution {
         }
         if mouse_scroll_lines.is_none() {
             diagnostics.push(format!(
-                "ui.mouse_scroll_lines must be between 1 and {} (got {})",
-                u16::MAX,
+                "ui.mouse_scroll_lines must be between {MIN_MOUSE_SCROLL_LINES} and {MAX_MOUSE_SCROLL_LINES} (got {})",
                 config.ui.mouse_scroll_lines()
             ));
         }

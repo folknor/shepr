@@ -24,27 +24,10 @@ use shepr_protocol::{
     MAX_INPUT_PAYLOAD, ServerMessage,
 };
 
-/// Minimum accepted attached client size.
-///
-/// Narrow observers must be allowed to drive narrow renders, otherwise the
-/// server wraps pane content against a wider width and the client sees the
-/// right edge clipped.
-const MIN_CLIENT_COLS: u16 = 1;
-const MIN_CLIENT_ROWS: u16 = 1;
-
-/// Total time a client gets to deliver its complete handshake frame.
-///
-/// This is one deadline across every read of the hello, not a per-read idle
-/// timeout: `shepr_platform::ipc::DeadlineReader` polls for readiness with only
-/// the time left before each read, so a peer trickling bytes cannot
-/// hold the handshake thread open. Set to 4 seconds (rather than 5) so the
-/// connection is closed within 5 seconds even with OS timer slack, thread
-/// scheduling, and cleanup overhead.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
-
-/// How long a transport thread waits for a client it could not register to
-/// receive its shutdown frame.
-const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+use crate::limits::{
+    HANDSHAKE_TIMEOUT, MAX_INPUT_EVENT_BATCH, MIN_CLIENT_COLS, MIN_CLIENT_ROWS,
+    UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
+};
 
 /// Why a client shell's geometry is refused, if it is. The limits are the
 /// protocol's own, shared with `clamp_terminal_size`: the cell limit is what
@@ -170,9 +153,6 @@ fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointR
         },
     )
 }
-/// Maximum structured input events accepted in one client message.
-const MAX_INPUT_EVENT_BATCH: usize = 4096;
-
 /// Channels owned by the server side of a client writer thread.
 #[derive(Clone, Debug)]
 pub(crate) struct ClientWriter {
@@ -956,7 +936,7 @@ fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ) && std::time::Instant::now() < deadline
         {
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(crate::limits::UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL);
         }
     }
 }

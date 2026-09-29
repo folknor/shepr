@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use cli::{CliError, CliResult};
 use shepr_core::env::SHEPR_ENV_IN_PANE;
 
-const NESTED_SHEPR_MESSAGES: [&str; 6] = [
+const NESTED_SHEPR_MESSAGES: &[&str] = &[
     "inception detected. we need to go deeper... said no one ever.",
     "recursion is a pathway to many abilities some consider to be... unnatural.",
     "you were so preoccupied with whether you could, you didn't stop to think if you should. \u{2014} dr. malcolm",
@@ -15,8 +15,7 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
 
 mod autodetect;
 mod cli;
-#[cfg(test)]
-mod test_support;
+mod limits;
 
 /// Whether this launch is inside a shepr pane that forbids nesting. `SHEPR_ENV`
 /// counts only when it is exactly [`SHEPR_ENV_IN_PANE`], the value shepr writes
@@ -211,7 +210,7 @@ fn launch() -> CliResult<i32> {
         endpoint_catalog,
         &loaded_config,
         paths,
-        autodetect::SERVER_READY_TIMEOUT,
+        limits::SERVER_READY_TIMEOUT,
         shepr_client::run_client_with_launch_config,
     )
     .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
@@ -279,6 +278,9 @@ fn load_validated_config(
         CliError::Config(diagnostics.iter().map(ToString::to_string).collect())
     })
 }
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(test)]
 mod tests {

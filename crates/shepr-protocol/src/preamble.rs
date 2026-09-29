@@ -24,7 +24,8 @@ use std::io::{self, Read, Write};
 /// Marks the start of a shepr client-protocol connection.
 pub const PREAMBLE_MAGIC: [u8; 8] = *b"SHEPRBID";
 
-const BUILD_ID_BYTES: usize = 16;
+// limits-exempt: the fixed build-identity preamble stores a 16-byte fingerprint.
+pub(crate) const BUILD_ID_BYTES: usize = 16;
 /// Total preamble length in bytes.
 pub const PREAMBLE_LEN: usize = PREAMBLE_MAGIC.len() + BUILD_ID_BYTES;
 

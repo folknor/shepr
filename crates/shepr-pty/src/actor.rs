@@ -14,27 +14,13 @@ pub use crate::submission::{QueuedSubmission, SubmissionCancel, SubmissionCancel
 use crate::{
     child_io::ChildIoSendError,
     fd,
+    limits::{
+        ACTOR_IDLE_POLL_MS, ACTOR_INBOX_MAX_BYTES, ACTOR_INBOX_MAX_ITEMS,
+        MAX_WRITE_FAILURE_DRAIN_CHUNKS, MAX_WRITE_STEPS_PER_PUMP, MIN_POLL_TIMEOUT_MS,
+        PTY_READ_BUFFER_BYTES, RESIZE_HOLD_ATTEMPTS, RESIZE_RETRY_BASE, RESIZE_RETRY_MAX,
+    },
     submission::{EnterStart, SharedSubmissionState, SubmissionPart, SubmissionState, lock_state},
 };
-
-// Actor handle methods must call wake_actor() after queuing work. The idle
-// timeout is only a fallback for missed wakes; PTY and wake readiness drive
-// normal responsiveness.
-const ACTOR_IDLE_POLL_MS: i32 = 1000;
-/// Unwritten bytes the inbox holds across user input, submissions and
-/// terminal replies. A single item larger than this is still admitted when
-/// nothing else is outstanding (see `PtyIoInbox::reserve`).
-const ACTOR_INBOX_MAX_BYTES: usize = 256 * 1024;
-const ACTOR_INBOX_MAX_ITEMS: usize = 1024;
-const RESIZE_RETRY_BASE: Duration = Duration::from_millis(50);
-const RESIZE_RETRY_MAX: Duration = Duration::from_secs(5);
-/// Failed ioctl attempts (50 + 100 + 200 + 400 + 800 ms of backoff) a resize
-/// may hold its replies, and every write queued after them, before the
-/// replies are released without it. The ioctl itself keeps retrying.
-const RESIZE_HOLD_ATTEMPTS: u8 = 5;
-/// Write steps one pump may take before it returns to poll, so a steady
-/// stream of input cannot starve reads of the child's output.
-const MAX_WRITE_STEPS_PER_PUMP: usize = 64;
 
 pub struct PtyReadResult {
     pub terminal_responses: Vec<Bytes>,
@@ -953,9 +939,10 @@ impl PtyIoActorRunner {
                 };
                 pending.attempts = pending.attempts.saturating_add(1);
                 let attempts = pending.attempts;
-                let shift = u32::from(attempts.saturating_sub(1).min(7));
+                let shift = u32::from(attempts.saturating_sub(1));
+                let multiplier = 1u32.checked_shl(shift).unwrap_or(u32::MAX);
                 let delay = RESIZE_RETRY_BASE
-                    .saturating_mul(1u32 << shift)
+                    .saturating_mul(multiplier)
                     .min(RESIZE_RETRY_MAX);
                 pending.retry_at = Some(now + delay);
                 // Holding the replies keeps them ordered, but it also holds
@@ -1003,8 +990,7 @@ impl PtyIoActorRunner {
     /// producing output cannot hold the actor here.
     fn handle_write_failure(&mut self, err: std::io::Error) {
         self.finish_active_submission(Err(err));
-        const MAX_DRAIN_CHUNKS: usize = 1024;
-        for _ in 0..MAX_DRAIN_CHUNKS {
+        for _ in 0..MAX_WRITE_FAILURE_DRAIN_CHUNKS {
             match self.read_chunk() {
                 ReadOutcome::Data | ReadOutcome::Interrupted => {}
                 ReadOutcome::WouldBlock | ReadOutcome::Closed => break,
@@ -1016,7 +1002,7 @@ impl PtyIoActorRunner {
     }
 
     fn read_chunk(&mut self) -> ReadOutcome {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; PTY_READ_BUFFER_BYTES];
         match self.file.read(&mut buf) {
             Ok(0) => ReadOutcome::Closed,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => ReadOutcome::WouldBlock,
@@ -1267,7 +1253,7 @@ impl PtyIoActorRunner {
             deadline
                 .saturating_duration_since(now)
                 .as_millis()
-                .max(1)
+                .max(MIN_POLL_TIMEOUT_MS)
                 .min(ACTOR_IDLE_POLL_MS as u128),
         )
         .unwrap_or(ACTOR_IDLE_POLL_MS)

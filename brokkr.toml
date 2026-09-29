@@ -422,6 +422,79 @@ pattern = 'bounded_vec::<\{\s*(?:codec::)?MAX_COLLECTION_ITEMS\s*\}'
 paths = ["crates/shepr-protocol/src/**/*.rs"]
 message = "the codec caps every collection at MAX_COLLECTION_ITEMS already; annotate bounded_vec only with a tighter cap"
 
+# Every numeric or Duration bound lives in its crate's `limits` module
+# (`crates/<crate>/src/limits.rs`, and `src/limits.rs` for the binary), named,
+# documented and beside the bounds it is coupled with. A value that is a format,
+# ABI or protocol definition rather than a tunable stays beside the code it
+# defines and carries `limits-exempt: <reason>` on its line or one of the two
+# above; `limits-exempt-states-a-reason` refuses a marker without one. Keep the
+# scope and test exclusions of the two limits rules in lockstep.
+#
+# The first rule takes a numeric, `Duration` or `NonZero` const or static whose
+# initializer has a numeric literal on its first line, or wraps onto the next.
+# The second takes the literal shapes a bound is usually spelled in outside a
+# const: a `Duration::from_*` literal, and a literal of two or more digits as a
+# channel, `with_capacity` or `Semaphore` capacity, an iterator `take` count or
+# a zeroed buffer length. Neither catches a literal inline in any other
+# expression (a comparison `len() > 32`, a `.clamp(3, 15)` range, a factor in
+# arithmetic), a single-digit capacity, buffer or count (`sync_channel(1)`,
+# `[0u8; 4]`), a channel turbofish with nested generics, an array-typed const,
+# a numeric value in a string (an ssh option), an atomic counter (allocator
+# state, not a bound), or test code: test files, and items below a file's first
+# `#[cfg(test)]`, where `check_skip_after_scopes.py` re-checks the production
+# items. A const initialized from other names (an alias or derivation of a named
+# bound) is deliberately not a bound of its own. Values inside a `limits` module
+# are not checked for a doc comment or a reason.
+[[textlint]]
+name = "numeric-consts-live-in-limits"
+pattern = '\b(?:const|static)\s+[A-Z][A-Z0-9_]*\s*:\s*(?:[ui](?:8|16|32|64|128|size)|f(?:32|64)|(?:(?:std|core)::time::)?Duration|(?:std::num::)?NonZero(?:U|I)(?:8|16|32|64|128|size)|(?:libc::)?c_u?(?:char|short|int|long))\s*=(?:[^;]*\b[0-9]|\s*$)'
+paths = ["crates/*/src/**/*.rs", "src/**/*.rs"]
+exclude = [
+    "crates/*/src/limits.rs",
+    "src/limits.rs",
+    "crates/shepr-test-support/**",
+    "crates/shepr-test-fixtures/**",
+    "**/test_support.rs",
+    "**/test_support/**",
+    "**/tests/**",
+    "**/tests.rs",
+    "**/*_tests.rs",
+]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "limits-exempt:"
+allow_marker_above = 2
+message = "a numeric or Duration const is a bound: move it into this crate's limits module, or mark it `limits-exempt: <reason>` if it is a format, ABI or protocol definition"
+
+[[textlint]]
+name = "duration-and-capacity-literals-live-in-limits"
+pattern = '\bDuration\s*::\s*from_(?:secs|millis|micros|nanos|mins|hours|secs_f32|secs_f64)\s*\(\s*[0-9]|(?:\b(?:sync_channel|channel)\s*(?:::\s*<[^>]*>\s*)?|\bwith_capacity\s*|\bSemaphore\s*::\s*new\s*|\.take\s*)\(\s*[0-9](?:_?[0-9])+|\[\s*0(?:_?u8)?\s*;\s*[0-9](?:_?[0-9])+'
+paths = ["crates/*/src/**/*.rs", "src/**/*.rs"]
+exclude = [
+    "crates/*/src/limits.rs",
+    "src/limits.rs",
+    "crates/shepr-test-support/**",
+    "crates/shepr-test-fixtures/**",
+    "**/test_support.rs",
+    "**/test_support/**",
+    "**/tests/**",
+    "**/tests.rs",
+    "**/*_tests.rs",
+]
+except = ['^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+[A-Z][A-Z0-9_]*\s*:']
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "limits-exempt:"
+allow_marker_above = 2
+message = "a literal duration, capacity, count or buffer size is a bound: name it in this crate's limits module, or mark it `limits-exempt: <reason>` if it is a format, ABI or protocol definition"
+
+[[textlint]]
+name = "limits-exempt-states-a-reason"
+pattern = '\blimits-exempt(?:[^:\w-]|:\s*$|$)'
+paths = ["crates/*/src/**/*.rs", "src/**/*.rs"]
+region = "comment"
+message = "spell the marker `limits-exempt: <reason>`, naming the format, ABI or protocol the value defines"
+
 # Every internal event the headless server handles goes through the one method
 # that also forwards clipboard writes to the foreground client.
 [[textlint]]

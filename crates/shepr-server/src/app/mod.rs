@@ -6,7 +6,7 @@
 pub(crate) mod actions;
 mod agent_resume;
 mod agents;
-pub use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
+pub use crate::limits::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 #[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
@@ -57,11 +57,10 @@ pub(crate) struct Outcome {
     pub(crate) render: RenderDemand,
 }
 
-const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
-const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
-const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
-const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
+use crate::limits::{
+    GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL,
+    PENDING_AGENT_RESUME_THEME_WAIT,
+};
 
 use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
@@ -131,8 +130,7 @@ pub struct App {
     pub(crate) paths: shepr_config::AppPaths,
 }
 
-pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
-pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
+pub(crate) use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, APP_EVENT_DRAIN_LIMIT};
 
 impl App {
     /// Test constructor: the app's files live in a fresh scratch directory.
@@ -463,6 +461,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::SESSION_SAVE_DEBOUNCE;
     use crate::test_support::IsolatedEnv;
     use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};

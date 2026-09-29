@@ -5,10 +5,6 @@
 
 use super::*;
 
-pub(super) const MIN_TAB_WIDTH: u16 = 8;
-pub(super) const NEW_TAB_WIDTH: u16 = 3;
-pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientShellKeybindingSource {
     RemoteLocal,

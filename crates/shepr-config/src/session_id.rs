@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::limits::MAX_SESSION_NAME_LEN;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionNameError(pub String);
 
@@ -11,8 +13,6 @@ impl std::fmt::Display for SessionNameError {
 }
 
 impl std::error::Error for SessionNameError {}
-
-const MAX_SESSION_NAME_LEN: usize = 64;
 
 pub const DEFAULT_SESSION_NAME: &str = "default";
 

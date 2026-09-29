@@ -38,6 +38,12 @@ probe and the vt synchronized-update timeout. Open:
   `now` parameters with an ambient `self.now` that only the input and event
   entry points refresh, so a test that bypasses them runs on the construction
   time; pass `now` explicitly or refresh it in one place.
+- `shepr-mux/src/terminal/state/`: `TerminalState`'s hook, session and
+  lifecycle paths read `Instant::now()` inline (`lifecycle.rs` hook-clear and
+  `release_agent_with_mutation`, several sites in `hooks.rs` and `sessions.rs`,
+  the `set_detected_state_with_mutation` wrapper in `detection.rs`, and a
+  `serde(skip, default = "Instant::now")` field in `mod.rs`). Take `now` as a
+  parameter at those entry points and have callers pass the app clock.
 - Other remaining reads: `shepr-config`'s `TerminalId::alloc` (HYGV-087),
   `shepr-server/src/server/client_transport.rs` and the `shepr-api` transport
   deadlines.

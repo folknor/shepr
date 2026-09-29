@@ -1,9 +1,7 @@
+pub use crate::limits::MANAGED_AGENT_RESUME_TIMEOUT;
 use shepr_core::env::{ChildEnv, EnvVar};
 use shepr_protocol::PublicPaneId;
 use shepr_pty::PtyCommand;
-
-/// Time allowed for a restored agent to appear after its resume launch.
-pub const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub(super) const OUTER_TERMINAL_IDENTITY_ENV: &[&str] = &[
     ChildEnv::ItermSessionId.name(),

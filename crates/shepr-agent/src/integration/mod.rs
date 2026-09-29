@@ -1,4 +1,4 @@
-use std::time::Duration;
+use crate::limits::HOOK_TIMEOUT;
 
 mod actions;
 mod atomic_replace;
@@ -23,30 +23,38 @@ pub use types::{
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const PI_INTEGRATION_VERSION: u32 = 1;
 const OMP_EXTENSION_INSTALL_NAME: &str = "shepr-omp-agent-state.ts";
 const OMP_EXTENSION_ASSET: &str = include_str!("assets/omp/shepr-agent-state.ts");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const OMP_INTEGRATION_VERSION: u32 = 1;
 const CLAUDE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CLAUDE_HOOK_ASSET: &str = include_str!("assets/claude/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const CLAUDE_INTEGRATION_VERSION: u32 = 2;
 const CODEX_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const CODEX_INTEGRATION_VERSION: u32 = 2;
 const KIMI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const KIMI_INTEGRATION_VERSION: u32 = 3;
 const KIMI_CONFIG_BLOCK_BEGIN: &str = "# >>> shepr kimi integration";
 const KIMI_CONFIG_BLOCK_END: &str = "# <<< shepr kimi integration";
 const KIMI_MIN_VERSION: &str = "0.14.0";
 const COPILOT_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const COPILOT_HOOK_ASSET: &str = include_str!("assets/copilot/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const COPILOT_INTEGRATION_VERSION: u32 = 2;
 const DEVIN_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DEVIN_HOOK_ASSET: &str = include_str!("assets/devin/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const DEVIN_INTEGRATION_VERSION: u32 = 2;
 const DROID_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DROID_HOOK_ASSET: &str = include_str!("assets/droid/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const DROID_INTEGRATION_VERSION: u32 = 2;
 const OPENCODE_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const OPENCODE_PLUGIN_ASSET: &str = include_str!("assets/opencode/shepr-agent-state.js");
@@ -56,25 +64,32 @@ const OPENCODE_TUI_PLUGIN_ASSET: &str = include_str!("assets/opencode/shepr-tui-
 const OPENCODE_V2_TUI_PLUGIN_DIR: &str = "shepr-opencode";
 const OPENCODE_V2_TUI_PLUGIN_SPEC: &str = "./shepr-opencode";
 const OPENCODE_V2_TUI_PLUGIN_ASSET: &str = include_str!("assets/opencode/tui.js");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const OPENCODE_INTEGRATION_VERSION: u32 = 1;
 const KILO_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const KILO_PLUGIN_ASSET: &str = include_str!("assets/kilo/shepr-agent-state.js");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const KILO_INTEGRATION_VERSION: u32 = 2;
 const QODERCLI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const QODERCLI_HOOK_ASSET: &str = include_str!("assets/qodercli/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const QODERCLI_INTEGRATION_VERSION: u32 = 1;
 const QWEN_HOOK_INSTALL_NAME: &str = "shepr-agent-session.sh";
 const QWEN_HOOK_ASSET: &str = include_str!("assets/qwen/shepr-agent-session.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const QWEN_INTEGRATION_VERSION: u32 = 1;
 const LETTA_HOOK_INSTALL_NAME: &str = "shepr-agent-session.sh";
 const LETTA_HOOK_ASSET: &str = include_str!("assets/letta/shepr-agent-session.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const LETTA_INTEGRATION_VERSION: u32 = 1;
 const CURSOR_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CURSOR_HOOK_ASSET: &str = include_str!("assets/cursor/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const CURSOR_INTEGRATION_VERSION: u32 = 2;
 const ANTIGRAVITY_CLI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const ANTIGRAVITY_CLI_HOOK_ASSET: &str =
     include_str!("assets/antigravity_cli/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const ANTIGRAVITY_CLI_INTEGRATION_VERSION: u32 = 1;
 /// Antigravity CLI keys `hooks.json` by hook name, so every Shepr entry lives
 /// under one Shepr-owned block that install rewrites and uninstall removes.
@@ -82,11 +97,12 @@ const ANTIGRAVITY_CLI_HOOK_BLOCK_NAME: &str = "shepr";
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const MASTRACODE_INTEGRATION_VERSION: u32 = 4;
 const GROK_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
+// limits-exempt: format version, matched against the one the adjacent asset carries.
 const GROK_INTEGRATION_VERSION: u32 = 2;
-const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Hook assets deliver reports best-effort and discard failures, because the
 // host agent may show a failing hook to the operator. The server refuses a

@@ -3,6 +3,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::limits::TEMP_FILE_ALLOCATION_ATTEMPTS;
+
 #[cfg(test)]
 use std::sync::OnceLock;
 
@@ -75,7 +77,7 @@ impl AtomicReplace {
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
 
-        for _ in 0..128 {
+        for _ in 0..TEMP_FILE_ALLOCATION_ATTEMPTS {
             let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
             // The kernel-random token separates processes; the atomic sequence
             // separates threads, and create_new arbitrates collisions.

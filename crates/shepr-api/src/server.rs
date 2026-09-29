@@ -7,9 +7,12 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
 use tracing::{debug, error, info, warn};
 
-#[cfg(test)]
-use std::fs;
-
+use crate::limits::{
+    ACCEPT_BACKOFF_MAX, ACCEPT_BACKOFF_MIN, BUSY_REFUSAL_QUEUE, BUSY_REQUEST_ID_TIMEOUT,
+    CONNECTION_POLL_INTERVAL, INITIAL_REQUEST_READ_CHUNK_BYTES, INITIAL_REQUEST_TIMEOUT,
+    MAX_ACTIVE_CONNECTIONS, MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT,
+    STREAM_WRITE_TIMEOUT,
+};
 use crate::schema::{
     ErrorResponse, Method, MethodTraits, Request, ResponseResult, ServerCapabilities,
     SuccessResponse,
@@ -23,32 +26,8 @@ use shepr_platform::ipc::{
     remove_socket_file_if_owned, set_local_stream_polling, socket_file_identity,
 };
 
-#[cfg(test)]
-mod subscription_socket_tests;
-
-pub(super) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
-pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Bound on how long an ordinary (non-wait, non-stream) request waits for the
-/// app main loop to answer. Without one, a stalled main loop hangs every CLI
-/// call and every agent hook that shells out to the CLI.
-///
-/// Most requests are answered in the same loop turn. The slowest legitimate
-/// case is a `pane.read`/`agent.read` of alternate-screen history, which the
-/// server serves by scrolling the agent and can take up to 20 s (15 s harvest
-/// plus 5 s restore in `crates/shepr-server/src/server/alt_screen_read.rs`), and a second read of
-/// the same pane is parked until the first finishes. A minute covers that
-/// with margin. Requests that carry their own timeout (`events.wait`,
-/// `agent.wait`, `pane.wait_for_output`, `agent.prompt` with `wait`) are
-/// dispatched on their own paths and are not subject to this bound.
-pub(super) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
     "timed out waiting for app response; the request may still run, so its outcome is unknown";
-pub(super) const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const BUSY_REQUEST_ID_TIMEOUT: Duration = Duration::from_millis(500);
-const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_INITIAL_REQUEST_BYTES: usize = shepr_protocol::MAX_INITIAL_REQUEST_BYTES;
-/// Bounds API worker threads and request-owned stream state such as subscriptions.
-const MAX_ACTIVE_CONNECTIONS: usize = 64;
 
 struct ConnectionAdmission {
     active: Arc<AtomicUsize>,
@@ -278,10 +257,6 @@ fn request_id_from_line(line: &str) -> String {
     }
 }
 
-/// Connections over the limit waiting for the refuser thread. Beyond this a
-/// refusal is sent at once without the caller's request ID.
-const BUSY_REFUSAL_QUEUE: usize = 16;
-
 /// Starts the one thread that answers connections over the limit, so reading
 /// their request IDs never holds up the accept loop. The thread ends when the
 /// returned sender (owned by the listener) is dropped. `None` when the thread
@@ -377,9 +352,6 @@ fn spawn_listener_thread(
     })
 }
 
-const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
-const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
-
 /// Retry pacing for the API listener after an accept or spawn failure.
 ///
 /// Errors like EMFILE persist until some fd is released, and a blocking
@@ -419,17 +391,6 @@ impl AcceptBackoff {
         self.delay = None;
         self.failures = 0;
     }
-}
-
-#[cfg(test)]
-fn handle_connection(
-    stream: LocalStream,
-    api_tx: &ApiRequestSender,
-    event_hub: &EventHub,
-    running: &Arc<AtomicBool>,
-    capabilities: Option<ServerCapabilities>,
-) -> std::io::Result<()> {
-    handle_connection_with_stop(stream, api_tx, event_hub, running, capabilities, None, None)
 }
 
 fn handle_connection_with_stop(
@@ -782,7 +743,7 @@ fn read_request_line_blocking(
 
     let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, deadline);
     let mut bytes = Vec::new();
-    let mut chunk = [0u8; 8 * 1024];
+    let mut chunk = [0u8; INITIAL_REQUEST_READ_CHUNK_BYTES];
     loop {
         let read = match reader.read(&mut chunk) {
             Ok(read) => read,
@@ -839,14 +800,14 @@ fn stream_subscriptions(
             )
         })
         .count();
-    if regex_subscription_count > crate::subscriptions::MAX_REGEX_MATCH_SUBSCRIPTIONS {
+    if regex_subscription_count > crate::limits::MAX_REGEX_MATCH_SUBSCRIPTIONS {
         let response = ErrorResponse {
             id: request_id.to_string(),
             error: crate::error::ApiError::new(
                 crate::error::ApiErrorCode::InvalidParams,
                 format!(
                     "events.subscribe allows at most {} regex output subscriptions",
-                    crate::subscriptions::MAX_REGEX_MATCH_SUBSCRIPTIONS
+                    crate::limits::MAX_REGEX_MATCH_SUBSCRIPTIONS
                 ),
             )
             .into_body(),
@@ -981,24 +942,6 @@ pub(super) fn dispatch_to_app_with_timeout_result(
     dispatch_to_app_result(request, api_tx, timeout, None)
 }
 
-#[cfg(test)]
-pub(super) fn dispatch_to_app_with_caller_timeout(
-    request: Request,
-    api_tx: &ApiRequestSender,
-    timeout: Option<Duration>,
-) -> String {
-    dispatch_to_app(
-        request,
-        api_tx,
-        timeout,
-        Some((
-            crate::error::ApiErrorCode::Timeout,
-            "timed out waiting for agent status",
-        )),
-    )
-    .body
-}
-
 pub(super) fn dispatch_to_app_with_caller_timeout_result(
     request: Request,
     api_tx: &ApiRequestSender,
@@ -1130,47 +1073,6 @@ pub(super) fn dispatch_to_app_until_stopped_result(
     }
 }
 
-#[cfg(test)]
-#[test]
-fn stop_aware_dispatch_ends_when_shutdown_starts() {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let stop = Arc::new(AtomicBool::new(true));
-    let result = dispatch_to_app_until_stopped_result(
-        Request {
-            id: "prompt".into(),
-            method: Method::AgentPrompt(crate::schema::AgentPromptParams {
-                target: "reviewer".into(),
-                text: "review this".into(),
-                wait: None,
-            }),
-        },
-        &tx,
-        Some(&stop),
-    );
-    let error = result.expect_err("shutdown ends the dispatch");
-    assert_eq!(error.code, crate::error::ApiErrorCode::ServerUnavailable);
-}
-
-#[cfg(test)]
-#[test]
-fn caller_timeout_dispatch_uses_timeout_error() {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let response = dispatch_to_app_with_caller_timeout(
-        Request {
-            id: "prompt-timeout".into(),
-            method: Method::AgentPrompt(crate::schema::AgentPromptParams {
-                target: "reviewer".into(),
-                text: "review this".into(),
-                wait: None,
-            }),
-        },
-        &tx,
-        Some(Duration::ZERO),
-    );
-    let error: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
-    assert_eq!(error.error.code, "timeout");
-}
-
 pub(super) fn error_response_json(
     id: &str,
     code: crate::error::ApiErrorCode,
@@ -1183,15 +1085,87 @@ pub(super) fn error_response_json(
 }
 
 #[cfg(test)]
+fn handle_connection(
+    stream: LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+    capabilities: Option<ServerCapabilities>,
+) -> std::io::Result<()> {
+    handle_connection_with_stop(stream, api_tx, event_hub, running, capabilities, None, None)
+}
+
+#[cfg(test)]
+pub(super) fn dispatch_to_app_with_caller_timeout(
+    request: Request,
+    api_tx: &ApiRequestSender,
+    timeout: Option<Duration>,
+) -> String {
+    dispatch_to_app(
+        request,
+        api_tx,
+        timeout,
+        Some((
+            crate::error::ApiErrorCode::Timeout,
+            "timed out waiting for agent status",
+        )),
+    )
+    .body
+}
+
+#[cfg(test)]
+mod subscription_socket_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::collections::HashMap;
+    use std::fs;
     use std::io::{BufRead, BufReader, Read};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn stop_aware_dispatch_ends_when_shutdown_starts() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let stop = Arc::new(AtomicBool::new(true));
+        let result = dispatch_to_app_until_stopped_result(
+            Request {
+                id: "prompt".into(),
+                method: Method::AgentPrompt(crate::schema::AgentPromptParams {
+                    target: "reviewer".into(),
+                    text: "review this".into(),
+                    wait: None,
+                }),
+            },
+            &tx,
+            Some(&stop),
+        );
+        let error = result.expect_err("shutdown ends the dispatch");
+        assert_eq!(error.code, crate::error::ApiErrorCode::ServerUnavailable);
+    }
+
+    #[test]
+    fn caller_timeout_dispatch_uses_timeout_error() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let response = dispatch_to_app_with_caller_timeout(
+            Request {
+                id: "prompt-timeout".into(),
+                method: Method::AgentPrompt(crate::schema::AgentPromptParams {
+                    target: "reviewer".into(),
+                    text: "review this".into(),
+                    wait: None,
+                }),
+            },
+            &tx,
+            Some(Duration::ZERO),
+        );
+        let error: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+        assert_eq!(error.error.code, "timeout");
+    }
 
     /// A fresh path in its own scratch directory.
     fn unique_test_path(name: &str) -> PathBuf {

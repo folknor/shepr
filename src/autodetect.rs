@@ -4,9 +4,6 @@
 use std::io;
 use std::time::Duration;
 
-/// Maximum time to wait for a freshly spawned server's client socket.
-pub(crate) const SERVER_READY_TIMEOUT: Duration = shepr_remote::local_server::SERVER_READY_TIMEOUT;
-
 /// Checks the local server, starts it when needed, then runs the client.
 ///
 /// A running server of a different build fails the launch with guidance for

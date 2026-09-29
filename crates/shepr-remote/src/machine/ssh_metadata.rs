@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{ProfileId, RemoteExecutable};
-
-const MAX_METADATA_BYTES: u64 = 16 * 1024;
+use crate::limits::MAX_METADATA_BYTES;
 
 #[derive(Serialize, Deserialize)]
 struct StoredMetadata {

@@ -1,3 +1,4 @@
+pub use crate::limits::MAX_SEQUENCE_SOURCES;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -11,8 +12,6 @@ struct MetadataToken {
 pub struct MetadataTokens {
     entries: HashMap<String, MetadataToken>,
 }
-
-pub const MAX_SEQUENCE_SOURCES: usize = 32;
 
 /// Per-source report sequences of one resource's metadata tokens (a
 /// workspace's), with when each was accepted.

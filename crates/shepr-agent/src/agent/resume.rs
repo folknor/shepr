@@ -4,10 +4,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize, de::Visitor};
 
-use super::{Agent, AgentSource, CONVERSATION_FLAG, ResumeArgs, SessionRefPolicy};
+use crate::limits::{MAX_SESSION_ID_LEN, MAX_SESSION_PATH_LEN};
 
-const MAX_SESSION_ID_LEN: usize = 512;
-const MAX_SESSION_PATH_LEN: usize = 4096;
+use super::{Agent, AgentSource, CONVERSATION_FLAG, ResumeArgs, SessionRefPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

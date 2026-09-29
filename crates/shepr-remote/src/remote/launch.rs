@@ -216,6 +216,10 @@ pub(super) fn posix_shell_command(script: &str) -> String {
 }
 
 pub(crate) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale";
+/// Remote shell status identifying the sysexits configuration error used when
+/// a cached bridge command names stale API metadata. This stays distinct from
+/// SSH's own failure status and the remote-status remapping.
+// limits-exempt: a sysexits status, part of the remote launch contract.
 pub(crate) const STALE_API_METADATA_EXIT_CODE: i32 = 78;
 
 pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: &str) -> String {

@@ -1,11 +1,13 @@
 use std::io;
 
+use crate::limits::VERSION_PROBE_TIMEOUT;
+
 use super::env::AgentIntegrationPaths;
 use super::registry::{
     action_label, install_operation, integration_target_label, uninstall_operation,
 };
 use super::types::{InstallOutcome, InstallOutput, UninstallOutcome};
-use super::version::{VERSION_PROBE_TIMEOUT, agent_version_requirement, enforce_agent_version};
+use super::version::{agent_version_requirement, enforce_agent_version};
 
 pub fn install_target(
     paths: &AgentIntegrationPaths,

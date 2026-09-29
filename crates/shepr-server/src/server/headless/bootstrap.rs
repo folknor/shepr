@@ -197,7 +197,7 @@ pub fn run_server(
         server.run().await.map_err(RunServerError::from)
     });
 
-    rt.shutdown_timeout(Duration::from_millis(100));
+    rt.shutdown_timeout(crate::limits::TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
     shepr_platform::logging::shutdown("server");
     result
 }

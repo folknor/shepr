@@ -312,6 +312,7 @@ pub fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::
 }
 
 /// Mode applied by [`bind_private_local_listener`]: owner read/write only.
+// limits-exempt: this is the private socket's POSIX file mode, kept beside its application.
 const PRIVATE_SOCKET_MODE: u32 = 0o600;
 
 /// Binds a listener at an absolute `path` so the socket is never reachable with anything

@@ -1,18 +1,17 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use interprocess::local_socket::traits::Stream as _;
 
 use super::EndpointTransport;
+use crate::limits::{
+    ENDPOINT_IO_POLL_INTERVAL, ENDPOINT_WRITE_TIMEOUT, MAX_BATCH_BYTES, MAX_QUEUED_BATCHES,
+    MAX_QUEUED_BYTES,
+};
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ClientMessage;
-
-const MAX_QUEUED_BATCHES: usize = 256;
-const MAX_BATCH_BYTES: usize = 64 * 1024;
-const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
-const IO_POLL_INTERVAL: Duration = crate::limits::ENDPOINT_IO_POLL_INTERVAL;
 
 #[derive(Default)]
 struct FrameBatch {
@@ -232,8 +231,7 @@ fn write_frame(
     stopped: &AtomicBool,
 ) -> io::Result<()> {
     // clock-io-ok: measure elapsed time while the worker writes a frame.
-    let deadline =
-        crate::limits::Deadline::after(Instant::now(), crate::limits::ENDPOINT_WRITE_TIMEOUT);
+    let deadline = crate::limits::Deadline::after(Instant::now(), ENDPOINT_WRITE_TIMEOUT);
     while !frame.is_empty() && !stopped.load(Ordering::Acquire) {
         let chunk = frame;
         match writer.write(chunk) {
@@ -253,7 +251,7 @@ fn write_frame(
                 "endpoint write timed out",
             ));
         }
-        std::thread::sleep(IO_POLL_INTERVAL);
+        std::thread::sleep(ENDPOINT_IO_POLL_INTERVAL);
     }
     Ok(())
 }
@@ -261,6 +259,7 @@ fn write_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn streams() -> (LocalStream, LocalStream) {
         use interprocess::local_socket::traits::Listener as _;
@@ -348,7 +347,7 @@ mod tests {
                         shepr_platform::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
                         shepr_platform::ipc::LocalStreamReadCount::Closed => return Ok(0),
                         shepr_platform::ipc::LocalStreamReadCount::Pending => {
-                            std::thread::sleep(IO_POLL_INTERVAL);
+                            std::thread::sleep(ENDPOINT_IO_POLL_INTERVAL);
                         }
                     }
                 }

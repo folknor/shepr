@@ -1,9 +1,6 @@
 use super::*;
 
-use super::process::{
-    PIPE_DRAIN_GRACE, PipeCapture, PipeEcho, SSH_STDERR_CAPTURE_LIMIT, SSH_STDOUT_CAPTURE_LIMIT,
-    wait_with_output_timeout,
-};
+use super::process::{PipeCapture, PipeEcho, wait_with_output_timeout};
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -11,33 +8,18 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
-pub(super) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration =
-    shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT;
-pub(super) const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = SSH_STDERR_CAPTURE_LIMIT;
+use crate::limits::{
+    NONINTERACTIVE_SSH_COMMAND_TIMEOUT, PIPE_DRAIN_GRACE, REMOTE_STDERR_FILTER_BUFFER_BYTES,
+    SSH_STDERR_CAPTURE_LIMIT, SSH_STDOUT_CAPTURE_LIMIT,
+};
 
 pub(super) mod ssh_options {
     use std::process::Command;
 
     pub(crate) const BATCH_MODE_NO: &str = "BatchMode=no";
     pub(crate) const BATCH_MODE_YES: &str = "BatchMode=yes";
-    pub(crate) const CONNECT_TIMEOUT: &str = "ConnectTimeout=10";
-    pub(crate) const CONNECTION_ATTEMPTS: &str = "ConnectionAttempts=1";
     pub(crate) const CONTROL_MASTER: &str = "ControlMaster=auto";
-    pub(crate) const CONTROL_PERSIST: &str = "ControlPersist=600";
-    pub(crate) const NONINTERACTIVE_PASSWORD_PROMPTS: &str = "NumberOfPasswordPrompts=0";
-    pub(crate) const AUTHENTICATION_PASSWORD_PROMPTS: &str = "NumberOfPasswordPrompts=3";
     pub(crate) const STRICT_HOST_KEY_CHECKING: &str = "StrictHostKeyChecking=yes";
-
-    #[derive(Clone, Copy)]
-    pub(crate) struct Keepalive {
-        pub(crate) interval_secs: u32,
-        pub(crate) count_max: u32,
-    }
-
-    pub(crate) const KEEPALIVE: Keepalive = Keepalive {
-        interval_secs: 15,
-        count_max: 4,
-    };
 
     /// Appends OpenSSH options using the same `-o` argument shape at each call site.
     pub(crate) fn append(command: &mut Command, options: &[&str]) {
@@ -46,13 +28,11 @@ pub(super) mod ssh_options {
         }
     }
 
-    impl Keepalive {
+    impl crate::limits::SshKeepalive {
         pub(crate) fn command_options(&self) -> [String; 2] {
-            let interval_secs = self.interval_secs;
-            let count_max = self.count_max;
             [
-                format!("ServerAliveInterval={interval_secs}"),
-                format!("ServerAliveCountMax={count_max}"),
+                format!("ServerAliveInterval={}", self.interval_secs),
+                format!("ServerAliveCountMax={}", self.count_max),
             ]
         }
 
@@ -66,9 +46,10 @@ pub(super) mod ssh_options {
         }
 
         pub(crate) fn config_lines(&self) -> String {
-            let interval_secs = self.interval_secs;
-            let count_max = self.count_max;
-            format!("  ServerAliveInterval {interval_secs}\n  ServerAliveCountMax {count_max}\n")
+            format!(
+                "  ServerAliveInterval {}\n  ServerAliveCountMax {}\n",
+                self.interval_secs, self.count_max
+            )
         }
     }
 }
@@ -279,7 +260,7 @@ pub(super) fn authentication_command_with_config(
         &[
             ssh_options::BATCH_MODE_NO,
             ssh_options::STRICT_HOST_KEY_CHECKING,
-            ssh_options::AUTHENTICATION_PASSWORD_PROMPTS,
+            crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
         ],
     );
     command.arg("-T").arg(target.as_str()).arg("exit");
@@ -560,7 +541,7 @@ impl<R: io::Read> io::Read for PrintableRemoteStderr<R> {
         // A chunk of only carriage returns filters to nothing; returning 0 for
         // it would read as end of stream, so read on.
         while self.offset == self.pending.len() {
-            let mut incoming = [0_u8; 4096];
+            let mut incoming = [0_u8; REMOTE_STDERR_FILTER_BUFFER_BYTES];
             let read = io::Read::read(&mut self.reader, &mut incoming)?;
             if read == 0 {
                 return Ok(0);
@@ -606,13 +587,13 @@ pub(super) fn apply_noninteractive_ssh_options(command: &mut Command) {
         command,
         &[
             ssh_options::BATCH_MODE_YES,
-            ssh_options::NONINTERACTIVE_PASSWORD_PROMPTS,
+            crate::limits::SSH_NONINTERACTIVE_PASSWORD_PROMPTS_OPTION,
             ssh_options::STRICT_HOST_KEY_CHECKING,
-            ssh_options::CONNECT_TIMEOUT,
-            ssh_options::CONNECTION_ATTEMPTS,
+            crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
+            crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
         ],
     );
-    ssh_options::KEEPALIVE.append_command_options(command);
+    crate::limits::SSH_KEEPALIVE.append_command_options(command);
 }
 
 pub(super) fn apply_managed_ssh_options(
@@ -633,7 +614,10 @@ pub(super) fn apply_managed_ssh_options(
         command.arg("-S").arg(control_path);
         ssh_options::append(
             command,
-            &[ssh_options::CONTROL_MASTER, ssh_options::CONTROL_PERSIST],
+            &[
+                ssh_options::CONTROL_MASTER,
+                crate::limits::SSH_CONTROL_PERSIST_OPTION,
+            ],
         );
     }
 }
@@ -745,7 +729,7 @@ pub(super) fn write_managed_ssh_config(
         contents.push_str(&format!("Include {include}\n"));
     }
     contents.push_str("Host *\n");
-    ssh_options::KEEPALIVE.append_config(&mut contents);
+    crate::limits::SSH_KEEPALIVE.append_config(&mut contents);
 
     let mut file = shepr_platform::create_private_file(&path)?;
     file.write_all(contents.as_bytes())?;

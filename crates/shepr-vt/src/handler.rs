@@ -67,6 +67,8 @@ use vte::ansi::{
     PrivateMode, Rgb, ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
 };
 
+use crate::limits::KEYBOARD_MODE_STACK_MAX_DEPTH;
+
 use super::DecMode;
 use super::ExtraModes;
 use super::modes::{self, ExtraMode};
@@ -114,10 +116,6 @@ pub(super) fn geometry_for_terminal(
         cell,
     }
 }
-
-/// alacritty's keyboard-mode stack cap (`KEYBOARD_MODE_STACK_MAX_DEPTH`,
-/// private in the pinned release).
-pub(super) const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = 4096;
 
 /// Depths of alacritty's two keyboard-mode stacks, mirrored from the parser
 /// actions that change them.

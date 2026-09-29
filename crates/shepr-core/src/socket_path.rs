@@ -19,6 +19,7 @@ use std::path::Path;
 /// `the_limit_is_what_std_accepts_for_a_socket_address` checks this against
 /// the standard library's own `sockaddr_un` construction, so the number is
 /// proven rather than restated.
+// limits-exempt: this is the Linux sockaddr_un ABI limit, kept beside the path check and its proof.
 pub const UNIX_SOCKET_PATH_MAX: usize = 107;
 
 /// Whether `path` is short enough to name a Unix socket.

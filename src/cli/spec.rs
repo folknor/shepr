@@ -345,7 +345,11 @@ fn agent_command() -> Command {
                 )
                 .arg(
                     u64_option("timeout", "MS")
-                        .help("Wait for interactive readiness (default: 30000; max: 300000)"),
+                        .help(format!(
+                            "Wait for interactive readiness (default: {}; max: {})",
+                            crate::limits::DEFAULT_AGENT_START_TIMEOUT_MS,
+                            shepr_server::app::MAX_AGENT_START_TIMEOUT.as_millis(),
+                        )),
                 )
                 .arg(
                     Arg::new("agent_args")

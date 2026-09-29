@@ -3,6 +3,7 @@ mod cwd;
 pub mod events;
 pub use cwd::UsableCwd;
 pub mod git;
+mod limits;
 pub mod pane;
 pub mod persist;
 pub mod render_signal;

@@ -8,12 +8,11 @@ use shepr_api::client::{ApiClientError, parse_response_value};
 use shepr_api::schema::{Method, Request, ResponseResult, ServerSshAgentRegisterParams};
 use shepr_platform::ipc::{LocalStream, LocalStreamRead, LocalStreamReadCount};
 
-const STREAM_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
-/// Keep retrying while the bridge is attached because the API server can restart
-/// at any time. Capping the delay bounds wakeups during a long outage.
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
-const MAX_RESPONSE_BYTES: usize = 4096;
+use crate::limits::{
+    SSH_AGENT_INITIAL_RETRY_DELAY, SSH_AGENT_MAX_RETRY_DELAY, SSH_AGENT_REGISTRATION_TIMEOUT,
+    SSH_AGENT_RESPONSE_MAX_BYTES, SSH_AGENT_RESPONSE_POLL_INTERVAL, SSH_AGENT_RETRY_BACKOFF_FACTOR,
+    SSH_AGENT_STREAM_POLL_INTERVAL,
+};
 
 pub(super) struct Registration {
     stop: Arc<AtomicBool>,
@@ -43,8 +42,10 @@ impl Registration {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
+            // A single byte probe is enough while monitoring the registration stream;
+            // buffering more would consume and discard extra data.
             let mut byte = [0];
-            let mut retry_delay = INITIAL_RETRY_DELAY;
+            let mut retry_delay = SSH_AGENT_INITIAL_RETRY_DELAY;
             let mut failures: u32 = 0;
             while !worker_stop.load(Ordering::Acquire) {
                 if let Some(connection) = stream.as_mut() {
@@ -52,11 +53,11 @@ impl Registration {
                         shepr_platform::ipc::poll_local_stream_read(connection, &mut byte),
                         Ok(LocalStreamRead::Pending)
                     ) {
-                        std::thread::park_timeout(STREAM_POLL_INTERVAL);
+                        std::thread::park_timeout(SSH_AGENT_STREAM_POLL_INTERVAL);
                         continue;
                     }
                     stream = None;
-                    retry_delay = INITIAL_RETRY_DELAY;
+                    retry_delay = SSH_AGENT_INITIAL_RETRY_DELAY;
                 }
 
                 // Retry both initial API readiness and connections lost during handoff.
@@ -73,8 +74,8 @@ impl Registration {
                         }
                         failures = 0;
                         stream = Some(connection);
-                        retry_delay = INITIAL_RETRY_DELAY;
-                        std::thread::park_timeout(STREAM_POLL_INTERVAL);
+                        retry_delay = SSH_AGENT_INITIAL_RETRY_DELAY;
+                        std::thread::park_timeout(SSH_AGENT_STREAM_POLL_INTERVAL);
                     }
                     Err(error) => {
                         failures = failures.saturating_add(1);
@@ -83,8 +84,9 @@ impl Registration {
                         // A missing API server is often permanent for the bridge's
                         // life, so log when a failure streak starts and when the
                         // delay settles at its ceiling, not on every retry.
-                        if wait == INITIAL_RETRY_DELAY
-                            || (wait < MAX_RETRY_DELAY && retry_delay == MAX_RETRY_DELAY)
+                        if wait == SSH_AGENT_INITIAL_RETRY_DELAY
+                            || (wait < SSH_AGENT_MAX_RETRY_DELAY
+                                && retry_delay == SSH_AGENT_MAX_RETRY_DELAY)
                         {
                             tracing::debug!(
                                 %error,
@@ -119,11 +121,13 @@ impl Drop for Registration {
 }
 
 fn next_retry_delay(current: Duration) -> Duration {
-    current.saturating_mul(2).min(MAX_RETRY_DELAY)
+    current
+        .saturating_mul(SSH_AGENT_RETRY_BACKOFF_FACTOR)
+        .min(SSH_AGENT_MAX_RETRY_DELAY)
 }
 
 fn connect(path: &Path, socket_path: &Path) -> io::Result<Option<LocalStream>> {
-    let timeout = Duration::from_millis(500);
+    let timeout = SSH_AGENT_REGISTRATION_TIMEOUT;
     let status = shepr_api::read_runtime_status_at(socket_path, timeout)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotConnected,
@@ -155,6 +159,7 @@ fn connect(path: &Path, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     // clock-io-ok: the response deadline begins after socket setup and request IO.
     let deadline = Instant::now() + timeout;
     let mut response = Vec::new();
+    // Single byte reads stop at the response newline without consuming later stream data.
     let mut byte = [0];
     loop {
         // clock-io-ok: each poll and response read consumes real wall time.
@@ -184,11 +189,11 @@ fn connect(path: &Path, socket_path: &Path) -> io::Result<Option<LocalStream>> {
                 };
             }
             LocalStreamReadCount::Data(_) => {
-                if response.len() == MAX_RESPONSE_BYTES {
+                if response.len() == SSH_AGENT_RESPONSE_MAX_BYTES {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "SSH agent registration response exceeded {MAX_RESPONSE_BYTES} bytes"
+                            "SSH agent registration response exceeded {SSH_AGENT_RESPONSE_MAX_BYTES} bytes"
                         ),
                     ));
                 }
@@ -197,7 +202,7 @@ fn connect(path: &Path, socket_path: &Path) -> io::Result<Option<LocalStream>> {
             LocalStreamReadCount::Closed => {
                 return Err(io::Error::other("SSH agent registration closed"));
             }
-            LocalStreamReadCount::Pending => std::thread::sleep(Duration::from_millis(10)),
+            LocalStreamReadCount::Pending => std::thread::sleep(SSH_AGENT_RESPONSE_POLL_INTERVAL),
         }
     }
 }
@@ -210,7 +215,7 @@ mod tests {
     use std::os::unix::net::{UnixListener, UnixStream};
 
     /// Generous upper bound for the registration worker to reach the fake
-    /// API. The retry delay is capped at `MAX_RETRY_DELAY`, so a working
+    /// API. The retry delay is capped at `SSH_AGENT_MAX_RETRY_DELAY`, so a working
     /// worker connects well inside it.
     const ACCEPT_LIMIT: Duration = Duration::from_secs(30);
 
@@ -248,14 +253,14 @@ mod tests {
 
     #[test]
     fn retry_delay_grows_to_a_fixed_ceiling() {
-        let mut delay = INITIAL_RETRY_DELAY;
-        while delay < MAX_RETRY_DELAY {
+        let mut delay = SSH_AGENT_INITIAL_RETRY_DELAY;
+        while delay < SSH_AGENT_MAX_RETRY_DELAY {
             let next = next_retry_delay(delay);
             assert!(next > delay);
             delay = next;
         }
-        assert_eq!(delay, MAX_RETRY_DELAY);
-        assert_eq!(next_retry_delay(delay), MAX_RETRY_DELAY);
+        assert_eq!(delay, SSH_AGENT_MAX_RETRY_DELAY);
+        assert_eq!(next_retry_delay(delay), SSH_AGENT_MAX_RETRY_DELAY);
     }
 
     #[test]
@@ -336,7 +341,7 @@ mod tests {
                 serde_json::from_str(&line).expect("test precondition");
             assert_eq!(request["method"], "server.ssh_agent.register");
             stream
-                .write_all(&vec![b'x'; MAX_RESPONSE_BYTES + 1])
+                .write_all(&vec![b'x'; SSH_AGENT_RESPONSE_MAX_BYTES + 1])
                 .expect("test precondition");
         });
 

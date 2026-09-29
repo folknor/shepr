@@ -21,9 +21,9 @@ use shepr_config::theme::Palette;
 pub(super) struct SectionSplit(f32);
 
 impl SectionSplit {
+    pub(super) const DEFAULT: Self = Self(shepr_core::layout::EVEN_SPLIT);
     const MIN: f32 = shepr_core::layout::MIN_SPLIT_RATIO;
     const MAX: f32 = shepr_core::layout::MAX_SPLIT_RATIO;
-    pub(super) const DEFAULT: Self = Self(shepr_core::layout::EVEN_SPLIT);
 
     pub(super) fn new(value: f32) -> Option<Self> {
         (value.is_finite() && (Self::MIN..=Self::MAX).contains(&value)).then_some(Self(value))
@@ -99,7 +99,10 @@ fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16
         reason = "split_ratio is clamped to its bounds, so the scaled height is non-negative and stays within the source u16 range"
     )]
     let workspace_height = ((total_height as f32) * split_ratio.get()).round() as u16;
-    let workspace_height = workspace_height.clamp(3, total_height.saturating_sub(3));
+    let workspace_height = workspace_height.clamp(
+        crate::limits::MIN_EXPANDED_SIDEBAR_SECTION_ROWS,
+        total_height.saturating_sub(crate::limits::MIN_EXPANDED_SIDEBAR_SECTION_ROWS),
+    );
     (
         workspace_height,
         total_height.saturating_sub(workspace_height),

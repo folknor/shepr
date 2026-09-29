@@ -1,9 +1,14 @@
 pub use shepr_vt::{ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor};
+
+/// Number of indexed colors in the terminal color palette format.
+// limits-exempt: the size of the xterm 256-color palette.
+pub const HOST_PALETTE_COLOR_COUNT: usize = 256;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalTheme {
     pub foreground: Option<RgbColor>,
     pub background: Option<RgbColor>,
-    pub palette: [Option<RgbColor>; 256],
+    pub palette: [Option<RgbColor>; HOST_PALETTE_COLOR_COUNT],
 }
 
 impl Default for TerminalTheme {
@@ -11,7 +16,7 @@ impl Default for TerminalTheme {
         Self {
             foreground: None,
             background: None,
-            palette: [None; 256],
+            palette: [None; HOST_PALETTE_COLOR_COUNT],
         }
     }
 }

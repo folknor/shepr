@@ -1,3 +1,4 @@
+use crate::limits::REMOTE_COMMAND_ARGS_INITIAL_CAPACITY;
 use crate::machine::SshTarget;
 
 /// The local executable's default program name and CLI parser name.
@@ -63,7 +64,7 @@ pub enum RemoteCliCommand<'a> {
 impl<'a> RemoteCliCommand<'a> {
     /// The argv words after the executable name.
     pub fn args(self) -> Vec<&'a str> {
-        let mut args = Vec::with_capacity(6);
+        let mut args = Vec::with_capacity(REMOTE_COMMAND_ARGS_INITIAL_CAPACITY);
         // Attach places its session after the target instead; client status has none.
         let session = match self {
             Self::ServerStatus { session }

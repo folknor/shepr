@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 use super::{ClientLoopEvent, ParsedHostInput};
+use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
 
 // ---------------------------------------------------------------------------
 // Stdin reader thread
@@ -38,7 +39,7 @@ pub(crate) fn stdin_reader_loop(
 ) {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
-    let mut scratch = [0u8; 4096];
+    let mut scratch = [0u8; HOST_INPUT_READ_CHUNK_BYTES];
     let mut framer = super::host_replies::HostInputFramer::for_host_input();
     framer.set_host_escape_disambiguation_active(host_escape_disambiguation_active);
     if host_color_query_sent {
@@ -181,7 +182,7 @@ fn flush_idle_input<R: AsRawFd>(
     if held_escape
         && stdin_read_ready(
             reader,
-            shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
+            shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
         ) == Some(false)
     {
         let chunks = framer.flush_timeout_framed();
@@ -209,7 +210,8 @@ fn send_unix_input_chunks(
             if let Some(input) = classify_unix_input(chunk, sgr_pixels, geometry) {
                 pending_palette.push(input);
             }
-            if pending_palette.len() == 256 && !flush_unix_palette_input(event_tx, pending_palette)
+            if pending_palette.len() == shepr_termio::host_term::theme::HOST_PALETTE_COLOR_COUNT
+                && !flush_unix_palette_input(event_tx, pending_palette)
             {
                 return false;
             }
@@ -286,9 +288,9 @@ fn idle_flush_timeout_ms<P: shepr_termio::input::raw_input::HostReplyPolicy>(
     if host_mouse_capture_active
         && (framer.has_pending_lone_escape() || framer.has_pending_incomplete_mouse_sequence())
     {
-        shepr_termio::input::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+        shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
     } else {
-        shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
     }
 }
 
@@ -421,7 +423,7 @@ mod tests {
     #[test]
     fn raw_input_idle_flush_timeout_keeps_escape_responsive() {
         let timeout_ms =
-            std::hint::black_box(shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS);
+            std::hint::black_box(shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS);
         assert!(timeout_ms <= 20);
     }
 
@@ -447,22 +449,22 @@ mod tests {
         for framer in [&escape, &sgr_mouse, &default_mouse, &unrelated] {
             assert_eq!(
                 idle_flush_timeout_ms(framer, false),
-                shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+                shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
             );
         }
         for framer in [&escape, &sgr_mouse, &default_mouse] {
             assert_eq!(
                 idle_flush_timeout_ms(framer, true),
-                shepr_termio::input::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+                shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
             );
         }
         assert_eq!(
             idle_flush_timeout_ms(&unrelated, true),
-            shepr_termio::input::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
         );
 
         let mouse_timeout_ms = std::hint::black_box(
-            shepr_termio::input::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS,
+            shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS,
         );
         assert!(mouse_timeout_ms > 100);
     }

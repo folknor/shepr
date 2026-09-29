@@ -11,11 +11,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
-const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
-/// One previous generation (`<name>.1`) survives a rotation, so the lines
-/// leading up to it are not lost the moment the limit is hit.
-const DEFAULT_RETAINED_LOG_FILES: usize = 1;
-
 /// The filter every file log starts with when `SHEPR_LOG` is unset or empty.
 const DEFAULT_LOG_FILTER: &str = "shepr=info";
 
@@ -59,8 +54,8 @@ pub fn init_file_logging_with_config(
     let make_writer = match RotatingFileMakeWriter::new(
         dir,
         file_name,
-        DEFAULT_MAX_LOG_BYTES,
-        DEFAULT_RETAINED_LOG_FILES,
+        super::limits::DEFAULT_MAX_LOG_BYTES,
+        super::limits::DEFAULT_RETAINED_LOG_FILES,
     ) {
         Ok(make_writer) => make_writer,
         Err(error) => {
@@ -544,6 +539,7 @@ struct RotatingFileState {
 
 /// Log files hold pane activity and error details; keep them private to the
 /// user like the rest of the data directory's state.
+// limits-exempt: this is the logger's POSIX file mode, kept beside its open call.
 const LOG_FILE_MODE: u32 = 0o600;
 
 impl RotatingFileState {

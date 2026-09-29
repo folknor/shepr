@@ -48,15 +48,12 @@ pub fn build_version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), limits::BUILD_ID)
 }
 
-/// Length of a build identity the workspace build script can state.
-const BUILD_ID_HEX_LEN: usize = 16;
-
 /// Whether `id` states a build identity: exactly the sixteen lowercase hex
 /// digits the build script mints. The build script's marker for a build whose
 /// inputs could not be established is not hex, and neither is an empty,
 /// truncated or garbled field, so none of them is an identity.
 pub fn is_identifiable_build_id(id: &str) -> bool {
-    id.len() == BUILD_ID_HEX_LEN
+    id.len() == preamble::BUILD_ID_BYTES
         && id
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))

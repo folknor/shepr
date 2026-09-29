@@ -1,6 +1,7 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::{ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointSendOutcome};
+use crate::limits::ACTIVATION_TIMEOUT;
 
 mod model;
 mod protocol;
@@ -11,8 +12,6 @@ pub use model::{
 };
 use model::{ActivationEvidence, ActivationPhase, EndpointLease};
 pub(crate) use model::{ActivationRollback, EndpointActivationIntent};
-
-const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn release_surface_best_effort(
     lease: &EndpointLease,

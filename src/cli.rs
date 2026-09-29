@@ -905,18 +905,29 @@ fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {
 }
 
 fn print_session_table(sessions: &[shepr_api::session::SessionInfo]) {
-    println!("{:<20} {:<8} {:<48} socket", "name", "status", "directory");
+    println!(
+        "{name:<name_width$} {status:<status_width$} {directory:<directory_width$} socket",
+        name = "name",
+        status = "status",
+        directory = "directory",
+        name_width = crate::limits::SESSION_TABLE_NAME_WIDTH,
+        status_width = crate::limits::SESSION_TABLE_STATUS_WIDTH,
+        directory_width = crate::limits::SESSION_TABLE_DIRECTORY_WIDTH,
+    );
     for session in sessions {
         println!(
-            "{:<20} {:<8} {:<48} {}",
-            session.name,
-            if session.running {
+            "{name:<name_width$} {status:<status_width$} {directory:<directory_width$} {socket}",
+            name = session.name,
+            status = if session.running {
                 "running"
             } else {
                 "stopped"
             },
-            session.session_dir.display(),
-            session.socket_path.display()
+            directory = session.session_dir.display(),
+            socket = session.socket_path.display(),
+            name_width = crate::limits::SESSION_TABLE_NAME_WIDTH,
+            status_width = crate::limits::SESSION_TABLE_STATUS_WIDTH,
+            directory_width = crate::limits::SESSION_TABLE_DIRECTORY_WIDTH,
         );
     }
 }

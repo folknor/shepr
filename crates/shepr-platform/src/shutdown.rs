@@ -187,7 +187,8 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
                 retry = if shutdown_pending {
                     super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY
                 } else {
-                    (retry * 2).min(super::limits::SHUTDOWN_RECONNECT_MAX_DELAY)
+                    (retry * super::limits::SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER)
+                        .min(super::limits::SHUTDOWN_RECONNECT_MAX_DELAY)
                 };
             }
         }

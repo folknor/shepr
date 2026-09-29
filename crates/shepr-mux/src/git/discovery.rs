@@ -1,10 +1,9 @@
+pub(super) use crate::limits::MAX_GIT_REF_FILE_BYTES;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use super::GitReadError;
-
-pub(super) const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSpaceMetadata {

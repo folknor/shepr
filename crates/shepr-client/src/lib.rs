@@ -63,6 +63,7 @@ use attach::{AttachInputAction, attach_semantic_message};
 use errors::ClientErrorContext;
 pub use errors::{ClientError, ClientExit, ClientRunError};
 use handshake::{ClientProcessRole, do_handshake};
+use limits::{CLIENT_EVENT_QUEUE_CAPACITY, ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY};
 
 use std::collections::VecDeque;
 use std::io::{self, Write as _};
@@ -417,9 +418,11 @@ async fn run_client_loop(
         state.host_modes.mouse_input_mirrors();
 
     // Channel for events from the resize and server reader threads.
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ClientLoopEvent>(256);
-    let (supervisor_tx, supervisor_rx) =
-        tokio::sync::mpsc::channel::<endpoint::EndpointSupervisorEvent>(64);
+    let (event_tx, event_rx) =
+        tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
+    let (supervisor_tx, supervisor_rx) = tokio::sync::mpsc::channel::<
+        endpoint::EndpointSupervisorEvent,
+    >(ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY);
     let stdin_tx = event_tx.clone();
 
     let endpoint_commands = endpoint::commands::EndpointCommands::default();

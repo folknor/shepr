@@ -1,14 +1,10 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
-
 use tracing::{debug, warn};
 
 use super::ClientLoopEvent;
-
-const DEFAULT_CELL_WIDTH_PX: u32 = 8;
-const DEFAULT_CELL_HEIGHT_PX: u32 = 16;
+use crate::limits::{DEFAULT_CELL_HEIGHT_PX, DEFAULT_CELL_WIDTH_PX, TERMINAL_RESIZE_POLL_INTERVAL};
 
 /// Average cell size derived from a terminal ioctl pixel extent.
 ///
@@ -192,7 +188,7 @@ pub(super) fn resize_poll_loop(
     shepr_platform::watch_terminal_resize_signal();
     let mut last_size = initial;
     while !should_quit.load(Ordering::Acquire) {
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(TERMINAL_RESIZE_POLL_INTERVAL);
         let signalled = shepr_platform::take_terminal_resize_signal();
         let new_size = match current_terminal_geometry(
             pixel_geometry_fallback,

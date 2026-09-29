@@ -12,6 +12,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 
+use crate::limits::{
+    FALLBACK_SHELL, PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES,
+    PASSWD_BUFFER_MAX_BYTES,
+};
 use shepr_core::env::{ChildEnv, EnvVar};
 use shepr_core::shell::ExecutableStatus as CandidateStatus;
 
@@ -38,11 +42,12 @@ impl PtyCommand {
 
     /// Run the shell selected and resolved while the server loaded its config.
     pub fn interactive_shell(default_shell: &str, login: bool) -> Self {
+        let default_shell = default_shell.trim();
         let mut command = Self::with_program(Program::Shell {
             login,
-            program: default_shell.trim().into(),
+            program: default_shell.into(),
         });
-        command.env(ChildEnv::Shell, default_shell.trim());
+        command.env(ChildEnv::Shell, default_shell);
         command
     }
 
@@ -157,13 +162,13 @@ impl PtyCommand {
     }
 
     /// Resolve the child environment's `$SHELL`, falling back to passwd and
-    /// then `/bin/sh` when the inherited value cannot be used.
+    /// then the compiled-in shell when neither value can be used.
     fn resolve_shell(&self, cwd: &OsStr) -> io::Result<OsString> {
         let inherited = self.get_env(ChildEnv::Shell).and_then(trimmed_shell);
         let candidate = inherited.clone().unwrap_or_else(passwd_shell);
         match self.search_path(&candidate, cwd) {
             Ok(resolved) => Ok(resolved),
-            Err(_) if inherited.is_none() => Ok(OsString::from("/bin/sh")),
+            Err(_) if inherited.is_none() => Ok(OsString::from(FALLBACK_SHELL)),
             Err(err) => {
                 if let Some(shell) = inherited {
                     tracing::warn!(
@@ -175,7 +180,7 @@ impl PtyCommand {
                 let fallback = passwd_shell();
                 Ok(self
                     .search_path(&fallback, cwd)
-                    .unwrap_or_else(|_| OsString::from("/bin/sh")))
+                    .unwrap_or_else(|_| OsString::from(FALLBACK_SHELL)))
             }
         }
     }
@@ -288,17 +293,17 @@ fn passwd_shell() -> OsString {
         Some(shell) => {
             tracing::warn!(
                 shell = %shell.to_string_lossy(),
-                "passwd shell is not executable, falling back to /bin/sh"
+                "passwd shell is not executable, falling back to the compiled-in shell"
             );
-            OsString::from("/bin/sh")
+            OsString::from(FALLBACK_SHELL)
         }
-        None => OsString::from("/bin/sh"),
+        None => OsString::from(FALLBACK_SHELL),
     }
 }
 
 /// Read one string field of the current user's passwd entry.
 fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<OsString> {
-    let mut buf: Vec<libc::c_char> = vec![0; 1024];
+    let mut buf: Vec<libc::c_char> = vec![0; PASSWD_BUFFER_INITIAL_BYTES];
     loop {
         // SAFETY: an all-zero passwd value has null pointers and zero scalars,
         // all valid initial values for getpwuid_r to overwrite.
@@ -315,8 +320,8 @@ fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<OsSt
                 &mut result,
             )
         };
-        if status == libc::ERANGE && buf.len() < 64 * 1024 {
-            buf.resize(buf.len() * 2, 0);
+        if status == libc::ERANGE && buf.len() < PASSWD_BUFFER_MAX_BYTES {
+            buf.resize(buf.len() * PASSWD_BUFFER_GROWTH_FACTOR, 0);
             continue;
         }
         if status != 0 || result.is_null() {

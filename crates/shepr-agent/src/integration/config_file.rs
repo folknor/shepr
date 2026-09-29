@@ -4,6 +4,8 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::limits::MAX_CONFIG_SYMLINK_DEPTH;
+
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 
 #[cfg(test)]
@@ -116,7 +118,7 @@ fn reject_hard_links(path: &Path) -> io::Result<()> {
 // Unlike canonicalize, this also follows dangling symlinks on a first install.
 fn resolve_target(path: &Path) -> io::Result<PathBuf> {
     let mut current = path.to_path_buf();
-    for _ in 0..40 {
+    for _ in 0..MAX_CONFIG_SYMLINK_DEPTH {
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 let link = fs::read_link(&current)?;

@@ -9,9 +9,9 @@ use shepr_protocol::MAX_ENDPOINT_RESPONSE_CHUNK_BYTES;
 
 use super::client_transport::ServerEvent;
 
-pub(crate) const MAX_ENDPOINT_COMMAND_BYTES: usize = shepr_protocol::MAX_ENDPOINT_COMMAND_BYTES;
-pub(crate) const MAX_ENDPOINT_BOOT_ID_BYTES: usize = 128;
-pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
+pub(crate) use crate::limits::{
+    MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_COMMAND_BYTES, MAX_ENDPOINT_REQUEST_ID_BYTES,
+};
 
 pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
     method.traits().client_shell

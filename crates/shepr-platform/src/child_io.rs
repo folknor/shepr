@@ -126,7 +126,14 @@ pub(super) fn poll_timeout_until(deadline: Instant, now: Instant) -> Option<i32>
     if remaining.is_zero() {
         return None;
     }
-    Some(i32::try_from(remaining.as_millis().max(1)).unwrap_or(i32::MAX))
+    Some(
+        i32::try_from(
+            remaining
+                .as_millis()
+                .max(super::limits::MIN_POLL_TIMEOUT_MILLISECONDS),
+        )
+        .unwrap_or(i32::MAX),
+    )
 }
 
 pub(crate) fn read_limited_reader(
@@ -154,7 +161,7 @@ pub(crate) fn read_limited_reader(
         bytes.extend_from_slice(&buffer[..bytes_read]);
     }
 
-    let mut sentinel = [0_u8; 1];
+    let mut sentinel = [0_u8; super::limits::LIMITED_READ_OVERFLOW_PROBE_BYTES];
     loop {
         return match reader.read(&mut sentinel) {
             Ok(0) if bytes.is_empty() => Ok(LimitedRead::Empty),

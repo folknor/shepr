@@ -1,3 +1,4 @@
+use crate::limits::{AGENT_OSC_MAX_CHARS, MAX_OSC_BODY_BYTES, MAX_OSC_DEBUG_CHARS};
 use std::path::PathBuf;
 
 use tracing::info;
@@ -40,8 +41,6 @@ enum OscStreamState {
 }
 
 impl OscStreamCollector {
-    const MAX_BODY_BYTES: usize = 4096;
-
     fn observe(&mut self, bytes: &[u8], mut receive: impl FnMut(&[u8])) {
         let mut cursor = 0;
         while cursor < bytes.len() {
@@ -96,7 +95,7 @@ impl OscStreamCollector {
 
     fn push(&mut self, byte: u8) {
         self.body.push(byte);
-        if self.body.len() > Self::MAX_BODY_BYTES {
+        if self.body.len() > MAX_OSC_BODY_BYTES {
             self.body.clear();
             self.state = OscStreamState::Discarding;
         }
@@ -108,10 +107,6 @@ impl OscStreamCollector {
         self.state = next;
     }
 }
-
-/// Maximum retained string length for agent OSC title and progress payloads.
-/// Title text is untrusted model output; cap it to bound memory and log size.
-const AGENT_OSC_MAX_CHARS: usize = 256;
 
 /// Retains the latest window title and OSC 9;4 progress payload emitted by
 /// the child process, for agent detection, the agent read API and the pane
@@ -274,13 +269,16 @@ fn parse_osc_debug_event(body: &[u8]) -> Option<OscDebugEvent> {
 }
 
 fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
-    const MAX_CHARS: usize = 512;
     let text = String::from_utf8_lossy(payload);
     let mut sanitized = String::new();
-    for ch in text.chars().filter(|ch| !ch.is_control()).take(MAX_CHARS) {
+    for ch in text
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_OSC_DEBUG_CHARS)
+    {
         sanitized.push(ch);
     }
-    if text.chars().count() > MAX_CHARS {
+    if text.chars().count() > MAX_OSC_DEBUG_CHARS {
         sanitized.push_str("...");
     }
     sanitized

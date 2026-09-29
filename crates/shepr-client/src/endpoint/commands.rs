@@ -1,11 +1,14 @@
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use shepr_api::client::ApiClientError;
 use shepr_api::schema::{Request, ResponseResult};
 use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
+use crate::limits::{
+    ENDPOINT_COMMAND_TIMEOUT, MAX_ENDPOINT_RESPONSE_BYTES, MAX_RETIRED_REQUESTS_PER_ENDPOINT,
+};
 use crate::shell::ClientShellEndpointError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,12 +52,6 @@ impl PartialEq<&str> for EndpointFailureCode {
         self.as_str() == *other
     }
 }
-
-const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
-/// Upper bound on one reassembled endpoint command response. Large pane selections and
-/// reads are the biggest legitimate responses and stay far below this.
-const MAX_ENDPOINT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandResponseKind {
@@ -395,6 +392,7 @@ pub(crate) fn parse_response(
 mod tests {
     use super::*;
     use shepr_api::schema::{ResponseResult, SuccessResponse};
+    use std::time::Duration;
 
     fn endpoint() -> ClientEndpointId {
         ClientEndpointId::Local

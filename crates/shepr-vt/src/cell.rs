@@ -1,4 +1,5 @@
 use super::*;
+use crate::limits::MAX_UNICODE_CODEPOINT_WIDTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellColor {
@@ -127,7 +128,12 @@ pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
         return 1;
     }
     match char::from_u32(codepoint) {
-        Some(ch) => u8::try_from(ch.width().unwrap_or(0).min(2)).unwrap_or(2),
+        Some(ch) => u8::try_from(
+            ch.width()
+                .unwrap_or(0)
+                .min(usize::from(MAX_UNICODE_CODEPOINT_WIDTH)),
+        )
+        .unwrap_or(MAX_UNICODE_CODEPOINT_WIDTH),
         None => 1,
     }
 }
@@ -235,6 +241,8 @@ pub(super) fn cell_graphemes(cell: &Cell) -> Vec<u32> {
     match cell_text(cell) {
         CellText::Empty => Vec::new(),
         CellText::Grapheme { base, zerowidth } => {
+            // A non-empty grapheme always has one base codepoint before its
+            // zero-width suffix.
             let mut graphemes = Vec::with_capacity(1 + zerowidth.len());
             graphemes.push(u32::from(base));
             graphemes.extend(zerowidth.iter().map(|&ch| u32::from(ch)));

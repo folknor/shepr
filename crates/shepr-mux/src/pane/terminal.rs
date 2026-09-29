@@ -1,3 +1,7 @@
+use crate::limits::{
+    COPY_MODE_WORD_SEPARATORS, DEFAULT_DETECTION_ROWS, SCAN_CHUNK_ROWS,
+    SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
+};
 use crate::terminal::TerminalReadSnapshot;
 pub use shepr_termio::ScrollMetrics;
 use std::collections::VecDeque;
@@ -32,9 +36,6 @@ use super::osc::{
     parse_reported_cwd, restore_host_terminal_theme_if_needed,
 };
 
-const DEFAULT_DETECTION_ROWS: usize = 24;
-/// Slack after a synchronized update's deadline before the follow-up render.
-const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
 /// Scroll metrics together with the row origin read under one terminal lock.
 /// Only tests read it; production paths take [`ScrollMetrics`] directly.
 #[cfg(test)]
@@ -92,11 +93,6 @@ impl<R> TerminalSearchWindow<R> {
     }
 }
 
-/// Rows a chunked history scan reads per hold of the terminal lock. Between
-/// chunks the lock is released so the PTY reader, rendering and detection
-/// are never stalled behind a scan of the whole scrollback.
-const SCAN_CHUNK_ROWS: u64 = 2048;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalWordMotion {
     NextStart,
@@ -106,8 +102,6 @@ pub enum TerminalWordMotion {
     PreviousBigStart,
     NextBigEnd,
 }
-
-const COPY_MODE_WORD_SEPARATORS: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalCursorState {

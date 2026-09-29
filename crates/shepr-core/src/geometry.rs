@@ -4,8 +4,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use serde::{Deserialize, Serialize};
 
-const PANE_MIN_COLS: u16 = 4;
-const PANE_MIN_ROWS: u16 = 2;
+use crate::limits::{PANE_MIN_COLS, PANE_MIN_ROWS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SplitBranch {

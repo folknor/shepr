@@ -1,4 +1,8 @@
 use super::*;
+use crate::limits::{
+    MAX_NAVIGATOR_OVERLAY_HEIGHT, MAX_NAVIGATOR_OVERLAY_WIDTH, MIN_CONTEXT_MENU_WIDTH,
+    MIN_NAVIGATOR_OVERLAY_HEIGHT, MIN_NAVIGATOR_OVERLAY_WIDTH,
+};
 
 #[derive(Default)]
 pub(crate) struct OverlayRender {
@@ -120,7 +124,7 @@ pub(crate) fn render_context_menu(
         .unwrap_or(0);
     let width = max_item_width
         .saturating_add(4)
-        .max(14)
+        .max(MIN_CONTEXT_MENU_WIDTH)
         .min(screen.width.max(1));
     let height = u16::try_from(items.len())
         .unwrap_or(u16::MAX)
@@ -319,9 +323,9 @@ fn render_navigator_overlay(
     p: &Palette,
 ) -> Option<OverlayRender> {
     let a = b.area;
-    let width = a.width.saturating_sub(4).min(116);
-    let height = a.height.saturating_sub(2).min(42);
-    if width < 4 || height < 9 {
+    let width = a.width.saturating_sub(4).min(MAX_NAVIGATOR_OVERLAY_WIDTH);
+    let height = a.height.saturating_sub(2).min(MAX_NAVIGATOR_OVERLAY_HEIGHT);
+    if width < MIN_NAVIGATOR_OVERLAY_WIDTH || height < MIN_NAVIGATOR_OVERLAY_HEIGHT {
         return None;
     }
     let q = Rect::new(

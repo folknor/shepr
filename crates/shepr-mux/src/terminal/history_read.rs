@@ -1,3 +1,6 @@
+use crate::limits::{
+    MIN_ALIGNMENT_RATIO_PERCENT, PERCENT_DENOMINATOR, SIMILAR_VIEWPORT_RATIO_PERCENT,
+};
 use std::collections::HashMap;
 
 use shepr_vt::{CellWide, ScreenTextRow};
@@ -7,9 +10,6 @@ pub struct TerminalReadSnapshot {
     pub text: String,
     pub truncated: bool,
 }
-
-const MIN_ALIGNMENT_RATIO_PERCENT: usize = 30;
-const SIMILAR_VIEWPORT_RATIO_PERCENT: usize = 70;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenSnapshot {
@@ -37,7 +37,8 @@ impl ScreenSnapshot {
             .zip(&right)
             .filter(|(left, right)| left == right && (!left.is_empty() || !right.is_empty()))
             .count();
-        matches.saturating_mul(100) >= comparable.saturating_mul(SIMILAR_VIEWPORT_RATIO_PERCENT)
+        matches.saturating_mul(PERCENT_DENOMINATOR)
+            >= comparable.saturating_mul(SIMILAR_VIEWPORT_RATIO_PERCENT)
     }
 }
 
@@ -135,7 +136,9 @@ fn upward_alignment(previous: &[String], next: &[String]) -> Option<(usize, usiz
         let Some(anchor) = first_anchor else {
             continue;
         };
-        if matches.saturating_mul(100) < comparable.saturating_mul(MIN_ALIGNMENT_RATIO_PERCENT) {
+        if matches.saturating_mul(PERCENT_DENOMINATOR)
+            < comparable.saturating_mul(MIN_ALIGNMENT_RATIO_PERCENT)
+        {
             continue;
         }
         // A row unique in each viewport can still occur elsewhere in the transcript.

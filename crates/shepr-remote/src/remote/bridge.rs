@@ -1,6 +1,6 @@
 use super::*;
 
-use super::process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho, kill_and_reap, kill_child};
+use super::process::{PipeCapture, PipeEcho, kill_and_reap, kill_child};
 use interprocess::TryClone as _;
 use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
@@ -13,12 +13,14 @@ use std::sync::{
     mpsc,
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-pub(super) const BRIDGE_ACCEPT_POLL: Duration = Duration::from_millis(50);
-pub(super) const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
-pub(super) const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
-const BRIDGE_FAILURE_REPORT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+use crate::limits::{
+    BRIDGE_ACCEPT_POLL, BRIDGE_CONNECTION_SHUTDOWN_GRACE, BRIDGE_FAILURE_CHANNEL_CAPACITY,
+    BRIDGE_FAILURE_REPORT_POLL_INTERVAL, BRIDGE_FAILURE_REPORT_TIMEOUT, BRIDGE_IO_BUFFER_BYTES,
+    BRIDGE_IO_POLL, BRIDGE_PATH_COMPONENT_MAX_CHARS, BRIDGE_TARGET_PREFIX_CHARS,
+    BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
+};
 
 pub(crate) struct SshStdioBridge {
     local_socket: PathBuf,
@@ -89,7 +91,7 @@ impl SshStdioBridge {
         // stream, discard any unclaimed report so a slow earlier SSH exit cannot
         // be shown as the later request's failure. Keep send nonblocking so the SSH
         // worker can finish even if its caller is already unwinding.
-        let (failure_tx, failure_rx) = mpsc::sync_channel(1);
+        let (failure_tx, failure_rx) = mpsc::sync_channel(BRIDGE_FAILURE_CHANNEL_CAPACITY);
         let failure_rx = Arc::new(std::sync::Mutex::new(failure_rx));
         let thread_failure_rx = Arc::clone(&failure_rx);
         let thread_socket = local_socket.clone();
@@ -452,7 +454,7 @@ pub(super) fn bridge_connection(
         })?;
         Some(PipeCapture::spawn(
             child_stderr,
-            NONINTERACTIVE_SSH_STDERR_LIMIT,
+            SSH_STDERR_CAPTURE_LIMIT,
             PipeEcho::None,
         ))
     } else {
@@ -511,7 +513,7 @@ pub(super) fn bridge_connection(
             upload_stop.cancel();
             // clock-io-ok: grace begins when client or pipe IO first stops.
             let stopped_at = stopped_at.get_or_insert_with(Instant::now);
-            if stopped_at.elapsed() >= Duration::from_millis(250) {
+            if stopped_at.elapsed() >= BRIDGE_CONNECTION_SHUTDOWN_GRACE {
                 connection_stop.store(true, Ordering::Release);
                 kill_child(&mut child, "ssh bridge");
                 break (child.wait(), false);
@@ -608,7 +610,9 @@ pub(crate) fn attempt_deadline_passed() -> io::Error {
 
 /// OpenSSH exits with 255 when ssh itself fails (resolve, connect, host key,
 /// authentication, a dropped link); any other code came from the remote command.
+// limits-exempt: an exit status of the OpenSSH and remote-shell contract.
 pub(crate) const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
+// limits-exempt: remote exit 255 is remapped to 254 to keep it apart from SSH failures.
 pub(crate) const REMAPPED_REMOTE_255_EXIT_CODE: i32 = 254;
 
 /// Whether `error` says the SSH link, not the remote side, failed: the remote end
@@ -694,7 +698,7 @@ pub(super) fn copy_reader_to_local_stream<R: io::Read>(
     connection_stop: &AtomicBool,
     bridge_stop: &AtomicBool,
 ) -> io::Result<u64> {
-    let mut buffer = [0_u8; 16 * 1024];
+    let mut buffer = [0_u8; BRIDGE_IO_BUFFER_BYTES];
     let mut total = 0;
 
     loop {
@@ -709,7 +713,7 @@ pub(super) fn copy_reader_to_local_stream<R: io::Read>(
             if connection_stop.load(Ordering::Acquire) || bridge_stop.load(Ordering::Acquire) {
                 return Ok(total);
             }
-            let chunk_len = (read - written).min(4 * 1024);
+            let chunk_len = (read - written).min(BRIDGE_WRITE_CHUNK_BYTES);
             match stream.write(&buffer[written..written + chunk_len]) {
                 Ok(0) => thread::sleep(BRIDGE_IO_POLL),
                 Ok(count) => written += count,
@@ -767,7 +771,7 @@ fn copy_upload_stream_to_writer<S: UploadReadStream, W: io::Write>(
     bridge_stop: &AtomicBool,
     client_closed: &AtomicBool,
 ) -> io::Result<u64> {
-    let mut buffer = [0_u8; 16 * 1024];
+    let mut buffer = [0_u8; BRIDGE_IO_BUFFER_BYTES];
     let mut total = 0;
 
     while !connection_stop.is_stopped() && !bridge_stop.load(Ordering::Acquire) {
@@ -835,7 +839,10 @@ pub(super) fn local_forward_socket_path(
     let target_clean = sanitize_path_component(target);
     let session_clean = sanitize_path_component(session_name);
     let readable_name = format!("shepr-remote-{target_clean}-{session_clean}.sock");
-    let target_prefix: String = target_clean.chars().take(8).collect();
+    let target_prefix: String = target_clean
+        .chars()
+        .take(BRIDGE_TARGET_PREFIX_CHARS)
+        .collect();
     let hash = short_socket_hash(target, session_name);
     let short_name = format!("shepr-r-{target_prefix}-{hash}.sock");
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable_name, &short_name)
@@ -846,8 +853,10 @@ pub(super) fn short_socket_hash(target: &str, session: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     target.hash(&mut hasher);
+    // Keep a fixed separator between the target and session fields in this hash format.
     0u8.hash(&mut hasher);
     session.hash(&mut hasher);
+    // Keep all 64 hash bits in the socket name as fixed width hexadecimal.
     format!("{:016x}", hasher.finish())
 }
 
@@ -863,7 +872,11 @@ pub(super) fn sanitize_path_component(input: &str) -> String {
         })
         .collect();
 
-    sanitized.trim_matches('-').chars().take(32).collect()
+    sanitized
+        .trim_matches('-')
+        .chars()
+        .take(BRIDGE_PATH_COMPONENT_MAX_CHARS)
+        .collect()
 }
 
 #[cfg(test)]

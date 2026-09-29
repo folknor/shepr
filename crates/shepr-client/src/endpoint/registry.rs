@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use super::ClientEndpointId;
 use super::health::{EndpointHealth, HealthAction};
+use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
 use shepr_protocol::ClientMessage;
 
 pub trait EndpointTransport: Send {
@@ -346,7 +347,7 @@ impl Drop for EndpointRegistry {
     fn drop(&mut self) {
         // clock-io-ok: bound the best-effort Detach flush during shutdown.
         let deadline =
-            crate::limits::Deadline::after(Instant::now(), std::time::Duration::from_millis(250));
+            crate::limits::Deadline::after(Instant::now(), ENDPOINT_DETACH_FLUSH_TIMEOUT);
         // Detach is a courtesy on the way out: every connection is disconnected just
         // below, and a server treats the closed connection as this client leaving, so a
         // Detach that fails to send or flush changes nothing.
@@ -577,8 +578,8 @@ mod tests {
         );
         // Taken after both inserts, so each connection's health clock started earlier.
         let now = Instant::now();
-        let ping_at = now + super::super::health::HEARTBEAT_INTERVAL;
-        let expire_at = ping_at + super::super::health::HEARTBEAT_TIMEOUT;
+        let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
+        let expire_at = ping_at + crate::limits::HEARTBEAT_TIMEOUT;
 
         socket.tick_health(ping_at);
         socket.tick_health(expire_at);
@@ -626,15 +627,14 @@ mod tests {
             Instant::now(),
         );
         let now = Instant::now();
-        registry.tick_health(now + super::super::health::HEARTBEAT_INTERVAL);
+        registry.tick_health(now + crate::limits::HEARTBEAT_INTERVAL);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
             [ClientMessage::HealthPing(_)]
         ));
 
         registry.tick_health(
-            now + super::super::health::HEARTBEAT_INTERVAL
-                + super::super::health::HEARTBEAT_TIMEOUT,
+            now + crate::limits::HEARTBEAT_INTERVAL + crate::limits::HEARTBEAT_TIMEOUT,
         );
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
@@ -662,8 +662,8 @@ mod tests {
         );
         let now = Instant::now();
         registry.mark_ready(&ssh_id, 2);
-        registry.received(&ssh_id, 2, now + super::super::health::HEARTBEAT_INTERVAL);
-        registry.tick_health(now + super::super::health::HEARTBEAT_TIMEOUT);
+        registry.received(&ssh_id, 2, now + crate::limits::HEARTBEAT_INTERVAL);
+        registry.tick_health(now + crate::limits::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_some());
     }
 

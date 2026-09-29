@@ -10,17 +10,29 @@ use super::{
 };
 use shepr_api::schema::AgentStartParams;
 
-const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
-pub const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
-pub const AGENT_START_SETTLE_DELAY: Duration = Duration::from_secs(3);
-const INVALID_AGENT_TIMEOUT_MESSAGE: &str =
-    "agent start timeout must be greater than 3000ms and at most 300000ms";
-const INVALID_AGENT_NAME_MESSAGE: &str = "agent name must start with a lowercase letter and contain only lowercase letters, digits, '-' or '_' (1-32 characters)";
+use crate::limits::{
+    AGENT_START_SETTLE_DELAY, DEFAULT_AGENT_START_TIMEOUT, MAX_AGENT_NAME_LEN,
+    MAX_AGENT_START_TIMEOUT,
+};
+
+fn invalid_agent_timeout_message() -> String {
+    format!(
+        "agent start timeout must be greater than {}ms and at most {}ms",
+        AGENT_START_SETTLE_DELAY.as_millis(),
+        MAX_AGENT_START_TIMEOUT.as_millis()
+    )
+}
+
+fn invalid_agent_name_message() -> String {
+    format!(
+        "agent name must start with a lowercase letter and contain only lowercase letters, digits, '-' or '_' (1-{MAX_AGENT_NAME_LEN} characters)"
+    )
+}
 
 fn valid_agent_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some('a'..='z'))
-        && name.len() <= 32
+        && name.len() <= MAX_AGENT_NAME_LEN
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_'))
 }
 
@@ -276,7 +288,7 @@ impl App {
         match err {
             AgentStartError::InvalidName => ApiError::new(
                 ApiErrorCode::InvalidAgentName,
-                INVALID_AGENT_NAME_MESSAGE,
+                invalid_agent_name_message(),
             ),
             AgentStartError::UnsupportedKind(kind) => ApiError::new(
                 ApiErrorCode::UnsupportedAgentKind,
@@ -288,7 +300,7 @@ impl App {
             ),
             AgentStartError::InvalidTimeout => ApiError::new(
                 ApiErrorCode::InvalidAgentTimeout,
-                INVALID_AGENT_TIMEOUT_MESSAGE,
+                invalid_agent_timeout_message(),
             ),
             AgentStartError::TargetNotFound(target) => agent_target_pane_not_found(&target),
             AgentStartError::TargetBusy(target) => ApiError::new(
@@ -357,7 +369,7 @@ impl App {
             AgentRenameError::Target(err) => self.agent_target_error(err),
             AgentRenameError::InvalidName => ApiError::new(
                 ApiErrorCode::InvalidAgentName,
-                INVALID_AGENT_NAME_MESSAGE,
+                invalid_agent_name_message(),
             ),
             AgentRenameError::NotAgent => ApiError::new(
                 ApiErrorCode::AgentNotFound,

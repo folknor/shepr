@@ -1,4 +1,5 @@
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
+#[cfg(test)]
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -12,7 +13,7 @@ use shepr_pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
 
 use super::responses::{failure, success};
 
-const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
+use crate::limits::AGENT_PROMPT_SUBMIT_DELAY;
 
 impl App {
     pub(super) fn handle_agent_list(&mut self) -> ApiResult {

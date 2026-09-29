@@ -39,6 +39,18 @@ Kept:
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.
+Two things qualify that:
+
+- A client validates each server's config again when it decodes the attach
+  snapshot, with the checks that only mean something on the sending host
+  (the new-pane cwd exists, the shell resolves) skipped. The server's config
+  crosses hosts, and the client rebuilds its runtime values from it; the
+  build-identity handshake is what guarantees both ends run the same
+  validator.
+- Detection manifest overrides are the one input that reloads, through
+  `shepr server reload-agent-manifests`. A bad override fails the launch;
+  on reload it leaves that agent on its bundled manifest and the reply
+  carries the warning.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
@@ -67,7 +79,9 @@ production crate has a test feature: where a double must reach inside a
 production type, the production crate offers a seam (a trait or a public
 constructor) instead.
 
-The libraries, from lower layers to higher layers:
+The libraries, from lower layers to higher layers. `brokkr.toml`'s
+dependency rules hold the layering; the one-line descriptions are
+orientation, and nothing checks them:
 
 - `shepr-core`: shared geometry, layout and plain types.
 - `shepr-platform`: Linux process, filesystem, IPC and terminal plumbing.
@@ -140,7 +154,11 @@ its own:
 ## Principles
 
 - **State is separated from runtime.** `AppState` is pure data, testable
-  without PTYs or async. `PaneState` is separate from `PaneRuntime`.
+  without PTYs or async. Per-terminal state lives in `TerminalState`
+  (in `AppState::terminals`), which is plain data testable without a PTY;
+  `PaneRuntime` (held by `App`, outside `AppState`)
+  owns the PTY, its tasks and the state shared with them. `PaneState` is only
+  the pane's link to its terminal plus per-pane input flags.
 - **Render is pure.** `compute_view()` in `crates/shepr-server/src/ui.rs`
   reads `AppState` by shared reference and returns the view its caller stores
   in `AppState::view`; pane runtimes are resized by explicit geometry paths

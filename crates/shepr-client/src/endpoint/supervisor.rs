@@ -6,58 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{ClientEndpointId, ClientEndpointStatus, NativeEndpointTransport};
+pub use crate::limits::MAX_RETRY_DELAY;
+use crate::limits::{
+    ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, STABLE_CONNECTION_PERIOD,
+};
 use interprocess::TryClone as _;
 use shepr_protocol::ClientSurfaceSize;
-
-const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
-/// Every endpoint, Local or saved machine, retries at least this often. `shepr machine
-/// reconnect` tells the user that open clients retry within 30 seconds once the machine is
-/// reachable again; a longer backoff for a reconnecting machine would make that untrue.
-///
-/// An attempt's own failure schedules the next one from when that attempt started, not
-/// from when it gave up, and no attempt runs longer than `ATTEMPT_BUDGET`. Together they
-/// keep the promise with an attempt already in flight: from any moment, the next attempt
-/// starts once the current one ends or its retry delay (counted from its start) is up,
-/// whichever is later, and both fall within 30 seconds.
-pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
-/// Same bound as `MAX_RETRY_DELAY`, for the same `shepr machine reconnect` promise.
-const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
-/// The longest one connection attempt may run: the SSH discovery commands, the bridge and
-/// the endpoint handshake all stop at this deadline. Without it an attempt against a host
-/// that hangs ran for minutes (each discovery command may take
-/// `shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT`, the handshake
-/// `crate::handshake::REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it,
-/// which broke the 30-second reconnect promise. `do_handshake` takes this deadline and
-/// stops at whichever of it and the handshake timeout comes first.
-///
-/// A healthy attempt needs far less: every noninteractive discovery command already had
-/// to fit a cold SSH connect into `SSH_ROUND_TRIP_TIMEOUT`. It stays below
-/// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
-///
-/// The budget is the same for every attempt, including one that has to run full
-/// discovery of the remote executable. Most attempts do not: `shepr machine add` seeds
-/// the metadata cache and a reconnect launches the bridge from the remembered executable.
-/// With the default managed ssh config every command after the first reuses one shared
-/// connection (ControlMaster, persisting ten minutes), so only one cold connect is paid.
-/// The case that can overrun is a cache miss or a stale remembered path on a slow link
-/// without connection sharing, where each of discovery's round trips (up to three
-/// commands, a status probe per candidate, then the bridge) is its own cold connect.
-/// That case is handled by resuming, not by a larger budget: the saved-machine connector
-/// keeps what discovery completed when an attempt ends on a timeout or other link
-/// failure (any other error clears it) and the next attempt continues from there, and it
-/// keeps a freshly discovered executable when only the bridge ran out of time. No
-/// discovery round trip may take longer than `SSH_ROUND_TRIP_TIMEOUT`, and the budget
-/// exceeds it by `SSH_ATTEMPT_SLACK`, so every attempt that starts
-/// with discovery completes at least one, and discovery finishes after a bounded number
-/// of attempts; after that the bridge and handshake need to fit one attempt, as on every
-/// ordinary reconnect. A larger budget for discovery
-/// attempts would stretch the 30-second reconnect promise exactly where the link is
-/// slowest, and would still fail on a link one step slower.
-const ATTEMPT_BUDGET: Duration =
-    shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
-/// What `ATTEMPT_BUDGET` allows beyond one cold SSH round trip.
-const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 
 // An attempt, and so the retry that follows it, must fit the reconnect promise.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
@@ -702,7 +656,7 @@ fn retry_delay(attempt: u32) -> Duration {
     INITIAL_RETRY_DELAY
         .saturating_mul(
             1_u32
-                .checked_shl(attempt.saturating_sub(1).min(8))
+                .checked_shl(attempt.saturating_sub(1))
                 .unwrap_or(u32::MAX),
         )
         .min(MAX_RETRY_DELAY)

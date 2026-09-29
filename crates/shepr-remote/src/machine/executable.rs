@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::Path;
 
-const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
+use crate::limits::MAX_REMOTE_EXECUTABLE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteExecutableError {

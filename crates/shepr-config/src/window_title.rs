@@ -1,5 +1,4 @@
-/// Maximum characters in a rendered outer terminal window title.
-pub(crate) const MAX_WINDOW_TITLE_CHARS: usize = 200;
+use crate::limits::MAX_WINDOW_TITLE_CHARS;
 
 pub(crate) fn default_window_title() -> String {
     "{hostname}: {workspace}".to_string()

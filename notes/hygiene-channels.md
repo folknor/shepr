@@ -128,6 +128,12 @@ once. The termio/client hunter's dissenting view on the same lint: an allow-list
 for it would be "too noisy to be worth it", and those sites are individual
 fixes.
 
+## HYGC-051 - A corrupt client preferences file is dropped silently
+
+`shepr-client/src/shell/overlays/preferences.rs::load` discards an unreadable or
+unparseable preferences file with `.ok()` and falls back to defaults with no log
+line. Log a warning for any failure other than not-found.
+
 ## HYGC-050 - Pane restore failure wording is owned by the UI module and reached from the app layer
 
 The pane restore failure is now a typed `RestoreFailure`, worded by

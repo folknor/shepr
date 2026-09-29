@@ -1033,7 +1033,7 @@ impl PaneRuntime {
 
         // --- Detection task ---
         let (detect_handle, detect_reset_notify, pending_release) = {
-            use std::time::{Duration, Instant};
+            use std::time::Instant;
 
             let child_liveness = Arc::clone(&child_liveness);
             let terminal = Arc::clone(&terminal);
@@ -1051,7 +1051,7 @@ impl PaneRuntime {
             let handle = tokio::spawn(async move {
                 let mut detector = DetectorState::new(Instant::now(), launch_purpose);
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(crate::limits::INITIAL_DETECTION_DELAY).await;
 
                 loop {
                     let now_for_tick = Instant::now();
@@ -1714,7 +1714,7 @@ impl PaneRuntime {
     pub fn screen_text_snapshot_with_seq(
         &self,
     ) -> Option<(shepr_vt::ActiveScreen, crate::terminal::ScreenSnapshot, u64)> {
-        for _ in 0..3 {
+        for _ in 0..crate::limits::SCREEN_SNAPSHOT_READ_ATTEMPTS {
             let before = self.content_seq();
             if !before.is_multiple_of(2) {
                 continue;

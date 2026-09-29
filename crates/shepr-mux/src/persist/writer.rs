@@ -1,3 +1,4 @@
+use crate::limits::{BACKUP_LIMIT, RECOVERY_SEQUENCE_LIMIT, SNAPSHOT_INTERVAL, SNAPSHOT_LIMIT};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -328,13 +329,11 @@ impl SessionWriter {
     }
 }
 
-const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-const SNAPSHOT_LIMIT: usize = 48;
+// limits-exempt: a filename field width of the recovery-copy name format.
 const RECOVERY_TIMESTAMP_DIGITS: usize = 39;
+// limits-exempt: a filename field width of the recovery-copy name format.
 const RECOVERY_SEQUENCE_DIGITS: usize = 3;
-/// Name attempts per recovery timestamp. The copy is created exclusively, so a
-/// concurrent writer that picked the same timestamp moves on to the next one.
-const RECOVERY_SEQUENCE_LIMIT: usize = 128;
+
 // Every sequence must fit the fixed width `recovery_timestamp` parses.
 const _: () = {
     let mut largest = RECOVERY_SEQUENCE_LIMIT - 1;
@@ -436,7 +435,7 @@ fn preserve_snapshot_after_write(path: &Path, now: SystemTime) -> io::Result<()>
 }
 
 fn preserve_existing(path: &Path, now: SystemTime) -> io::Result<bool> {
-    preserve_existing_in(path, &super::io::backup_directory(path), 3, now)
+    preserve_existing_in(path, &super::io::backup_directory(path), BACKUP_LIMIT, now)
 }
 
 fn preserve_existing_in(

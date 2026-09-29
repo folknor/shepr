@@ -1,23 +1,24 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use crate::limits::{
+    AGENT_PROMPT_EFFECT_TIMEOUT_MS, AGENT_PROMPT_RESPONSE_GRACE, APP_RESPONSE_TIMEOUT,
+    CONNECTION_POLL_INTERVAL,
+};
 use crate::schema::{
     ErrorResponse, EventData, EventEnvelope, EventMatch, EventsWaitParams, Method, Request,
     ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
     SuccessResponse,
 };
 use crate::server::{
-    APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_until_stopped_result,
-    dispatch_to_app_with_caller_timeout_result, dispatch_to_app_with_timeout_result,
-    error_response_json, server_is_stopping, should_stop_connection, shutdown_wait_error,
+    dispatch_to_app_until_stopped_result, dispatch_to_app_with_caller_timeout_result,
+    dispatch_to_app_with_timeout_result, error_response_json, server_is_stopping,
+    should_stop_connection, shutdown_wait_error,
 };
 use crate::subscriptions::ActiveSubscription;
 use crate::subscriptions::{match_output, output_match_read_source, subscription_events_after};
 use crate::{ApiRequestSender, EventHub};
 use shepr_platform::ipc::LocalStream;
-
-const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
-const AGENT_PROMPT_RESPONSE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(super) fn wait_for_output(
     request_id: String,

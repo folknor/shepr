@@ -2,7 +2,7 @@ use shepr_protocol::KittyKeyboardFlags;
 use shepr_vt::ModifyOtherKeysLevel;
 use std::io::{self, Write};
 
-const HOST_MOUSE_REPORTING_DISABLE_SEQUENCES: [&[u8]; 8] = [
+const HOST_MOUSE_REPORTING_DISABLE_SEQUENCES: &[&[u8]] = &[
     b"\x1b[?1006l",
     b"\x1b[?1016l",
     b"\x1b[?1015l",
@@ -25,7 +25,7 @@ pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = b"\x1b[23;0t";
 // 1015 remains in host cleanup for legacy urxvt terminals; the core does not
 // model that host-side mouse encoding.
 pub fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
-    for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES {
+    for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES.iter().copied() {
         writer.write_all(sequence)?;
     }
     writer.flush()
@@ -264,7 +264,7 @@ mod tests {
         let mut output = Vec::new();
         clear_host_mouse_reporting(&mut output).expect("test precondition");
         let mut expected = Vec::new();
-        for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES {
+        for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES.iter().copied() {
             expected.extend_from_slice(sequence);
         }
         assert_eq!(output, expected);

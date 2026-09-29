@@ -1,5 +1,7 @@
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use bytes::Bytes;
 use crossterm::event::{KeyModifiers, MouseEventKind};
@@ -10,12 +12,10 @@ use shepr_mux::pane::PaneRuntime;
 use shepr_mux::terminal::{ScreenSnapshot, UpwardMerge};
 use shepr_protocol::TerminalId;
 
-const INITIAL_QUIET: Duration = Duration::from_millis(10);
-const OUTPUT_QUIET: Duration = Duration::from_millis(10);
-const STEP_TIMEOUT: Duration = Duration::from_millis(120);
-const MAX_DURATION: Duration = Duration::from_secs(15);
-const MAX_RESTORE_DURATION: Duration = Duration::from_secs(5);
-const WHEEL_STEP_EVENTS: usize = 3;
+use crate::limits::{
+    INITIAL_QUIET, MAX_DURATION, MAX_RESTORE_DURATION, OUTPUT_QUIET, STEP_TIMEOUT,
+    WHEEL_STEP_EVENTS,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -99,11 +99,11 @@ impl PendingAltScreenRead {
         source: shepr_api::schema::ReadSource,
         lines: Option<u32>,
     ) -> shepr_mux::terminal::TerminalReadSnapshot {
-        let line_limit = lines.map(|lines| lines.min(1000) as usize);
+        let line_limit = lines.map(|lines| lines.min(crate::limits::MAX_READ_LINES) as usize);
         match source {
             shepr_api::schema::ReadSource::Recent
             | shepr_api::schema::ReadSource::RecentUnwrapped => {
-                let limit = line_limit.unwrap_or(80);
+                let limit = line_limit.unwrap_or(crate::limits::DEFAULT_RECENT_READ_LINES);
                 shepr_mux::terminal::snapshot_text(
                     &self.initial.rows,
                     limit,

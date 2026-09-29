@@ -1,3 +1,4 @@
+use crate::limits::TERMINAL_PALETTE_COLORS;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -145,7 +146,12 @@ impl SavedHostTheme {
             background: self.background,
             ..Default::default()
         };
-        for (index, color) in self.palette.iter().take(256).enumerate() {
+        for (index, color) in self
+            .palette
+            .iter()
+            .take(TERMINAL_PALETTE_COLORS)
+            .enumerate()
+        {
             theme.palette[index] = *color;
         }
         theme

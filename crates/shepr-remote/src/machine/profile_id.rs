@@ -3,9 +3,13 @@ use std::io;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// Number of source bytes in a profile ID before hexadecimal encoding. The
+/// fixed 16 byte width yields a serialized ID with 32 characters.
+// limits-exempt: profile IDs have a fixed serialized width used by parse and generate.
 const PROFILE_ID_BYTES: usize = 16;
 /// Hex characters `ProfileId::short` keeps. A character count, unlike
 /// `PROFILE_ID_BYTES`, which counts the bytes the full hex id encodes.
+// limits-exempt: the shortened ID is a fixed display and socket-name format.
 const SHORT_ID_HEX_CHARS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +48,7 @@ impl ProfileId {
     pub fn generate() -> io::Result<Self> {
         let high = shepr_platform::unpredictable_token()?;
         let low = shepr_platform::unpredictable_token()?;
+        // Each random u64 is rendered as 16 hex characters to form the 32-character ID.
         Ok(Self(format!("{high:016x}{low:016x}")))
     }
 

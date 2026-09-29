@@ -1,7 +1,9 @@
 use super::*;
 
 pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
+    // limits-exempt: fixed FNV-1a parameters stay beside the topology hash they define.
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    // limits-exempt: fixed FNV-1a parameters stay beside the topology hash they define.
     const PRIME: u64 = 0x0000_0100_0000_01b3;
 
     fn write(hash: &mut u64, bytes: &[u8]) {

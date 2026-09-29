@@ -17,7 +17,7 @@ use std::time::Duration;
 // server answers HealthPong. The timing relation is asserted in shepr-core.
 // That heartbeat renews this byte-level watchdog, so a healthy idle bridge of
 // either kind stays connected while a dead client's bridge exits.
-pub(crate) const IDLE_TIMEOUT: Duration = shepr_core::limits::BRIDGE_IDLE_TIMEOUT;
+pub(crate) use shepr_core::limits::BRIDGE_IDLE_TIMEOUT as IDLE_TIMEOUT;
 
 type BootClock = Arc<dyn Fn() -> io::Result<u64> + Send + Sync>;
 
@@ -69,7 +69,9 @@ impl Activity {
             .name("ssh-bridge-liveness".into())
             .spawn(move || {
                 loop {
-                    match stopped.recv_timeout(timeout.min(Duration::from_secs(1))) {
+                    match stopped
+                        .recv_timeout(timeout.min(super::limits::BRIDGE_WATCHDOG_POLL_INTERVAL))
+                    {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }

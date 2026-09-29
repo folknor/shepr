@@ -24,13 +24,10 @@
 //! that completed them, relative to the slice handed to [`Scanner::scan`], so
 //! callers can interleave the core's own replies with ours in byte order.
 
-const MAX_CSI_BYTES: usize = 64;
-// A PATH_MAX path can be percent-encoded to about 12 KiB in a file URI, before
-// its authority and OSC command prefix. Keep room for that while bounding OSC
-// buffering for every pane.
-const MAX_OSC_BYTES: usize = 16 * 1024;
-const MAX_DCS_INTRO_BYTES: usize = 16;
-const MAX_XTGETTCAP_BYTES: usize = 1024;
+use crate::limits::{
+    MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_U16_DECIMAL_DIGITS, MAX_XTGETTCAP_BYTES,
+    XTGETTCAP_REPLY_OVERHEAD_BYTES,
+};
 
 /// Raw OSC working-directory report. It may be a URI or a path, so parsing
 /// belongs to the pane after the terminal scanner has framed it.
@@ -338,7 +335,7 @@ fn undispatched_modify_other_keys_level(params: &[u8]) -> Option<super::ModifyOt
 }
 
 fn parse_decimal(bytes: &[u8]) -> Option<u16> {
-    if bytes.is_empty() || bytes.len() > 5 {
+    if bytes.is_empty() || bytes.len() > MAX_U16_DECIMAL_DIGITS {
         return None;
     }
     std::str::from_utf8(bytes).ok()?.parse().ok()
@@ -394,8 +391,10 @@ fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
 }
 
 fn build_xtgettcap_response(cap_hex: &[u8], value: Option<&[u8]>) -> Vec<u8> {
-    let mut response =
-        Vec::with_capacity(8 + cap_hex.len() + value.map_or(0, |bytes| bytes.len() * 2));
+    // Each value byte expands to two wire hex digits.
+    let mut response = Vec::with_capacity(
+        XTGETTCAP_REPLY_OVERHEAD_BYTES + cap_hex.len() + value.map_or(0, |bytes| bytes.len() * 2),
+    );
     response.extend_from_slice(b"\x1bP1+r");
     response.extend_from_slice(cap_hex);
     if let Some(value) = value {

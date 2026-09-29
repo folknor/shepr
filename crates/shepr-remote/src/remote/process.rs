@@ -5,21 +5,10 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
-pub(super) const SSH_STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
-pub(super) const SSH_STDERR_CAPTURE_LIMIT: usize = 16 * 1024;
-
-/// How long a pipe reader may keep running after the ssh child has exited.
-///
-/// The child's own output is already in the pipe by then, so a healthy reader
-/// drains it in far less than this. A reader that is still blocked means some
-/// other process inherited the write end: an OpenSSH `ControlPersist` master
-/// forked from this very command is the known case (older OpenSSH releases
-/// daemonize the master without redirecting its stderr, so the pipe stays
-/// open for up to the persist timeout). Joining such a reader would stall the
-/// caller for that long, so it is abandoned instead and the bytes captured so
-/// far are used.
-pub(super) const PIPE_DRAIN_GRACE: Duration = Duration::from_millis(500);
+use crate::limits::{
+    PIPE_DRAIN_GRACE, SSH_CHILD_PROCESS_POLL_INTERVAL, SSH_PIPE_DONE_CHANNEL_CAPACITY,
+    SSH_PIPE_READ_BUFFER_BYTES, SSH_STDERR_CAPTURE_LIMIT, SSH_STDOUT_CAPTURE_LIMIT,
+};
 
 #[derive(Clone, Copy)]
 enum CaptureRetention {
@@ -67,7 +56,7 @@ impl PipeCapture {
         // print a few lines, so reserving the limit up front would waste it.
         let captured = Arc::new(Mutex::new(VecDeque::new()));
         let worker_captured = Arc::clone(&captured);
-        let (done_tx, done) = mpsc::sync_channel(1);
+        let (done_tx, done) = mpsc::sync_channel(SSH_PIPE_DONE_CHANNEL_CAPACITY);
         thread::spawn(move || {
             let result = read_into(reader, &worker_captured, limit, echo, retention);
             // The receiver is gone only when `finish` gave up on this reader after
@@ -105,7 +94,7 @@ fn read_into(
     echo: PipeEcho,
     retention: CaptureRetention,
 ) -> io::Result<()> {
-    let mut buffer = [0_u8; 8 * 1024];
+    let mut buffer = [0_u8; SSH_PIPE_READ_BUFFER_BYTES];
     let mut destination = io::stderr();
     loop {
         let read = match reader.read(&mut buffer) {
@@ -188,7 +177,7 @@ pub(super) fn wait_with_output_timeout(
                 "noninteractive SSH command timed out",
             ));
         }
-        thread::sleep(POLL_INTERVAL);
+        thread::sleep(SSH_CHILD_PROCESS_POLL_INTERVAL);
     };
     running.armed = false;
     let stdout = running

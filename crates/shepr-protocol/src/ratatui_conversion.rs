@@ -200,7 +200,7 @@ impl FrameData {
         // Walk the buffer's row-major content directly with origin-relative
         // coordinates. `Buffer::cell` takes absolute positions and would miss
         // for a buffer whose area does not start at (0, 0).
-        let row_len = usize::from(width).max(1);
+        let row_len = usize::from(width).max(super::limits::MIN_BUFFER_ROW_LEN);
         for (position, cell) in buffer.content.iter().enumerate() {
             let (Ok(col), Ok(row)) = (
                 u16::try_from(position % row_len),

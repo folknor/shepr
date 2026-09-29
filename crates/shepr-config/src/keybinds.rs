@@ -4,6 +4,10 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
 use super::Config;
+use crate::limits::{
+    FIRST_INDEXED_BINDING_KEY, INDEXED_BINDING_RANGE_SYNTAX, LAST_INDEXED_BINDING_KEY,
+    MAX_FUNCTION_KEY_NUMBER, MIN_FUNCTION_KEY_NUMBER,
+};
 
 pub(crate) type KeyCombo = (KeyCode, KeyModifiers);
 
@@ -193,14 +197,18 @@ impl IndexedKeybind {
     pub fn matched_index(&self, key: &impl BindingKey) -> Option<usize> {
         let combo = self.trigger.combo();
         let (expected_code, _) = normalize_key_combo(combo);
-        let KeyCode::Char(key_number @ '1'..='9') = expected_code else {
+        let KeyCode::Char(key_number @ FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY) =
+            expected_code
+        else {
             return None;
         };
+        let index =
+            usize::try_from(u32::from(key_number) - u32::from(FIRST_INDEXED_BINDING_KEY)).ok()?;
         let legacy_shifted_number = matches!(key.code(), KeyCode::Char(c)
             if shifted_number_symbol(c) == Some(key_number)
                 && indexed_shifted_number_matches(key, combo, key_number));
         if terminal_key_matches_combo(key, combo) || legacy_shifted_number {
-            Some((key_number as usize) - ('1' as usize))
+            Some(index)
         } else {
             None
         }
@@ -322,9 +330,9 @@ impl Config {
         let mut diagnostics = Vec::new();
         let prefix = parse_key_combo(&self.keys.prefix);
         if prefix.is_none() {
-            diagnostics.push(format!(
-                "invalid keybinding: keys.prefix = {:?}",
-                self.keys.prefix
+            diagnostics.push(invalid_keybinding_diagnostic(
+                "keys.prefix",
+                &self.keys.prefix,
             ));
         }
         let prefix_source = if is_configured("prefix") {
@@ -439,6 +447,30 @@ fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
     }
 }
 
+fn invalid_keybinding_diagnostic(field: &str, raw: &str) -> String {
+    let unsupported_function_key = raw.split('+').any(|part| {
+        let token = part.trim().to_ascii_lowercase();
+        let Some(suffix) = token.strip_prefix('f') else {
+            return false;
+        };
+        if suffix.is_empty() || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
+            return false;
+        }
+        !matches!(
+            suffix.parse::<u8>(),
+            Ok(number) if (MIN_FUNCTION_KEY_NUMBER..=MAX_FUNCTION_KEY_NUMBER).contains(&number)
+        )
+    });
+    let message = format!("invalid keybinding: {field} = {raw:?}");
+    if unsupported_function_key {
+        format!(
+            "{message}; supported function keys are F{MIN_FUNCTION_KEY_NUMBER} through F{MAX_FUNCTION_KEY_NUMBER}"
+        )
+    } else {
+        message
+    }
+}
+
 fn parse_action_bindings(
     field: &str,
     config: &BindingConfig,
@@ -467,7 +499,7 @@ fn parse_action_bindings(
                 diagnostics.push(diag);
             }
             None => {
-                let diag = format!("invalid keybinding: {field} = {raw:?}");
+                let diag = invalid_keybinding_diagnostic(field, raw);
                 diagnostics.push(diag);
             }
         }
@@ -503,7 +535,7 @@ fn parse_navigate_bindings(
                 diagnostics.push(diag);
             }
             None => {
-                let diag = format!("invalid keybinding: {field} = {raw:?}");
+                let diag = invalid_keybinding_diagnostic(field, raw);
                 diagnostics.push(diag);
             }
         }
@@ -541,7 +573,7 @@ fn parse_indexed_bindings(
                 }
             }
             None => {
-                let diag = format!("invalid keybinding: {field} = {raw:?}");
+                let diag = invalid_keybinding_diagnostic(field, raw);
                 diagnostics.push(diag);
             }
         }
@@ -586,7 +618,7 @@ fn parse_navigate_indexed_bindings(
                 }
             }
             None => {
-                diagnostics.push(format!("invalid keybinding: {field} = {raw:?}"));
+                diagnostics.push(invalid_keybinding_diagnostic(field, raw));
             }
         }
     }
@@ -601,9 +633,12 @@ fn push_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
+    if !matches!(
+        binding.trigger.combo().0,
+        KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
+    ) {
         let diag = format!(
-            "indexed keybinding must use 1..9: {field} = {:?}",
+            "indexed keybinding must use {INDEXED_BINDING_RANGE_SYNTAX}: {field} = {:?}",
             binding.label
         );
         diagnostics.push(diag);
@@ -627,9 +662,12 @@ fn push_navigate_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
+    if !matches!(
+        binding.trigger.combo().0,
+        KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
+    ) {
         diagnostics.push(format!(
-            "indexed keybinding must use 1..9: {field} = {:?}",
+            "indexed keybinding must use {INDEXED_BINDING_RANGE_SYNTAX}: {field} = {:?}",
             binding.label
         ));
         return;
@@ -744,12 +782,9 @@ fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
     };
 
     if let Some(range_modifiers) = parse_range_modifiers(body) {
-        let bindings = (1..=9)
-            .map(|idx| {
-                let combo = (
-                    KeyCode::Char(char::from_digit(idx, 10).unwrap_or('1')),
-                    range_modifiers,
-                );
+        let bindings = (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
+            .map(|key| {
+                let combo = (KeyCode::Char(key), range_modifiers);
                 let key_label = format_key_combo(combo);
                 ResolvedBinding {
                     trigger: if trigger_prefix {
@@ -855,7 +890,7 @@ fn parse_range_modifiers(s: &str) -> Option<KeyModifiers> {
     let mut saw_range = false;
     for part in s.split('+') {
         let trimmed = part.trim();
-        if trimmed == "1..9" {
+        if trimmed == INDEXED_BINDING_RANGE_SYNTAX {
             if saw_range {
                 return None;
             }
@@ -949,7 +984,9 @@ pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
         s if s.starts_with('f') => {
             let number = s[1..].parse::<u8>().ok()?;
             // Crossterm's Unix keyboard parser maps extended function keys through F35.
-            (1..=35).contains(&number).then_some(KeyCode::F(number))?
+            (MIN_FUNCTION_KEY_NUMBER..=MAX_FUNCTION_KEY_NUMBER)
+                .contains(&number)
+                .then_some(KeyCode::F(number))?
         }
         _ => return None,
     };

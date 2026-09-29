@@ -1,8 +1,5 @@
 use super::*;
-
-const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
-const MIN_TAB_STRIP_WIDTH: u16 =
-    MIN_TAB_WIDTH + NEW_TAB_WIDTH + TAB_SCROLL_BUTTON_WIDTH.saturating_mul(2);
+use crate::limits::{MIN_TAB_STRIP_WIDTH, MIN_TAB_WIDTH, NEW_TAB_WIDTH, TAB_SCROLL_BUTTON_WIDTH};
 
 pub(crate) fn render_tab_bar(
     buffer: &mut Buffer,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::limits::{KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
 
 fn vp(col: u16, row: u16) -> Point<ViewportRow> {
     Point::new(ViewportRow(row), col)
@@ -732,7 +733,7 @@ fn unlisted_dec_modes_are_absent_from_number_lookup() {
 /// pushed the keyboard stack grows without bound. The adapter caps it first.
 #[test]
 fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
-    let max = handler::KEYBOARD_MODE_STACK_MAX_DEPTH;
+    let max = KEYBOARD_MODE_STACK_MAX_DEPTH;
     let flood = b"\x1b[>1u".repeat(max + 10);
     // No title pushed, one title pushed, and inside a synchronized update
     // (whose buffered bytes reach the core only at ESU).

@@ -4,6 +4,11 @@ use std::{
     path::PathBuf,
 };
 
+use crate::limits::{
+    FOREGROUND_CHILD_BYTE_LIMIT, FOREGROUND_CHILD_PID_LIMIT, FOREGROUND_TASK_ENTRY_LIMIT,
+    FOREGROUND_TREE_SCAN_LIMIT, PROC_CHILDREN_READ_BUFFER_BYTES,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundProcess {
     pub pid: u32,
@@ -25,29 +30,6 @@ pub struct ForegroundJob {
 const SHELL_NAMES: &[&str] = &[
     "sh", "bash", "dash", "zsh", "fish", "ksh", "mksh", "csh", "tcsh", "elvish", "xonsh", "nu",
 ];
-
-/// Upper bound on the number of processes visited while resolving a pane's
-/// foreground process-group tree. Foreground-job detection reads `/proc/<pid>/stat`
-/// and task/children files for every visited process on a repeated (per-tick/5s)
-/// cadence, so an unbounded walk lets accumulated descendants or unreaped zombies
-/// under the pane shell grow the server's read-syscall rate and CPU without limit
-/// at a constant pane count; the walk runs per pane per tick, so its cost
-/// multiplies by the number of panes. The
-/// foreground-group leader's subtree and the pane shell's descendants advance
-/// round-robin under a shared candidate ceiling, with independent per-root work
-/// budgets, so a pathologically large accumulation on either side cannot starve the
-/// other. Discovery is best effort once a budget is exhausted.
-const FOREGROUND_TREE_SCAN_LIMIT: usize = 512;
-/// Number of `/proc/<pid>/task` entries a root's subtree may consume, bounding how
-/// far one process's thread count can multiply the walk's work.
-const FOREGROUND_TASK_ENTRY_LIMIT: usize = 2_048;
-/// Number of `/proc/<pid>/task/<tid>/children` bytes a root's subtree may read,
-/// stopping a parent that accumulates unreaped children from growing read work
-/// without limit.
-const FOREGROUND_CHILD_BYTE_LIMIT: usize = 128 * 1024;
-/// Aggregate number of child pids a root's subtree may parse and enqueue, bounding
-/// the walk's pending queues and allocations.
-const FOREGROUND_CHILD_PID_LIMIT: usize = 2_048;
 
 /// Per-root work budget for foreground process discovery. The foreground-group
 /// leader and the pane shell each get their own budget, so one side's expansion
@@ -252,7 +234,7 @@ fn process_task_children(pid: u32, tid: u32, budget: &mut ForegroundScanBudget) 
 fn read_bounded_pid_list(mut reader: impl Read, budget: &mut ForegroundScanBudget) -> Vec<u32> {
     let mut pids = Vec::new();
     let mut token = Vec::new();
-    let mut buffer = [0_u8; 4096];
+    let mut buffer = [0_u8; PROC_CHILDREN_READ_BUFFER_BYTES];
 
     while budget.child_bytes > 0 && budget.child_pids > 0 {
         let read_len = budget.child_bytes.min(buffer.len());

@@ -1,18 +1,14 @@
 use regex::{Regex, RegexBuilder};
 
 use crate::event_hub::EventHistoryError;
+use crate::limits::{APP_RESPONSE_TIMEOUT, MATCH_REGEX_DFA_SIZE_LIMIT, MATCH_REGEX_SIZE_LIMIT};
 use crate::schema::{
     ErrorBody, ErrorResponse, EventKind, Method, PaneAgentStatusChangedEvent,
     PaneOutputMatchedEvent, PaneScrollChangedEvent, PaneScrollInfo, Request, Subscription,
     SubscriptionEventData, SubscriptionEventEnvelope, SubscriptionEventKind,
 };
-use crate::server::{APP_RESPONSE_TIMEOUT, dispatch_to_app_with_timeout_result};
+use crate::server::dispatch_to_app_with_timeout_result;
 use crate::{ApiRequestSender, EventHub};
-
-// Bound each compiled program and its lazy DFA cache; the server also caps each stream's count.
-pub(crate) const MAX_REGEX_MATCH_SUBSCRIPTIONS: usize = 32;
-const MATCH_REGEX_SIZE_LIMIT: usize = 256 * 1024;
-const MATCH_REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;
 
 pub(crate) fn compile_match_regex(value: &str) -> Result<Regex, crate::error::ApiError> {
     let mut builder = RegexBuilder::new(value);

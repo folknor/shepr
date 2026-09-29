@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::agent::{KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER};
+use crate::limits::VERSION_PROBE_TIMEOUT;
 use shepr_core::env::EnvVar;
 use shepr_test_support::IsolatedEnv;
 

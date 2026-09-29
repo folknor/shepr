@@ -1,5 +1,9 @@
 use super::*;
+use crate::limits::{
+    LIGHT_LUMINANCE_THRESHOLD, LUMINANCE_BLUE_WEIGHT, LUMINANCE_GREEN_WEIGHT, LUMINANCE_RED_WEIGHT,
+};
 
+// limits-exempt: the xterm palette starts with its 16 named ANSI colors.
 pub(super) const NAMED_COLOR_COUNT: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -27,8 +31,10 @@ impl RgbColor {
     }
 
     pub fn inferred_appearance(self) -> ColorScheme {
-        let luminance = u32::from(self.r) * 299 + u32::from(self.g) * 587 + u32::from(self.b) * 114;
-        if luminance >= 128_000 {
+        let luminance = u32::from(self.r) * LUMINANCE_RED_WEIGHT
+            + u32::from(self.g) * LUMINANCE_GREEN_WEIGHT
+            + u32::from(self.b) * LUMINANCE_BLUE_WEIGHT;
+        if luminance >= LIGHT_LUMINANCE_THRESHOLD {
             ColorScheme::Light
         } else {
             ColorScheme::Dark
@@ -68,6 +74,8 @@ pub fn default_palette() -> [RgbColor; 256] {
             u8::try_from(value * 40 + 55).unwrap_or(u8::MAX)
         }
     };
+    // 232 is where the xterm 6-by-6-by-6 color cube ends and its grayscale
+    // entries begin.
     for (offset, slot) in palette[NAMED_COLOR_COUNT..232].iter_mut().enumerate() {
         *slot = RgbColor {
             r: cube(offset / 36),
@@ -75,6 +83,7 @@ pub fn default_palette() -> [RgbColor; 256] {
             b: cube(offset % 6),
         };
     }
+    // 232..256 are the final 24 grayscale slots in the xterm 256-color palette.
     for (offset, slot) in palette[232..256].iter_mut().enumerate() {
         // `offset` is 0..24 here, so `offset * 10 + 8` maxes at 238.
         let value = u8::try_from(offset * 10 + 8).unwrap_or(u8::MAX);
@@ -99,6 +108,7 @@ pub enum ColorQueryTarget {
 impl ColorQueryTarget {
     pub(super) fn from_index(index: usize) -> Option<Self> {
         match index {
+            // xterm palette indexes cover every value in one byte.
             0..=255 => Some(Self::Palette(u8::try_from(index).unwrap_or(u8::MAX))),
             index if index == NamedColor::Foreground as usize => Some(Self::Foreground),
             index if index == NamedColor::Background as usize => Some(Self::Background),

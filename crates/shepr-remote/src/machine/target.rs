@@ -1,7 +1,7 @@
 use std::fmt;
 use std::ops::Deref;
 
-const MAX_SSH_TARGET_BYTES: usize = 1024;
+use crate::limits::MAX_SSH_TARGET_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SshTargetError {

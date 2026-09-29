@@ -5,11 +5,11 @@ use std::process::{Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::types::InstallWarning;
+use crate::limits::{
+    MAX_VERSION_PROBE_OUTPUT, VERSION_PROBE_POLL_INTERVAL, VERSION_PROBE_READ_BUFFER_BYTES,
+};
 
-pub(crate) const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const MAX_VERSION_PROBE_OUTPUT: usize = 64 * 1024;
+use super::types::InstallWarning;
 
 pub(crate) struct AgentVersionRequirement {
     pub label: &'static str,
@@ -150,7 +150,7 @@ fn run_version_probe(
 
     let deadline = clock.now() + timeout;
     let mut output = Vec::new();
-    let mut read_buffer = [0; 4096];
+    let mut read_buffer = [0; VERSION_PROBE_READ_BUFFER_BYTES];
     let mut stdout_closed = false;
     let mut status = None;
     loop {

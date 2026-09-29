@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::Stream as _;
 use serde::de::DeserializeOwned;
 
+use crate::limits::{
+    ORDINARY_RESPONSE_TIMEOUT, UNBOUNDED_RESPONSE_SEND_TIMEOUT, WAIT_RESPONSE_GRACE,
+};
 use crate::schema::{ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse};
 use shepr_platform::ipc::LocalStream;
 
@@ -156,20 +159,6 @@ impl ApiClient {
     }
 }
 
-/// Client-side bound for ordinary requests. It trails the server's own bound
-/// so the server can report that the request timed out with an unknown outcome
-/// before the client gives up on the socket.
-const ORDINARY_RESPONSE_TIMEOUT: Duration =
-    Duration::from_secs(crate::server::ORDINARY_REQUEST_TIMEOUT.as_secs() + 5);
-const UNBOUNDED_RESPONSE_SEND_TIMEOUT: Duration = crate::server::INITIAL_REQUEST_TIMEOUT;
-
-/// Slack past a wait's own `timeout_ms`. At its deadline a wait still makes a
-/// final app probe (bounded by the server's 5 s app-response timeout), and
-/// `agent.prompt --wait` chains a submission step and two status waits that
-/// can each overrun by one such probe. This only has to exceed those
-/// overruns; it is not what normally ends a wait.
-const WAIT_RESPONSE_GRACE: Duration = Duration::from_secs(30);
-
 fn deadline_after(timeout: Duration) -> io::Result<Instant> {
     Instant::now().checked_add(timeout).ok_or_else(|| {
         io::Error::new(
@@ -183,7 +172,7 @@ fn deadline_after(timeout: Duration) -> io::Result<Instant> {
 /// no bound.
 ///
 /// Wait methods run as long as the caller asked: their own `timeout_ms` plus
-/// [`WAIT_RESPONSE_GRACE`], or unbounded when sent without one. A plain
+/// the wait response grace, or unbounded when sent without one. A plain
 /// `agent.prompt` is unbounded because the server answers only once the
 /// prompt is written to the agent, which a busy agent may delay for minutes
 /// (see `prompt_agent` in `crates/shepr-api/src/wait.rs`). Everything else, including the
@@ -466,7 +455,7 @@ mod tests {
             crate::schema::EmptyParams::default(),
         )))
         .expect("ordinary requests are bounded");
-        assert!(ordinary > crate::server::ORDINARY_REQUEST_TIMEOUT);
+        assert!(ordinary > crate::limits::ORDINARY_REQUEST_TIMEOUT);
 
         let wait = |timeout_ms| {
             request(Method::AgentWait(crate::schema::AgentWaitParams {

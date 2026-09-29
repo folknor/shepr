@@ -52,18 +52,6 @@ impl CliContext {
         })
     }
 
-    #[cfg(test)]
-    pub(super) fn test_local(paths: shepr_config::AppPaths) -> Self {
-        Self {
-            paths,
-            target: RefCell::new(ApiTarget::Local {
-                build_checked: false,
-            }),
-            caller_pane_id: None,
-            caller_socket: None,
-        }
-    }
-
     fn machine(
         paths: shepr_config::AppPaths,
         profile: SavedSshEndpoint,
@@ -420,6 +408,20 @@ fn validate_machine_command(command: &super::CliCommand) -> Result<(), String> {
         Err(format!(
             "`{command_path}` cannot run against a machine; --machine only supports noninteractive server API commands and does not run local management commands or attach a TUI",
         ))
+    }
+}
+
+#[cfg(test)]
+impl CliContext {
+    pub(super) fn test_local(paths: shepr_config::AppPaths) -> Self {
+        Self {
+            paths,
+            target: RefCell::new(ApiTarget::Local {
+                build_checked: false,
+            }),
+            caller_pane_id: None,
+            caller_socket: None,
+        }
     }
 }
 

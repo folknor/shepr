@@ -1,3 +1,4 @@
+use crate::limits::MAX_METADATA_SOURCES;
 use std::time::{Duration, Instant};
 
 use super::{TerminalState, TerminalStateMutation};
@@ -43,12 +44,6 @@ impl EffectivePresentation {
         }
     }
 }
-
-/// Distinct metadata sources one terminal keeps, both for live presentation
-/// metadata and for the per-source report sequences. Any process in the pane
-/// can report metadata under a source name of its choosing, so without a cap
-/// a script that invents a new name per report grows these maps forever.
-pub(crate) const MAX_METADATA_SOURCES: usize = 64;
 
 impl TerminalState {
     /// Make room for `source` in the report-sequence maps. Sequences of

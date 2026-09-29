@@ -42,7 +42,7 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
         contents.contains("Host *"),
         "config should add a Host * fallback block: {contents}"
     );
-    let keepalive_config = ssh_options::KEEPALIVE.config_lines();
+    let keepalive_config = crate::limits::SSH_KEEPALIVE.config_lines();
     assert!(
         contents.contains(&keepalive_config),
         "config should set the keepalive values: {contents}"
@@ -196,10 +196,10 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
         .collect::<Vec<_>>();
     for required in [
         ssh_options::CONTROL_MASTER,
-        ssh_options::CONTROL_PERSIST,
+        crate::limits::SSH_CONTROL_PERSIST_OPTION,
         ssh_options::BATCH_MODE_NO,
         ssh_options::STRICT_HOST_KEY_CHECKING,
-        ssh_options::AUTHENTICATION_PASSWORD_PROMPTS,
+        crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
     ] {
         assert!(args.iter().any(|arg| arg == required), "missing {required}");
     }
@@ -272,7 +272,7 @@ fn remote_ssh_command_uses_managed_config_when_present() {
             "-o".to_string(),
             ssh_options::CONTROL_MASTER.to_string(),
             "-o".to_string(),
-            ssh_options::CONTROL_PERSIST.to_string(),
+            crate::limits::SSH_CONTROL_PERSIST_OPTION.to_string(),
             "-T".to_string(),
             "example".to_string(),
         ]
@@ -327,15 +327,15 @@ fn exit_sweep_waits_for_owners_that_are_already_dropping() {
 
 #[test]
 fn noninteractive_ssh_stderr_capture_is_bounded() {
-    let stderr = vec![b'x'; NONINTERACTIVE_SSH_STDERR_LIMIT + 4096];
+    let stderr = vec![b'x'; SSH_STDERR_CAPTURE_LIMIT + 4096];
     let captured = PipeCapture::spawn(
         io::Cursor::new(stderr),
-        NONINTERACTIVE_SSH_STDERR_LIMIT,
+        SSH_STDERR_CAPTURE_LIMIT,
         PipeEcho::None,
     )
     .finish(Duration::from_secs(3))
     .expect("capture stderr");
-    assert_eq!(captured.len(), NONINTERACTIVE_SSH_STDERR_LIMIT);
+    assert_eq!(captured.len(), SSH_STDERR_CAPTURE_LIMIT);
 }
 
 #[test]
@@ -352,14 +352,14 @@ fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    let keepalive_options = ssh_options::KEEPALIVE.command_options();
+    let keepalive_options = crate::limits::SSH_KEEPALIVE.command_options();
     for required in [
         "-C",
         ssh_options::BATCH_MODE_YES,
-        ssh_options::NONINTERACTIVE_PASSWORD_PROMPTS,
+        crate::limits::SSH_NONINTERACTIVE_PASSWORD_PROMPTS_OPTION,
         ssh_options::STRICT_HOST_KEY_CHECKING,
-        ssh_options::CONNECT_TIMEOUT,
-        ssh_options::CONNECTION_ATTEMPTS,
+        crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
+        crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
         keepalive_options[0].as_str(),
         keepalive_options[1].as_str(),
     ] {

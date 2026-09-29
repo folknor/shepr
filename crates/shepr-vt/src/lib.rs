@@ -37,6 +37,7 @@ mod color;
 mod coords;
 mod format;
 mod handler;
+mod limits;
 mod locks;
 mod modes;
 mod read;
@@ -93,6 +94,10 @@ use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};
 use self::rows::RowOrigin;
 use self::scan::{ScanEvent, Scanner};
+use crate::limits::{
+    MAX_CLIPBOARD_BYTES, MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_CELL_BYTES, MIN_SCROLLBACK_COLUMNS,
+    MIN_SCROLLBACK_LINES,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error(&'static str);
@@ -131,6 +136,7 @@ impl ColorScheme {
 // emit this codepoint as literal text; keep filtering it out of copied,
 // history and rendered text so stray placeholder glyphs don't leak into
 // user-visible output.
+// limits-exempt: the codepoint the kitty graphics protocol defines.
 pub(crate) const KITTY_UNICODE_PLACEHOLDER: u32 = 0x10EEEE;
 
 /// Fallback colours used until the program or host sets its own defaults.
@@ -143,19 +149,8 @@ const DEFAULT_FOREGROUND: RgbColor = RgbColor {
 };
 const DEFAULT_BACKGROUND: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
 
-/// Scrollback is configured in bytes; alacritty counts lines. Any non-zero
-/// byte budget keeps at least this many lines so tiny budgets still scroll,
-/// which means a small budget on a wide pane is exceeded by design.
-const MIN_SCROLLBACK_LINES: usize = 1_000;
-/// Sanity cap on the converted line count. The byte budget alone does not
-/// bound memory: the line floor above, heap-held cell extras (combining
-/// marks, hyperlinks) and history kept across a widening resize (see
-/// [`Terminal::resize`]) all go past it.
-const MAX_SCROLLBACK_LINES: usize = 1_000_000;
-
 // This parser boundary returns clipboard effects as data and has no logging
 // dependency; oversize-store diagnostics belong with the pane-level consumer.
-const MAX_CLIPBOARD_BYTES: usize = 192 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveScreen {
@@ -200,7 +195,10 @@ fn scrollback_lines(max_scrollback_bytes: usize, columns: usize) -> usize {
     if max_scrollback_bytes == 0 {
         return 0;
     }
-    let bytes_per_line = columns.max(1).saturating_mul(mem::size_of::<Cell>()).max(1);
+    let bytes_per_line = columns
+        .max(MIN_SCROLLBACK_COLUMNS)
+        .saturating_mul(mem::size_of::<Cell>())
+        .max(MIN_SCROLLBACK_CELL_BYTES);
     (max_scrollback_bytes / bytes_per_line).clamp(MIN_SCROLLBACK_LINES, MAX_SCROLLBACK_LINES)
 }
 

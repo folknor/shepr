@@ -10,11 +10,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize, de::MapAccess, de::Visitor};
 
 use super::ConfigAgent;
-
-const MAX_SIDEBAR_ROWS: usize = 16;
-const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
-const MAX_SIDEBAR_RULES: usize = 16;
-const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
+use crate::limits::{
+    DEFAULT_SIDEBAR_ROW_GAP, MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES, MAX_SIDEBAR_ROWS,
+    MAX_SIDEBAR_RULES, MAX_SIDEBAR_TOKENS_PER_ROW,
+};
 
 fn deserialize_sidebar_rows<'de, D, T>(deserializer: D) -> Result<Vec<Vec<T>>, D::Error>
 where
@@ -337,8 +336,12 @@ where
             "unknown sidebar token `{value}`; custom tokens must start with `$`"
         ));
     };
+    if name.len() > MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES {
+        return Err(format!(
+            "invalid custom sidebar token `{value}`; custom token names may contain at most {MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES} bytes"
+        ));
+    }
     if name.is_empty()
-        || name.len() > 32
         || !name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))

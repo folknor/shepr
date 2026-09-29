@@ -157,11 +157,6 @@ mod agent_status_tests {
     }
 }
 
-/// Largest `lines` a read accepts. Larger requests are rejected rather than
-/// quietly shortened, so a caller never mistakes a capped read for the whole
-/// history it asked for.
-pub(super) const MAX_READ_LINES: u32 = 1000;
-
 /// The format a read produces. `strip_ansi: false` asks to keep escape
 /// sequences, which only the ANSI renderer has, so it selects that renderer
 /// whatever `format` says; `strip_ansi: true` (the default) leaves `format` in
@@ -355,13 +350,14 @@ pub(super) fn normalize_reported_agent_label(agent: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-pub(super) const METADATA_TTL_MAX_MS: u64 = 86_400_000;
-pub(super) const METADATA_SOURCE_MAX_CHARS: usize = 80;
-const METADATA_TTL_MIN_MS: u64 = 1;
-const MAX_METADATA_TOKEN_KEYS_PER_REQUEST: usize = 16;
-pub(super) const MAX_METADATA_TOKEN_KEYS_PER_RESOURCE: usize = 32;
-const MAX_METADATA_TOKEN_KEY_LEN: usize = 32;
-const MAX_METADATA_TOKEN_VALUE_LEN: usize = 80;
+use crate::limits::{
+    MAX_METADATA_TOKEN_KEY_LEN, MAX_METADATA_TOKEN_KEYS_PER_REQUEST, MAX_METADATA_TOKEN_VALUE_LEN,
+    METADATA_TTL_MIN_MS,
+};
+pub(super) use crate::limits::{
+    MAX_METADATA_TOKEN_KEYS_PER_RESOURCE, MAX_READ_LINES, METADATA_SOURCE_MAX_CHARS,
+    METADATA_TTL_MAX_MS,
+};
 
 pub(super) fn normalize_metadata_source(value: &str) -> Result<String, &'static str> {
     let value = value.trim();

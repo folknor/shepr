@@ -217,6 +217,7 @@ pub struct SessionConfig {
     /// when restoring a Shepr session. Default: true.
     pub resume_agents_on_restore: bool,
     /// Milliseconds between automatic agent restores. Zero disables spacing.
+    /// Default: 100.
     pub startup_per_agent_delay_ms: u32,
 }
 

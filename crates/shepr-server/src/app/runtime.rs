@@ -3,7 +3,8 @@ use std::time::Instant;
 #[cfg(test)]
 use std::time::Duration;
 
-use super::{App, MIN_RENDER_INTERVAL};
+use super::App;
+use crate::limits::MIN_RENDER_INTERVAL;
 
 impl App {
     pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: &shepr_protocol::TerminalId) {

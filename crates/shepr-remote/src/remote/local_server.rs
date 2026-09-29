@@ -8,18 +8,13 @@ use std::time::Duration;
 use shepr_core::env::EnvVar;
 use tracing::info;
 
+use crate::limits::{SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT};
+
+pub use crate::limits::SERVER_READY_TIMEOUT;
+
 fn client_socket_path(paths: &shepr_config::AppPaths) -> std::path::PathBuf {
     paths.server_address().client_socket().to_path_buf()
 }
-
-/// Poll interval when waiting for the server socket to appear.
-const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Timeout for checking the stable JSON API before attaching to the binary protocol socket.
-const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Maximum time for a newly spawned server to expose its client socket.
-pub const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A direct client checks the build before attaching. An SSH bridge leaves the
 /// check to the client's typed protocol handshake so mismatch errors retain it.

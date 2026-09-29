@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::limits::{MIN_POLL_TIMEOUT_MS, WAKE_PIPE_READ_BUFFER_BYTES};
+
 pub(crate) fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
     // SAFETY: F_GETFD/F_SETFD take and return integers and touch no memory;
     // a bad fd fails with EBADF.
@@ -89,7 +91,7 @@ pub(crate) fn create_wake_pipe() -> std::io::Result<WakePipe> {
 }
 
 pub(crate) fn drain_wake_fd(fd: RawFd) -> std::io::Result<()> {
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; WAKE_PIPE_READ_BUFFER_BYTES];
     loop {
         // SAFETY: reads at most `buf.len()` bytes into a live stack buffer.
         let read = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
@@ -171,9 +173,12 @@ pub(crate) fn poll_pty_and_wake(
                 if remaining.is_zero() {
                     return Ok(PtyWakeReadiness::default());
                 }
-                remaining_timeout_ms =
-                    i32::try_from(remaining.as_millis().clamp(1, i32::MAX as u128))
-                        .unwrap_or(i32::MAX);
+                remaining_timeout_ms = i32::try_from(
+                    remaining
+                        .as_millis()
+                        .clamp(MIN_POLL_TIMEOUT_MS, i32::MAX as u128),
+                )
+                .unwrap_or(i32::MAX);
                 continue;
             }
             return Err(err);

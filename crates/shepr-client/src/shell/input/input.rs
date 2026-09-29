@@ -1,18 +1,17 @@
 use super::*;
 use crate::input_wire::WirePaneInput;
+use crate::limits::{CLIPBOARD_RESULT_QUEUE_CAPACITY, MODAL_PASTE_CLIPBOARD_TIMEOUT};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use shepr_protocol::ClientPaneInputEvent;
 use shepr_termio::input::raw_input::RawInputEvent;
 
+// limits-exempt: this fixed tag identifies the local input source in the lease table.
 const LOCAL_INPUT_SOURCE: u8 = 0;
 
 fn is_retained_selection_copy_key(key: &shepr_termio::input::TerminalKey) -> bool {
     matches!(key.code, KeyCode::Char('c' | 'C'))
         && matches!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }
-
-/// How long Ctrl+V in a modal input waits for the clipboard helper before giving up.
-const MODAL_PASTE_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Set while a clipboard helper thread is still running, including one abandoned after a
 /// timeout, so a hung helper is waited on once rather than once per keypress.
@@ -46,7 +45,7 @@ fn read_clipboard_text_bounded_with(
         tracing::warn!("an earlier clipboard read is still running; paste skipped");
         return None;
     }
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(CLIPBOARD_RESULT_QUEUE_CAPACITY);
     let spawned = std::thread::Builder::new()
         .name("shepr-clipboard-read".into())
         .spawn(move || {
@@ -201,7 +200,7 @@ fn push_host_theme_update(
         && let Some(ClientMessage::ClientShellHostTheme {
             update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(pending),
         }) = requests.last_mut()
-        && pending.len() + colors.len() <= 256
+        && pending.len() + colors.len() <= shepr_termio::host_term::theme::HOST_PALETTE_COLOR_COUNT
     {
         pending.extend_from_slice(colors);
         return;

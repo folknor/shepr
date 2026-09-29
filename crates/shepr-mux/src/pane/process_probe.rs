@@ -1,3 +1,10 @@
+pub(super) use crate::limits::{AGENT_MISS_CONFIRMATION_ATTEMPTS, RELEASE_REACQUIRE_SUPPRESSION};
+use crate::limits::{
+    PROCESS_ACQUISITION_FAST_RECHECK, PROCESS_ACQUISITION_FAST_WINDOW,
+    PROCESS_ACQUISITION_IDLE_RESET, PROCESS_ACQUISITION_SLOW_RECHECK, PROCESS_ACQUISITION_WINDOW,
+    PROCESS_RECHECK_ACTIVE_AGENT, PROCESS_RECHECK_IDENTIFIED,
+    PROCESS_RECHECK_MISSING_FOREGROUND_GROUP, PROCESS_RECHECK_NO_AGENT, PROCESS_RECHECK_TRANSIENT,
+};
 use std::sync::Mutex;
 
 use tokio::sync::mpsc;
@@ -15,9 +22,6 @@ use crate::UsableCwd;
 use crate::events::AppEvent;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
-
-pub(super) const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration =
-    std::time::Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PendingAgentRelease {
@@ -97,16 +101,6 @@ pub(super) async fn publish_agent_process_detected_event(
         );
     }
 }
-
-pub(super) const AGENT_MISS_CONFIRMATION_ATTEMPTS: u8 = 6;
-const PROCESS_RECHECK_IDENTIFIED: std::time::Duration = std::time::Duration::from_secs(5);
-const PROCESS_RECHECK_MISSING_FOREGROUND_GROUP: std::time::Duration =
-    std::time::Duration::from_secs(30);
-const PROCESS_ACQUISITION_WINDOW: std::time::Duration = std::time::Duration::from_secs(8);
-const PROCESS_ACQUISITION_FAST_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
-const PROCESS_ACQUISITION_FAST_RECHECK: std::time::Duration = std::time::Duration::from_millis(500);
-const PROCESS_ACQUISITION_SLOW_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
-const PROCESS_ACQUISITION_IDLE_RESET: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AgentDetectionPresence {
@@ -594,13 +588,13 @@ impl DetectorState {
         transient_color_override: bool,
     ) -> std::time::Duration {
         if pending_release_active || transient_color_override {
-            std::time::Duration::from_millis(50)
+            PROCESS_RECHECK_TRANSIENT
         } else if self.pending_idle.active() {
             AGENT_PENDING_IDLE_RECHECK
         } else if self.current_agent().is_none() {
-            std::time::Duration::from_millis(500)
+            PROCESS_RECHECK_NO_AGENT
         } else {
-            std::time::Duration::from_millis(300)
+            PROCESS_RECHECK_ACTIVE_AGENT
         }
     }
 

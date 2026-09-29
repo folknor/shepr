@@ -2,6 +2,7 @@ use super::*;
 use interprocess::local_socket::traits::Stream as _;
 use shepr_core::socket_path::fits_unix_socket_path;
 use std::fs;
+use std::time::Duration;
 
 fn upload_test_streams(
     name: &str,

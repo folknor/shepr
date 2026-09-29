@@ -168,8 +168,11 @@ impl ClientShellState {
                     self.selection = None;
                 } else {
                     self.selection_highlight_clear_deadline = Some(
-                        crate::limits::Deadline::after(now, std::time::Duration::from_millis(500))
-                            .instant(),
+                        crate::limits::Deadline::after(
+                            now,
+                            crate::limits::WORD_SELECTION_HIGHLIGHT_TIMEOUT,
+                        )
+                        .instant(),
                     );
                 }
             }

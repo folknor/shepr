@@ -9,13 +9,9 @@ use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 // `ipc::bind_private_local_listener` in the server and API, and the peer check
 // on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
 
+use crate::limits::{STOP_STATUS_TIMEOUT, STOP_WAIT_POLL, STOP_WAIT_TIMEOUT};
 use shepr_config::DEFAULT_SESSION_NAME;
 use shepr_config::{SessionId, SessionName, SessionNameError};
-#[cfg(test)]
-use shepr_core::env::EnvVar;
-
-const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
-const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
@@ -249,10 +245,6 @@ pub fn parse_target_name(name: &str) -> Result<SessionId, SessionError> {
 /// The flag that lets `server stop` and `session stop` stop a server of
 /// another build.
 pub const FORCE_STOP_FLAG: &str = "--force";
-
-/// How long a stop waits for the target's `ping` before treating its build as
-/// unknown.
-const STOP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What a stop learned about the build of the server it is about to stop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -622,6 +614,7 @@ pub fn validate_name(name: &str) -> Result<(), SessionError> {
 mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
+    use shepr_core::env::EnvVar;
     use shepr_test_fixtures::AppPathsFixture as _;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::io::{BufRead, BufReader, Write};

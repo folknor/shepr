@@ -5,15 +5,7 @@ use ratatui::layout::Rect;
 
 use super::App;
 
-/// Delay before retrying pending agent resumes whose due launch attempt failed
-/// without consuming the plan.
-const PENDING_AGENT_RESUME_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// How long a restored managed agent's name waits, once its resume command is
-/// typed, for the agent's process (or a hook report from it) to appear. Only
-/// the process has to show up, not reach a prompt, so this is generous.
-const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration =
-    shepr_mux::pane::MANAGED_AGENT_RESUME_TIMEOUT;
+use crate::limits::{MANAGED_AGENT_RESUME_TIMEOUT, PENDING_AGENT_RESUME_RETRY_INTERVAL};
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,

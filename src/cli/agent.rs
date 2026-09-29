@@ -10,10 +10,9 @@ use shepr_api::schema::{
 };
 
 use super::matches::{flag, required, string, value, values};
-
-const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
-const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
+use crate::limits::{
+    AGENT_START_POLL_INTERVAL, DEFAULT_AGENT_START_TIMEOUT_MS, PANE_SHELL_READINESS_RETRY_TIMEOUT,
+};
 
 struct AgentStartTiming {
     poll_interval: Duration,

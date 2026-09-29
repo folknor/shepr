@@ -107,9 +107,10 @@ fn is_directory(path: &Path) -> bool {
     }
 }
 
-const DATETIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const MAX_COMMAND_LINE_BYTES: usize = 4096;
-const MAX_TAB_BAR_TEXT_CHARS: usize = 80;
+use crate::limits::{
+    DATETIME_REFRESH_INTERVAL, MAX_COMMAND_LINE_BYTES, MAX_TAB_BAR_TEXT_CHARS,
+    TAB_BAR_COMMAND_SHELL, TAB_BAR_COMMAND_SHELL_ARGS, TAB_BAR_STATUS_READ_BUFFER_BYTES,
+};
 
 #[derive(Default)]
 pub(super) struct TabBarStatus {
@@ -507,7 +508,7 @@ async fn read_last_output_line(
     let mut current_line = Vec::new();
     let mut last_line = Vec::new();
     let mut ended_with_newline = false;
-    let mut buffer = [0_u8; 1024];
+    let mut buffer = [0_u8; TAB_BAR_STATUS_READ_BUFFER_BYTES];
 
     loop {
         let count = stdout.read(&mut buffer).await?;
@@ -632,9 +633,9 @@ async fn run_status_command(
 
     // host-program-ok: a status command is the user's shell command line
     // The working directory is chosen by `App::status_command_env`.
-    let mut process = shepr_platform::child_command("/bin/sh", &cwd);
+    let mut process = shepr_platform::child_command(TAB_BAR_COMMAND_SHELL, &cwd);
     process
-        .args(["-lc", &command])
+        .args([TAB_BAR_COMMAND_SHELL_ARGS, &command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Arbitrary command stderr is unbounded and may contain secrets;

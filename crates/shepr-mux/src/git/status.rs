@@ -1,5 +1,6 @@
+use crate::limits::GIT_STATUS_RETRY_DELAY;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::{AheadBehind, GitReadError, WorkspaceGitStatusSnapshot};
 
@@ -13,8 +14,6 @@ use super::{
         read_ref_oid_with_errors,
     },
 };
-
-const GIT_STATUS_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GitStatusRefreshDemand {
@@ -455,6 +454,7 @@ mod tests {
     use crate::git::test_support::{
         git_written_fixture, live_git_space, temp_test_dir, write_fake_tracked_repo,
     };
+    use std::time::Duration;
 
     #[test]
     fn cache_key_preserves_non_utf8_checkout_path() {

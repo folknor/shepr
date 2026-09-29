@@ -1,17 +1,12 @@
 use std::time::{Duration, Instant, SystemTime};
 
-use super::{App, SESSION_SAVE_DEBOUNCE};
-use crate::limits::{HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_CHECK_INTERVAL};
+use super::App;
+use crate::limits::{
+    CHECKPOINT_MAX_FAILURES, HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_CHECK_INTERVAL,
+    SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN,
+};
 #[cfg(test)]
 use shepr_mux::events::AppEvent;
-
-const SESSION_SAVE_RETRY_MIN: Duration = Duration::from_millis(250);
-const SESSION_SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
-// Critical checkpoints give up after bounded retries: a failed disk must not
-// retain logind's delay inhibitor for its entire timeout, nor keep exited
-// panes on screen forever waiting for a save that cannot succeed.
-const CHECKPOINT_MAX_FAILURES: u8 = 3;
-
 #[derive(Clone, Copy)]
 enum SessionSavePurpose {
     Autosave,

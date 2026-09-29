@@ -9,8 +9,7 @@ use std::path::Path;
 use std::process::{ChildStderr, ChildStdout, Output, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long one Git probe may run before it is killed.
-pub const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+pub use super::limits::GIT_COMMAND_TIMEOUT;
 
 /// Why a Git probe produced no output to interpret.
 #[derive(Debug)]

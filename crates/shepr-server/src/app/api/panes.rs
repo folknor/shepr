@@ -463,7 +463,7 @@ fn normalize_presentation_text(value: Option<String>) -> Option<String> {
     let normalized: String = trimmed
         .chars()
         .filter(|ch| !ch.is_control())
-        .take(80)
+        .take(crate::limits::MAX_PRESENTATION_TEXT_CHARS)
         .collect();
     (!normalized.trim().is_empty()).then(|| normalized.trim().to_string())
 }

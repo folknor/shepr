@@ -164,7 +164,7 @@ pub(super) fn resolve_launch_executable(
 
 /// The machine's node name, as shown by tmux's `#h`.
 pub fn hostname() -> Option<String> {
-    let mut buffer = [0_u8; 256];
+    let mut buffer = [0_u8; super::limits::HOSTNAME_BUFFER_BYTES];
     // SAFETY: gethostname(2) writes at most `buffer.len()` bytes into a live
     // stack buffer.
     let result =

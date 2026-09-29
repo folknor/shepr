@@ -1,5 +1,6 @@
 use super::render::{ShellRenderState, display_width, put_right_text, put_text};
 use super::*;
+use crate::limits::WORKSPACE_HEADER_ROWS;
 
 pub(super) fn render_collapsed(
     buffer: &mut Buffer,

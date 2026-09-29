@@ -1,3 +1,4 @@
+use crate::limits::{MAX_SESSION_HISTORY_FILE_BYTES, MAX_SESSION_PATH_SYMLINK_HOPS};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -29,12 +30,6 @@ pub(super) fn backup_directory(path: &Path) -> PathBuf {
     path.with_file_name(BACKUP_DIRECTORY_NAME)
 }
 
-// This is the session-history writer's file budget and restore uses the same
-// bound. `serialize_history` trims pane text to it; if the workspace/tab shape
-// alone is larger, it writes a compact history with no pane entries. The
-// fingerprint in that compact form is a fixed 64-character SHA-256 digest.
-const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;
-
 fn ensure_history_size(size: usize) -> std::io::Result<()> {
     if size > MAX_SESSION_HISTORY_FILE_BYTES {
         return Err(std::io::Error::new(
@@ -59,7 +54,7 @@ fn read_history_file(path: &Path) -> std::io::Result<String> {
 // excludes the dangling-symlink case stow users hit on the very first save.
 fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
     let mut current = path.to_path_buf();
-    for _ in 0..16 {
+    for _ in 0..MAX_SESSION_PATH_SYMLINK_HOPS {
         let meta = match std::fs::symlink_metadata(&current) {
             Ok(meta) => meta,
             Err(_) => return Ok(current),

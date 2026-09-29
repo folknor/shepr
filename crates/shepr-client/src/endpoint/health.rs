@@ -1,7 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-pub(super) const HEARTBEAT_INTERVAL: Duration = shepr_core::limits::HEARTBEAT_INTERVAL;
-pub(super) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::limits::{HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT};
 
 const _: () = assert!(HEARTBEAT_INTERVAL.as_millis() < HEARTBEAT_TIMEOUT.as_millis());
 
@@ -63,6 +62,7 @@ impl EndpointHealth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn quiet_connection_is_probed_then_expires_without_a_reply() {

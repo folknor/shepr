@@ -6,11 +6,7 @@ fn writer_gone(client_id: ClientId) {
     debug!(?client_id, "client writer channel closed");
 }
 
-/// How often shell projections are rechecked for inputs that change without
-/// an event: `/proc` cwd and foreground cwd of shells that do not report
-/// OSC 7, and the new-workspace cwd derived from them.
-pub(super) const SHELL_CWD_REFRESH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(1);
+pub(super) use crate::limits::SHELL_CWD_REFRESH_INTERVAL;
 
 /// The layout-free session snapshot every shell projection is built from,
 /// shared by all shell clients.

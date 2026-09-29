@@ -4,6 +4,7 @@ mod diagnostic;
 mod io;
 mod keybinding_table;
 mod keybinds;
+mod limits;
 mod model;
 mod session_id;
 mod sidebar;
@@ -17,6 +18,10 @@ mod wire;
 pub use self::address::ServerAddress;
 pub use self::address::derive_client_socket_from_api_socket;
 pub use self::agent::ConfigAgent;
+pub use self::limits::{
+    DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_MOUSE_SCROLL_LINES,
+    DEFAULT_SCROLLBACK_LIMIT_BYTES,
+};
 /// The raw config values, as deserialized. Runtime code receives a
 /// [`ValidatedConfig`]; raw values become one only through validation
 /// ([`ValidatedConfig::from_values`] or a launch load).
@@ -54,11 +59,6 @@ pub use self::keybinds::{parse_api_key_combo, parse_key_combo};
 pub use self::{tab_bar::ValidatedTabBarRightEntry, window_title::sanitize_window_title_text};
 
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
-
-pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
-pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
-pub const DEFAULT_HEADLESS_COLS: u16 = 120;
-pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
 impl Config {
     #[cfg(test)]

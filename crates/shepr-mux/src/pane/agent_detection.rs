@@ -1,19 +1,11 @@
+use crate::limits::AGENT_PENDING_IDLE_CONFIRMATIONS;
+pub(super) use crate::limits::{
+    AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_CAP, AGENT_PENDING_IDLE_RECHECK,
+    AGENT_STARTUP_GRACE_WINDOW, STABLE_VISIBLE_SIGNAL_REFRESH,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use shepr_agent::detect::{Agent, AgentDetection, AgentState};
-
-pub(super) const AGENT_PENDING_IDLE_RECHECK: std::time::Duration =
-    std::time::Duration::from_millis(100);
-const AGENT_PENDING_IDLE_CONFIRMATIONS: u8 = 3;
-pub(super) const AGENT_PENDING_IDLE_CAP: std::time::Duration =
-    std::time::Duration::from_millis(700);
-pub(super) const STABLE_VISIBLE_SIGNAL_REFRESH: std::time::Duration =
-    std::time::Duration::from_millis(800);
-pub(super) const AGENT_STARTUP_GRACE_WINDOW: std::time::Duration =
-    std::time::Duration::from_secs(3);
-/// A restored agent pane holds absence until its resumed process can appear.
-pub(super) const AGENT_ABSENCE_STARTUP_HOLD: std::time::Duration =
-    super::MANAGED_AGENT_RESUME_TIMEOUT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DetectionPublishState {

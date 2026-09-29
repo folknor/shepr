@@ -64,5 +64,7 @@ pub struct WireStyle {
 
 // Ratatui stores underline shape in reserved modifier bits while a frame
 // crosses an in-memory buffer. The wire carries a typed underline shape.
+// limits-exempt: ratatui's in-memory underline-style field starts at bit 12.
 pub const RATATUI_UNDERLINE_STYLE_SHIFT: u16 = 12;
-pub const RATATUI_UNDERLINE_STYLE_MASK: u16 = 0xF000;
+// limits-exempt: four reserved bits encode the in-memory underline-style value.
+pub const RATATUI_UNDERLINE_STYLE_MASK: u16 = 0xF << RATATUI_UNDERLINE_STYLE_SHIFT;

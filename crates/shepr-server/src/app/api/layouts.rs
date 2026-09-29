@@ -13,8 +13,7 @@ use shepr_core::layout::{Node, PaneId};
 use super::super::api_helpers::{active_workspace_not_found, tab_not_found, workspace_not_found};
 use super::responses::{failure, success};
 
-const MAX_LAYOUT_PANES: usize = 24;
-const MAX_LAYOUT_DEPTH: usize = 16;
+use crate::limits::{MAX_LAYOUT_DEPTH, MAX_LAYOUT_PANES};
 
 impl App {
     pub(super) fn handle_layout_export(&mut self, params: &LayoutExportParams) -> ApiResult {

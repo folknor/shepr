@@ -1,0 +1,72 @@
+//! Input framing limits and terminal-facing buffer sizes.
+
+use std::time::Duration;
+
+/// Idle time before an incomplete raw terminal key sequence is flushed.
+///
+/// Ten milliseconds keeps lone Escape responsive while allowing bytes from one
+/// terminal write to arrive together.
+pub const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;
+
+/// Wait this long before flushing a possible mouse sequence when host mouse
+/// reporting is active; 150 milliseconds accommodates fragmented reports.
+pub const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
+
+/// Largest bracketed paste body the framer holds while waiting for its
+/// terminator. Past this the held part is closed and delivered as one paste and
+/// the rest of it is dropped up to the terminator, so a paste that never ends
+/// cannot grow the buffer without bound. It is far above the server's
+/// per-message input limit, which rejects such a paste in the client shell
+/// anyway (with a visible notice), so the cut only matters to direct attach,
+/// which streams large pastes through.
+pub(crate) const MAX_PENDING_PASTE_BYTES: usize = 16 * 1024 * 1024;
+
+/// How long a held, unterminated bracketed paste may go without receiving a
+/// byte before the framer stops waiting for its terminator. Terminals write a
+/// paste in one go, so a stall this long means the terminator is not coming;
+/// without the limit every later keystroke would queue behind the paste and
+/// the client would look hung. The check runs when input next arrives: the
+/// held part is delivered as a complete paste and the new input is framed
+/// normally.
+pub(crate) const PASTE_STALL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Number of color-query replies expected from the full host theme query.
+///
+/// The count is the 256 indexed palette entries plus the foreground and
+/// background replies.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the palette size plus two replies fits in u16"
+)]
+pub(crate) const MAX_HOST_COLOR_QUERY_REPLIES: u16 =
+    crate::host_term::theme::HOST_PALETTE_COLOR_COUNT as u16 + 2;
+
+/// Maximum length of an orphaned SGR mouse tail accepted by the parser.
+///
+/// Thirty-two bytes cover decimal coordinates in a complete supported mouse
+/// report; longer tails are not retained as plausible reports.
+pub(crate) const MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES: usize = 32;
+
+/// Maximum bytes retained while discarding an incomplete terminal control tail.
+///
+/// The 128-byte ceiling allows supported host replies to finish while bounding
+/// malformed or unterminated control input.
+pub(crate) const MAX_DISCARDED_CONTROL_TAIL_BYTES: usize = 128;
+
+/// Initial allocation for a UTF-8 mouse report.
+///
+/// Sixteen bytes fit the complete supported report, including the escape
+/// prefix and three encoded coordinates, without growing the common buffer.
+pub(crate) const UTF8_MOUSE_REPORT_INITIAL_CAPACITY: usize = 16;
+
+/// Initial allocation for the common kitty key encoding before optional text.
+///
+/// Thirty-two bytes avoid growth for ordinary key sequences while allowing the
+/// associated-text path to expand when needed.
+pub(crate) const KITTY_KEY_SEQUENCE_INITIAL_CAPACITY: usize = 32;
+
+/// Maximum UTF-8 byte width of one Unicode scalar value.
+///
+/// Unicode encodes each scalar in at most four bytes, which is the fixed
+/// stack-buffer size needed before appending its encoded bytes.
+pub(crate) const UTF8_CODE_POINT_BUFFER_BYTES: usize = 4;

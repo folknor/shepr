@@ -16,6 +16,7 @@ use std::process::{Child, Stdio};
 
 use crate::command::PtyCommand;
 use crate::fd;
+use crate::limits::GETDENTS_READ_BUFFER_BYTES;
 
 /// Both ends of a freshly opened PTY. Both fds are close-on-exec.
 pub struct OpenedPty {
@@ -248,9 +249,11 @@ fn mark_inherited_fds_cloexec() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
+    // limits-exempt: a field offset in the Linux `linux_dirent64` record.
     const DIRENT_RECLEN_OFFSET: usize = 16;
+    // limits-exempt: a field offset in the Linux `linux_dirent64` record.
     const DIRENT_NAME_OFFSET: usize = 19;
-    let mut buffer = [0u8; 4096];
+    let mut buffer = [0u8; GETDENTS_READ_BUFFER_BYTES];
     loop {
         // SAFETY: getdents64 writes at most `buffer.len()` bytes into this
         // live stack buffer and reads only the integer directory fd.

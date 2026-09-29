@@ -1,7 +1,6 @@
 use super::*;
 
-/// Upper bound on the wait for client writers to flush their shutdown frames.
-const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+use crate::limits::SHUTDOWN_FLUSH_TIMEOUT;
 
 /// The server lifecycle states that can affect saves or request handling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

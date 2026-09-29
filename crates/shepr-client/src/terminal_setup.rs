@@ -4,8 +4,11 @@ use std::io;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use crate::limits::{
+    HOST_INPUT_READ_CHUNK_BYTES, HOST_KEYBOARD_QUERY_TIMEOUT, MAX_BUFFERED_HOST_INPUT,
+};
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture,
@@ -130,9 +133,6 @@ pub(super) struct TerminalGuard {
     restored: bool,
 }
 
-const HOST_KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
-const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
-
 fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u8>) {
     let mut buffered_input = Vec::new();
     if let Err(err) = writer
@@ -164,7 +164,7 @@ fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u
             }
         }
 
-        let mut scratch = [0u8; 4096];
+        let mut scratch = [0u8; HOST_INPUT_READ_CHUNK_BYTES];
         let capacity = MAX_BUFFERED_HOST_INPUT - buffered_input.len();
         let read_limit = capacity.min(scratch.len());
         match shepr_platform::read_fd(stdin_fd, &mut scratch[..read_limit]) {
@@ -351,12 +351,19 @@ impl HostMouseMode {
     }
 }
 
+// limits-exempt: each value is a bit position in the terminal restore mask.
 const RESTORE_KITTY_KEYBOARD_ENTRY: u8 = 1 << 0;
+// limits-exempt: each value is a bit position in the terminal restore mask.
 const RESTORE_MODIFY_OTHER_KEYS: u8 = 1 << 1;
+// limits-exempt: each value is a bit position in the terminal restore mask.
 const RESTORE_COLOR_SCHEME_REPORTS: u8 = 1 << 2;
+// limits-exempt: each value is a bit position in the terminal restore mask.
 const RESTORE_FOCUS_CHANGE: u8 = 1 << 3;
+// limits-exempt: each value is a bit position in the terminal restore mask.
 const RESTORE_BRACKETED_PASTE: u8 = 1 << 4;
+// limits-exempt: each value is a bit position in the terminal restore mask.
 const RESTORE_LINE_WRAP: u8 = 1 << 5;
+// limits-exempt: each value is a bit position in the terminal restore mask.
 const RESTORE_MOUSE_CAPTURE: u8 = 1 << 6;
 const RESTORE_KEYBOARD_MASK: u8 = RESTORE_KITTY_KEYBOARD_ENTRY | RESTORE_MODIFY_OTHER_KEYS;
 

@@ -556,10 +556,12 @@ fn append_to_container(
     } else {
         closing
     };
-    let mut updated = String::with_capacity(content.len() + delimiter.len() + value.len() + 1);
+    let separator = if has_elements { "," } else { "" };
+    let mut updated =
+        String::with_capacity(content.len() + delimiter.len() + value.len() + separator.len());
     updated.push_str(&content[..insertion_index]);
     if has_elements {
-        updated.push(',');
+        updated.push_str(separator);
         updated.push_str(delimiter);
     }
     updated.push_str(value);

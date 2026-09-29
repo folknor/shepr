@@ -2,6 +2,7 @@ pub mod blit;
 pub mod copy_mode;
 pub mod host_term;
 pub mod input;
+pub mod limits;
 pub mod scroll;
 
 pub use input::raw_input;

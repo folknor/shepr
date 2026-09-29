@@ -17,32 +17,17 @@ use crate::host_term::theme::{
     parse_palette_color_response,
 };
 use crate::input::{TerminalKey, parse_terminal_key_sequence};
+use crate::limits::{
+    MAX_DISCARDED_CONTROL_TAIL_BYTES, MAX_HOST_COLOR_QUERY_REPLIES,
+    MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES, MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT,
+};
 
+// limits-exempt: ESC is the terminal-control introducer byte used by this parser.
 const ESC: u8 = 0x1b;
-pub const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;
-pub const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
 pub const GHOSTTY_COLOR_SCHEME_DARK_REPORT: &[u8] = b"\x1b[?997;1n";
 pub const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = b"\x1b[?997;2n";
 pub const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
 pub const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
-
-/// Largest bracketed paste body the framer holds while waiting for its
-/// terminator. Past this the held part is closed and delivered as one paste and
-/// the rest of it is dropped up to the terminator, so a paste that never ends
-/// cannot grow the buffer without bound. It is far above the server's
-/// per-message input limit, which rejects such a paste in the client shell
-/// anyway (with a visible notice), so the cut only matters to direct attach,
-/// which streams large pastes through.
-const MAX_PENDING_PASTE_BYTES: usize = 16 * 1024 * 1024;
-
-/// How long a held, unterminated bracketed paste may go without receiving a
-/// byte before the framer stops waiting for its terminator. Terminals write a
-/// paste in one go, so a stall this long means the terminator is not coming;
-/// without the limit every later keystroke would queue behind the paste and
-/// the client would look hung. The check runs when input next arrives: the
-/// held part is delivered as a complete paste and the new input is framed
-/// normally.
-const PASTE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The body of `data` when it is exactly one complete bracketed paste.
 fn complete_bracketed_paste_payload(data: &[u8]) -> Option<&[u8]> {
@@ -191,8 +176,6 @@ fn raw_input_event_kind(event: &RawInputEvent) -> &'static str {
     }
 }
 
-const COLOR_QUERY_REPLIES: u16 = 258;
-
 /// Client-side accounting for replies to queries sent to the outer terminal.
 /// The byte framer only asks whether a reply may still be in flight.
 #[derive(Default)]
@@ -206,7 +189,7 @@ pub struct HostReplies {
 
 impl HostReplyPolicy for HostReplies {
     fn color_query_sent(&mut self) {
-        self.color = COLOR_QUERY_REPLIES;
+        self.color = MAX_HOST_COLOR_QUERY_REPLIES;
     }
 
     fn cell_size_query_sent(&mut self) {
@@ -429,8 +412,6 @@ pub struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
     /// terminator arrives.
     discarding_paste_tail: bool,
 }
-
-const MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES: usize = 32;
 
 impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     pub fn for_host_input() -> Self {
@@ -883,8 +864,6 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         chunks
     }
 }
-
-const MAX_DISCARDED_CONTROL_TAIL_BYTES: usize = 128;
 
 fn plausible_control_string_tail(family: ControlStringFamily, buffer: &[u8]) -> bool {
     match family {

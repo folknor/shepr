@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::limits::KEY_BINDING_COUNT;
+
 use super::{
     AgentPanelSortConfig, BindingConfig, HostCursorModeConfig, NewTerminalCwdConfig,
     PaneBordersConfig, RightClickPassthroughModifierConfig, SidebarCollapsedModeConfig,
@@ -214,24 +216,6 @@ impl From<WireBindingConfig> for BindingConfig {
         }
     }
 }
-
-macro_rules! count_key_binding_fields {
-    (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-    ) => {
-        [
-            $(stringify!($action_field),)*
-            $(stringify!($indexed_field),)*
-            $(stringify!($navigate_config_field),)*
-            $(stringify!($navigate_indexed_config_field),)*
-        ].len()
-    };
-}
-
-const KEY_BINDING_COUNT: usize = crate::keybinding_table!(count_key_binding_fields);
 
 impl WireKeysConfig {
     fn from_config(keys: &KeysConfig) -> Self {

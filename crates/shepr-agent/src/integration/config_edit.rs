@@ -6,6 +6,7 @@ use serde_json::{Map, Value, json};
 use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
 
 use crate::agent::IntegrationTarget as Target;
+use crate::limits::TOML_BASIC_STRING_DELIMITER_BYTES;
 
 use super::command::hook_command;
 use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END};
@@ -479,7 +480,7 @@ fn unterminated_kimi_block_error() -> io::Error {
 }
 
 pub(crate) fn toml_basic_string(value: &str) -> String {
-    let mut result = String::with_capacity(value.len() + 2);
+    let mut result = String::with_capacity(value.len() + TOML_BASIC_STRING_DELIMITER_BYTES);
     result.push('"');
     for ch in value.chars() {
         match ch {

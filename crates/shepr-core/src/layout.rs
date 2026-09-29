@@ -6,13 +6,12 @@ use std::collections::HashSet;
 use ratatui::layout::{Direction, Rect};
 
 use crate::geometry::SplitBranch;
+use crate::limits::{
+    FIRST_PANE_ID, MIN_SPLIT_CHILD_CELLS, MIN_SPLIT_EXTENT_CELLS, MIN_WORKSPACE_PANES,
+    PLACEHOLDER_PANE_ID, SPLIT_EDGE_MATCH_TOLERANCE_CELLS,
+};
 
-/// Smallest permitted first-child share of a layout split.
-pub const MIN_SPLIT_RATIO: f32 = 0.1;
-/// Largest permitted first-child share of a layout split.
-pub const MAX_SPLIT_RATIO: f32 = 0.9;
-/// First-child share used when a split has no explicit ratio.
-pub const EVEN_SPLIT: f32 = 0.5;
+pub use crate::limits::{EVEN_SPLIT, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO};
 
 /// First-child share of a BSP split.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,12 +41,13 @@ impl SplitRatio {
 pub struct PaneId(u32);
 
 /// Global atomic counter for unique PaneId generation across all workspaces.
-static NEXT_PANE_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+static NEXT_PANE_ID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(FIRST_PANE_ID);
 
 impl PaneId {
     /// Allocate a globally unique PaneId.
     ///
-    /// Never returns the placeholder id 0 and never hands out an id twice.
+    /// Never returns the placeholder ID and never hands out an ID twice.
     /// The counter refuses to advance past `u32::MAX` instead of wrapping, so
     /// exhausting it (four billion panes in one process) is a loud failure
     /// rather than a silent reuse of live ids.
@@ -145,7 +145,7 @@ pub struct TileLayout {
 /// A saved layout defect rejected before it becomes a live [`TileLayout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidSavedLayout {
-    /// A leaf uses ID 0, which layout edits reserve as an internal placeholder.
+    /// A leaf uses the reserved placeholder ID while a layout edit is in progress.
     PlaceholderPaneId,
     /// Two leaves use the same pane identity.
     DuplicatePaneId(PaneId),
@@ -228,7 +228,7 @@ impl TileLayout {
             first
         };
         let new_id = PaneId::alloc();
-        let placeholder = PaneId::from_raw(0);
+        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
         self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
         self.set_focus(new_id);
@@ -248,7 +248,7 @@ impl TileLayout {
             return None;
         }
         let new_id = PaneId::alloc();
-        let placeholder = PaneId::from_raw(0);
+        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
         self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
         Some(new_id)
@@ -265,7 +265,7 @@ impl TileLayout {
         ratio: f32,
         focus: bool,
     ) -> bool {
-        if target == moved || moved.raw() == 0 {
+        if target == moved || moved.raw() == PLACEHOLDER_PANE_ID {
             return false;
         }
         let ids = self.pane_ids();
@@ -273,7 +273,7 @@ impl TileLayout {
             return false;
         }
 
-        let placeholder = PaneId::from_raw(0);
+        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
         self.root = split_at(old, target, direction, moved, SplitRatio::clamped(ratio));
         if focus {
@@ -285,7 +285,7 @@ impl TileLayout {
     /// Close the focused pane, returning focus to the pane it came from when
     /// that pane is still open. Returns false if it's the last pane.
     pub fn close_focused(&mut self) -> bool {
-        if self.pane_count() <= 1 {
+        if self.pane_count() <= MIN_WORKSPACE_PANES {
             return false;
         }
         let ids = self.pane_ids();
@@ -305,7 +305,7 @@ impl TileLayout {
             Some(prev) if prev != target && ids.contains(&prev) => prev,
             _ => ordered,
         };
-        let placeholder = PaneId::from_raw(0);
+        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
         if let Some(new_root) = remove_pane(old, target) {
             self.root = new_root;
@@ -323,10 +323,10 @@ impl TileLayout {
         if self.focus == id {
             return self.close_focused();
         }
-        if self.pane_count() <= 1 || !self.pane_ids().contains(&id) {
+        if self.pane_count() <= MIN_WORKSPACE_PANES || !self.pane_ids().contains(&id) {
             return false;
         }
-        let placeholder = PaneId::from_raw(0);
+        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
         let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
         let Some(new_root) = remove_pane(old, id) else {
             return false;
@@ -441,7 +441,7 @@ impl TileLayout {
 fn collect_validated_ids(node: &Node, ids: &mut HashSet<PaneId>) -> Result<(), InvalidSavedLayout> {
     match node {
         Node::Pane(id) => {
-            if id.raw() == 0 {
+            if id.raw() == PLACEHOLDER_PANE_ID {
                 return Err(InvalidSavedLayout::PlaceholderPaneId);
             }
             if !ids.insert(*id) {
@@ -529,7 +529,7 @@ fn ranges_overlap(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> bool {
 }
 
 fn split_on_requested_edge(split: &SplitBorder, focused: Rect, nav: NavDirection) -> bool {
-    split_edge_distance(split, focused, nav) <= 1
+    split_edge_distance(split, focused, nav) <= SPLIT_EDGE_MATCH_TOLERANCE_CELLS
 }
 
 fn split_area_overlaps_focused_pane(split: &SplitBorder, focused: Rect, nav: NavDirection) -> bool {
@@ -824,17 +824,18 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
 }
 
 fn split_extent(total: u16, ratio: f32) -> (u16, u16) {
-    // For axes at least two cells wide, keep one cell for each child even when
-    // the requested fraction rounds to an endpoint. A one-cell axis cannot
-    // show both children, so retain the ratio-based allocation there.
+    // For axes at least `MIN_SPLIT_EXTENT_CELLS` wide, keep
+    // `MIN_SPLIT_CHILD_CELLS` for each child even when the requested fraction
+    // rounds to an endpoint. A smaller axis cannot show both children, so
+    // retain the ratio-based allocation there.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "SplitRatio keeps the product finite and within [0, total] before rounding"
     )]
     let first = (f32::from(total) * ratio).round() as u16;
-    let first = if total >= 2 {
-        first.clamp(1, total - 1)
+    let first = if total >= MIN_SPLIT_EXTENT_CELLS {
+        first.clamp(MIN_SPLIT_CHILD_CELLS, total - MIN_SPLIT_CHILD_CELLS)
     } else {
         first
     };

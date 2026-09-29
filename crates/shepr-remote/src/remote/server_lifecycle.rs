@@ -2,10 +2,9 @@ use super::*;
 
 use std::io;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-pub(super) const REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
-pub(super) const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+use crate::limits::{REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT, REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RemoteServerStatus {

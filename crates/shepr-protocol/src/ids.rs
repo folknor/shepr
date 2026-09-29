@@ -326,6 +326,7 @@ mod public_child_id_tests {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TerminalId(String);
 
+// Starting at one keeps generated terminal ID suffixes nonzero.
 static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 
 impl TerminalId {

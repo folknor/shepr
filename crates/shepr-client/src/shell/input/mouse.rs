@@ -189,7 +189,12 @@ impl ClientShellState {
     }
 
     fn selection_edge_scroll_lines(distance: u16) -> usize {
-        usize::from(distance).saturating_mul(3).clamp(3, 15)
+        usize::from(distance)
+            .saturating_mul(crate::limits::SELECTION_EDGE_SCROLL_LINES_PER_ROW)
+            .clamp(
+                crate::limits::MIN_SELECTION_EDGE_SCROLL_LINES,
+                crate::limits::MAX_SELECTION_EDGE_SCROLL_LINES,
+            )
     }
 
     fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<shepr_termio::ScrollMetrics> {
@@ -527,7 +532,10 @@ impl ClientShellState {
                 (i32::from(point.1), i32::from(hit.area.y), hit.area.height)
             }
         };
-        ((pointer + grab_offset - origin) as f32 / f32::from(length.max(1))).clamp(0.1, 0.9)
+        ((pointer + grab_offset - origin) as f32 / f32::from(length.max(1))).clamp(
+            shepr_core::layout::MIN_SPLIT_RATIO,
+            shepr_core::layout::MAX_SPLIT_RATIO,
+        )
     }
 
     fn tab_drop_index_at(&self, point: (u16, u16)) -> Option<usize> {

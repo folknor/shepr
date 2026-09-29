@@ -2,11 +2,12 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) const DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 5;
-pub(crate) const DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 2;
-pub(crate) const MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 31_536_000;
-pub(crate) const MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 3_600;
-pub(crate) const MAX_TAB_BAR_RIGHT_ENTRIES: usize = 16;
+use crate::limits::{
+    DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS, DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
+    MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS, MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
+    MAX_TAB_BAR_RIGHT_ENTRIES, MIN_TAB_BAR_COMMAND_INTERVAL_SECONDS,
+    MIN_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
+};
 
 #[derive(Debug, Clone)]
 pub enum ValidatedTabBarRightEntry {
@@ -107,9 +108,9 @@ pub(crate) fn parse_tab_bar_right_entries(
                     diagnostics.push(format!("ui.tab_bar_right[{index}] command is empty"));
                     valid = false;
                 }
-                if *interval_seconds == 0 {
+                if *interval_seconds < MIN_TAB_BAR_COMMAND_INTERVAL_SECONDS {
                     diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] interval_seconds must be at least 1"
+                        "ui.tab_bar_right[{index}] interval_seconds must be at least {MIN_TAB_BAR_COMMAND_INTERVAL_SECONDS}"
                     ));
                     valid = false;
                 }
@@ -119,9 +120,9 @@ pub(crate) fn parse_tab_bar_right_entries(
                     ));
                     valid = false;
                 }
-                if *timeout_seconds == 0 {
+                if *timeout_seconds < MIN_TAB_BAR_COMMAND_TIMEOUT_SECONDS {
                     diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] timeout_seconds must be at least 1"
+                        "ui.tab_bar_right[{index}] timeout_seconds must be at least {MIN_TAB_BAR_COMMAND_TIMEOUT_SECONDS}"
                     ));
                     valid = false;
                 }

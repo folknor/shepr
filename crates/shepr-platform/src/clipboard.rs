@@ -3,12 +3,7 @@
 //! and error kinds only.
 
 use super::*;
-use std::{
-    io::Write,
-    os::fd::AsRawFd,
-    process::Stdio,
-    time::{Duration, Instant},
-};
+use std::{io::Write, os::fd::AsRawFd, process::Stdio, time::Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ClipboardCommand {
@@ -19,22 +14,11 @@ pub(super) struct ClipboardCommand {
     pub(super) owns_selection_after_exit: bool,
 }
 
-/// How long one clipboard read or write may take, across every helper it
-/// tries, before the helper is killed. A helper can hang indefinitely (an X
-/// selection owner that never answers, a compositor that is gone) and must
-/// not outlive the request that started it.
-pub(super) const CLIPBOARD_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// Clipboard helpers read no paths. A selection-owning helper can outlive the
 /// request, so it must not pin the directory shepr happened to start in.
 fn clipboard_helper_dir() -> &'static std::path::Path {
     std::path::Path::new("/")
 }
-
-/// Maximum bytes read from a host clipboard helper for a paste. This bounds
-/// host-initiated reads; the terminal emulator separately bounds terminal-
-/// originated OSC 52 stores, which travel in the opposite direction.
-pub(super) const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
 
 /// The real clock, in the shared form the child-output deadline reader holds.
 fn system_clock() -> std::sync::Arc<dyn Fn() -> Instant + Send + Sync> {
@@ -55,7 +39,7 @@ fn write_clipboard_with_clock(
     bytes: &[u8],
     now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
 ) -> bool {
-    let deadline = now() + CLIPBOARD_HELPER_TIMEOUT;
+    let deadline = now() + super::limits::CLIPBOARD_HELPER_TIMEOUT;
     commands
         .iter()
         .any(|command| run_clipboard_command_with_clock(command, bytes, deadline, now))
@@ -73,7 +57,7 @@ pub fn read_clipboard_text() -> Option<String> {
 fn read_clipboard_text_with_clock(
     now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
 ) -> Option<String> {
-    let deadline = now() + CLIPBOARD_HELPER_TIMEOUT;
+    let deadline = now() + super::limits::CLIPBOARD_HELPER_TIMEOUT;
     read_clipboard_text_commands(ClipboardSession::from_env())
         .iter()
         .find_map(|command| read_clipboard_text_with_command_with_clock(command, deadline, now))
@@ -262,7 +246,7 @@ pub(super) fn read_clipboard_text_with_command_with_clock(
         deadline,
         std::sync::Arc::clone(now),
     );
-    let bytes = match read_limited_reader(stdout, MAX_CLIPBOARD_TEXT_BYTES) {
+    let bytes = match read_limited_reader(stdout, super::limits::MAX_CLIPBOARD_TEXT_BYTES) {
         Ok(LimitedRead::Complete(bytes)) => Some(bytes),
         Ok(LimitedRead::Empty) => None,
         // Too large, unreadable, or out of time: stop the helper rather than

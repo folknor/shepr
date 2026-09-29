@@ -1,3 +1,5 @@
+use crate::limits::MAX_EVENT_HISTORY;
+
 #[derive(Clone, Default)]
 pub struct EventHub {
     inner: std::sync::Arc<std::sync::Mutex<EventHubState>>,
@@ -22,8 +24,6 @@ pub enum EventHistoryError {
 }
 
 impl EventHub {
-    const MAX_EVENTS: usize = 512;
-
     pub fn push(&self, event: crate::schema::EventEnvelope) {
         let sequence = {
             // A poisoned history may have inconsistent sequence and event data; do not publish
@@ -34,7 +34,7 @@ impl EventHub {
             state.next_sequence += 1;
             let sequence = state.next_sequence;
             state.events.push((sequence, event));
-            let overflow = state.events.len().saturating_sub(Self::MAX_EVENTS);
+            let overflow = state.events.len().saturating_sub(MAX_EVENT_HISTORY);
             if overflow > 0 {
                 state.events.drain(0..overflow);
             }
@@ -95,19 +95,19 @@ mod tests {
                 .expect("test precondition")
                 .is_empty()
         );
-        for _ in 0..EventHub::MAX_EVENTS {
+        for _ in 0..MAX_EVENT_HISTORY {
             hub.push(event());
         }
         assert_eq!(
             hub.events_after_checked(0)
                 .expect("test precondition")
                 .len(),
-            EventHub::MAX_EVENTS
+            MAX_EVENT_HISTORY
         );
         hub.push(event());
         assert_eq!(hub.events_after_checked(0), Err(EventHistoryError::Lost));
         let retained = hub.events_after_checked(1).expect("test precondition");
-        assert_eq!(retained.len(), EventHub::MAX_EVENTS);
+        assert_eq!(retained.len(), MAX_EVENT_HISTORY);
         assert_eq!(retained.first().expect("test precondition").0, 2);
         assert_eq!(
             retained.last().expect("test precondition").0,

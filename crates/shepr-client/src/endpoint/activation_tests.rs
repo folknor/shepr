@@ -1,6 +1,7 @@
 use super::*;
 use crate::tests::test_pane_id;
 use shepr_test_fixtures::*;
+use std::time::Duration;
 
 fn endpoint() -> ClientEndpointId {
     ClientEndpointId::Ssh(

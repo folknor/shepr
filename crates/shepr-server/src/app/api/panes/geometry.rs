@@ -249,9 +249,9 @@ impl App {
         let amount = params
             .amount
             .filter(|amount| amount.is_finite())
-            .unwrap_or(0.05)
+            .unwrap_or(crate::limits::DEFAULT_PANE_RESIZE_AMOUNT)
             .abs()
-            .min(0.5);
+            .min(crate::limits::MAX_PANE_RESIZE_AMOUNT);
         let direction: NavDirection = super::nav_direction(params.direction);
         let area = self.state.view.terminal_area;
         let changed = self

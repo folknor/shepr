@@ -1,3 +1,5 @@
+pub(crate) use crate::limits::HOOK_SEQUENCE_REANCHOR_AFTER;
+use crate::limits::{MAX_HOOK_REPORT_SOURCES, MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -14,24 +16,6 @@ use shepr_protocol::TerminalId;
 #[path = "../metadata.rs"]
 mod metadata;
 pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
-
-/// Hook reports are ordered per source by the `seq` each hook process takes
-/// from its own wall clock (nanoseconds for the shell/python hooks,
-/// microseconds for the JS plugins; only ever compared within one source).
-/// A report whose `seq` is not above the last accepted one is normally a
-/// straggler from a racing hook process and is dropped. Hook processes race
-/// over milliseconds, though; a non-increasing `seq` arriving this long after
-/// the source's last accepted report means the clock stepped backwards (NTP,
-/// resume, a manual change), and dropping would lose every report until the
-/// clock caught up again. Such a report is accepted and re-anchors the
-/// source's sequence.
-pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
-
-/// Maximum source strings retained for hook report ordering on one pane.
-const MAX_HOOK_REPORT_SOURCES: usize = 64;
-
-/// Bound stale-session history per official source; older identities are dropped first.
-const MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE: usize = 64;
 
 /// Whether a report carrying `seq` is older than the source's last accepted
 /// `last_seq` (accepted at `last_accepted_at`). The one ordering rule for

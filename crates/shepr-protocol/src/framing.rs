@@ -1,13 +1,11 @@
 use super::codec::{self, CodecError};
+use super::limits::HANDSHAKE_FRAME_SIZE;
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
+// limits-exempt: the frame format prefixes payloads with a four-byte u32 LE length.
 const LENGTH_PREFIX_BYTES: usize = 4;
-/// Largest client hello a server accepts. Both hello forms are a few hundred
-/// bytes; the small cap keeps an unauthenticated peer from making the
-/// handshake thread allocate a full `MAX_FRAME_SIZE` buffer.
-const HANDSHAKE_FRAME_SIZE: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Framing: length-prefixed binary messages

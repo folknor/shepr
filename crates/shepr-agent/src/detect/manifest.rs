@@ -38,6 +38,11 @@ use regex::Regex;
 use serde::Deserialize;
 
 use super::{Agent, AgentDetection, AgentState, agent_label, parse_agent_label};
+use crate::limits::{
+    MAX_GATE_DEPTH, MAX_MANIFEST_PREVIEW_CHARS, MAX_MATCHER_CHARS, MAX_MATCHERS_PER_GATE,
+    MAX_REGION_LINE_COUNT, MAX_REGIONS_PER_MANIFEST, MAX_RULES_PER_MANIFEST, MAX_TOTAL_GATES,
+    MAX_TOTAL_MATCHERS, MIN_REGION_LINE_COUNT, UTF8_MAX_BYTES_PER_CODEPOINT,
+};
 
 pub const DEFAULT_KNOWN_AGENT_IDLE_FALLBACK: &str = "default_known_agent_idle_fallback";
 pub const NO_SCREEN_MANIFEST_FALLBACK: &str = "no_screen_manifest";
@@ -409,7 +414,7 @@ impl CompiledContains {
     }
 
     fn feed(&self, character: char, needle: &[u8], matched: &mut usize) -> bool {
-        let mut encoded = [0; 4];
+        let mut encoded = [0; UTF8_MAX_BYTES_PER_CODEPOINT];
         for &byte in character.encode_utf8(&mut encoded).as_bytes() {
             while *matched > 0 && byte != needle[*matched] {
                 *matched = self.prefix[*matched - 1];
@@ -448,12 +453,12 @@ fn final_sigma(text: &str, index: usize, case_ignorable: &Regex, cased: &Regex) 
 }
 
 fn is_case_ignorable(character: char, property: &Regex) -> bool {
-    let mut encoded = [0; 4];
+    let mut encoded = [0; UTF8_MAX_BYTES_PER_CODEPOINT];
     property.is_match(character.encode_utf8(&mut encoded))
 }
 
 fn is_cased(character: char, property: &Regex) -> bool {
-    let mut encoded = [0; 4];
+    let mut encoded = [0; UTF8_MAX_BYTES_PER_CODEPOINT];
     property.is_match(character.encode_utf8(&mut encoded))
 }
 
@@ -517,7 +522,7 @@ enum RegionSpec {
     /// `osc_progress`: the last OSC 9;4 progress string, not the screen.
     OscProgress,
     /// `bottom_lines(N)`: the last N lines. For the three counted regions N is
-    /// 1..=65535, written without a leading zero.
+    /// `MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT`, written without a leading zero.
     BottomLines(usize),
     /// `bottom_non_empty_lines(N)`: from the Nth-last non-empty line to the end.
     BottomNonEmptyLines(usize),
@@ -653,16 +658,6 @@ fn recover_poison<T>(result: std::sync::LockResult<T>) -> T {
         Err(poisoned) => poisoned.into_inner(),
     }
 }
-
-const MAX_RULES_PER_MANIFEST: usize = 128;
-const MAX_GATE_DEPTH: usize = 8;
-const MAX_TOTAL_GATES: usize = 512;
-const MAX_MATCHERS_PER_GATE: usize = 32;
-/// Distinct regions one manifest may read. Detection caches region texts in a
-/// fixed array of this size, so the limit is checked when compiling.
-const MAX_REGIONS_PER_MANIFEST: usize = 32;
-const MAX_TOTAL_MATCHERS: usize = 1024;
-const MAX_MATCHER_CHARS: usize = 512;
 
 /// Loaded manifests for every screen-manifest agent, read from the bundled
 /// set plus local overrides in one directory, and swapped wholesale on reload.
@@ -1687,9 +1682,8 @@ fn rule_evidence(rule: &ManifestRule, region_text: &str) -> RuleEvidence {
 }
 
 fn bounded_preview(text: &str) -> String {
-    const MAX_CHARS: usize = 240;
     let mut chars = text.chars();
-    let mut preview: String = chars.by_ref().take(MAX_CHARS).collect();
+    let mut preview: String = chars.by_ref().take(MAX_MANIFEST_PREVIEW_CHARS).collect();
     if chars.next().is_some() {
         preview.push_str("...");
     }
@@ -1769,8 +1763,6 @@ fn region<'a>(input: DetectionInput<'a>, spec: &str) -> &'a str {
     RegionSpec::parse(spec).map_or("", |spec| spec.extract(input))
 }
 
-const MAX_REGION_LINE_COUNT: usize = u16::MAX as usize;
-
 fn region_count(spec: &str, name: &str) -> Option<usize> {
     let count = spec
         .strip_prefix(name)?
@@ -1785,7 +1777,7 @@ fn region_count(spec: &str, name: &str) -> Option<usize> {
     count
         .parse::<usize>()
         .ok()
-        .filter(|count| (1..=MAX_REGION_LINE_COUNT).contains(count))
+        .filter(|count| (MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT).contains(count))
 }
 
 fn bottom_lines(content: &str, count: usize) -> &str {

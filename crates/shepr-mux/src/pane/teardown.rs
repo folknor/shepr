@@ -1,3 +1,4 @@
+use crate::limits::{PANE_TEARDOWN_BUDGET, PANE_TEARDOWN_STEPS};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, Ordering},
@@ -175,14 +176,6 @@ fn run_pane_teardown(pane_id: PaneId, work: &PaneTeardownWork) {
         terminate_pane_session(pane_id, &child_liveness);
     }
 }
-
-const PANE_TEARDOWN_STEP: Duration = Duration::from_millis(250);
-const PANE_TEARDOWN_BUDGET: Duration = PANE_TEARDOWN_STEP.saturating_mul(3);
-const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = [
-    (shepr_platform::Signal::Hangup, PANE_TEARDOWN_STEP),
-    (shepr_platform::Signal::Terminate, PANE_TEARDOWN_STEP),
-    (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
-];
 
 fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
     let session_id = child_liveness.pid();

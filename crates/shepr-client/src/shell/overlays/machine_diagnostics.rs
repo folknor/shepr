@@ -70,7 +70,7 @@ impl ClientShellState {
                 MachineDiagnostic {
                     message: message
                         .filter(|c| !c.is_control() || *c == '\n')
-                        .take(4096)
+                        .take(crate::limits::MAX_MACHINE_DIAGNOSTIC_CHARS)
                         .collect(),
                     requires_authentication,
                 },
