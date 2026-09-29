@@ -271,6 +271,8 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
+    /// The `[[machines]]` entries, in file order.
+    pub machines: Vec<super::MachineConfig>,
 }
 
 #[derive(Debug)]

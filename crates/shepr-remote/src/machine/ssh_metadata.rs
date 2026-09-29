@@ -1,10 +1,13 @@
-use std::io::{self, Read as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use super::{ProfileId, RemoteExecutable};
+use super::{RemoteExecutable, SshTarget};
 use crate::limits::MAX_METADATA_BYTES;
+
+static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Serialize, Deserialize)]
 struct StoredMetadata {
@@ -12,20 +15,21 @@ struct StoredMetadata {
     executable: String,
 }
 
+/// The remembered remote executable for one SSH target. Machines that share a
+/// target share the hint, since the executable belongs to the host.
 pub struct SshMetadataCache {
-    // Saved endpoint discovery and the machine commands use this same per-profile hint.
     path: PathBuf,
     target: String,
 }
 
 impl SshMetadataCache {
-    pub fn new(paths: &shepr_config::AppPaths, profile_id: &ProfileId, target: &str) -> Self {
+    pub fn new(paths: &shepr_config::AppPaths, target: &SshTarget) -> Self {
         Self {
             path: paths
                 .client_state_dir()
                 .join("ssh-metadata")
-                .join(format!("{profile_id}.json")),
-            target: target.to_owned(),
+                .join(format!("{:016x}.json", target_file_key(target.as_str()))),
+            target: target.as_str().to_owned(),
         }
     }
 
@@ -47,8 +51,7 @@ impl SshMetadataCache {
             executable: executable.as_str().to_owned(),
         };
         let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
-        super::catalog::store_private_json(&self.path, &bytes, "SSH metadata")
-            .map_err(io::Error::other)?;
+        store_private_json(&self.path, &bytes)?;
         tracing::debug!(
             path = %self.path.display(),
             target = %self.target,
@@ -64,6 +67,77 @@ impl SshMetadataCache {
         match std::fs::remove_file(&self.path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
+        }
+    }
+}
+
+/// A stable 64-bit FNV-1a hash of the target, naming its cache file. Targets can
+/// hold characters and lengths a file name cannot, and a collision only costs
+/// a cache miss because the stored target is compared on load.
+fn target_file_key(target: &str) -> u64 {
+    // limits-exempt: the FNV-1a 64-bit offset basis and prime are fixed by the algorithm.
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    target.bytes().fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(PRIME)
+    })
+}
+
+/// Writes `content` to `path` through a private temporary file and a rename,
+/// refusing to replace a symlink or a non-file.
+fn store_private_json(path: &Path, content: &[u8]) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid SSH metadata path: {}", path.display()),
+        )
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid SSH metadata path: {}", path.display()),
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to replace SSH metadata through a non-file path",
+        ));
+    }
+
+    let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+    let token = shepr_platform::unpredictable_token()?;
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(file_name);
+    // Keep the random token at its full fixed width hexadecimal representation.
+    temp_name.push(format!("-{token:016x}-{sequence}.tmp"));
+    let temp_path = parent.join(temp_name);
+    let mut temp = shepr_platform::create_private_file(&temp_path)?;
+    let mut cleanup = AbandonedTempFile(Some(temp_path.clone()));
+    temp.write_all(content).and_then(|()| temp.sync_all())?;
+    drop(temp);
+    std::fs::rename(&temp_path, path)?;
+    cleanup.0 = None;
+    shepr_platform::sync_directory(parent)
+}
+
+/// Removes a failed store's temporary file. A failed removal is logged with its
+/// path and does not replace the store error the caller returns.
+struct AbandonedTempFile(Option<PathBuf>);
+
+impl Drop for AbandonedTempFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0
+            && let Err(error) = std::fs::remove_file(path)
+        {
+            tracing::warn!(
+                %error,
+                path = %path.display(),
+                "could not remove temporary SSH metadata file after a failed store"
+            );
         }
     }
 }
@@ -93,8 +167,23 @@ fn load_metadata(path: &Path, target: &str) -> Option<RemoteExecutable> {
 mod tests {
     use super::*;
 
+    /// The cache is keyed by SSH target alone: one target always finds one file
+    /// however many machines name it, and distinct targets get distinct files.
     #[test]
-    fn metadata_is_disposable_fingerprinted_and_independent_per_profile() {
+    fn metadata_path_is_keyed_by_ssh_target() {
+        let scratch = shepr_test_support::ScratchDir::new("ssh-metadata-key");
+        let paths = shepr_config::AppPaths::rooted_at(&scratch, None, None);
+        let target = |value: &str| SshTarget::parse(value).expect("test precondition");
+        let build = SshMetadataCache::new(&paths, &target("dev@build.example"));
+        let again = SshMetadataCache::new(&paths, &target("dev@build.example"));
+        let other = SshMetadataCache::new(&paths, &target("dev@other.example"));
+        assert_eq!(build.path(), again.path());
+        assert_ne!(build.path(), other.path());
+        assert!(build.path().starts_with(paths.client_state_dir()));
+    }
+
+    #[test]
+    fn metadata_is_disposable_fingerprinted_and_independent_per_target() {
         // Not created yet: storing creates the cache directory.
         let root = shepr_test_support::ScratchDir::new("ssh-metadata").join("cache");
         let first = SshMetadataCache {

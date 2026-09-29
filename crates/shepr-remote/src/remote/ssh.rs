@@ -353,10 +353,6 @@ impl RemoteSsh {
         self.target.as_str()
     }
 
-    pub(super) fn destination(&self) -> String {
-        self.target.to_string()
-    }
-
     pub(crate) fn options(&self) -> Option<&ManagedSshOptions> {
         self.managed_config.as_ref().map(|config| &config.options)
     }

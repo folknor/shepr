@@ -126,15 +126,10 @@ impl ClientShellState {
         let Some(diagnostic) = self.machine_diagnostics.errors.get(&id) else {
             return true;
         };
-        let ClientEndpointId::Ssh(profile_id) = &id else {
+        let ClientEndpointId::Ssh(label) = &id else {
             return true;
         };
-        let command = if diagnostic.requires_authentication {
-            format!("shepr machine reconnect {profile_id}")
-        } else {
-            format!("shepr machine status {profile_id}")
-        };
-        let code = format!("machine-diagnostic:{profile_id}");
+        let code = format!("machine-diagnostic:{label}");
         // An explicit click can reopen its diagnostic, but must not replace another notice.
         if self
             .visible_endpoint_notice
@@ -149,7 +144,15 @@ impl ClientShellState {
                 kind: ClientEndpointNoticeKind::Unavailable,
                 code,
             },
-            title: format!("{}: {command}", self.endpoint_label(&id)),
+            title: if diagnostic.requires_authentication {
+                format!(
+                    "{}: shepr machine reconnect {}",
+                    self.endpoint_label(&id),
+                    shepr_remote::shell_quote(label.as_str())
+                )
+            } else {
+                self.endpoint_label(&id).to_owned()
+            },
             body: diagnostic.message.clone(),
         });
         outcome.repaint = true;

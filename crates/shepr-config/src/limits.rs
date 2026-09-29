@@ -23,6 +23,11 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 /// attached client's real geometry is available.
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
+/// Maximum length in bytes of an SSH target.
+///
+/// Bounds a value that ends up on an ssh command line and in the wire config.
+pub(crate) const MAX_SSH_TARGET_BYTES: usize = 1024;
+
 /// Maximum rows accepted in each configured sidebar layout.
 ///
 /// The row cap permits detailed layouts while bounding config-authored UI

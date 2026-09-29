@@ -1,46 +1,20 @@
 use clap::ArgMatches;
-use serde::Serialize;
-
-use shepr_remote::machine::{EndpointCatalog, SshMetadataCache, SshTarget};
 
 use super::CliError;
-use super::matches::{flag, required, string};
+use super::matches::required;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
-    List { json: bool },
-    Status { machine: Option<String>, json: bool },
-    Reconnect { machine: String },
-    Add(AddArgs),
-    Remove { machine: String },
+    Reconnect { label: String },
 }
 
 pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("list", command)) => Some(Command::List {
-            json: flag(command, "json"),
-        }),
-        Some(("status", command)) => Some(Command::Status {
-            machine: string(command, "machine"),
-            json: flag(command, "json"),
-        }),
         Some(("reconnect", command)) => Some(Command::Reconnect {
-            machine: required(command, "machine")?,
-        }),
-        Some(("add", command)) => Some(Command::Add(add_args(command)?)),
-        Some(("remove", command)) => Some(Command::Remove {
-            machine: required(command, "machine")?,
+            label: required(command, "label")?,
         }),
         _ => None,
     }
-}
-
-#[derive(Serialize)]
-struct MachineListRow<'a> {
-    id: &'a str,
-    label: &'a str,
-    target: &'a str,
-    selected: bool,
 }
 
 pub(super) fn run_machine_command(
@@ -49,417 +23,79 @@ pub(super) fn run_machine_command(
 ) -> super::CliResult<i32> {
     let paths: &shepr_config::AppPaths = context;
     match command {
-        Command::List { json } => list(paths, json),
-        Command::Status { machine, json } => {
-            status(machine.as_deref(), json, paths, saved_ssh_settings(paths)?)
-        }
-        Command::Reconnect { machine } => reconnect(paths, &machine, saved_ssh_settings(paths)?),
-        Command::Add(args) => add(paths, args, saved_ssh_settings(paths)?),
-        Command::Remove { machine } => remove(paths, &machine),
+        Command::Reconnect { label } => reconnect(paths, &label),
     }
 }
 
-fn list(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
-    let catalog = load_catalog(paths)?;
-    let selected_profile = catalog.load_selection();
-    let rows = catalog
-        .ssh
-        .iter()
-        .map(|profile| MachineListRow {
-            id: profile.id.as_str(),
-            label: &profile.label,
-            target: profile.target.as_str(),
-            selected: selected_profile.as_ref() == Some(&profile.id),
-        })
-        .collect::<Vec<_>>();
-    if json {
-        // SSH diagnostics can include remote control bytes. serde_json writes ESC as
-        // `\u001b`; the text renderer below escapes controls before printing them.
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&rows).map_err(std::io::Error::other)?
-        );
-        return Ok(0);
-    }
-    if rows.is_empty() {
-        println!("No saved SSH machines.");
-        return Ok(0);
-    }
-    for row in rows {
-        println!("{}\t{}\t{}", row.id, row.label, row.target);
-    }
-    Ok(0)
-}
-
-#[derive(Serialize)]
-struct MachineStatusRow<'a> {
-    id: &'a str,
-    label: &'a str,
-    status: &'static str,
-    error: Option<String>,
-}
-
-fn status(
-    selector: Option<&str>,
-    json: bool,
-    paths: &shepr_config::AppPaths,
-    settings: shepr_remote::SavedSshSettings,
-) -> super::CliResult<i32> {
-    let catalog = load_catalog(paths)?;
-    let profiles = match selector {
-        Some(selector) => {
-            vec![super::target::resolve_machine(&catalog.ssh, selector).map_err(CliError::Usage)?]
-        }
-        None => catalog.ssh.iter().collect(),
-    };
-    let rows = profiles
-        .into_iter()
-        .map(|profile| {
-            let (status, error) = match shepr_remote::check_saved_ssh(
-                paths,
-                profile.id.as_str(),
-                &profile.target,
-                settings,
-            ) {
-                Ok(()) => ("reachable", None),
-                Err(error) => {
-                    let status = if shepr_remote::SshFailureDiagnostic::from_error(&error)
-                        .requires_authentication()
-                    {
-                        "auth required"
-                    } else {
-                        "error"
-                    };
-                    (status, Some(error.to_string()))
-                }
-            };
-            MachineStatusRow {
-                id: profile.id.as_str(),
-                label: &profile.label,
-                status,
-                error,
-            }
-        })
-        .collect::<Vec<_>>();
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&rows).map_err(std::io::Error::other)?
-        );
-    } else {
-        for row in &rows {
-            println!("{}\t{}\t{}", row.id, row.label, row.status);
-            if let Some(error) = &row.error {
-                for line in escaped_error_lines(error) {
-                    println!("{line}");
-                }
-            }
-        }
-        if rows.is_empty() {
-            println!("No saved SSH machines.");
-        }
-    }
-    Ok(i32::from(rows.iter().any(|row| row.error.is_some())))
-}
-
-fn escaped_error_lines(error: &str) -> impl Iterator<Item = String> + '_ {
-    // Keep sanitized SSH stderr's line breaks while escaping controls on each line.
-    error
-        .split('\n')
-        .map(|line| format!("  {}", line.escape_debug()))
-}
-
-fn reconnect(
-    paths: &shepr_config::AppPaths,
-    selector: &str,
-    settings: shepr_remote::SavedSshSettings,
-) -> super::CliResult<i32> {
+/// Authenticates one configured machine in this terminal. The machine is
+/// looked up by label among the `[[machines]]` of the config validated for
+/// this invocation.
+fn reconnect(paths: &shepr_config::AppPaths, label: &str) -> super::CliResult<i32> {
     use std::io::IsTerminal;
-    let catalog = load_catalog(paths)?;
-    let profile =
-        super::target::resolve_machine(&catalog.ssh, selector).map_err(CliError::Usage)?;
+    let config = super::load_validated_config(paths)?;
+    let machine = config
+        .machines()
+        .iter()
+        .find(|machine| machine.label.as_str() == label)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "unknown machine '{label}'; machines are the [[machines]] entries of config.toml"
+            ))
+        })?;
     if !std::io::stdin().is_terminal() {
         return Err(CliError::Usage(
-            "reconnect requires an interactive terminal; use shepr machine status for noninteractive checks"
-                .into(),
+            "reconnect requires an interactive terminal".into(),
         ));
     }
-    let mut authentication =
-        shepr_remote::ssh_authentication_command(paths, &profile.target, settings)?;
+    let settings = shepr_remote::SavedSshSettings {
+        manage_ssh_config: config.remote().manage_ssh_config,
+    };
+    let target = &machine.ssh;
+    let mut authentication = shepr_remote::ssh_authentication_command(paths, target, settings)?;
     if !authentication.command.status()?.success() {
-        return Err(failed(
-            "SSH authentication failed; the saved machine was not changed.",
-        ));
+        return Err(CliError::Failed {
+            message: "SSH authentication failed.".to_owned(),
+            hints: Vec::new(),
+        });
     }
-    shepr_remote::check_saved_ssh(paths, profile.id.as_str(), &profile.target, settings)?;
+    shepr_remote::check_saved_ssh(paths, &machine.label, target, settings)?;
     println!(
-        "Machine {} is reachable. Open Shepr clients retry within {} seconds.",
-        profile.id,
+        "Machine {label} is reachable. Open Shepr clients retry within {} seconds.",
         shepr_client::endpoint::MAX_RETRY_DELAY.as_secs()
     );
     Ok(0)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AddArgs {
-    target: String,
-    label: String,
-}
-
-fn add_args(matches: &ArgMatches) -> Option<AddArgs> {
-    Some(AddArgs {
-        target: required(matches, "ssh-target")?,
-        label: required(matches, "label")?,
-    })
-}
-
-fn add(
-    paths: &shepr_config::AppPaths,
-    args: AddArgs,
-    settings: shepr_remote::SavedSshSettings,
-) -> super::CliResult<i32> {
-    let AddArgs { target, label } = args;
-    let target = SshTarget::parse(target).map_err(|error| CliError::Usage(error.to_string()))?;
-    let mut catalog = load_catalog(paths)?;
-    // This preflight validates fields and capacity before remote setup can wait. Its ID is
-    // intentionally discarded; IDs identify saved rows. Duplicate labels are permitted,
-    // and selectors report ambiguity so callers can use the profile ID.
-    catalog
-        .add_ssh(label.clone(), target.clone())
-        .map_err(|error| CliError::Usage(error.to_string()))?;
-    let executable = shepr_remote::prepare_saved_ssh(
-        paths,
-        &target,
-        settings,
-        &mut super::operator::TerminalOperator,
-    )
-    .map_err(|error| CliError::Failed {
-        message: format!("{error}; machine was not saved"),
-        hints: shepr_remote::saved_ssh_error_hint(&error, &target),
-    })?;
-    // Setup can wait for human approval. Do not overwrite catalog edits made meanwhile.
-    let mut catalog = load_catalog(paths).map_err(|error| {
-        std::io::Error::other(format!(
-            "remote prepared, but machine was not saved: {error}"
-        ))
-    })?;
-    let id = catalog
-        .add_ssh(label, target.clone())
-        .map_err(|error| CliError::Usage(error.to_string()))?;
-    store_catalog(&mut catalog).map_err(|error| {
-        std::io::Error::other(format!(
-            "remote prepared, but machine was not saved: {error}"
-        ))
-    })?;
-    // The machine is saved and reachable either way; a missing cache only means
-    // the first connection discovers the remote shepr again, so this is a warning
-    // and not a failed add.
-    let metadata_cache = SshMetadataCache::new(paths, &id, &target);
-    if let Err(error) = metadata_cache.store(&executable) {
-        eprintln!(
-            "warning: could not cache the remote shepr location in {}: {error}; \
-             connections to {id} rediscover it until the cache can be written",
-            metadata_cache.path().display()
-        );
-    }
-    println!("Saved SSH machine {id}. Remote server is ready.");
-    println!("Open Shepr clients connect automatically.");
-    Ok(0)
-}
-
-fn saved_ssh_settings(
-    paths: &shepr_config::AppPaths,
-) -> super::CliResult<shepr_remote::SavedSshSettings> {
-    let config = super::load_validated_config(paths)?;
-    Ok(shepr_remote::SavedSshSettings {
-        manage_ssh_config: config.remote().manage_ssh_config,
-    })
-}
-
-fn remove(paths: &shepr_config::AppPaths, selector: &str) -> super::CliResult<i32> {
-    let mut catalog = load_catalog(paths)?;
-    let profile =
-        super::target::resolve_machine(&catalog.ssh, selector).map_err(CliError::Usage)?;
-    let id = profile.id.clone();
-    let was_selected = catalog.load_selection().as_ref() == Some(&id);
-    let metadata_cache = SshMetadataCache::new(paths, &id, profile.target.as_str());
-    if !catalog.remove_ssh(&id) {
-        return Err(failed(&format!("machine profile {id} was not found")));
-    }
-    store_catalog(&mut catalog)?;
-    // The profile is already gone from the catalog and a new profile gets a fresh
-    // ID, so nothing reads this file again; a leftover is an orphaned private file
-    // worth naming, not a failed removal.
-    if let Err(error) = metadata_cache.invalidate() {
-        eprintln!(
-            "warning: could not remove cached SSH metadata {}: {error}",
-            metadata_cache.path().display()
-        );
-    }
-    // The next launch falls back to Local instead of naming a removed machine.
-    if was_selected {
-        catalog
-            .store_selection(None)
-            .map_err(std::io::Error::other)?;
-    }
-    println!("Removed SSH machine {id}.");
-    Ok(0)
-}
-
-/// A command failure reported as prose, exit status 1.
-fn failed(message: &str) -> CliError {
-    CliError::Failed {
-        message: message.to_owned(),
-        hints: Vec::new(),
-    }
-}
-
-fn load_catalog(paths: &shepr_config::AppPaths) -> super::CliResult<EndpointCatalog> {
-    EndpointCatalog::load(paths).map_err(|error| std::io::Error::other(error).into())
-}
-
-fn store_catalog(catalog: &mut EndpointCatalog) -> super::CliResult<()> {
-    catalog
-        .store_profiles()
-        .map_err(|error| std::io::Error::other(error).into())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    fn parse_add_args(args: &[String]) -> Result<AddArgs, clap::Error> {
-        let mut argv = vec![
-            "shepr".to_string(),
-            "machine".to_string(),
-            "add".to_string(),
-        ];
-        argv.extend_from_slice(args);
-        let matches = super::super::spec::command().try_get_matches_from(&argv)?;
-        let Some(("machine", machine)) = matches.subcommand() else {
-            panic!("machine command did not parse");
-        };
-        let Some(("add", add)) = machine.subcommand() else {
-            panic!("machine add did not parse");
-        };
-        Ok(add_args(add).expect("test precondition"))
-    }
-
     #[test]
-    fn machine_mutation_commands_only_expose_add_and_remove() {
+    fn the_machine_group_only_exposes_reconnect() {
         let spec = super::super::spec::command();
         let machine = spec
             .get_subcommands()
             .find(|command| command.get_name() == "machine")
             .expect("machine command should be present");
-        let mut subcommands = machine
+        let subcommands = machine
             .get_subcommands()
             .map(clap::Command::get_name)
             .collect::<Vec<_>>();
-        subcommands.sort_unstable();
 
-        assert_eq!(
-            subcommands,
-            vec!["add", "list", "reconnect", "remove", "status"]
-        );
+        assert_eq!(subcommands, vec!["reconnect"]);
     }
 
     #[test]
-    fn machine_status_preserves_error_paragraphs_and_escapes_controls_per_line() {
-        let lines = escaped_error_lines("first\n\nthird\tline\u{1b}[2J").collect::<Vec<_>>();
-
-        assert_eq!(
-            lines,
-            vec![
-                "  first".to_owned(),
-                "  ".to_owned(),
-                "  third\\tline\\u{1b}[2J".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn machine_remove_takes_the_shared_label_or_id_selector() {
+    fn reconnect_takes_a_label() {
         let matches = super::super::spec::command()
-            .try_get_matches_from(["shepr", "machine", "remove", "Build"])
+            .try_get_matches_from(["shepr", "machine", "reconnect", "Build"])
             .expect("test precondition");
         let Some(("machine", machine)) = matches.subcommand() else {
             panic!("machine command did not parse");
         };
-        let Some(("remove", remove)) = machine.subcommand() else {
-            panic!("machine remove did not parse");
-        };
         assert_eq!(
-            remove.get_one::<String>("machine").map(String::as_str),
-            Some("Build")
+            super::parse(machine),
+            Some(super::Command::Reconnect {
+                label: "Build".into()
+            })
         );
-    }
-
-    #[test]
-    fn add_parser_preserves_values_across_argument_orders() {
-        for args in [
-            vec!["--label", "coder", "workstation.coder"],
-            vec!["workstation.coder", "--label", "coder"],
-            vec!["--label=coder", "workstation.coder"],
-        ] {
-            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
-            assert_eq!(
-                parse_add_args(&args).expect("test precondition"),
-                AddArgs {
-                    target: "workstation.coder".into(),
-                    label: "coder".into(),
-                },
-                "{args:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn add_parser_rejects_incomplete_duplicate_and_extra_arguments() {
-        for args in [
-            vec![],
-            vec!["--label", "coder"],
-            vec!["workstation.coder"],
-            vec!["workstation.coder", "--label"],
-            vec![
-                "workstation.coder",
-                "--label",
-                "coder",
-                "--remote-session",
-                "a",
-            ],
-            vec!["--label", "coder", "--label", "other", "workstation.coder"],
-            vec!["--label", "coder", "workstation.coder", "other-host"],
-            vec!["--unknown", "workstation.coder", "--label", "coder"],
-            vec!["--label", "--other", "workstation.coder"],
-        ] {
-            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
-            assert!(parse_add_args(&args).is_err(), "{args:?}");
-        }
-    }
-
-    #[test]
-    fn add_label_does_not_swallow_the_next_option() {
-        // `--label` needs a value; a following option is not taken as one, so
-        // the missing label is what gets reported.
-        let args = ["workstation.coder", "--label", "--label", "coder"]
-            .map(str::to_owned)
-            .to_vec();
-        let error = parse_add_args(&args).expect_err("test precondition");
-        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
-    }
-
-    #[test]
-    fn list_rows_do_not_have_credential_fields() {
-        let encoded = serde_json::to_string(&MachineListRow {
-            id: "0123456789abcdef0123456789abcdef",
-            label: "Build",
-            target: "dev@build",
-            selected: false,
-        })
-        .expect("test precondition");
-        assert!(!encoded.contains("password"));
-        assert!(!encoded.contains("key"));
-        assert!(!encoded.contains("enabled"));
     }
 }

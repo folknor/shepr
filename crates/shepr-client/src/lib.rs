@@ -74,19 +74,11 @@ use shepr_termio::blit as render_ansi;
 
 /// Runs the local shell client with startup settings already loaded by the
 /// launch coordinator. The binary launcher installs the process-wide file
-/// logger before calling this function.
-pub fn run_client_with_launch_config(
+/// logger before calling this function. The saved machines are the launch
+/// config's `[[machines]]`, fixed for the life of the client.
+fn run_launched_client(
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
-    endpoint_catalog: endpoint::EndpointCatalog,
-) -> Result<ClientExit, ClientRunError> {
-    run_client_with_launch_state(config, paths, Some(endpoint_catalog))
-}
-
-fn run_client_with_launch_state(
-    config: &shepr_config::ValidatedConfig,
-    paths: &shepr_config::AppPaths,
-    initial_catalog: Option<endpoint::EndpointCatalog>,
 ) -> Result<ClientExit, ClientRunError> {
     let settings = ClientSettings::resolve(config).map_err(io::Error::from)?;
     let socket_path = paths.server_address().client_socket().to_path_buf();
@@ -98,17 +90,13 @@ fn run_client_with_launch_state(
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
         paths: paths.clone(),
-        local_socket_path: socket_path.clone(),
     };
 
     crate::logging::startup("client");
     info!(path = %socket_path.display(), "connecting to server");
 
-    let endpoint_catalog = match initial_catalog {
-        Some(catalog) => catalog,
-        None => endpoint::EndpointCatalog::load(paths).map_err(ClientRunError::LaunchCatalog)?,
-    };
-    let local_failure_policy = endpoint::LocalFailurePolicy::for_catalog(&endpoint_catalog);
+    let machines = config.machines().to_vec();
+    let local_failure_policy = endpoint::LocalFailurePolicy::for_machines(&machines);
 
     let initial_stream = match shepr_platform::ipc::connect_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
@@ -190,7 +178,7 @@ fn run_client_with_launch_state(
     let result = rt.block_on(async {
         run_client_loop(
             initial,
-            endpoint_catalog,
+            machines,
             local_failure_policy,
             geometry,
             should_quit,
@@ -230,7 +218,7 @@ fn run_client_with_launch_state(
 /// - main loop: coordinates input, output, and server communication
 async fn run_client_loop(
     initial: Option<LocalStream>,
-    endpoint_catalog: endpoint::EndpointCatalog,
+    machines: Vec<shepr_config::MachineConfig>,
     local_failure_policy: endpoint::LocalFailurePolicy,
     initial_geometry: shepr_core::geometry::HostGeometry,
     should_quit: Arc<AtomicBool>,
@@ -283,12 +271,8 @@ async fn run_client_loop(
         title_write_failure: HostWriteFailure::default(),
     };
     state.set_host_size(cols, rows);
-    let catalog_watch = Some(endpoint::EndpointCatalogWatch::new(
-        &config.paths,
-        launch_now,
-    ));
     let freeze_recovery_attempted = None;
-    state.shell.set_endpoint_catalog(&endpoint_catalog.ssh);
+    state.shell.set_machines(&machines);
     if local_unavailable {
         state.shell.set_endpoint_status(
             &endpoint::ClientEndpointId::Local,
@@ -374,7 +358,7 @@ async fn run_client_loop(
     };
     let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
         &config.paths,
-        &endpoint_catalog.ssh,
+        &machines,
         shepr_remote::SavedSshSettings {
             manage_ssh_config: config.settings.manage_ssh_config(),
         },
@@ -401,15 +385,18 @@ async fn run_client_loop(
     let next_surface_serial = 1_u64;
     let pending_activation: Option<endpoint::PendingEndpointActivation> = None;
     let scheduled_activation = None;
-    let selection = endpoint::selection::EndpointSelectionTracker::new(&endpoint_catalog);
+    let selection = endpoint::selection::EndpointSelectionTracker::new(
+        machines
+            .iter()
+            .map(|machine| machine.label.clone())
+            .collect(),
+    );
 
     let client_timer = timer::ClientLoopTimer::new();
     let mut client_loop = ClientLoop {
         state,
-        endpoint_catalog,
         local_failure_policy,
         should_quit,
-        config,
         write_stream,
         supervisors,
         endpoint_commands,
@@ -418,7 +405,6 @@ async fn run_client_loop(
         scheduled_activation,
         selection,
         client_timer,
-        catalog_watch,
         freeze_recovery_attempted,
         reported_cell_size,
         event_tx,
@@ -458,10 +444,8 @@ fn spawn_workspace_label_lookup(
 
 struct ClientLoop {
     state: ClientState,
-    endpoint_catalog: endpoint::EndpointCatalog,
     local_failure_policy: endpoint::LocalFailurePolicy,
     should_quit: Arc<AtomicBool>,
-    config: ClientLoopConfig,
     write_stream: endpoint::EndpointRegistry,
     supervisors: endpoint::EndpointSupervisors,
     endpoint_commands: endpoint::commands::EndpointCommands,
@@ -470,7 +454,6 @@ struct ClientLoop {
     scheduled_activation: Option<ClientLoopEvent>,
     selection: endpoint::selection::EndpointSelectionTracker,
     client_timer: timer::ClientLoopTimer,
-    catalog_watch: Option<endpoint::EndpointCatalogWatch>,
     freeze_recovery_attempted: Option<(endpoint::ClientEndpointId, u64)>,
     reported_cell_size: Arc<AtomicCellSize>,
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
@@ -486,9 +469,8 @@ impl ClientLoop {
             // client-clock-sample-ok: the pre-wait sample for supervisors and timers.
             let loop_now = std::time::Instant::now();
             // Handoffs finish or roll back in many places; judge the requested selection once
-            // nothing is in flight, so a rolled-back target neither stays selected nor persists.
-            self.selection.settle_and_persist(
-                &self.endpoint_catalog,
+            // nothing is in flight, so a rolled-back target does not stay selected.
+            self.selection.settle(
                 self.pending_activation.is_some()
                     || self.state.deferred_local_activation.is_some()
                     || self.scheduled_activation.is_some(),
@@ -866,7 +848,6 @@ impl ClientLoop {
         let Self {
             write_stream,
             selection,
-            endpoint_catalog,
             state,
             endpoint_commands,
             pending_activation,
@@ -877,8 +858,8 @@ impl ClientLoop {
         let generation = write_stream
             .connection(&endpoint_id)
             .map(|connection| connection.generation.get());
-        // Persisting waits for the handoff to commit; see `endpoint::selection`.
-        if !selection.begin(endpoint_catalog, &endpoint_id, generation) {
+        // A failed handoff rolls the selection back; see `endpoint::selection`.
+        if !selection.begin(&endpoint_id, generation) {
             return Ok(ClientLoopAction::NextEvent);
         }
         begin_endpoint_activation(
@@ -1357,10 +1338,6 @@ impl ClientLoop {
             pending_activation,
             endpoint_commands,
             supervisors,
-            catalog_watch,
-            endpoint_catalog,
-            config,
-            selection,
             scheduled_activation,
             ..
         } = self;
@@ -1416,47 +1393,6 @@ impl ClientLoop {
                 false,
                 now,
             );
-        }
-        match catalog_watch.as_mut().and_then(|watch| watch.poll(now)) {
-            Some(Ok(profiles)) => {
-                let active_retired = follow_endpoint_catalog(
-                    state,
-                    write_stream,
-                    endpoint_commands,
-                    supervisors,
-                    pending_activation,
-                    endpoint_catalog,
-                    &config.local_socket_path,
-                    profiles,
-                    now,
-                );
-                selection.catalog_changed(endpoint_catalog);
-                if active_retired {
-                    clear_endpoint_host_effects(state)?;
-                    if scheduled_activation.is_none() {
-                        *scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
-                            endpoint_id: endpoint::ClientEndpointId::Local,
-                            target: None,
-                            force: false,
-                        });
-                    }
-                }
-                *local_failure_policy = endpoint::LocalFailurePolicy::for_catalog(endpoint_catalog);
-                if local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local)
-                    && write_stream
-                        .connection(&endpoint::ClientEndpointId::Local)
-                        .is_none()
-                {
-                    return Err(ClientError::ConnectionLost(io::Error::new(
-                        io::ErrorKind::NotConnected,
-                        "Local is unavailable and no saved machines remain",
-                    )));
-                }
-            }
-            Some(Err(error)) => {
-                warn!(%error, "saved SSH endpoint catalog changed but is unusable; keeping the machines already loaded");
-            }
-            None => {}
         }
         let expired_endpoints = endpoint_commands
             .expire(now)

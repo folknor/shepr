@@ -8,5 +8,5 @@ pub fn run_client(
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
 ) -> Result<ClientExit, ClientRunError> {
-    run_client_with_launch_state(config, paths, None)
+    run_launched_client(config, paths)
 }

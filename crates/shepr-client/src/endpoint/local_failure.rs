@@ -1,4 +1,4 @@
-use super::{ClientEndpointId, EndpointCatalog};
+use super::ClientEndpointId;
 
 /// Whether losing Local is fatal for the client process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9,12 +9,8 @@ pub(crate) enum LocalFailurePolicy {
 
 impl LocalFailurePolicy {
     /// Resolve the client lifetime rule from its configured saved machines.
-    pub(crate) fn for_catalog(catalog: &EndpointCatalog) -> Self {
-        Self::for_saved_machines(catalog.has_ssh())
-    }
-
-    fn for_saved_machines(has_saved_machines: bool) -> Self {
-        if has_saved_machines {
+    pub(crate) fn for_machines(machines: &[shepr_config::MachineConfig]) -> Self {
+        if !machines.is_empty() {
             Self::Reconnect
         } else {
             Self::ExitClient
@@ -35,23 +31,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_catalog_without_saved_machines_makes_local_failure_fatal() {
-        let catalog = EndpointCatalog::default();
-        let policy = LocalFailurePolicy::for_catalog(&catalog);
+    fn a_config_without_machines_makes_local_failure_fatal() {
+        let policy = LocalFailurePolicy::for_machines(&[]);
         assert!(policy.ends_client_for(&ClientEndpointId::Local));
         assert!(!policy.reconnects_local());
     }
 
     #[test]
-    fn saved_machines_keep_the_client_alive_when_local_fails() {
-        let policy = LocalFailurePolicy::for_saved_machines(true);
+    fn configured_machines_keep_the_client_alive_when_local_fails() {
+        let machine = shepr_config::MachineConfig {
+            label: shepr_config::MachineLabel::parse("Build").expect("test precondition"),
+            ssh: shepr_config::SshTarget::parse("build").expect("test precondition"),
+        };
+        let policy = LocalFailurePolicy::for_machines(std::slice::from_ref(&machine));
         assert!(!policy.ends_client_for(&ClientEndpointId::Local));
         assert!(policy.reconnects_local());
 
-        let remote = ClientEndpointId::Ssh(
-            super::super::ProfileId::parse("0123456789abcdef0123456789abcdef")
-                .expect("test precondition"),
-        );
+        let remote = ClientEndpointId::Ssh(machine.label);
         assert!(!policy.ends_client_for(&remote));
     }
 }

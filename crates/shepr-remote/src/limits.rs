@@ -7,32 +7,10 @@ use std::time::Duration;
 /// it is reused in a shell command.
 pub(crate) const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
 
-/// Maximum UTF-8 bytes in a saved SSH target. The cap covers user, host,
-/// port, and SSH URI forms while bounding catalog data and command arguments.
-pub(crate) const MAX_SSH_TARGET_BYTES: usize = 1024;
-
 /// Maximum bytes read from one cached remote metadata file. Discovery hints
 /// contain only a few paths or names, so the cap leaves ample room without
 /// letting a corrupt cache consume unbounded memory.
 pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
-
-/// Maximum bytes in the saved endpoint catalog. The cap covers a useful
-/// catalog of profiles with typical labels, targets, and JSON
-/// overhead while bounding file reads.
-pub(crate) const MAX_CATALOG_BYTES: u64 = 64 * 1024;
-
-/// Maximum saved SSH profiles. This keeps catalog size and each client refresh
-/// bounded while allowing a useful set of remote machines.
-pub(crate) const MAX_PROFILES: usize = 64;
-
-/// Maximum UTF-8 bytes in a saved endpoint label. This allows a readable name
-/// while keeping catalog rows and user-facing labels compact.
-pub(crate) const MAX_LABEL_BYTES: usize = 128;
-
-/// How often an open client checks the saved machine catalog for changes. An
-/// interval keeps selection updates responsive without polling the
-/// filesystem on every client event.
-pub(crate) const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Maximum UTF-8 bytes in an SSH agent registration response line. The reply
 /// is a small JSON status, so the cap leaves room for its envelope and bounds
@@ -75,14 +53,6 @@ pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// Maximum time for a newly spawned server to expose its client socket. The
 /// deadline allows normal startup while keeping a failed launch finite.
 pub const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Time allowed for a stopped remote server to disappear. The timeout covers
-/// ordinary process shutdown without making an SSH attach wait indefinitely.
-pub(crate) const REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Poll interval while confirming remote server shutdown. It keeps confirmation
-/// responsive without repeatedly invoking SSH.
-pub(crate) const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Delay between checks that an SSH child process has exited. It bounds
 /// completion latency without spinning on `try_wait`.

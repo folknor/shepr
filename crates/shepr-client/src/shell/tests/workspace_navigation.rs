@@ -402,7 +402,7 @@ fn mouse_clicks_cancel_remote_workspace_navigation() {
 
 #[test]
 fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
-    for invalidation in ["offline", "removed", "deleted", "boot", "generation"] {
+    for invalidation in ["offline", "deleted", "boot", "generation"] {
         let (mut state, remote_id) = state_with_remote();
         let mut remote = workspaces(2);
         remote.boot_id = crate::tests::test_boot_id("remote-boot");
@@ -424,7 +424,6 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
         assert_eq!(state.navigate_workspace_id, selected);
         match invalidation {
             "offline" => state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting),
-            "removed" => state.set_endpoint_catalog(&[]),
             "deleted" => {
                 remote.revision = remote.revision.checked_next().expect("test precondition");
                 remote.workspaces.pop();
@@ -712,15 +711,14 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
                 state.set_snapshot(Box::new(workspaces(3)));
             }
             "endpoint" => {
-                let profile = remote_profile();
-                let remote = ClientEndpointId::Ssh(profile.id.clone());
-                state.set_endpoint_catalog(&[profile]);
+                let machine = remote_machine();
+                let remote = ClientEndpointId::Ssh(machine.label.clone());
+                state.set_machines(&[machine]);
                 state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
                 state.set_endpoint_snapshot(&remote, Box::new(snapshot));
                 assert!(state.activate_endpoint_projection(&remote));
                 assert!(state.pending_workspace_highlight.is_none());
                 assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
-                state.set_endpoint_catalog(&[]);
             }
             _ => unreachable!(),
         }

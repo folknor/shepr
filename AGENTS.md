@@ -10,7 +10,7 @@ There is no compatibility with upstream herdr installs. The fork is stripped
 hard: the goal is the smallest code surface that does what the owner uses,
 not parity with upstream.
 
-shepr has never been run: no config, catalog, session or other on-disk state
+shepr has never been run: no config, session or other on-disk state
 exists anywhere, so there is nothing to stay compatible with. Remove legacy
 fields and migration code freely.
 
@@ -34,9 +34,10 @@ Kept:
 - Mouse selection, copy mode, keybinding help, window title templating
 - The JSON API over the server socket. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
-  saved machine. `status`, `server stop`, `detect capture` and `detect explain
-  <PANE>` talk to the local server over its socket; `session`, `integration`,
-  `machine` and `detect explain --file` manage local state in the CLI process
+  configured machine. `status`, `server stop`, `detect capture` and `detect explain
+  <PANE>` talk to the local server over its socket; `integration`,
+  `machine reconnect` and `detect explain --file` manage local state in the CLI
+  process
 
 shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr is deliberately not kept, and
@@ -48,7 +49,7 @@ detection manifest overrides and their reload: a detection change ships as a
 new build.
 
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
-the subcommands are `status`, `machine`, `server`, `session`, `integration`
+the subcommands are `status`, `machine`, `server`, `integration`
 and `detect`. Workspaces, tabs and panes are managed from the TUI only; there
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the text the detector evaluates for a pane, and
@@ -65,7 +66,9 @@ validator.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
-Saved machines are add/remove only. Unreachable ones fail soft. With saved
+Machines are configured in config.toml as `[[machines]]` entries (a `label` and
+an `ssh` target), read once at launch like the rest of the config; there are no
+commands to add, remove or list them. Unreachable ones fail soft. With
 machines configured, losing the local server does not end the client either:
 it keeps serving the remote machines and reconnects once the local server is
 restarted.
@@ -104,7 +107,7 @@ orientation, and nothing checks them:
 - `shepr-config`: configuration parsing and validation.
 - `shepr-api`: JSON API schema, client and server transport.
 - `shepr-termio`: terminal input and copy mode.
-- `shepr-remote`: saved machines and SSH connections.
+- `shepr-remote`: configured machines and SSH connections.
 - `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
 - `shepr-server`: application state, UI and serving.
 - `shepr-client`: endpoint management and TUI presentation.
@@ -141,8 +144,8 @@ so only crates above those can take it.
 The build profile selects the runtime directory and the data directory (saved
 layout, history, server log, lease). A release build keeps the plain XDG
 locations; a dev build uses sibling `shepr-dev` directories, so it has its own
-sockets, saved layout and history with no flag. Config and the saved-machine
-catalog are shared by every profile. The build identity also covers the profile
+sockets, saved layout and history with no flag. Config, machines included, is
+shared by every profile. The build identity also covers the profile
 as well as the source, so a dev and a release build never talk to each other's
 server: one that is reached anyway is refused with guidance.
 

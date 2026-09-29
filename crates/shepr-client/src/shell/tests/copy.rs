@@ -1835,9 +1835,12 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_tabs_and_panes() {
         })
         .collect::<Vec<_>>();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let remote = SavedSshEndpoint::new("Remote", "dev@example.invalid").expect("test precondition");
-    let remote_id = ClientEndpointId::Ssh(remote.id.clone());
-    state.set_endpoint_catalog(&[remote]);
+    let remote = shepr_config::MachineConfig {
+        label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),
+        ssh: shepr_config::SshTarget::parse("dev@example.invalid").expect("test precondition"),
+    };
+    let remote_id = ClientEndpointId::Ssh(remote.label.clone());
+    state.set_machines(&[remote]);
     state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);
     state.set_endpoint_snapshot(&remote_id, Box::new(snapshot.clone()));
     state.set_snapshot(Box::new(snapshot));

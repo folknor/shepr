@@ -1,30 +1,6 @@
 use super::*;
 
 #[test]
-fn remote_setup_approval_requires_input_and_rejects_unrecognized_answers() {
-    for default in [false, true] {
-        for input in ["", "maybe\n"] {
-            assert_eq!(
-                read_remote_confirmation(&mut input.as_bytes(), default)
-                    .expect_err("test precondition")
-                    .kind(),
-                io::ErrorKind::Interrupted
-            );
-        }
-        assert_eq!(
-            read_remote_confirmation(&mut "\n".as_bytes(), default).expect("test precondition"),
-            default
-        );
-        assert!(
-            read_remote_confirmation(&mut "YES\n".as_bytes(), default).expect("test precondition")
-        );
-        assert!(
-            !read_remote_confirmation(&mut "no\n".as_bytes(), default).expect("test precondition")
-        );
-    }
-}
-
-#[test]
 fn parse_remote_server_status_json_reads_running_server() {
     assert_eq!(
         parse_remote_server_status_json(

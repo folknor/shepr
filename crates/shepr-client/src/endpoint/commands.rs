@@ -577,8 +577,7 @@ mod tests {
     #[test]
     fn endpoint_lanes_complete_independently() {
         let remote = ClientEndpointId::Ssh(
-            crate::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
-                .expect("test precondition"),
+            crate::endpoint::MachineLabel::parse("build").expect("test precondition"),
         );
         let mut commands = commands_with_in_flight();
         commands.lanes.insert(
@@ -619,8 +618,7 @@ mod tests {
     #[test]
     fn retiring_complete_source_lane_cancels_queued_ids_and_keeps_other_lanes() {
         let remote = ClientEndpointId::Ssh(
-            crate::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
-                .expect("test precondition"),
+            crate::endpoint::MachineLabel::parse("build").expect("test precondition"),
         );
         let mut commands = commands_with_in_flight();
         commands
@@ -737,8 +735,7 @@ mod tests {
     fn stale_or_unknown_responses_do_not_damage_the_live_lane() {
         let mut commands = commands_with_in_flight();
         let unknown = ClientEndpointId::Ssh(
-            crate::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
-                .expect("test precondition"),
+            crate::endpoint::MachineLabel::parse("build").expect("test precondition"),
         );
 
         assert!(

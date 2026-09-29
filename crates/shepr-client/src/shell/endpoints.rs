@@ -102,8 +102,11 @@ pub enum ClientEndpointFocusTarget {
 }
 
 impl ClientShellState {
-    pub fn set_endpoint_catalog(&mut self, profiles: &[SavedSshEndpoint]) {
-        let mut next = Vec::with_capacity(profiles.len().saturating_add(1));
+    /// Sets the configured machines, once at launch: Local first, then one endpoint per
+    /// `[[machines]]` entry, each Connecting with no snapshot. The set never changes
+    /// while the client runs.
+    pub fn set_machines(&mut self, machines: &[shepr_config::MachineConfig]) {
+        let mut next = Vec::with_capacity(machines.len().saturating_add(1));
         let local = self
             .endpoints
             .iter()
@@ -111,46 +114,19 @@ impl ClientShellState {
             .cloned()
             .unwrap_or_else(local_endpoint);
         next.push(local);
-        for profile in profiles {
-            let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
-            let previous = self
-                .endpoints
-                .iter()
-                .find(|endpoint| endpoint.endpoint_id == endpoint_id);
+        for machine in machines {
             next.push(ClientShellEndpoint {
-                endpoint_id,
-                label: profile.label.clone(),
-                status: previous
-                    .map_or(ClientEndpointStatus::Connecting, |endpoint| endpoint.status),
-                snapshot: previous.and_then(|endpoint| endpoint.snapshot.clone()),
-                resolved_config: previous.and_then(|endpoint| endpoint.resolved_config.clone()),
-                resolved_config_error: previous
-                    .and_then(|endpoint| endpoint.resolved_config_error.clone()),
-                snapshot_generation: previous.and_then(|endpoint| endpoint.snapshot_generation),
-                agent_recency: previous.map_or_default(|endpoint| endpoint.agent_recency.clone()),
+                endpoint_id: ClientEndpointId::Ssh(machine.label.clone()),
+                label: machine.label.to_string(),
+                status: ClientEndpointStatus::Connecting,
+                snapshot: None,
+                resolved_config: None,
+                resolved_config_error: None,
+                snapshot_generation: None,
+                agent_recency: HashMap::new(),
             });
         }
-
-        if !next
-            .iter()
-            .any(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-        {
-            self.select_unavailable_local();
-        }
-        self.collapsed_endpoints.retain(|endpoint_id| {
-            next.iter()
-                .any(|endpoint| &endpoint.endpoint_id == endpoint_id)
-        });
         self.endpoints = next;
-    }
-
-    pub(crate) fn select_unavailable_local(&mut self) {
-        self.reset_endpoint_projection();
-        self.active_endpoint_id = ClientEndpointId::Local;
-        self.mode = ClientShellMode::Terminal;
-        self.snapshot = None;
-        self.active_resolved_config = None;
-        self.graphics_scope = "local:unavailable".to_owned();
     }
 
     pub fn set_endpoint_status(

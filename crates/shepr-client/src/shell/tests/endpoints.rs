@@ -2,14 +2,17 @@ use super::*;
 
 #[path = "workspace_navigation.rs"]
 mod workspace_navigation;
-use crate::endpoint::{ClientEndpointId, ClientEndpointStatus, ProfileId, SavedSshEndpoint};
+use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
-fn remote_profile() -> SavedSshEndpoint {
-    SavedSshEndpoint {
-        id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
-        label: "Build".into(),
-        target: shepr_remote::SshTarget::parse("dev@build.example").expect("test precondition"),
+fn remote_machine() -> shepr_config::MachineConfig {
+    machine_named("Build", "dev@build.example")
+}
+
+fn machine_named(label: &str, ssh: &str) -> shepr_config::MachineConfig {
+    shepr_config::MachineConfig {
+        label: shepr_config::MachineLabel::parse(label).expect("test precondition"),
+        ssh: shepr_config::SshTarget::parse(ssh).expect("test precondition"),
     }
 }
 
@@ -30,10 +33,16 @@ fn agent(status: shepr_api::schema::AgentStatus, state_change_seq: u64) -> Clien
 }
 
 fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
+    state_with_machines(&[remote_machine()])
+}
+
+/// Online state with a remote snapshot for the first machine; any others stay Connecting.
+fn state_with_machines(
+    machines: &[shepr_config::MachineConfig],
+) -> (ClientShellState, ClientEndpointId) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let profile = remote_profile();
-    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
-    state.set_endpoint_catalog(&[profile]);
+    let endpoint_id = ClientEndpointId::Ssh(machines[0].label.clone());
+    state.set_machines(machines);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
@@ -76,9 +85,9 @@ fn repeated_endpoint_snapshots_reuse_the_validated_config() {
 #[test]
 fn switching_to_an_endpoint_with_an_undecodable_config_keeps_the_previous_one() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let profile = remote_profile();
-    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
-    state.set_endpoint_catalog(&[profile]);
+    let machine = remote_machine();
+    let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
+    state.set_machines(&[machine]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
@@ -241,11 +250,7 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
             .take()
             .expect("test precondition");
         assert!(notice.body.contains("Permission denied"));
-        assert!(
-            notice
-                .title
-                .contains("shepr machine reconnect 0123456789abcdef0123456789abcdef")
-        );
+        assert!(notice.title.contains("shepr machine reconnect Build"));
     }
     state.set_endpoint_status(&id, ClientEndpointStatus::Online);
     state.compose(120, 40).expect("test precondition");
@@ -544,63 +549,27 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
 }
 
 #[test]
-fn live_catalog_rename_preserves_snapshot_and_remove_readd_clears_it() {
-    let (mut state, remote) = state_with_remote();
-    let mut profile = remote_profile();
-    profile.label = "Renamed".into();
-    state.set_endpoint_catalog(&[profile.clone()]);
-    assert_eq!(state.endpoint_label(&remote), "Renamed");
-    assert!(state.endpoint_is_online(&remote));
-    assert_eq!(
-        state.endpoint_boot_id(&remote),
-        Some(&crate::tests::test_boot_id("remote-boot"))
-    );
-    state.set_endpoint_catalog(&[]);
-    assert_eq!(state.endpoint_status(&remote), None);
-    assert!(!state.endpoint_has_snapshot(&remote));
-    state.set_endpoint_catalog(&[profile]);
+fn configured_machines_start_connecting_without_a_snapshot() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let machine = remote_machine();
+    let remote = ClientEndpointId::Ssh(machine.label.clone());
+    state.set_machines(&[machine]);
+    assert_eq!(state.endpoint_label(&remote), "Build");
     assert_eq!(
         state.endpoint_status(&remote),
         Some(ClientEndpointStatus::Connecting)
     );
     assert!(!state.endpoint_has_snapshot(&remote));
-}
-
-#[test]
-fn live_catalog_active_removal_does_not_retain_remote_projection_or_input() {
-    let (mut state, remote) = state_with_remote();
-    assert!(state.activate_endpoint_projection(&remote));
-    state.set_pane_surface(surface());
-    state.mode = ClientShellMode::Prefix;
-    state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
-        highlighted: 0,
-    }));
-    state.select_unavailable_local();
-    state.set_endpoint_catalog(&[]);
     assert!(state.endpoint_is_active(&ClientEndpointId::Local));
-    assert!(state.snapshot.is_none());
-    assert!(state.pane_surface.is_none());
-    assert!(state.pending_pane_surface.is_none());
-    assert!(state.overlay.is_none());
-    assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(state.endpoint_has_snapshot(&ClientEndpointId::Local));
-    let frame = state.compose(100, 30).expect("test precondition");
-    let buffer = frame.to_ratatui_buffer().expect("test precondition");
-    let text = buffer
-        .content()
-        .iter()
-        .map(ratatui::buffer::Cell::symbol)
-        .collect::<String>();
-    assert!(!text.contains("remote-workspace"));
 }
 
 #[test]
 fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
     for (cols, rows) in [(100, 28), (36, 18)] {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-        let profile = remote_profile();
-        let remote = ClientEndpointId::Ssh(profile.id.clone());
-        state.set_endpoint_catalog(&[profile]);
+        let machine = remote_machine();
+        let remote = ClientEndpointId::Ssh(machine.label.clone());
+        state.set_machines(&[machine]);
         state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
         state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
         state.set_endpoint_snapshot(&remote, Box::new(snapshot()));
@@ -987,9 +956,9 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         AgentSidebarToken::Agent,
     ]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    let profile = remote_profile();
-    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
-    state.set_endpoint_catalog(&[profile]);
+    let machine = remote_machine();
+    let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
+    state.set_machines(&[machine]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
 
     let mut local = snapshot();
@@ -1050,9 +1019,9 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    let profile = remote_profile();
-    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
-    state.set_endpoint_catalog(&[profile]);
+    let machine = remote_machine();
+    let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
+    state.set_machines(&[machine]);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
 
     let mut local = snapshot();
@@ -1243,12 +1212,9 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
             ClientEndpointStatus::Online,
             ClientEndpointStatus::Reconnecting,
         ] {
-            let (mut state, remote_id) = state_with_remote();
-            let mut other_profile = remote_profile();
-            other_profile.id =
-                ProfileId::parse("1123456789abcdef0123456789abcdef").expect("test precondition");
-            let other_id = ClientEndpointId::Ssh(other_profile.id.clone());
-            state.set_endpoint_catalog(&[remote_profile(), other_profile]);
+            let other_machine = machine_named("Other", "dev@other.example");
+            let other_id = ClientEndpointId::Ssh(other_machine.label.clone());
+            let (mut state, remote_id) = state_with_machines(&[remote_machine(), other_machine]);
             state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
             state.set_endpoint_snapshot(&other_id, Box::new(snapshot()));
             state.set_endpoint_status(&remote_id, status);

@@ -24,7 +24,7 @@ mod ssh;
 #[path = "remote/ssh_agent.rs"]
 mod ssh_agent;
 
-use crate::machine::RemoteExecutable;
+use crate::machine::{MachineLabel, RemoteExecutable};
 use bridge::*;
 use discovery::*;
 use launch::*;
@@ -35,9 +35,8 @@ pub use crate::machine::SshTarget;
 pub use args::*;
 pub use bridge::{BridgeUpload, BridgeUploadEnd};
 pub use host::run_remote_client_bridge;
-pub use launch::{check_saved_ssh, interactive_shell_command, prepare_saved_ssh, shell_quote};
+pub use launch::{check_saved_ssh, interactive_shell_command, shell_quote};
 pub use saved::*;
-pub use server_lifecycle::{Confirmation, Operator};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

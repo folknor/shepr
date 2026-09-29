@@ -13,9 +13,7 @@ pub(crate) use local_failure::*;
 pub(crate) use message_policy::*;
 pub(crate) use registry::*;
 pub use registry::{EndpointRegistry, EndpointTransport};
-pub use shepr_remote::machine::{
-    EndpointCatalog, EndpointCatalogChanges, EndpointCatalogWatch, ProfileId, SavedSshEndpoint,
-};
+pub use shepr_config::MachineLabel;
 pub use supervisor::MAX_RETRY_DELAY;
 pub(crate) use supervisor::*;
 pub(crate) use writer::NativeEndpointTransport;
@@ -23,7 +21,7 @@ pub(crate) use writer::NativeEndpointTransport;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClientEndpointId {
     Local,
-    Ssh(ProfileId),
+    Ssh(MachineLabel),
 }
 
 impl ClientEndpointId {
@@ -41,7 +39,7 @@ impl ClientEndpointId {
     pub(crate) fn storage_key(&self) -> String {
         match self {
             Self::Local => "local".into(),
-            Self::Ssh(profile_id) => format!("ssh:{profile_id}"),
+            Self::Ssh(label) => format!("ssh:{label}"),
         }
     }
 }
@@ -59,22 +57,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_storage_keys_do_not_contain_ssh_targets() {
-        let profile =
-            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
-        assert_eq!(
-            ClientEndpointId::Ssh(profile).storage_key(),
-            "ssh:0123456789abcdef0123456789abcdef"
-        );
+    fn endpoint_storage_keys_use_the_label_not_the_ssh_target() {
+        let label = MachineLabel::parse("build").expect("test precondition");
+        assert_eq!(ClientEndpointId::Ssh(label).storage_key(), "ssh:build");
     }
 
     #[test]
     fn endpoint_display_labels_have_a_single_local_name() {
-        let profile =
-            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
+        let label = MachineLabel::parse("build").expect("test precondition");
         assert_eq!(ClientEndpointId::Local.display_label(), "Local");
         assert_eq!(
-            ClientEndpointId::Ssh(profile).display_label(),
+            ClientEndpointId::Ssh(label).display_label(),
             "Unknown endpoint"
         );
     }

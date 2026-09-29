@@ -232,14 +232,6 @@ impl EndpointRegistry {
         }
     }
 
-    pub(crate) fn disconnect(&mut self, endpoint_id: &ClientEndpointId) {
-        self.failures
-            .retain(|failure| &failure.endpoint_id != endpoint_id);
-        if let Some(mut connection) = self.connections.remove(endpoint_id) {
-            connection.transport.disconnect();
-        }
-    }
-
     pub(crate) fn fail(&mut self, endpoint_id: &ClientEndpointId, error: &io::Error) {
         self.record_failure(endpoint_id, error);
     }
@@ -318,6 +310,14 @@ impl EndpointRegistry {
         // clock-io-ok: this test-only constructor stands in for the client launch.
         Self::new_at(local, generation, Instant::now())
     }
+
+    pub(crate) fn disconnect(&mut self, endpoint_id: &ClientEndpointId) {
+        self.failures
+            .retain(|failure| &failure.endpoint_id != endpoint_id);
+        if let Some(mut connection) = self.connections.remove(endpoint_id) {
+            connection.transport.disconnect();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -354,9 +354,8 @@ mod tests {
         }
     }
 
-    fn profile() -> crate::endpoint::ProfileId {
-        crate::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
-            .expect("test precondition")
+    fn profile() -> crate::endpoint::MachineLabel {
+        crate::endpoint::MachineLabel::parse("build").expect("test precondition")
     }
 
     #[test]
@@ -402,8 +401,8 @@ mod tests {
     fn every_failed_endpoint_reports_its_newest_failure_once() {
         fn endpoint_id(index: usize) -> ClientEndpointId {
             ClientEndpointId::Ssh(
-                crate::endpoint::ProfileId::parse(format!("{index:032x}"))
-                    .expect("test profile id"),
+                crate::endpoint::MachineLabel::parse(format!("machine-{index}"))
+                    .expect("test machine label"),
             )
         }
         fn insert(registry: &mut EndpointRegistry, index: usize, generation: u64) {

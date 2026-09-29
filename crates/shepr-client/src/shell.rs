@@ -70,7 +70,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use super::endpoint::{ClientEndpointId, ClientEndpointStatus, SavedSshEndpoint};
+use super::endpoint::{ClientEndpointId, ClientEndpointStatus};
 use shepr_config::theme::Palette;
 use shepr_config::{
     LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig, TabBarPositionConfig,

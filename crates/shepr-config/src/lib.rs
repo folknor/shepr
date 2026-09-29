@@ -5,6 +5,7 @@ mod io;
 mod keybinding_table;
 mod keybinds;
 mod limits;
+mod machine;
 mod model;
 mod sidebar;
 mod tab_bar;
@@ -20,6 +21,9 @@ pub use self::agent::ConfigAgent;
 pub use self::limits::{
     DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_MOUSE_SCROLL_LINES,
     DEFAULT_SCROLLBACK_LIMIT_BYTES,
+};
+pub use self::machine::{
+    IntoSshTarget, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,
 };
 /// The raw config values, as deserialized. Runtime code receives a
 /// [`ValidatedConfig`]; raw values become one only through validation
@@ -110,6 +114,9 @@ mod tests {
                     path.pop();
                 }
             }
+            // An empty list (`machines`) has no value to document; the
+            // template shows the entry shape as a commented `[[machines]]`.
+            toml::Value::Array(values) if values.is_empty() => {}
             _ => leaves.push((path.clone(), value.clone())),
         }
     }

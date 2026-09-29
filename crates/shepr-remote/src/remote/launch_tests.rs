@@ -42,10 +42,6 @@ fn remote_bridge_command_uses_installed_binary() {
             "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
         )
     );
-    assert_eq!(
-        remote_shepr.saved_bridge_command(),
-        "/usr/bin/shepr remote-client-bridge </dev/null"
-    );
 }
 
 /// The bridge command is interpreted by /bin/sh, not by the login shell: the

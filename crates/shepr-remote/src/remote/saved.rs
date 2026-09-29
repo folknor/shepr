@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::machine::{ProfileId, RemoteExecutable, SshMetadataCache, SshTarget};
+use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
     DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
@@ -32,9 +32,8 @@ pub struct SavedSshSettings {
     pub manage_ssh_config: bool,
 }
 
-/// Connects one saved SSH machine repeatedly while it remains in the catalog with the same
-/// target (the client follows catalog edits and builds a new connector when a
-/// machine is removed, re-added or re-pointed).
+/// Connects one configured SSH machine repeatedly. The machine set is fixed at
+/// launch, so a connector lives as long as its client.
 ///
 /// It owns what used to be rebuilt on every attempt: the ssh settings fixed at
 /// launch, one temporary managed ssh config (instead of a new directory per
@@ -56,7 +55,7 @@ pub struct SavedSshSettings {
 /// finishes.
 pub struct SavedSshConnector {
     paths: shepr_config::AppPaths,
-    profile_id: ProfileId,
+    label: MachineLabel,
     target: SshTarget,
     settings: SavedSshSettings,
     state: ConnectorState,
@@ -95,13 +94,13 @@ impl StoredSetupError {
 impl SavedSshConnector {
     pub fn new(
         paths: &shepr_config::AppPaths,
-        profile_id: &ProfileId,
+        label: &MachineLabel,
         target: &SshTarget,
         settings: SavedSshSettings,
     ) -> Self {
         let mut connector = Self {
             paths: paths.clone(),
-            profile_id: profile_id.clone(),
+            label: label.clone(),
             target: target.clone(),
             settings,
             state: ConnectorState::default(),
@@ -127,7 +126,7 @@ impl SavedSshConnector {
             } else {
                 tracing::warn!(
                     %error,
-                    profile = %self.profile_id,
+                    machine = %self.label,
                     target = %self.target.as_str(),
                     "saved SSH path setup failed transiently; it will be retried"
                 );
@@ -146,7 +145,7 @@ impl SavedSshConnector {
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    profile = %self.profile_id,
+                    machine = %self.label,
                     target = %self.target.as_str(),
                     "saved SSH setup failed transiently; it will be retried"
                 );
@@ -158,7 +157,7 @@ impl SavedSshConnector {
         // This path is needed even when managed SSH config is disabled. Validate it at
         // launch so an XDG_RUNTIME_DIR that can never hold the local bridge socket fails
         // before the endpoint's first scheduled connection attempt.
-        saved_bridge_path(self.paths.xdg_runtime_dir(), &self.profile_id)?;
+        saved_bridge_path(self.paths.xdg_runtime_dir(), &self.label)?;
         if self.settings.manage_ssh_config {
             shepr_platform::shared_ssh_control_path(
                 self.paths.xdg_runtime_dir(),
@@ -185,7 +184,7 @@ impl SavedSshConnector {
         mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
         let target = &self.target;
-        let metadata_cache = SshMetadataCache::new(&self.paths, &self.profile_id, target.as_str());
+        let metadata_cache = SshMetadataCache::new(&self.paths, target);
         let state = &mut self.state;
         if let Some(error) = &state.launch_fatal_setup_error {
             return Err(error.to_io_error());
@@ -221,7 +220,7 @@ impl SavedSshConnector {
         if let Some(known) = remote_shepr.clone() {
             match Self::attempt(
                 &self.paths,
-                &self.profile_id,
+                &self.label,
                 ssh,
                 target,
                 &known,
@@ -233,7 +232,7 @@ impl SavedSshConnector {
                 Err(error) => {
                     tracing::debug!(
                         %error,
-                        profile = %self.profile_id,
+                        machine = %self.label,
                         target = %self.target.as_str(),
                         "remembered remote Shepr did not connect; rediscovering"
                     );
@@ -250,7 +249,7 @@ impl SavedSshConnector {
                 if discovery.has_progress() {
                     tracing::debug!(
                         %error,
-                        profile = %self.profile_id,
+                        machine = %self.label,
                         target = %self.target.as_str(),
                         "SSH discovery stopped; the next attempt resumes it"
                     );
@@ -264,7 +263,7 @@ impl SavedSshConnector {
         *remote_shepr = Some(discovered.clone());
         match Self::attempt(
             &self.paths,
-            &self.profile_id,
+            &self.label,
             ssh,
             target,
             &discovered,
@@ -277,7 +276,7 @@ impl SavedSshConnector {
                 if let Err(error) = metadata_cache.store(&discovered) {
                     tracing::warn!(
                         %error,
-                        profile = %self.profile_id,
+                        machine = %self.label,
                         target = %target.as_str(),
                         path = %metadata_cache.path().display(),
                         "could not cache SSH machine metadata; later connections rediscover the remote shepr"
@@ -296,7 +295,7 @@ impl SavedSshConnector {
 
     fn attempt<T>(
         paths: &shepr_config::AppPaths,
-        profile_id: &ProfileId,
+        label: &MachineLabel,
         ssh: &RemoteSsh,
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
@@ -307,7 +306,7 @@ impl SavedSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }
-        let path = saved_bridge_path(paths.xdg_runtime_dir(), profile_id)?;
+        let path = saved_bridge_path(paths.xdg_runtime_dir(), label)?;
         let bridge =
             SshStdioBridge::start(target.clone(), remote_shepr, path.clone(), ssh.options())?;
         let stream = shepr_platform::ipc::connect_local_stream(&path)?;
@@ -318,20 +317,42 @@ impl SavedSshConnector {
     }
 }
 
-// The profile only makes these names readable; it is not what keeps bridges
+// The label only makes these names readable; it is not what keeps bridges
 // apart. `remote_bridge_endpoint_path` inserts a fresh random token into every
-// name it hands out, so each bridge (every client attached to one saved
+// name it hands out, so each bridge (every client attached to one configured
 // machine, every connect attempt) binds a
-// socket of its own and removes it on drop. Two bridges for one profile never
+// socket of its own and removes it on drop. Two bridges for one machine never
 // contend for a path, so the busy-socket `AddrInUse` cannot arise between them.
+
+/// Longest run of label characters kept in a socket file name. Labels are
+/// free text, and a socket path has a hard length limit.
+// limits-exempt: bounds a decorative file name fragment, not behavior.
+const BRIDGE_NAME_LABEL_CHARS: usize = 24;
+
+/// The label reduced to a file name fragment: ASCII letters, digits, `-` and `_`
+/// only, at most `BRIDGE_NAME_LABEL_CHARS` of them. Other characters become
+/// `_`, so a label can never inject a path separator.
+fn bridge_name_fragment(label: &MachineLabel) -> String {
+    label
+        .as_str()
+        .chars()
+        .take(BRIDGE_NAME_LABEL_CHARS)
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
 
 /// A fresh socket path for one saved-machine attach bridge. The prefix is
 /// distinct from the `shepr-ssh-` SSH config directories, whose sweep matches
 /// on that prefix.
-fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> io::Result<PathBuf> {
-    let readable = format!("shepr-bridge-{profile_id}.sock");
-    let short = format!("shepr-b-{}.sock", profile_id.short());
-    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
+fn saved_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io::Result<PathBuf> {
+    let readable = format!("shepr-bridge-{}.sock", bridge_name_fragment(label));
+    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, "shepr-b.sock")
 }
 
 fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
@@ -367,34 +388,41 @@ mod tests {
     }
 
     #[test]
-    fn bridge_paths_use_profile_identity_not_target() {
+    fn bridge_paths_use_the_label_not_the_target() {
         let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-paths");
-        let first = saved_bridge_path(
-            runtime_dir.path(),
-            &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
-        )
-        .expect("test precondition");
-        let second = saved_bridge_path(
-            runtime_dir.path(),
-            &ProfileId::parse("fedcba9876543210fedcba9876543210").expect("test precondition"),
-        )
-        .expect("test precondition");
+        let label = |value: &str| MachineLabel::parse(value).expect("test precondition");
+        let first =
+            saved_bridge_path(runtime_dir.path(), &label("build")).expect("test precondition");
+        let second =
+            saved_bridge_path(runtime_dir.path(), &label("laptop")).expect("test precondition");
         assert_ne!(first, second);
+        assert!(first.to_string_lossy().contains("shepr-bridge-build"));
         assert!(!first.to_string_lossy().contains("example.com"));
-        assert!(!first.to_string_lossy().contains("default"));
+    }
+
+    /// Labels are free text; only a bounded, path-safe fragment reaches the
+    /// socket name.
+    #[test]
+    fn bridge_names_sanitize_and_bound_the_label() {
+        let label = MachineLabel::parse("../etc/pass wd \u{e9}").expect("test precondition");
+        assert_eq!(bridge_name_fragment(&label), "___etc_pass_wd__");
+        let long = MachineLabel::parse("x".repeat(500)).expect("test precondition");
+        assert_eq!(bridge_name_fragment(&long).len(), BRIDGE_NAME_LABEL_CHARS);
+        let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-sanitized");
+        let path = saved_bridge_path(runtime_dir.path(), &label).expect("test precondition");
+        assert_eq!(path.parent(), Some(runtime_dir.path()));
     }
 
     /// Two clients attached to one saved machine each bind a bridge socket of
     /// their own at the same time, and dropping them leaves the runtime
     /// directory empty.
     #[test]
-    fn concurrent_bridges_for_one_profile_each_bind_their_own_socket() {
+    fn concurrent_bridges_for_one_machine_each_bind_their_own_socket() {
         let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-concurrent");
-        let profile =
-            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
+        let label = MachineLabel::parse("build").expect("test precondition");
         let paths = [
-            saved_bridge_path(runtime_dir.path(), &profile),
-            saved_bridge_path(runtime_dir.path(), &profile),
+            saved_bridge_path(runtime_dir.path(), &label),
+            saved_bridge_path(runtime_dir.path(), &label),
         ]
         .map(|path| path.expect("test precondition"));
         let bridges: Vec<_> = paths

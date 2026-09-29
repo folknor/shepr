@@ -1,10 +1,6 @@
 use super::*;
 
 use std::io;
-use std::thread;
-use std::time::Instant;
-
-use crate::limits::{REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT, REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RemoteServerStatus {
@@ -17,26 +13,6 @@ pub(super) enum RemoteServerStatus {
         detached_server_daemon: bool,
     },
     NotRunning,
-}
-
-pub(super) fn ensure_remote_server_ready(
-    operator: &mut dyn Operator,
-    ssh: &RemoteSsh,
-    remote_shepr: &RemoteExecutable,
-) -> io::Result<()> {
-    let status = remote_server_status(ssh, remote_shepr)?;
-    let RemoteServerStatus::Running {
-        version,
-        detached_server_daemon: false,
-        ..
-    } = &status
-    else {
-        return ensure_remote_server_build(ssh.target(), &status);
-    };
-    if confirm_remote_server_stop(operator, &ssh.destination(), version.as_deref())? {
-        return stop_remote_server(operator, ssh, remote_shepr);
-    }
-    ensure_remote_server_build(ssh.target(), &status)
 }
 
 /// Rejects a running remote server from another build once, before a bridge starts
@@ -65,8 +41,7 @@ pub(super) fn ensure_remote_server_build(
     ))
 }
 
-/// Queries the remote server's state without judging its build, so shutdown polling
-/// can watch a server from another build go away.
+/// Queries the remote server's state without judging its build.
 pub(super) fn remote_server_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
@@ -116,6 +91,23 @@ fn remote_server_compatibility_error(
     )
 }
 
+/// The error for a remote server that is running but was not started as a
+/// detached daemon, so an SSH drop could take its panes with it. The remedy is
+/// the operator's to apply: this crate never stops a server on its own.
+pub(super) fn remote_server_not_detached_error(
+    machine: &str,
+    target: &str,
+    version: Option<&str>,
+) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "the remote shepr server (v{}) for machine {machine} on {target} was not started as a detached daemon and may not survive SSH connection loss. On that host run `shepr server stop`, which ends its panes including shells, agents and tests, then start shepr again so the bridge starts a detached server",
+            printable_remote_value(version)
+        ),
+    )
+}
+
 /// A single remote-reported token (a version, a build id) for a local message:
 /// printable ASCII and spaces only, else `unknown`.
 pub(super) fn printable_remote_value(value: Option<&str>) -> String {
@@ -145,151 +137,6 @@ pub(super) fn printable_remote_text(value: &str) -> String {
             }
         })
         .collect()
-}
-
-/// Offers to restart a remote server that was not started as a detached
-/// daemon. Declining, or having no terminal to ask on, keeps it running.
-pub(super) fn confirm_remote_server_stop(
-    operator: &mut dyn Operator,
-    target: &str,
-    version: Option<&str>,
-) -> io::Result<bool> {
-    let confirmation = Confirmation {
-        context: vec![
-            format!("remote shepr server on {target} is currently running:"),
-            format!("  server: v{}", printable_remote_value(version)),
-            String::new(),
-            "the remote server was not started as a detached daemon and may not survive SSH connection loss. restart it so network drops disconnect only this client."
-                .to_owned(),
-            "This stops active remote pane processes, including shells, agents, dev servers, and tests."
-                .to_owned(),
-        ],
-        question: "restart the remote server now?".to_owned(),
-        default: false,
-    };
-    match operator.confirm(&confirmation)? {
-        Some(answer) => Ok(answer),
-        None => {
-            operator.notice(&format!(
-                "remote shepr server on {target} is still running v{}.",
-                printable_remote_value(version)
-            ));
-            Ok(false)
-        }
-    }
-}
-
-/// The operator on the far side of an interactive remote operation. This
-/// crate never writes to the terminal or reads stdin itself: the binary owns
-/// operator output and implements this.
-pub trait Operator {
-    /// Shows one line of progress or status text.
-    fn notice(&mut self, line: &str);
-
-    /// Asks a yes/no question. `Ok(None)` means there is no terminal to ask
-    /// on, which the caller treats as the question going unanswered.
-    fn confirm(&mut self, confirmation: &Confirmation) -> io::Result<Option<bool>>;
-}
-
-/// A yes/no question for the operator. The question carries its own default,
-/// so the rendered `[y/N]` hint and the answer to an empty line come from one
-/// value and cannot disagree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Confirmation {
-    /// Lines shown before the question, in order; an empty string is a blank
-    /// line.
-    pub context: Vec<String>,
-    /// The question itself, without the answer hint.
-    pub question: String,
-    /// The answer an empty line gives.
-    pub default: bool,
-}
-
-impl Confirmation {
-    /// The prompt line, question plus answer hint, with a trailing space and
-    /// no newline.
-    pub fn prompt(&self) -> String {
-        let hint = if self.default { "[Y/n]" } else { "[y/N]" };
-        format!("{} {hint} ", self.question)
-    }
-
-    /// Reads one answer line. End of input and an unrecognised answer cancel
-    /// the operation.
-    pub fn read_answer(&self, reader: &mut impl io::BufRead) -> io::Result<bool> {
-        // `Confirmation` is public and supports both defaults, so blank input
-        // must continue to match the hint rendered by `prompt`.
-        read_remote_confirmation(reader, self.default)
-    }
-}
-
-pub(super) fn stop_remote_server(
-    operator: &mut dyn Operator,
-    ssh: &RemoteSsh,
-    remote_shepr: &RemoteExecutable,
-) -> io::Result<()> {
-    // Forced: the operator already confirmed this stop, and the server being
-    // replaced may be of another build than the remote binary, which an
-    // unforced stop refuses.
-    let args = RemoteCliCommand::ServerStop { force: true }.args();
-    let command = remote_shepr.command(&args);
-    let output = ssh.sh_output(&command)?;
-    if !output.status.success() {
-        return Err(command_failed("remote server stop failed", &output));
-    }
-
-    wait_for_remote_server_shutdown(ssh, remote_shepr)?;
-    operator.notice(&format!(
-        "stopped the remote shepr server on {}; it will restart when the remote client bridge attaches.",
-        ssh.target()
-    ));
-    Ok(())
-}
-
-pub(super) fn wait_for_remote_server_shutdown(
-    ssh: &RemoteSsh,
-    remote_shepr: &RemoteExecutable,
-) -> io::Result<()> {
-    // clock-io-ok: shutdown confirmation spans remote status round trips.
-    let deadline = Instant::now() + REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT;
-    loop {
-        if remote_server_status(ssh, remote_shepr)? == RemoteServerStatus::NotRunning {
-            return Ok(());
-        }
-        // clock-io-ok: the remote status request above can consume wall time.
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "shutdown was requested, but the old remote shepr server on {target} is still responding after {} seconds",
-                    REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT.as_secs(),
-                    target = ssh.target()
-                ),
-            ));
-        }
-        thread::sleep(REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL);
-    }
-}
-
-pub(super) fn read_remote_confirmation(
-    reader: &mut impl io::BufRead,
-    default: bool,
-) -> io::Result<bool> {
-    let mut answer = String::new();
-    if reader.read_line(&mut answer)? == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "remote setup cancelled",
-        ));
-    }
-    match answer.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Ok(true),
-        "n" | "no" => Ok(false),
-        "" => Ok(default),
-        _ => Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "remote setup cancelled: expected yes or no",
-        )),
-    }
 }
 
 #[cfg(test)]
@@ -327,87 +174,24 @@ mod tests {
         }
     }
 
-    /// The rendered hint and the answer to an empty line come from one value.
+    /// A non-daemon server is an error that tells the operator what to run,
+    /// and remote-supplied text in it is filtered.
     #[test]
-    fn a_confirmation_prompt_and_its_empty_answer_share_one_default() {
-        for (default, hint) in [(false, "[y/N]"), (true, "[Y/n]")] {
-            let confirmation = Confirmation {
-                context: Vec::new(),
-                question: "restart?".into(),
-                default,
-            };
-            assert_eq!(confirmation.prompt(), format!("restart? {hint} "));
-            assert_eq!(
-                confirmation
-                    .read_answer(&mut "\n".as_bytes())
-                    .expect("an empty line takes the default"),
-                default
-            );
-        }
-    }
+    fn a_non_detached_server_is_an_error_with_instructions() {
+        let error = remote_server_not_detached_error("build", "dev@host", Some("1.0"));
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        let message = error.to_string();
+        assert!(message.contains("machine build on dev@host"), "{message}");
+        assert!(message.contains("`shepr server stop`"), "{message}");
 
-    /// With no terminal to ask on, the server keeps running and the operator
-    /// is told so; nothing is printed by this crate.
-    #[test]
-    fn an_unanswerable_restart_question_keeps_the_server() {
-        struct Absent(Vec<String>);
-        impl Operator for Absent {
-            fn notice(&mut self, line: &str) {
-                self.0.push(line.to_owned());
-            }
-            fn confirm(&mut self, _confirmation: &Confirmation) -> io::Result<Option<bool>> {
-                Ok(None)
-            }
-        }
-        let mut operator = Absent(Vec::new());
-        assert!(
-            !confirm_remote_server_stop(&mut operator, "host", Some("1.0"))
-                .expect("no terminal is not an error")
-        );
-        assert_eq!(
-            operator.0,
-            ["remote shepr server on host is still running v1.0."]
-        );
+        let injected = remote_server_not_detached_error("build", "host", Some("\x1b[2J"));
+        assert!(injected.to_string().contains("vunknown"));
+        assert!(!injected.to_string().contains('\x1b'));
     }
 
     #[test]
-    fn remote_version_text_is_filtered_before_operator_output() {
-        struct Capture {
-            confirmation: Option<Confirmation>,
-            notices: Vec<String>,
-        }
-        impl Operator for Capture {
-            fn notice(&mut self, line: &str) {
-                self.notices.push(line.to_owned());
-            }
-            fn confirm(&mut self, confirmation: &Confirmation) -> io::Result<Option<bool>> {
-                self.confirmation = Some(confirmation.clone());
-                Ok(None)
-            }
-        }
-
+    fn remote_version_text_is_filtered_before_local_output() {
         let injected = "\x1b[2J";
-        let mut operator = Capture {
-            confirmation: None,
-            notices: Vec::new(),
-        };
-        assert!(
-            !confirm_remote_server_stop(&mut operator, "host", Some(injected))
-                .expect("unanswered confirmation keeps the server")
-        );
-        let confirmation = operator.confirmation.expect("confirmation was rendered");
-        assert_eq!(confirmation.context[1], "  server: vunknown");
-        assert!(
-            confirmation
-                .context
-                .iter()
-                .all(|line| !line.contains('\x1b'))
-        );
-        assert_eq!(
-            operator.notices,
-            ["remote shepr server on host is still running vunknown."]
-        );
-
         let error =
             ensure_remote_server_build("host", &running(Some(injected.into()), Some(injected)))
                 .expect_err("different build is rejected");

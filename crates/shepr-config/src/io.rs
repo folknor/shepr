@@ -13,8 +13,8 @@ use super::{
 include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
 
 /// The directory name shepr uses under an XDG base directory for state that
-/// every build shares: the config and the saved-machine catalog. The catalog
-/// lives in `client/` below the state directory of this name.
+/// every build shares: the config and the client-owned state in `client/`
+/// below the state directory of this name.
 const SHARED_APP_DIR_NAME: &str = "shepr";
 
 /// The build profile a binary was compiled with, which decides where it keeps
@@ -24,7 +24,7 @@ const SHARED_APP_DIR_NAME: &str = "shepr";
 /// cargo dev profile) uses `shepr-dev` in place of `shepr` for the runtime
 /// directory and the saved-layout directory, so a dev server and the installed
 /// release server hold different sockets, locks and saved layouts without any
-/// flag. Config and the saved-machine catalog stay shared by every profile.
+/// flag. Config and the client-owned state stay shared by every profile.
 /// A server of another build is still refused by the build-identity checks,
 /// which is what tells the two apart once they can no longer collide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,7 +160,7 @@ impl AppPaths {
     }
 
     /// The state directory shared by every build profile. It holds the
-    /// client-owned state (the saved-machine catalog); the saved layout and
+    /// client-owned state; the saved layout and
     /// history live in [`data_dir`](Self::data_dir).
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
@@ -924,6 +924,81 @@ mod tests {
     }
 
     #[test]
+    fn machines_load_in_config_order() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let loaded = Config::load_from_str(
+            r#"
+[[machines]]
+label = "build"
+ssh = "dev@build"
+
+[[machines]]
+label = "gpu"
+ssh = "ssh://gpu.example"
+"#,
+        );
+        let validated = loaded
+            .into_validated(AppPaths::default())
+            .expect("valid machines load");
+        let machines: Vec<_> = validated
+            .machines()
+            .iter()
+            .map(|machine| (machine.label.as_str(), machine.ssh.as_str()))
+            .collect();
+        assert_eq!(
+            machines,
+            [("build", "dev@build"), ("gpu", "ssh://gpu.example")]
+        );
+
+        let none = Config::load_from_str("[terminal]\n")
+            .into_validated(AppPaths::default())
+            .expect("no machines is valid");
+        assert!(none.machines().is_empty());
+    }
+
+    #[test]
+    fn invalid_machines_fail_the_launch() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        for (content, message) in [
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"h1\"\n[[machines]]\nlabel = \"a\"\nssh = \"h2\"\n",
+                "duplicates machines[0]",
+            ),
+            (
+                "[[machines]]\nlabel = \"  \"\nssh = \"h\"\n",
+                "machine label must not be blank",
+            ),
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"-oProxyCommand=x\"\n",
+                "must not start with",
+            ),
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"\"\n",
+                "SSH target must not be empty",
+            ),
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"u:p@h\"\n",
+                "must not contain a password",
+            ),
+            ("[[machines]]\nlabel = \"a\"\n", "ssh"),
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"h\"\nhost = \"x\"\n",
+                "unknown config key machines.0.host",
+            ),
+        ] {
+            let errors = Config::load_from_str(content)
+                .into_validated(AppPaths::default())
+                .expect_err("invalid machines must not launch");
+            assert!(
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.to_string().contains(message)),
+                "expected {message:?} in {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn config_check_collects_all_semantic_diagnostics() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-diagnostics");
@@ -1209,7 +1284,7 @@ tab_bar_right = [
             runtime.join("shepr-dev/shepr-client.sock")
         );
 
-        // Config, the shared state directory (with the machine catalog below
+        // Config, the shared state directory (with the client state below
         // it) and the XDG runtime root are the same in both profiles.
         assert_eq!(release.config_dir(), dev.config_dir());
         assert_eq!(release.config_file(), dev.config_file());

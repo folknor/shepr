@@ -603,6 +603,24 @@ pub(crate) struct ValidatedValues {
     pub(crate) terminal: ValidatedTerminalConfig,
 }
 
+/// One diagnostic per machine whose label an earlier entry already uses. Labels
+/// are the machines' identifiers, so they must be unique; blank labels and
+/// malformed SSH targets cannot reach here, as the types refuse them.
+fn machine_label_diagnostics(machines: &[super::MachineConfig]) -> Vec<String> {
+    let mut seen = std::collections::HashMap::new();
+    let mut diagnostics = Vec::new();
+    for (index, machine) in machines.iter().enumerate() {
+        let first = *seen.entry(&machine.label).or_insert(index);
+        if first != index {
+            diagnostics.push(format!(
+                "machines[{index}] label {:?} duplicates machines[{first}]",
+                machine.label.as_str()
+            ));
+        }
+    }
+    diagnostics
+}
+
 /// Results of parsing each value used at runtime, plus every diagnostic found.
 /// No fallback values escape this boundary: `values` is present only when all
 /// parsed fields are valid.
@@ -671,6 +689,7 @@ impl ConfigResolution {
                 config.ui.mouse_scroll_lines()
             ));
         }
+        diagnostics.extend(machine_label_diagnostics(&config.machines));
         let mut path_diagnostics = Vec::new();
         if let Err(errors) = &terminal {
             path_diagnostics.extend(errors.iter().cloned());
@@ -852,6 +871,11 @@ impl ValidatedConfig {
 
     pub fn remote(&self) -> &RemoteConfig {
         &self.config.remote
+    }
+
+    /// The configured machines, in config order. Labels are unique.
+    pub fn machines(&self) -> &[super::MachineConfig] {
+        &self.config.machines
     }
 
     pub fn live_keybinds(&self) -> super::LiveKeybindConfig {
@@ -1239,6 +1263,43 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         wire["config"]["server"]["headless_cols"] = serde_json::json!(0);
 
         assert!(serde_json::from_value::<ValidatedConfig>(wire).is_err());
+    }
+
+    #[test]
+    fn machines_round_trip_the_wire_and_are_validated_again() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-machines-wire");
+        let config: Config = toml::from_str(
+            "[[machines]]\nlabel = \"build\"\nssh = \"dev@build\"\n\
+             [[machines]]\nlabel = \"gpu\"\nssh = \"gpu\"\n",
+        )
+        .expect("test precondition");
+        let validated = ValidatedConfig::test_from_config_with_paths(
+            config,
+            None,
+            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
+        );
+        let wire = serde_json::to_value(&validated).expect("serialize test config");
+        let received = serde_json::from_value::<ValidatedConfig>(wire.clone())
+            .expect("machines survive the wire");
+        assert_eq!(received.machines(), validated.machines());
+
+        for (field, value, expected) in [
+            ("ssh", "-oProxyCommand=x", "must not start with"),
+            ("label", "", "must not be blank"),
+        ] {
+            let mut bad = wire.clone();
+            bad["config"]["machines"][0][field] = serde_json::json!(value);
+            let error = serde_json::from_value::<ValidatedConfig>(bad)
+                .expect_err("a received machine is validated again");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+
+        let mut duplicate = wire;
+        duplicate["config"]["machines"][1]["label"] = serde_json::json!("build");
+        let error = serde_json::from_value::<ValidatedConfig>(duplicate)
+            .expect_err("received duplicate labels are refused");
+        assert!(error.to_string().contains("duplicates"), "{error}");
     }
 
     #[test]

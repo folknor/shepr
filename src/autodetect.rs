@@ -17,15 +17,10 @@ use std::time::Duration;
 /// A launch failure before the client runs is the error; once the client has
 /// run, its own result is handed back untouched for the caller to report.
 pub(crate) fn auto_detect_launch<T>(
-    endpoint_catalog: shepr_remote::machine::EndpointCatalog,
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
     server_ready_timeout: Duration,
-    run_client: impl FnOnce(
-        &shepr_config::ValidatedConfig,
-        &shepr_config::AppPaths,
-        shepr_remote::machine::EndpointCatalog,
-    ) -> T,
+    run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> T,
 ) -> io::Result<T> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
@@ -38,8 +33,8 @@ pub(crate) fn auto_detect_launch<T>(
     let socket_path = paths.server_address().client_socket().to_path_buf();
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
-    // The running server is checked whether or not saved machines are
-    // enabled. With saved machines a mismatch does not end the launch below,
+    // The running server is checked whether or not machines are
+    // configured. With configured machines a mismatch does not end the launch below,
     // so they stay reachable; the Local endpoint's own handshake then rejects
     // the different build and shows the same guidance.
     let startup = shepr_remote::local_server::ensure_running(
@@ -48,7 +43,7 @@ pub(crate) fn auto_detect_launch<T>(
         shepr_remote::local_server::BuildCheck::BeforeAttach,
     );
     if let Err(error) = startup {
-        if !endpoint_catalog.has_ssh() {
+        if config.machines().is_empty() {
             return Err(error);
         }
         // Keep the full refusal visible even though the client will remain open
@@ -56,7 +51,7 @@ pub(crate) fn auto_detect_launch<T>(
         crate::cli::print_notice(&local_startup_notice(&error));
     }
 
-    Ok(run_client(config, paths, endpoint_catalog))
+    Ok(run_client(config, paths))
 }
 
 /// What the operator is told when Local fails to start or is refused while

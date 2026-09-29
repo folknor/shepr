@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::limits::KEY_BINDING_COUNT;
 
 use super::{
-    AgentPanelSortConfig, BindingConfig, HostCursorModeConfig, NewTerminalCwdConfig,
-    PaneBordersConfig, RightClickPassthroughModifierConfig, SidebarCollapsedModeConfig,
-    SidebarTokenRule, StatusIndicatorStyle, TabBarPositionConfig, TabBarRightEntryConfig,
-    ThemeConfig,
+    AgentPanelSortConfig, BindingConfig, HostCursorModeConfig, MachineConfig, MachineLabel,
+    NewTerminalCwdConfig, PaneBordersConfig, RightClickPassthroughModifierConfig,
+    SidebarCollapsedModeConfig, SidebarTokenRule, SshTarget, StatusIndicatorStyle,
+    TabBarPositionConfig, TabBarRightEntryConfig, ThemeConfig,
     model::{
         AdvancedConfig, Config, ExperimentalConfig, KeysConfig, RemoteConfig, ServerConfig,
         SessionConfig, TerminalConfig, UiConfig,
@@ -31,6 +31,32 @@ pub(super) struct WireConfig {
     advanced: AdvancedConfig,
     experimental: WireExperimentalConfig,
     remote: RemoteConfig,
+    machines: Vec<WireMachine>,
+}
+
+/// Plain strings, so a received machine is parsed again on this side rather
+/// than trusted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WireMachine {
+    label: String,
+    ssh: String,
+}
+
+impl WireMachine {
+    fn from_config(machine: &MachineConfig) -> Self {
+        Self {
+            label: machine.label.as_str().to_owned(),
+            ssh: machine.ssh.as_str().to_owned(),
+        }
+    }
+
+    fn into_config(self) -> Result<MachineConfig, String> {
+        let label =
+            MachineLabel::parse(self.label).map_err(|error| format!("machines: {error}"))?;
+        let ssh = SshTarget::parse(self.ssh)
+            .map_err(|error| format!("machines: machine {label}: {error}"))?;
+        Ok(MachineConfig { label, ssh })
+    }
 }
 
 impl WireConfig {
@@ -45,6 +71,11 @@ impl WireConfig {
             advanced: config.advanced.clone(),
             experimental: WireExperimentalConfig::from_config(&config.experimental),
             remote: config.remote.clone(),
+            machines: config
+                .machines
+                .iter()
+                .map(WireMachine::from_config)
+                .collect(),
         }
     }
 
@@ -62,6 +93,11 @@ impl WireConfig {
             advanced: self.advanced,
             experimental: self.experimental.into_config(),
             remote: self.remote,
+            machines: self
+                .machines
+                .into_iter()
+                .map(WireMachine::into_config)
+                .collect::<Result<_, _>>()?,
         })
     }
 }

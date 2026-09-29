@@ -29,8 +29,6 @@ pub enum ClientRunError {
     /// The client failed while launching. If the host terminal had already
     /// been taken, its guard restored it before this was returned.
     Launch(io::Error),
-    /// Loading the saved machine catalog failed before the terminal was taken.
-    LaunchCatalog(shepr_remote::machine::CatalogError),
     /// The session ended in failure after the host terminal was restored.
     /// The exit's last line is the failure.
     Session(ClientExit),
@@ -46,9 +44,6 @@ impl std::fmt::Display for ClientRunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Launch(error) => write!(f, "{error}"),
-            Self::LaunchCatalog(error) => {
-                write!(f, "saved SSH endpoint catalog is unavailable: {error}")
-            }
             Self::Session(exit) => {
                 for (index, line) in exit.lines().enumerate() {
                     if index > 0 {

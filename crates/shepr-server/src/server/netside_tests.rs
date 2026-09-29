@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use shepr_api as api;
 use shepr_client::endpoint::{
     ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport,
-    PendingEndpointActivation, ProfileId, SavedSshEndpoint, SurfaceActivationProgress,
+    PendingEndpointActivation, SurfaceActivationProgress,
 };
 use shepr_protocol::ServerMessage;
 
@@ -171,12 +171,11 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     ));
     let remote_snapshot = headless_tests::client_shell_snapshot(&target_control);
 
-    let profile = SavedSshEndpoint {
-        id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
-        label: "Remote".into(),
-        target: shepr_remote::SshTarget::parse("dev@example.com").expect("test precondition"),
+    let machine = shepr_config::MachineConfig {
+        label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),
+        ssh: shepr_config::SshTarget::parse("dev@example.com").expect("test precondition"),
     };
-    let target_id = ClientEndpointId::Ssh(profile.id.clone());
+    let target_id = ClientEndpointId::Ssh(machine.label.clone());
     let now = std::time::Instant::now();
     let mut shell = shepr_client::ClientShellState::new_at(
         shepr_client::ClientShellConfig::from_validated_config(
@@ -184,7 +183,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         ),
         now,
     );
-    shell.set_endpoint_catalog(&[profile]);
+    shell.set_machines(&[machine]);
     shell.set_endpoint_snapshot_for_generation(
         &ClientEndpointId::Local,
         SOURCE_GENERATION,

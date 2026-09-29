@@ -23,7 +23,6 @@ mod error;
 mod integration;
 mod machine;
 mod matches;
-pub(crate) mod operator;
 mod server;
 mod server_not_running;
 mod spec;
@@ -307,7 +306,7 @@ mod tests {
     fn every_cli_spec_root_has_typed_parser() {
         let samples: [(&str, &[&str]); 5] = [
             ("status", &["status"]),
-            ("machine", &["machine", "list"]),
+            ("machine", &["machine", "reconnect", "build"]),
             ("server", &["server", "stop"]),
             ("detect", &["detect", "capture", "w1:p1"]),
             ("integration", &["integration", "status"]),
@@ -414,15 +413,11 @@ mod tests {
             &["session", "stop", "work"],
             &["session", "attach", "work"],
             &["session", "delete", "work"],
-            &[
-                "machine",
-                "add",
-                "host",
-                "--label",
-                "h",
-                "--remote-session",
-                "a",
-            ],
+            &["machine", "list"],
+            &["machine", "status"],
+            &["machine", "add", "host", "--label", "h"],
+            &["machine", "remove", "h"],
+            &["machine", "reconnect"],
             &["api", "snapshot"],
             &["workspace", "list"],
             &["tab", "list"],

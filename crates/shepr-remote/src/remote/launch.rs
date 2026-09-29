@@ -4,11 +4,15 @@ use std::io;
 
 pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
-/// Checks that the saved machine's remote server is running as a detached
-/// daemon. `machine` names it in the error's remedy.
+/// Checks, without prompting, that the configured machine can be served: SSH
+/// works, a matching shepr is found, and any server already running there is
+/// this build and a detached daemon. A stopped server passes, since the
+/// bridge starts a detached one on attach. A running server that is not a
+/// detached daemon is an `Unsupported` error whose text says how to fix it.
+/// `machine` is the label named in that text.
 pub fn check_saved_ssh(
     paths: &shepr_config::AppPaths,
-    machine: &str,
+    machine: &MachineLabel,
     target: &SshTarget,
     settings: super::SavedSshSettings,
 ) -> io::Result<()> {
@@ -19,54 +23,15 @@ pub fn check_saved_ssh(
     ensure_remote_server_build(ssh.target(), &status)?;
     match status {
         RemoteServerStatus::Running {
-            detached_server_daemon: true,
+            version,
+            detached_server_daemon: false,
             ..
-        } => Ok(()),
-        _ => Err(io::Error::other(format!(
-            "remote Shepr server is stopped or was not started as a detached daemon; run `shepr machine reconnect {}`",
-            shell_quote(machine),
-        ))),
-    }
-}
-
-pub fn prepare_saved_ssh(
-    paths: &shepr_config::AppPaths,
-    target: &SshTarget,
-    settings: super::SavedSshSettings,
-    operator: &mut dyn Operator,
-) -> Result<RemoteExecutable, super::SshFailureDiagnostic> {
-    prepare_saved_ssh_inner(paths, target, settings, operator)
-        .map_err(|error| super::SshFailureDiagnostic::from_error(&error))
-}
-
-fn prepare_saved_ssh_inner(
-    paths: &shepr_config::AppPaths,
-    target: &SshTarget,
-    settings: super::SavedSshSettings,
-    operator: &mut dyn Operator,
-) -> io::Result<RemoteExecutable> {
-    let ssh = RemoteSsh::new(target.clone(), settings.manage_ssh_config, paths)?;
-    let remote_shepr = locate_remote_shepr(&ssh)?;
-    ensure_remote_server_ready(operator, &ssh, &remote_shepr)?;
-
-    // The bridge already owns daemon startup. EOF closes only this temporary attachment,
-    // leaving the server running even when no local TUI is open yet.
-    let command = remote_shepr.saved_bridge_command();
-    let output = ssh.sh_output(&command)?;
-    if !output.status.success() {
-        return Err(command_failed("remote server startup failed", &output));
-    }
-    let status = remote_server_status(&ssh, &remote_shepr)?;
-    ensure_remote_server_build(ssh.target(), &status)?;
-    match status {
-        RemoteServerStatus::Running {
-            detached_server_daemon: true,
-            ..
-        } => Ok(remote_shepr),
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "remote server is not ready for saved machines",
+        } => Err(remote_server_not_detached_error(
+            &shell_quote(machine.as_str()),
+            ssh.target(),
+            version.as_deref(),
         )),
+        RemoteServerStatus::Running { .. } | RemoteServerStatus::NotRunning => Ok(()),
     }
 }
 
@@ -96,14 +61,6 @@ impl RemoteExecutable {
         // script to `/bin/sh -s` instead), so the login shell only has to launch one
         // quoted command.
         posix_shell_command(&posix_remote_output_command(&self.command(&args)))
-    }
-
-    pub(super) fn saved_bridge_command(&self) -> String {
-        let args = RemoteCliCommand::ClientBridge.args();
-        // This redirects bridge stdin to /dev/null. The bridge forwards EOF as a
-        // socket write shutdown, so the server's handshake reader returns without
-        // waiting for its deadline.
-        format!("{} </dev/null", self.command(&args))
     }
 }
 

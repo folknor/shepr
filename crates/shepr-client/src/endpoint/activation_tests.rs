@@ -129,10 +129,7 @@ impl PendingEndpointActivation {
 }
 
 fn endpoint() -> ClientEndpointId {
-    ClientEndpointId::Ssh(
-        super::super::ProfileId::parse("0123456789abcdef0123456789abcdef")
-            .expect("test precondition"),
-    )
+    ClientEndpointId::Ssh(super::super::MachineLabel::parse("Remote").expect("test precondition"))
 }
 
 fn lease(id: ClientEndpointId, generation: u64, boot: &str) -> EndpointLease {
@@ -210,14 +207,12 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
     let mut shell = crate::ClientShellState::new(crate::ClientShellConfig::from_config(
         &shepr_config::Config::default(),
     ));
-    let profile = super::super::SavedSshEndpoint {
-        id: super::super::ProfileId::parse("0123456789abcdef0123456789abcdef")
-            .expect("test precondition"),
-        label: "Remote".into(),
-        target: shepr_remote::SshTarget::parse("dev@example.com").expect("test precondition"),
+    let machine = shepr_config::MachineConfig {
+        label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),
+        ssh: shepr_config::SshTarget::parse("dev@example.com").expect("test precondition"),
     };
-    let target = ClientEndpointId::Ssh(profile.id.clone());
-    shell.set_endpoint_catalog(&[profile]);
+    let target = ClientEndpointId::Ssh(machine.label.clone());
+    shell.set_machines(&[machine]);
     shell.set_snapshot(Box::new(test_snapshot("local-boot", 1)));
     shell.set_endpoint_status(&target, ClientEndpointStatus::Online);
     shell.set_endpoint_snapshot(&target, Box::new(test_snapshot("remote-boot", 1)));
