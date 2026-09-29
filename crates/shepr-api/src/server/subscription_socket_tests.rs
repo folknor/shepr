@@ -1,8 +1,6 @@
 use super::*;
 use crate::limits::APP_RESPONSE_TIMEOUT;
-use crate::schema::{
-    AgentStatus, EventData, EventEnvelope, PaneInfo, PaneReadResult, ReadFormat, ReadSource,
-};
+use crate::schema::{AgentStatus, EventData, EventEnvelope, PaneInfo};
 use interprocess::local_socket::traits::Listener as _;
 use serde_json::{Value, json};
 use shepr_platform::ipc::{LocalStreamReadCount, poll_local_stream_read_count};
@@ -187,12 +185,12 @@ fn renamed_event(index: usize) -> EventEnvelope {
     }
 }
 
-fn output_subscription() -> Value {
+/// A sampled subscription: it probes the app at setup and samples it on every
+/// poll, so a test can hold either request to stall this connection.
+fn scroll_subscription() -> Value {
     json!({
-        "type": "pane.output_matched",
-        "pane_id": "pane_1",
-        "source": "recent",
-        "match": {"type": "substring", "value": "never"}
+        "type": "pane.scroll_changed",
+        "pane_id": "pane_1"
     })
 }
 
@@ -226,18 +224,6 @@ fn reply_to_probe(request: &ApiRequestMessage) {
                 agent_session: None,
                 scroll: None,
                 revision: 0,
-            },
-        },
-        Method::PaneRead(_) => ResponseResult::PaneRead {
-            read: PaneReadResult {
-                pane_id: "pane_1".into(),
-                workspace_id: "workspace_1".into(),
-                tab_id: "tab_1".into(),
-                source: ReadSource::RecentUnwrapped,
-                format: ReadFormat::Text,
-                text: String::new(),
-                revision: 0,
-                truncated: false,
             },
         },
         ref other => panic!("unexpected subscription probe: {other:?}"),
@@ -305,7 +291,7 @@ fn assert_subscription_history_loss(agent_status: bool) {
             "agent_status": "working"
         }])
     } else {
-        json!([{"type": "workspace.renamed"}, output_subscription()])
+        json!([{"type": "workspace.renamed"}, scroll_subscription()])
     };
     client.subscribe("history-gap", &subscriptions);
     // Hold the setup probe after the server pins its subscription cursor.
@@ -329,7 +315,7 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     let mut slow = test.connect();
     slow.subscribe(
         "slow",
-        &json!([{"type": "workspace.renamed"}, output_subscription()]),
+        &json!([{"type": "workspace.renamed"}, scroll_subscription()]),
     );
     let probe = test.app_request();
     assert_eq!(probe.request.id, "slow:sub:1:probe");
@@ -337,9 +323,9 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     slow.assert_started("slow");
     // Pause only this connection in an existing app request, rather than depending
     // on OS socket buffer sizes or sleeping to make its event cursor fall behind.
-    let paused_read = test.app_request();
-    assert_eq!(paused_read.request.id, "slow:sub:1:read");
-    assert!(matches!(paused_read.request.method, Method::PaneRead(_)));
+    let paused_sample = test.app_request();
+    assert_eq!(paused_sample.request.id, "slow:sub:1:pane");
+    assert!(matches!(paused_sample.request.method, Method::PaneGet(_)));
     // All five batches must finish before the held app request can time out.
     let deadline = Instant::now() + RESPONSE_TIMEOUT;
     for batch in 0..5 {
@@ -350,7 +336,7 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
         healthy.assert_renames(indices, deadline);
     }
 
-    reply_to_probe(&paused_read);
+    reply_to_probe(&paused_sample);
     slow.assert_history_lost("slow");
     test.hub.push(renamed_event(640));
     healthy.assert_renames(640..641, Instant::now() + RESPONSE_TIMEOUT);

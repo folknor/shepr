@@ -19,6 +19,12 @@ pub(crate) fn test_tab_id(id: &str) -> shepr_protocol::PublicTabId {
         .unwrap_or_else(|_| panic!("{id:?} is not a canonical public tab id"))
 }
 
+/// A workspace id from its canonical spelling (`w<number>`).
+pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
+    id.parse()
+        .unwrap_or_else(|_| panic!("{id:?} is not a canonical workspace id"))
+}
+
 #[test]
 fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
     let size = AtomicCellSize::new();

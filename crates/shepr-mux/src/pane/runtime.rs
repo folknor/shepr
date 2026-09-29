@@ -70,13 +70,13 @@ impl Drop for UnreapedChild {
                     if let Err(err) = child.wait() {
                         tracing::warn!(
                             pid = child.id(),
-                            %err,
+                            error = %err,
                             "could not reap an abandoned pane child"
                         );
                     }
                 });
             if let Err(err) = spawned {
-                tracing::warn!(%err, "could not start a reaper for an abandoned pane child");
+                tracing::warn!(error = %err, "could not start a reaper for an abandoned pane child");
             }
         }
     }
@@ -93,12 +93,12 @@ async fn wait_for_child_exit(
     let async_pidfd = match tokio::io::unix::AsyncFd::new(pidfd) {
         Ok(async_pidfd) => async_pidfd,
         Err(err) => {
-            tracing::debug!(%err, "could not register child pidfd; falling back to child wait");
+            tracing::debug!(error = %err, "could not register child pidfd; falling back to child wait");
             return wait_for_child_exit_blocking(child).await;
         }
     };
     if let Err(err) = async_pidfd.readable().await {
-        tracing::debug!(%err, "child pidfd readiness failed; falling back to child wait");
+        tracing::debug!(error = %err, "child pidfd readiness failed; falling back to child wait");
         return wait_for_child_exit_blocking(child).await;
     }
 
@@ -112,7 +112,7 @@ async fn wait_for_child_exit(
         Err(err) => {
             // Kernels may expose pidfd_open before waitid(P_PIDFD); the child
             // is ready by now, so Child::wait is only a short fallback reap.
-            tracing::debug!(%err, "waitid on child pidfd failed; falling back to child wait");
+            tracing::debug!(error = %err, "waitid on child pidfd failed; falling back to child wait");
             wait_for_child_exit_blocking(child).await
         }
     }
@@ -368,7 +368,7 @@ fn publish_reported_cwd(
             drop(last_reported);
             warn!(
                 pane = pane_id.raw(),
-                err = %err,
+                error = %err,
                 "failed to send terminal cwd report"
             );
         }
@@ -425,6 +425,10 @@ struct DeferredEffectOrderState {
     /// or early return between reservation and application). The sequence
     /// skips them once every earlier ticket has finished.
     finished_early: std::collections::BTreeSet<u64>,
+    /// Tickets parked in `apply` for an earlier one. Counted under the lock
+    /// before waiting, so a finishing ticket only wakes the condvar when
+    /// someone is parked on it.
+    waiting: usize,
 }
 
 impl DeferredEffectOrderState {
@@ -452,8 +456,11 @@ impl Drop for DeferredEffectTicket {
     fn drop(&mut self) {
         let mut state = shepr_vt::lock_auxiliary(&self.order.state);
         state.finish(self.seq);
+        let parked = state.waiting > 0;
         drop(state);
-        self.order.ready.notify_all();
+        if parked {
+            self.order.ready.notify_all();
+        }
     }
 }
 
@@ -475,11 +482,15 @@ impl DeferredEffectTicket {
     /// finishes this one (also when the effect panics).
     fn apply(self, effect: impl FnOnce()) {
         let mut state = shepr_vt::lock_auxiliary(&self.order.state);
-        while state.next_to_apply != self.seq {
-            state = match self.order.ready.wait(state) {
-                Ok(state) => state,
-                Err(poisoned) => shepr_vt::recover_auxiliary_poison(poisoned),
-            };
+        if state.next_to_apply != self.seq {
+            state.waiting += 1;
+            while state.next_to_apply != self.seq {
+                state = match self.order.ready.wait(state) {
+                    Ok(state) => state,
+                    Err(poisoned) => shepr_vt::recover_auxiliary_poison(poisoned),
+                };
+            }
+            state.waiting -= 1;
         }
         drop(state);
         effect();
@@ -513,7 +524,7 @@ impl PaneReadEffects {
             if let Err(err) = self.events.try_send(AppEvent::ClipboardWrite { content }) {
                 warn!(
                     pane = pane_id.raw(),
-                    err = %err,
+                    error = %err,
                     "failed to send OSC 52 clipboard write"
                 );
             }
@@ -815,8 +826,9 @@ impl PaneRuntime {
         let terminal = Arc::new(pane_terminal);
         let content_write_lock = Arc::new(Mutex::new(()));
 
-        let spawned = shepr_pty::backend::spawn_pty(rows, cols, cmd)
-            .inspect_err(|err| error!(pane = pane_id.raw(), err = %err, "{spawn_error_message}"))?;
+        let spawned = shepr_pty::backend::spawn_pty(rows, cols, cmd).inspect_err(
+            |err| error!(pane = pane_id.raw(), error = %err, "{spawn_error_message}"),
+        )?;
 
         let mut child = spawned.child;
         let master_fd = spawned.master_fd;
@@ -919,7 +931,7 @@ impl PaneRuntime {
                     }) {
                         error!(
                             pane = pane_id.raw(),
-                            err = %err,
+                            error = %err,
                             "failed to report a pane whose PTY reader failed"
                         );
                     }
@@ -950,7 +962,7 @@ impl PaneRuntime {
                         warn!(
                             pane = pane_id.raw(),
                             pid,
-                            err = %kill_err,
+                            error = %kill_err,
                             "failed to kill pane child after PTY actor startup failed"
                         );
                     }
@@ -986,7 +998,7 @@ impl PaneRuntime {
                         tracing::debug!(
                             pane = pane_id.raw(),
                             pid,
-                            %err,
+                            error = %err,
                             "could not duplicate child pidfd; falling back to child wait"
                         );
                         None
@@ -1015,7 +1027,7 @@ impl PaneRuntime {
                     })
                     .await
                 {
-                    error!(pane = pane_id.raw(), err = %e, "failed to send PaneDied event");
+                    error!(pane = pane_id.raw(), error = %e, "failed to send PaneDied event");
                 }
             });
         }
@@ -1307,7 +1319,9 @@ impl PaneRuntime {
         let mut terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         terminal.write(screen);
         Self {
-            pane_id: PaneId::from_raw(0),
+            // Not installed under any layout pane, so it takes an id of its
+            // own rather than one some real pane may hold.
+            pane_id: PaneId::alloc(),
             terminal: Arc::new(PaneTerminal::new(terminal)),
             io,
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
@@ -1651,7 +1665,7 @@ impl PaneRuntime {
 
         let bytes = shepr_vt::encode_focus(event);
         if let Err(err) = self.try_send_bytes(Bytes::from_static(bytes)) {
-            warn!(err = %err, ?event, "failed to forward pane focus event");
+            warn!(error = %err, ?event, "failed to forward pane focus event");
         }
         true
     }
@@ -2260,7 +2274,11 @@ mod tests {
 
         let tracker = Arc::new(PaneTeardownTracker::default());
         let started = std::time::Instant::now();
-        shutdown_pane_processes(PaneId::from_raw(0), child_liveness, &tracker);
+        shutdown_pane_processes(
+            shepr_test_fixtures::fixed_pane_id(1),
+            child_liveness,
+            &tracker,
+        );
         assert!(
             started.elapsed() < std::time::Duration::from_millis(200),
             "teardown must not block its caller through the grace periods"
@@ -2301,7 +2319,7 @@ mod tests {
     /// terminal and requests the render with no further PTY bytes.
     #[tokio::test]
     async fn an_update_left_open_by_a_quiet_child_is_flushed_by_the_timeout_task() {
-        let pane_id = PaneId::from_raw(7);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(7);
         let terminal = Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(20, 5, 0)));
         let (events, _events_rx) = mpsc::channel(8);
         let effects = Arc::new(PaneReadEffects {
@@ -2337,6 +2355,21 @@ mod tests {
         assert!(effects.render_dirty.is_pending());
     }
 
+    /// Returns once `count` tickets are parked in `apply`. The count is
+    /// raised under the order lock before waiting, so seeing it here means
+    /// the ticket has released the lock into its condvar wait.
+    fn wait_until_parked(order: &DeferredEffectOrder, count: usize) {
+        // A ticket that never parks is a failure, not a hang.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while shepr_vt::lock_auxiliary(&order.state).waiting < count {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{count} ticket(s) never parked in apply"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     /// A later write's deferred effect waits for an earlier one reserved
     /// before it, even when the later one is applied first.
     #[test]
@@ -2352,7 +2385,7 @@ mod tests {
                 second.apply(|| applied.lock().expect("test lock").push(2));
             })
         };
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        wait_until_parked(&order, 1);
         assert!(
             applied.lock().expect("test lock").is_empty(),
             "the second effect ran before the first"
@@ -2380,7 +2413,7 @@ mod tests {
         let waiting = order.reserve();
         let after = order.reserve();
         let waiter = std::thread::spawn(move || waiting.apply(|| {}));
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        wait_until_parked(&order, 1);
         drop(lost);
         waiter.join().expect("waiting effect thread");
         let ran = Cell::new(false);
@@ -2410,7 +2443,7 @@ mod tests {
     fn pane_teardown_without_a_session_does_nothing() {
         let tracker = Arc::new(PaneTeardownTracker::default());
         shutdown_pane_processes(
-            PaneId::from_raw(0),
+            shepr_test_fixtures::fixed_pane_id(1),
             Arc::new(ChildLiveness::new(0, None)),
             &tracker,
         );
@@ -2599,7 +2632,7 @@ mod tests {
         terminal
             .mode_set(shepr_vt::DecMode::FocusEvents, true)
             .expect("test precondition");
-        let pane_id = PaneId::from_raw(0);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
@@ -2630,7 +2663,7 @@ mod tests {
     async fn focus_events_are_suppressed_when_disabled() {
         let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
         let terminal = shepr_vt::Terminal::new(80, 24, 0);
-        let pane_id = PaneId::from_raw(0);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
@@ -2864,7 +2897,7 @@ mod tests {
     #[tokio::test]
     async fn state_changed_event_waits_for_queue_space_instead_of_dropping() {
         let (tx, mut rx) = mpsc::channel(1);
-        let pane_id = PaneId::from_raw(42);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(42);
 
         tx.try_send(AppEvent::GitStatusRefreshed {
             results: Vec::new(),

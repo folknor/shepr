@@ -76,7 +76,7 @@ pub(crate) fn api_request_failed(request_id: &str, method_name: &str, err: &str)
         outcome = "error",
         request_id,
         method = method_name,
-        err,
+        error = err,
         "api request failed"
     );
 }

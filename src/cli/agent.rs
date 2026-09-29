@@ -305,11 +305,19 @@ fn agent_attach(
             hints: Vec::new(),
         });
     };
+    let Ok(terminal_id) = terminal_id.parse::<shepr_protocol::TerminalId>() else {
+        return Err(super::CliError::Failed {
+            message: format!(
+                "agent attach failed: server reported invalid terminal_id {terminal_id:?}"
+            ),
+            hints: Vec::new(),
+        });
+    };
     crate::init_client_logging(paths)?;
     super::finish_client(shepr_client::run_terminal_attach(
         &config,
         paths,
-        terminal_id.to_owned(),
+        terminal_id,
         takeover,
     ))
 }

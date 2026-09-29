@@ -56,6 +56,26 @@ pub struct SurfaceRect {
     pub height: u16,
 }
 
+impl From<shepr_core::geometry::Rect> for SurfaceRect {
+    fn from(rect: shepr_core::geometry::Rect) -> Self {
+        Self {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        }
+    }
+}
+
+impl From<shepr_core::layout::Direction> for PaneSurfaceSplitDirection {
+    fn from(direction: shepr_core::layout::Direction) -> Self {
+        match direction {
+            shepr_core::layout::Direction::Horizontal => Self::Horizontal,
+            shepr_core::layout::Direction::Vertical => Self::Vertical,
+        }
+    }
+}
+
 /// One server-rendered active-tab surface without sidebar, tab bar, or overlays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfaceFrame {

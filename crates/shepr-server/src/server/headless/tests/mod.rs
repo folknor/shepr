@@ -1571,7 +1571,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     let _input = install_focused_test_runtime(&mut server, b"BASE");
     let pane_id = server.app.state.workspaces[0].tabs()[0].root_pane();
     // A second pane so zoom has something to hide.
-    server.app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    server.app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     server.app.state.ensure_test_terminals();
     let public_pane_id = server.app.public_pane_id(0, pane_id).expect("pane id");
     let pane = |snapshot: &shepr_protocol::ClientShellSnapshot| {
@@ -1864,7 +1864,7 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("synchronized-split");
     let first = workspace.tabs()[0].root_pane();
-    let second = workspace.test_split(ratatui::layout::Direction::Vertical);
+    let second = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
@@ -1910,7 +1910,7 @@ async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed-sync");
     let hidden = workspace.tabs()[0].root_pane();
-    let visible = workspace.test_split(ratatui::layout::Direction::Vertical);
+    let visible = workspace.test_split(shepr_core::layout::Direction::Vertical);
     workspace.set_tab_zoomed(0, true);
 
     server.app.state.workspaces = vec![workspace];
@@ -2839,7 +2839,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("layout-geometry");
     let first_pane = workspace.tabs()[0].root_pane();
-    let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
@@ -2888,7 +2888,7 @@ async fn public_close_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("public-close-geometry");
     let first_pane = workspace.tabs()[0].root_pane();
-    let second_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
+    let second_pane = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
@@ -3225,10 +3225,7 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let first_workspace_id = server
-        .app
-        .public_workspace_id(0)
-        .expect("test precondition");
+    let first_workspace_id = server.app.state.workspaces[0].id.clone();
     let second_workspace_id = server
         .app
         .public_workspace_id(1)
@@ -3273,15 +3270,11 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
         Some(second_workspace_id.as_str())
     );
     assert_eq!(
-        first_location.active_tab_ids
-            [&shepr_protocol::WorkspaceId::new(first_workspace_id.as_str())]
-            .to_string(),
+        first_location.active_tab_ids[&first_workspace_id].to_string(),
         second_tab_id
     );
     assert_eq!(
-        second_location.active_tab_ids
-            [&shepr_protocol::WorkspaceId::new(first_workspace_id.as_str())]
-            .to_string(),
+        second_location.active_tab_ids[&first_workspace_id].to_string(),
         first_tab_id
     );
     shutdown_test_runtimes(&mut server);
@@ -4074,10 +4067,11 @@ fn terminal_attach_rejects_missing_terminal_and_removes_client() {
         Some(ClientConnectionMode::TerminalPending)
     ));
 
+    let missing = shepr_protocol::TerminalId::alloc();
     assert!(
         !server.handle_server_event(ServerEvent::ClientAttachTerminal {
             client_id: ClientId::test_new(7),
-            terminal_id: "term_missing".to_owned().into(),
+            terminal_id: missing.clone(),
             takeover: false,
         })
     );
@@ -4085,7 +4079,9 @@ fn terminal_attach_rejects_missing_terminal_and_removes_client() {
     let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
     assert_eq!(
         reason,
-        Some("terminal attach failed: terminal term_missing not found".to_owned())
+        Some(format!(
+            "terminal attach failed: terminal {missing} not found"
+        ))
     );
 }
 
@@ -4248,7 +4244,7 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
     assert!(
         server.handle_server_event(ServerEvent::ClientAttachTerminal {
             client_id: ClientId::test_new(2),
-            terminal_id: terminal_id_string.into(),
+            terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
             takeover: false,
         })
     );
@@ -4334,15 +4330,17 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
         assert!(
             !server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.clone().into(),
+                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
                 takeover: false,
             })
         );
         assert!(!server.clients.contains_key(&7));
         assert!(
-            !server
-                .clients
-                .has_attach_owner(&shepr_protocol::TerminalId::test_new(&terminal_id_string))
+            !server.clients.has_attach_owner(
+                &terminal_id_string
+                    .parse::<shepr_protocol::TerminalId>()
+                    .expect("allocated terminal id")
+            )
         );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(
@@ -4361,7 +4359,7 @@ fn terminal_attach_rejects_second_client_without_takeover() {
         assert!(
             server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.clone().into(),
+                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
                 takeover: false,
             })
         );
@@ -4370,7 +4368,7 @@ fn terminal_attach_rejects_second_client_without_takeover() {
         assert!(
             !server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: ClientId::test_new(8),
-                terminal_id: terminal_id_string.clone().into(),
+                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
                 takeover: false,
             })
         );
@@ -4378,10 +4376,11 @@ fn terminal_attach_rejects_second_client_without_takeover() {
         assert!(server.clients.contains_key(&7));
         assert!(!server.clients.contains_key(&8));
         assert_eq!(
-            server
-                .clients
-                .attach_owners()
-                .get(&shepr_protocol::TerminalId::test_new(&terminal_id_string)),
+            server.clients.attach_owners().get(
+                &terminal_id_string
+                    .parse::<shepr_protocol::TerminalId>()
+                    .expect("allocated terminal id")
+            ),
             Some(&ClientId::test_new(7))
         );
     });
@@ -4394,7 +4393,7 @@ fn terminal_attach_takeover_replaces_existing_client() {
         assert!(
             server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.clone().into(),
+                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
                 takeover: false,
             })
         );
@@ -4403,7 +4402,7 @@ fn terminal_attach_takeover_replaces_existing_client() {
         assert!(
             server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: ClientId::test_new(8),
-                terminal_id: terminal_id_string.clone().into(),
+                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
                 takeover: true,
             })
         );
@@ -4411,10 +4410,11 @@ fn terminal_attach_takeover_replaces_existing_client() {
         assert!(!server.clients.contains_key(&7));
         assert!(server.clients.contains_key(&8));
         assert_eq!(
-            server
-                .clients
-                .attach_owners()
-                .get(&shepr_protocol::TerminalId::test_new(&terminal_id_string)),
+            server.clients.attach_owners().get(
+                &terminal_id_string
+                    .parse::<shepr_protocol::TerminalId>()
+                    .expect("allocated terminal id")
+            ),
             Some(&ClientId::test_new(8))
         );
     });
@@ -4427,7 +4427,7 @@ fn terminal_attach_detach_sends_shutdown_before_removal() {
         assert!(
             server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.clone().into(),
+                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
                 takeover: false,
             })
         );
@@ -4438,9 +4438,11 @@ fn terminal_attach_detach_sends_shutdown_before_removal() {
 
         assert!(!server.clients.contains_key(&7));
         assert!(
-            !server
-                .clients
-                .has_attach_owner(&shepr_protocol::TerminalId::test_new(&terminal_id_string))
+            !server.clients.has_attach_owner(
+                &terminal_id_string
+                    .parse::<shepr_protocol::TerminalId>()
+                    .expect("allocated terminal id")
+            )
         );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(reason, Some("detached".to_owned()));
@@ -4454,7 +4456,7 @@ fn terminal_attach_is_told_about_rejected_pastes_and_dropped_input_once() {
         assert!(
             server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: ClientId::test_new(7),
-                terminal_id: terminal_id_string.clone().into(),
+                terminal_id: terminal_id_string.parse().expect("allocated terminal id"),
                 takeover: false,
             })
         );
@@ -4898,7 +4900,7 @@ async fn pane_death_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-death-geometry");
     let first_pane = workspace.tabs()[0].root_pane();
-    let dead_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
+    let dead_pane = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
@@ -5738,9 +5740,9 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
             RenderEncoding::SemanticFrame,
             None,
         );
-        client.mode = ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
-            terminal_id.clone(),
-        ));
+        client.mode = ClientConnectionMode::terminal_attach(
+            terminal_id.parse().expect("allocated terminal id"),
+        );
         server.clients.insert(1, client);
 
         assert!(server.handle_server_event(ServerEvent::ClientResize {
@@ -5848,7 +5850,7 @@ async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry()
         (1, ClientConnectionMode::TerminalPending),
         (
             2,
-            ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new("t1")),
+            ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::alloc()),
         ),
     ] {
         server.clients.insert(
@@ -6136,9 +6138,9 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
-                    terminal_id.clone(),
-                )),
+                ClientConnectionMode::terminal_attach(
+                    terminal_id.parse().expect("allocated terminal id"),
+                ),
                 shepr_core::geometry::GridSize::clamped(80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
@@ -6287,9 +6289,9 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
-                    terminal_id.clone(),
-                )),
+                ClientConnectionMode::terminal_attach(
+                    terminal_id.parse().expect("allocated terminal id"),
+                ),
                 shepr_core::geometry::GridSize::clamped(80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
@@ -6332,9 +6334,9 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(shepr_protocol::TerminalId::test_new(
-                    terminal_id.clone(),
-                )),
+                ClientConnectionMode::terminal_attach(
+                    terminal_id.parse().expect("allocated terminal id"),
+                ),
                 shepr_core::geometry::GridSize::clamped(80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize {
                     width_px: 10,

@@ -577,7 +577,7 @@ fn expected_osc_rgb_response(command: &str, color: shepr_vt::RgbColor) -> Bytes 
 fn process_pty_bytes_reports_latest_working_directory_report() {
     let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let partial = pane.process_pty_bytes(pane_id, b"\x1b]7;file:///tmp/shepr%20");
     assert_eq!(partial.reported_cwd, None);
@@ -602,7 +602,7 @@ fn process_pty_bytes_reports_latest_working_directory_report() {
 fn process_pty_bytes_reports_only_completed_title_changes() {
     let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     assert!(
         !pane
@@ -629,7 +629,10 @@ fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
     let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = PaneTerminal::new(terminal);
 
-    let result = pane.process_pty_bytes(PaneId::from_raw(1), b"output\x1b]52;c;Y2xpcGJvYXJk\x07");
+    let result = pane.process_pty_bytes(
+        shepr_test_fixtures::fixed_pane_id(1),
+        b"output\x1b]52;c;Y2xpcGJvYXJk\x07",
+    );
 
     assert!(result.request_render);
     assert_eq!(result.render_delay, None);
@@ -644,7 +647,7 @@ fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]52;c;c3RhbGU=\x07");
 
-    let result = pane.process_pty_bytes(PaneId::from_raw(1), b"live output");
+    let result = pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"live output");
 
     assert!(result.clipboard_writes.is_empty());
 }
@@ -655,7 +658,7 @@ fn seeded_history_pwd_does_not_leak_into_live_output() {
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]7;file:///tmp/restored\x07");
 
-    let result = pane.process_pty_bytes(PaneId::from_raw(1), b"live output");
+    let result = pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"live output");
 
     assert_eq!(result.reported_cwd, None);
 }
@@ -714,7 +717,7 @@ fn decscusr_cursor_shape_preserves_blinking_variants() {
 fn cursor_state_uses_terminal_default_until_child_sets_shape() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
@@ -733,7 +736,7 @@ fn cursor_state_uses_terminal_default_until_child_sets_shape() {
 fn cursor_state_returns_terminal_default_after_decscusr_reset() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b[2 q");
     assert_eq!(
@@ -753,7 +756,7 @@ fn cursor_state_returns_terminal_default_after_decscusr_reset() {
 fn cursor_shape_tracker_handles_split_decscusr_sequences() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b[");
     pane.process_pty_bytes(pane_id, b"5 ");
@@ -769,7 +772,7 @@ fn cursor_shape_tracker_handles_split_decscusr_sequences() {
 fn cursor_state_reports_the_live_position() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"x");
     let result = pane.process_pty_bytes(pane_id, b"\x1b[6;21H");
@@ -786,7 +789,7 @@ fn cursor_state_reports_the_live_position() {
 fn cursor_state_returns_terminal_default_after_ris() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b[4 q");
     assert_eq!(
@@ -807,7 +810,7 @@ fn cursor_state_returns_terminal_default_after_ris() {
 fn host_theme_change_does_not_split_a_partial_child_sequence() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b[3");
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
@@ -830,7 +833,7 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
 fn expired_synchronized_update_is_flushed_only_by_tick() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let start = Instant::now();
 
     let begin = pane.process_pty_bytes_at(
@@ -885,7 +888,7 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
 fn tick_ends_an_expired_synchronized_update() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let begin = pane.process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[5n");
     assert!(begin.render_delay.is_some());
@@ -917,7 +920,7 @@ fn tick_ends_an_expired_synchronized_update() {
 fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let begin = pane.process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[5n");
     assert!(begin.terminal_responses.is_empty());
@@ -1191,7 +1194,7 @@ fn terminal_modified_enter_tracks_live_protocol_negotiation() {
 
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let legacy = ["\r", "\r", "\r", "\x1b\r"];
     let mode_one = ["\x1b[27;2;13~", "\x1b[27;5;13~", "\x1b[27;9;13~", "\x1b\r"];
     let mode_two = [
@@ -1435,7 +1438,7 @@ fn grouped_release_is_encoded_once() {
 fn terminal_key_encoder_updates_after_terminal_mode_changes() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let before = pane.encode_terminal_key(
         shepr_termio::input::TerminalKey::new(
@@ -1462,7 +1465,7 @@ fn terminal_key_encoder_updates_after_terminal_mode_changes() {
 fn terminal_key_encoder_updates_after_kitty_flag_changes() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let key = shepr_termio::input::TerminalKey::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
@@ -1482,7 +1485,7 @@ fn terminal_key_encoder_updates_after_kitty_flag_changes() {
 fn terminal_kitty_pane_encodes_shift_enter_as_csi_u() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[>5u");
 
     let key =
@@ -1516,7 +1519,7 @@ fn terminal_modify_other_keys_mode_one_preserves_shift_enter() {
 fn terminal_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[>1u");
 
     let key =
@@ -1531,7 +1534,7 @@ fn terminal_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
 fn terminal_kitty_pane_preserves_legacy_ctrl_alt_letter() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[>5u");
 
     let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b\x06");
@@ -1576,7 +1579,7 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
     );
 
     let kitty = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     kitty.process_pty_bytes(pane_id, b"\x1b[>1u");
 
     assert_eq!(
@@ -1593,7 +1596,7 @@ fn terminal_key_encoders_are_isolated_per_pane() {
     let first = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
     let second = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
 
-    first.process_pty_bytes(PaneId::from_raw(1), b"\x1b[?1h");
+    first.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"\x1b[?1h");
 
     let first_encoded = first.encode_terminal_key(
         shepr_termio::input::TerminalKey::new(
@@ -1871,7 +1874,7 @@ fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback()
         let mut terminal = shepr_vt::Terminal::new(10, 3, 100);
         terminal.write(initial);
         let pane = PaneTerminal::new(terminal);
-        let pane_id = PaneId::from_raw(1);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
         pane.resize(shepr_core::geometry::PaneGeometry::new(10, 3, 0, 0));
         pane.process_pty_bytes(pane_id, b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
@@ -1887,7 +1890,7 @@ fn resize_that_removes_scrollback_restores_live_follow() {
     let mut terminal = shepr_vt::Terminal::new(10, 3, 100);
     terminal.write(b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.set_scroll_offset_from_bottom(1);
     pane.resize(shepr_core::geometry::PaneGeometry::new(10, 5, 0, 0));
@@ -1929,7 +1932,7 @@ fn extract_selection_uses_stable_rows_after_viewport_moves() {
         .scroll_metrics()
         .expect("scroll metrics after initial scroll");
     let mut selection = shepr_vt::selection::Selection::anchor(
-        PaneId::from_raw(1),
+        shepr_test_fixtures::fixed_pane_id(1),
         Point::new(metrics.absolute_row_at_viewport(ViewportRow(0)), 0),
     );
     selection.drag(Point::new(
@@ -2025,7 +2028,7 @@ fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
     let cursor = pane.cursor_state().expect("test precondition");
     assert_eq!((cursor.x, cursor.y), (0, 2));
 
-    pane.process_pty_bytes(PaneId::from_raw(1), b"new $ ");
+    pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"new $ ");
     assert_eq!(pane.recent_text(5), "output\nuser@host $\nnew $\n");
 }
 
@@ -2191,7 +2194,7 @@ fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
 fn process_pty_bytes_answers_xtwinops_size_queries() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b[14t\x1b[16t\x1b[18t");
@@ -2210,7 +2213,7 @@ fn process_pty_bytes_answers_xtwinops_size_queries() {
 fn xtwinops_size_queries_follow_successful_resize() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
     pane.resize(shepr_core::geometry::PaneGeometry::new(100, 30, 10, 20));
 
@@ -2230,7 +2233,7 @@ fn xtwinops_size_queries_follow_successful_resize() {
 fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     for (cell_width_px, cell_height_px) in [(0, 0), (0, 18), (9, 0)] {
         pane.resize(shepr_core::geometry::PaneGeometry::new(
             80,
@@ -2253,7 +2256,7 @@ fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
 fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() {
     let terminal = shepr_vt::Terminal::new(91, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[?1049h");
     assert!(
         pane.resize(shepr_core::geometry::PaneGeometry::new(92, 24, 9, 18))
@@ -2288,7 +2291,7 @@ fn resize_returns_in_band_size_report_response() {
 fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane_terminal = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 0)));
     pane_terminal.process_pty_bytes(pane_id, b"ordinary output");
@@ -2494,7 +2497,7 @@ fn render_preserves_rgb_background_fill_cells() {
 fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b_25a1;s\x1b\\");
 
@@ -2505,7 +2508,7 @@ fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
 fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b[6n");
 
@@ -2517,7 +2520,7 @@ fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
 fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     assert!(
         pane.apply_host_terminal_appearance(Some(
@@ -2568,7 +2571,7 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
 fn process_pty_bytes_returns_xtgettcap_truecolor_query_responses_without_queuing_input() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(
         pane_id,
@@ -2599,7 +2602,7 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
         for fragmented in [false, true] {
             let terminal = shepr_vt::Terminal::new(20, 5, 0);
             let pane = PaneTerminal::new(terminal);
-            let pane_id = PaneId::from_raw(1);
+            let pane_id = shepr_test_fixtures::fixed_pane_id(1);
             pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
                 background: Some(shepr_termio::host_term::theme::RgbColor {
                     r: 0,
@@ -2645,7 +2648,7 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
 fn process_pty_bytes_returns_split_xtgettcap_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1bP+q4");
     assert!(result.terminal_responses.is_empty());
@@ -2670,7 +2673,7 @@ fn process_pty_bytes_returns_split_xtgettcap_query_response() {
 fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_reply() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b[c\x1bP+q5463\x1b\\");
 
@@ -2686,7 +2689,7 @@ fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_re
 fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_reply() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1bP+q5463\x1b\\\x1b[c");
 
@@ -2702,7 +2705,7 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_re
 fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
         background: Some(shepr_termio::host_term::theme::RgbColor {
@@ -2728,7 +2731,7 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply
 fn host_theme_update_preserves_child_default_color_override() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b]11;#112233\x07");
     assert!(result.terminal_responses.is_empty());
@@ -2754,7 +2757,7 @@ fn host_theme_update_preserves_child_default_color_override() {
 fn child_default_color_reset_restores_cached_host_color() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b]11;#112233\x07");
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
@@ -2780,7 +2783,7 @@ fn child_default_color_reset_restores_cached_host_color() {
 fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b]0;title\x07\x1bP+q5463\x1b\\");
 
@@ -2794,7 +2797,7 @@ fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
 fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         background: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x00,
@@ -2823,7 +2826,7 @@ fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
 fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1bP+q6E6F7065;4D7\x1b\\");
 
@@ -2834,7 +2837,7 @@ fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
 fn process_pty_bytes_returns_underline_color_xtgettcap_query_responses() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1bP+q5375;536D756C78;536574756C63\x1b\\");
 
@@ -2902,7 +2905,7 @@ fn full_frame_preserves_curly_underline_style() {
 fn process_pty_bytes_orders_default_color_reply_before_following_device_attribute_reply() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
         background: Some(shepr_termio::host_term::theme::RgbColor {
@@ -2927,7 +2930,7 @@ fn process_pty_bytes_orders_default_color_reply_before_following_device_attribut
 fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(
         shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
             0,
@@ -2953,7 +2956,7 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
 
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let mut theme = shepr_termio::host_term::theme::TerminalTheme::default();
     let mut queries = String::new();
     for index in 0..=u8::MAX {
@@ -2986,7 +2989,7 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
 fn child_palette_override_survives_host_refresh_until_reset() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(
         shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
             7,
@@ -3027,7 +3030,7 @@ fn child_palette_override_survives_host_refresh_until_reset() {
 fn process_pty_bytes_returns_split_palette_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let color = current_palette_color(&pane, 255);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b]4;25");
@@ -3047,7 +3050,7 @@ fn process_pty_bytes_returns_split_palette_color_query_response() {
 fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(
             pane_id,
@@ -3064,7 +3067,7 @@ fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
 fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let color = current_palette_color(&pane, 0);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
@@ -3094,7 +3097,7 @@ fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
 fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
         background: Some(shepr_termio::host_term::theme::RgbColor {
@@ -3117,7 +3120,7 @@ fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input
 fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
@@ -3166,7 +3169,7 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
 fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b]4;0;?;1;?\x1b\\\x1b]4;0;?\x1b\\");
 
@@ -3180,7 +3183,7 @@ fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
 fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b]10;rgb:11/22/33\x07");
     let result = pane.process_pty_bytes(pane_id, b"\x1b]10;?\x1b\\");
@@ -3193,7 +3196,7 @@ fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
 fn process_pty_bytes_tracks_later_multi_value_color_set() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b]10;?;rgb:44/55/66\x1b\\");
 
@@ -3214,7 +3217,7 @@ fn process_pty_bytes_tracks_later_multi_value_color_set() {
 fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallback() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
@@ -3237,7 +3240,7 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallbac
 fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
@@ -3261,7 +3264,7 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground()
 fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
@@ -3285,7 +3288,7 @@ fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
 fn process_pty_bytes_returns_default_color_query_responses_in_order() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0x65,
@@ -3316,7 +3319,7 @@ fn process_pty_bytes_returns_default_color_query_responses_in_order() {
 fn process_pty_bytes_returns_split_default_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
         background: Some(shepr_termio::host_term::theme::RgbColor {
@@ -3343,7 +3346,7 @@ fn process_pty_bytes_returns_split_default_color_query_response() {
 fn process_pty_bytes_returns_split_cursor_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xfd,
@@ -3370,7 +3373,7 @@ fn process_pty_bytes_returns_split_cursor_color_query_response() {
 fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
         background: Some(shepr_termio::host_term::theme::RgbColor {
@@ -3560,7 +3563,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     let mut terminal = shepr_vt::Terminal::new(10, 3, 1);
     write_numbered_lines(&mut terminal, 1_100);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let position = pane.scroll_position().expect("test precondition");
     assert!(
         position.metrics.history_origin > AbsRow(0),
@@ -3590,7 +3593,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     let line = found.matches[0].start.row;
     assert_eq!(line, AbsRow(1_050));
     let selection = shepr_vt::selection::Selection::range(
-        PaneId::from_raw(1),
+        shepr_test_fixtures::fixed_pane_id(1),
         Point::new(line, 0),
         Point::new(line, 5),
     );
@@ -3633,7 +3636,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     // An evicted row is refused rather than read.
     let evicted = origin.saturating_sub(1);
     let gone = shepr_vt::selection::Selection::range(
-        PaneId::from_raw(1),
+        shepr_test_fixtures::fixed_pane_id(1),
         Point::new(evicted, 0),
         Point::new(evicted, 5),
     );
@@ -3837,7 +3840,7 @@ fn match_window_agrees_with_the_complete_match_list() {
 fn full_render_leaves_dirty_rows_for_the_next_patch() {
     let terminal = shepr_vt::Terminal::new(8, 4, 100);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.collect_dirty_patch(8, 4);
     pane.process_pty_bytes(pane_id, b"\x1b[2;1HX");
 
@@ -3858,7 +3861,7 @@ fn full_render_leaves_dirty_rows_for_the_next_patch() {
 fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
     let terminal = shepr_vt::Terminal::new(8, 6, 100);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.collect_dirty_patch(8, 6);
     pane.process_pty_bytes(pane_id, b"\x1b[2;3HX\x1b[5;4HY");
 
@@ -3903,7 +3906,7 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
 fn primary_history_is_unavailable_on_the_alternate_screen() {
     let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"history one\r\nhistory two\r\nprompt");
     assert!(
         pane.primary_history_ansi()
@@ -3924,7 +3927,7 @@ fn primary_history_is_unavailable_on_the_alternate_screen() {
 fn screen_text_snapshot_copies_rows_only_on_the_alternate_screen() {
     let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = PaneTerminal::new(terminal);
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
 
     let (screen, cols, rows) = pane.screen_text_snapshot().expect("snapshot");
@@ -3942,7 +3945,7 @@ fn screen_text_snapshot_copies_rows_only_on_the_alternate_screen() {
 fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
     let terminal = shepr_vt::Terminal::new(20, 3, 0);
     let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
-    let pane_id = PaneId::from_raw(1);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     assert!(!pane.process_pty_bytes(pane_id, b"before").core_poisoned);
     assert!(!pane.core_poisoned());
 

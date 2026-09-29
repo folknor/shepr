@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn client_attach_terminal_roundtrip() -> TestResult {
         let msg = ClientMessage::AttachTerminal {
-            terminal_id: "term_123".to_owned().into(),
+            terminal_id: "term_123_1".parse()?,
             takeover: true,
         };
         assert_eq!(roundtrip(&msg)?, msg);

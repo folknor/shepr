@@ -19,6 +19,8 @@ fn shutdown_response(request_id: String) -> crate::error::EncodedApiResponse {
     crate::error::encode_result_with_outcome(request_id, Err(shutdown_wait_error()))
 }
 
+/// Serves one `events.wait`. `clock` decides the request's own timeout; the
+/// socket thread hands in the real one.
 pub(super) fn wait_for_event(
     request_id: String,
     params: EventsWaitParams,
@@ -27,8 +29,9 @@ pub(super) fn wait_for_event(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     server_stop: Option<&Arc<AtomicBool>>,
+    clock: &dyn Fn() -> std::time::Instant,
 ) -> std::io::Result<Option<crate::error::EncodedApiResponse>> {
-    let deadline = match checked_timeout_deadline(params.timeout_ms) {
+    let deadline = match checked_timeout_deadline(clock(), params.timeout_ms) {
         Ok(deadline) => deadline,
         Err(error) => {
             return Ok(Some(crate::error::encode_result_with_outcome(
@@ -79,7 +82,7 @@ pub(super) fn wait_for_event(
             }
         }
 
-        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        if deadline.is_some_and(|deadline| clock() >= deadline) {
             let response = ErrorResponse {
                 id: request_id,
                 error: crate::error::ApiError::new(
@@ -98,12 +101,12 @@ pub(super) fn wait_for_event(
 }
 
 fn checked_timeout_deadline(
+    now: std::time::Instant,
     timeout_ms: Option<u64>,
 ) -> Result<Option<std::time::Instant>, crate::error::ApiError> {
     timeout_ms
         .map(|ms| {
-            std::time::Instant::now()
-                .checked_add(std::time::Duration::from_millis(ms))
+            now.checked_add(std::time::Duration::from_millis(ms))
                 .ok_or_else(|| {
                     crate::error::ApiError::new(
                         crate::error::ApiErrorCode::InvalidRequest,

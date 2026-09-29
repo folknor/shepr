@@ -1,5 +1,5 @@
 use super::*;
-use crate::tests::{test_pane_id, test_tab_id};
+use crate::tests::{test_pane_id, test_tab_id, test_workspace_id};
 use crossterm::event::MouseEvent;
 use shepr_api::schema::AgentStatus;
 use shepr_protocol::{
@@ -17,14 +17,14 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             &shepr_config::ValidatedConfig::test_default(),
         )
         .expect("test config encodes"),
-        focused_workspace_id: Some("ws_1".into()),
-        focused_tab_id: Some(test_tab_id("ws_1:t1")),
-        focused_pane_id: Some(test_pane_id("ws_1:p1")),
+        focused_workspace_id: Some(test_workspace_id("w1")),
+        focused_tab_id: Some(test_tab_id("w1:t1")),
+        focused_pane_id: Some(test_pane_id("w1:p1")),
         tab_bar_right: Vec::new(),
         tab_bar_right_separator: " ".into(),
         workspaces: vec![ClientShellWorkspace {
-            workspace_id: "ws_1".into(),
-            active_tab_id: test_tab_id("ws_1:t1"),
+            workspace_id: test_workspace_id("w1"),
+            active_tab_id: test_tab_id("w1:t1"),
             new_workspace_cwd: "/repo".into(),
             number: 1,
             label: "client-shell".into(),
@@ -36,8 +36,8 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             agent_status: AgentStatus::Idle,
         }],
         tabs: vec![ClientShellTab {
-            tab_id: test_tab_id("ws_1:t1"),
-            workspace_id: "ws_1".into(),
+            tab_id: test_tab_id("w1:t1"),
+            workspace_id: test_workspace_id("w1"),
             number: 1,
             label: "1".into(),
             custom_label: false,
@@ -46,9 +46,9 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             agent_status: AgentStatus::Idle,
         }],
         panes: vec![ClientShellPane {
-            pane_id: test_pane_id("ws_1:p1"),
-            workspace_id: "ws_1".into(),
-            tab_id: test_tab_id("ws_1:t1"),
+            pane_id: test_pane_id("w1:p1"),
+            workspace_id: test_workspace_id("w1"),
+            tab_id: test_tab_id("w1:t1"),
             label: None,
             cwd: Some("/repo".into()),
             foreground_cwd: Some("/repo".into()),
@@ -76,7 +76,7 @@ fn surface() -> PaneSurfaceFrame {
             &[],
         ),
         panes: vec![PaneSurfacePane {
-            pane_id: test_pane_id("ws_1:p1"),
+            pane_id: test_pane_id("w1:p1"),
             content_revision: 0,
             rect: SurfaceRect {
                 x: 0,
@@ -152,10 +152,10 @@ fn pane_scroll_result(
 ) -> shepr_api::schema::ResponseResult {
     shepr_api::schema::ResponseResult::PaneInfo {
         pane: shepr_api::schema::PaneInfo {
-            pane_id: "ws_1:p1".into(),
+            pane_id: "w1:p1".into(),
             terminal_id: "terminal_1".into(),
-            workspace_id: "ws_1".into(),
-            tab_id: "ws_1:t1".into(),
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
             focused: true,
             cwd: None,
             foreground_cwd: None,
@@ -185,7 +185,7 @@ fn copy_search_result(
 ) -> shepr_api::schema::ResponseResult {
     let total = matches.len() as u64;
     shepr_api::schema::ResponseResult::PaneCopySearch {
-        pane_id: "ws_1:p1".into(),
+        pane_id: "w1:p1".into(),
         content_revision: 0,
         matches,
         total,

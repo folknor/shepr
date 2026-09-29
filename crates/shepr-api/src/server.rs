@@ -77,7 +77,7 @@ impl Drop for ServerHandle {
         if let Err(err) = self.remove_socket_file_if_owned()
             && err.kind() != std::io::ErrorKind::NotFound
         {
-            warn!(path = %self.path.display(), err = %err, "failed to remove api socket on shutdown");
+            warn!(path = %self.path.display(), error = %err, "failed to remove api socket on shutdown");
         }
 
         if let Some(thread) = self.thread.take() {
@@ -110,7 +110,7 @@ impl ServerHandle {
         match shepr_platform::ipc::connect_local_stream(&self.path) {
             Ok(_stream) => true,
             Err(err) => {
-                debug!(err = %err, "could not wake api listener for shutdown");
+                debug!(error = %err, "could not wake api listener for shutdown");
                 false
             }
         }
@@ -192,7 +192,7 @@ fn start_server_inner(
                 return Ok(());
             }
             Err(err) => {
-                warn!(err = %err, "api connection peer credentials unavailable; refused");
+                warn!(error = %err, "api connection peer credentials unavailable; refused");
                 return Ok(());
             }
         }
@@ -223,7 +223,7 @@ fn start_server_inner(
                     server_stop.as_ref(),
                     ssh_agents.as_ref(),
                 ) {
-                    warn!(err = %err, "api connection failed");
+                    warn!(error = %err, "api connection failed");
                 }
             })
             .map(|_| ())
@@ -268,7 +268,7 @@ fn spawn_busy_refuser() -> Option<std::sync::mpsc::SyncSender<LocalStream>> {
     match spawned {
         Ok(_) => Some(tx),
         Err(err) => {
-            warn!(err = %err, "api busy refuser thread unavailable; refusals carry no request id");
+            warn!(error = %err, "api busy refuser thread unavailable; refusals carry no request id");
             None
         }
     }
@@ -296,6 +296,7 @@ fn hand_off_busy_connection(
 /// Refuses a connection over the limit, echoing the caller's request ID when
 /// its request line arrives within a short bound. Runs on the refuser thread.
 fn reject_busy_connection(mut stream: LocalStream) {
+    // clock-io-ok: the bound covers a real socket read of the request line.
     let deadline = Instant::now() + BUSY_REQUEST_ID_TIMEOUT;
     let request_id = match read_request_line_until(&mut stream, deadline) {
         Ok(Some(line)) => request_id_from_line(line.trim()),
@@ -315,7 +316,7 @@ fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
         format!("API server is at its limit of {MAX_ACTIVE_CONNECTIONS} active connections"),
     );
     if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response.body) {
-        debug!(err = %err, "failed to send API connection limit refusal");
+        debug!(error = %err, "failed to send API connection limit refusal");
     }
 }
 
@@ -364,9 +365,9 @@ impl AcceptBackoff {
     fn failed(&mut self, what: &'static str, err: &io::Error) {
         self.failures = self.failures.saturating_add(1);
         if self.failures == 1 {
-            error!(err = %err, "{what}; retrying");
+            error!(error = %err, "{what}; retrying");
         } else {
-            debug!(err = %err, failures = self.failures, "{what}; retrying");
+            debug!(error = %err, failures = self.failures, "{what}; retrying");
         }
         let delay = self
             .delay
@@ -398,7 +399,7 @@ fn handle_connection_with_stop(
     ssh_agents: Option<&shepr_platform::ssh_agent::SshAgentRegistry>,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
-        debug!(err = %err, "api connection write timeout unavailable");
+        debug!(error = %err, "api connection write timeout unavailable");
     }
 
     let Some(line) = read_initial_request_line(&mut stream)? else {
@@ -529,6 +530,8 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
                 server_stop,
+                // clock-io-ok: the socket thread supplies the real clock.
+                &Instant::now,
             )?;
             finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
@@ -671,6 +674,7 @@ pub fn api_method_name(method: &Method) -> &'static str {
 }
 
 fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option<String>> {
+    // clock-io-ok: the bound covers a real socket read of the request line.
     read_request_line_until(stream, Instant::now() + INITIAL_REQUEST_TIMEOUT)
 }
 
@@ -751,35 +755,6 @@ fn stream_subscriptions(
     running: &Arc<AtomicBool>,
     server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<()> {
-    let regex_subscription_count = params
-        .subscriptions
-        .iter()
-        .filter(|subscription| {
-            matches!(
-                subscription,
-                crate::schema::Subscription::PaneOutputMatched {
-                    r#match: crate::schema::OutputMatch::Regex { .. },
-                    ..
-                }
-            )
-        })
-        .count();
-    if regex_subscription_count > crate::limits::MAX_REGEX_MATCH_SUBSCRIPTIONS {
-        let response = ErrorResponse {
-            id: request_id.to_string(),
-            error: crate::error::ApiError::new(
-                crate::error::ApiErrorCode::InvalidParams,
-                format!(
-                    "events.subscribe allows at most {} regex output subscriptions",
-                    crate::limits::MAX_REGEX_MATCH_SUBSCRIPTIONS
-                ),
-            )
-            .into_body(),
-        };
-        write_api_json_line_allow_disconnect(&mut stream, request_id, &response)?;
-        return Ok(());
-    }
-
     let event_start_sequence = event_hub.current_sequence();
     let mut subscriptions = Vec::with_capacity(params.subscriptions.len());
     for (index, subscription) in params.subscriptions.into_iter().enumerate() {
@@ -1370,7 +1345,7 @@ mod tests {
             "req".into(),
             Err(crate::error::ApiError::new(
                 crate::error::ApiErrorCode::Timeout,
-                "timed out waiting for output match",
+                "timed out waiting for agent status",
             )),
         );
         assert_eq!(timeout.outcome.as_str(), "timeout");

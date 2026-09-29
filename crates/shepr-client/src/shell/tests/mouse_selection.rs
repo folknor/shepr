@@ -189,7 +189,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::LayoutSetSplitRatio(params)
-            if params.tab_id.as_deref() == Some("ws_1:t1")
+            if params.tab_id.as_deref() == Some("w1:t1")
                 && params.path == vec![false, true]
                 && (params.ratio - 0.6).abs() < f32::EPSILON
     ));
@@ -210,7 +210,7 @@ fn disabled_mouse_chrome_keeps_tab_wheel_but_removes_split_drag_hits() {
     config.ui.mouse_capture = false;
     let mut projected = snapshot();
     let mut second_tab = projected.tabs[0].clone();
-    second_tab.tab_id = test_tab_id("ws_1:t2");
+    second_tab.tab_id = test_tab_id("w1:t2");
     second_tab.number = 2;
     second_tab.label = "2".into();
     second_tab.focused = false;
@@ -250,7 +250,7 @@ fn disabled_mouse_chrome_keeps_tab_wheel_but_removes_split_drag_hits() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "ws_1:t2"
+                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "w1:t2"
             )
     ));
 }
@@ -400,7 +400,7 @@ fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<Cli
             "boot-1",
             id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
-                pane_id: "ws_1:p1".into(),
+                pane_id: "w1:p1".into(),
                 text: text.into(),
             }),
         )
@@ -567,7 +567,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     let focused_on = |pane_id: &str| {
         let mut projected = snapshot();
         let mut other = projected.panes[0].clone();
-        other.pane_id = test_pane_id("ws_1:p2");
+        other.pane_id = test_pane_id("w1:p2");
         projected.panes.push(other);
         for pane in &mut projected.panes {
             pane.focused = pane.pane_id == pane_id;
@@ -576,11 +576,11 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
         projected
     };
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(focused_on("ws_1:p2")));
+    state.set_snapshot(Box::new(focused_on("w1:p2")));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
     let pane = state.hits.panes[0].clone();
-    assert_eq!(pane.pane_id, "ws_1:p1");
+    assert_eq!(pane.pane_id, "w1:p1");
     let mouse = |kind, column| {
         RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind,
@@ -596,7 +596,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     )]);
     // Snapshots produced before the click's PaneFocus lands (a title spinner,
     // say) still name the old pane; they must not cancel the drag.
-    state.set_snapshot(Box::new(focused_on("ws_1:p2")));
+    state.set_snapshot(Box::new(focused_on("w1:p2")));
     assert!(state.selection.is_some(), "focus lag cancelled the drag");
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Drag(MouseButton::Left),
@@ -611,11 +611,11 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
         ((shepr_vt::AbsRow(0), 0), (shepr_vt::AbsRow(0), 2))
     );
 
-    state.set_snapshot(Box::new(focused_on("ws_1:p1")));
+    state.set_snapshot(Box::new(focused_on("w1:p1")));
     assert!(state.selection.is_some());
     assert!(state.selection_focus_pending.is_none());
     // Once focus has landed, moving it away again ends the selection.
-    state.set_snapshot(Box::new(focused_on("ws_1:p2")));
+    state.set_snapshot(Box::new(focused_on("w1:p2")));
     assert!(state.selection.is_none());
 }
 
@@ -635,10 +635,10 @@ fn selection_in_focused_pane_still_ends_when_focus_moves() {
     assert!(state.selection_focus_pending.is_none());
     let mut moved = snapshot();
     let mut other = moved.panes[0].clone();
-    other.pane_id = test_pane_id("ws_1:p2");
+    other.pane_id = test_pane_id("w1:p2");
     moved.panes[0].focused = false;
     moved.panes.push(other);
-    moved.focused_pane_id = Some(test_pane_id("ws_1:p2"));
+    moved.focused_pane_id = Some(test_pane_id("w1:p2"));
     state.set_snapshot(Box::new(moved));
     assert!(state.selection.is_none());
 }
@@ -719,10 +719,10 @@ fn double_click_release_ignores_reply_after_focus_or_content_changes() {
             lagging.panes[0].focused = false;
             state.set_snapshot(Box::new(lagging));
             let mut unfocused = snapshot();
-            unfocused.focused_pane_id = Some(test_pane_id("ws_1:p2"));
+            unfocused.focused_pane_id = Some(test_pane_id("w1:p2"));
             unfocused.panes[0].focused = false;
             let mut other = unfocused.panes[0].clone();
-            other.pane_id = test_pane_id("ws_1:p2");
+            other.pane_id = test_pane_id("w1:p2");
             other.focused = true;
             unfocused.panes.push(other);
             state.set_snapshot(Box::new(unfocused));
@@ -927,7 +927,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         [(5, 6, 4, false), (6, 8, 3, false)]
     {
         state.selection = Some(shepr_vt::selection::Selection::anchor(
-            test_pane_id("ws_1:p1"),
+            test_pane_id("w1:p1"),
             shepr_vt::Point::new(shepr_vt::AbsRow(12), 0),
         ));
         let mut changed_surface =
@@ -958,7 +958,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     let [ClientMessage::ClientShellPaneInput { pane_id, events }] = &click.requests[..] else {
         panic!("pane application click should use targeted canonical input");
     };
-    assert_eq!(pane_id, "ws_1:p1");
+    assert_eq!(pane_id, "w1:p1");
     assert!(matches!(
         &events[..],
         [ClientPaneInputEvent::Mouse {
@@ -989,7 +989,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     assert!(matches!(
         &release.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
-            if pane_id == "ws_1:p1"
+            if pane_id == "w1:p1"
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
@@ -1039,7 +1039,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     assert!(matches!(
         &outcome.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
-            if pane_id == "ws_1:p1"
+            if pane_id == "w1:p1"
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
@@ -1058,7 +1058,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
         [
             ClientMessage::ClientShellPaneInput { pane_id, events },
             ClientMessage::ClientShellFocus { focused: false }
-        ] if pane_id == "ws_1:p1" && matches!(
+        ] if pane_id == "w1:p1" && matches!(
             &events[..],
             [ClientPaneInputEvent::Mouse {
                 kind: shepr_protocol::ClientMouseKind::Up(
@@ -1091,7 +1091,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     })]);
     assert!(matches!(
         &down.requests[..],
-        [ClientMessage::ClientShellPaneInput { pane_id, .. }] if pane_id == "ws_1:p1"
+        [ClientMessage::ClientShellPaneInput { pane_id, .. }] if pane_id == "w1:p1"
     ));
     assert!(state.overlay.is_none());
     assert!(state.pane_mouse_gesture.is_some());
@@ -1105,7 +1105,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     assert!(matches!(
         &up.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
-            if pane_id == "ws_1:p1"
+            if pane_id == "w1:p1"
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
@@ -1124,7 +1124,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     let mut projected = snapshot();
     for index in 2..=3 {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("ws_1", index);
+        tab.tab_id = shepr_protocol::PublicTabId::new("w1", index);
         tab.number = index;
         tab.label = index.to_string();
         tab.focused = false;
@@ -1157,7 +1157,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
             ref tab_id,
             insert_index: Some(3),
             ..
-        }) if tab_id == "ws_1:t1"
+        }) if tab_id == "w1:t1"
     ));
     let frame = state.compose(106, 20).expect("tab drop indicator");
     assert!(
@@ -1181,7 +1181,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::TabMove(params)
-            if params.tab_id == "ws_1:t1" && params.insert_index == 3
+            if params.tab_id == "w1:t1" && params.insert_index == 3
     ));
 
     state.compose(106, 20).expect("tabs after drag");
@@ -1201,7 +1201,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     assert!(matches!(
         &click.actions[0],
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, shepr_api::schema::Method::TabFocus(target) if target.tab_id == "ws_1:t2")
+            if matches!(&request.method, shepr_api::schema::Method::TabFocus(target) if target.tab_id == "w1:t2")
     ));
 }
 
@@ -1210,7 +1210,7 @@ fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
     let mut projected = snapshot();
     for index in 2..=3 {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("ws_1", index);
+        tab.tab_id = shepr_protocol::PublicTabId::new("w1", index);
         tab.number = index;
         tab.label = index.to_string();
         tab.focused = false;
@@ -1277,18 +1277,12 @@ fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "ws_1:t1"
+                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "w1:t1"
             )
     ));
     assert_eq!(state.tab_scroll, 0);
     state.compose(106, 20).expect("tab bar after wheel");
-    assert!(
-        state
-            .hits
-            .tabs
-            .iter()
-            .any(|(_, tab_id)| tab_id == "ws_1:t1")
-    );
+    assert!(state.hits.tabs.iter().any(|(_, tab_id)| tab_id == "w1:t1"));
 }
 
 #[test]

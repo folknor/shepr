@@ -24,19 +24,18 @@ phantoms here.
 
 ---
 
-## HYGV-087 - Identifier allocation reaches process-global counters and clocks directly, with no injection point and no owner of the format
+## HYGV-154 - Identities that can still be minted unchecked
 
-Reported by the core/platform, protocol/config, remote and server hunters.
+`PaneId`, `TerminalId` and `WorkspaceId` can now only be built through a
+validating path. The same shape remains elsewhere:
 
-- `crates/shepr-core/src/layout.rs`: `static NEXT_PANE_ID`. `PaneId::alloc()`
-  reads it, and `alloc_from(&counter)` exists purely so the exhaustion test can
-  inject one. Any test wanting deterministic pane ids must use `from_raw`, which
-  bypasses validation entirely: it accepts `0`, the documented placeholder, while
-  `collect_validated_ids` rejects `0`. Fix: `PaneId::from_raw -> Option<PaneId>`
-  is a compiler-enforced signature change; removing the global needs an allocator
-  value threaded through `Workspace`, which is the larger and better fix.
-- `crates/shepr-protocol/src/ids.rs`'s doc claims `TerminalId` is an "opaque
-  identity for a server-owned terminal ... callers must not derive it from a pane
-  id or layout position", while `TerminalId` has a public `From<String>` and a
-  non-`cfg`-gated `pub fn test_new`, so deriving one from anything is a one-liner.
-  Removing `From<String>` and gating `test_new` makes the claim structural.
+- `shepr-protocol`'s `PublicChildId::new` and its parser accept any non-empty
+  workspace segment; client and server tests rely on non-canonical segments
+  (`"wOLD"`, `"ws_1:p1"`, `"old-workspace"`), including
+  `shepr-client`'s `activation_tests.rs` and `composition.rs`.
+- `BootId` has a public `From<&str>`, and `RequestId` public `From<String>` and
+  `From<&str>`.
+- `shepr-mux`'s `NEXT_WORKSPACE_ID` global is untouched.
+- `shepr-server/src/client_shell.rs::snapshot_from_session` re-parses id
+  strings the same process produced, because the API snapshot types are
+  `String`-typed.

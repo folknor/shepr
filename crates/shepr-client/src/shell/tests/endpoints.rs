@@ -20,9 +20,9 @@ fn agent(
     state_change_seq: u64,
 ) -> ClientShellAgent {
     ClientShellAgent {
-        pane_id: "ws_1:p1".parse().expect("test precondition"),
-        workspace_id: "ws_1".into(),
-        tab_id: test_tab_id("ws_1:t1"),
+        pane_id: "w1:p1".parse().expect("test precondition"),
+        workspace_id: test_workspace_id("w1"),
+        tab_id: test_tab_id("w1:t1"),
         name: Some(name.into()),
         display_agent: None,
         agent: Some("pi".into()),
@@ -202,7 +202,7 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
         .rect;
     let row = local.bottom();
     state.chrome_drag = Some(ClientChromeDrag::Workspace {
-        source_workspace_id: "ws_1".into(),
+        source_workspace_id: test_workspace_id("w1"),
         target: Some((None, row)),
     });
     let frame = state.compose(120, 40).expect("dragging frame");
@@ -280,7 +280,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .expect("test precondition");
         projection.agents = (0..8)
             .map(|index| ClientShellAgent {
-                pane_id: shepr_protocol::PublicPaneId::new("ws_1", index + 1),
+                pane_id: shepr_protocol::PublicPaneId::new("w1", index + 1),
                 focused: index == 0,
                 ..agent(&format!("agent {index}"), AgentStatus::Idle, 1)
             })
@@ -314,9 +314,9 @@ fn agent_navigation_reveals_offscreen_targets() {
     ] {
         let (mut state, remote) = state_with_scrollable_agents();
         let (endpoint_id, pane_id) = match action {
-            KeybindAction::NextAgent => (ClientEndpointId::Local, "ws_1:p2"),
-            KeybindAction::PreviousAgent => (remote, "ws_1:p8"),
-            _ => (ClientEndpointId::Local, "ws_1:p1"),
+            KeybindAction::NextAgent => (ClientEndpointId::Local, "w1:p2"),
+            KeybindAction::PreviousAgent => (remote, "w1:p8"),
+            _ => (ClientEndpointId::Local, "w1:p1"),
         };
         state.agent_scroll = if action == KeybindAction::PreviousAgent {
             0
@@ -368,7 +368,7 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
         if select_pane {
             assert!(state.focus_or_activate(
                 remote.clone(),
-                ClientEndpointFocusTarget::Pane(test_pane_id("ws_1:p1")),
+                ClientEndpointFocusTarget::Pane(test_pane_id("w1:p1")),
                 &mut outcome,
             ));
         } else {
@@ -543,7 +543,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
     assert!(matches!(
         input.requests.as_slice(),
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
-            if pane_id == "ws_1:p1" && events.len() == 1
+            if pane_id == "w1:p1" && events.len() == 1
     ));
 }
 
@@ -758,7 +758,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     let template = initial.workspaces[0].clone();
     initial.workspaces = (1..=12)
         .map(|number| ClientShellWorkspace {
-            workspace_id: format!("ws_{number}").into(),
+            workspace_id: test_workspace_id(&format!("w{number}")),
             number,
             label: format!("space-{number}"),
             focused: number == 1,
@@ -769,7 +769,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     let mut remote = initial.clone();
     remote.boot_id = "remote-boot".into();
     remote.workspaces.push(ClientShellWorkspace {
-        workspace_id: "ws_13".into(),
+        workspace_id: test_workspace_id("w13"),
         number: 13,
         focused: false,
         ..template.clone()
@@ -782,14 +782,14 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
     update.revision = shepr_protocol::ProjectionRevision::new(2);
     update.workspaces.push(ClientShellWorkspace {
-        workspace_id: "ws_13".into(),
+        workspace_id: test_workspace_id("w13"),
         number: 13,
         label: "new-space".into(),
         ..template
     });
-    update.focused_workspace_id = Some("ws_13".into());
+    update.focused_workspace_id = Some(test_workspace_id("w13"));
     for workspace in &mut update.workspaces {
-        workspace.focused = workspace.workspace_id == "ws_13";
+        workspace.focused = workspace.workspace_id == "w13";
     }
     state.set_snapshot(Box::new(update));
     let mut updated_surface = surface();
@@ -799,18 +799,22 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     assert!(state.reveal_focused_workspace);
     state.compose(106, 20).expect("new workspace revealed");
     assert!(
-        state.hits.workspaces.iter().any(|hit| {
-            hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "ws_13"
-        })
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| { hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "w13" })
     );
 
     state.workspace_scroll = 0;
     state.compose(106, 20).expect("manual scroll");
     assert_eq!(state.workspace_scroll, 0);
     assert!(
-        !state.hits.workspaces.iter().any(|hit| {
-            hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "ws_13"
-        })
+        !state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| { hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "w13" })
     );
     let unchanged = state.snapshot.as_deref().expect("snapshot").clone();
     state.set_snapshot(Box::new(unchanged));
@@ -827,8 +831,8 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
 
     let add_second_workspace = |snapshot: &mut ClientShellSnapshot| {
         let mut workspace = snapshot.workspaces[0].clone();
-        workspace.workspace_id = "ws_2".into();
-        workspace.active_tab_id = test_tab_id("ws_2:t1");
+        workspace.workspace_id = test_workspace_id("w2");
+        workspace.active_tab_id = test_tab_id("w2:t1");
         workspace.number = 2;
         workspace.label = "second-workspace".into();
         workspace.focused = false;
@@ -841,7 +845,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     remote.boot_id = "remote-boot".into();
     add_second_workspace(&mut remote);
     let mut third = remote.workspaces[1].clone();
-    third.workspace_id = "ws_3".into();
+    third.workspace_id = test_workspace_id("w3");
     third.number = 3;
     third.label = "third-workspace".into();
     remote.workspaces.push(third);
@@ -1108,7 +1112,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
         [ClientShellAction::ActivateEndpoint {
             endpoint_id: activated,
             target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-        }] if activated == &endpoint_id && pane_id == "ws_1:p1"
+        }] if activated == &endpoint_id && pane_id == "w1:p1"
     ));
 }
 
@@ -1293,7 +1297,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                         .expect("test precondition")
                         .focused_workspace_id
                         .as_deref(),
-                    Some("ws_1")
+                    Some("w1")
                 );
                 assert_eq!(state.collapsed_endpoints.contains(&remote_id), collapsed);
                 assert!(!state.collapsed_endpoints.contains(&ClientEndpointId::Local));
@@ -1348,7 +1352,7 @@ fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
     );
     assert_eq!(
         state.active_endpoint_workspace_at((local.x, local.y)),
-        Some("ws_1".into())
+        Some("w1".into())
     );
 }
 
@@ -1800,7 +1804,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
                     ClientNavigatorTarget::Pane {
                         endpoint_id: target_endpoint,
                         pane_id,
-                    } if target_endpoint == &endpoint_id && pane_id == "ws_1:p1"
+                    } if target_endpoint == &endpoint_id && pane_id == "w1:p1"
                 )
             })
             .map(|row| row.target.clone())
@@ -1811,7 +1815,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
     }
     let mut local = snapshot();
     let mut inserted = local.workspaces[0].clone();
-    inserted.workspace_id = "ws_2".into();
+    inserted.workspace_id = test_workspace_id("w2");
     inserted.focused = false;
     local.workspaces.push(inserted);
     state.set_snapshot(Box::new(local));
@@ -1824,7 +1828,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
         [ClientShellAction::ActivateEndpoint {
             endpoint_id: activated,
             target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-        }] if activated == &endpoint_id && pane_id == "ws_1:p1"
+        }] if activated == &endpoint_id && pane_id == "w1:p1"
     ));
     assert!(state.overlay.is_none());
 }
@@ -1940,7 +1944,7 @@ fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
             navigator.selected,
             Some(ClientNavigatorTarget::Pane {
                 endpoint_id: expected_endpoint,
-                pane_id: test_pane_id("ws_1:p1"),
+                pane_id: test_pane_id("w1:p1"),
             })
         );
     }
@@ -1963,7 +1967,7 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
                     ClientNavigatorTarget::Workspace {
                         endpoint_id: target_endpoint,
                         workspace_id,
-                    } if target_endpoint == &endpoint_id && workspace_id == "ws_1"
+                    } if target_endpoint == &endpoint_id && workspace_id == "w1"
                 )
             })
             .map(|row| row.target.clone())
@@ -1981,6 +1985,6 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
         [ClientShellAction::ActivateEndpoint {
             endpoint_id: activated,
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
-        }] if activated == &endpoint_id && workspace_id == "ws_1"
+        }] if activated == &endpoint_id && workspace_id == "w1"
     ));
 }

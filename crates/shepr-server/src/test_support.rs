@@ -7,9 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use ratatui::layout::Direction;
 use shepr_agent::detect::{Agent, AgentState};
-use shepr_core::layout::PaneId;
+use shepr_core::layout::{Direction, PaneId};
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
 use shepr_mux::terminal::{EffectiveStateChange, TerminalState};
 use shepr_mux::workspace::{MovedPane, PaneRemoval, PaneRemovalScope, Tab, TabPane, Workspace};

@@ -64,7 +64,7 @@ fn sweep_stale_remote_ssh_config_dirs(runtime_dir: &Path) {
     let entries = match std::fs::read_dir(runtime_dir) {
         Ok(entries) => entries,
         Err(error) => {
-            tracing::debug!(path = %runtime_dir.display(), err = %error, "could not scan SSH config runtime directory");
+            tracing::debug!(path = %runtime_dir.display(), error = %error, "could not scan SSH config runtime directory");
             return;
         }
     };
@@ -95,7 +95,7 @@ fn sweep_stale_remote_ssh_config_dirs(runtime_dir: &Path) {
         if let Err(error) = std::fs::remove_dir_all(&path) {
             tracing::warn!(
                 path = %path.display(),
-                err = %error,
+                error = %error,
                 "failed to remove stale SSH config directory"
             );
         }

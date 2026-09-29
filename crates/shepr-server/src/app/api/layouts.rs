@@ -1,14 +1,12 @@
 use shepr_api::error::{ApiErrorCode, ApiResult};
 use std::path::PathBuf;
 
-use ratatui::layout::Direction;
-
 use crate::app::{App, Mode};
 use shepr_api::schema::{
     EventData, EventEnvelope, LayoutApplyParams, LayoutDescription, LayoutExportParams, LayoutNode,
     LayoutPane, LayoutSetSplitRatioParams, ResponseResult, SplitDirection,
 };
-use shepr_core::layout::{Node, PaneId};
+use shepr_core::layout::{Direction, Node, PaneId};
 
 use super::super::api_helpers::{active_workspace_not_found, tab_not_found, workspace_not_found};
 use super::responses::{failure, success};

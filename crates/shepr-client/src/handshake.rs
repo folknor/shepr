@@ -288,12 +288,18 @@ mod tests {
             server
                 .write_all(&server_opening)
                 .expect("test precondition: the client reads the opening");
-            // Hold the connection until the client has read the opening. The client
-            // writes its preamble before reading anything, so it is always there.
+            // The client writes its preamble before reading anything, so it is
+            // always there.
             let mut client_preamble = [0u8; shepr_protocol::preamble::PREAMBLE_LEN];
             std::io::Read::read_exact(&mut server, &mut client_preamble)
                 .expect("test precondition: the client sends its preamble first");
-            std::thread::sleep(Duration::from_millis(50));
+            // Hold the connection, draining whatever else the client sends,
+            // until the client hangs up after reading the opening. Every
+            // opening here is at least a preamble long, so the client fails
+            // on its bytes without waiting for this end to close.
+            let mut rest = Vec::new();
+            // The client may reset rather than close cleanly; either ends the hold.
+            drop(std::io::Read::read_to_end(&mut server, &mut rest));
         });
         let error = do_handshake(
             &mut client,
@@ -305,6 +311,8 @@ mod tests {
             None,
         )
         .expect_err("the opening is not this build");
+        // Hanging up is what releases the peer's hold.
+        drop(client);
         peer.join().expect("test precondition");
         error
     }

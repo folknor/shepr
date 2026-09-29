@@ -263,7 +263,7 @@ impl HeadlessServer {
             {
                 warn!(
                     path = %client_path.display(),
-                    err = %cleanup_error,
+                    error = %cleanup_error,
                     "failed to remove client socket after listener setup failed"
                 );
             }
@@ -833,7 +833,7 @@ impl HeadlessServer {
             // The client is gone, so there is nobody to show a failure to.
             let result = apply_client_pane_input_events(runtime, &[held.release]);
             if let Err(err) = result {
-                warn!(?client_id, err = %err, "client shell teardown release failed");
+                warn!(?client_id, error = %err, "client shell teardown release failed");
             }
         }
     }
@@ -848,7 +848,7 @@ impl HeadlessServer {
         pane_id: &shepr_protocol::PublicPaneId,
         failures: &crate::server::pane_input::PaneInputFailures,
     ) {
-        warn!(?client_id, pane_id = %pane_id, err = %failures, "targeted client shell input failed");
+        warn!(?client_id, pane_id = %pane_id, error = %failures, "targeted client shell input failed");
         let dropped = failures.dropped_for_backpressure();
         if dropped == 0 {
             return;
@@ -976,7 +976,7 @@ impl HeadlessServer {
             modifiers.bits(),
         );
         if let Err(err) = &result {
-            warn!(?client_id, terminal_id = %terminal_id, err = %err, "terminal attach scroll failed");
+            warn!(?client_id, terminal_id = %terminal_id, error = %err, "terminal attach scroll failed");
         }
         self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
         true
@@ -1025,7 +1025,7 @@ impl HeadlessServer {
         };
         let result = apply_client_pane_input_events(runtime, &[event]);
         if let Err(err) = &result {
-            warn!(?client_id, terminal_id = %terminal_id, err = %err, "terminal attach mouse input failed");
+            warn!(?client_id, terminal_id = %terminal_id, error = %err, "terminal attach mouse input failed");
         }
         self.report_terminal_attach_input(client_id, AttachInputDelivery::of_batch(&result));
         true
@@ -1236,7 +1236,7 @@ impl HeadlessServer {
         let serialized = match Self::frame_server_message(msg) {
             Ok(framed) => framed,
             Err(err) => {
-                warn!(err = %err, "failed to serialize message for clients");
+                warn!(error = %err, "failed to serialize message for clients");
                 return;
             }
         };
@@ -1271,7 +1271,7 @@ impl HeadlessServer {
         let serialized = match Self::frame_server_message(msg) {
             Ok(framed) => framed,
             Err(err) => {
-                warn!(?client_id, err = %err, "failed to serialize message for client");
+                warn!(?client_id, error = %err, "failed to serialize message for client");
                 return false;
             }
         };
@@ -1598,7 +1598,7 @@ impl HeadlessServer {
                 };
                 let result = apply_terminal_attach_input(runtime, data);
                 if let Err(err) = &result {
-                    warn!(?client_id, terminal_id = %terminal_id, err = %err, "terminal attach input failed");
+                    warn!(?client_id, terminal_id = %terminal_id, error = %err, "terminal attach input failed");
                 }
                 self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
                 true

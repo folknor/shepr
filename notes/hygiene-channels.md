@@ -34,18 +34,10 @@ expected to find phantoms among them.
 - Nothing tests that a busy client or API socket comes out of
   `shepr-server`'s `run_server` as `RunServerError::AlreadyRunning`; only the
   raw `AddrInUse` from `bind_private_socket` is tested.
+- The IO error kind field is `kind = ?err.kind()` in
+  `shepr-platform/src/remote_bridge_io.rs` but `error_kind = ?err.kind()` in
+  `shepr-platform/src/clipboard.rs`; pick one.
 - The `library-crates-do-not-write-stderr` textlint does not cover
   `io::stdout()`. Current library uses are fd handoffs in the client terminal
   setup and the bridge relay; decide whether stdout needs the same rule with a
   marker for those.
-
-## HYGC-013 - Structured field names for the same thing differ across sites
-
-`shepr-client` keys every failure field `error`. Every other crate mixes `err`
-and `error` for the same thing in `tracing` fields: a count across the Rust
-sources found both spellings in `shepr-agent`, `shepr-api`, `shepr-mux`,
-`shepr-platform`, `shepr-remote` and `shepr-server`, and only `err` in
-`shepr-pty`. Pick one name and convert the other crates.
-
-Enforcement named: a text rule on the field name, or funnelling failures through
-one helper.

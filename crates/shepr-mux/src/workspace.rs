@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 
 use crate::events::AppEvent;
@@ -12,10 +11,8 @@ use crate::git::{AheadBehind, GitSpaceMetadata, fallback_label_from_cwd};
 use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalState;
-use shepr_core::layout::{PaneId, TileLayout};
-use shepr_protocol::{
-    PublicPaneId, PublicTabId, TerminalId, WorkspaceId, decode_public_number, encode_public_number,
-};
+use shepr_core::layout::{Direction, PaneId, TileLayout};
+use shepr_protocol::{PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
 
 mod aggregate;
 mod geometry;
@@ -24,7 +21,7 @@ mod tab;
 pub use self::geometry::apply_pane_chrome;
 pub use self::tab::{NewPane, Tab, TabPane};
 pub use self::{
-    geometry::{PaneChromeInfo, PaneGeometry, pane_inner_rect, terminal_content_rect},
+    geometry::{PaneChromeInfo, PaneGeometry, layout_rect, pane_inner_rect, terminal_content_rect},
     tab::MovedPane,
 };
 
@@ -85,16 +82,17 @@ pub struct TabCreationOutcome {
 }
 
 static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(1);
-pub(crate) fn generate_workspace_id() -> String {
+pub(crate) fn generate_workspace_id() -> WorkspaceId {
     let counter = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "w{}",
-        encode_public_number(usize::try_from(counter).unwrap_or(usize::MAX))
-    )
-}
-
-pub(crate) fn public_workspace_number(id: &str) -> Option<usize> {
-    id.strip_prefix('w').and_then(decode_public_number)
+    match usize::try_from(counter)
+        .ok()
+        .and_then(WorkspaceId::from_number)
+    {
+        Some(id) => id,
+        // The counter starts at one and a u64 of workspaces is never reached;
+        // wrapping to zero would have to reuse a live ID.
+        None => panic!("workspace id space exhausted"),
+    }
 }
 
 /// Canonical public pane ID renderer; parsing uses `PublicPaneId::from_str`.
@@ -279,7 +277,7 @@ fn valid_tabs<'a>(
 pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
     let Some(next) = workspaces
         .iter()
-        .filter_map(|workspace| public_workspace_number(&workspace.id))
+        .map(|workspace| workspace.id.number())
         .max()
         .and_then(|max| u64::try_from(max.checked_add(1)?).ok())
     else {
@@ -329,7 +327,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub(crate) fn from_restored_tabs(
-        id: String,
+        id: WorkspaceId,
         custom_name: Option<String>,
         identity_cwd: PathBuf,
         tabs: Vec<Tab>,
@@ -342,7 +340,7 @@ impl Workspace {
             return None;
         }
         let mut workspace = Self {
-            id: id.into(),
+            id,
             custom_name,
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label: fallback_label_from_cwd(&identity_cwd),
@@ -401,7 +399,7 @@ impl Workspace {
         tab_index: usize,
         direction: shepr_core::layout::NavDirection,
         delta: f32,
-        area: ratatui::layout::Rect,
+        area: shepr_core::geometry::Rect,
     ) -> bool {
         self.tabs
             .get_mut(tab_index)
@@ -414,7 +412,7 @@ impl Workspace {
         pane_id: PaneId,
         direction: shepr_core::layout::NavDirection,
         delta: f32,
-        area: ratatui::layout::Rect,
+        area: shepr_core::geometry::Rect,
     ) -> bool {
         self.tabs
             .get_mut(tab_index)
@@ -449,7 +447,7 @@ impl Workspace {
     /// loop. The background Git refresh discovers it, because an undiscovered
     /// identity never matches the workspace's resolved cwd.
     fn with_first_tab(
-        id: String,
+        id: WorkspaceId,
         custom_name: Option<String>,
         identity_cwd: &Path,
         mut tab: Tab,
@@ -459,7 +457,7 @@ impl Workspace {
             pane.public_number = 1;
         }
         let mut workspace = Self {
-            id: WorkspaceId::new(id),
+            id,
             custom_name,
             identity_cwd: identity_cwd.to_path_buf(),
             cached_identity_cwd: PathBuf::new(),
@@ -1327,7 +1325,7 @@ impl Workspace {
             .expect("test pane exists")
             .public_number = 1;
         let mut workspace = Self {
-            id: WorkspaceId::new(generate_workspace_id()),
+            id: generate_workspace_id(),
             custom_name: Some(name.to_string()),
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
@@ -1525,6 +1523,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_protocol::{decode_public_number, encode_public_number};
 
     #[test]
     fn public_tab_and_pane_ids_share_one_canonical_format() {
@@ -1587,13 +1586,13 @@ mod tests {
     #[test]
     fn reserving_restored_workspace_ids_prevents_reuse() {
         let mut restored = Workspace::test_new("restored");
-        restored.id = WorkspaceId::new("wZ");
+        restored.id = "wZ".parse().expect("canonical workspace id");
 
         reserve_workspace_ids(&[restored]);
 
         let generated = generate_workspace_id();
         assert_ne!(generated, "wZ");
-        assert!(public_workspace_number(&generated) > public_workspace_number("wZ"));
+        assert!(generated.number() > 31);
     }
 
     #[test]

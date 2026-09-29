@@ -1,4 +1,5 @@
-//! Grid and cell pixel dimensions shared by the terminal, PTY, and client.
+//! Grid and cell pixel dimensions shared by the terminal, PTY, and client, and
+//! the cell rect the pane layout is computed in.
 
 use std::num::{NonZeroU16, NonZeroU32};
 
@@ -40,6 +41,30 @@ impl GridSize {
         Self {
             cols: NonZeroU16::new(cols.max(PANE_MIN_COLS)).unwrap_or(NonZeroU16::MIN),
             rows: NonZeroU16::new(rows.max(PANE_MIN_ROWS)).unwrap_or(NonZeroU16::MIN),
+        }
+    }
+}
+
+/// A cell-addressed area: the layout model's rect. Rendering crates convert it
+/// to their drawing library's rect at the boundary, so this crate stays free
+/// of any TUI dependency.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Rect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl Rect {
+    /// Clamp `width` and `height` so the right and bottom edges stay within
+    /// `u16`.
+    pub const fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+        Self {
+            x,
+            y,
+            width: x.saturating_add(width) - x,
+            height: y.saturating_add(height) - y,
         }
     }
 }
@@ -146,6 +171,21 @@ impl HostGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rect_new_keeps_the_far_edges_within_u16() {
+        assert_eq!(
+            Rect::new(1, 2, 3, 4),
+            Rect {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4
+            }
+        );
+        let edge = Rect::new(u16::MAX - 1, u16::MAX, 10, 10);
+        assert_eq!((edge.width, edge.height), (1, 0));
+    }
 
     #[test]
     fn geometry_rejects_zero_components() {

@@ -161,7 +161,7 @@ impl App {
                     .ok();
             });
         if let Err(err) = spawned {
-            tracing::warn!(%err, "failed to spawn git status refresh thread");
+            tracing::warn!(error = %err, "failed to spawn git status refresh thread");
             self.git_refresh.git_refresh_in_flight = false;
             self.git_refresh.last_git_remote_status_refresh = now;
         }

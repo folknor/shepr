@@ -458,7 +458,7 @@ mod tests {
 
         let (mut layout, root) = shepr_core::layout::TileLayout::new();
         let new_pane = layout
-            .split_pane(root, ratatui::layout::Direction::Horizontal, 0.25)
+            .split_pane(root, shepr_core::layout::Direction::Horizontal, 0.25)
             .expect("test precondition");
 
         // Right three quarters (90 cols), minus left+right border and the
@@ -509,7 +509,7 @@ mod tests {
         let active_index = ws.active_tab_index();
         let active_public = ws.tabs()[active_index].number();
         assert_ne!(active_index + 1, active_public);
-        let new_pane = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let new_pane = ws.test_split(shepr_core::layout::Direction::Horizontal);
         assert!(ws.public_pane_number(new_pane).is_some());
         state.ensure_test_terminals();
 

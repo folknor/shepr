@@ -1317,7 +1317,6 @@ name = "shepr-api"
 version = "0.1.0"
 dependencies = [
  "interprocess",
- "regex",
  "serde",
  "serde_json",
  "shepr-agent",
@@ -1382,7 +1381,6 @@ dependencies = [
 name = "shepr-core"
 version = "0.1.0"
 dependencies = [
- "ratatui",
  "serde",
 ]
 

@@ -420,7 +420,7 @@ impl PtyIoActorHandle {
 
     fn wake_actor(&self) {
         if let Err(err) = self.wake.wake() {
-            debug!(err = %err, "failed to wake PTY actor");
+            debug!(error = %err, "failed to wake PTY actor");
         }
     }
 }
@@ -593,7 +593,7 @@ impl PtyIoActorRunner {
                     {
                         error!(
                             pane = self.pane_id.raw(),
-                            err = %err,
+                            error = %err,
                             "PTY actor wake drain failed; closing the pane"
                         );
                         self.exit_reason = ReaderExit::IoFailed;
@@ -619,7 +619,7 @@ impl PtyIoActorRunner {
                 Err(err) => {
                     error!(
                         pane = self.pane_id.raw(),
-                        err = %err,
+                        error = %err,
                         "PTY actor poll failed; closing the pane"
                     );
                     self.exit_reason = ReaderExit::IoFailed;
@@ -700,12 +700,12 @@ impl PtyIoActorRunner {
             // A failure that cannot clear would repeat on every resize, so
             // only the first one per pane is a warning.
             if self.resize_failure_logged {
-                debug!(pane = self.pane_id.raw(), err = %err, "PTY resize failed");
+                debug!(pane = self.pane_id.raw(), error = %err, "PTY resize failed");
             } else {
                 self.resize_failure_logged = true;
                 warn!(
                     pane = self.pane_id.raw(),
-                    err = %err,
+                    error = %err,
                     "PTY resize failed; the child keeps its previous window size"
                 );
             }
@@ -719,7 +719,7 @@ impl PtyIoActorRunner {
     /// child's last output reaches the terminal. Bounded so a peer that keeps
     /// producing output cannot hold the actor here.
     fn handle_write_failure(&mut self, err: &std::io::Error) {
-        debug!(pane = self.pane_id.raw(), err = %err, "PTY actor stopping after a write failure");
+        debug!(pane = self.pane_id.raw(), error = %err, "PTY actor stopping after a write failure");
         for _ in 0..MAX_WRITE_FAILURE_DRAIN_CHUNKS {
             match self.read_chunk() {
                 ReadOutcome::Data | ReadOutcome::Interrupted => {}
@@ -741,13 +741,13 @@ impl PtyIoActorRunner {
                 if pty_master_error_means_child_closed(&err) {
                     debug!(
                         pane = self.pane_id.raw(),
-                        err = %err,
+                        error = %err,
                         "PTY actor read ended after the child closed its terminal"
                     );
                 } else {
                     error!(
                         pane = self.pane_id.raw(),
-                        err = %err,
+                        error = %err,
                         "PTY actor read failed; closing the pane"
                     );
                 }
@@ -886,13 +886,13 @@ impl PtyIoActorRunner {
                 if pty_master_error_means_child_closed(&err) {
                     debug!(
                         pane = self.pane_id.raw(),
-                        err = %err,
+                        error = %err,
                         "PTY actor write ended after the child closed its terminal"
                     );
                 } else {
                     error!(
                         pane = self.pane_id.raw(),
-                        err = %err,
+                        error = %err,
                         "PTY actor write failed; closing the pane"
                     );
                 }
@@ -944,6 +944,10 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    fn test_pane_id() -> PaneId {
+        PaneId::from_raw(1).expect("1 is not the layout placeholder")
+    }
+
     fn test_wake_pair() -> (fd::WakeWriter, OwnedFd) {
         let pipe = fd::create_wake_pipe().expect("wake pipe");
         (pipe.writer, pipe.read_fd)
@@ -966,7 +970,7 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (read_tx, read_rx) = std_mpsc::channel();
         let config = PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             master_fd: owned,
             on_read: Box::new(move |bytes| {
                 read_tx
@@ -996,7 +1000,7 @@ mod tests {
         let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
         let inbox = Arc::new(Mutex::new(PtyIoInbox::default()));
         let response_order = Arc::new(Mutex::new(()));
-        let pane_id = PaneId::from_raw(1);
+        let pane_id = test_pane_id();
         let handle = PtyIoActorHandle {
             pane_id,
             wake: wake_pipe.writer,
@@ -1057,7 +1061,7 @@ mod tests {
     fn rejected_user_input_hands_its_bytes_back() {
         let (wake, _wake_read_fd) = test_wake_pair();
         let handle = PtyIoActorHandle {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             wake,
             inbox: Arc::new(Mutex::new(PtyIoInbox::default())),
             response_order: Arc::new(Mutex::new(())),
@@ -1086,7 +1090,7 @@ mod tests {
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             master_fd: owned,
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: Box::new(|_| {}),
@@ -1173,7 +1177,7 @@ mod tests {
         let handle_slot = Arc::new(Mutex::new(None::<PtyIoActorHandle>));
         let (attempt_tx, attempt_rx) = std_mpsc::channel();
         let config = PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             master_fd: owned,
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: Box::new({
@@ -1220,7 +1224,7 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (exit_tx, exit_rx) = std_mpsc::channel();
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             master_fd: owned,
             on_read,
             on_reader_exit: Box::new(move |exit| {
@@ -1393,7 +1397,7 @@ mod tests {
         let (read_tx, read_rx) = std_mpsc::channel::<Bytes>();
         let (exit_tx, exit_rx) = std_mpsc::channel();
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             master_fd: master,
             on_read: Box::new(move |bytes| {
                 read_tx
@@ -1506,7 +1510,7 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (read_tx, read_rx) = std_mpsc::channel();
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             master_fd: owned,
             on_read: Box::new(move |bytes| {
                 read_tx
@@ -1797,7 +1801,7 @@ mod tests {
     fn oversized_input_is_admitted_only_into_an_empty_inbox() {
         let (wake, _wake_read_fd) = test_wake_pair();
         let handle = PtyIoActorHandle {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             wake,
             inbox: Arc::new(Mutex::new(PtyIoInbox::default())),
             response_order: Arc::new(Mutex::new(())),
@@ -1830,7 +1834,7 @@ mod tests {
         const REPLY_LEN: usize = 4096;
         let (read_tx, read_rx) = std_mpsc::channel();
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
+            pane_id: test_pane_id(),
             master_fd: owned,
             // Every read is a query that earns a reply, as for a child that
             // prints DA1 or DSR in a loop.

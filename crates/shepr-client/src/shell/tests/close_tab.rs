@@ -6,7 +6,7 @@ fn close_state(confirm: bool, tab_count: usize) -> ClientShellState {
     let mut projected = snapshot();
     for number in 2..=tab_count {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("ws_1", number);
+        tab.tab_id = shepr_protocol::PublicTabId::new("w1", number);
         tab.number = number;
         tab.focused = false;
         projected.tabs.push(tab);
@@ -32,7 +32,7 @@ fn click(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
 
 fn request_close(state: &mut ClientShellState, menu: bool) -> ClientShellInput {
     if menu {
-        state.open_tab_context_menu(test_tab_id("ws_1:t1"), 30, 1);
+        state.open_tab_context_menu(test_tab_id("w1:t1"), 30, 1);
         state.compose(106, 24).expect("test precondition");
         let close_row = state.hits.context_menu_rows[2].0;
         click(state, close_row)
@@ -66,7 +66,7 @@ fn assert_tab_close(outcome: &ClientShellInput) {
         })
         .filter(|method| !matches!(method, Method::TabFocus(_)))
         .collect::<Vec<_>>();
-    assert!(matches!(methods.as_slice(), [Method::TabClose(target)] if target.tab_id == "ws_1:t1"));
+    assert!(matches!(methods.as_slice(), [Method::TabClose(target)] if target.tab_id == "w1:t1"));
 }
 
 #[test]
@@ -136,13 +136,13 @@ fn last_tab_confirmation_preserves_target_across_focus_changes_and_new_tabs() {
         .expect("test precondition")
         .clone();
     let mut other_workspace = projected.workspaces[0].clone();
-    other_workspace.workspace_id = "ws_2".into();
-    other_workspace.active_tab_id = test_tab_id("ws_2:t1");
+    other_workspace.workspace_id = test_workspace_id("w2");
+    other_workspace.active_tab_id = test_tab_id("w2:t1");
     other_workspace.focused = false;
     projected.workspaces.push(other_workspace);
     let mut other_tab = projected.tabs[0].clone();
-    other_tab.workspace_id = "ws_2".into();
-    other_tab.tab_id = test_tab_id("ws_2:t1");
+    other_tab.workspace_id = test_workspace_id("w2");
+    other_tab.tab_id = test_tab_id("w2:t1");
     other_tab.focused = false;
     projected.tabs.push(other_tab);
     state.set_snapshot(Box::new(projected.clone()));
@@ -153,16 +153,16 @@ fn last_tab_confirmation_preserves_target_across_focus_changes_and_new_tabs() {
         Some(ClientShellOverlay::ConfirmClose(_))
     ));
     let mut new_tab = projected.tabs[0].clone();
-    new_tab.tab_id = test_tab_id("ws_1:t2");
+    new_tab.tab_id = test_tab_id("w1:t2");
     new_tab.focused = false;
     projected.tabs.push(new_tab);
-    projected.focused_workspace_id = Some("ws_2".into());
-    projected.focused_tab_id = Some(test_tab_id("ws_2:t1"));
+    projected.focused_workspace_id = Some(test_workspace_id("w2"));
+    projected.focused_tab_id = Some(test_tab_id("w2:t1"));
     for workspace in &mut projected.workspaces {
-        workspace.focused = workspace.workspace_id == "ws_2";
+        workspace.focused = workspace.workspace_id == "w2";
     }
     for tab in &mut projected.tabs {
-        tab.focused = tab.tab_id == "ws_2:t1";
+        tab.focused = tab.tab_id == "w2:t1";
     }
     state.set_snapshot(Box::new(projected));
     assert_tab_close(&state.handle_input_bytes(b"\r"));
@@ -184,7 +184,7 @@ fn last_tab_confirmation_rejects_missing_moved_or_reconnected_targets() {
             .clone();
         match change {
             "missing" => projected.tabs.clear(),
-            "moved" => projected.tabs[0].workspace_id = "different_workspace".into(),
+            "moved" => projected.tabs[0].workspace_id = test_workspace_id("w7"),
             "reconnected" => state.endpoints[0].snapshot_generation = Some(2),
             _ => unreachable!(),
         }

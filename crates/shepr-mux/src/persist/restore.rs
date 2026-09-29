@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 use tracing::{error, warn};
 
@@ -12,8 +11,8 @@ use crate::render_signal::RenderSignal;
 use crate::terminal::{RestoreFailure, TerminalState};
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
-use shepr_core::layout::{InvalidSavedLayout, Node, PaneId, SplitRatio, TileLayout};
-use shepr_protocol::TerminalId;
+use shepr_core::layout::{Direction, InvalidSavedLayout, Node, PaneId, SplitRatio, TileLayout};
+use shepr_protocol::{TerminalId, WorkspaceId};
 
 use super::snapshot::{
     HistoryCarry, PaneAgentSessionSnapshot, PaneHistorySnapshot, TabHistorySnapshot,
@@ -263,22 +262,23 @@ fn next_free_public_tab_number(next: &mut usize, used: &HashSet<usize>) -> usize
     number
 }
 
-/// The ID a restored workspace gets. A saved ID is kept unless an earlier
-/// workspace of the same file already took it (a hand-edited or damaged
-/// file). A workspace without a usable ID gets a fresh one, which must not be
-/// any other saved workspace's ID either: the process-wide ID counter only
-/// moves past the saved IDs once restore finishes, so a fresh ID could
-/// otherwise be one a later saved workspace already owns. Every candidate the
-/// loop skips is a distinct saved or used ID, so it ends.
+/// The ID a restored workspace gets. A saved ID is kept if it is a canonical
+/// workspace ID that no earlier workspace of the same file already took (a
+/// hand-edited or damaged file can break either). A workspace without a
+/// usable ID gets a fresh one, which must not be any other saved workspace's
+/// ID either: the process-wide ID counter only moves past the saved IDs once
+/// restore finishes, so a fresh ID could otherwise be one a later saved
+/// workspace already owns. Every candidate the loop skips is a distinct saved
+/// or used ID, so it ends.
 fn restored_workspace_id(
     saved: Option<&str>,
     saved_ids: &HashSet<&str>,
-    used_ids: &mut HashSet<String>,
-) -> String {
-    if let Some(id) = saved.filter(|id| !id.is_empty())
-        && used_ids.insert(id.to_string())
+    used_ids: &mut HashSet<WorkspaceId>,
+) -> WorkspaceId {
+    if let Some(id) = saved.and_then(|id| id.parse::<WorkspaceId>().ok())
+        && used_ids.insert(id.clone())
     {
-        return id.to_string();
+        return id;
     }
     loop {
         let id = crate::workspace::generate_workspace_id();
@@ -290,7 +290,7 @@ fn restored_workspace_id(
 
 fn restore_workspace(
     snap: &WorkspaceSnapshot,
-    workspace_id: String,
+    workspace_id: WorkspaceId,
     history: Option<&WorkspaceHistorySnapshot>,
     rows: u16,
     cols: u16,
@@ -645,7 +645,7 @@ fn restore_tab(
                 error!(
                     tab = ?snap.custom_name,
                     pane_id = id.raw(),
-                    err = %e,
+                    error = %e,
                     "failed to restore pane"
                 );
                 let terminal = restored_terminal(
@@ -997,12 +997,12 @@ mod tests {
         let node = Node::Split {
             direction: Direction::Horizontal,
             ratio: shepr_core::layout::SplitRatio::clamped(0.5),
-            first: Box::new(Node::Pane(PaneId::from_raw(0))),
+            first: Box::new(Node::Pane(shepr_test_fixtures::fixed_pane_id(3))),
             second: Box::new(Node::Split {
                 direction: Direction::Vertical,
                 ratio: shepr_core::layout::SplitRatio::clamped(0.3),
-                first: Box::new(Node::Pane(PaneId::from_raw(1))),
-                second: Box::new(Node::Pane(PaneId::from_raw(2))),
+                first: Box::new(Node::Pane(shepr_test_fixtures::fixed_pane_id(1))),
+                second: Box::new(Node::Pane(shepr_test_fixtures::fixed_pane_id(2))),
             }),
         };
 
@@ -1543,9 +1543,9 @@ mod tests {
         // The ID the counter would hand out next is also saved on a later
         // workspace; a third workspace repeats that saved ID.
         let probe = crate::workspace::generate_workspace_id();
-        let next =
-            crate::workspace::public_workspace_number(&probe).expect("test precondition") + 1;
-        let taken = format!("w{}", shepr_protocol::encode_public_number(next));
+        let taken = WorkspaceId::from_number(probe.number() + 1)
+            .expect("test precondition")
+            .to_string();
         let tab = |id: u32| vec![tab_snapshot("t", LayoutSnapshot::Pane(id), &[id])];
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1555,6 +1555,7 @@ mod tests {
                 workspace_snapshot(Some(&taken), "owner", tab(2), 0),
                 workspace_snapshot(Some(&taken), "repeat", tab(3), 0),
                 workspace_snapshot(Some(""), "empty id", tab(4), 0),
+                workspace_snapshot(Some("ws_1"), "non-canonical id", tab(5), 0),
             ],
             active: Some(0),
             selected: 0,
@@ -1563,23 +1564,20 @@ mod tests {
         let restored = restore_runtimeless(&snapshot);
 
         let ids: Vec<_> = restored.workspaces.iter().map(|ws| ws.id.clone()).collect();
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), 5);
         assert_eq!(ids[1], taken, "the first owner of a saved ID keeps it");
+        assert_ne!(ids[4], "ws_1", "a non-canonical saved ID is replaced");
         let unique: HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len(), "{ids:?}");
-        assert!(ids.iter().all(|id| !id.is_empty()));
         // A later new workspace does not reuse any restored ID either.
         let fresh = crate::workspace::generate_workspace_id();
-        assert!(
-            !ids.contains(&fresh.into()),
-            "fresh workspace id reused: {ids:?}"
-        );
+        assert!(!ids.contains(&fresh), "fresh workspace id reused: {ids:?}");
     }
 
     #[test]
     fn prune_restored_node_collapses_missing_branch() {
-        let keep = PaneId::from_raw(11);
-        let missing = PaneId::from_raw(12);
+        let keep = shepr_test_fixtures::fixed_pane_id(11);
+        let missing = shepr_test_fixtures::fixed_pane_id(12);
         let node = Node::Split {
             direction: Direction::Horizontal,
             ratio: shepr_core::layout::SplitRatio::clamped(0.5),
@@ -1595,8 +1593,8 @@ mod tests {
 
     #[test]
     fn resolve_restored_pane_prefers_surviving_saved_id_and_falls_back_to_first_remaining() {
-        let first = PaneId::from_raw(21);
-        let second = PaneId::from_raw(22);
+        let first = shepr_test_fixtures::fixed_pane_id(21);
+        let second = shepr_test_fixtures::fixed_pane_id(22);
         let id_map = HashMap::from([(0_u32, first), (1_u32, second)]);
         let surviving = std::collections::HashSet::from([first]);
         let pane_ids = vec![first];

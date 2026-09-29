@@ -19,7 +19,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
     state.overlay = None;
     state.mode = ClientShellMode::Copy;
     state.copy_mode = Some(ClientCopyModeState {
-        pane_id: test_pane_id("ws_1:p1"),
+        pane_id: test_pane_id("w1:p1"),
         content_revision: 0,
         geometry: (80, 24),
         alternate_screen_active: false,
@@ -220,7 +220,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.method,
-                shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "ws_1:p1"
+                shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "w1:p1"
             )
     ));
     assert!(
@@ -266,7 +266,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::PaneSelectionRead(params)
-            if params.pane_id == "ws_1:p1"
+            if params.pane_id == "w1:p1"
                 && params.anchor == shepr_api::schema::PaneSelectionPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
@@ -283,7 +283,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
             "boot-1",
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
-                pane_id: "ws_1:p1".into(),
+                pane_id: "w1:p1".into(),
                 text: "LIV".into(),
             }),
         )
@@ -396,7 +396,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
             "boot-1",
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
-                pane_id: "ws_1:p1".into(),
+                pane_id: "w1:p1".into(),
                 text: "yIV".into(),
             }),
         )
@@ -535,7 +535,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::PaneScroll(params)
-            if params.pane_id == "ws_1:p1" && params.offset_from_bottom == 20
+            if params.pane_id == "w1:p1" && params.offset_from_bottom == 20
     ));
     let top_request_id = request.id.clone();
     state.handle_endpoint_result("boot-1", &top_request_id, Ok(pane_scroll_result(20, 20, 2)));
@@ -782,7 +782,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
             "boot-1",
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
-                pane_id: "ws_1:p1".into(),
+                pane_id: "w1:p1".into(),
                 cursor: shepr_api::schema::PaneTextPoint {
                     row: origin.row,
                     col: 3,
@@ -839,7 +839,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
         "boot-1",
         &request_id,
         Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
-            pane_id: "ws_1:p1".into(),
+            pane_id: "w1:p1".into(),
             cursor: shepr_api::schema::PaneTextPoint {
                 row: origin.row,
                 col: 3,
@@ -852,7 +852,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
         outcome.requests.iter().any(|request| matches!(
             request,
             ClientMessage::ClientShellPaneInput { pane_id, events }
-                if pane_id == "ws_1:p1"
+                if pane_id == "w1:p1"
                     && events.iter().any(|event| matches!(
                         event,
                         ClientPaneInputEvent::Key {
@@ -934,7 +934,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::PaneCopySearch(params)
-            if params.pane_id == "ws_1:p1"
+            if params.pane_id == "w1:p1"
                 && params.query == "needle"
                 && params.direction == shepr_api::schema::PaneCopySearchDirection::Forward
                 && params.cursor == origin
@@ -1148,17 +1148,17 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     snapshot.panes[0].label = Some("agent".into());
     snapshot.panes[0].focused = false;
     let mut shell = snapshot.panes[0].clone();
-    shell.pane_id = test_pane_id("ws_1:p2");
+    shell.pane_id = test_pane_id("w1:p2");
     shell.label = Some("shell".into());
     snapshot.panes.push(shell);
     for label in ["notes", "logs"] {
         let mut tab = snapshot.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("ws_1", snapshot.tabs.len() + 1);
+        tab.tab_id = shepr_protocol::PublicTabId::new("w1", snapshot.tabs.len() + 1);
         tab.label = label.into();
         tab.focused = false;
         tab.number = snapshot.tabs.len() + 1;
         let mut pane = snapshot.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new("ws_1", snapshot.panes.len() + 1);
+        pane.pane_id = shepr_protocol::PublicPaneId::new("w1", snapshot.panes.len() + 1);
         pane.tab_id = tab.tab_id.clone();
         pane.label = Some(label.into());
         pane.focused = false;
@@ -1166,8 +1166,8 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
         snapshot.panes.push(pane);
     }
     let mut workspace = snapshot.workspaces[0].clone();
-    workspace.workspace_id = "ws_2".into();
-    workspace.active_tab_id = test_tab_id("ws_2:t1");
+    workspace.workspace_id = test_workspace_id("w2");
+    workspace.active_tab_id = test_tab_id("w2:t1");
     workspace.label = "second".into();
     workspace.number = 2;
     workspace.focused = false;
@@ -1179,7 +1179,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     let mut pane = snapshot.panes[0].clone();
     pane.workspace_id = workspace.workspace_id.clone();
     pane.tab_id = tab.tab_id.clone();
-    pane.pane_id = test_pane_id("ws_2:p1");
+    pane.pane_id = test_pane_id("w2:p1");
     snapshot.workspaces.push(workspace);
     snapshot.tabs.push(tab);
     snapshot.panes.push(pane);
@@ -1233,7 +1233,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     navigator.scroll = 2;
     navigator.selected = Some(ClientNavigatorTarget::Pane {
         endpoint_id: state.active_endpoint_id.clone(),
-        pane_id: test_pane_id("ws_1:p2"),
+        pane_id: test_pane_id("w1:p2"),
     });
     let visible = visible_rows(&mut state, 11);
     assert_eq!(visible.len(), 2);
@@ -1245,7 +1245,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("expected navigator");
     };
-    navigator.query = "ws_1:p2".into();
+    navigator.query = "w1:p2".into();
     navigator.scroll = 0;
     let visible = visible_rows(&mut state, 30);
     assert_eq!(visible.len(), 2);
@@ -1283,7 +1283,7 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
             target,
             matches.then(|| ClientNavigatorTarget::Pane {
                 endpoint_id: state.active_endpoint_id.clone(),
-                pane_id: test_pane_id("ws_1:p1"),
+                pane_id: test_pane_id("w1:p1"),
             }),
             "query={query:?}"
         );
@@ -1293,19 +1293,19 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
 #[test]
 fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actionable() {
     let mut projected = snapshot();
-    projected.panes[0].pane_id = test_pane_id("ws_1:p1");
-    projected.focused_pane_id = Some(test_pane_id("ws_1:p1"));
+    projected.panes[0].pane_id = test_pane_id("w1:p1");
+    projected.focused_pane_id = Some(test_pane_id("w1:p1"));
     projected.tabs[0].label = "review".into();
     projected.tabs[0].custom_label = true;
     let mut second = projected.panes[0].clone();
-    second.pane_id = test_pane_id("ws_1:p2");
+    second.pane_id = test_pane_id("w1:p2");
     second.focused = false;
     second.foreground_cwd = Some("/repo/subproject".into());
     projected.panes.push(second);
     let first_agent = ClientShellAgent {
-        pane_id: test_pane_id("ws_1:p1"),
-        workspace_id: "ws_1".into(),
-        tab_id: test_tab_id("ws_1:t1"),
+        pane_id: test_pane_id("w1:p1"),
+        workspace_id: test_workspace_id("w1"),
+        tab_id: test_tab_id("w1:t1"),
         name: Some("writer".into()),
         display_agent: None,
         agent: Some("pi".into()),
@@ -1318,7 +1318,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         focused: true,
     };
     let mut second_agent = first_agent.clone();
-    second_agent.pane_id = "ws_1:p2".parse().expect("test precondition");
+    second_agent.pane_id = "w1:p2".parse().expect("test precondition");
     second_agent.name = Some("reviewer".into());
     second_agent.agent = Some("claude".into());
     second_agent.title = Some("checking navigation".into());
@@ -1330,19 +1330,19 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
     for (query, filter, expected) in [
-        ("", None, vec!["ws_1:p1", "ws_1:p2"]),
-        ("review", None, vec!["ws_1:p1", "ws_1:p2"]),
-        ("client-shell", None, vec!["ws_1:p1", "ws_1:p2"]),
-        ("main", None, vec!["ws_1:p1", "ws_1:p2"]),
-        ("claude", None, vec!["ws_1:p2"]),
-        ("checking navigation", None, vec!["ws_1:p2"]),
-        ("/repo/subproject", None, vec!["ws_1:p2"]),
+        ("", None, vec!["w1:p1", "w1:p2"]),
+        ("review", None, vec!["w1:p1", "w1:p2"]),
+        ("client-shell", None, vec!["w1:p1", "w1:p2"]),
+        ("main", None, vec!["w1:p1", "w1:p2"]),
+        ("claude", None, vec!["w1:p2"]),
+        ("checking navigation", None, vec!["w1:p2"]),
+        ("/repo/subproject", None, vec!["w1:p2"]),
         (
             "review",
             Some(ClientNavigatorFilter::Blocked),
-            vec!["ws_1:p2"],
+            vec!["w1:p2"],
         ),
-        ("", Some(ClientNavigatorFilter::Working), vec!["ws_1:p1"]),
+        ("", Some(ClientNavigatorFilter::Working), vec!["w1:p1"]),
         ("no such agent", None, vec![]),
     ] {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
@@ -1409,7 +1409,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     })]);
     assert!(
         matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-        if matches!(&request.method, shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "ws_1:p2"))
+        if matches!(&request.method, shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "w1:p2"))
     );
 }
 
@@ -1418,13 +1418,13 @@ fn navigator_distinguishes_unnamed_terminals_on_numbered_tabs() {
     let mut projected = snapshot();
     for (number, label) in [(2, "2"), (3, "logs")] {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("ws_1", number);
+        tab.tab_id = shepr_protocol::PublicTabId::new("w1", number);
         tab.number = number;
         tab.label = label.into();
         tab.custom_label = number == 3;
         tab.focused = false;
         let mut pane = projected.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new("ws_1", number);
+        pane.pane_id = shepr_protocol::PublicPaneId::new("w1", number);
         pane.tab_id = tab.tab_id.clone();
         pane.focused = false;
         projected.tabs.push(tab);
@@ -1480,7 +1480,7 @@ fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
             target,
             expected.then(|| ClientNavigatorTarget::Workspace {
                 endpoint_id: ClientEndpointId::Local,
-                workspace_id: "ws_1".into(),
+                workspace_id: "w1".into(),
             })
         );
     }
@@ -1491,25 +1491,25 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
     let mut projected = snapshot();
     projected.panes[0].label = Some("needle-first".into());
     let mut sibling = projected.panes[0].clone();
-    sibling.pane_id = test_pane_id("ws_1:p2");
+    sibling.pane_id = test_pane_id("w1:p2");
     sibling.label = Some("other".into());
     sibling.focused = false;
     projected.panes.push(sibling);
     let mut empty = projected.workspaces[0].clone();
-    empty.workspace_id = "ws_empty".into();
+    empty.workspace_id = test_workspace_id("w8");
     empty.label = "empty".into();
     empty.focused = false;
     projected.workspaces.push(empty);
     let mut last = projected.workspaces[0].clone();
-    last.workspace_id = "ws_last".into();
+    last.workspace_id = test_workspace_id("w9");
     last.label = "last".into();
-    last.active_tab_id = test_tab_id("ws_last:t1");
+    last.active_tab_id = test_tab_id("w9:t1");
     last.focused = false;
     let mut tab = projected.tabs[0].clone();
     tab.workspace_id = last.workspace_id.clone();
     tab.tab_id = last.active_tab_id.clone();
     tab.focused = false;
-    for (id, label) in [("ws_last:p1", "needle-last"), ("ws_last:p2", "other-last")] {
+    for (id, label) in [("w9:p1", "needle-last"), ("w9:p2", "other-last")] {
         let mut pane = projected.panes[0].clone();
         pane.pane_id = test_pane_id(id);
         pane.label = Some(label.into());
@@ -1543,27 +1543,27 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
         })
     };
     press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("ws_1:p1"));
+    assert_eq!(selected(&state), target("w1:p1"));
     press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("ws_last:p1"));
+    assert_eq!(selected(&state), target("w9:p1"));
     press(&mut state, KeyCode::Down);
-    assert_eq!(selected(&state), target("ws_last:p2"));
+    assert_eq!(selected(&state), target("w9:p2"));
     press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("ws_last:p2"));
+    assert_eq!(selected(&state), target("w9:p2"));
     press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("ws_1:p1"));
+    assert_eq!(selected(&state), target("w1:p1"));
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("navigator");
     };
     navigator.query = "needle".into();
     press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("ws_last:p1"));
+    assert_eq!(selected(&state), target("w9:p1"));
     press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("ws_1:p1"));
+    assert_eq!(selected(&state), target("w1:p1"));
     press(&mut state, KeyCode::Char('/'));
     press(&mut state, KeyCode::Left);
     press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("ws_1:p1"));
+    assert_eq!(selected(&state), target("w1:p1"));
     press(&mut state, KeyCode::Left);
     press(&mut state, KeyCode::Char('X'));
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
@@ -1589,7 +1589,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
     let mut projected = snapshot();
     for index in 2..=60 {
         let mut pane = projected.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new("ws_1", index);
+        pane.pane_id = shepr_protocol::PublicPaneId::new("w1", index);
         pane.label = Some(format!("agent {index}"));
         pane.focused = false;
         projected.panes.push(pane);
@@ -1642,7 +1642,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .offset_from_bottom,
         0
     );
-    let last_pane = shepr_protocol::PublicPaneId::new("ws_1", 60);
+    let last_pane = shepr_protocol::PublicPaneId::new("w1", 60);
     assert!(state.hits.navigator_rows.iter().any(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { pane_id, .. } if *pane_id == last_pane)));
     mouse(&mut state, MouseEventKind::Down(MouseButton::Left), track.y);
     state.compose(106, 24).expect("jump back to top");
@@ -1755,7 +1755,8 @@ fn navigator_scale_snapshot(workspaces: usize, tabs: usize, panes: usize) -> Cli
     result.panes.clear();
     for w in 0..workspaces {
         let mut workspace = workspace_template.clone();
-        workspace.workspace_id = format!("workspace_{w}").into();
+        workspace.workspace_id =
+            shepr_protocol::WorkspaceId::from_number(w + 1).expect("one-based workspace number");
         workspace.active_tab_id = shepr_protocol::PublicTabId::new(&workspace.workspace_id, 1);
         workspace.number = w + 1;
         workspace.label = format!("workspace {w}");
@@ -1940,7 +1941,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     };
     assert!(matches!(
         &request.method,
-        shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "ws_1:p1"
+        shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "w1:p1"
     ));
     assert!(state.overlay.is_none());
 }
@@ -1983,12 +1984,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     );
 
     let mut unfocused = snapshot();
-    unfocused.focused_pane_id = Some(test_pane_id("ws_1:p2"));
+    unfocused.focused_pane_id = Some(test_pane_id("w1:p2"));
     unfocused.panes[0].focused = false;
     unfocused.panes.push(ClientShellPane {
-        pane_id: test_pane_id("ws_1:p2"),
-        workspace_id: "ws_1".into(),
-        tab_id: test_tab_id("ws_1:t1"),
+        pane_id: test_pane_id("w1:p2"),
+        workspace_id: test_workspace_id("w1"),
+        tab_id: test_tab_id("w1:t1"),
         label: None,
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo".into()),
@@ -2016,7 +2017,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert_eq!(state.mode, ClientShellMode::Terminal);
 
     let mut other_selection = shepr_vt::selection::Selection::range(
-        test_pane_id("ws_1:p2"),
+        test_pane_id("w1:p2"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
     );
@@ -2027,11 +2028,11 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         state
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "ws_1:p2")
+            .is_some_and(|selection| selection.pane_id == "w1:p2")
     );
 
     let mut other_surface = surface();
-    other_surface.panes[0].pane_id = test_pane_id("ws_1:p2");
+    other_surface.panes[0].pane_id = test_pane_id("w1:p2");
     state.set_pane_surface(other_surface.clone());
     other_surface.surface_revision = other_surface
         .surface_revision
@@ -2047,7 +2048,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert!(
         matches!(&copy.actions[..], [ClientShellAction::Endpoint { request, .. }]
         if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
-            if params.pane_id == "ws_1:p2" && params.content_revision.is_none()))
+            if params.pane_id == "w1:p2" && params.content_revision.is_none()))
     );
 
     state.set_snapshot(Box::new(snapshot()));
@@ -2057,14 +2058,14 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         state
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "ws_1:p1")
+            .is_some_and(|selection| selection.pane_id == "w1:p1")
     );
     state.handle_raw_events(vec![RawInputEvent::Paste("ignored".into())]);
     assert!(
         state
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "ws_1:p1")
+            .is_some_and(|selection| selection.pane_id == "w1:p1")
     );
 
     state.mode = ClientShellMode::Navigate;
@@ -2076,7 +2077,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         state
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "ws_1:p1")
+            .is_some_and(|selection| selection.pane_id == "w1:p1")
     );
     state.mode = ClientShellMode::Resize;
     state.handle_raw_events(vec![RawInputEvent::Key(
@@ -2087,7 +2088,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         state
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "ws_1:p1")
+            .is_some_and(|selection| selection.pane_id == "w1:p1")
     );
 }
 
@@ -2099,7 +2100,7 @@ fn retained_selection_copy_suppresses_key_repeats() {
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut selection = shepr_vt::selection::Selection::range(
-        test_pane_id("ws_1:p1"),
+        test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
     );
@@ -2163,7 +2164,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
             "boot-1",
             &first_id,
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
-                pane_id: "ws_1:p1".into(),
+                pane_id: "w1:p1".into(),
                 cursor: intermediate,
                 content_revision: 0,
             }),
@@ -2213,7 +2214,7 @@ fn queued_copy_keys_preserve_prefix_order() {
         "boot-1",
         &motion_id,
         Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
-            pane_id: "ws_1:p1".into(),
+            pane_id: "w1:p1".into(),
             cursor: origin,
             content_revision: 0,
         }),
@@ -2301,7 +2302,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
             "boot-1",
             &motion_id,
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
-                pane_id: "ws_1:p1".into(),
+                pane_id: "w1:p1".into(),
                 cursor: target,
                 content_revision: 0,
             }),
@@ -2392,7 +2393,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
             "boot-1",
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
-                pane_id: "ws_1:p1".into(),
+                pane_id: "w1:p1".into(),
                 text: "hello world".into(),
             }),
         )
@@ -2467,7 +2468,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             action,
             ClientShellAction::Endpoint { request, .. }
                 if matches!(&request.method, shepr_api::schema::Method::PaneScroll(params)
-                    if params.pane_id == "ws_1:p1" && params.offset_from_bottom == 1)
+                    if params.pane_id == "w1:p1" && params.offset_from_bottom == 1)
         )));
         if selection_before_gap.is_some() {
             assert_eq!(

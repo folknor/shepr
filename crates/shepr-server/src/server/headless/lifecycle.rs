@@ -442,7 +442,7 @@ impl HeadlessServer {
         {
             warn!(
                 path = %self.client_socket_path.display(),
-                err = %err,
+                error = %err,
                 "failed to remove client socket on shutdown"
             );
         }

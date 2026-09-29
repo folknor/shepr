@@ -416,7 +416,6 @@ pub(super) fn restore_host_terminal_theme_if_needed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_core::layout::PaneId;
 
     #[test]
     fn bulk_osc_scan_matches_bytewise_state() {
@@ -924,7 +923,7 @@ mod tests {
     fn restore_host_terminal_theme_reapplies_cached_colors() {
         let terminal = shepr_vt::Terminal::new(80, 24, 0);
         let pane = super::super::PaneTerminal::new(terminal);
-        let pane_id = PaneId::from_raw(1);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let shell_pid = 7;
         let host_theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: Some(shepr_termio::host_term::theme::RgbColor {

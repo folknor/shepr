@@ -86,6 +86,7 @@ impl ApiClient {
         deadline: Instant,
     ) -> Result<serde_json::Value, ApiClientDeadlineError> {
         let mut stream = self.connect().map_err(ApiClientDeadlineError::Connect)?;
+        // clock-io-ok: the socket connect above may have used the budget.
         let send_timeout = deadline.saturating_duration_since(Instant::now());
         if send_timeout.is_zero() {
             return Err(ApiClientDeadlineError::Request(ApiClientError::Io(
@@ -160,6 +161,8 @@ impl ApiClient {
 }
 
 fn deadline_after(timeout: Duration) -> io::Result<Instant> {
+    // clock-io-ok: the response deadline begins after the request write and
+    // bounds real socket reads.
     Instant::now().checked_add(timeout).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

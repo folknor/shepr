@@ -200,7 +200,7 @@ impl App {
         Some(TerminalTargetCandidate {
             terminal_id: terminal.id.clone(),
             pane_id: shepr_protocol::PublicPaneId::new(&ws.id, pane_number),
-            workspace_id: shepr_protocol::WorkspaceId::new(ws.id.clone()),
+            workspace_id: ws.id.clone(),
             tab_id: shepr_protocol::PublicTabId::new(&ws.id, tab_number),
             cwd: ws.tabs()[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)

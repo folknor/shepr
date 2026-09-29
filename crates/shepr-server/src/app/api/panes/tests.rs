@@ -26,7 +26,7 @@ fn app_with_test_workspace() -> (App, String) {
 fn pane_input_set_changes_only_the_target_pane() {
     let (mut app, public_pane_id) = app_with_test_workspace();
     let target = app.state.workspaces[0].tabs()[0].root_pane();
-    let other = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let other = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
 
     let response = app.handle_pane_input_set(&PaneInputSetParams {
         pane_id: public_pane_id,
@@ -572,7 +572,7 @@ fn api_pane_current_prefers_caller_pane_id() {
     app.state.set_active_index(Some(0));
     app.state.set_selected_index(Some(0));
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.ensure_test_terminals();
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -658,7 +658,7 @@ fn api_pane_current_reports_no_active_pane() {
 fn api_pane_swap_explicit_source_and_target_preserves_focus_and_returns_layout() {
     let mut app = app_with_workspace();
     let source = app.state.workspaces[0].tabs()[0].root_pane();
-    let target = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let target = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, source);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 20);
     let source_public = app.public_pane_id(0, source).expect("test precondition");
@@ -945,7 +945,7 @@ fn api_pane_move_target_tab_id_survives_source_workspace_removal() {
 fn api_pane_move_to_new_tab_creates_tab_without_spawning_terminal() {
     let mut app = app_with_workspace();
     let source = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     let source_terminal = app.state.workspaces[0].tabs()[0]
         .terminal_id(source)
         .expect("test precondition")
@@ -1221,7 +1221,7 @@ fn api_pane_move_existing_tab_no_focus_preserves_previous_target_focus() {
     let previously_focused = app.state.workspaces[0].tabs()[target_tab].root_pane();
     app.state.workspaces[0].switch_tab(target_tab);
     let explicit_target =
-        app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(target_tab, previously_focused);
     seed_terminal_states(&mut app);
     let source_public = app.public_pane_id(0, source).expect("test precondition");
@@ -1264,7 +1264,7 @@ fn api_pane_move_recovery_restores_removed_source_workspace() {
         .terminal_id(source)
         .expect("test precondition")
         .clone();
-    let previous_workspace_id = app.public_workspace_id(0).expect("test precondition");
+    let previous_workspace_id = app.state.workspaces[0].id.clone();
     let context = PaneMoveRecoveryContext {
         source_ws_idx: 0,
         previous_workspace_id: previous_workspace_id.clone(),
@@ -1339,7 +1339,7 @@ fn api_pane_zoom_current_toggles_zoom() {
     app.state.set_active_index(Some(0));
     app.state.set_selected_index(Some(0));
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let _right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let _right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
 
@@ -1412,7 +1412,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
     app.state.set_active_index(Some(0));
     app.state.set_selected_index(Some(0));
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let _right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let _right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
 
@@ -1477,7 +1477,7 @@ fn api_pane_zoom_idempotent_mode_reports_focus_change() {
     app.state.set_active_index(Some(0));
     app.state.set_selected_index(Some(0));
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     app.state.workspaces[0].set_tab_zoomed(0, true);
     let right_public = app.public_pane_id(0, right).expect("test precondition");
@@ -1533,7 +1533,7 @@ fn api_pane_layout_of_a_zoomed_tab_reports_only_the_zoomed_pane() {
     app.state.set_active_index(Some(0));
     app.state.set_selected_index(Some(0));
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, right);
     app.state.workspaces[0].set_tab_zoomed(0, true);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 20);
@@ -1554,7 +1554,7 @@ fn api_pane_layout_of_a_zoomed_tab_reports_only_the_zoomed_pane() {
 fn api_pane_layout_returns_public_ids_rects_and_splits() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 20);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -1582,7 +1582,7 @@ fn api_pane_layout_returns_public_ids_rects_and_splits() {
 fn api_pane_neighbor_returns_directional_neighbor_public_id() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 20);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -1606,7 +1606,7 @@ fn api_pane_neighbor_returns_directional_neighbor_public_id() {
 fn api_pane_edges_reports_physical_layout_edges() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 20);
     let right_public = app.public_pane_id(0, right).expect("test precondition");
@@ -1630,7 +1630,7 @@ fn api_pane_edges_reports_physical_layout_edges() {
 fn api_pane_resize_changes_target_ratio_without_changing_focus() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, right);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 20);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -1665,7 +1665,7 @@ fn api_pane_resize_changes_target_ratio_without_changing_focus() {
 fn api_pane_focus_direction_focuses_neighbor() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane_in_tab(0, root);
     app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 20);
     let root_public = app.public_pane_id(0, root).expect("test precondition");

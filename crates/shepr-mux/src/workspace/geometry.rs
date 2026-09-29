@@ -13,6 +13,29 @@ use ratatui::{
 
 use shepr_core::layout::{PaneId, PaneInfo as LayoutPaneInfo, TileLayout};
 
+/// The layout model's rect as the one ratatui draws into. Both are plain
+/// cell coordinates, so the conversion copies the fields. These are free
+/// functions because neither type is local to any shepr crate that sees both,
+/// so no `From` impl between them can exist.
+fn ratatui_rect(rect: shepr_core::geometry::Rect) -> Rect {
+    Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+/// A ratatui rect as the layout model's rect; the inverse of `ratatui_rect`.
+pub fn layout_rect(rect: Rect) -> shepr_core::geometry::Rect {
+    shepr_core::geometry::Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
 /// Layout position with the chrome and content geometry added for a view.
 #[derive(Clone)]
 pub struct PaneChromeInfo {
@@ -28,8 +51,8 @@ impl From<LayoutPaneInfo> for PaneChromeInfo {
     fn from(pane: LayoutPaneInfo) -> Self {
         Self {
             id: pane.id,
-            rect: pane.rect,
-            inner_rect: pane.rect,
+            rect: ratatui_rect(pane.rect),
+            inner_rect: ratatui_rect(pane.rect),
             scrollbar_rect: None,
             borders: Borders::NONE,
             is_focused: pane.is_focused,
@@ -41,7 +64,7 @@ impl From<PaneChromeInfo> for LayoutPaneInfo {
     fn from(pane: PaneChromeInfo) -> Self {
         Self {
             id: pane.id,
-            rect: pane.rect,
+            rect: layout_rect(pane.rect),
             is_focused: pane.is_focused,
         }
     }
@@ -209,7 +232,7 @@ impl PaneGeometry {
     pub fn tab_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneChromeInfo> {
         if !zoomed {
             return apply_pane_chrome(
-                &layout.panes(self.area),
+                &layout.panes(layout_rect(self.area)),
                 self.pane_borders,
                 self.pane_gaps,
                 self.pane_outer_borders,
@@ -262,7 +285,7 @@ impl PaneGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::layout::Direction;
+    use shepr_core::layout::Direction;
 
     fn geometry(pane_borders: shepr_config::PaneBordersConfig, scrollbars: bool) -> PaneGeometry {
         PaneGeometry {

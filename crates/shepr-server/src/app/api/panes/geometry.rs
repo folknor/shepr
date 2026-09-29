@@ -135,7 +135,7 @@ impl App {
                 "pane layout unavailable",
             );
         };
-        let area = self.state.view.terminal_area;
+        let area = shepr_mux::workspace::layout_rect(self.state.view.terminal_area);
         let Some(info) = tab
             .layout()
             .panes(area)
@@ -253,7 +253,7 @@ impl App {
             .abs()
             .min(crate::limits::MAX_PANE_RESIZE_AMOUNT);
         let direction: NavDirection = super::nav_direction(params.direction);
-        let area = self.state.view.terminal_area;
+        let area = shepr_mux::workspace::layout_rect(self.state.view.terminal_area);
         let changed = self
             .state
             .workspaces
@@ -317,13 +317,17 @@ impl App {
             };
             let target = self.directional_pane_target(ws_idx, tab_idx, source_pane_id, direction);
             match target {
-                Some(target_pane_id) => {
-                    (ws_idx, tab_idx, source_pane_id, Some(target_pane_id), None)
-                }
+                Some(target_pane_id) => (
+                    ws_idx,
+                    tab_idx,
+                    Some(source_pane_id),
+                    Some(target_pane_id),
+                    None,
+                ),
                 None => (
                     ws_idx,
                     tab_idx,
-                    source_pane_id,
+                    Some(source_pane_id),
                     None,
                     Some(PaneSwapReason::NoNeighbor),
                 ),
@@ -367,17 +371,9 @@ impl App {
                     "pane layout unavailable",
                 );
             };
-            let source_pane_id = source
-                .map(|(_, _, pane_id)| pane_id)
-                .or_else(|| {
-                    self.state
-                        .workspaces
-                        .get(ws_idx)?
-                        .tabs()
-                        .get(tab_idx)
-                        .map(|tab| tab.layout().focused())
-                })
-                .unwrap_or(PaneId::from_raw(0));
+            // An unresolved source leaves nothing to swap (the reason below
+            // is `NotFound`), and its public id is echoed from the request.
+            let source_pane_id = source.map(|(_, _, pane_id)| pane_id);
             let target_pane_id = target.map(|(_, _, pane_id)| pane_id);
             let reason = match (source, target) {
                 (None, _) | (_, None) => Some(PaneSwapReason::NotFound),
@@ -396,6 +392,7 @@ impl App {
 
         let mut changed = false;
         if reason.is_none()
+            && let Some(source_pane_id) = source_pane_id
             && let Some(target_pane_id) = target_pane_id
         {
             let previous_focus = self.state.current_pane_focus_target();
@@ -423,8 +420,8 @@ impl App {
                     self.public_pane_id(idx, pane_id)
                 })
                 .unwrap_or(raw),
-            None => self
-                .public_pane_id(ws_idx, source_pane_id)
+            None => source_pane_id
+                .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id))
                 .unwrap_or_default(),
         };
         let target_public_id = match params.target_pane_id {
@@ -504,7 +501,7 @@ impl App {
         };
         let recovery_context = PaneMoveRecoveryContext {
             source_ws_idx,
-            previous_workspace_id: previous_workspace_id.clone(),
+            previous_workspace_id: source_ws.id.clone(),
             previous_workspace_label,
             previous_tab_label,
             identity_cwd,
@@ -962,7 +959,7 @@ impl App {
                 &context.identity_cwd,
                 moved,
             );
-            workspace.id = context.previous_workspace_id.into();
+            workspace.id = context.previous_workspace_id;
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
             self.state.workspaces.insert(insert_idx, workspace);
         }

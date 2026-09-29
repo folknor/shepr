@@ -276,7 +276,7 @@ fn add_split_border_cells(
 
     for split in split_borders {
         match split.direction {
-            ratatui::layout::Direction::Horizontal => {
+            shepr_core::layout::Direction::Horizontal => {
                 let x = split.pos;
                 let end = split.area.y.saturating_add(split.area.height);
                 for y in split.area.y..=end {
@@ -297,7 +297,7 @@ fn add_split_border_cells(
                     cell.right |= right;
                 }
             }
-            ratatui::layout::Direction::Vertical => {
+            shepr_core::layout::Direction::Vertical => {
                 let y = split.pos;
                 let end = split.area.x.saturating_add(split.area.width);
                 for x in split.area.x..=end {
@@ -637,11 +637,13 @@ mod tests {
     fn default_horizontal_split_uses_one_shared_divider_column() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs()[0].root_pane();
-        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             true,
@@ -664,11 +666,13 @@ mod tests {
     fn default_vertical_split_uses_one_shared_divider_row() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs()[0].root_pane();
-        let bottom = workspace.test_split(ratatui::layout::Direction::Vertical);
+        let bottom = workspace.test_split(shepr_core::layout::Direction::Vertical);
         workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             true,
@@ -691,11 +695,13 @@ mod tests {
     fn disabled_outer_borders_keep_only_shared_pane_dividers() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs()[0].root_pane();
-        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             false,
@@ -717,11 +723,13 @@ mod tests {
     fn pane_gaps_keep_independent_bordered_panes() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs()[0].root_pane();
-        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             true,
             true,
@@ -744,11 +752,13 @@ mod tests {
     fn borderless_pane_gaps_add_one_empty_cell_between_panes() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs()[0].root_pane();
-        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Off,
             true,
             true,
@@ -771,10 +781,12 @@ mod tests {
     #[test]
     fn disabled_pane_borders_make_inner_rect_equal_visual_rect() {
         let mut workspace = Workspace::test_new("test");
-        workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.test_split(shepr_core::layout::Direction::Horizontal);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Off,
             false,
             true,
@@ -789,7 +801,7 @@ mod tests {
     #[test]
     fn always_pane_borders_frame_lone_pane() {
         let workspace = Workspace::test_new("test");
-        let area = Rect::new(0, 0, 100, 20);
+        let area = shepr_core::geometry::Rect::new(0, 0, 100, 20);
 
         let default_infos = apply_pane_chrome(
             &workspace.tabs()[0].layout().panes(area),
@@ -823,7 +835,7 @@ mod tests {
         app.view.terminal_area = Rect::new(0, 0, 4, 4);
         app.view.pane_infos = vec![
             PaneInfo {
-                id: PaneId::from_raw(1),
+                id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 2),
                 inner_rect: Rect::default(),
                 scrollbar_rect: None,
@@ -831,7 +843,7 @@ mod tests {
                 is_focused: true,
             },
             PaneInfo {
-                id: PaneId::from_raw(2),
+                id: shepr_test_fixtures::fixed_pane_id(2),
                 rect: Rect::new(2, 0, 2, 2),
                 inner_rect: Rect::default(),
                 scrollbar_rect: None,
@@ -839,7 +851,7 @@ mod tests {
                 is_focused: false,
             },
             PaneInfo {
-                id: PaneId::from_raw(3),
+                id: shepr_test_fixtures::fixed_pane_id(3),
                 rect: Rect::new(0, 2, 2, 2),
                 inner_rect: Rect::default(),
                 scrollbar_rect: None,
@@ -847,7 +859,7 @@ mod tests {
                 is_focused: false,
             },
             PaneInfo {
-                id: PaneId::from_raw(4),
+                id: shepr_test_fixtures::fixed_pane_id(4),
                 rect: Rect::new(2, 2, 2, 2),
                 inner_rect: Rect::default(),
                 scrollbar_rect: None,
@@ -858,16 +870,16 @@ mod tests {
         let split_borders = vec![
             shepr_core::layout::SplitBorder {
                 pos: 2,
-                direction: ratatui::layout::Direction::Horizontal,
+                direction: shepr_core::layout::Direction::Horizontal,
                 ratio: 0.5,
-                area: Rect::new(0, 0, 4, 4),
+                area: shepr_core::geometry::Rect::new(0, 0, 4, 4),
                 path: vec![],
             },
             shepr_core::layout::SplitBorder {
                 pos: 2,
-                direction: ratatui::layout::Direction::Vertical,
+                direction: shepr_core::layout::Direction::Vertical,
                 ratio: 0.5,
-                area: Rect::new(0, 0, 4, 4),
+                area: shepr_core::geometry::Rect::new(0, 0, 4, 4),
                 path: vec![shepr_core::geometry::SplitBranch::First],
             },
         ];
@@ -893,7 +905,7 @@ mod tests {
         app.view.terminal_area = Rect::new(0, 0, 4, 3);
         app.view.pane_infos = vec![
             PaneInfo {
-                id: PaneId::from_raw(1),
+                id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 3),
                 inner_rect: Rect::default(),
                 scrollbar_rect: None,
@@ -901,7 +913,7 @@ mod tests {
                 is_focused: true,
             },
             PaneInfo {
-                id: PaneId::from_raw(2),
+                id: shepr_test_fixtures::fixed_pane_id(2),
                 rect: Rect::new(2, 0, 2, 3),
                 inner_rect: Rect::default(),
                 scrollbar_rect: None,
@@ -1017,7 +1029,7 @@ mod tests {
     async fn zoomed_multi_pane_keeps_border_space() {
         let mut app = AppState::test_new();
         let mut workspace = Workspace::test_new("test");
-        let focused_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let focused_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.set_tab_zoomed(0, true);
         let terminal_runtimes = registry_with_runtime(
             &workspace,
@@ -1076,7 +1088,7 @@ mod tests {
                 app.view.terminal_area = area;
                 let mut workspace = Workspace::test_new("test");
                 let root = workspace.tabs()[0].root_pane();
-                let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+                let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
                 workspace.set_tab_zoomed(0, zoomed);
                 let mut terminal_runtimes = PaneRuntimeRegistry::new();
                 for pane in [root, right] {
@@ -1168,7 +1180,7 @@ mod tests {
         };
         let expected_style = automatic_selection_style(&palette, host_theme);
         let selection = Some(Selection::range(
-            PaneId::from_raw(1),
+            shepr_test_fixtures::fixed_pane_id(1),
             shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
             shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
         ));
@@ -1193,7 +1205,7 @@ mod tests {
                 render_selection_highlight(
                     selection.as_ref(),
                     frame.buffer_mut(),
-                    &PaneId::from_raw(1),
+                    &shepr_test_fixtures::fixed_pane_id(1),
                     Rect::new(0, 0, 4, 1),
                     zero_origin_metrics(1),
                     &palette,
@@ -1227,7 +1239,7 @@ mod tests {
         let host_theme = shepr_termio::host_term::theme::TerminalTheme::default();
         let expected = automatic_selection_style(&palette, host_theme);
         let selection = Some(Selection::range(
-            PaneId::from_raw(1),
+            shepr_test_fixtures::fixed_pane_id(1),
             shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
             shepr_vt::Point::new(shepr_vt::AbsRow(2), 3),
         ));
@@ -1236,7 +1248,7 @@ mod tests {
         render_selection_highlight(
             selection.as_ref(),
             &mut buffer,
-            &PaneId::from_raw(1),
+            &shepr_test_fixtures::fixed_pane_id(1),
             Rect::new(1, 1, 4, 3),
             zero_origin_metrics(3),
             &palette,
@@ -1257,7 +1269,7 @@ mod tests {
         render_selection_highlight(
             selection.as_ref(),
             &mut buffer,
-            &PaneId::from_raw(1),
+            &shepr_test_fixtures::fixed_pane_id(1),
             Rect::new(10, 10, 4, 3),
             zero_origin_metrics(3),
             &palette,
@@ -1270,7 +1282,7 @@ mod tests {
         render_selection_highlight(
             selection.as_ref(),
             &mut unmapped,
-            &PaneId::from_raw(1),
+            &shepr_test_fixtures::fixed_pane_id(1),
             Rect::new(0, 0, 4, 2),
             None,
             &palette,

@@ -161,7 +161,7 @@ pub(super) fn shutdown_pane_processes(
     if let Err(err) = spawned {
         warn!(
             pane = pane_id.raw(),
-            %err,
+            error = %err,
             "could not start pane teardown thread; tearing down inline"
         );
         run_pane_teardown(pane_id, &work);

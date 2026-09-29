@@ -148,7 +148,7 @@ fn cursor_movement_preserves_filter_selection_and_scroll() {
                 v.scroll = 3;
                 v.selected = Some(ClientNavigatorTarget::Pane {
                     endpoint_id: ClientEndpointId::Local,
-                    pane_id: test_pane_id("ws_1:p1"),
+                    pane_id: test_pane_id("w1:p1"),
                 });
             }
             ClientShellOverlay::Help(v) => v.scroll = 3,

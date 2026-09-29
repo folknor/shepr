@@ -1,62 +1,12 @@
-use regex::{Regex, RegexBuilder};
-
 use crate::event_hub::EventHistoryError;
-use crate::limits::{APP_RESPONSE_TIMEOUT, MATCH_REGEX_DFA_SIZE_LIMIT, MATCH_REGEX_SIZE_LIMIT};
+use crate::limits::APP_RESPONSE_TIMEOUT;
 use crate::schema::{
     ErrorBody, ErrorResponse, EventKind, Method, PaneAgentStatusChangedEvent,
-    PaneOutputMatchedEvent, PaneScrollChangedEvent, PaneScrollInfo, Request, Subscription,
-    SubscriptionEventData, SubscriptionEventEnvelope, SubscriptionEventKind,
+    PaneScrollChangedEvent, PaneScrollInfo, Request, Subscription, SubscriptionEventData,
+    SubscriptionEventEnvelope, SubscriptionEventKind,
 };
 use crate::server::dispatch_to_app_with_timeout_result;
 use crate::{ApiRequestSender, EventHub};
-
-pub(crate) fn compile_match_regex(value: &str) -> Result<Regex, crate::error::ApiError> {
-    let mut builder = RegexBuilder::new(value);
-    builder
-        .size_limit(MATCH_REGEX_SIZE_LIMIT)
-        .dfa_size_limit(MATCH_REGEX_DFA_SIZE_LIMIT);
-    builder.build().map_err(|error| {
-        crate::error::ApiError::new(crate::error::ApiErrorCode::InvalidRegex, error.to_string())
-    })
-}
-
-pub(super) fn output_match_read_source(
-    source: &crate::schema::ReadSource,
-) -> crate::schema::ReadSource {
-    match source {
-        crate::schema::ReadSource::Recent => crate::schema::ReadSource::RecentUnwrapped,
-        other => *other,
-    }
-}
-
-pub(super) fn match_output(
-    text: &str,
-    matcher: &crate::schema::OutputMatch,
-    regex: Option<&Regex>,
-) -> Option<String> {
-    match matcher {
-        crate::schema::OutputMatch::Substring { value } => text
-            .lines()
-            .find(|line| line.contains(value))
-            .map(str::to_string),
-        crate::schema::OutputMatch::Regex { .. } => regex.and_then(|re| {
-            text.lines()
-                .find(|line| re.is_match(line))
-                .map(str::to_string)
-        }),
-    }
-}
-
-pub(super) struct ActiveOutputMatchedSubscription {
-    pane_id: String,
-    source: crate::schema::ReadSource,
-    lines: Option<u32>,
-    matcher: crate::schema::OutputMatch,
-    regex: Option<Regex>,
-    strip_ansi: bool,
-    currently_matching: bool,
-    request_prefix: String,
-}
 
 pub(super) struct ActiveAgentStatusChangedSubscription {
     pane_id: String,
@@ -103,7 +53,6 @@ pub(super) struct ActiveEventSubscription {
 
 pub(super) enum ActiveSubscription {
     Event(ActiveEventSubscription),
-    OutputMatched(ActiveOutputMatchedSubscription),
     AgentStatusChanged(Box<ActiveAgentStatusChangedSubscription>),
     ScrollChanged(ActiveScrollChangedSubscription),
 }
@@ -157,49 +106,6 @@ impl ActiveSubscription {
                 Ok(event_subscription(EventKind::PaneAgentDetected))
             }
             Subscription::LayoutUpdated {} => Ok(event_subscription(EventKind::LayoutUpdated)),
-            Subscription::PaneOutputMatched {
-                pane_id,
-                source,
-                lines,
-                r#match,
-                strip_ansi,
-            } => {
-                let regex = match &r#match {
-                    crate::schema::OutputMatch::Regex { value } => {
-                        match compile_match_regex(value) {
-                            Ok(regex) => Some(regex),
-                            Err(error) => {
-                                return Err(ErrorResponse {
-                                    id: request_id.to_string(),
-                                    error: error.into_body(),
-                                });
-                            }
-                        }
-                    }
-                    crate::schema::OutputMatch::Substring { .. } => None,
-                };
-
-                let probe = pane_read(
-                    format!("{request_id}:sub:{index}:probe"),
-                    &pane_id,
-                    source,
-                    lines,
-                    strip_ansi,
-                    api_tx,
-                );
-                probe?;
-
-                Ok(Self::OutputMatched(ActiveOutputMatchedSubscription {
-                    pane_id,
-                    source,
-                    lines,
-                    matcher: r#match,
-                    regex,
-                    strip_ansi,
-                    currently_matching: false,
-                    request_prefix: format!("{request_id}:sub:{index}"),
-                }))
-            }
             Subscription::PaneAgentStatusChanged {
                 pane_id,
                 agent_status,
@@ -254,7 +160,6 @@ impl ActiveSubscription {
     ) -> Result<Option<serde_json::Value>, ErrorBody> {
         let event = match self {
             Self::Event(subscription) => return subscription.poll(event_hub),
-            Self::OutputMatched(subscription) => subscription.poll(api_tx)?,
             Self::AgentStatusChanged(subscription) => {
                 subscription.poll_result(api_tx, event_hub)?
             }
@@ -271,7 +176,7 @@ impl ActiveSubscription {
         match self {
             Self::Event(subscription) => Some(subscription.last_sequence),
             Self::AgentStatusChanged(subscription) => Some(subscription.last_sequence),
-            Self::OutputMatched(_) | Self::ScrollChanged(_) => None,
+            Self::ScrollChanged(_) => None,
         }
     }
 
@@ -311,7 +216,7 @@ impl ActiveSubscription {
                     })
                     .transpose()
             }
-            Self::OutputMatched(_) | Self::ScrollChanged(_) => Ok(None),
+            Self::ScrollChanged(_) => Ok(None),
         }
     }
 
@@ -327,7 +232,6 @@ impl ActiveSubscription {
             Self::AgentStatusChanged(subscription) => {
                 subscription.poll_snapshot(api_tx, event_hub)?
             }
-            Self::OutputMatched(subscription) => subscription.poll(api_tx)?,
             Self::ScrollChanged(subscription) => subscription.poll(api_tx)?,
         };
         event
@@ -350,11 +254,10 @@ const STREAM_SEQUENCE_FIELD: &str = "seq";
 ///
 /// Every line carries the hub sequence as `seq`. History events carry their
 /// own sequence, which is strictly increasing across distinct hub events.
-/// Sampled events (`pane.output_matched`, `pane.scroll_changed`, and the
-/// snapshot-derived `pane.agent_status_changed`) are not hub events: they
-/// follow all history delivered in the same poll and carry the sequence of the
-/// last hub event delivered before them, so `seq` never decreases along a
-/// stream.
+/// Sampled events (`pane.scroll_changed` and the snapshot-derived
+/// `pane.agent_status_changed`) are not hub events: they follow all history
+/// delivered in the same poll and carry the sequence of the last hub event
+/// delivered before them, so `seq` never decreases along a stream.
 pub(super) struct SubscriptionStream {
     subscriptions: Vec<ActiveSubscription>,
     delivered_through: u64,
@@ -468,45 +371,6 @@ impl ActiveEventSubscription {
             }
         }
         Ok(None)
-    }
-}
-
-impl ActiveOutputMatchedSubscription {
-    fn poll(
-        &mut self,
-        api_tx: &ApiRequestSender,
-    ) -> Result<Option<SubscriptionEventEnvelope>, ErrorBody> {
-        let read = pane_read(
-            format!("{}:read", self.request_prefix),
-            &self.pane_id,
-            output_match_read_source(&self.source),
-            self.lines,
-            self.strip_ansi,
-            api_tx,
-        )
-        .map_err(|response| response.error)?;
-
-        let matched_line = match_output(&read.text, &self.matcher, self.regex.as_ref());
-        match matched_line {
-            Some(matched_line) => {
-                if self.currently_matching {
-                    return Ok(None);
-                }
-                self.currently_matching = true;
-                Ok(Some(SubscriptionEventEnvelope {
-                    event: SubscriptionEventKind::PaneOutputMatched,
-                    data: SubscriptionEventData::PaneOutputMatched(PaneOutputMatchedEvent {
-                        pane_id: read.pane_id.clone(),
-                        matched_line,
-                        read,
-                    }),
-                }))
-            }
-            None => {
-                self.currently_matching = false;
-                Ok(None)
-            }
-        }
     }
 }
 
@@ -675,47 +539,6 @@ impl ActiveScrollChangedSubscription {
     }
 }
 
-fn pane_read(
-    request_id: String,
-    pane_id: &str,
-    source: crate::schema::ReadSource,
-    lines: Option<u32>,
-    strip_ansi: bool,
-    api_tx: &ApiRequestSender,
-) -> Result<crate::schema::PaneReadResult, ErrorResponse> {
-    let response = dispatch_to_app_with_timeout_result(
-        Request {
-            id: request_id.clone(),
-            method: Method::PaneRead(crate::schema::PaneReadParams {
-                pane_id: pane_id.to_string(),
-                source,
-                lines,
-                // `strip_ansi: false` switches the read to the ANSI renderer.
-                format: crate::schema::ReadFormat::Text,
-                strip_ansi,
-                intent: crate::schema::ReadIntent::Passive,
-            }),
-        },
-        api_tx,
-        Some(APP_RESPONSE_TIMEOUT),
-    );
-    match response {
-        Ok(crate::schema::ResponseResult::PaneRead { read }) => Ok(read),
-        Err(error) => Err(ErrorResponse {
-            id: request_id,
-            error: error.into_body(),
-        }),
-        Ok(_) => Err(ErrorResponse {
-            id: request_id,
-            error: crate::error::ApiError::new(
-                crate::error::ApiErrorCode::InternalError,
-                "app returned an unexpected pane read result",
-            )
-            .into_body(),
-        }),
-    }
-}
-
 fn pane_get(
     request_id: String,
     pane_id: &str,
@@ -833,18 +656,6 @@ mod tests {
     }
 
     #[test]
-    fn wire_regexes_compile_within_a_size_bound() {
-        assert!(compile_match_regex("ready: \\d+").is_ok());
-        // A Unicode word class repeated this often compiles to far more than
-        // the bound.
-        let error = compile_match_regex("\\w{2000}").expect_err("an oversized program is refused");
-        assert!(matches!(
-            error.code,
-            crate::error::ApiErrorCode::InvalidRegex
-        ));
-    }
-
-    #[test]
     fn sampling_subscriptions_report_a_vanished_pane_instead_of_going_silent() {
         let event_hub = EventHub::default();
         let api_tx = pane_not_found_app();
@@ -853,18 +664,6 @@ mod tests {
                 pane_id: "pane_1".into(),
                 last_scroll: None,
                 request_prefix: "scroll".into(),
-            }),
-            ActiveSubscription::OutputMatched(ActiveOutputMatchedSubscription {
-                pane_id: "pane_1".into(),
-                source: crate::schema::ReadSource::Recent,
-                lines: None,
-                matcher: crate::schema::OutputMatch::Substring {
-                    value: "ready".into(),
-                },
-                regex: None,
-                strip_ansi: true,
-                currently_matching: false,
-                request_prefix: "output".into(),
             }),
             ActiveSubscription::AgentStatusChanged(Box::new(
                 ActiveAgentStatusChangedSubscription {

@@ -2,13 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use ratatui::layout::Direction;
-
 use super::PaneSpawnHandles;
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
 use crate::terminal::TerminalState;
-use shepr_core::layout::{PaneId, TileLayout};
+use shepr_core::layout::{Direction, PaneId, TileLayout};
 use shepr_protocol::TerminalId;
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
@@ -277,7 +275,7 @@ impl Tab {
         &mut self,
         direction: shepr_core::layout::NavDirection,
         delta: f32,
-        area: ratatui::layout::Rect,
+        area: shepr_core::geometry::Rect,
     ) -> bool {
         if !self.has_consistent_panes() {
             return false;
@@ -291,7 +289,7 @@ impl Tab {
         pane_id: PaneId,
         direction: shepr_core::layout::NavDirection,
         delta: f32,
-        area: ratatui::layout::Rect,
+        area: shepr_core::geometry::Rect,
     ) -> bool {
         self.has_consistent_panes() && self.layout.resize_pane(pane_id, direction, delta, area)
     }

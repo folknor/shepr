@@ -47,7 +47,7 @@ pub(crate) fn pane_exit_failed(pane_id: u32, err: &str) {
         subsystem = "pane",
         outcome = "error",
         pane_id,
-        err,
+        error = err,
         "pane child wait failed"
     );
 }
@@ -69,7 +69,7 @@ pub(crate) fn session_save_failed(path: &Path, err: &str) {
         subsystem = "persist",
         outcome = "error",
         path = %path.display(),
-        err,
+        error = err,
         "failed to save session"
     );
 }
@@ -90,7 +90,7 @@ pub(crate) fn session_clear_failed(path: &Path, err: &str) {
         subsystem = "persist",
         outcome = "error",
         path = %path.display(),
-        err,
+        error = err,
         "failed to clear session"
     );
 }

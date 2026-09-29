@@ -102,7 +102,7 @@ fn write_endpoint_rejection(
     let welcome = EndpointServerWelcome::incompatible(reason);
     let response = ServerMessage::EndpointWelcome(welcome);
     if let Err(err) = shepr_protocol::write_message(stream, &response) {
-        debug!(?client_id, err = %err, "client left before its handshake refusal was written");
+        debug!(?client_id, error = %err, "client left before its handshake refusal was written");
     }
 }
 
@@ -595,6 +595,7 @@ pub(crate) fn handle_client_handshake(
     // The client's preamble and hello are read against one overall deadline.
     let mut reader = shepr_platform::ipc::DeadlineReader::new(
         &mut stream,
+        // clock-io-ok: the deadline bounds real socket reads of the handshake.
         std::time::Instant::now() + HANDSHAKE_TIMEOUT,
     );
     match shepr_protocol::preamble::read_preamble(&mut reader) {
@@ -653,7 +654,7 @@ pub(crate) fn handle_client_handshake(
             debug!(
                 ?client_id,
                 session = %session.display_name(),
-                err = %err,
+                error = %err,
                 "failed to read client hello"
             );
             return Ok(());
@@ -723,7 +724,7 @@ pub(crate) fn handle_client_handshake(
                 debug!(
                     ?client_id,
                     session = %session.display_name(),
-                    err = %err,
+                    error = %err,
                     "client left before its handshake refusal was written"
                 );
             }
@@ -828,12 +829,16 @@ fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
         // stuck on a client that stopped reading must not pin this thread
         // forever.
         let mut flushed = writer.flush();
+        // clock-io-ok: the bound covers the writer thread's real socket write.
         let deadline = std::time::Instant::now() + UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT;
         while matches!(
             flushed.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ) && std::time::Instant::now() < deadline
-        {
+        ) {
+            // clock-io-ok: the writer thread flushes concurrently in real time.
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
             std::thread::sleep(crate::limits::UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL);
         }
     }
@@ -867,7 +872,7 @@ fn client_writer_loop(
                     true
                 }
                 Err(err) => {
-                    debug!(err = %err, "client flush failed, closing writer");
+                    debug!(error = %err, "client flush failed, closing writer");
                     false
                 }
             },
@@ -884,11 +889,11 @@ fn client_writer_loop(
 fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
     let result = shepr_platform::write_client_stream(stream, data);
     if let Err(err) = result {
-        debug!(err = %err, "client write failed, closing writer");
+        debug!(error = %err, "client write failed, closing writer");
         return false;
     }
     if let Err(err) = stream.flush() {
-        debug!(err = %err, "client flush failed, closing writer");
+        debug!(error = %err, "client flush failed, closing writer");
         return false;
     }
     true
@@ -925,7 +930,7 @@ fn client_read_loop_with_endpoint_controls(
                 debug!(
                     ?client_id,
                     session = %session.display_name(),
-                    err = %err,
+                    error = %err,
                     "client read error, closing"
                 );
                 send_client_disconnected(server_event_tx, client_id);

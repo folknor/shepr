@@ -355,7 +355,7 @@ pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
                 subsystem = "ipc",
                 outcome = "staging_unavailable",
                 path = %path.display(),
-                err = %err,
+                error = %err,
                 "private socket staging failed; binding in place"
             );
             let listener = bind_in_place_then_restrict(path)?;
@@ -381,7 +381,7 @@ fn bind_in_place_then_restrict(path: &Path) -> io::Result<LocalListener> {
         if let Err(remove_error) = fs::remove_file(path) {
             tracing::warn!(
                 path = %path.display(),
-                err = %remove_error,
+                error = %remove_error,
                 "failed to remove socket after restricting its mode failed"
             );
         }
@@ -495,7 +495,7 @@ fn remove_staging_entry(path: &Path) -> bool {
         Err(error) => {
             tracing::warn!(
                 path = %path.display(),
-                err = %error,
+                error = %error,
                 "failed to remove socket staging entry"
             );
             false
@@ -523,13 +523,13 @@ fn remove_staging_directory(
     {
         tracing::warn!(
             path = %staging_dir.display(),
-            err = %restore_error,
+            error = %restore_error,
             "failed to restore socket staging owner marker"
         );
     }
     tracing::warn!(
         path = %staging_dir.display(),
-        err = %error,
+        error = %error,
         "failed to remove socket staging directory"
     );
 }
@@ -552,7 +552,7 @@ fn sweep_stale_socket_staging_dirs(parent: &Path) {
     let entries = match fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(error) => {
-            tracing::debug!(path = %parent.display(), err = %error, "could not scan socket staging parent");
+            tracing::debug!(path = %parent.display(), error = %error, "could not scan socket staging parent");
             return;
         }
     };

@@ -174,7 +174,7 @@ impl PtyCommand {
                 if let Some(shell) = inherited {
                     tracing::warn!(
                         shell = %shell.to_string_lossy(),
-                        err = %err,
+                        error = %err,
                         "SHELL is not executable; falling back to passwd shell"
                     );
                 }
@@ -248,7 +248,7 @@ fn usable_directory(path: &Path, what: &str) -> bool {
     is_directory(path).unwrap_or_else(|err| {
         tracing::warn!(
             path = %path.display(),
-            err = %err,
+            error = %err,
             "{what} cannot be inspected; not using it"
         );
         false

@@ -147,7 +147,7 @@ impl HeadlessServer {
             }) {
                 Ok(framed) => framed,
                 Err(err) => {
-                    warn!(err = %err, "failed to serialize mouse capture mode for client");
+                    warn!(error = %err, "failed to serialize mouse capture mode for client");
                     continue;
                 }
             };
@@ -204,7 +204,7 @@ impl HeadlessServer {
             ) {
                 Ok(serialized) => serialized,
                 Err(err) => {
-                    warn!(err = %err, "failed to serialize client shell keyboard report-all mode");
+                    warn!(error = %err, "failed to serialize client shell keyboard report-all mode");
                     continue;
                 }
             };
@@ -261,7 +261,7 @@ impl HeadlessServer {
                 }) {
                     Ok(framed) => framed,
                     Err(err) => {
-                        warn!(err = %err, "failed to serialize direct terminal keyboard mode");
+                        warn!(error = %err, "failed to serialize direct terminal keyboard mode");
                         continue;
                     }
                 };
@@ -635,7 +635,7 @@ impl HeadlessServer {
                         let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
                             Ok(framed) => framed,
                             Err(err) => {
-                                warn!(?client_id, err = %err, "failed to frame endpoint snapshot");
+                                warn!(?client_id, error = %err, "failed to frame endpoint snapshot");
                                 broken_clients.push(client_id);
                                 continue;
                             }
@@ -776,7 +776,7 @@ impl HeadlessServer {
                     continue;
                 }
                 Err(err) => {
-                    warn!(?client_id, err = %err, "failed to serialize frame");
+                    warn!(?client_id, error = %err, "failed to serialize frame");
                     broken_clients.push(client_id);
                     continue;
                 }

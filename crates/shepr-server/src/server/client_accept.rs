@@ -33,14 +33,14 @@ pub(crate) fn accept_pending_client_connections(
                         continue;
                     }
                     Err(err) => {
-                        warn!(err = %err, "client peer credentials unavailable; refused");
+                        warn!(error = %err, "client peer credentials unavailable; refused");
                         continue;
                     }
                 }
                 let client_id = clients.allocate_client_id();
 
                 if let Err(err) = stream.set_nonblocking(true) {
-                    warn!(err = %err, "failed to set client stream nonblocking");
+                    warn!(error = %err, "failed to set client stream nonblocking");
                     continue;
                 }
 
@@ -58,7 +58,7 @@ pub(crate) fn accept_pending_client_connections(
                         debug!(
                             ?client_id,
                             session = %session.display_name(),
-                            err = %err,
+                            error = %err,
                             "client handshake failed"
                         );
                     }
@@ -66,7 +66,7 @@ pub(crate) fn accept_pending_client_connections(
             }
             Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => break,
             Err(err) => {
-                error!(err = %err, "client listener accept failed");
+                error!(error = %err, "client listener accept failed");
                 break;
             }
         }

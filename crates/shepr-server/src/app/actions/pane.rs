@@ -18,7 +18,8 @@ impl AppState {
             return;
         };
         let panes = if tab.zoomed() {
-            tab.layout().panes(self.view.terminal_area)
+            tab.layout()
+                .panes(shepr_mux::workspace::layout_rect(self.view.terminal_area))
         } else {
             self.view
                 .pane_infos
@@ -48,7 +49,8 @@ impl AppState {
             return false;
         };
         let panes = if tab.zoomed() {
-            tab.layout().panes(self.view.terminal_area)
+            tab.layout()
+                .panes(shepr_mux::workspace::layout_rect(self.view.terminal_area))
         } else {
             self.view
                 .pane_infos
@@ -98,7 +100,12 @@ impl AppState {
                     .get_mut(workspace_index)
                     .is_some_and(|workspace| {
                         let tab_index = workspace.active_tab_index();
-                        workspace.resize_focused_pane_in_tab(tab_index, direction, 0.05, area)
+                        workspace.resize_focused_pane_in_tab(
+                            tab_index,
+                            direction,
+                            0.05,
+                            shepr_mux::workspace::layout_rect(area),
+                        )
                     });
                 if resized {
                     self.mark_session_dirty();

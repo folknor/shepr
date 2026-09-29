@@ -63,7 +63,7 @@ fn is_server_listening_at(socket_path: &Path) -> io::Result<bool> {
         shepr_platform::ipc::Liveness::Live => Ok(true),
         shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => Ok(false),
         shepr_platform::ipc::Liveness::Unreachable(err) => {
-            tracing::warn!(path = %socket_path.display(), %err, "failed to check server socket");
+            tracing::warn!(path = %socket_path.display(), error = %err, "failed to check server socket");
             Err(err)
         }
     }

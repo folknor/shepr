@@ -941,9 +941,7 @@ mod tests {
         assert!(connection(ClientConnectionMode::shell()).is_active_shell_client());
         let pending = connection(ClientConnectionMode::TerminalPending);
         assert!(!pending.is_active_shell_client());
-        let attached = connection(ClientConnectionMode::terminal_attach(TerminalId::test_new(
-            "t1",
-        )));
+        let attached = connection(ClientConnectionMode::terminal_attach(TerminalId::alloc()));
         assert!(!attached.is_active_shell_client());
 
         let mut clients = HashMap::new();
@@ -986,7 +984,7 @@ mod tests {
         assert!(!registry.claim_unowned_geometry("w1:t1", first_id));
         assert_eq!(registry.geometry_controller("w1:t1"), Some(first_id));
 
-        let terminal_id = TerminalId::test_new("terminal-a");
+        let terminal_id = TerminalId::alloc();
         registry.set_attach_owner(terminal_id.clone(), second_id);
         assert_eq!(registry.attach_owner(&terminal_id), Some(second_id));
         assert_eq!(

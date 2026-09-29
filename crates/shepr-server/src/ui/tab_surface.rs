@@ -84,7 +84,7 @@ pub(crate) fn compute_tab_surface_for(
         if tab.zoomed() {
             Vec::new()
         } else {
-            tab.layout().splits(area)
+            tab.layout().splits(shepr_mux::workspace::layout_rect(area))
         }
     });
     let pane_infos = resolved.map_or_else(Vec::new, |(workspace_index, tab_index)| {
@@ -243,7 +243,7 @@ mod tests {
     use crate::test_support::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::layout::Direction;
+    use shepr_core::layout::Direction;
     use shepr_mux::workspace::Workspace;
 
     #[test]

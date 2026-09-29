@@ -25,6 +25,20 @@ the entry says so.
 
 ---
 
+## HYGP-154 - The injected events.wait clock has no test that injects it
+
+`shepr-api/src/wait.rs::wait_for_event` takes a clock so its deadline is
+testable, but only the real socket path calls it, with `Instant::now`. Add a
+test that drives the deadline with a fake clock, or the seam proves nothing.
+
+## HYGP-153 - Two server files still open with an early test-only item
+
+`shepr-server/src/server/alt_screen_read.rs` has `#[cfg(test)]` on a `use` at
+the top and `shepr-server/src/lib.rs` has one on an early line, so every
+`skip_after` textlint (including the new server transport clock rule) skips
+the whole file. Neither has a production violation today; move the test-only
+items into the trailing test module so the rules see the production part.
+
 ## HYGP-152 - Concurrent bridges for one saved machine may collide on one socket path
 
 The saved-machine bridge socket is named by profile only
@@ -35,57 +49,3 @@ hit `AddrInUse`, which is classified as a link failure, so the second may retry
 until it gives up. Unconfirmed whether something else keeps them apart; verify
 with two clients attached to one saved machine, and if they collide, add a
 per-client component to the name.
-
-## HYGP-066 - Clock seam residue
-
-The clock seam (time passed in, each converted subsystem held by a scoped
-textlint) now covers `shepr-server/src/app/`, the headless loop, mux
-`persist/`, `shepr-remote` (with marked I/O timing exceptions), the platform
-deadline helpers, the client endpoint and activation paths, the agent version
-probe and the vt synchronized-update timeout. Open:
-
-- Other remaining reads: `shepr-config`'s `TerminalId::alloc` (HYGV-087),
-  `shepr-server/src/server/client_transport.rs` and the `shepr-api` transport
-  deadlines.
-- Tests still sleeping on real time, each with a reason recorded at the site:
-  platform process, clipboard helper, bridge and D-Bus tests; mux runtime (50 ms
-  and 20 ms); client `handshake.rs` and `terminal_geometry.rs`; server
-  `app/mod.rs`, `tab_bar_status.rs` and `client_transport.rs`.
-
-## HYGP-031 - Test-only code is compiled into production libraries through Cargo feature unification (`test-api`, `test-support`)
-
-**Decision (partial):** piece 4 of the test-isolation work adopted from
-broadarrow is landed: no production crate has a `[features]` table any more.
-Shared test doubles live in `shepr-test-support` and the new dev-only
-`shepr-test-fixtures` crate, server-only fixtures moved into `shepr-server`'s
-own `#[cfg(test)]` module, and `brokkr.toml` forbids any normal or build edge to
-either dev-only crate (`test-support-never-ships`,
-`test-fixtures-never-ships`). An install feature check
-(`install_feature_check = "always"`) compiles the shipped feature set the way
-`cargo install` resolves it, closing the gate gap. The seam
-`PaneRuntimeIo::TestChannel` needed is built: `shepr-pty::ChildIo` is a boxed
-trait object `PaneRuntime` holds, with a `PaneOutputWriter` for the real PTY
-read path and a `ChannelChildIo` test double in `shepr-test-fixtures`, so the
-enum variant and its six `#[cfg]` match arms are gone. `shepr-agent`'s
-`resume.rs::test_codex_plan`, `shepr-platform`'s `process.rs::signal_processes`,
-the `ServerAddress` `Default` that validation would reject, and
-`EventHub::events_after` are deleted outright rather than feature-gated.
-`shepr-server`'s crate-wide `#[cfg_attr(feature = "test-api", allow(dead_code))]`
-is gone along with the feature, and `dead_code` reports nothing in that crate
-today. `#[allow]` gives way to `#[expect(.., reason)]` workspace-wide (B9 in
-`notes/broadarrow-ports.md`). Open: `shepr-protocol`'s public id conversions
-are test-only again (`PublicTabId`/`PublicPaneId`'s `From<&str>` are
-`#[cfg(test)]` and panic on a non-canonical literal instead of the earlier
-`unwrap_or_else` fallback), but `TerminalId::test_new`, `WorkspaceId::new` and
-`WorkspaceId::from(&str)` remain `pub` and ungated, so any caller can still mint
-an identity that is supposed to come from one place.
-
-## HYGP-058 - Dependencies that production code does not use
-
-- `shepr-core` depends on `ratatui`: `layout.rs` uses
-  `ratatui::layout::{Direction, Rect}` and `brokkr.toml` allows it, putting a TUI
-  rendering crate at the bottom of the layering where `shepr-mux`,
-  `shepr-protocol` and `shepr-config` all inherit it. `Rect` and `Direction` are
-  four `u16`s and a two-variant enum; owning them in `shepr-core` alongside
-  `GridSize` would drop `ratatui` from the bottom four crates' dependency closure
-  and remove a re-export the wire types currently share with the renderer.

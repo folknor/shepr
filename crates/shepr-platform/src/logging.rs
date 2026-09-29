@@ -96,7 +96,7 @@ pub fn init_file_logging_with_config(
         tracing::warn!(
             file = file_name,
             dir = %dir.display(),
-            err = %error,
+            error = %error,
             "file logging not installed: a logger is already set"
         );
         return Err(io::Error::other(format!(

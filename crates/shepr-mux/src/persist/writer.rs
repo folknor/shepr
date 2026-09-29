@@ -114,7 +114,7 @@ impl SessionWriter {
             tracing::warn!(
                 event = "persist.snapshot", subsystem = "persist", outcome = "error",
                 path = %self.path.display(),
-                err = %err, "failed to preserve session snapshot"
+                error = %err, "failed to preserve session snapshot"
             );
         }
     }
@@ -220,7 +220,7 @@ impl SessionWriter {
                     Err(err) => {
                         tracing::warn!(
                             event = "persist.snapshot", subsystem = "persist", outcome = "error",
-                            path = %self.path.display(), err = %err,
+                            path = %self.path.display(), error = %err,
                             "failed to preserve session snapshot"
                         );
                         SnapshotHistoryPlan::RetryAfterWrite
@@ -232,7 +232,7 @@ impl SessionWriter {
                 tracing::warn!(
                     event = "persist.snapshot", subsystem = "persist", outcome = "error",
                     path = %self.path.display(),
-                    err = %err, "failed to inspect session snapshot history"
+                    error = %err, "failed to inspect session snapshot history"
                 );
                 SnapshotHistoryPlan::RetryAfterWrite
             }
@@ -513,13 +513,13 @@ fn log_recovery_prune_failure(path: &Path, directory: &Path, err: &io::Error) {
     if directory == super::io::snapshot_directory(path).as_path() {
         tracing::warn!(
             event = "persist.snapshot", subsystem = "persist", outcome = "prune_error",
-            path = %path.display(), recovery_directory = %directory.display(), err = %err,
+            path = %path.display(), recovery_directory = %directory.display(), error = %err,
             "preserved session snapshot but could not prune old copies"
         );
     } else {
         tracing::warn!(
             event = "persist.backup", subsystem = "persist", outcome = "prune_error",
-            path = %path.display(), recovery_directory = %directory.display(), err = %err,
+            path = %path.display(), recovery_directory = %directory.display(), error = %err,
             "preserved session recovery copy but could not prune old copies"
         );
     }

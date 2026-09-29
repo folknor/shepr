@@ -1718,11 +1718,15 @@ impl ClientShellState {
                     .workspaces
                     .iter()
                     .find(|hit| super::contains(hit.rect, point))
-                    .map(|hit| ClientWorkspacePress {
-                        endpoint_id: hit.endpoint_id.clone(),
-                        workspace_id: hit.workspace_id.clone().into(),
-                        start_column: mouse.column,
-                        start_row: mouse.row,
+                    .and_then(|hit| {
+                        // Hits are drawn from the endpoint's workspace IDs,
+                        // so this parse only refuses what no server sent.
+                        Some(ClientWorkspacePress {
+                            endpoint_id: hit.endpoint_id.clone(),
+                            workspace_id: hit.workspace_id.parse().ok()?,
+                            start_column: mouse.column,
+                            start_row: mouse.row,
+                        })
                     });
                 if let Some(workspace_press) = workspace_press {
                     self.workspace_press = Some(workspace_press);

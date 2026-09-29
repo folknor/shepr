@@ -99,15 +99,3 @@ pub(crate) const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
 /// Status probe deadline before a stop treats the server build as unknown. It
 /// gives a local server time to answer while keeping stop responsive.
 pub(crate) const STOP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Maximum regex-output subscriptions per API stream, bounding repeated regex
-/// work on each pane update.
-pub(crate) const MAX_REGEX_MATCH_SUBSCRIPTIONS: usize = 32;
-
-/// Maximum compiled regex program size for API output matching. The cap limits
-/// memory spent on a caller-supplied expression.
-pub(crate) const MATCH_REGEX_SIZE_LIMIT: usize = 256 * 1024;
-
-/// Maximum lazy DFA cache size for API output matching, separately bounding
-/// the regex engine's cached automaton memory.
-pub(crate) const MATCH_REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;

@@ -398,6 +398,8 @@ fn stop_socket_with_timeout(
     timeout: Duration,
     label: &str,
 ) -> Result<(), SessionError> {
+    // clock-io-ok: one deadline bounds the real stop request's socket reads
+    // and the server process's exit, so it must share their real clock.
     let deadline = Instant::now() + timeout;
     let request = server_stop_request("cli:session:stop");
     send_stop_request(socket_path, &request, deadline, label)?;
@@ -492,6 +494,7 @@ fn send_stop_request(
     deadline: Instant,
     label: &str,
 ) -> Result<(), SessionError> {
+    // clock-io-ok: the deadline is the one the real socket reader below keeps.
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Ok(());
     }
@@ -582,13 +585,17 @@ fn all_sockets_stopped(socket_paths: &[PathBuf]) -> std::io::Result<bool> {
 }
 
 fn wait_until_stopped_until(socket_paths: &[PathBuf], deadline: Instant) -> std::io::Result<bool> {
-    while Instant::now() < deadline {
+    loop {
+        // clock-io-ok: polls another process's sockets while it exits.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return all_sockets_stopped(socket_paths);
+        }
         if all_sockets_stopped(socket_paths)? {
             return Ok(true);
         }
-        std::thread::sleep(STOP_WAIT_POLL.min(time_until(deadline)));
+        std::thread::sleep(STOP_WAIT_POLL.min(remaining));
     }
-    all_sockets_stopped(socket_paths)
 }
 
 fn reachable_socket_paths(socket_paths: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
@@ -599,10 +606,6 @@ fn reachable_socket_paths(socket_paths: &[PathBuf]) -> std::io::Result<Vec<PathB
         }
     }
     Ok(reachable)
-}
-
-fn time_until(deadline: Instant) -> Duration {
-    deadline.saturating_duration_since(Instant::now())
 }
 
 pub fn validate_name(name: &str) -> Result<(), SessionError> {

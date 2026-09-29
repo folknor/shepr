@@ -87,7 +87,7 @@ The stated contract is "payloads use the positional codec", and wire types must 
 
 ## Event-driven API connection loop
 
-- The API server is thread-per-connection with 100 ms polling. Streams carry the hub sequence (`SubscriptionStream`, `src/api/subscriptions.rs`), but sampled subscriptions (output match, scroll, agent-status fallback) still poll the app 10 times a second; each `pane.output_matched` subscription runs a full recent-text `PaneRead` on the main thread each time. One event-driven loop and a complete, sequenced model diff from the event hub would remove the polling.
+- The API server is thread-per-connection with 100 ms polling. Streams carry the hub sequence (`SubscriptionStream`, `src/api/subscriptions.rs`), but sampled subscriptions (scroll, agent-status fallback) still poll the app 10 times a second. One event-driven loop and a complete, sequenced model diff from the event hub would remove the polling.
 
 ## One owner for persistence, with history formatted off the loop
 

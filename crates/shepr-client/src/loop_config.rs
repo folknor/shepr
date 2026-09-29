@@ -122,7 +122,7 @@ mod tests {
         let attach = ClientSettings::resolve_with_host_preferences(
             &config,
             &super::super::ClientLaunchMode::Attach {
-                terminal_id: shepr_protocol::TerminalId::test_new("term_test"),
+                terminal_id: shepr_protocol::TerminalId::alloc(),
                 takeover: false,
                 escape: super::super::AttachEscapeState::default(),
             },

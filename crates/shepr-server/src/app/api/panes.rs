@@ -104,8 +104,8 @@ impl App {
             ));
         };
         let direction = match params.direction {
-            shepr_api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
-            shepr_api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
+            shepr_api::schema::SplitDirection::Right => shepr_core::layout::Direction::Horizontal,
+            shepr_api::schema::SplitDirection::Down => shepr_core::layout::Direction::Vertical,
         };
         let shell_config =
             shepr_mux::pane::PaneShellConfig::new(&default_shell, self.state.settings.login_shell);
@@ -451,7 +451,9 @@ impl App {
         direction: PaneDirection,
     ) -> Option<PaneId> {
         let tab = self.state.workspaces.get(ws_idx)?.tabs().get(tab_idx)?;
-        let panes = tab.layout().panes(self.state.view.terminal_area);
+        let panes = tab.layout().panes(shepr_mux::workspace::layout_rect(
+            self.state.view.terminal_area,
+        ));
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, nav_direction(direction), &panes)
     }
@@ -464,6 +466,7 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs().get(tab_idx)?;
         let area = self.state.view.terminal_area;
+        let layout_area = shepr_mux::workspace::layout_rect(area);
         let focused_pane_id = self.public_pane_id(ws_idx, tab.layout().focused())?;
         // The layout reports what is on screen: a zoomed tab shows only its
         // focused pane over the whole area and no split lines, so its hidden
@@ -481,14 +484,14 @@ impl App {
                 Some(PaneLayoutPane {
                     pane_id: self.public_pane_id(ws_idx, pane.id)?,
                     focused: pane.is_focused,
-                    rect: pane_layout_rect(pane.rect),
+                    rect: pane_layout_rect(shepr_mux::workspace::layout_rect(pane.rect)),
                 })
             })
             .collect();
         let visible_splits = if tab.zoomed() {
             Vec::new()
         } else {
-            tab.layout().splits(area)
+            tab.layout().splits(layout_area)
         };
         let splits = visible_splits
             .into_iter()
@@ -496,10 +499,12 @@ impl App {
             .map(|(idx, split)| PaneLayoutSplit {
                 id: split_path_id(idx, &split.path),
                 direction: match split.direction {
-                    ratatui::layout::Direction::Horizontal => {
+                    shepr_core::layout::Direction::Horizontal => {
                         shepr_api::schema::SplitDirection::Right
                     }
-                    ratatui::layout::Direction::Vertical => shepr_api::schema::SplitDirection::Down,
+                    shepr_core::layout::Direction::Vertical => {
+                        shepr_api::schema::SplitDirection::Down
+                    }
                 },
                 ratio: split.ratio,
                 rect: pane_layout_rect(split.area),
@@ -510,7 +515,7 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx)?,
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             zoomed: tab.zoomed(),
-            area: pane_layout_rect(area),
+            area: pane_layout_rect(layout_area),
             focused_pane_id,
             panes,
             splits,
@@ -559,7 +564,7 @@ enum ResolvedPaneMoveDestination {
 
 struct PaneMoveRecoveryContext {
     source_ws_idx: usize,
-    previous_workspace_id: String,
+    previous_workspace_id: shepr_protocol::WorkspaceId,
     previous_workspace_label: Option<String>,
     previous_tab_label: Option<String>,
     identity_cwd: std::path::PathBuf,
@@ -596,14 +601,14 @@ fn encode_unchanged_pane_move(
 
 fn split_direction_to_layout(
     direction: &shepr_api::schema::SplitDirection,
-) -> ratatui::layout::Direction {
+) -> shepr_core::layout::Direction {
     match direction {
-        shepr_api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
-        shepr_api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
+        shepr_api::schema::SplitDirection::Right => shepr_core::layout::Direction::Horizontal,
+        shepr_api::schema::SplitDirection::Down => shepr_core::layout::Direction::Vertical,
     }
 }
 
-fn pane_layout_rect(rect: ratatui::layout::Rect) -> PaneLayoutRect {
+fn pane_layout_rect(rect: shepr_core::geometry::Rect) -> PaneLayoutRect {
     PaneLayoutRect {
         x: rect.x,
         y: rect.y,

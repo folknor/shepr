@@ -41,7 +41,9 @@ impl Harness {
     }
 
     fn write(&mut self, bytes: &[u8]) {
-        let result = self.pane.process_pty_bytes(PaneId::from_raw(1), bytes);
+        let result = self
+            .pane
+            .process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), bytes);
         for reply in result.terminal_responses {
             self.effects.replies.extend_from_slice(&reply);
         }

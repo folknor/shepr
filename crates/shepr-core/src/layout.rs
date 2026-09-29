@@ -3,9 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
-use ratatui::layout::{Direction, Rect};
-
-use crate::geometry::SplitBranch;
+use crate::geometry::{Rect, SplitBranch};
 use crate::limits::{
     FIRST_PANE_ID, MIN_SPLIT_CHILD_CELLS, MIN_SPLIT_EXTENT_CELLS, MIN_WORKSPACE_PANES,
     PLACEHOLDER_PANE_ID, SPLIT_EDGE_MATCH_TOLERANCE_CELLS,
@@ -37,10 +35,23 @@ impl SplitRatio {
     }
 }
 
+/// Process-wide pane identity. Never the layout's internal placeholder: a
+/// value comes from [`PaneId::alloc`] or from [`PaneId::from_raw`], which
+/// refuses the placeholder, and deserialization goes through `from_raw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u32")]
 pub struct PaneId(u32);
 
 /// Global atomic counter for unique PaneId generation across all workspaces.
+///
+/// This stays a process global rather than an allocator value threaded
+/// through `Workspace`. Pane ids must be unique across every workspace, not
+/// within one: panes move between workspaces keeping their id, and server
+/// maps keyed by pane id span workspaces. An owned allocator would therefore
+/// live in the server's app state and be passed into every layout split,
+/// tab and workspace constructor, restore and pane move, for no change in
+/// behaviour. Tests that want fixed ids build them with `from_raw`, and the
+/// exhaustion rule is tested through `alloc_from`.
 static NEXT_PANE_ID: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(FIRST_PANE_ID);
 
@@ -73,10 +84,36 @@ impl PaneId {
         self.0
     }
 
-    /// Reconstruct a raw id without advancing the allocator. Live restore must
-    /// remap saved pane IDs through `alloc` before installing the layout.
-    pub fn from_raw(id: u32) -> Self {
-        Self(id)
+    /// Reconstruct a raw id without advancing the allocator; `None` for the
+    /// layout's placeholder, which is never a pane. Live restore must remap
+    /// saved pane IDs through `alloc` before installing the layout.
+    pub fn from_raw(id: u32) -> Option<Self> {
+        (id != PLACEHOLDER_PANE_ID).then_some(Self(id))
+    }
+
+    /// The stand-in leaf a split or move writes while it rebuilds a subtree.
+    /// It must not outlive the operation, and no value built outside this
+    /// module (`from_raw`, deserialization) can be it.
+    const PLACEHOLDER: Self = Self(PLACEHOLDER_PANE_ID);
+}
+
+/// A raw id that is the layout's placeholder, which is never a pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaceholderPaneIdError;
+
+impl std::fmt::Display for PlaceholderPaneIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("pane id is the layout placeholder")
+    }
+}
+
+impl std::error::Error for PlaceholderPaneIdError {}
+
+impl TryFrom<u32> for PaneId {
+    type Error = PlaceholderPaneIdError;
+
+    fn try_from(id: u32) -> Result<Self, Self::Error> {
+        Self::from_raw(id).ok_or(PlaceholderPaneIdError)
     }
 }
 
@@ -102,6 +139,14 @@ pub struct SplitBorder {
     pub area: Rect,
     /// Path from root to this split node.
     pub path: Vec<SplitBranch>,
+}
+
+/// Axis a BSP split divides its area along: `Horizontal` puts the children
+/// side by side, `Vertical` stacks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    Horizontal,
+    Vertical,
 }
 
 /// Cardinal direction for pane navigation.
@@ -145,8 +190,6 @@ pub struct TileLayout {
 /// A saved layout defect rejected before it becomes a live [`TileLayout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidSavedLayout {
-    /// A leaf uses the reserved placeholder ID while a layout edit is in progress.
-    PlaceholderPaneId,
     /// Two leaves use the same pane identity.
     DuplicatePaneId(PaneId),
     /// The focused pane is not present among the leaves.
@@ -228,8 +271,7 @@ impl TileLayout {
             first
         };
         let new_id = PaneId::alloc();
-        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
-        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
         self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
         self.set_focus(new_id);
         new_id
@@ -248,8 +290,7 @@ impl TileLayout {
             return None;
         }
         let new_id = PaneId::alloc();
-        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
-        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
         self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
         Some(new_id)
     }
@@ -265,7 +306,7 @@ impl TileLayout {
         ratio: f32,
         focus: bool,
     ) -> bool {
-        if target == moved || moved.raw() == PLACEHOLDER_PANE_ID {
+        if target == moved {
             return false;
         }
         let ids = self.pane_ids();
@@ -273,8 +314,7 @@ impl TileLayout {
             return false;
         }
 
-        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
-        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
         self.root = split_at(old, target, direction, moved, SplitRatio::clamped(ratio));
         if focus {
             self.set_focus(moved);
@@ -305,8 +345,7 @@ impl TileLayout {
             Some(prev) if prev != target && ids.contains(&prev) => prev,
             _ => ordered,
         };
-        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
-        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
         if let Some(new_root) = remove_pane(old, target) {
             self.root = new_root;
             self.focus = new_focus;
@@ -326,8 +365,7 @@ impl TileLayout {
         if self.pane_count() <= MIN_WORKSPACE_PANES || !self.pane_ids().contains(&id) {
             return false;
         }
-        let placeholder = PaneId::from_raw(PLACEHOLDER_PANE_ID);
-        let old = std::mem::replace(&mut self.root, Node::Pane(placeholder));
+        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
         let Some(new_root) = remove_pane(old, id) else {
             return false;
         };
@@ -440,10 +478,9 @@ impl TileLayout {
 
 fn collect_validated_ids(node: &Node, ids: &mut HashSet<PaneId>) -> Result<(), InvalidSavedLayout> {
     match node {
+        // No leaf can be the placeholder: `PaneId` values outside this module
+        // are never it, and the edits that write it replace it before return.
         Node::Pane(id) => {
-            if id.raw() == PLACEHOLDER_PANE_ID {
-                return Err(InvalidSavedLayout::PlaceholderPaneId);
-            }
             if !ids.insert(*id) {
                 return Err(InvalidSavedLayout::DuplicatePaneId(*id));
             }
@@ -857,6 +894,19 @@ mod tests {
     }
 
     #[test]
+    fn raw_pane_ids_refuse_the_placeholder_including_through_serde() {
+        assert_eq!(PaneId::from_raw(PLACEHOLDER_PANE_ID), None);
+        assert_eq!(PaneId::from_raw(7), Some(PaneId(7)));
+        let decode = |raw: u32| {
+            <PaneId as serde::Deserialize>::deserialize(serde::de::value::U32Deserializer::<
+                serde::de::value::Error,
+            >::new(raw))
+        };
+        assert_eq!(decode(7).ok(), Some(PaneId(7)));
+        assert!(decode(PLACEHOLDER_PANE_ID).is_err());
+    }
+
+    #[test]
     fn split_ratio_rejects_values_outside_layout_bounds() {
         assert_eq!(
             SplitRatio::new(MIN_SPLIT_RATIO).map(SplitRatio::get),
@@ -876,7 +926,7 @@ mod tests {
     }
 
     fn pane(id: u32) -> PaneId {
-        PaneId::from_raw(id)
+        PaneId::from_raw(id).expect("test pane ids are not the placeholder")
     }
 
     fn saved_layout(root: Node, focus: PaneId) -> TileLayout {
@@ -1349,10 +1399,6 @@ mod tests {
         assert_eq!(
             TileLayout::from_saved(pair(1, 1), pane(1)).err(),
             Some(InvalidSavedLayout::DuplicatePaneId(pane(1)))
-        );
-        assert_eq!(
-            TileLayout::from_saved(pair(0, 1), pane(1)).err(),
-            Some(InvalidSavedLayout::PlaceholderPaneId)
         );
     }
 

@@ -357,7 +357,7 @@ fn remove_temporary_link(path: &Path) {
     if let Err(error) = fs::remove_file(path) {
         tracing::warn!(
             path = %path.display(),
-            err = %error,
+            error = %error,
             "failed to remove temporary SSH agent link"
         );
     }
@@ -405,7 +405,7 @@ fn sweep_stale_temporary_links(stable: &Path) {
     let entries = match fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(error) => {
-            tracing::debug!(path = %parent.display(), err = %error, "could not scan SSH agent link directory");
+            tracing::debug!(path = %parent.display(), error = %error, "could not scan SSH agent link directory");
             return;
         }
     };
@@ -434,7 +434,7 @@ fn sweep_stale_temporary_links(stable: &Path) {
         if let Err(error) = fs::remove_file(&path) {
             tracing::warn!(
                 path = %path.display(),
-                err = %error,
+                error = %error,
                 "failed to remove stale temporary SSH agent link"
             );
         }
@@ -451,7 +451,7 @@ impl Drop for State {
             if let Err(error) = fs::remove_file(&self.path) {
                 tracing::warn!(
                     path = %self.path.display(),
-                    err = %error,
+                    error = %error,
                     "failed to remove published SSH agent address"
                 );
             }

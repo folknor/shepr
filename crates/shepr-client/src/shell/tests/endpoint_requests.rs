@@ -60,7 +60,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     crate::shell_runtime::dispatch_client_shell_actions(
         vec![ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
-            target: Some(ClientEndpointFocusTarget::Workspace("ws_1".into())),
+            target: Some(ClientEndpointFocusTarget::Workspace("w1".into())),
         }],
         &mut commands,
         &mut endpoints,
@@ -74,7 +74,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     assert!(matches!(next, Some(ClientLoopEvent::ActivateEndpoint {
         endpoint_id: ClientEndpointId::Local,
         target: Some(ClientEndpointFocusTarget::Workspace(id)), ..
-    }) if id == "ws_1"));
+    }) if id == "w1"));
     assert!(matches!(rx.try_recv(), Ok(ClientLoopEvent::Timer)));
 }
 
@@ -118,7 +118,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
 
     let (mut state, actions) = pending_request();
     let stale_id = request_id(&actions).to_owned();
-    let current = state.focus_endpoint_target(ClientEndpointFocusTarget::Workspace("ws_1".into()));
+    let current = state.focus_endpoint_target(ClientEndpointFocusTarget::Workspace("w1".into()));
     let current_id = request_id(&current).to_owned();
     let mut commands = EndpointCommands::default();
     for (generation, actions) in [(1, actions), (2, current)] {
@@ -153,13 +153,13 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.selection = Some(shepr_vt::selection::Selection::range(
-        test_pane_id("ws_1:p1"),
+        test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));
     for result in [
         Ok(shepr_api::schema::ResponseResult::PaneSelection {
-            pane_id: "ws_1:p1".into(),
+            pane_id: "w1:p1".into(),
             text: String::new(),
         }),
         Err(ClientShellEndpointError {

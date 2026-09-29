@@ -142,6 +142,41 @@ allow_marker = "clock-io-ok"
 allow_marker_above = 3
 message = "pass the time in from the read or IO boundary; mark that boundary"
 
+# Server transport outside the app and the headless loop: the client
+# handshake, writer and socket plumbing. Its deadlines bound real socket IO.
+[[textlint]]
+name = "server-transport-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-server/src/**/*.rs"]
+exclude = [
+    "crates/shepr-server/src/app/**",
+    "crates/shepr-server/src/server/headless.rs",
+    "crates/shepr-server/src/server/headless/**",
+    "crates/shepr-server/src/test_support.rs",
+    "**/tests.rs",
+    "**/tests/**",
+    "**/*_tests.rs",
+]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "pass time in from the server loop; mark deadlines that bound real IO"
+
+# The API socket threads, client and session stop. Request timeouts decided
+# by the API take the clock; deadlines handed to a real socket reader are
+# marked.
+[[textlint]]
+name = "api-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-api/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "take the clock as a parameter; mark deadlines that bound real socket IO"
+
 # The clippy seals (`clippy.toml`): the environment reader, exits, bool path
 # probes, panic containment, child working directories and debug assertions.
 # Every escape is a scoped `#[expect(clippy::disallowed_methods, reason = ..)]`
@@ -528,6 +563,20 @@ except = ['\bhandle_internal_event_with_forwarding\s*\(']
 region = "code"
 message = "route an internal event through HeadlessServer::handle_internal_event_with_forwarding, which forwards clipboard writes to the foreground client"
 
+# A failure carried on a tracing event is keyed `error`, so one log query finds
+# every failure. Matched are an `err = ` field (`=` not followed by `=` or `>`,
+# so comparisons and match arms pass) and the `%err` / `?err` shorthands, each
+# opening a line or following `(`, `,` or `{`. A bare `err` field (a captured
+# variable, `warn!(err, ..)`) reads the same as a call argument and is not
+# caught; spell it `error = err`. A value `%err` wrapped onto a line of its own
+# after `error =` is flagged too; keep a field and its value on one line.
+[[textlint]]
+name = "tracing-failure-field-is-error"
+pattern = '(?:^|[(,{])\s*(?:err\s*=(?:[^=>]|$)|[%?]err\b)'
+paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs", "build.rs"]
+region = "code"
+message = "key a failure on a tracing event `error` (error = %err), not `err`"
+
 [[script_check]]
 name = "cited-paths"
 command = "python3 scripts/check_cited_paths.py"
@@ -622,7 +671,7 @@ lints_workspace_required = true
 [[dependency_rule]]
 name = "shepr-core-layer"
 from = "shepr-core"
-allow = ["ratatui", "serde"]
+allow = ["serde"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -684,6 +733,17 @@ from = "*"
 forbid = "alacritty_terminal"
 except = ["shepr-vt"]
 
+# ratatui is a drawing library, taken only by the crates that draw or carry
+# its values: protocol converts drawn buffers to wire frames, config resolves
+# theme colors, termio paints selections and scrollbars, mux renders panes,
+# and server and client compose the screen. The pane layout model below them
+# computes in `shepr_core`'s own `Rect` and `Direction`.
+[[dependency_rule]]
+name = "ratatui-only-in-drawing-crates"
+from = "*"
+forbid = "ratatui"
+except = ["shepr-client", "shepr-config", "shepr-mux", "shepr-protocol", "shepr-server", "shepr-termio"]
+
 [[dependency_rule]]
 name = "shepr-agent-layer"
 from = "shepr-agent"
@@ -705,7 +765,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-api-layer"
 from = "shepr-api"
-allow = ["interprocess", "regex", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "tokio", "tracing"]
+allow = ["interprocess", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "tokio", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]

@@ -188,7 +188,7 @@ pub(super) fn remove_after_failed_publish(path: &Path) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => tracing::warn!(
             event = "persist.cleanup", subsystem = "persist", outcome = "remove_error",
-            path = %path.display(), err = %err,
+            path = %path.display(), error = %err,
             "failed to remove a file left by a failed session publish"
         ),
     }
@@ -499,7 +499,7 @@ pub fn load(lease: &DataDirLease) -> Option<SessionSnapshot> {
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "read_error",
-                path = %path.display(), err = %err, "failed to read session file"
+                path = %path.display(), error = %err, "failed to read session file"
             );
             return None;
         }
@@ -509,7 +509,7 @@ pub fn load(lease: &DataDirLease) -> Option<SessionSnapshot> {
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "parse_error",
-                path = %path.display(), err = %err, "failed to parse session file, ignoring"
+                path = %path.display(), error = %err, "failed to parse session file, ignoring"
             );
             None
         }
@@ -527,7 +527,7 @@ pub fn load_history(lease: &DataDirLease) -> Option<SessionHistorySnapshot> {
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "read_error",
-                path = %path.display(), err = %err, "failed to read session history file"
+                path = %path.display(), error = %err, "failed to read session history file"
             );
             return None;
         }
@@ -537,7 +537,7 @@ pub fn load_history(lease: &DataDirLease) -> Option<SessionHistorySnapshot> {
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "parse_error",
-                path = %path.display(), err = %err, "failed to parse session history file, ignoring"
+                path = %path.display(), error = %err, "failed to parse session history file, ignoring"
             );
             None
         }

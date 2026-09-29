@@ -1,7 +1,8 @@
 use super::*;
 use crate::test_support::*;
-use ratatui::layout::{Direction, Rect};
+use ratatui::layout::Rect;
 use shepr_agent::detect::{Agent, AgentState};
+use shepr_core::layout::Direction;
 use shepr_mux::workspace::Workspace;
 
 fn app_with_workspaces(names: &[&str]) -> AppState {
@@ -616,7 +617,7 @@ fn pane_died_multi_pane_keeps_workspace() {
 #[test]
 fn pane_died_unknown_pane_is_noop() {
     let mut state = app_with_workspaces(&["test"]);
-    let fake_id = PaneId::from_raw(9999);
+    let fake_id = shepr_test_fixtures::fixed_pane_id(9999);
 
     assert!(state.handle_pane_died(fake_id).is_empty());
 
@@ -1023,7 +1024,7 @@ fn cwd_report_for_missing_pane_is_ignored() {
     state.session_dirty = false;
 
     state.handle_app_event(AppEvent::TerminalCwdReported {
-        pane_id: PaneId::from_raw(pane_id.raw().saturating_add(1_000_000)),
+        pane_id: shepr_test_fixtures::fixed_pane_id(pane_id.raw().saturating_add(1_000_000)),
         cwd: shepr_mux::UsableCwd::new(std::path::PathBuf::from("/")).expect("root is usable"),
     });
 

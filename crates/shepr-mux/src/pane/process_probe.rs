@@ -74,7 +74,7 @@ pub(super) async fn publish_state_changed_event(
     {
         warn!(
             pane = pane_id.raw(),
-            err = %e,
+            error = %e,
             "failed to deliver StateChanged event"
         );
     }
@@ -96,7 +96,7 @@ pub(super) async fn publish_agent_process_detected_event(
     {
         warn!(
             pane = pane_id.raw(),
-            err = %e,
+            error = %e,
             "failed to deliver AgentProcessDetected event"
         );
     }

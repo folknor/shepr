@@ -1,5 +1,6 @@
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -32,33 +33,99 @@ pub fn decode_public_number(value: &str) -> Option<usize> {
     Some(decoded)
 }
 
+const WORKSPACE_ID_PREFIX: char = 'w';
+
 /// Stable public workspace identity. Its spelling is only needed at process
 /// and API boundaries; a launch must not mix it with tab or pane identities.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct WorkspaceId(String);
+///
+/// The only spelling is `w` followed by a one-based public number
+/// ([`encode_public_number`]). A value is built from that number or parsed
+/// from its canonical text, deserialization included, so no workspace ID
+/// exists that the server's allocator could not have issued.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize)]
+#[serde(try_from = "String")]
+pub struct WorkspaceId {
+    // Declared first so the derived order and hash follow the text.
+    text: String,
+    number: usize,
+}
 
 impl WorkspaceId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+    /// The ID of one-based public workspace number `number`; zero has none.
+    pub fn from_number(number: usize) -> Option<Self> {
+        (number > 0).then(|| Self {
+            text: format!("{WORKSPACE_ID_PREFIX}{}", encode_public_number(number)),
+            number,
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
+    }
+
+    /// The one-based public number this ID spells.
+    pub fn number(&self) -> usize {
+        self.number
     }
 }
 
-impl From<String> for WorkspaceId {
-    fn from(id: String) -> Self {
-        Self(id)
+/// Text that is not a canonical workspace ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceIdParseError;
+
+impl fmt::Display for WorkspaceIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid workspace id")
     }
 }
 
+impl std::error::Error for WorkspaceIdParseError {}
+
+impl FromStr for WorkspaceId {
+    type Err = WorkspaceIdParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .strip_prefix(WORKSPACE_ID_PREFIX)
+            .and_then(parse_public_number)
+            .and_then(Self::from_number)
+            // Decoding accepts no alternative spellings today; the round trip
+            // keeps that true if the alphabet or decoder ever loosens.
+            .filter(|id| id.text == value)
+            .ok_or(WorkspaceIdParseError)
+    }
+}
+
+impl TryFrom<String> for WorkspaceId {
+    type Error = WorkspaceIdParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+/// This crate's own tests spell workspace IDs as literals; the text must be
+/// canonical. Other crates build them with `from_number` or parse them.
+#[cfg(test)]
 impl From<&str> for WorkspaceId {
-    fn from(id: &str) -> Self {
-        Self(id.to_owned())
+    fn from(value: &str) -> Self {
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("{value:?}: {error}"))
+    }
+}
+
+impl serde::Serialize for WorkspaceId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
+}
+
+/// Debug shows the text alone, as a newtype over it would; the number is
+/// derived from it.
+impl fmt::Debug for WorkspaceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("WorkspaceId").field(&self.text).finish()
     }
 }
 
@@ -70,13 +137,13 @@ impl fmt::Display for WorkspaceId {
 
 impl From<WorkspaceId> for String {
     fn from(id: WorkspaceId) -> Self {
-        id.0
+        id.text
     }
 }
 
 impl From<&WorkspaceId> for String {
     fn from(id: &WorkspaceId) -> Self {
-        id.0.clone()
+        id.text.clone()
     }
 }
 
@@ -115,9 +182,12 @@ impl PartialEq<&str> for WorkspaceId {
 /// Public identity for a child of a workspace: `<workspace>:<KIND><number>`.
 /// Use the [`PublicTabId`] and [`PublicPaneId`] aliases; `KIND` is the
 /// letter that tells the two apart in the canonical text.
+///
+/// The workspace segment is held as text, not as a [`WorkspaceId`]: this
+/// type accepts any non-empty segment, so it must not vouch for one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PublicChildId<const KIND: char> {
-    workspace_id: WorkspaceId,
+    workspace_id: String,
     number: usize,
     encoded: String,
 }
@@ -136,9 +206,9 @@ impl<const KIND: char> PublicChildId<KIND> {
     /// Panics if `workspace_id` is empty or `number` is zero, because neither
     /// value can be represented by a canonical public child ID.
     pub fn new(workspace_id: impl Into<String>, number: usize) -> Self {
-        let workspace_id = WorkspaceId::new(workspace_id);
+        let workspace_id: String = workspace_id.into();
         assert!(
-            !workspace_id.as_str().is_empty(),
+            !workspace_id.is_empty(),
             "public child IDs require a non-empty workspace ID"
         );
         assert!(number > 0, "public child IDs use one-based numbers");
@@ -322,19 +392,32 @@ mod public_child_id_tests {
 /// Opaque identity for a server-owned terminal.
 ///
 /// During the pane-backed transition this is stored one-to-one beside panes,
-/// but callers must not derive it from a pane id or layout position.
+/// but callers must not derive it from a pane id or layout position. That is
+/// structural: a value comes from [`TerminalId::alloc`] or from parsing text
+/// in the exact form `alloc` writes (`term_<stamp>_<counter>`), and
+/// deserialization goes through the same parse.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub struct TerminalId(String);
 
 // Starting at one keeps generated terminal ID suffixes nonzero.
 static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The stamp every terminal ID of this process carries, taken at the first
+/// allocation. It only has to tell one server lifetime from another (the
+/// counter restarts with each process), so a stale attach target from an
+/// earlier server never names a new terminal. It is identity, not a time any
+/// decision reads, which is why it is sampled here once rather than passed in
+/// through the clock seam.
+static TERMINAL_ID_STAMP: OnceLock<Result<Duration, Duration>> = OnceLock::new();
+
 impl TerminalId {
     pub fn alloc() -> Self {
-        let since_epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => Ok(duration),
-            Err(error) => Err(error.duration()),
-        };
+        let stamp =
+            *TERMINAL_ID_STAMP.get_or_init(|| match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(duration) => Ok(duration),
+                Err(error) => Err(error.duration()),
+            });
         // One allocation per terminal never exhausts a u64; wrapping would
         // repeat an earlier id, so exhaustion is refused rather than wrapped.
         let counter =
@@ -344,17 +427,11 @@ impl TerminalId {
                 Ok(counter) => counter,
                 Err(_) => panic!("terminal id allocation counter exhausted"),
             };
-        Self::from_clock_and_counter(since_epoch, counter)
+        Self::from_clock_and_counter(stamp, counter)
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// Builds fixed IDs for tests in dependent crates. Those crates build this
-    /// library as a normal dependency, where its own `cfg(test)` does not apply.
-    pub fn test_new(id: impl Into<String>) -> Self {
-        Self(id.into())
     }
 
     fn from_clock_and_counter(since_epoch: Result<Duration, Duration>, counter: u64) -> Self {
@@ -369,13 +446,51 @@ impl TerminalId {
     }
 }
 
-// The client carries its owned CLI attach target as a TerminalId, and protocol
-// and server tests also construct fixed wire IDs. Removing this conversion
-// needs a parsing boundary and test updates outside the protocol crate. The
-// rule against pane-derived IDs therefore remains a caller convention.
-impl From<String> for TerminalId {
-    fn from(id: String) -> Self {
-        Self(id)
+/// Text that is not a terminal ID in the form [`TerminalId::alloc`] writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalIdParseError;
+
+impl fmt::Display for TerminalIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid terminal id")
+    }
+}
+
+impl std::error::Error for TerminalIdParseError {}
+
+impl FromStr for TerminalId {
+    type Err = TerminalIdParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let rest = value.strip_prefix("term_").ok_or(TerminalIdParseError)?;
+        let (before_epoch, rest) = match rest.strip_prefix("before_") {
+            Some(rest) => (true, rest),
+            None => (false, rest),
+        };
+        let (micros, counter) = rest.split_once('_').ok_or(TerminalIdParseError)?;
+        let micros = Duration::from_micros(micros.parse().map_err(|_| TerminalIdParseError)?);
+        let counter = u64::from_str_radix(counter, 16)
+            .ok()
+            .filter(|counter| *counter > 0)
+            .ok_or(TerminalIdParseError)?;
+        let stamp = if before_epoch {
+            Err(micros)
+        } else {
+            Ok(micros)
+        };
+        // The number parsers accept signs, leading zeros and upper-case hex;
+        // re-encoding and comparing refuses every spelling `alloc` never writes.
+        Some(Self::from_clock_and_counter(stamp, counter))
+            .filter(|id| id.0 == value)
+            .ok_or(TerminalIdParseError)
+    }
+}
+
+impl TryFrom<String> for TerminalId {
+    type Error = TerminalIdParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
     }
 }
 
@@ -409,5 +524,95 @@ mod terminal_id_tests {
         assert_eq!(first.as_str(), "term_1_11");
         assert_eq!(second.as_str(), "term_17_1");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn allocated_terminal_ids_parse_back_and_differ() {
+        let first = TerminalId::alloc();
+        let second = TerminalId::alloc();
+
+        assert_ne!(first, second);
+        assert_eq!(first.as_str().parse::<TerminalId>(), Ok(first.clone()));
+        let wire = crate::codec::to_vec(&second).expect("terminal id encoding");
+        assert_eq!(
+            wire,
+            crate::codec::to_vec(second.as_str()).expect("terminal id string encoding")
+        );
+        assert_eq!(
+            crate::codec::from_slice_exact::<TerminalId>(&wire).expect("terminal id decoding"),
+            second
+        );
+    }
+
+    #[test]
+    fn terminal_ids_refuse_every_spelling_alloc_never_writes() {
+        for canonical in ["term_0_1", "term_before_7_1", "term_17_ff"] {
+            assert!(canonical.parse::<TerminalId>().is_ok(), "{canonical}");
+        }
+        for invalid in [
+            "",
+            "t1",
+            "terminal-a",
+            "7",
+            "term_",
+            "term_1",
+            "term_1_",
+            "term__1",
+            "term_1_0",
+            "term_01_1",
+            "term_1_01",
+            "term_1_FF",
+            "term_+1_1",
+            "term_1_+1",
+            "term_before__1",
+            "term_1_1_1",
+        ] {
+            assert!(invalid.parse::<TerminalId>().is_err(), "{invalid:?}");
+        }
+        let wire = crate::codec::to_vec("terminal-a").expect("string encoding");
+        assert!(crate::codec::from_slice_exact::<TerminalId>(&wire).is_err());
+    }
+}
+
+#[cfg(test)]
+mod workspace_id_tests {
+    use super::WorkspaceId;
+
+    #[test]
+    fn workspace_ids_spell_their_public_number() {
+        assert_eq!(WorkspaceId::from_number(0), None);
+        let id = WorkspaceId::from_number(33).expect("nonzero number");
+        assert_eq!(id.as_str(), "w11");
+        assert_eq!(id.number(), 33);
+        assert_eq!("w11".parse::<WorkspaceId>(), Ok(id.clone()));
+
+        let wire = crate::codec::to_vec(&id).expect("workspace id encoding");
+        assert_eq!(
+            wire,
+            crate::codec::to_vec("w11").expect("workspace string encoding")
+        );
+        assert_eq!(
+            crate::codec::from_slice_exact::<WorkspaceId>(&wire).expect("workspace id decoding"),
+            id
+        );
+    }
+
+    #[test]
+    fn workspace_ids_refuse_text_the_allocator_never_writes() {
+        for invalid in [
+            "",
+            "w",
+            "1",
+            "wA:p1",
+            "ws_1",
+            "wOLD",
+            "W1",
+            "w1 ",
+            "old-workspace",
+        ] {
+            assert!(invalid.parse::<WorkspaceId>().is_err(), "{invalid:?}");
+        }
+        let wire = crate::codec::to_vec("ws_1").expect("string encoding");
+        assert!(crate::codec::from_slice_exact::<WorkspaceId>(&wire).is_err());
     }
 }

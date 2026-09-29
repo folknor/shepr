@@ -1182,7 +1182,7 @@ fn bundled_loaded_manifest(agent: Agent, manifest: AgentManifest) -> Option<Load
     match loaded_manifest(manifest, ManifestSource::Bundled) {
         Ok(loaded) => Some(loaded),
         Err(err) => {
-            tracing::error!(agent = agent_label(agent), %err, "bundled manifest could not be compiled");
+            tracing::error!(agent = agent_label(agent), error = %err, "bundled manifest could not be compiled");
             None
         }
     }
@@ -1196,7 +1196,7 @@ fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
         .and_then(|(_, content)| match parse_bundled_manifest(id, content) {
             Ok(manifest) => Some(manifest),
             Err(err) => {
-                tracing::error!(agent = id, %err, "bundled manifest is invalid");
+                tracing::error!(agent = id, error = %err, "bundled manifest is invalid");
                 None
             }
         })

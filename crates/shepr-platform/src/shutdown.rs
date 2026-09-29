@@ -163,7 +163,7 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
                         outcome = "unavailable",
                         shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
-                        err = %err,
+                        error = %err,
                         retry_seconds = retry_delay.as_secs(),
                         "host shutdown notification unavailable"
                     );
@@ -174,7 +174,7 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
                         outcome = "unavailable",
                         shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
-                        err = %err,
+                        error = %err,
                         retry_seconds = retry_delay.as_secs(),
                         "host shutdown notification unavailable"
                     );

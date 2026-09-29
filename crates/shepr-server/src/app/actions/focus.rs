@@ -52,7 +52,7 @@ impl AppState {
         let ws = self.workspaces.get(ws_idx)?;
         let pane_id = ws.focused_pane_id();
         Some(PaneFocusTarget {
-            workspace_id: shepr_protocol::WorkspaceId::new(ws.id.to_string()),
+            workspace_id: ws.id.clone(),
             pane_id,
         })
     }
@@ -175,7 +175,7 @@ impl AppState {
             return;
         };
         let target = PaneFocusTarget {
-            workspace_id: shepr_protocol::WorkspaceId::new(ws.id.to_string()),
+            workspace_id: ws.id.clone(),
             pane_id,
         };
         if previous.as_ref() != Some(&target) {
@@ -199,7 +199,7 @@ impl AppState {
         };
         let previous = self.current_pane_focus_target();
         let target = PaneFocusTarget {
-            workspace_id: shepr_protocol::WorkspaceId::new(ws.id.to_string()),
+            workspace_id: ws.id.clone(),
             pane_id,
         };
         if previous.as_ref() == Some(&target) {

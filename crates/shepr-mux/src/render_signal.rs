@@ -100,8 +100,8 @@ mod tests {
     #[test]
     fn coalesces_pty_sources_until_taken() {
         let signal = RenderSignal::new();
-        let first = PaneId::from_raw(10);
-        let second = PaneId::from_raw(20);
+        let first = shepr_test_fixtures::fixed_pane_id(10);
+        let second = shepr_test_fixtures::fixed_pane_id(20);
 
         assert!(signal.request_pty(first));
         assert!(!signal.request_pty(first));
@@ -117,10 +117,10 @@ mod tests {
     #[test]
     fn hidden_pty_sources_coalesce_to_one_wake() {
         let signal = RenderSignal::new();
-        signal.set_immediate_pty_sources(HashSet::from([PaneId::from_raw(100)]));
+        signal.set_immediate_pty_sources(HashSet::from([shepr_test_fixtures::fixed_pane_id(100)]));
 
         let wakes = (1..=50)
-            .filter(|pane_id| signal.request_pty(PaneId::from_raw(*pane_id)))
+            .filter(|pane_id| signal.request_pty(shepr_test_fixtures::fixed_pane_id(*pane_id)))
             .count();
 
         assert_eq!(wakes, 1);
@@ -129,12 +129,12 @@ mod tests {
     #[test]
     fn immediate_pty_source_wakes_pending_hidden_work() {
         let signal = RenderSignal::new();
-        let hidden = PaneId::from_raw(10);
-        let visible = PaneId::from_raw(20);
+        let hidden = shepr_test_fixtures::fixed_pane_id(10);
+        let visible = shepr_test_fixtures::fixed_pane_id(20);
         signal.set_immediate_pty_sources(HashSet::from([visible]));
 
         assert!(signal.request_pty(hidden));
-        assert!(!signal.request_pty(PaneId::from_raw(30)));
+        assert!(!signal.request_pty(shepr_test_fixtures::fixed_pane_id(30)));
         assert!(signal.request_pty(visible));
         assert!(!signal.request_pty(visible));
     }
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn newly_visible_queued_pty_work_is_immediate_before_the_loop_checks_it() {
         let signal = RenderSignal::new();
-        let pane_id = PaneId::from_raw(10);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(10);
 
         signal.set_immediate_pty_sources(HashSet::new());
         assert!(signal.request_pty(pane_id));
@@ -156,9 +156,9 @@ mod tests {
     #[test]
     fn terminal_title_source_wakes_pending_pty_work() {
         let signal = RenderSignal::new();
-        let hidden = PaneId::from_raw(10);
-        let first_title = PaneId::from_raw(20);
-        let second_title = PaneId::from_raw(30);
+        let hidden = shepr_test_fixtures::fixed_pane_id(10);
+        let first_title = shepr_test_fixtures::fixed_pane_id(20);
+        let second_title = shepr_test_fixtures::fixed_pane_id(30);
 
         assert!(signal.request_pty(hidden));
         assert!(signal.request_terminal_title(first_title));
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn coalesces_terminal_title_sources_without_making_them_pty_damage() {
         let signal = RenderSignal::new();
-        let pane_id = PaneId::from_raw(10);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(10);
 
         assert!(signal.request_terminal_title(pane_id));
         assert!(!signal.request_terminal_title(pane_id));
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn keeps_generic_and_pty_requests_distinct() {
         let signal = RenderSignal::new();
-        let pane_id = PaneId::from_raw(10);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(10);
 
         signal.request_generic();
         assert!(!signal.request_pty(pane_id));

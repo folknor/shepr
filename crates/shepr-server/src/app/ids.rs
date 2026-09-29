@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn public_ids_resolve() {
         let mut app = test_app_with_workspaces(&["a", "b"]);
-        let second = app.state.workspaces[1].test_split(ratatui::layout::Direction::Horizontal);
+        let second = app.state.workspaces[1].test_split(shepr_core::layout::Direction::Horizontal);
         app.state.ensure_test_terminals();
         let ws_id = app.state.workspaces[1].id.clone();
 

@@ -21,14 +21,14 @@ pub fn run_client(
 pub fn run_terminal_attach(
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
-    terminal_id: String,
+    terminal_id: shepr_protocol::TerminalId,
     takeover: bool,
 ) -> Result<ClientExit, ClientRunError> {
     run_client_with_mode(
         config,
         paths,
         ClientLaunchMode::Attach {
-            terminal_id: terminal_id.into(),
+            terminal_id,
             takeover,
             escape: AttachEscapeState::from_config(config),
         },

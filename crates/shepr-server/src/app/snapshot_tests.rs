@@ -2,10 +2,10 @@ use crate::test_support::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use ratatui::layout::{Direction, Rect};
+use ratatui::layout::Rect;
 
 use super::{AppState, Mode};
-use shepr_core::layout::NavDirection;
+use shepr_core::layout::{Direction, NavDirection};
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_mux::persist::snapshot::*;
 use shepr_mux::terminal::TerminalState;

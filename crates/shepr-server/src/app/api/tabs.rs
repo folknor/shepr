@@ -339,7 +339,7 @@ mod tests {
             event_hub.clone(),
         );
         let mut workspace = Workspace::test_new("tabs");
-        let split = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let split = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.test_add_tab(Some("survivor"));
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();

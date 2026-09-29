@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
 use crate::pane::PaneRuntimeRegistry;
 use crate::workspace::Workspace;
-use shepr_core::layout::Node;
+use shepr_core::layout::{Direction, Node};
 use shepr_core::limits::PALETTE_COLOR_COUNT;
 use shepr_protocol::TerminalId;
 

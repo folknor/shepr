@@ -309,13 +309,6 @@ fn subscribe_request_parses_parameterized_subscriptions() {
         "params": {
             "subscriptions": [
                 {
-                    "type": "pane.output_matched",
-                    "pane_id": "p_1_1",
-                    "source": "recent",
-                    "lines": 200,
-                    "match": { "type": "substring", "value": "auth: received" }
-                },
-                {
                     "type": "pane.agent_status_changed",
                     "pane_id": "p_1_1",
                     "agent_status": "idle"
@@ -333,26 +326,16 @@ fn subscribe_request_parses_parameterized_subscriptions() {
     let Method::EventsSubscribe(params) = request.method else {
         panic!("wrong method parsed");
     };
-    assert_eq!(params.subscriptions.len(), 3);
+    assert_eq!(params.subscriptions.len(), 2);
     assert!(matches!(
         &params.subscriptions[0],
-        Subscription::PaneOutputMatched {
-            pane_id,
-            source: ReadSource::Recent,
-            lines: Some(200),
-            r#match: OutputMatch::Substring { value },
-            strip_ansi: true,
-        } if pane_id == "p_1_1" && value == "auth: received"
-    ));
-    assert!(matches!(
-        &params.subscriptions[1],
         Subscription::PaneAgentStatusChanged {
             pane_id,
             agent_status: Some(AgentStatus::Idle),
         } if pane_id == "p_1_1"
     ));
     assert!(matches!(
-        &params.subscriptions[2],
+        &params.subscriptions[1],
         Subscription::PaneScrollChanged { pane_id } if pane_id == "p_1_1"
     ));
 }
@@ -360,25 +343,19 @@ fn subscribe_request_parses_parameterized_subscriptions() {
 #[test]
 fn subscription_event_envelope_round_trips() {
     let event = SubscriptionEventEnvelope {
-        event: SubscriptionEventKind::PaneOutputMatched,
-        data: SubscriptionEventData::PaneOutputMatched(PaneOutputMatchedEvent {
+        event: SubscriptionEventKind::PaneAgentStatusChanged,
+        data: SubscriptionEventData::PaneAgentStatusChanged(PaneAgentStatusChangedEvent {
             pane_id: "p_1_1".into(),
-            matched_line: "auth: received".into(),
-            read: PaneReadResult {
-                pane_id: "p_1_1".into(),
-                workspace_id: "w_1".into(),
-                tab_id: "t_1_1".into(),
-                source: ReadSource::Recent,
-                format: ReadFormat::Text,
-                text: "auth: received\n".into(),
-                revision: 0,
-                truncated: false,
-            },
+            workspace_id: "w_1".into(),
+            agent_status: AgentStatus::Blocked,
+            agent: Some("pi".into()),
+            title: Some("approval".into()),
+            display_agent: None,
         }),
     };
 
     let json = serde_json::to_string(&event).expect("test precondition");
-    assert!(json.contains("\"event\":\"pane.output_matched\""));
+    assert!(json.contains("\"event\":\"pane.agent_status_changed\""));
     let restored: SubscriptionEventEnvelope =
         serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, event);

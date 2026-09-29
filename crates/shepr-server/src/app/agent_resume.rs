@@ -462,7 +462,7 @@ impl App {
                     pane = pane_id.raw(),
                     terminal = %terminal_id,
                     agent = %plan.agent,
-                    err = %err,
+                    error = %err,
                     "failed to start shell for deferred agent resume"
                 );
                 if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
@@ -482,7 +482,7 @@ impl App {
                 pane = pane_id.raw(),
                 terminal = %terminal_id,
                 agent = %plan.agent,
-                err = %err,
+                error = %err,
                 "failed to send deferred agent resume command to shell"
             );
             drop(runtime);
@@ -833,7 +833,7 @@ mod tests {
             .expect("test precondition");
         let pane_infos = workspace.tabs()[0]
             .layout()
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .panes(shepr_core::geometry::Rect::new(0, 0, 100, 30))
             .into_iter()
             .map(Into::into)
             .collect();
@@ -916,7 +916,7 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = workspace.tabs()[0]
             .layout()
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .panes(shepr_core::geometry::Rect::new(0, 0, 100, 30))
             .into_iter()
             .map(Into::into)
             .collect();
@@ -954,7 +954,7 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = workspace.tabs()[0]
             .layout()
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .panes(shepr_core::geometry::Rect::new(0, 0, 100, 30))
             .into_iter()
             .map(Into::into)
             .collect();
@@ -1016,7 +1016,7 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = active_workspace.tabs()[0]
             .layout()
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .panes(shepr_core::geometry::Rect::new(0, 0, 100, 30))
             .into_iter()
             .map(Into::into)
             .collect();
@@ -1082,7 +1082,7 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = workspace.tabs()[0]
             .layout()
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .panes(shepr_core::geometry::Rect::new(0, 0, 100, 30))
             .into_iter()
             .map(Into::into)
             .collect();
@@ -1141,7 +1141,7 @@ mod tests {
         let mut app = test_app();
         let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed");
         let hidden_pane = workspace.tabs()[0].root_pane();
-        let visible_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let visible_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.set_tab_zoomed(0, true);
         let hidden_terminal = workspace
             .terminal_id(hidden_pane)
@@ -1210,7 +1210,7 @@ mod tests {
         let current_workspace = shepr_mux::workspace::Workspace::test_new("current");
         app.state.view.pane_infos = previous_workspace.tabs()[0]
             .layout()
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .panes(shepr_core::geometry::Rect::new(0, 0, 100, 30))
             .into_iter()
             .map(Into::into)
             .collect();
@@ -1263,7 +1263,7 @@ mod tests {
     async fn pending_agent_resume_launches_with_inner_rect_size() {
         let mut app = test_app();
         let mut workspace = shepr_mux::workspace::Workspace::test_new("split");
-        let pane_id = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let pane_id = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()

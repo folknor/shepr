@@ -48,7 +48,6 @@ api_error_codes! {
     InvalidPaneSwap => "invalid_pane_swap",
     InvalidParams => "invalid_params",
     InvalidRatio => "invalid_ratio",
-    InvalidRegex => "invalid_regex",
     InvalidRequest => "invalid_request",
     InvalidSshAgent => "invalid_ssh_agent",
     InvalidTarget => "invalid_target",

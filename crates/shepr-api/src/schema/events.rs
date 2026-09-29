@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use super::common::{AgentStatus, ReadSource};
-use super::panes::{PaneInfo, PaneReadResult, PaneScrollInfo};
+use super::common::AgentStatus;
+use super::panes::{PaneInfo, PaneScrollInfo};
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 
@@ -55,17 +55,6 @@ pub enum Subscription {
     PaneExited {},
     #[serde(rename = "pane.agent_detected")]
     PaneAgentDetected {},
-    #[serde(rename = "pane.output_matched")]
-    PaneOutputMatched {
-        pane_id: String,
-        source: ReadSource,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        lines: Option<u32>,
-        r#match: OutputMatch,
-        /// `false` matches against the ANSI rendering, escape sequences included.
-        #[serde(default = "super::common::default_true")]
-        strip_ansi: bool,
-    },
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged {
         pane_id: String,
@@ -85,21 +74,13 @@ pub struct EventsWaitParams {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum OutputMatch {
-    Substring { value: String },
-    Regex { value: String },
-}
-
 /// What `events.wait` can wait for.
 ///
 /// Only the variants the wait loop can actually match are accepted. The enum
 /// used to parse fifteen more (workspace, tab and pane lifecycle matches, plus
 /// `pane_output_changed`), all of which were then rejected at runtime with
 /// `unsupported_event_wait_match`; an unknown `event` is now a parse error
-/// (`invalid_request`) instead. For lifecycle events, use `events.subscribe`;
-/// for output, use `pane.output_matched` subscriptions.
+/// (`invalid_request`) instead. For lifecycle events, use `events.subscribe`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventMatch {
@@ -146,8 +127,6 @@ pub struct EventEnvelope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubscriptionEventKind {
-    #[serde(rename = "pane.output_matched")]
-    PaneOutputMatched,
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged,
     #[serde(rename = "pane.scroll_changed")]
@@ -163,16 +142,8 @@ pub struct SubscriptionEventEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SubscriptionEventData {
-    PaneOutputMatched(PaneOutputMatchedEvent),
     PaneAgentStatusChanged(PaneAgentStatusChangedEvent),
     ScrollChanged(PaneScrollChangedEvent),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneOutputMatchedEvent {
-    pub pane_id: String,
-    pub matched_line: String,
-    pub read: PaneReadResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

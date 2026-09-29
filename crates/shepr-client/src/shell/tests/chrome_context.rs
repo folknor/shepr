@@ -4,8 +4,8 @@ use super::*;
 fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     let mut snapshot = snapshot();
     snapshot.tabs.extend((2..=8).map(|number| ClientShellTab {
-        tab_id: shepr_protocol::PublicTabId::new("ws_1", number),
-        workspace_id: "ws_1".into(),
+        tab_id: shepr_protocol::PublicTabId::new("w1", number),
+        workspace_id: test_workspace_id("w1"),
         number,
         label: number.to_string(),
         custom_label: false,
@@ -31,31 +31,19 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     assert_eq!(state.tab_scroll, 1);
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
-    update.focused_tab_id = Some(test_tab_id("ws_1:t8"));
+    update.focused_tab_id = Some(test_tab_id("w1:t8"));
     for tab in &mut update.tabs {
-        tab.focused = tab.tab_id == "ws_1:t8";
+        tab.focused = tab.tab_id == "w1:t8";
     }
     state.set_snapshot(Box::new(update));
     state.compose(80, 20).expect("focused overflow tab");
-    assert!(
-        state
-            .hits
-            .tabs
-            .iter()
-            .any(|(_, tab_id)| tab_id == "ws_1:t8")
-    );
+    assert!(state.hits.tabs.iter().any(|(_, tab_id)| tab_id == "w1:t8"));
 
     state.compose(300, 20).expect("tabs without overflow");
     assert_eq!(state.tab_scroll, 0);
     assert_eq!(state.hits.tabs.len(), 8);
     state.compose(80, 20).expect("focused tab after narrowing");
-    assert!(
-        state
-            .hits
-            .tabs
-            .iter()
-            .any(|(_, tab_id)| tab_id == "ws_1:t8")
-    );
+    assert!(state.hits.tabs.iter().any(|(_, tab_id)| tab_id == "w1:t8"));
 }
 
 #[test]
@@ -75,8 +63,8 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .iter()
         .enumerate()
         .map(|(index, label)| ClientShellTab {
-            tab_id: shepr_protocol::PublicTabId::new("ws_1", index + 1),
-            workspace_id: "ws_1".into(),
+            tab_id: shepr_protocol::PublicTabId::new("w1", index + 1),
+            workspace_id: test_workspace_id("w1"),
             number: index + 1,
             label: (*label).into(),
             custom_label: index > 0,
@@ -87,7 +75,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .collect();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     for number in [8, 7, 8] {
-        let tab_id = shepr_protocol::PublicTabId::new("ws_1", number);
+        let tab_id = shepr_protocol::PublicTabId::new("w1", number);
         projected.focused_tab_id = Some(tab_id.clone());
         projected.workspaces[0].active_tab_id = tab_id.clone();
         projected.panes[0].tab_id = tab_id.clone();
@@ -162,7 +150,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     let template = initial.workspaces[0].clone();
     initial.workspaces = (1..=12)
         .map(|number| ClientShellWorkspace {
-            workspace_id: format!("ws_{number}").into(),
+            workspace_id: test_workspace_id(&format!("w{number}")),
             number,
             label: format!("space-{number}"),
             branch: None,
@@ -181,14 +169,14 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
             .hits
             .workspaces
             .iter()
-            .all(|hit| hit.workspace_id != "ws_12")
+            .all(|hit| hit.workspace_id != "w12")
     );
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
     update.revision = shepr_protocol::ProjectionRevision::new(2);
-    update.focused_workspace_id = Some("ws_12".into());
+    update.focused_workspace_id = Some(test_workspace_id("w12"));
     for workspace in &mut update.workspaces {
-        workspace.focused = workspace.workspace_id == "ws_12";
+        workspace.focused = workspace.workspace_id == "w12";
     }
     let mut updated_surface = surface();
     updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
@@ -203,7 +191,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.workspace_id == "ws_12")
+            .any(|hit| hit.workspace_id == "w12")
     );
 }
 
@@ -262,7 +250,7 @@ fn client_owned_sidebar_dividers_resize_live() {
     assert!(!state.hits.panes.is_empty());
     assert!(state.hits.machines.is_empty());
     assert_eq!(state.hits.sidebar_divider.x, 31);
-    assert_eq!(state.hits.workspaces[0].workspace_id, "ws_1");
+    assert_eq!(state.hits.workspaces[0].workspace_id, "w1");
 
     let next_resize =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -333,7 +321,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Workspace { ref workspace_id, .. },
             ..
-        })) if workspace_id == "ws_1"
+        })) if workspace_id == "w1"
     ));
     let workspace_items = match state.overlay.as_ref() {
         Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
@@ -357,7 +345,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             target: ClientRenameTarget::Workspace { ref workspace_id },
             ..
-        })) if workspace_id == "ws_1"
+        })) if workspace_id == "w1"
     ));
 
     state.overlay = None;
@@ -392,7 +380,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::PaneSplit(params)
-            if params.target_pane_id.as_deref() == Some("ws_1:p1")
+            if params.target_pane_id.as_deref() == Some("w1:p1")
                 && params.direction == shepr_api::schema::SplitDirection::Right
     ));
 }
@@ -487,7 +475,7 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     assert!(matches!(
         &request.method,
         shepr_api::schema::Method::TabCreate(params)
-            if params.workspace_id.as_deref() == Some("ws_1")
+            if params.workspace_id.as_deref() == Some("w1")
                 && params.label.as_deref() == Some("logs")
     ));
     assert!(state.overlay.is_none());
@@ -544,7 +532,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
     oversized.panes[0].pixel_width = 1600;
     oversized.panes[0].pixel_height = 960;
     let mut off_screen = oversized.panes[0].clone();
-    off_screen.pane_id = test_pane_id("ws_1:p2");
+    off_screen.pane_id = test_pane_id("w1:p2");
     let far = SurfaceRect {
         x: 190,
         y: 0,
@@ -564,7 +552,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
         "a pane with no visible cell has no hit"
     );
     let hit = &state.hits.panes[0];
-    assert_eq!(hit.pane_id, "ws_1:p1");
+    assert_eq!(hit.pane_id, "w1:p1");
     assert_eq!(hit.inner_rect, area);
     assert_eq!((hit.pixel_width, hit.pixel_height), (0, 0));
     assert!(state.hits.pane_splits.is_empty());
@@ -575,7 +563,7 @@ fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.selection = Some(shepr_vt::selection::Selection::range(
-        test_pane_id("ws_1:p1"),
+        test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));

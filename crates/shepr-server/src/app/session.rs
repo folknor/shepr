@@ -226,7 +226,7 @@ impl App {
                 let backoff_delay = self.session_saver.retry_after_failure(now);
                 let delay = retry_delay_override.unwrap_or(backoff_delay);
                 tracing::warn!(
-                    err = %err,
+                    error = %err,
                     failures = self.session_saver.failed_saves,
                     retry_ms = delay.as_millis(),
                     "session save failed"

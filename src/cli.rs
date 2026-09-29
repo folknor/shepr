@@ -658,6 +658,11 @@ fn run_terminal_command(
             terminal_id,
             takeover,
         } => {
+            let Ok(terminal_id) = terminal_id.parse::<shepr_protocol::TerminalId>() else {
+                return Err(CliError::Usage(format!(
+                    "invalid terminal id {terminal_id:?}"
+                )));
+            };
             let config = match config {
                 Some(config) => config,
                 None => load_validated_config(context)?,
@@ -1147,7 +1152,7 @@ mod tests {
         env.set(shepr_core::env::EnvVar::SheprConfigPath, &config_path);
 
         for args in [
-            &["terminal", "attach", "terminal-1"][..],
+            &["terminal", "attach", "term_1_1"][..],
             &["agent", "attach", "agent-1"],
         ] {
             let invocation = parse(args);
@@ -1165,6 +1170,22 @@ mod tests {
                 "{args:?} should fail on invalid config before connecting: {error}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_attach_refuses_an_id_the_server_never_issues() {
+        let invocation = parse(&["terminal", "attach", "terminal-1"]);
+        let Launch::Cli(command) = invocation.launch else {
+            panic!("terminal attach is not a CLI command");
+        };
+        let error = match super::run(command.as_ref(), None) {
+            Err(error) => error,
+            Ok(code) => panic!("terminal attach unexpectedly returned exit code {code}"),
+        };
+        assert!(
+            matches!(&error, super::CliError::Usage(message) if message.contains("invalid terminal id")),
+            "{error}"
+        );
     }
 
     #[test]

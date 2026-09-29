@@ -244,7 +244,7 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
             info!(cwd = %cwd.display(), "created startup workspace");
         }
         Err(err) => {
-            warn!(cwd = %cwd.display(), err = %err, "failed to create startup workspace");
+            warn!(cwd = %cwd.display(), error = %err, "failed to create startup workspace");
             app.state.mode = app::Mode::Navigate;
         }
     }

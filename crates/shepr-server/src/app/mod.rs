@@ -377,7 +377,7 @@ impl App {
                 true
             }
             Err(err) => {
-                tracing::error!(err = %err, "failed to create default workspace");
+                tracing::error!(error = %err, "failed to create default workspace");
                 self.state.mode = Mode::Navigate;
                 false
             }
@@ -1245,7 +1245,7 @@ mod tests {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("terminal-target-ambiguous");
         let first = workspace.tabs()[0].root_pane();
-        let second = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let second = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         let first_terminal_id = app.state.workspaces[0]
@@ -1381,7 +1381,7 @@ mod tests {
         assert_eq!(response["result"]["type"], "pane_info");
         let splits = app.state.workspaces[0].tabs()[0]
             .layout()
-            .splits(ratatui::layout::Rect::new(0, 0, 100, 20));
+            .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
         assert!((splits[0].ratio - 0.333).abs() < f32::EPSILON);
         let response_pane_id = response["result"]["pane"]["pane_id"]
@@ -1652,7 +1652,7 @@ mod tests {
         app.policy = AppPolicy::Production;
         let mut workspace = Workspace::test_new("preserved");
         let first_pane = workspace.tabs()[0].root_pane();
-        let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();

@@ -100,14 +100,14 @@ fn enable_utf8_input(master: &OwnedFd) {
     // live, writable termios that tcgetattr fills in and does not retain.
     if unsafe { libc::tcgetattr(master.as_raw_fd(), &mut termios) } != 0 {
         let err = io::Error::last_os_error();
-        tracing::warn!(%err, "could not read PTY attributes to enable UTF-8 input");
+        tracing::warn!(error = %err, "could not read PTY attributes to enable UTF-8 input");
         return;
     }
     termios.c_iflag |= libc::IUTF8;
     // SAFETY: as above; tcsetattr only reads `termios`.
     if unsafe { libc::tcsetattr(master.as_raw_fd(), libc::TCSANOW, &termios) } != 0 {
         let err = io::Error::last_os_error();
-        tracing::warn!(%err, "could not enable UTF-8 input on the PTY");
+        tracing::warn!(error = %err, "could not enable UTF-8 input on the PTY");
     }
 }
 

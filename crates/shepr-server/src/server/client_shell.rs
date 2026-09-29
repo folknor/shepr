@@ -37,7 +37,12 @@ pub(super) fn snapshot_from_session(
 ) -> shepr_protocol::ClientShellSnapshot {
     let focused_workspace_id = location
         .and_then(|location| location.focused_workspace_id.clone())
-        .or_else(|| snapshot.focused_workspace_id.clone().map(Into::into));
+        .or_else(|| {
+            snapshot
+                .focused_workspace_id
+                .as_deref()
+                .and_then(|id| id.parse().ok())
+        });
     let focused_tab_id = location
         .and_then(|location| location.focused_tab_id().cloned())
         .or_else(|| {
@@ -79,7 +84,8 @@ pub(super) fn snapshot_from_session(
         .filter_map(|(position, workspace)| {
             let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
-            let workspace_id = workspace.workspace_id;
+            // The snapshot comes from this same app, so its IDs are canonical.
+            let workspace_id: shepr_protocol::WorkspaceId = workspace.workspace_id.parse().ok()?;
             let workspace_index = app
                 .state
                 .workspaces
@@ -89,11 +95,7 @@ pub(super) fn snapshot_from_session(
                 .or_else(|| app.parse_workspace_id(&workspace_id));
             let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
             let active_tab_id = location
-                .and_then(|location| {
-                    location
-                        .active_tab_ids
-                        .get(&shepr_protocol::WorkspaceId::new(workspace_id.as_str()))
-                })
+                .and_then(|location| location.active_tab_ids.get(&workspace_id))
                 .cloned()
                 .or_else(|| workspace.active_tab_id.parse().ok())?;
             let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
@@ -108,7 +110,7 @@ pub(super) fn snapshot_from_session(
             });
             Some(shepr_protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
-                workspace_id: workspace_id.into(),
+                workspace_id,
                 active_tab_id,
                 new_workspace_cwd,
                 number: workspace.number,
@@ -140,7 +142,7 @@ pub(super) fn snapshot_from_session(
             Some(shepr_protocol::ClientShellTab {
                 focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
                 tab_id,
-                workspace_id: tab.workspace_id.into(),
+                workspace_id: tab.workspace_id.parse().ok()?,
                 number: tab.number,
                 label: tab.label,
                 custom_label: state.is_some_and(|state| !state.is_auto_named()),
@@ -166,7 +168,7 @@ pub(super) fn snapshot_from_session(
                 .is_some_and(|pane| pane.right_click_passthrough);
             Some(shepr_protocol::ClientShellPane {
                 pane_id,
-                workspace_id: pane.workspace_id.into(),
+                workspace_id: pane.workspace_id.parse().ok()?,
                 tab_id: pane.tab_id.parse().ok()?,
                 label: pane.label,
                 cwd: pane.cwd,
@@ -186,7 +188,7 @@ pub(super) fn snapshot_from_session(
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             Some(shepr_protocol::ClientShellAgent {
                 pane_id,
-                workspace_id: agent.workspace_id.into(),
+                workspace_id: agent.workspace_id.parse().ok()?,
                 tab_id: agent.tab_id.parse().ok()?,
                 name: agent.name,
                 display_agent: agent.display_agent,
@@ -390,16 +392,8 @@ pub(super) fn render_pane_surface(
                 app.state.settings.pane_gaps,
                 &pane_frames,
             )?;
-            let direction = match split.direction {
-                ratatui::layout::Direction::Horizontal => {
-                    shepr_protocol::PaneSurfaceSplitDirection::Horizontal
-                }
-                ratatui::layout::Direction::Vertical => {
-                    shepr_protocol::PaneSurfaceSplitDirection::Vertical
-                }
-            };
             Some(shepr_protocol::PaneSurfaceSplit {
-                direction,
+                direction: split.direction.into(),
                 pos: split.pos,
                 area: split.area.into(),
                 hit_rect: hit_rect.into(),
@@ -443,10 +437,10 @@ fn split_hit_rect(
     pane_frames: &[Rect],
 ) -> Option<Rect> {
     let hit = match (split.direction, pane_borders, pane_gaps) {
-        (ratatui::layout::Direction::Horizontal, true, false) => {
+        (shepr_core::layout::Direction::Horizontal, true, false) => {
             Rect::new(split.pos, split.area.y, 1, split.area.height)
         }
-        (ratatui::layout::Direction::Horizontal, true, true) => {
+        (shepr_core::layout::Direction::Horizontal, true, true) => {
             let start = split.pos.saturating_sub(1);
             Rect::new(
                 start,
@@ -455,16 +449,16 @@ fn split_hit_rect(
                 split.area.height,
             )
         }
-        (ratatui::layout::Direction::Horizontal, false, true) => Rect::new(
+        (shepr_core::layout::Direction::Horizontal, false, true) => Rect::new(
             split.pos.checked_sub(1)?,
             split.area.y,
             1,
             split.area.height,
         ),
-        (ratatui::layout::Direction::Vertical, true, false) => {
+        (shepr_core::layout::Direction::Vertical, true, false) => {
             Rect::new(split.area.x, split.pos, split.area.width, 1)
         }
-        (ratatui::layout::Direction::Vertical, true, true) => {
+        (shepr_core::layout::Direction::Vertical, true, true) => {
             let start = split.pos.saturating_sub(1);
             Rect::new(
                 split.area.x,
@@ -473,7 +467,7 @@ fn split_hit_rect(
                 split.pos.saturating_sub(start).saturating_add(1),
             )
         }
-        (ratatui::layout::Direction::Vertical, false, true) => {
+        (shepr_core::layout::Direction::Vertical, false, true) => {
             Rect::new(split.area.x, split.pos.checked_sub(1)?, split.area.width, 1)
         }
         (_, false, false) => return None,
@@ -547,9 +541,9 @@ mod tests {
     fn split_hits_follow_released_border_and_gap_geometry() {
         let horizontal = shepr_core::layout::SplitBorder {
             pos: 20,
-            direction: ratatui::layout::Direction::Horizontal,
+            direction: shepr_core::layout::Direction::Horizontal,
             ratio: 0.5,
-            area: Rect::new(2, 3, 40, 12),
+            area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
             path: vec![shepr_core::geometry::SplitBranch::First],
         };
         assert_eq!(
@@ -568,9 +562,9 @@ mod tests {
 
         let vertical = shepr_core::layout::SplitBorder {
             pos: 9,
-            direction: ratatui::layout::Direction::Vertical,
+            direction: shepr_core::layout::Direction::Vertical,
             ratio: 0.5,
-            area: Rect::new(2, 3, 40, 12),
+            area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
             path: vec![shepr_core::geometry::SplitBranch::Second],
         };
         assert_eq!(
@@ -580,9 +574,9 @@ mod tests {
 
         let edge = shepr_core::layout::SplitBorder {
             pos: 0,
-            direction: ratatui::layout::Direction::Horizontal,
+            direction: shepr_core::layout::Direction::Horizontal,
             ratio: 0.5,
-            area: Rect::new(0, 0, 1, 4),
+            area: shepr_core::geometry::Rect::new(0, 0, 1, 4),
             path: Vec::new(),
         };
         assert_eq!(

@@ -83,13 +83,13 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             &mut TrackedIo::new(&mut stdin_to_socket, activity),
         ) && !is_closed_socket(&err)
         {
-            tracing::warn!(kind = ?err.kind(), %err, "SSH bridge upload failed");
+            tracing::warn!(kind = ?err.kind(), error = %err, "SSH bridge upload failed");
         }
         let interprocess::local_socket::Stream::UdSocket(stream) = stdin_to_socket;
         if let Err(err) = stream.inner().shutdown(std::net::Shutdown::Write)
             && !is_closed_socket(&err)
         {
-            tracing::warn!(%err, "SSH bridge failed to half-close the server socket");
+            tracing::warn!(error = %err, "SSH bridge failed to half-close the server socket");
         }
     });
     let _download = std::thread::spawn(move || {
@@ -109,7 +109,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             if let Err(err) = socket.inner().shutdown(std::net::Shutdown::Both)
                 && !is_closed_socket(&err)
             {
-                tracing::warn!(%err, "SSH bridge failed to shut down the idle server socket");
+                tracing::warn!(error = %err, "SSH bridge failed to shut down the idle server socket");
             }
             Ok(RemoteBridgeOutcome::IdleExpired { idle_for })
         }

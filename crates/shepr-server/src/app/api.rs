@@ -489,7 +489,7 @@ mod tests {
             event_hub.clone(),
         );
         let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-exit-layout");
-        let dead_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let dead_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");

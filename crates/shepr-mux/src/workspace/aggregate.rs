@@ -40,9 +40,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::layout::Direction;
-
-    use shepr_core::layout::PaneId;
+    use shepr_core::layout::{Direction, PaneId};
 
     use super::*;
 
