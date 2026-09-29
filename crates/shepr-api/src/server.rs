@@ -580,15 +580,7 @@ fn handle_request(
         return response;
     }
 
-    dispatch_to_app(
-        request,
-        api_tx,
-        Some(ORDINARY_REQUEST_TIMEOUT),
-        Some((
-            crate::error::ApiErrorCode::Timeout,
-            ORDINARY_REQUEST_TIMEOUT_MESSAGE,
-        )),
-    )
+    dispatch_to_app(request, api_tx)
 }
 
 fn server_is_stopping(server_stop: Option<&Arc<crate::ServerStopSignal>>) -> bool {
@@ -727,22 +719,12 @@ fn write_api_json_line_allow_disconnect<T: serde::Serialize>(
 fn dispatch_to_app(
     request: Request,
     api_tx: &ApiRequestSender,
-    timeout: Option<Duration>,
-    timeout_response: Option<(crate::error::ApiErrorCode, &str)>,
 ) -> crate::error::EncodedApiResponse {
     let request_id = request.id.clone();
-    crate::error::encode_result_with_outcome(
-        request_id,
-        dispatch_to_app_result(request, api_tx, timeout, timeout_response),
-    )
+    crate::error::encode_result_with_outcome(request_id, dispatch_to_app_result(request, api_tx))
 }
 
-fn dispatch_to_app_result(
-    request: Request,
-    api_tx: &ApiRequestSender,
-    timeout: Option<Duration>,
-    timeout_response: Option<(crate::error::ApiErrorCode, &str)>,
-) -> crate::error::ApiResult {
+fn dispatch_to_app_result(request: Request, api_tx: &ApiRequestSender) -> crate::error::ApiResult {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     if let Err(err) = api_tx.send(ApiRequestMessage {
         request,
@@ -754,38 +736,16 @@ fn dispatch_to_app_result(
         ));
     }
 
-    let response = match timeout {
-        Some(timeout) => response_rx.recv_timeout(timeout).map_err(|err| match err {
-            std::sync::mpsc::RecvTimeoutError::Timeout => std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!(
-                    "timed out waiting for app response after {} ms",
-                    timeout.as_millis()
-                ),
-            ),
-            std::sync::mpsc::RecvTimeoutError::Disconnected => std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "app response channel closed",
-            ),
-        }),
-        None => response_rx
-            .recv()
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::BrokenPipe, err)),
-    };
-
-    match response {
+    match response_rx.recv_timeout(ORDINARY_REQUEST_TIMEOUT) {
         Ok(response) => response,
-        Err(err) => {
-            if err.kind() == std::io::ErrorKind::TimedOut
-                && let Some((code, message)) = timeout_response
-            {
-                return Err(crate::error::ApiError::new(code, message));
-            }
-            Err(crate::error::ApiError::new(
-                crate::error::ApiErrorCode::ServerUnavailable,
-                format!("request handling failed: {err}"),
-            ))
-        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(crate::error::ApiError::new(
+            crate::error::ApiErrorCode::Timeout,
+            ORDINARY_REQUEST_TIMEOUT_MESSAGE,
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(crate::error::ApiError::new(
+            crate::error::ApiErrorCode::ServerUnavailable,
+            "request handling failed: app response channel closed",
+        )),
     }
 }
 

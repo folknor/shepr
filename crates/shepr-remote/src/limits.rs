@@ -52,6 +52,25 @@ pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// overloaded local server check.
 pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long a launch waits, under the launch lock, for the data directory lease
+/// of a server that has closed its sockets but is still saving its layout. A
+/// stop returns once the sockets are gone, and the lease is released only after
+/// the shutdown drain, so a server started at once would find the lease held
+/// and exit. A lease still held after this is left to the daemon's own
+/// already-running handling.
+pub(crate) const LEASE_RELEASE_WAIT: Duration = Duration::from_secs(10);
+
+/// Time allowed for the SSH command that stops a remote server. The remote
+/// `server stop` itself waits up to its own stop deadline for the server to
+/// close its sockets; this covers that plus the connection.
+pub(crate) const REMOTE_STOP_SSH_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// How many times one machine is offered a restart. A server that was replaced
+/// between the check and the stop is a new occupant and is offered again, once;
+/// beyond that something keeps restarting it and the operator is told to run
+/// shepr again.
+pub(crate) const MAX_RESTART_OFFERS: usize = 2;
+
 /// Time allowed for the sibling `shepr-server --version` that `status client`
 /// runs to report the installed pair. It prints one line and exits, so a longer
 /// wait means a broken or hung binary; the deadline keeps a remote discovery

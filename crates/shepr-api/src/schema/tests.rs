@@ -371,7 +371,6 @@ fn create_response_round_trips_with_root_pane() {
                 agent_status: AgentStatus::Idle,
                 agent_session: None,
                 scroll: None,
-                revision: 0,
             },
         },
     };

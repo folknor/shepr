@@ -48,15 +48,6 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
 - **Hook assets and the CLI.** The item above proposes moving hook assets to
   the CLI, but the CLI no longer has report commands; that direction now means
   adding them back.
-- **Server shell state is always present.** `ClientConnection::shell_state()`
-  and `shell_state_mut()` in shepr-server still return `Option` although every
-  connection has shell state; dozens of call sites guard a `None` that cannot
-  happen.
-- **Unconsumed `revision`.** `PaneInfo.revision` and `AgentInfo.revision` have
-  no consumer in shepr.
-- **Pane copy and search handlers.** Check whether the TUI still reaches every
-  handler in `crates/shepr-server/src/app/api/panes/copy.rs` (including
-  `clear_screen`); remove what it does not.
 - **Remote interactive branches.** `RemoteSsh`'s non-interactive flag and its
   interactive branches (stderr relay, `framed_user_shell_output`) are only
   reachable from tests, and `RemoteCliCommand::ServerStop` is unused outside
@@ -69,11 +60,6 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
   (and whether `TerminalId` is still needed outside the server);
   `is_launch_fatal_setup_error`'s comment in shepr-remote; "saved machines"
   wording in `src/autodetect.rs` and client comments, now configured machines.
-- **Preflight findings are dropped.** `src/preflight.rs` prints nothing for
-  `MachineCheck::Incompatible`, and the client's connectors never call
-  `check_saved_ssh`, so an incompatible remote (another build, a stale or
-  missing sibling `shepr-server`) is only reported later by the handshake and
-  its error never shown.
 - **Discovery ignores the metadata cache.** `check_saved_ssh` runs full remote
   discovery for every machine at every launch and neither reads nor writes
   `SshMetadataCache`.
@@ -85,9 +71,6 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
 - **Redundant build hash in the root package.** The root package appears to
   run the workspace `build.rs` too, hashing the tree and writing build id files
   nothing in `src/` includes.
-- **Dead after the API pruning.** `dispatch_to_app_result` in shepr-api
-  `server.rs` keeps an unused no-timeout branch; `ApiErrorCode` lists variants
-  nothing returns (`PaneClosed`, `UnsupportedMethod`, `ClientMissing`).
 - **`launch_argv` is never set.** Nothing launches a pane from an argv any
   more, so `TerminalState::launch_argv` is always `None`, yet the snapshot
   persists and restores it and `crates/shepr-server/src/app/api/layouts.rs`
@@ -100,6 +83,18 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
 - **Runtime directory permissions.** `prepare_socket_path` and the server
   create the runtime directory with `create_dir_all`, so it gets umask
   permissions; only the launcher creates it 0700.
+- **Stop returns before the lease is free.** `stop_active_server` in
+  `crates/shepr-api/src/server_stop.rs` waits only for the sockets to go, while
+  the data-directory lease is released after the shutdown drain; the launcher
+  compensates by waiting for the lease before spawning. Waiting inside stop
+  would be more correct. The launcher also hardcodes `session.lock`, which must
+  match shepr-mux's `LOCK_FILE_NAME`.
+- **Remote stop of a server that already exited.** A remote `server stop`
+  that finds no server reports a generic failure, so the restart offer says it
+  could not stop the machine; locally the same case counts as an occupant
+  change. A dedicated exit code, like the boot mismatch, would align them.
+- **Prompt gate checks stdin only.** The startup preflight decides it can ask
+  from stdin being a terminal, but prints its questions on stderr.
 - **Re-prompting for SSH authentication.** A machine that still needs
   authentication after a failed or skipped startup prompt is not prompted again
   until the next launch, and there is no TUI action to suspend the screen and

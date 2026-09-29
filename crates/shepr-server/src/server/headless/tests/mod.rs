@@ -27,8 +27,7 @@ pub(crate) fn outer_terminal_focus(
     server
         .clients
         .get(&client_id)
-        .and_then(crate::server::clients::ClientConnection::shell_state)
-        .and_then(|shell| shell.outer_terminal_focus)
+        .and_then(|client| client.shell_state().outer_terminal_focus)
 }
 
 pub(crate) fn dispatch_lifecycle_messages(
@@ -934,7 +933,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     assert!(
         server.clients[&client_id]
             .shell_state()
-            .is_some_and(|shell| shell.endpoint_command_in_flight)
+            .endpoint_command_in_flight
     );
 
     assert!(
@@ -966,7 +965,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     assert!(
         !server.clients[&client_id]
             .shell_state()
-            .is_some_and(|shell| shell.endpoint_command_in_flight)
+            .endpoint_command_in_flight
     );
 
     match read_server_message(control_rx.recv().expect("endpoint response")) {
@@ -1254,10 +1253,8 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
         );
         assert_eq!(server.shell_session_generation, generation);
         assert_eq!(
-            server.clients[&7]
-                .shell_state()
-                .map(|shell| shell.session_generation),
-            Some(generation)
+            server.clients[&7].shell_state().session_generation,
+            generation
         );
     };
 
@@ -1649,9 +1646,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     server.render_and_stream();
     let before = recv_pane_surface(&mut render, "baseline");
     assert!(frame_text(&before.frame).contains("BASE"));
-    let projection_before = server.clients[&7]
-        .shell_state()
-        .map_or(0, |shell| shell.projection_revision.get());
+    let projection_before = server.clients[&7].shell_state().projection_revision.get();
 
     write_shared_test_pane(
         &mut server,
@@ -1668,9 +1663,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     server.render_and_stream();
     assert!(render.try_recv().is_err(), "partial frame was published");
     assert_eq!(
-        server.clients[&7]
-            .shell_state()
-            .map_or(0, |shell| shell.projection_revision.get()),
+        server.clients[&7].shell_state().projection_revision.get(),
         projection_before
     );
 
@@ -2361,9 +2354,7 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
         cache.session.focused_tab_id.as_deref(),
         Some(first_tab_id.as_str())
     );
-    let shell = server.clients[&70]
-        .shell_state()
-        .expect("test shell connection");
+    let shell = server.clients[&70].shell_state();
     assert_eq!(shell.session_generation, server.shell_session_generation);
     assert_eq!(
         shell
@@ -2425,14 +2416,12 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
         .get_mut(&61)
         .expect("test precondition")
         .shell_state_mut()
-        .expect("shell state")
         .outer_terminal_focus = Some(true);
     server
         .clients
         .get_mut(&62)
         .expect("test precondition")
         .shell_state_mut()
-        .expect("shell state")
         .outer_terminal_focus = Some(true);
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
@@ -2591,14 +2580,12 @@ async fn public_focus_moves_shell_focus_between_tabs() {
         .get_mut(&63)
         .expect("test precondition")
         .shell_state_mut()
-        .expect("shell state")
         .outer_terminal_focus = Some(true);
     server
         .clients
         .get_mut(&64)
         .expect("test precondition")
         .shell_state_mut()
-        .expect("shell state")
         .outer_terminal_focus = Some(true);
     assert!(server.app.state.switch_workspace_tab(0, second_tab));
 
@@ -3042,11 +3029,13 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
 
     let first_location = server.clients[&41]
         .shell_state()
-        .and_then(|shell| shell.location.as_ref())
+        .location
+        .as_ref()
         .expect("test precondition");
     let second_location = server.clients[&42]
         .shell_state()
-        .and_then(|shell| shell.location.as_ref())
+        .location
+        .as_ref()
         .expect("test precondition");
     assert_eq!(
         first_location.focused_workspace_id.as_deref(),
@@ -3142,7 +3131,8 @@ async fn public_pane_focus_replaces_a_diverged_client_shell_projection() {
     assert_eq!(server.app.state.active_index(), Some(0));
     let location = server.clients[&9]
         .shell_state()
-        .and_then(|shell| shell.location.as_ref())
+        .location
+        .as_ref()
         .expect("test precondition");
     assert_eq!(
         location.focused_workspace_id.as_deref(),
@@ -4167,14 +4157,12 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
         .get_mut(&71)
         .expect("test precondition")
         .shell_state_mut()
-        .expect("shell state")
         .outer_terminal_focus = Some(true);
     server
         .clients
         .get_mut(&72)
         .expect("test precondition")
         .shell_state_mut()
-        .expect("shell state")
         .outer_terminal_focus = Some(false);
 
     assert!(
@@ -4898,7 +4886,6 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
         .get_mut(&1)
         .expect("shell client")
         .shell_state_mut()
-        .expect("shell state")
         .mouse_capture = true;
     server.stream_host_mouse_capture_mode();
     assert!(matches!(

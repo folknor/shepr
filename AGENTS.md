@@ -70,9 +70,17 @@ an `ssh` target), read once at launch like the rest of the config; there are no
 commands to add, remove or list them. The TUI connects to them without
 prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
 checks every machine and runs interactive ssh for each one that needs
-authentication, one at a time, on shepr's own control socket; there is no
-command for it. Host keys are never accepted automatically. Unreachable ones
-fail soft. With
+authentication, one at a time, on shepr's own control socket, then checks those
+again; there is no command for it. Host keys are never accepted automatically.
+A running server of a different build, the local one or a machine's, is then
+offered a restart in one pass after the last authentication prompt: the
+question says that the restart ends the server's pane processes and that the
+layout is restored with fresh shells and agents resumed. Consent is asked on
+the terminal and defaults to keeping the server; with no terminal, or on
+refusal, the server is left running and unavailable and shepr says how to stop
+it. The stop names the boot identity that was observed, so a server that
+replaced it in the meantime is not stopped, and is offered again as a new
+occupant. Unreachable machines fail soft. With
 machines configured, losing the local server does not end the client either:
 it keeps serving the remote machines and reconnects once the local server is
 restarted.

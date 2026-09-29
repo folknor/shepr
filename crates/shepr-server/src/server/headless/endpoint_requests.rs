@@ -11,10 +11,7 @@ impl HeadlessServer {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
         };
-        let Some(shell) = client.shell_state() else {
-            self.remove_client_and_resize_if_needed(client_id);
-            return true;
-        };
+        let shell = client.shell_state();
         let request_id: shepr_protocol::RequestId = request.id.clone().into();
         if !crate::server::client_commands::supports_client_shell_method(&request.method) {
             let message = crate::server::client_commands::error_message(
@@ -99,10 +96,8 @@ impl HeadlessServer {
             self.send_to_client(client_id, &message);
             return false;
         }
-        if let Some(client) = self.clients.get_mut(&client_id)
-            && let Some(shell) = client.shell_state_mut()
-        {
-            shell.endpoint_command_in_flight = true;
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.shell_state_mut().endpoint_command_in_flight = true;
         }
         let foreground_changed = self.promote_client_to_foreground(client_id);
         foreground_changed

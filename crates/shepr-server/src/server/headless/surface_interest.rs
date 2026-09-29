@@ -20,7 +20,7 @@ impl HeadlessServer {
             let current = self
                 .clients
                 .get(&client_id)?
-                .shell_state()?
+                .shell_state()
                 .projection_revision;
             let Some(raised) = current.checked_next() else {
                 warn!(
@@ -39,7 +39,7 @@ impl HeadlessServer {
         let (changed, projection_revision, held_inputs) = {
             let client = self.clients.get_mut(&client_id)?;
             let (changed, projection_revision) = {
-                let shell = client.shell_state_mut()?;
+                let shell = client.shell_state_mut();
                 let changed = shell.surface_active != active;
                 if let Some(raised) = raised_floor {
                     shell.projection_revision = raised;
@@ -60,9 +60,7 @@ impl HeadlessServer {
             if active {
                 client.host_mouse_capture_active = None;
                 client.host_sgr_pixels_active = None;
-                if let Some(shell) = client.shell_state_mut() {
-                    shell.host_keyboard_report_all_active = None;
-                }
+                client.shell_state_mut().host_keyboard_report_all_active = None;
             }
             client.clear_deferred_render();
             if !active && let Some(writer) = &client.writer {
@@ -91,9 +89,7 @@ impl HeadlessServer {
                     self.clients.iter().any(|(&other_id, client)| {
                         other_id != client_id
                             && client.is_active_shell_client()
-                            && client
-                                .shell_state()
-                                .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
+                            && client.shell_state().outer_terminal_focus == Some(true)
                             && self.shell_tab_id_for_client(other_id).as_deref()
                                 == Some(tab_id.as_str())
                     })

@@ -102,7 +102,6 @@ mod tests {
             Some("修复\u{1F642}标题")
         );
         assert_eq!(pane.agent_status, shepr_api::schema::AgentStatus::Working);
-        assert_eq!(pane.revision, 1);
         let agent = app.collect_agent_infos().pop().expect("test precondition");
         assert_eq!(agent.terminal_title.as_deref(), Some("⠋ 修复\u{1F642}标题"));
         assert_eq!(
@@ -127,7 +126,6 @@ mod tests {
             pane.terminal_title_stripped.as_deref(),
             Some("修复\u{1F642}标题")
         );
-        assert_eq!(pane.revision, 1);
 
         app.terminal_runtimes
             .get(&terminal_id)
@@ -143,7 +141,6 @@ mod tests {
         let pane = app.pane_info(0, pane_id).expect("test precondition");
         assert_eq!(pane.terminal_title, None);
         assert_eq!(pane.terminal_title_stripped, None);
-        assert_eq!(pane.revision, 3);
     }
 
     #[tokio::test]

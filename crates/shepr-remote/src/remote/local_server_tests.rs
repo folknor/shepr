@@ -386,6 +386,71 @@ fn the_launch_lock_wait_is_bounded_and_its_file_persists() {
     );
 }
 
+#[test]
+fn the_lease_wait_returns_at_once_when_the_data_directory_was_never_served() {
+    let _env = IsolatedEnv::new();
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let mut sleeps = 0;
+    wait_for_lease_release(&paths, &mut Instant::now, &mut |_| sleeps += 1);
+    assert_eq!(sleeps, 0);
+    assert!(
+        !paths
+            .data_dir()
+            .join(DATA_DIR_LEASE_FILE_NAME)
+            .try_exists()
+            .expect("stat the lease path"),
+        "waiting must not create the lease file"
+    );
+}
+
+#[test]
+fn the_lease_wait_is_bounded_and_ends_when_the_lease_is_released() {
+    let _env = IsolatedEnv::new();
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let lease_path = paths.data_dir().join(DATA_DIR_LEASE_FILE_NAME);
+    let held = shepr_platform::ipc::acquire_flock_lock(&lease_path, false).expect("lease holder");
+
+    // A clock that jumps past the deadline: a held lease ends the wait.
+    let start = Instant::now();
+    let mut ticks = 0;
+    let mut clock = || {
+        ticks += 1;
+        start + LEASE_RELEASE_WAIT * ticks
+    };
+    let mut sleeps = 0;
+    wait_for_lease_release(&paths, &mut clock, &mut |_| sleeps += 1);
+    assert!(sleeps <= 1, "the wait ends at its deadline, slept {sleeps}");
+
+    drop(held);
+    let mut sleeps = 0;
+    wait_for_lease_release(&paths, &mut Instant::now, &mut |_| sleeps += 1);
+    assert_eq!(sleeps, 0, "a free lease is not waited for");
+}
+
+#[test]
+fn the_running_server_status_never_starts_a_server() {
+    let _env = IsolatedEnv::new();
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    assert!(
+        running_server_status(&paths)
+            .expect("an absent server is no error")
+            .is_none()
+    );
+    assert_nothing_was_launched(&paths);
+
+    let (client, api) = runtime_sockets(&paths);
+    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let server = serve_status_once(
+        UnixListener::bind(&api).expect("test precondition"),
+        other_build_id(),
+    );
+    let status = running_server_status(&paths)
+        .expect("a live server answers")
+        .expect("a server is running");
+    server.join().expect("fake server thread");
+    assert_eq!(status.build_id, other_build_id());
+}
+
 // ---------------------------------------------------------------------------
 // Starting the daemon
 // ---------------------------------------------------------------------------

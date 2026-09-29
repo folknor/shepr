@@ -34,8 +34,8 @@ use tracing::info;
 use shepr_api::schema::SiblingServerJson;
 
 use crate::limits::{
-    LAUNCH_LOCK_WAIT_GRACE, SIBLING_VERSION_OUTPUT_BYTES, SIBLING_VERSION_TIMEOUT,
-    SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT,
+    LAUNCH_LOCK_WAIT_GRACE, LEASE_RELEASE_WAIT, SIBLING_VERSION_OUTPUT_BYTES,
+    SIBLING_VERSION_TIMEOUT, SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT,
 };
 
 pub use crate::limits::SERVER_READY_TIMEOUT;
@@ -89,9 +89,63 @@ pub fn ensure_running(
         Probed::NoServer => {}
     }
 
+    // A server that was just stopped closes its sockets before it releases its
+    // data directory lease, and one started into the held lease exits at once.
+    wait_for_lease_release(paths, &mut real_now, &mut std::thread::sleep);
+
     info!(server = %server.display(), "no server running, starting the server daemon");
     let status = launch_daemon(paths, &server, timeout)?;
     accept_running(paths, &status, build_check)
+}
+
+/// What is running at the local server address, without ever starting a server:
+/// the status of a server that answers, or `None` when nothing listens. The
+/// pre-TUI restart offer reads a different-build server through this. A listener
+/// that does not answer, or a socket that cannot be judged, is an error, as it is
+/// for a launch.
+pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Option<RuntimeStatus>> {
+    match probe_server(paths)? {
+        Probed::Running(status) => Ok(Some(status)),
+        Probed::NoServer => Ok(None),
+        Probed::Unresponsive => Err(unresponsive_error(paths)),
+    }
+}
+
+/// The lease file inside the data directory. This is `shepr-mux`'s
+/// `persist::lock::LOCK_FILE_NAME`, which the client does not link; the two must
+/// stay equal.
+const DATA_DIR_LEASE_FILE_NAME: &str = "session.lock";
+
+/// Waits, bounded by [`LEASE_RELEASE_WAIT`], until the data directory lease is
+/// free, by taking and dropping its lock. A lease that never frees is not an
+/// error here: the daemon reports its own already-running refusal. A data
+/// directory with no lease file has never been served, so there is nothing to
+/// wait for (and nothing is created).
+fn wait_for_lease_release(
+    paths: &shepr_config::AppPaths,
+    now: &mut impl FnMut() -> Instant,
+    sleep: &mut impl FnMut(Duration),
+) {
+    let lease_path = paths.data_dir().join(DATA_DIR_LEASE_FILE_NAME);
+    if !matches!(lease_path.try_exists(), Ok(true)) {
+        return;
+    }
+    let deadline = now() + LEASE_RELEASE_WAIT;
+    loop {
+        match shepr_platform::ipc::acquire_flock_lock(&lease_path, false) {
+            Ok(_free) => return,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => {
+                tracing::warn!(path = %lease_path.display(), %error, "cannot check the data directory lease");
+                return;
+            }
+        }
+        if now() >= deadline {
+            tracing::warn!(path = %lease_path.display(), "the data directory lease is still held");
+            return;
+        }
+        sleep(SOCKET_POLL_INTERVAL);
+    }
 }
 
 // ---------------------------------------------------------------------------

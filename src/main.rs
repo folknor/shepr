@@ -134,9 +134,9 @@ fn launch() -> CliResult<i32> {
     refuse_if_nested_disabled(&loaded_config)?;
 
     init_client_logging(paths)?;
-    // Prompts must run before the client takes the terminal: it connects to
-    // machines with BatchMode and cannot answer one.
-    preflight::authenticate_machines(&loaded_config, paths);
+    // Prompts and restart offers must run before the client takes the
+    // terminal: it connects to machines with BatchMode and cannot answer one.
+    preflight::run(&loaded_config, paths);
     let client = autodetect::auto_detect_launch(
         &loaded_config,
         paths,

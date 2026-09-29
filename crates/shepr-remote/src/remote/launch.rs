@@ -6,21 +6,65 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
 /// Checks, without prompting, that the configured machine can be served: SSH
 /// works, a matching shepr and sibling `shepr-server` pair is found (discovery
-/// checks both builds), and any server already running there is this build. A
-/// stopped server passes, since the bridge starts one on attach. No SSH
-/// command starts once `deadline` has passed, and each is cut short at it.
+/// checks both builds), and whether a server already running there is this build.
+/// A stopped server is [`SavedSshCheck::Ready`], since the bridge starts one on
+/// attach. A running server of another build is not an error when it can be
+/// restarted: it comes back as [`SavedSshCheck::DifferentBuild`] with the
+/// discovered executable and the observed boot identity. No SSH command starts
+/// once `deadline` has passed, and each is cut short at it.
 pub fn check_saved_ssh(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
     settings: super::SavedSshSettings,
     deadline: std::time::Instant,
-) -> io::Result<()> {
+) -> io::Result<SavedSshCheck> {
     let mut ssh =
         RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
     ssh.set_attempt_deadline(Some(deadline));
     let remote = locate_remote_shepr(&ssh)?;
     let status = remote_server_status(&ssh, &remote)?;
-    ensure_remote_server_build(ssh.target(), &status)
+    judge_remote_server(ssh.target(), &remote, &status)
+}
+
+/// Stops the remote server instance that reported `server.boot_id`, and no
+/// other, by running the discovered remote `shepr server stop --expect-boot` over
+/// a noninteractive connection. The remote command waits for the server's
+/// sockets to close and exits with
+/// `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE` when another boot answered
+/// (nothing was stopped).
+pub fn stop_remote_server(
+    paths: &shepr_config::AppPaths,
+    target: &SshTarget,
+    settings: super::SavedSshSettings,
+    server: &DifferentBuildServer,
+) -> io::Result<RemoteStop> {
+    let ssh =
+        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
+    let args = RemoteCliCommand::ServerStop {
+        expected_boot: &server.boot_id,
+    }
+    .args();
+    let output = ssh.sh_output_within(
+        &server.executable.command(&args),
+        crate::limits::REMOTE_STOP_SSH_TIMEOUT,
+    )?;
+    if output.status.success() {
+        return Ok(RemoteStop::Stopped);
+    }
+    if output.status.code() == Some(shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE) {
+        return Ok(RemoteStop::BootChanged);
+    }
+    Err(command_failed("remote server stop failed", &output))
+}
+
+/// How a conditional remote stop ended when it did not fail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteStop {
+    /// The observed instance was stopped and its sockets are gone.
+    Stopped,
+    /// The server that answered is not the instance that was observed, so
+    /// nothing was stopped.
+    BootChanged,
 }
 
 impl RemoteExecutable {

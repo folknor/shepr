@@ -244,7 +244,6 @@ impl App {
             agent_status: pane_agent_status(terminal.state),
             agent_session: terminal_agent_session_info(terminal),
             scroll,
-            revision: terminal.revision(),
         })
     }
 

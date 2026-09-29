@@ -155,7 +155,6 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         .get_mut(&client_id)
         .expect("surface client")
         .shell_state_mut()
-        .expect("shell state")
         .endpoint_command_in_flight = true;
 
     assert!(
@@ -284,17 +283,10 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         Some(shared_tab_id.as_str())
     );
     assert_eq!(
-        server.clients[&7]
-            .shell_state()
-            .and_then(|shell| shell.outer_terminal_focus),
+        server.clients[&7].shell_state().outer_terminal_focus,
         Some(true)
     );
-    assert_eq!(
-        server.clients[&8]
-            .shell_state()
-            .and_then(|shell| shell.outer_terminal_focus),
-        None
-    );
+    assert_eq!(server.clients[&8].shell_state().outer_terminal_focus, None);
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
         focused_size,
@@ -310,15 +302,11 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         focused: false,
     }));
     assert_eq!(
-        server.clients[&7]
-            .shell_state()
-            .and_then(|shell| shell.outer_terminal_focus),
+        server.clients[&7].shell_state().outer_terminal_focus,
         Some(true)
     );
     assert_eq!(
-        server.clients[&8]
-            .shell_state()
-            .and_then(|shell| shell.outer_terminal_focus),
+        server.clients[&8].shell_state().outer_terminal_focus,
         Some(false)
     );
     assert_eq!(
@@ -370,9 +358,7 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
         .expect("focused surface reassertion response");
 
     assert_eq!(
-        server.clients[&8]
-            .shell_state()
-            .and_then(|shell| shell.outer_terminal_focus),
+        server.clients[&8].shell_state().outer_terminal_focus,
         Some(true)
     );
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
@@ -410,10 +396,7 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
             .expect("test precondition");
         client.host_mouse_capture_active = Some(false);
         client.host_sgr_pixels_active = Some(false);
-        client
-            .shell_state_mut()
-            .expect("shell state")
-            .host_keyboard_report_all_active = Some(false);
+        client.shell_state_mut().host_keyboard_report_all_active = Some(false);
     }
 
     let boot_id = server.client_shell_boot_id.clone();
@@ -443,7 +426,7 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
     assert_eq!(
         server.clients[&client_id]
             .shell_state()
-            .and_then(|shell| shell.host_keyboard_report_all_active),
+            .host_keyboard_report_all_active,
         Some(false)
     );
     let messages = (0..3)

@@ -596,15 +596,7 @@ impl HeadlessServer {
             self.sync_runtime_view_geometry();
             return;
         };
-        let Some(shell) = client.shell_state() else {
-            self.clients.set_foreground_client_id(None);
-            self.effective_size = self.app.state.settings.headless_size;
-            self.app.state.outer_terminal_focus = None;
-            self.app.state.host_cell_size =
-                shepr_termio::host_term::cell_size::HostCellSize::default();
-            self.sync_runtime_view_geometry();
-            return;
-        };
+        let shell = client.shell_state();
 
         let terminal_size = client.terminal_size;
         let host_cell_size = client.cell_size.or_default();
@@ -638,9 +630,7 @@ impl HeadlessServer {
             self.app.state.outer_terminal_focus = None;
             return;
         };
-        self.app.state.outer_terminal_focus = client
-            .shell_state()
-            .and_then(|shell| shell.outer_terminal_focus);
+        self.app.state.outer_terminal_focus = client.shell_state().outer_terminal_focus;
     }
 
     fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
@@ -678,18 +668,14 @@ impl HeadlessServer {
             .get(&client_id)
             .filter(|client| {
                 client.is_active_shell_client()
-                    && client
-                        .shell_state()
-                        .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
+                    && client.shell_state().outer_terminal_focus == Some(true)
             })
             .and_then(|_| self.shell_focus_target(client_id));
         let should_release_focus = disconnected_focus.as_ref().is_some_and(|target| {
             !self.clients.iter().any(|(&other_id, client)| {
                 other_id != client_id
                     && client.is_active_shell_client()
-                    && client
-                        .shell_state()
-                        .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
+                    && client.shell_state().outer_terminal_focus == Some(true)
                     && self.shell_tab_id_for_client(other_id).as_deref()
                         == Some(target.tab_id.as_str())
             })
@@ -1133,9 +1119,7 @@ impl HeadlessServer {
                 if !client.update_host_theme(&update) {
                     return false;
                 }
-                let Some(shell) = client.shell_state() else {
-                    return false;
-                };
+                let shell = client.shell_state();
                 if !shell.surface_active || !is_foreground {
                     return false;
                 }
@@ -1156,9 +1140,7 @@ impl HeadlessServer {
                     return false;
                 };
                 if !client.is_active_shell_client()
-                    || client
-                        .shell_state()
-                        .is_none_or(|shell| shell.outer_terminal_focus == Some(focused))
+                    || client.shell_state().outer_terminal_focus == Some(focused)
                 {
                     return false;
                 }
@@ -1166,15 +1148,11 @@ impl HeadlessServer {
                 let another_focused_viewer = self.clients.iter().any(|(&other_id, client)| {
                     other_id != client_id
                         && client.is_active_shell_client()
-                        && client
-                            .shell_state()
-                            .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
+                        && client.shell_state().outer_terminal_focus == Some(true)
                         && self.shell_tab_id_for_client(other_id) == tab_id
                 });
-                if let Some(client) = self.clients.get_mut(&client_id)
-                    && let Some(shell) = client.shell_state_mut()
-                {
-                    shell.outer_terminal_focus = Some(focused);
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.shell_state_mut().outer_terminal_focus = Some(focused);
                 }
                 if focused {
                     self.promote_client_to_foreground(client_id);
@@ -1206,9 +1184,7 @@ impl HeadlessServer {
                 }
                 client.host_mouse_capture_active = None;
                 client.host_sgr_pixels_active = None;
-                if let Some(shell) = client.shell_state_mut() {
-                    shell.host_keyboard_report_all_active = None;
-                }
+                client.shell_state_mut().host_keyboard_report_all_active = None;
                 self.sent_window_title = None;
                 self.stream_host_mouse_capture_mode();
                 self.stream_shell_keyboard_mode();
@@ -1328,15 +1304,13 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                if !client
-                    .shell_state()
-                    .is_some_and(|shell| shell.endpoint_command_in_flight)
+                if !client.shell_state().endpoint_command_in_flight
                     || boot_id != self.client_shell_boot_id
                 {
                     return false;
                 }
-                if final_chunk && let Some(shell) = client.shell_state_mut() {
-                    shell.endpoint_command_in_flight = false;
+                if final_chunk {
+                    client.shell_state_mut().endpoint_command_in_flight = false;
                 }
                 self.send_to_client(
                     client_id,

@@ -33,20 +33,6 @@ fn anchor_full_lifecycle_session(
 }
 
 #[test]
-fn revision_advances_and_saturates_instead_of_wrapping() {
-    let mut terminal = test_terminal();
-    let start = terminal.revision();
-    terminal.bump_revision();
-    assert_eq!(terminal.revision(), start + 1);
-
-    terminal.revision = u64::MAX - 1;
-    terminal.bump_revision();
-    assert_eq!(terminal.revision(), u64::MAX);
-    terminal.bump_revision();
-    assert_eq!(terminal.revision(), u64::MAX);
-}
-
-#[test]
 fn hook_sequence_drops_stragglers_but_survives_a_clock_stepping_back() {
     let mut terminal = test_terminal();
     let t0 = Instant::now();

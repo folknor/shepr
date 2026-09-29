@@ -373,9 +373,16 @@ impl RemoteSsh {
     }
 
     pub(super) fn sh_output(&self, script: &str) -> io::Result<Output> {
-        let script = posix_remote_output_command(script);
         // clock-io-ok: earlier SSH round trips may have used the attempt budget.
         let timeout = self.noninteractive_timeout(Instant::now())?;
+        self.sh_output_within(script, timeout)
+    }
+
+    /// Runs `script` under `/bin/sh` on the remote host, giving a noninteractive
+    /// connection `timeout` instead of the round-trip budget. For a command that
+    /// legitimately runs longer than one round trip, such as a server stop.
+    pub(super) fn sh_output_within(&self, script: &str, timeout: Duration) -> io::Result<Output> {
+        let script = posix_remote_output_command(script);
         let mut child = self
             .command()
             .arg("/bin/sh -s")

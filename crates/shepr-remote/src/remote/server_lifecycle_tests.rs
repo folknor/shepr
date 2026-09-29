@@ -4,12 +4,13 @@ use super::*;
 fn parse_remote_server_status_json_reads_running_server() {
     assert_eq!(
         parse_remote_server_status_json(
-            r#"{"running":true,"version":"0.6.0","build_id":"0123456789abcdef","capabilities":{"ssh_agent_registration":false},"compatible":true,"socket":"/run/shepr.sock","restart_needed":false}"#
+            r#"{"running":true,"version":"0.6.0","build_id":"0123456789abcdef","boot_id":"4242-1700000000","capabilities":{"ssh_agent_registration":false},"compatible":true,"socket":"/run/shepr.sock","restart_needed":false}"#
         )
         .expect("test precondition"),
         RemoteServerStatus::Running {
             version: Some("0.6.0".into()),
             build_id: Some("0123456789abcdef".into()),
+            boot_id: Some("4242-1700000000".into()),
         }
     );
 }

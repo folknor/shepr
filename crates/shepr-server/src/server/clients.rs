@@ -490,12 +490,12 @@ impl ClientConnection {
         }
     }
 
-    pub(crate) fn shell_state(&self) -> Option<&ClientShellState> {
-        Some(&self.shell)
+    pub(crate) fn shell_state(&self) -> &ClientShellState {
+        &self.shell
     }
 
-    pub(crate) fn shell_state_mut(&mut self) -> Option<&mut ClientShellState> {
-        Some(&mut self.shell)
+    pub(crate) fn shell_state_mut(&mut self) -> &mut ClientShellState {
+        &mut self.shell
     }
 
     pub(crate) fn request_repaint(&mut self) {
@@ -511,9 +511,7 @@ impl ClientConnection {
         target: &shepr_protocol::PublicPaneId,
         events: &[ClientPaneInputEvent],
     ) {
-        let Some(shell) = self.shell_state_mut() else {
-            return;
-        };
+        let shell = self.shell_state_mut();
         for event in events {
             match event {
                 // A press that committed text gets no release from the client,
@@ -608,9 +606,7 @@ impl ClientConnection {
     }
 
     pub(crate) fn drain_shell_held_inputs(&mut self) -> Vec<ClientShellHeldInput> {
-        let Some(shell) = self.shell_state_mut() else {
-            return Vec::new();
-        };
+        let shell = self.shell_state_mut();
         shell.held_inputs.drain().map(|(_, held)| held).collect()
     }
 
@@ -618,8 +614,7 @@ impl ClientConnection {
         &mut self,
         update: &shepr_protocol::ClientHostThemeUpdate,
     ) -> bool {
-        self.shell_state_mut()
-            .is_some_and(|shell| shell.update_host_theme(update))
+        self.shell_state_mut().update_host_theme(update)
     }
 
     pub(crate) fn deferred_render(&self) -> RenderDemand {
@@ -641,7 +636,7 @@ impl ClientConnection {
     }
 
     pub(crate) fn is_active_shell_client(&self) -> bool {
-        self.shell_state().is_some_and(|state| state.surface_active)
+        self.shell_state().surface_active
     }
 }
 

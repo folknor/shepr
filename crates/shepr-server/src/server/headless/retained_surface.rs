@@ -274,12 +274,7 @@ impl HeadlessServer {
                 fallback!("no_baseline");
             };
             if surface.boot_id != self.client_shell_boot_id
-                || surface.projection_revision
-                    != client
-                        .shell_state()
-                        .map_or(shepr_protocol::ProjectionRevision::ZERO, |shell| {
-                            shell.projection_revision
-                        })
+                || surface.projection_revision != client.shell_state().projection_revision
                 || surface.frame.width != target.terminal_size.cols.get()
                 || surface.frame.height != target.terminal_size.rows.get()
             {

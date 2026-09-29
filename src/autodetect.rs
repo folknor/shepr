@@ -7,7 +7,9 @@ use std::time::Duration;
 /// Checks the local server, starts it when needed, then runs the client.
 ///
 /// A running server of a different build fails the launch with guidance for
-/// the resolved socket target. With saved machines configured, a
+/// the resolved socket target. The startup step before this one
+/// (`preflight::run`) has already offered to restart it; what reaches here is a
+/// server the operator kept, or one that could not be asked about. With saved machines configured, a
 /// local startup failure does not end the launch, so the remote machines stay
 /// reachable. It is still refused, not swallowed: the failure is printed to
 /// stderr before the TUI takes the terminal, where it is on screen again once

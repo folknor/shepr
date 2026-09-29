@@ -27,13 +27,9 @@ impl TerminalState {
         }
         let previous_stripped = self.terminal_title_stripped();
         self.terminal_title = title;
-        let stripped_changed = previous_stripped != self.terminal_title_stripped();
-        if stripped_changed {
-            self.bump_revision();
-        }
         TerminalTitleChange {
             raw_changed: true,
-            stripped_changed,
+            stripped_changed: previous_stripped != self.terminal_title_stripped(),
         }
     }
 
@@ -65,21 +61,6 @@ impl TerminalState {
                 now,
             );
         }
-        self.bump_revision();
-    }
-
-    /// Returns the pane's metadata revision, reported as `revision` in the
-    /// API's pane and agent info. It advances when the stripped terminal
-    /// title changes or an agent resume is abandoned; nothing in shepr
-    /// compares it, so it only lets an API consumer tell that those changed.
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    /// Advances the revision, preserving monotonicity at exhaustion.
-    /// Saturation avoids wrapping an old revision back into a current value.
-    pub fn bump_revision(&mut self) {
-        self.revision = self.revision.saturating_add(1);
     }
 
     pub fn set_detected_state_with_screen_signals_at(

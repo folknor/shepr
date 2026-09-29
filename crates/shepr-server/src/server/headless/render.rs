@@ -51,9 +51,7 @@ impl HeadlessServer {
             return false;
         };
         let changed = self.clients.values().any(|client| {
-            let Some(shell) = client.shell_state() else {
-                return false;
-            };
+            let shell = client.shell_state();
             let Some(sent) = shell.snapshot.as_ref() else {
                 return true;
             };
@@ -97,8 +95,8 @@ impl HeadlessServer {
         let requested = self
             .clients
             .iter()
-            .filter_map(|(&client_id, client)| {
-                let shell = client.shell_state()?;
+            .map(|(&client_id, client)| {
+                let shell = client.shell_state();
                 let focused = shell
                     .surface_active
                     .then(|| self.shell_focused_runtime(client_id))
@@ -107,11 +105,11 @@ impl HeadlessServer {
                     focused.is_some_and(|(runtime, _)| runtime.mouse_reporting_enabled());
                 let sgr_pixels = client.pixel_mouse
                     && focused.is_some_and(|(runtime, _)| runtime.sgr_pixel_mouse_enabled());
-                Some((
+                (
                     client_id,
                     shell.surface_active && (shell.mouse_capture || child_requests_mouse),
                     shell.surface_active && sgr_pixels,
-                ))
+                )
             })
             .collect::<Vec<_>>();
 
@@ -174,10 +172,7 @@ impl HeadlessServer {
             let Some(client) = self.clients.get_mut(&client_id) else {
                 continue;
             };
-            if client
-                .shell_state()
-                .is_some_and(|shell| shell.host_keyboard_report_all_active == Some(report_all))
-            {
+            if client.shell_state().host_keyboard_report_all_active == Some(report_all) {
                 continue;
             }
             let Some(writer) = &client.writer else {
@@ -199,9 +194,7 @@ impl HeadlessServer {
                 broken_clients.push(client_id);
                 continue;
             }
-            if let Some(shell) = client.shell_state_mut() {
-                shell.host_keyboard_report_all_active = Some(report_all);
-            }
+            client.shell_state_mut().host_keyboard_report_all_active = Some(report_all);
         }
 
         for client_id in broken_clients {
@@ -452,10 +445,11 @@ impl HeadlessServer {
             let Some(client) = self.clients.get_mut(&client_id) else {
                 continue;
             };
-            let needs_projection = client.shell_state().is_some_and(|shell| {
+            let needs_projection = {
+                let shell = client.shell_state();
                 shell.session_generation != self.shell_session_generation
                     || shell.snapshot.is_none()
-            });
+            };
             if needs_projection {
                 let Some(cache) = self.shell_session_cache.as_ref() else {
                     continue;
@@ -467,20 +461,12 @@ impl HeadlessServer {
                     cache.session.clone(),
                     &[],
                     &self.client_shell_boot_id,
-                    client
-                        .shell_state()
-                        .map_or(0, |shell| shell.projection_revision.get()),
-                    client
-                        .shell_state()
-                        .and_then(|shell| shell.location.as_ref()),
+                    client.shell_state().projection_revision.get(),
+                    client.shell_state().location.as_ref(),
                 );
-                let snapshot_changed = client
-                    .shell_state()
-                    .is_some_and(|shell| shell.snapshot.as_ref() != Some(&candidate));
+                let snapshot_changed = client.shell_state().snapshot.as_ref() != Some(&candidate);
                 if snapshot_changed {
-                    let Some(shell) = client.shell_state_mut() else {
-                        continue;
-                    };
+                    let shell = client.shell_state_mut();
                     // The counter is per connection and steps once per
                     // changed snapshot, so exhaustion is unreachable in
                     // practice. Should it happen, drop the client: it
@@ -514,17 +500,11 @@ impl HeadlessServer {
                         broken_clients.push(client_id);
                         continue;
                     }
-                    if let Some(shell) = client.shell_state_mut() {
-                        shell.snapshot = Some(candidate);
-                    }
+                    client.shell_state_mut().snapshot = Some(candidate);
                 }
-                if let Some(shell) = client.shell_state_mut() {
-                    shell.session_generation = self.shell_session_generation;
-                }
+                client.shell_state_mut().session_generation = self.shell_session_generation;
             }
-            let Some(shell) = client.shell_state() else {
-                continue;
-            };
+            let shell = client.shell_state();
             let shell_projection_revision = shell.projection_revision;
             if !shell.surface_active {
                 client.clear_deferred_render();

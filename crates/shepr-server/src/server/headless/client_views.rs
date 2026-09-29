@@ -53,7 +53,7 @@ impl HeadlessServer {
         let tab_id = self
             .clients
             .get(&client_id)?
-            .shell_state()?
+            .shell_state()
             .location
             .as_ref()
             .and_then(crate::server::clients::ClientShellLocation::focused_tab_id);
@@ -124,7 +124,7 @@ impl HeadlessServer {
         for client in self
             .clients
             .values_mut()
-            .filter_map(|client| client.shell_state_mut())
+            .map(crate::server::clients::ClientConnection::shell_state_mut)
         {
             let location = client.location.get_or_insert_with(|| {
                 crate::server::clients::ClientShellLocation {
@@ -147,7 +147,7 @@ impl HeadlessServer {
         for client in self
             .clients
             .values_mut()
-            .filter_map(|client| client.shell_state_mut())
+            .map(crate::server::clients::ClientConnection::shell_state_mut)
         {
             if let Some(location) = client.location.as_mut() {
                 location.focus_tab(workspace_id.clone(), tab_id.clone());
@@ -179,10 +179,7 @@ impl HeadlessServer {
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
-        let Some(location) = client
-            .shell_state_mut()
-            .and_then(|shell| shell.location.as_mut())
-        else {
+        let Some(location) = client.shell_state_mut().location.as_mut() else {
             return false;
         };
         location.focus_tab(workspace_id, tab_id.clone());
@@ -244,10 +241,7 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                let Some(location) = client
-                    .shell_state_mut()
-                    .and_then(|shell| shell.location.as_mut())
-                else {
+                let Some(location) = client.shell_state_mut().location.as_mut() else {
                     return false;
                 };
                 location.focus_workspace(workspace_id);
@@ -300,9 +294,7 @@ impl HeadlessServer {
             .iter()
             .filter(|(_, client)| {
                 client.is_active_shell_client()
-                    && client
-                        .shell_state()
-                        .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
+                    && client.shell_state().outer_terminal_focus == Some(true)
             })
             .filter_map(|(&client_id, _)| self.shell_tab_id_for_client(client_id))
             .collect()
