@@ -283,7 +283,6 @@ fn add(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    println!("Saved SSH machine {id}. Remote server is ready.");
     // The machine is saved and reachable either way; a missing cache only means
     // the first connection discovers the remote shepr again, so this is a warning
     // and not a failed add.
@@ -295,6 +294,7 @@ fn add(
             metadata_cache.path().display()
         );
     }
+    println!("Saved SSH machine {id}. Remote server is ready.");
     println!("Open Shepr clients connect automatically.");
     Ok(0)
 }

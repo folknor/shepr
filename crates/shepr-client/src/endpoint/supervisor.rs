@@ -22,15 +22,18 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 /// Same bound as `MAX_RETRY_DELAY`, for the same `shepr machine reconnect` promise.
-const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(30);
+const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// The longest one connection attempt may run: the SSH discovery commands, the bridge and
 /// the endpoint handshake all stop at this deadline. Without it an attempt against a host
-/// that hangs ran for minutes (each discovery command may take 15 seconds, the handshake
-/// 60), and the next attempt waited for it, which broke the 30-second reconnect promise.
+/// that hangs ran for minutes (each discovery command may take
+/// `shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT`, the handshake
+/// `crate::handshake::REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it,
+/// which broke the 30-second reconnect promise. `do_handshake` takes this deadline and
+/// stops at whichever of it and the handshake timeout comes first.
 ///
 /// A healthy attempt needs far less: every noninteractive discovery command already had
-/// to fit a cold SSH connect into 15 seconds. It stays below `MAX_RETRY_DELAY` to leave
-/// room for tearing a timed-out bridge down.
+/// to fit a cold SSH connect into `SSH_ROUND_TRIP_TIMEOUT`. It stays below
+/// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
 ///
 /// The budget is the same for every attempt, including one that has to run full
 /// discovery of the remote executable. Most attempts do not: `shepr machine add` seeds
@@ -44,13 +47,20 @@ const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// keeps what discovery completed when an attempt ends on a timeout or other link
 /// failure (any other error clears it) and the next attempt continues from there, and it
 /// keeps a freshly discovered executable when only the bridge ran out of time. No
-/// discovery round trip may take longer than 15 seconds, so every attempt that starts
+/// discovery round trip may take longer than `SSH_ROUND_TRIP_TIMEOUT`, and the budget
+/// exceeds it by `SSH_ATTEMPT_SLACK`, so every attempt that starts
 /// with discovery completes at least one, and discovery finishes after a bounded number
 /// of attempts; after that the bridge and handshake need to fit one attempt, as on every
 /// ordinary reconnect. A larger budget for discovery
 /// attempts would stretch the 30-second reconnect promise exactly where the link is
 /// slowest, and would still fail on a link one step slower.
-const ATTEMPT_BUDGET: Duration = Duration::from_secs(25);
+const ATTEMPT_BUDGET: Duration =
+    shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
+/// What `ATTEMPT_BUDGET` allows beyond one cold SSH round trip.
+const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
+
+// An attempt, and so the retry that follows it, must fit the reconnect promise.
+const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {

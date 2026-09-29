@@ -75,6 +75,9 @@ pub struct PaneTeardownTracker {
 }
 
 impl PaneTeardownTracker {
+    /// Three signal grace periods; session scans add work outside this budget.
+    pub const BUDGET: Duration = PANE_TEARDOWN_BUDGET;
+
     fn start(self: &Arc<Self>) -> PaneTeardownInFlight {
         *shepr_vt::lock_auxiliary(&self.in_flight) += 1;
         PaneTeardownInFlight {
@@ -173,19 +176,12 @@ fn run_pane_teardown(pane_id: PaneId, work: &PaneTeardownWork) {
     }
 }
 
-const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, std::time::Duration); 3] = [
-    (
-        shepr_platform::Signal::Hangup,
-        std::time::Duration::from_millis(250),
-    ),
-    (
-        shepr_platform::Signal::Terminate,
-        std::time::Duration::from_millis(250),
-    ),
-    (
-        shepr_platform::Signal::Kill,
-        std::time::Duration::from_millis(250),
-    ),
+const PANE_TEARDOWN_STEP: Duration = Duration::from_millis(250);
+const PANE_TEARDOWN_BUDGET: Duration = PANE_TEARDOWN_STEP.saturating_mul(3);
+const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = [
+    (shepr_platform::Signal::Hangup, PANE_TEARDOWN_STEP),
+    (shepr_platform::Signal::Terminate, PANE_TEARDOWN_STEP),
+    (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
 ];
 
 fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {

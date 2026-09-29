@@ -11,7 +11,8 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
-pub(super) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration =
+    shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT;
 pub(super) const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = SSH_STDERR_CAPTURE_LIMIT;
 
 pub(super) mod ssh_options {

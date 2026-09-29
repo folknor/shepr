@@ -1,3 +1,4 @@
+use crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY;
 use crate::server::ClientId;
 
 pub(super) enum AltScreenReadConflict {
@@ -251,6 +252,18 @@ impl super::HeadlessServer {
         if self.running_agent_manifest_reload.is_empty() {
             self.running_agent_manifest_reload.push(msg);
             self.start_agent_manifest_reload();
+        } else if self.queued_agent_manifest_reloads.len() >= AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY {
+            shepr_api::send_api_response(
+                &msg.respond_to,
+                &msg.request.id,
+                msg.request.method.traits().name,
+                Err(shepr_api::error::ApiError::new(
+                    shepr_api::error::ApiErrorCode::EndpointBusy,
+                    format!(
+                        "agent manifest reload queue is full (limit {AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY})"
+                    ),
+                )),
+            );
         } else {
             self.queued_agent_manifest_reloads.push(msg);
         }
@@ -573,6 +586,49 @@ impl super::HeadlessServer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn excess_manifest_reloads_are_rejected_when_the_queue_is_full() {
+        let mut server = crate::server::headless::tests::test_headless_server();
+        let reload = |id: &str| {
+            let (respond_to, response_rx) = std::sync::mpsc::channel();
+            let msg = shepr_api::ApiRequestMessage {
+                request: shepr_api::schema::Request {
+                    id: id.into(),
+                    method: shepr_api::schema::Method::ServerReloadAgentManifests(
+                        shepr_api::schema::EmptyParams::default(),
+                    ),
+                },
+                respond_to,
+            };
+            (msg, response_rx)
+        };
+
+        let (running, _running_rx) = reload("running");
+        server.running_agent_manifest_reload.push(running);
+        for index in 0..crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY {
+            let id = format!("queued-{index}");
+            let (msg, _response_rx) = reload(&id);
+            assert!(!server.handle_api_request_with_shutdown_check(msg));
+        }
+        assert_eq!(
+            server.queued_agent_manifest_reloads.len(),
+            crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY
+        );
+
+        let (overflow, response_rx) = reload("overflow");
+        assert!(!server.handle_api_request_with_shutdown_check(overflow));
+        let error = response_rx
+            .recv()
+            .expect("full reload queue responds immediately")
+            .expect_err("full reload queue must be rejected");
+        assert_eq!(error.code, shepr_api::error::ApiErrorCode::EndpointBusy);
+        assert_eq!(
+            server.queued_agent_manifest_reloads.len(),
+            crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY
+        );
+        crate::server::headless::tests::shutdown_test_runtimes(&mut server);
+    }
+
     #[test]
     fn deferred_requests_are_owned_until_the_headless_loop_retries_them() {
         let (respond_to, _response_rx) = std::sync::mpsc::channel();

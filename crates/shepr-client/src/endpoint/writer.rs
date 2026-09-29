@@ -12,7 +12,7 @@ use shepr_protocol::ClientMessage;
 const MAX_QUEUED_BATCHES: usize = 256;
 const MAX_BATCH_BYTES: usize = 64 * 1024;
 const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
-const IO_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const IO_POLL_INTERVAL: Duration = crate::limits::ENDPOINT_IO_POLL_INTERVAL;
 
 #[derive(Default)]
 struct FrameBatch {

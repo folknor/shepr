@@ -366,19 +366,6 @@ feeds the buffered frame through the parser and mutates the grid), but files it
 as a live defect, so a fix pass should expect that entry in the bug document
 rather than here.
 
-## HYGG-111 - `manifest.rs`'s module doc enumerates region names, matcher keys, gate keys and limits in prose
-
-`shepr-agent`, next to `RegionSpec::parse`, `ManifestRule`, `ManifestGate` and
-the `MAX_*` constants - including "at most eight levels total". The hunter says
-the doc-comment case is enforceable only by a doc test that parses the prose,
-which is not worth it, and that the honest fix is to shorten the prose to the
-concepts and point at the enum. Same entry carries `notes/todo.md`'s stale
-paths (`src/integration/assets/...`, `src/detect/manifests/...`,
-`src/ghostty/rows.rs`, `src/protocol/wire.rs`, `src/client/shell/state.rs`) -
-none of which exist since the crate split, all now under `crates/`. `notes/`
-carries no truth guarantee, but the paths are stale enough to send a reader
-nowhere.
-
 ## HYGG-116 - Claim: alacritty types never leak out of `shepr-vt`
 
 The dependency rule enforces this at crate level, and the hunter found no

@@ -1,7 +1,6 @@
 //! Remote-host side of the SSH stdio bridge.
 
 use std::io;
-use std::time::Duration;
 
 /// Relays this process's stdio to the server's client socket until either side
 /// closes or the idle watchdog fires. The outcome goes back to the binary: on
@@ -34,11 +33,9 @@ pub fn run_remote_client_bridge(
 /// only as this command's stderr and exit status, which it classifies as an
 /// ordinary retryable failure.
 fn ensure_remote_server_running(paths: &shepr_config::AppPaths) -> io::Result<()> {
-    let socket_path = paths.server_address().client_socket().to_path_buf();
-    if super::local_server::is_server_listening(paths)? {
-        return Ok(());
-    }
-
-    super::local_server::spawn_server_daemon(paths)?;
-    super::local_server::wait_for_server_socket(&socket_path, Duration::from_secs(5), paths)
+    super::local_server::ensure_running(
+        paths,
+        super::local_server::SERVER_READY_TIMEOUT,
+        super::local_server::BuildCheck::AtClientHandshake,
+    )
 }

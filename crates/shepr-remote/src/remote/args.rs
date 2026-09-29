@@ -1,5 +1,118 @@
 use crate::machine::SshTarget;
 
+/// The local executable's default program name and CLI parser name.
+pub const PROGRAM_NAME: &str = "shepr";
+
+/// The executable name installed on remote hosts, which discovery searches for.
+pub const REMOTE_INSTALL_NAME: &str = "shepr";
+
+pub const FLAG_SESSION: &str = "--session";
+pub const FLAG_REMOTE: &str = "--remote";
+pub const FLAG_REMOTE_KEYBINDINGS: &str = "--remote-keybindings";
+pub const FLAG_JSON: &str = "--json";
+pub const FLAG_CHECK: &str = "--check";
+
+pub fn option_name_from_flag(flag: &'static str) -> &'static str {
+    flag.strip_prefix("--").unwrap_or(flag)
+}
+
+pub const COMMAND_STATUS: &str = "status";
+pub const COMMAND_SERVER: &str = "server";
+pub const COMMAND_CLIENT: &str = "client";
+pub const COMMAND_STOP: &str = "stop";
+pub const COMMAND_REMOTE_CLIENT_BRIDGE: &str = "remote-client-bridge";
+pub const COMMAND_REMOTE_API_BRIDGE: &str = "remote-api-bridge";
+
+pub const KEYBINDINGS_LOCAL: &str = "local";
+pub const KEYBINDINGS_SERVER: &str = COMMAND_SERVER;
+
+/// A `shepr` command line that shepr builds for another `shepr` process to parse.
+///
+/// Commands run on a remote host name their session only when it is not the
+/// default one; the remote process then resolves the default by the flag's
+/// absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteCliCommand<'a> {
+    ClientStatus,
+    ServerStatus {
+        session: &'a str,
+    },
+    ClientBridge {
+        session: &'a str,
+    },
+    ApiBridge {
+        session: &'a str,
+        check: bool,
+    },
+    ServerStop {
+        session: &'a str,
+        force: bool,
+    },
+    /// `shepr --remote`, run locally by the operator. `session: None` leaves
+    /// the session to that invocation's own resolution (which honours
+    /// `SHEPR_SESSION`, as a named session's panes export it); `Some` always
+    /// names it, the default session included.
+    Attach {
+        target: &'a str,
+        session: Option<&'a str>,
+        keybindings: Option<RemoteKeybindings>,
+    },
+}
+
+impl<'a> RemoteCliCommand<'a> {
+    /// The argv words after the executable name.
+    pub fn args(self) -> Vec<&'a str> {
+        let mut args = Vec::with_capacity(6);
+        // Attach places its session after the target instead; client status has none.
+        let session = match self {
+            Self::ServerStatus { session }
+            | Self::ClientBridge { session }
+            | Self::ApiBridge { session, .. }
+            | Self::ServerStop { session, .. } => Some(session),
+            Self::ClientStatus | Self::Attach { .. } => None,
+        };
+        if let Some(session) = session
+            && session != shepr_config::DEFAULT_SESSION_NAME
+        {
+            args.extend([FLAG_SESSION, session]);
+        }
+
+        match self {
+            Self::ClientStatus => args.extend([COMMAND_STATUS, COMMAND_CLIENT, FLAG_JSON]),
+            Self::ServerStatus { .. } => {
+                args.extend([COMMAND_STATUS, COMMAND_SERVER, FLAG_JSON]);
+            }
+            Self::ClientBridge { .. } => args.push(COMMAND_REMOTE_CLIENT_BRIDGE),
+            Self::ApiBridge { check, .. } => {
+                args.push(COMMAND_REMOTE_API_BRIDGE);
+                if check {
+                    args.push(FLAG_CHECK);
+                }
+            }
+            Self::ServerStop { force, .. } => {
+                args.extend([COMMAND_SERVER, COMMAND_STOP]);
+                if force {
+                    args.push(shepr_api::session::FORCE_STOP_FLAG);
+                }
+            }
+            Self::Attach {
+                target,
+                session,
+                keybindings,
+            } => {
+                args.extend([FLAG_REMOTE, target]);
+                if let Some(keybindings) = keybindings {
+                    args.extend([FLAG_REMOTE_KEYBINDINGS, keybindings.to_env_value()]);
+                }
+                if let Some(session) = session {
+                    args.extend([FLAG_SESSION, session]);
+                }
+            }
+        }
+        args
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteKeybindings {
     Local,
@@ -9,9 +122,11 @@ pub enum RemoteKeybindings {
 impl RemoteKeybindings {
     pub(super) fn parse(value: &str) -> Result<Self, String> {
         match value {
-            "local" => Ok(Self::Local),
-            "server" => Ok(Self::Server),
-            _ => Err("--remote-keybindings must be 'local' or 'server'".to_string()),
+            KEYBINDINGS_LOCAL => Ok(Self::Local),
+            KEYBINDINGS_SERVER => Ok(Self::Server),
+            _ => Err(format!(
+                "{FLAG_REMOTE_KEYBINDINGS} must be '{KEYBINDINGS_LOCAL}' or '{KEYBINDINGS_SERVER}'"
+            )),
         }
     }
 
@@ -30,8 +145,8 @@ impl RemoteKeybindings {
     /// variable carry.
     pub fn to_env_value(self) -> &'static str {
         match self {
-            Self::Local => "local",
-            Self::Server => "server",
+            Self::Local => KEYBINDINGS_LOCAL,
+            Self::Server => KEYBINDINGS_SERVER,
         }
     }
 }

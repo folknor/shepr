@@ -843,7 +843,7 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
         .synchronized_output_deadline()
         .expect("test precondition");
     assert!(pane.synchronized_output_active());
-    assert_eq!(pane.synchronized_output_state(), (true, 1));
+    assert_eq!(pane.synchronized_output_state(), Some((true, 1)));
     let backend = ratatui::backend::TestBackend::new(20, 5);
     let mut host = ratatui::Terminal::new(backend).expect("test precondition");
     host.draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
@@ -865,7 +865,7 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
     assert_eq!(flushed.clipboard_writes, vec![b"hi".to_vec()]);
     assert!(flushed.terminal_title_changed);
     assert_eq!(pane.terminal_title().as_deref(), Some("framed"));
-    assert_eq!(pane.synchronized_output_state(), (false, 2));
+    assert_eq!(pane.synchronized_output_state(), Some((false, 2)));
 
     assert!(
         pane.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 0, 0))
@@ -898,7 +898,12 @@ fn tick_ends_an_expired_synchronized_update() {
         flushed.terminal_responses,
         vec![Bytes::from_static(b"\x1b[0n")]
     );
-    assert!(!pane.synchronized_output_state().0);
+    assert!(
+        !pane
+            .synchronized_output_state()
+            .expect("terminal core is healthy")
+            .0
+    );
 }
 
 /// Output that arrives after an update expired first ends that update, under
@@ -934,7 +939,7 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
     );
     assert!(late.request_render);
     assert!(late.render_delay.is_none());
-    assert_eq!(pane.synchronized_output_state(), (false, 2));
+    assert_eq!(pane.synchronized_output_state(), Some((false, 2)));
 }
 
 #[test]
@@ -2281,21 +2286,21 @@ fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends(
     let pane_terminal = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
+    assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 0)));
     pane_terminal.process_pty_bytes(pane_id, b"ordinary output");
-    assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
+    assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 0)));
 
     let begin = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026h");
     assert!(!begin.request_render);
-    assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
+    assert_eq!(pane_terminal.synchronized_output_state(), Some((true, 1)));
 
     let body = pane_terminal.process_pty_bytes(pane_id, b"hello");
     assert!(!body.request_render);
-    assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
+    assert_eq!(pane_terminal.synchronized_output_state(), Some((true, 1)));
 
     let end = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026l");
     assert!(end.request_render);
-    assert_eq!(pane_terminal.synchronized_output_state(), (false, 2));
+    assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 2)));
 }
 
 #[test]
@@ -3949,4 +3954,5 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
     // Visible without any output, for the actor's idle check.
     assert!(pane.core_poisoned());
     assert!(pane.process_pty_bytes(pane_id, b"after").core_poisoned);
+    assert_eq!(pane.synchronized_output_state(), None);
 }

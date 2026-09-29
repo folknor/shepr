@@ -112,6 +112,8 @@ pub fn run_server(
     on_ready: impl FnOnce(&ServerReady),
 ) -> Result<(), RunServerError> {
     let resolved_config = encode_resolved_config(config)?;
+    let api_socket = shepr_api::socket_path(paths);
+    let client_socket = client_socket_path(paths);
 
     // The startup-cwd hint stays in this process's environment; every child
     // launch path scrubs it instead of the server unsetting it here.
@@ -146,10 +148,7 @@ pub fn run_server(
     ) {
         Ok(server) => server,
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-            return Err(already_running(
-                ServerSocket::Api,
-                shepr_api::socket_path(paths),
-            ));
+            return Err(already_running(ServerSocket::Api, api_socket.clone()));
         }
         Err(err) => return Err(err.into()),
     };
@@ -178,17 +177,14 @@ pub fn run_server(
             match HeadlessServer::new(app, Some(_api_server), resolved_config, stop_requested) {
                 Ok(server) => server,
                 Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-                    return Err(already_running(
-                        ServerSocket::Client,
-                        client_socket_path(paths),
-                    ));
+                    return Err(already_running(ServerSocket::Client, client_socket.clone()));
                 }
                 Err(err) => return Err(err.into()),
             };
 
         let ready = ServerReady {
-            api_socket: shepr_api::socket_path(paths),
-            client_socket: client_socket_path(paths),
+            api_socket,
+            client_socket,
             log_file: session_data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
         };
         info!(

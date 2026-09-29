@@ -261,6 +261,9 @@ pub(super) struct RenderedPaneSurface {
 pub(super) enum SurfaceRenderDeferred {
     Synchronized,
     Changed,
+    /// A pane's terminal core is poisoned. The PTY actor closes that pane
+    /// shortly; until then the frame is deferred like a synchronized update.
+    Poisoned,
 }
 
 pub(super) fn render_pane_surface(
@@ -286,7 +289,9 @@ pub(super) fn render_pane_surface(
                 workspace_index,
                 pane.id,
             ) {
-                let (synchronized, epoch) = runtime.synchronized_output_state();
+                let Some((synchronized, epoch)) = runtime.synchronized_output_state() else {
+                    return Err(SurfaceRenderDeferred::Poisoned);
+                };
                 if synchronized {
                     return Err(SurfaceRenderDeferred::Synchronized);
                 }
@@ -412,7 +417,9 @@ pub(super) fn render_pane_surface(
                 workspace_index,
                 pane_id,
             ) {
-                let (synchronized, after_epoch) = runtime.synchronized_output_state();
+                let Some((synchronized, after_epoch)) = runtime.synchronized_output_state() else {
+                    return Err(SurfaceRenderDeferred::Poisoned);
+                };
                 if synchronized {
                     return Err(SurfaceRenderDeferred::Synchronized);
                 }

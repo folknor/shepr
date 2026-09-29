@@ -3,18 +3,40 @@ use super::*;
 #[test]
 fn saved_machine_server_commands_are_scoped_to_the_explicit_session() {
     let shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    for (args, command) in [
-        (&["status", "server", "--json"][..], "status server --json"),
-        (&["server", "stop"][..], "server stop"),
-        (&["remote-client-bridge"][..], "remote-client-bridge"),
+    for (named_command, default_command, line) in [
+        (
+            RemoteCliCommand::ServerStatus { session: "agents" },
+            RemoteCliCommand::ServerStatus {
+                session: shepr_config::DEFAULT_SESSION_NAME,
+            },
+            "status server --json",
+        ),
+        (
+            RemoteCliCommand::ServerStop {
+                session: "agents",
+                force: true,
+            },
+            RemoteCliCommand::ServerStop {
+                session: shepr_config::DEFAULT_SESSION_NAME,
+                force: true,
+            },
+            "server stop --force",
+        ),
+        (
+            RemoteCliCommand::ClientBridge { session: "agents" },
+            RemoteCliCommand::ClientBridge {
+                session: shepr_config::DEFAULT_SESSION_NAME,
+            },
+            "remote-client-bridge",
+        ),
     ] {
         assert_eq!(
-            shepr.session_command("agents", args),
-            format!("{} --session agents {command}", shepr.as_str())
+            shepr.command(&named_command.args()),
+            format!("{} --session agents {line}", shepr.as_str())
         );
         assert_eq!(
-            shepr.session_command(shepr_config::DEFAULT_SESSION_NAME, args),
-            format!("{} {command}", shepr.as_str())
+            shepr.command(&default_command.args()),
+            format!("{} {line}", shepr.as_str())
         );
     }
 }
@@ -168,13 +190,20 @@ fn cached_api_command_does_not_depend_on_a_posix_login_shell() {
     // The remote shepr: a fixture stand-in that passes the bridge check
     // and otherwise answers as the bridge, naming the session it was given.
     let dir = shepr_test_support::ScratchDir::new("api-command");
-    let check = ["--session", "agents", "remote-api-bridge", "--check"];
+    let check = RemoteCliCommand::ApiBridge {
+        session: "agents",
+        check: true,
+    }
+    .args()
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
     let fake = fixture::stand_in(
         &dir,
         "shepr",
         &[
             Step::When {
-                operands: check.map(String::from).to_vec(),
+                operands: check,
                 steps: vec![Step::Exit(0)],
             },
             Step::Print("bridged-".into()),

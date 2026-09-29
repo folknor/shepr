@@ -20,3 +20,7 @@ pub(super) const ENDPOINT_ERROR_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const ENDPOINT_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long one endpoint frame write, or an input flush, may block.
 pub(super) const ENDPOINT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Poll spacing while an endpoint writer waits for socket progress.
+pub(super) const ENDPOINT_IO_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+const _: () = assert!(ENDPOINT_IO_POLL_INTERVAL.as_millis() < ENDPOINT_WRITE_TIMEOUT.as_millis());

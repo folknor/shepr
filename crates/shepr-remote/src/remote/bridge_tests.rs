@@ -26,6 +26,25 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc;
 
+    struct CountingUploadStream {
+        stream: shepr_platform::ipc::LocalStream,
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl UploadReadStream for CountingUploadStream {
+        fn poll_read_count(
+            &mut self,
+            buffer: &mut [u8],
+        ) -> io::Result<shepr_platform::ipc::LocalStreamReadCount> {
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            shepr_platform::ipc::poll_local_stream_read_count(&mut self.stream, buffer)
+        }
+
+        fn wait_for_input(&self, wake: &shepr_platform::RemoteBridgeWake) -> io::Result<()> {
+            wake.wait(&self.stream)
+        }
+    }
+
     let (mut client, stream) = upload_test_streams("idle");
     let attempts = Arc::new(AtomicUsize::new(0));
     let worker_attempts = Arc::clone(&attempts);
@@ -33,12 +52,13 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
     let worker_stop = Arc::clone(&stop);
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
-        super::super::bridge::UPLOAD_READ_ATTEMPTS
-            .with(|slot| *slot.borrow_mut() = Some(worker_attempts));
         let mut output = Vec::new();
         let closed = AtomicBool::new(false);
-        let result = copy_local_stream_to_writer(
-            stream,
+        let result = copy_upload_stream_to_writer(
+            CountingUploadStream {
+                stream,
+                polls: worker_attempts,
+            },
             &mut output,
             &worker_stop,
             &AtomicBool::new(false),

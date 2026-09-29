@@ -5,7 +5,7 @@ use std::io;
 use std::time::Duration;
 
 /// Maximum time to wait for a freshly spawned server's client socket.
-pub(crate) const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const SERVER_READY_TIMEOUT: Duration = shepr_remote::local_server::SERVER_READY_TIMEOUT;
 
 /// Checks the local server, starts it when needed, then runs the client.
 ///
@@ -45,23 +45,11 @@ pub(crate) fn auto_detect_launch<T>(
     // enabled. With saved machines a mismatch does not end the launch below,
     // so they stay reachable; the Local endpoint's own handshake then rejects
     // the different build and shows the same guidance.
-    let startup = match shepr_remote::local_server::is_server_listening(paths) {
-        Ok(true) => {
-            tracing::info!("server already running, attaching as client");
-            shepr_remote::local_server::validate_running_server_compatibility(paths)
-        }
-        Ok(false) => {
-            tracing::info!("no server running, spawning server daemon");
-            shepr_remote::local_server::spawn_server_daemon(paths).and_then(|_| {
-                shepr_remote::local_server::wait_for_server_socket(
-                    &socket_path,
-                    server_ready_timeout,
-                    paths,
-                )
-            })
-        }
-        Err(error) => Err(error),
-    };
+    let startup = shepr_remote::local_server::ensure_running(
+        paths,
+        server_ready_timeout,
+        shepr_remote::local_server::BuildCheck::BeforeAttach,
+    );
     if let Err(error) = startup {
         if !endpoint_catalog.has_ssh() {
             return Err(error);

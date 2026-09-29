@@ -404,6 +404,7 @@ struct PaneReadEffects {
     /// The PTY actor's handle, set once the actor exists; the timer queues
     /// the replies of a flushed frame through it.
     timer_writer: std::sync::OnceLock<PtyIoActorHandle>,
+    timer_reply_drop_reported: AtomicBool,
     rt: tokio::runtime::Handle,
 }
 
@@ -614,7 +615,19 @@ impl PaneReadEffects {
             // The actor is set right after it spawns, so this is only a timer
             // that beat that store. Flush anyway: the frame must not stay
             // hidden until the child's next output. Its replies have no route.
-            None => drop(tick()),
+            None => {
+                let replies = tick();
+                if !replies.is_empty()
+                    && !self.timer_reply_drop_reported.swap(true, Ordering::Relaxed)
+                {
+                    warn!(
+                        pane = self.pane_id.raw(),
+                        dropped_replies = replies.len(),
+                        "synchronized update replies had no PTY actor route"
+                    );
+                }
+                drop(replies);
+            }
         }
         let Some(result) = tick_result else {
             return;
@@ -859,6 +872,7 @@ impl PaneRuntime {
                 sync_timeout_render: SyncTimeoutRender::default(),
                 deferred_effect_order: Arc::default(),
                 timer_writer: std::sync::OnceLock::new(),
+                timer_reply_drop_reported: AtomicBool::new(false),
                 rt: tokio::runtime::Handle::current(),
             });
             let read_effects = Arc::clone(&effects);
@@ -1551,7 +1565,10 @@ impl PaneRuntime {
         self.terminal.synchronized_output_active()
     }
 
-    pub fn synchronized_output_state(&self) -> (bool, u64) {
+    /// Returns the synchronized-output flag and generation together. `None`
+    /// means the terminal core is poisoned, so render callers must defer the
+    /// frame instead of treating an invented state as a successful read.
+    pub fn synchronized_output_state(&self) -> Option<(bool, u64)> {
         self.terminal.synchronized_output_state()
     }
 
@@ -2499,6 +2516,7 @@ mod tests {
             sync_timeout_render: SyncTimeoutRender::default(),
             deferred_effect_order: Arc::default(),
             timer_writer: std::sync::OnceLock::new(),
+            timer_reply_drop_reported: AtomicBool::new(false),
             rt: tokio::runtime::Handle::current(),
         });
 

@@ -209,7 +209,7 @@ impl AppState {
     }
 
     pub(crate) fn mark_shell_projection_dirty(&mut self) {
-        self.shell_projection_revision = self.shell_projection_revision.wrapping_add(1);
+        self.shell_projection_revision = self.shell_projection_revision.saturating_add(1);
     }
 
     /// Geometry a new pane's PTY is sized against: the most recently computed
@@ -554,5 +554,9 @@ mod tests {
         state.mark_shell_projection_dirty();
         state.mark_shell_projection_dirty();
         assert_eq!(state.shell_projection_revision, 2);
+
+        state.shell_projection_revision = u64::MAX;
+        state.mark_shell_projection_dirty();
+        assert_eq!(state.shell_projection_revision, u64::MAX);
     }
 }

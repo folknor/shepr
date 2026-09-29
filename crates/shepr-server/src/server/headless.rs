@@ -182,8 +182,11 @@ pub struct HeadlessServer {
     api_window_title: Option<String>,
     /// Pending API work lives with the server state it routes and mutates.
     /// Each retained item belongs to an API request awaiting its response.
-    /// The API listener admits at most 64 connections, with one request per
-    /// connection, so these queues are collectively bounded at 64 items.
+    /// The API listener's active-connection limit, with one request per
+    /// connection, bounds these queues together. The manifest reload queue
+    /// also has a cap of its own (`AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY`,
+    /// answered with `EndpointBusy`), so it stays bounded independently of
+    /// how the API admits connections.
     /// Alternate-screen reads that are being captured without an attached client.
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
     deferred_alt_screen_reads: Vec<shepr_api::ApiRequestMessage>,
@@ -629,7 +632,10 @@ impl HeadlessServer {
             self.app.save_session_before_teardown_async().await;
         }
         self.app.terminal_runtimes.clear();
-        if !self.app.wait_for_pane_teardowns(Duration::from_secs(3)) {
+        if !self
+            .app
+            .wait_for_pane_teardowns(crate::limits::PANE_TEARDOWN_WAIT)
+        {
             warn!("pane session teardown did not finish before server exit");
         }
         // The save and the teardown wait can each take seconds.

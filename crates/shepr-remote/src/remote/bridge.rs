@@ -20,13 +20,6 @@ pub(super) const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
 pub(super) const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
 const BRIDGE_FAILURE_REPORT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-#[cfg(test)]
-thread_local! {
-    pub(super) static UPLOAD_READ_ATTEMPTS: std::cell::RefCell<
-        Option<Arc<std::sync::atomic::AtomicUsize>>,
-    > = const { std::cell::RefCell::new(None) };
-}
-
 pub(crate) struct SshStdioBridge {
     local_socket: PathBuf,
     socket_identity: shepr_platform::ipc::SocketFileIdentity,
@@ -693,7 +686,39 @@ pub(super) fn copy_reader_to_local_stream<R: io::Read>(
 /// here on its way to the remote host. Like the download half above, it never logs the
 /// bytes it copies; bridge diagnostics carry errors and ssh's own stderr only.
 pub(super) fn copy_local_stream_to_writer<W: io::Write>(
-    mut stream: shepr_platform::ipc::LocalStream,
+    stream: shepr_platform::ipc::LocalStream,
+    writer: &mut W,
+    connection_stop: &BridgeUploadStop,
+    bridge_stop: &AtomicBool,
+    client_closed: &AtomicBool,
+) -> io::Result<u64> {
+    copy_upload_stream_to_writer(stream, writer, connection_stop, bridge_stop, client_closed)
+}
+
+trait UploadReadStream {
+    fn poll_read_count(
+        &mut self,
+        buffer: &mut [u8],
+    ) -> io::Result<shepr_platform::ipc::LocalStreamReadCount>;
+
+    fn wait_for_input(&self, wake: &shepr_platform::RemoteBridgeWake) -> io::Result<()>;
+}
+
+impl UploadReadStream for shepr_platform::ipc::LocalStream {
+    fn poll_read_count(
+        &mut self,
+        buffer: &mut [u8],
+    ) -> io::Result<shepr_platform::ipc::LocalStreamReadCount> {
+        shepr_platform::ipc::poll_local_stream_read_count(self, buffer)
+    }
+
+    fn wait_for_input(&self, wake: &shepr_platform::RemoteBridgeWake) -> io::Result<()> {
+        wake.wait(self)
+    }
+}
+
+fn copy_upload_stream_to_writer<S: UploadReadStream, W: io::Write>(
+    mut stream: S,
     writer: &mut W,
     connection_stop: &BridgeUploadStop,
     bridge_stop: &AtomicBool,
@@ -703,20 +728,14 @@ pub(super) fn copy_local_stream_to_writer<W: io::Write>(
     let mut total = 0;
 
     while !connection_stop.is_stopped() && !bridge_stop.load(Ordering::Acquire) {
-        #[cfg(test)]
-        UPLOAD_READ_ATTEMPTS.with(|attempts| {
-            if let Some(attempts) = attempts.borrow().as_ref() {
-                attempts.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-        match shepr_platform::ipc::poll_local_stream_read_count(&mut stream, &mut buffer)? {
+        match stream.poll_read_count(&mut buffer)? {
             shepr_platform::ipc::LocalStreamReadCount::Data(read) => {
                 writer.write_all(&buffer[..read])?;
                 writer.flush()?;
                 total += read as u64;
             }
             shepr_platform::ipc::LocalStreamReadCount::Pending => {
-                connection_stop.wake.wait(&stream)?;
+                stream.wait_for_input(&connection_stop.wake)?;
             }
             shepr_platform::ipc::LocalStreamReadCount::Closed => {
                 client_closed.store(true, Ordering::Release);

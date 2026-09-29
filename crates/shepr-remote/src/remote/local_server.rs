@@ -18,6 +18,35 @@ const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Timeout for checking the stable JSON API before attaching to the binary protocol socket.
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Maximum time for a newly spawned server to expose its client socket.
+pub const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A direct client checks the build before attaching. An SSH bridge leaves the
+/// check to the client's typed protocol handshake so mismatch errors retain it.
+#[derive(Clone, Copy)]
+pub enum BuildCheck {
+    BeforeAttach,
+    AtClientHandshake,
+}
+
+/// Ensures a server is listening, with the caller's build-check policy.
+pub fn ensure_running(
+    paths: &shepr_config::AppPaths,
+    timeout: Duration,
+    build_check: BuildCheck,
+) -> io::Result<()> {
+    if is_server_listening(paths)? {
+        info!("server already running");
+        return match build_check {
+            BuildCheck::BeforeAttach => validate_running_server_compatibility(paths),
+            BuildCheck::AtClientHandshake => Ok(()),
+        };
+    }
+    info!("no server running, spawning server daemon");
+    spawn_server_daemon(paths)?;
+    wait_for_server_socket(&client_socket_path(paths), timeout, paths)
+}
+
 // ---------------------------------------------------------------------------
 // Server detection
 // ---------------------------------------------------------------------------
@@ -171,7 +200,7 @@ fn build_server_daemon_command(
 /// Polls the socket path at regular intervals until a connection succeeds
 /// or the timeout elapses. Returns an error if the server doesn't become
 /// ready within the timeout.
-pub fn wait_for_server_socket(
+fn wait_for_server_socket(
     socket_path: &Path,
     timeout: Duration,
     paths: &shepr_config::AppPaths,

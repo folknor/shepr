@@ -86,23 +86,37 @@ impl Shared {
         if self.requested.load(Ordering::Acquire) {
             return;
         }
-        tracing::info!("host shutdown requested; preserving session before pane termination");
-        self.start_warning();
+        let generation = self.start_warning();
+        tracing::info!(
+            event = "host.shutdown.request",
+            subsystem = "shutdown",
+            outcome = "pending",
+            generation,
+            "host shutdown requested; preserving session before pane termination"
+        );
     }
 
     /// Refresh a warning after reconnecting if the flag could have hidden a
     /// cancellation and a second warning while logind was unavailable.
     fn refresh_warning(&self) {
+        let generation = self.start_warning();
         tracing::info!(
+            event = "host.shutdown.refresh",
+            subsystem = "shutdown",
+            outcome = "pending",
+            generation,
             "host shutdown remains pending after reconnect; refreshing session checkpoint"
         );
-        self.start_warning();
     }
 
-    fn start_warning(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
+    fn start_warning(&self) -> u64 {
+        let generation = self
+            .generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         self.requested.store(true, Ordering::Release);
         (self.wake)();
+        generation
     }
 
     /// Report that the pending shutdown was called off.
@@ -139,11 +153,33 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
                 } else {
                     retry
                 };
-                tracing::debug!(
-                    err = %err,
-                    retry_seconds = retry_delay.as_secs(),
-                    "host shutdown notification unavailable"
-                );
+                // Losing logind while a shutdown is pending may cost the session
+                // checkpoint, so that case warns. Without one pending it is
+                // routine on hosts without a system bus and would repeat every
+                // retry for the life of the server, so it stays diagnostic.
+                if shutdown_pending {
+                    tracing::warn!(
+                        event = "host.shutdown.notification",
+                        subsystem = "shutdown",
+                        outcome = "unavailable",
+                        shutdown_pending,
+                        generation = shared.generation.load(Ordering::Acquire),
+                        err = %err,
+                        retry_seconds = retry_delay.as_secs(),
+                        "host shutdown notification unavailable"
+                    );
+                } else {
+                    tracing::debug!(
+                        event = "host.shutdown.notification",
+                        subsystem = "shutdown",
+                        outcome = "unavailable",
+                        shutdown_pending,
+                        generation = shared.generation.load(Ordering::Acquire),
+                        err = %err,
+                        retry_seconds = retry_delay.as_secs(),
+                        "host shutdown notification unavailable"
+                    );
+                }
                 // A lost signal stream leaves cancellation unobservable until
                 // reconnecting, so retry promptly while a warning is pending.
                 tokio::time::sleep(retry_delay).await;

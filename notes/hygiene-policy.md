@@ -342,15 +342,6 @@ record.
   `source` string per invocation grows those four without bound, per pane, for
   the life of the server. Suggested: one `BoundedSourceMap<V>` for all seven with
   the cap as a construction parameter.
-- `shepr-server`: `pending_alt_screen_reads`, `deferred_alt_screen_reads` and
-  `queued_agent_manifest_reloads` are uncapped `Vec`s;
-  `queued_agent_manifest_reloads` accumulates one entry per
-  `server.reload-agent-manifests` request that arrives while a reload runs, so a
-  client looping on that method grows it without bound. `shutdown_flushes` is
-  bounded by client count. `broken_clients.contains(&client_id)` is a linear scan
-  inside the per-render loop, bounded by client count, so cosmetic. Suggested: a
-  bounded queue type that rejects with `EndpointBusy` (the code already exists)
-  past a cap.
 - `shepr-client`: unusually good - `MAX_NOTICES` (64),
   `MAX_PENDING_PASTE_BYTES` (16 MiB), `MAX_QUEUED_BATCHES` / `MAX_QUEUED_BYTES`,
   `MAX_RETIRED_REQUESTS_PER_ENDPOINT`, `MAX_ENDPOINT_RESPONSE_BYTES`,
@@ -448,8 +439,6 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   budget by different arithmetic (division vs multiplication) - that pair is tied
   by `wire_tests::client_surface_clamp_fits_server_geometry_limit`, which the
   hunter names as the pattern the other pairs lack.
-- `shepr-server` `app/state.rs`: `shell_projection_revision` is bumped with
-  `wrapping_add` while every other revision now saturates or checks.
 - `shepr-pty` / `shepr-config`: `to_std_command` quietly substitutes home for a
   bad cwd (warn only) while the API validates `new_cwd` upstream - two policies
   for one value.
@@ -611,12 +600,6 @@ are test-only again (`PublicTabId`/`PublicPaneId`'s `From<&str>` are
 `WorkspaceId::from(&str)` remain `pub` and ungated, so any caller can still mint
 an identity that is supposed to come from one place.
 
-## HYGP-032 - `#[cfg(test)]` branches inside production functions change what production runs
-
-- `shepr-remote`: `UPLOAD_READ_ATTEMPTS` is a `thread_local!` counter checked
-  inside `copy_local_stream_to_writer`'s hot loop under `#[cfg(test)]`. Correctly
-  gated, but it means the hot path under test is not the hot path that ships.
-
 ## HYGP-033 - Test-only helpers that cannot report what their production siblings report
 
 - `shepr-api` `event_hub.rs`: the test-support `events_after` returns
@@ -695,15 +678,6 @@ for each is the hunter's.
   lines holding two functions, one of which (`shell_single_quote`) is imported
   separately by `targets.rs` to build the Grok command that bypasses the other;
   merging it into the module that owns hook command construction removes a file.
-- `shepr-client`: `frame_output::write_composed_frame` is
-  `writer.write_all(encoded)` with one caller, and its companion `ComposedFrame`
-  is a newtype over `FrameData` with a `From` and a `Deref` whose own doc says
-  "Shepr no longer forwards pane images to the outer terminal, so this is a thin
-  wrapper around the plain text frame" - the residue of a removed feature, read
-  by everyone after as a composition boundary. Evidence: the doc names the
-  removed reason for its existence, the type adds no field and no invariant, the
-  function adds no behaviour over `write_all`, and the sibling patch path
-  bypasses both.
 
 ## HYGP-042 - Flags, parameters and constants that have had one value since they were added
 
@@ -800,17 +774,6 @@ now carry the distinction to the refresh task as typed errors, so the
   test probes in the `SHEPR_` namespace (`SHEPR_CONFIG_READ_ONLY_TEST`,
   `SHEPR_CONFIG_PARTIAL_WRITE_TEST`); the opencode probe was renamed out of it.
 
-## HYGP-054 - `agent_name_from_known_package_path` hardcodes six npm package layouts
-
-From `shepr-agent`: `@earendil-works/pi-coding-agent`, `@oh-my-pi/...`,
-`@moonshot-ai/kimi-code`, `@qwen-code/qwen-code`, `mastracode`,
-`@letta-ai/letta-code`, two of them twice for a `dist/bundle` variant. These are
-upstream-version-specific paths, so a package layout change makes the arm dead
-code that still reads as live, and nothing in the build can tell. The hunter
-calls this the compatibility-path case: each arm should carry the version or date
-it was observed, and re-checking belongs with the existing "monitor upstream
-changes" work item.
-
 ## HYGP-057 - Modules and items sitting in a crate that does not use them
 
 - `shepr-api` `RenderDemand::join` has a dedicated test and one user,
@@ -833,24 +796,6 @@ changes" work item.
   four `u16`s and a two-variant enum; owning them in `shepr-core` alongside
   `GridSize` would drop `ratatui` from the bottom four crates' dependency closure
   and remove a re-export the wire types currently share with the renderer.
-
-## HYGP-060 - A duplicated startup sequence and a doubled rejection check in `shepr-remote`
-
-- `host.rs::ensure_remote_server_running` (41 lines) is
-  `is_server_listening` -> `spawn_server_daemon` -> `wait_for_server_socket`,
-  which is exactly `autodetect::auto_detect_launch`'s startup block minus the
-  build-compatibility check and with a 5 s rather than 15 s budget. The missing
-  build check is deliberate and documented, which the hunter calls a good
-  comment; the duplicated sequence is not. Fix:
-  `local_server::ensure_running(paths, ReadyTimeout, BuildCheck)` owns the
-  sequence and both callers pick the policy explicitly. Not a rule, a shared
-  function.
-
-## HYGP-064 - The client presentation write-failure warning is spelled twice
-
-`crates/shepr-client/src/shell/state.rs`: `HostWriteFailure::observe` writes
-the same `warn!` in two branches around `presentation_log_context`. One
-warning site, fed the context once.
 
 ## HYGP-062 - `modes::lookup(DecMode)` returns `Option` for a table that holds every variant
 

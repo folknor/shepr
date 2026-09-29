@@ -489,11 +489,13 @@ fn remote_path_discovery_only_accepts_cacheable_executables() {
 }
 
 #[test]
-fn known_remote_binary_candidate_script_includes_cargo_and_local_bin() {
+fn known_remote_binary_candidate_script_includes_cargo_home_and_local_bin() {
     let script = known_remote_binary_candidate_script();
 
-    assert!(script.contains("emit \"$home/.cargo/bin/shepr\""));
-    assert!(script.contains("emit \"$home/.local/bin/shepr\""));
+    assert!(script.contains("cargo_home=${CARGO_HOME:-}"));
+    assert!(script.contains("cargo_home=\"$home/.cargo\""));
+    assert!(script.contains(&format!("emit \"$cargo_home/bin/{REMOTE_INSTALL_NAME}\"")));
+    assert!(script.contains(&format!("emit \"$home/.local/bin/{REMOTE_INSTALL_NAME}\"")));
 }
 
 #[test]

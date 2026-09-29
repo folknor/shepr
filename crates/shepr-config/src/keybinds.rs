@@ -866,6 +866,19 @@ fn parse_range_modifiers(s: &str) -> Option<KeyModifiers> {
     saw_range.then_some(modifiers)
 }
 
+/// Parses a key named through the API (`pane send-keys`, `agent send-keys`):
+/// keybinding syntax plus a few spellings callers commonly send (`C-c`, `c-c`,
+/// a bare `+`). Config keybindings go through [`parse_key_combo`] and do not
+/// accept these.
+pub fn parse_api_key_combo(s: &str) -> Option<KeyCombo> {
+    let s = match s.trim() {
+        "C-c" | "c-c" => "ctrl+c",
+        "+" => "plus",
+        key => key,
+    };
+    parse_key_combo(s)
+}
+
 pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
     let parts: Vec<&str> = s.split('+').collect();
     let mut modifiers = KeyModifiers::empty();
@@ -1236,6 +1249,22 @@ prefix = "ö"
             parse_key_combo("ampersand"),
             Some((KeyCode::Char('&'), KeyModifiers::empty()))
         );
+    }
+
+    #[test]
+    fn parse_api_key_aliases() {
+        let control_c = Some((KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(parse_api_key_combo("C-c"), control_c);
+        assert_eq!(parse_api_key_combo("c-c"), control_c);
+        assert_eq!(parse_api_key_combo(" ctrl+c "), control_c);
+        assert_eq!(
+            parse_api_key_combo("+"),
+            Some((KeyCode::Char('+'), KeyModifiers::empty()))
+        );
+        // The aliases are API-only: keybinding config does not accept them.
+        for alias in ["C-c", "c-c", "+"] {
+            assert_eq!(parse_key_combo(alias), None, "{alias:?}");
+        }
     }
 
     #[test]

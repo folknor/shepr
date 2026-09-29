@@ -322,7 +322,19 @@ impl PublicationSnapshot {
             remove_temporary_link(&temporary);
             return Err(error);
         }
+        // Only a swap away from a published agent is a loss worth a warning; a
+        // first publish with no agent at all is a host without one.
+        let replaced_agent = self.identity.is_some();
         self.identity = Some(identity);
+        if replaced_agent && target == unavailable.as_path() {
+            tracing::warn!(
+                event = "ssh_agent.publish",
+                subsystem = "ssh_agent",
+                outcome = "unavailable",
+                path = %self.path.display(),
+                "published SSH agent address now points to the unavailable target"
+            );
+        }
         Ok(())
     }
 }

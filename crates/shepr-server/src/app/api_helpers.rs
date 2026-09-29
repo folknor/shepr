@@ -56,17 +56,8 @@ pub(super) fn agent_target_not_found(target: &str) -> ApiError {
 }
 
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
-    let normalized = normalize_api_key_alias(key.trim());
-    let (code, modifiers) = shepr_config::parse_key_combo(normalized)?;
+    let (code, modifiers) = shepr_config::parse_api_key_combo(key)?;
     Some(crossterm::event::KeyEvent::new(code, modifiers))
-}
-
-fn normalize_api_key_alias(key: &str) -> &str {
-    match key {
-        "C-c" | "c-c" => "ctrl+c",
-        "+" => "plus",
-        _ => key,
-    }
 }
 
 pub(super) fn encode_api_text(runtime: &shepr_mux::pane::PaneRuntime, text: &str) -> Vec<u8> {

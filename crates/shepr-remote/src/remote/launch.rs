@@ -23,9 +23,7 @@ fn run_remote_inner(
     let session_name = paths.session_id().display_name().to_owned();
     let runtime_dir = paths.xdg_runtime_dir();
     let local_socket = local_forward_socket_path(runtime_dir, &remote.target, &session_name)?;
-    let program = std::env::args()
-        .next()
-        .unwrap_or_else(|| "shepr".to_string());
+    let program = local_invocation_name();
     let reattach_command =
         reattach_command(&program, &remote.target, &session_name, remote.keybindings);
     let remote_ssh = RemoteSsh::new(
@@ -151,36 +149,29 @@ impl RemoteExecutable {
         command
     }
 
-    pub(super) fn session_command(&self, session_name: &str, args: &[&str]) -> String {
-        self.command(&Self::session_args(session_name, args))
-    }
-
-    pub(super) fn session_args<'a>(session_name: &'a str, args: &[&'a str]) -> Vec<&'a str> {
-        let mut session_args = Vec::with_capacity(args.len() + 2);
-        if session_name != shepr_config::DEFAULT_SESSION_NAME {
-            session_args.extend(["--session", session_name]);
-        }
-        session_args.extend_from_slice(args);
-        session_args
-    }
-
     pub(super) fn status_client_command(&self) -> String {
-        format!(
-            "test -x {} && {}",
-            self.quoted(),
-            self.command(&["status", "client", "--json"])
-        )
+        let args = RemoteCliCommand::ClientStatus.args();
+        format!("test -x {} && {}", self.quoted(), self.command(&args))
     }
 
     pub(super) fn api_bridge_check_command(&self, session_name: &str) -> String {
         let path = self.quoted();
-        let status = self.command(&["status", "client", "--json"]);
-        let check = self.command(&["--session", session_name, "remote-api-bridge", "--check"]);
+        let status = self.command(&RemoteCliCommand::ClientStatus.args());
+        let check = self.command(
+            &RemoteCliCommand::ApiBridge {
+                session: session_name,
+                check: true,
+            }
+            .args(),
+        );
         format!("test -x {path} && {status} && {check} </dev/null")
     }
 
     pub(super) fn bridge_command(&self, session_name: &str) -> String {
-        let args = Self::session_args(session_name, &["remote-client-bridge"]);
+        let args = RemoteCliCommand::ClientBridge {
+            session: session_name,
+        }
+        .args();
         // sshd hands this string to the user's login shell, which need not be POSIX
         // (xonsh, fish, nushell). Run the script under /bin/sh, as the API bridge does
         // (discovery feeds its script to `/bin/sh -s` instead), so the login shell only
@@ -189,7 +180,10 @@ impl RemoteExecutable {
     }
 
     pub(super) fn saved_bridge_command(&self, session_name: &str) -> String {
-        let args = Self::session_args(session_name, &["remote-client-bridge"]);
+        let args = RemoteCliCommand::ClientBridge {
+            session: session_name,
+        }
+        .args();
         // This redirects bridge stdin to /dev/null. The bridge forwards EOF as a
         // socket write shutdown, so the server's handshake reader returns without
         // waiting for its deadline.
@@ -225,8 +219,18 @@ pub(crate) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale";
 pub(crate) const STALE_API_METADATA_EXIT_CODE: i32 = 78;
 
 pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: &str) -> String {
-    let path = shell_quote(executable.as_str());
-    let session = shell_quote(session);
+    let check_args = RemoteCliCommand::ApiBridge {
+        session,
+        check: true,
+    }
+    .args();
+    let bridge_args = RemoteCliCommand::ApiBridge {
+        session,
+        check: false,
+    }
+    .args();
+    let check_command = executable.command(&check_args);
+    let bridge_command = executable.command(&bridge_args);
     // The API bridge's stdin is the data channel, so unlike discovery this
     // script cannot be fed to `/bin/sh -s`; it has to reach the login shell as
     // `/bin/sh -c '<script>'`. Keep it to one line with no single quote,
@@ -236,8 +240,8 @@ pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: 
     // needs quoting would bring `'\''` back; paths come from discovery and
     // session names are validated.
     let script = format!(
-        "if {path} --session {session} remote-api-bridge --check </dev/null >/dev/null 2>&1; then {}; else echo {STALE_API_METADATA} >&2; exit {STALE_API_METADATA_EXIT_CODE}; fi",
-        posix_remote_output_command(&format!("{path} --session {session} remote-api-bridge")),
+        "if {check_command} </dev/null >/dev/null 2>&1; then {}; else echo {STALE_API_METADATA} >&2; exit {STALE_API_METADATA_EXIT_CODE}; fi",
+        posix_remote_output_command(&bridge_command),
     );
     posix_shell_command(&script)
 }
@@ -248,18 +252,36 @@ pub(super) fn reattach_command(
     session_name: &str,
     keybindings: RemoteKeybindings,
 ) -> String {
-    let program = shell_quote(if program.is_empty() { "shepr" } else { program });
-    let target = shell_quote(target);
-    let mut command = format!("{program} --remote {target}");
-    if keybindings != RemoteKeybindings::Local {
-        command.push_str(" --remote-keybindings ");
-        command.push_str(keybindings.to_env_value());
+    let program = shell_quote(if program.is_empty() {
+        PROGRAM_NAME
+    } else {
+        program
+    });
+    let args = RemoteCliCommand::Attach {
+        target,
+        session: (session_name != shepr_config::DEFAULT_SESSION_NAME).then_some(session_name),
+        keybindings: (keybindings != RemoteKeybindings::Local).then_some(keybindings),
     }
-    if session_name != shepr_config::DEFAULT_SESSION_NAME {
-        command.push_str(" --session ");
-        command.push_str(&shell_quote(session_name));
-    }
-    command
+    .args();
+    shell_command_line(program, args)
+}
+
+/// `program` followed by each argument shell-quoted, space-separated.
+pub(super) fn shell_command_line(program: String, args: Vec<&str>) -> String {
+    args.into_iter()
+        .map(shell_quote)
+        .fold(program, |mut command, arg| {
+            command.push(' ');
+            command.push_str(&arg);
+            command
+        })
+}
+
+fn local_invocation_name() -> String {
+    std::env::args()
+        .next()
+        .filter(|program| !program.is_empty())
+        .unwrap_or_else(|| PROGRAM_NAME.to_owned())
 }
 
 pub fn shell_quote(value: &str) -> String {
@@ -322,7 +344,7 @@ mod shell_command_tests {
             "shepr",
             &[
                 answers(
-                    &["status", "client", "--json"],
+                    &RemoteCliCommand::ClientStatus.args(),
                     vec![
                         Step::Print(
                             "{\"version\":\"test\",\"build_id\":\"0123456789abcdef\"}\n".into(),
@@ -331,7 +353,11 @@ mod shell_command_tests {
                     ],
                 ),
                 answers(
-                    &["--session", "agents", "remote-api-bridge", "--check"],
+                    &RemoteCliCommand::ApiBridge {
+                        session: "agents",
+                        check: true,
+                    }
+                    .args(),
                     vec![Step::Exit(0)],
                 ),
                 Step::Exit(64),

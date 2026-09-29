@@ -1,4 +1,5 @@
 use shepr_api::schema::{EmptyParams, Method, Request};
+use shepr_remote::COMMAND_STOP;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -10,7 +11,7 @@ pub(crate) enum Command {
 impl Command {
     pub(super) fn name(self) -> &'static str {
         match self {
-            Self::Stop { .. } => "stop",
+            Self::Stop { .. } => COMMAND_STOP,
             Self::AgentManifests { .. } => "agent-manifests",
             Self::ReloadAgentManifests => "reload-agent-manifests",
         }
@@ -25,7 +26,7 @@ impl Command {
 
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some(("stop", command)) => Some(Command::Stop {
+        Some((COMMAND_STOP, command)) => Some(Command::Stop {
             force: super::matches::flag(command, "force"),
         }),
         Some(("agent-manifests", command)) => Some(Command::AgentManifests {

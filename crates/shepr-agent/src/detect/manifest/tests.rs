@@ -834,6 +834,7 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
     }
 }
 
+// Enforcement: keep the descriptor flags and bundled manifest registry aligned.
 #[test]
 fn all_bundled_manifests_parse_validate_and_compile() {
     for agent in Agent::screen_manifest_agents() {
@@ -844,6 +845,10 @@ fn all_bundled_manifests_parse_validate_and_compile() {
         );
     }
     for (key, content) in BUNDLED_MANIFESTS {
+        assert!(
+            Agent::screen_manifest_agents().any(|agent| agent.label() == *key),
+            "bundled manifest {key} has no screen-detection descriptor"
+        );
         let manifest = parse_bundled_manifest(key, content)
             .unwrap_or_else(|error| panic!("bundled {key} manifest: {error}"));
         if let Err(error) = loaded_manifest(manifest, ManifestSource::Bundled) {

@@ -97,34 +97,6 @@ Enforcement: one mapping function in `shepr-agent` used by both
 `attention_rank` and `pane_agent_status`, with the `aggregate.rs` doc comment
 deleted rather than restated.
 
-## HYGV-025 - The Unix socket path limit is restated in prose, in a test literal, and in another crate's doc comment
-
-**Decision (partial):** piece 2 (scratch directories under the project's
-`target/` tree, adopting broadarrow's `test-scratch`/`test-support` scheme)
-replaces the `shepr-test-support` prose copy: broadarrow names scratch roots with
-fixed-width digests and proves a socket-leaf budget at the deepest handed-out
-path through the production `sun_path` check (`check_unix_socket_path`), rather
-than restating the number. Decided: the `sun_path` limit and its check move
-from `shepr-platform` down to `shepr-core`, so the scratch code can prove the
-budget without depending on the platform crate. Also decided: the managed SSH
-config writer (`crates/shepr-remote/src/remote/ssh.rs::write_managed_ssh_config`)
-takes its control directory as an input rather than computing one internally,
-so its tests can pass a short path instead of one that cannot fit `sun_path`
-under a deep checkout. Open: the `ipc.rs` prose and the `platform/src/tests.rs`
-literals.
-
-Reported by the core/platform and remote hunters.
-
-`crates/shepr-platform/src/ssh_paths.rs` owns `UNIX_SOCKET_PATH_MAX = 107`.
-Restatements: `ipc.rs` ("without using any of `sun_path`'s 107 bytes"),
-`platform/src/tests.rs` (`"x".repeat(107)`, `"x".repeat(108)`), and
-`crates/shepr-test-support/src/lib.rs` ("`sun_path` (108 bytes)").
-
-The test-support copy is a forced duplication: that crate's dependency allowlist
-is `["libc"]`, so it cannot read the platform constant, and the restriction is
-right. What keeps them in step: nothing. Since it is prose, the cheapest answer
-is prose that cannot drift ("must fit in `sun_path`", without the number).
-
 ## HYGV-027 - The client state subdirectory is spelled at three sites, two ways
 
 Reported by the remote hunter.
@@ -139,31 +111,6 @@ Fix: a `shepr_config::AppPaths::client_state_dir()` accessor, like the existing
 `server_address()` / `session_id()`. Enforcement: a text rule forbidding the
 literal `"client"` as a path component outside that accessor, or the accessor
 plus review.
-
-## HYGV-032 - `"shepr"` as a program name has two resolution rules, plus an independent remote-install location list
-
-Reported by the remote hunter, as fact.
-
-- `crates/shepr-remote/src/remote/launch.rs::run_remote` resolves the local
-  program from `std::env::args().next()` with `"shepr"` as fallback.
-- `machine/saved.rs::saved_ssh_bootstrap_command` hardcodes `"shepr"`
-  unconditionally, and that string is printed to the operator as a command to
-  run.
-- `remote/discovery.rs` hardcodes `shepr` as the remote binary name in
-  `command -v shepr` and in the known-locations script.
-
-This one legitimately needs two values (local argv0 versus remote install name);
-the finding is that neither is named. Fix: one `PROGRAM_NAME` constant plus one
-`local_invocation_name()` helper, and a separate constant for the remote install
-name with a comment saying so. Enforcement: a text rule against the bare
-`"shepr"` literal outside the owning module.
-
-Related and not mechanically enforceable: `discovery.rs::known_remote_binary_candidate_script`
-hardcodes `$HOME/.cargo/bin/shepr` and `$HOME/.local/bin/shepr`, while `brokkr
-install` decides where the binary actually lands. Where we install and where we
-look are independent lists across the brokkr/shepr boundary. Best available: a
-comment at each site naming the other, and a test that the script's paths are a
-superset of `brokkr install`'s destination if brokkr exposes it.
 
 ## HYGV-035 - `/bin/sh` and the shell-resolution rules are spelled across several sites
 
@@ -342,85 +289,6 @@ there and in tests. The vt/pty hunter adds that a text rule forbidding numeric
 `const` inside function bodies is feasible. Whether any individual knob should
 become a config key is a judgement the code cannot reveal.
 
-## HYGV-037 - The bridge idle timeout and the client heartbeat interval are coupled across crates with nothing linking them
-
-Reported by the core/platform and remote hunters.
-
-`shepr_platform::remote_bridge::IDLE_TIMEOUT` (60 s) must exceed
-`shepr_client::endpoint::health::HEARTBEAT_INTERVAL` (5 s) or a healthy idle
-remote bridge is torn down under a live client. Neither constant mentions the
-other, and neither crate can see the other (`shepr-platform` is below
-`shepr-client`); `shepr-remote` sits between them and passes only
-`idle_timeout: bool` through. The `remote_bridge.rs` module doc states the
-relationship in prose ("The client endpoint sends HealthPing after five seconds
-without received data ... Those protocol frames renew this byte-level watchdog"),
-which is exactly the claim nothing checks: halve the timeout or double the ping
-interval and healthy idle bridges start dying.
-
-Fix: both constants in `shepr-core` (which both crates may depend on) with the
-relation stated at the definition. Enforcement: a test in whichever crate can see
-both asserting `IDLE_TIMEOUT >= HEARTBEAT_INTERVAL * k`.
-
-## HYGV-038 - Four independent fifteen-second SSH budgets, and the two `wait_for_server_socket` callers disagree in the wrong direction
-
-**Decision (partial):** the two inline `Duration::from_secs` literals
-(`src/cli/target.rs`'s 15 and `host.rs`'s 5) are what the duration-literal
-textlint of the per-crate `limits` modules forbids, adopted incrementally with
-the hygiene work (HYGV-036), so they get names when their crate's turn comes.
-Open: the shared owner for the 15-second budget, the `wait_for_server_socket`
-parameter, and deriving `ATTEMPT_BUDGET` from the values it cites.
-
-Reported by the remote hunter, as fact, with the api/cli hunter's timeout table
-naming two of the same values.
-
-- `crates/shepr-remote/src/remote/ssh.rs`:
-  `NONINTERACTIVE_SSH_COMMAND_TIMEOUT` is 15 s for every noninteractive command.
-- `src/cli/target.rs::server_status` uses an inline `Duration::from_secs(15)` for
-  the remote API probe. Same physical quantity ("one cold SSH round trip"), two
-  unnamed literals in two crates.
-- `src/autodetect.rs` uses `SERVER_READY_TIMEOUT = 15 s` for the local server;
-  `crates/shepr-remote/src/remote/host.rs` passes an inline
-  `Duration::from_secs(5)` for the server on the remote host reached over SSH, so
-  the slower case gets the shorter budget and the 5 is not even named.
-- `crates/shepr-client/src/endpoint/supervisor.rs` reasons at length in prose
-  about "15 seconds" per discovery command, "the handshake 60", and
-  "ControlMaster, persisting ten minutes" (`ControlPersist=600` in `ssh.rs`), and
-  derives `ATTEMPT_BUDGET = 25 s` from them. None of those numbers is read; all
-  are restated. Changing `NONINTERACTIVE_SSH_COMMAND_TIMEOUT` to 30 s silently
-  invalidates the 25 s budget and the documented argument for it, and no test
-  fails.
-
-Fix: `local_server::SERVER_READY_TIMEOUT` owned next to
-`wait_for_server_socket`, with the parameter removed unless a caller has a stated
-reason to differ (removal makes divergence unrepresentable); export
-`NONINTERACTIVE_SSH_COMMAND_TIMEOUT` and the handshake timeout and define
-`ATTEMPT_BUDGET` in terms of them. Enforcement: a test asserting
-`ATTEMPT_BUDGET >= NONINTERACTIVE_SSH_COMMAND_TIMEOUT + slack` and
-`ATTEMPT_BUDGET < MAX_RETRY_DELAY` - the second half already exists in
-`supervisor.rs`, so the pattern is known there and only half applied.
-
-## HYGV-042 - One megabyte is the cap on "one client request" in three unrelated places
-
-**Decision (partial):** per-crate `limits` modules are adopted incrementally with
-the hygiene work (HYGV-036), which gives each of the three constants a findable
-home. Open: whether the three are one knob owned by `shepr-protocol::limits`, as
-the enforcement below proposes, or three knobs in three crates' modules.
-
-Reported by the server hunter.
-
-- `shepr_protocol::MAX_INPUT_PAYLOAD = 1024 * 1024`.
-- `MAX_ENDPOINT_COMMAND_BYTES = 1024 * 1024` in
-  `crates/shepr-server/src/server/client_commands.rs`.
-- `MAX_INITIAL_REQUEST_BYTES = 1024 * 1024` in `crates/shepr-api/src/server.rs`.
-
-Three independent spellings of one magnitude for three doors into the same
-process. None cites the others, and all three crates depend on `shepr-protocol`,
-which already owns `MAX_FRAME_SIZE` and `MAX_INPUT_PAYLOAD`, so no boundary
-forces the copies.
-
-Enforcement: move all three into `shepr-protocol::limits` and add a text rule
-forbidding `1024 * 1024` outside that module.
-
 ## HYGV-043 - The clipboard byte caps have two unrelated owners, and one is restated as a magic number in its own test
 
 The platform half is resolved: `MAX_CLIPBOARD_TEXT_BYTES` is at module scope in
@@ -433,45 +301,6 @@ Open: `shepr-vt`'s `MAX_CLIPBOARD_BYTES` drops an OSC 52 payload over 192 KiB
 with no log line, so a copy from a pane that silently does nothing cannot be
 diagnosed. A rate-limited log with the byte count (never the content) is the
 fix.
-
-## HYGV-045 - The pane teardown budget and the server's wait for it are unrelated numbers in different crates
-
-**Decision (partial):** per-crate `limits` modules are adopted incrementally with
-the hygiene work (HYGV-036), so the three `250` ms spellings and the server's
-`3` s wait become named constants in their crates' modules. Open: deriving the
-server's wait from an exported teardown budget and asserting the relation.
-
-Reported by the mux hunter.
-
-`crates/shepr-mux/src/pane/teardown.rs` spells `Duration::from_millis(250)` three
-times inside `PANE_TEARDOWN_STEPS` (one value, three spellings) and the 750 ms
-total is nowhere named. `crates/shepr-server/src/server/headless.rs` waits
-`Duration::from_secs(3)` for those teardowns to finish. The 3 s must exceed the
-750 ms plus however long two `/proc` session scans take; that relationship is
-stated nowhere and the two numbers cannot see each other.
-
-Fix: export the total from `teardown.rs` as `pub const PANE_TEARDOWN_BUDGET` and
-have the server derive its wait from it, with a compile-time or test assertion
-that the wait is the larger.
-
-## HYGV-047 - Interlocks between tunables exist only in prose, including one user-visible promise
-
-Reported by the termio/client hunter, with the remote hunter's R10 as the same
-shape across crates (see HYGV-038).
-
-`crates/shepr-client/src/endpoint/supervisor.rs`'s doc comment for
-`MAX_RETRY_DELAY` states that `shepr machine reconnect` tells the user open
-clients retry within 30 seconds, and that `ATTEMPT_BUDGET` (25 s) plus the retry
-accounting keep that promise. Three constants in that file, a fourth in
-`shepr-remote` (the fifteen-second per-command discovery budget the comment
-cites), and the CLI's user-facing wording all have to agree, and nothing in the
-build would notice any of them drifting. The hunter's point is that this is a
-careful, correct comment about an unenforced invariant.
-
-Enforcement, cheap and absent: `const _: () = assert!(...)` for
-`ATTEMPT_BUDGET < MAX_RETRY_DELAY`, `HEARTBEAT_INTERVAL < HEARTBEAT_TIMEOUT` and
-`IO_POLL_INTERVAL < WRITE_TIMEOUT`, plus a test asserting the CLI's reconnect
-message quotes `MAX_RETRY_DELAY` rather than a literal `30`.
 
 ## HYGV-050 - Minimum grid size is clamped at three layers with three different minimums
 
@@ -538,43 +367,6 @@ This is two owners rather than one: a `git_bool()` in the git module completed
 against Git's grammar, and one `env_bool()` wherever shepr env flags are
 resolved. Holdable by a text rule forbidding the bare list elsewhere.
 
-## HYGV-077 - The remote `shepr` CLI's argument spellings are re-spelled in `shepr-remote` with no shared constant
-
-**Decision (partial):** `--idle-timeout-v1` is deleted, which removes one of the
-listed spellings. The shared-constant and round-trip-test proposal remains open
-for the rest.
-
-Reported by the remote hunter, as fact.
-
-`shepr-remote` builds command lines for a remote `shepr` binary out of bare
-literals: `"remote-client-bridge"`, `"--idle-timeout-v1"`, `"remote-api-bridge"`,
-`"--check"`, `"status"`, `"client"`, `"server"`, `"--json"`, `"server stop"`,
-`"--session"`. Every one is defined independently in `src/cli/spec.rs` and
-`src/cli.rs`; `--idle-timeout-v1` alone is spelled in `launch.rs`, `src/cli.rs`
-and `src/cli/spec.rs`. The root binary depends on `shepr-remote`, so a shared
-constant module there could be the single owner for both the producer and the
-parser.
-
-Enforcement: a test that round-trips each generated remote command string through
-`cli::spec::command().try_get_matches_from`, so the parser proves the producer.
-The only current check is byte-for-byte golden strings in `attach.rs`, which pin
-the producer to itself and say nothing about the parser.
-
-## HYGV-083 - Two owners for "does this agent have a screen manifest", with the existing test as the enforcement
-
-Reported by the agent hunter, who files it as a non-finding with an answer, and
-who asked for it to be recorded so it is not hunted again.
-
-`AgentDescriptor::screen_manifest` (the flag) and
-`manifest::has_screen_manifest(agent)` (whether the registry actually loaded one)
-agree today because
-`manifest/tests.rs::all_bundled_manifests_parse_validate_and_compile` pins it,
-which is exactly the right kind of enforcement. Worth knowing that
-`BUNDLED_MANIFESTS` is a third list keyed by label string
-(`("agy", include_str!("manifests/antigravity.toml"))`), so a label rename breaks
-the join - and the existing test catches that. The recommendation is: keep the
-test, it is the enforcement.
-
 ## HYGV-087 - Identifier allocation reaches process-global counters and clocks directly, with no injection point and no owner of the format
 
 Reported by the core/platform, protocol/config, remote and server hunters.
@@ -611,25 +403,6 @@ between them). What keeps the two validations in step is the exact-build preambl
 plus the shared crate, and the hunter's recommendation is to say that out loud in
 the `AGENTS.md` sentence, which currently reads as absolute.
 
-## HYGV-095 - `client_socket_path(paths)` is recomputed four times in one function
-
-Reported by the server hunter.
-
-`crates/shepr-server/src/server/headless/bootstrap.rs` computes it at three sites
-plus the API socket at a fourth. Pure and cheap, so this is tidiness rather than
-risk, but it is four sites that will each be read as "where the client socket
-comes from".
-
-## HYGV-096 - `normalize_api_key_alias` is a three-entry alias table living away from the parser that owns key names
-
-Reported by the server hunter.
-
-`crates/shepr-server/src/app/api_helpers.rs` maps `"C-c" | "c-c" => "ctrl+c"` and
-`"+" => "plus"`. Key-name parsing otherwise belongs entirely to
-`shepr-config::parse_key_combo`, so a fourth alias will be added here rather than
-there and the two will drift. Fix: move the aliases into `shepr-config` next to
-the parser.
-
 ## HYGV-104 - Sidebar chrome preferences are validated at the moment of use rather than at startup
 
 Reported by the termio/client hunter.
@@ -644,13 +417,6 @@ the project's "any config problem fails the launch; no fallbacks".
 
 Fix: a startup probe on the preferences path, which turns this into a launch
 refusal. Checkable by a test that launches with a read-only state directory.
-
-## HYGV-110 - `INTEGRATION_SPECS.events` restates `Target::hook_events()`
-
-`crates/shepr-agent/src/integration/registry.rs`: each spec row's `events`
-field repeats what `target.hook_events()` already returns; a test now guards
-against a miswired row, but the field itself is the redundancy. Drop it and
-read the target.
 
 ## HYGV-107 - `read_message`'s `max_frame_size` parameter has had one value at every production call site
 

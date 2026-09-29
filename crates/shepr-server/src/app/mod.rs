@@ -231,7 +231,14 @@ impl App {
             } else {
                 "ok"
             };
-            shepr_platform::logging::session_restored(restored.workspaces.len(), outcome);
+            shepr_platform::logging::session_restored(
+                &lease
+                    .directory()
+                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
+                paths.session_id().display_name(),
+                restored.workspaces.len(),
+                outcome,
+            );
             if restored.workspaces.is_empty() {
                 (Vec::new(), None, 0)
             } else {

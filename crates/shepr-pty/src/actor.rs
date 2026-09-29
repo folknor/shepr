@@ -112,6 +112,7 @@ fn submission_withdrawn_error() -> std::io::Error {
 
 #[derive(Clone)]
 pub struct PtyIoActorHandle {
+    pane_id: PaneId,
     wake: fd::WakeWriter,
     inbox: Arc<Mutex<PtyIoInbox>>,
     /// Lock order for terminal mutations that can produce replies is
@@ -136,6 +137,8 @@ struct PtyIoInbox {
     next_order: u64,
     next_entry_id: u64,
     latest_resize: Option<QueuedResize>,
+    terminal_response_drops: u64,
+    terminal_response_drop_reported: bool,
     shutdown: bool,
 }
 
@@ -223,9 +226,9 @@ impl PtyIoInbox {
         Ok(())
     }
 
-    fn push_terminal_response(&mut self, bytes: Bytes) -> bool {
+    fn push_terminal_response(&mut self, bytes: Bytes) -> (bool, bool) {
         if bytes.is_empty() {
-            return true;
+            return (true, false);
         }
         // Only a child that has stopped reading fills the inbox, and a reply
         // it will read late is worth little, so an overflowing reply is
@@ -234,7 +237,7 @@ impl PtyIoInbox {
         // DA1 sentinel behind a dropped answer tells the child the answer is
         // not coming rather than leaving it waiting).
         if !self.reserve(bytes.len(), 1) {
-            return false;
+            return (false, self.note_terminal_response_drop());
         }
         let order = self.next_order();
         let id = self.next_entry_id();
@@ -243,6 +246,15 @@ impl PtyIoInbox {
             order,
             kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)),
         });
+        (true, false)
+    }
+
+    fn note_terminal_response_drop(&mut self) -> bool {
+        self.terminal_response_drops = self.terminal_response_drops.saturating_add(1);
+        if self.terminal_response_drop_reported {
+            return false;
+        }
+        self.terminal_response_drop_reported = true;
         true
     }
 
@@ -282,7 +294,7 @@ impl PtyIoInbox {
         &mut self,
         geometry: shepr_core::geometry::PaneGeometry,
         terminal_responses: Vec<Bytes>,
-    ) {
+    ) -> Option<u64> {
         if let Some(previous) = self.latest_resize.take() {
             for bytes in previous.terminal_responses {
                 self.release_bytes(bytes.len());
@@ -291,12 +303,15 @@ impl PtyIoInbox {
         }
 
         let mut accepted_responses = Vec::new();
+        let mut should_report_drop = false;
         for bytes in terminal_responses {
             if bytes.is_empty() {
                 continue;
             }
             if self.reserve(bytes.len(), 1) {
                 accepted_responses.push(bytes);
+            } else if self.note_terminal_response_drop() {
+                should_report_drop = true;
             }
         }
         let order = self.next_order();
@@ -307,6 +322,7 @@ impl PtyIoInbox {
             retry_at: None,
             attempts: 0,
         });
+        should_report_drop.then_some(self.terminal_response_drops)
     }
 
     /// The entry the actor should handle next. A write already under way
@@ -477,11 +493,20 @@ impl PtyIoActorHandle {
             return;
         }
         let mut queued = false;
+        let mut should_report_drop = false;
         for response in responses {
-            queued = inbox.push_terminal_response(response) || queued;
+            let (accepted, first_drop_count) = inbox.push_terminal_response(response);
+            queued = accepted || queued;
+            if !accepted {
+                should_report_drop |= first_drop_count;
+            }
         }
+        let reported_drop_count = should_report_drop.then_some(inbox.terminal_response_drops);
         drop(inbox);
         drop(order);
+        if let Some(dropped_responses) = reported_drop_count {
+            report_terminal_response_drops(self.pane_id, dropped_responses);
+        }
         if queued {
             self.wake_actor();
         }
@@ -501,9 +526,12 @@ impl PtyIoActorHandle {
         if inbox.shutdown {
             return;
         }
-        inbox.replace_resize(geometry, terminal_responses);
+        let reported_drop_count = inbox.replace_resize(geometry, terminal_responses);
         drop(inbox);
         drop(_order);
+        if let Some(dropped_responses) = reported_drop_count {
+            report_terminal_response_drops(self.pane_id, dropped_responses);
+        }
         self.wake_actor();
     }
 
@@ -529,6 +557,13 @@ impl PtyIoActorHandle {
     }
 }
 
+fn report_terminal_response_drops(pane_id: PaneId, dropped_responses: u64) {
+    warn!(
+        pane = pane_id.raw(),
+        dropped_responses, "PTY terminal reply inbox is full; dropped terminal replies"
+    );
+}
+
 pub struct PtyIoActor;
 
 impl PtyIoActor {
@@ -547,6 +582,7 @@ impl PtyIoActor {
         let inbox = Arc::new(Mutex::new(PtyIoInbox::default()));
         let response_order = Arc::new(Mutex::new(()));
         let handle = PtyIoActorHandle {
+            pane_id: config.pane_id,
             wake: wake_pipe.writer,
             inbox: Arc::clone(&inbox),
             response_order: Arc::clone(&response_order),
@@ -993,13 +1029,22 @@ impl PtyIoActorRunner {
                 }
                 let after_response_order = result.after_response_order;
                 let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+                let mut should_report_drop = false;
                 if !inbox.shutdown {
                     for response in result.terminal_responses {
-                        let _ = inbox.push_terminal_response(response);
+                        let (accepted, first_drop) = inbox.push_terminal_response(response);
+                        if !accepted {
+                            should_report_drop |= first_drop;
+                        }
                     }
                 }
+                let reported_drop_count =
+                    should_report_drop.then_some(inbox.terminal_response_drops);
                 drop(inbox);
                 drop(_order);
+                if let Some(dropped_responses) = reported_drop_count {
+                    report_terminal_response_drops(self.pane_id, dropped_responses);
+                }
                 if let Some(after_response_order) = after_response_order {
                     #[expect(
                         clippy::disallowed_methods,
@@ -1416,13 +1461,15 @@ mod tests {
         let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
         let inbox = Arc::new(Mutex::new(PtyIoInbox::default()));
         let response_order = Arc::new(Mutex::new(()));
+        let pane_id = PaneId::from_raw(1);
         let handle = PtyIoActorHandle {
+            pane_id,
             wake: wake_pipe.writer,
             inbox: Arc::clone(&inbox),
             response_order: Arc::clone(&response_order),
         };
         let runner = PtyIoActorRunner {
-            pane_id: PaneId::from_raw(1),
+            pane_id,
             file: std::fs::File::from(owned),
             inbox,
             response_order,
@@ -1475,6 +1522,7 @@ mod tests {
     fn rejected_user_input_hands_its_bytes_back() {
         let (wake, _wake_read_fd) = test_wake_pair();
         let handle = PtyIoActorHandle {
+            pane_id: PaneId::from_raw(1),
             wake,
             inbox: Arc::new(Mutex::new(PtyIoInbox::default())),
             response_order: Arc::new(Mutex::new(())),
@@ -2327,9 +2375,12 @@ mod tests {
     #[test]
     fn resize_reply_entries_have_distinct_ids_at_the_same_sequence_order() {
         let mut inbox = PtyIoInbox::default();
-        inbox.replace_resize(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 8, 16),
-            vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+        assert_eq!(
+            inbox.replace_resize(
+                shepr_core::geometry::PaneGeometry::new(80, 24, 8, 16),
+                vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+            ),
+            None
         );
         let resize = inbox.latest_resize.take().expect("resize was queued");
         inbox.insert_resize_replies(resize.order, resize.terminal_responses);
@@ -2339,6 +2390,22 @@ mod tests {
         assert_eq!(first.order, second.order);
         assert_ne!(first.id, second.id);
         assert_eq!(inbox.next_entry_index(false, Some(second.id)), Some(1));
+    }
+
+    #[test]
+    fn terminal_reply_overflow_is_counted_and_reported_once() {
+        let mut inbox = PtyIoInbox::default();
+        assert!(inbox.reserve(ACTOR_INBOX_MAX_BYTES, 0));
+
+        assert_eq!(
+            inbox.push_terminal_response(Bytes::from_static(b"first")),
+            (false, true)
+        );
+        assert_eq!(
+            inbox.push_terminal_response(Bytes::from_static(b"second")),
+            (false, false)
+        );
+        assert_eq!(inbox.terminal_response_drops, 2);
     }
 
     #[test]
@@ -2614,6 +2681,7 @@ mod tests {
     fn oversized_input_is_admitted_only_into_an_empty_inbox() {
         let (wake, _wake_read_fd) = test_wake_pair();
         let handle = PtyIoActorHandle {
+            pane_id: PaneId::from_raw(1),
             wake,
             inbox: Arc::new(Mutex::new(PtyIoInbox::default())),
             response_order: Arc::new(Mutex::new(())),

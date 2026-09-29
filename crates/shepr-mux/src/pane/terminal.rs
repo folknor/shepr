@@ -3,7 +3,10 @@ pub use shepr_termio::ScrollMetrics;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -148,6 +151,11 @@ pub enum TerminalDirtyPatchOutcome {
     Fallback,
 }
 
+pub(super) struct TerminalDirtyPatchCollection {
+    pub outcome: TerminalDirtyPatchOutcome,
+    pub fallback_reason: Option<&'static str>,
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InputState {
@@ -202,8 +210,12 @@ pub(crate) struct PaneTerminal {
     /// least once a second) and ends the pane, which is reported dead and
     /// removed, so those answers only cover that short window. Turning every
     /// reader into a fallible one would push a `Result` through render,
-    /// detection and the API for a state that lasts under a second.
+    /// detection and the API for a state that lasts under a second. Writers do
+    /// not treat a poisoned lock as a successful mutation: operations without
+    /// a failure return log their skipped operation once per pane.
     pub core: Mutex<PaneTerminalCore>,
+    mutation_failure_reported: AtomicBool,
+    dirty_patch_fallback_reported: AtomicBool,
 }
 
 pub(crate) struct PaneTerminalCore {
@@ -226,10 +238,32 @@ pub(crate) struct PaneTerminalCore {
 }
 
 impl PaneTerminal {
-    pub(crate) fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            core.dirty_collection_hook = Some(hook);
+    fn report_terminal_mutation_failure(&self, operation: &'static str) {
+        if !self.mutation_failure_reported.swap(true, Ordering::Relaxed) {
+            error!(
+                operation,
+                "terminal core lock poisoned; mutation was not applied"
+            );
         }
+    }
+
+    /// A fallback is routine (a visible hyperlink is enough), so this is
+    /// diagnostic detail, recorded once per pane.
+    fn report_dirty_patch_fallback(&self, reason: &'static str) {
+        if !self
+            .dirty_patch_fallback_reported
+            .swap(true, Ordering::Relaxed)
+        {
+            debug!(reason, "dirty terminal patch fell back to a full render");
+        }
+    }
+
+    pub(crate) fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            self.report_terminal_mutation_failure("dirty collection hook update");
+            return;
+        };
+        core.dirty_collection_hook = Some(hook);
     }
 
     /// Whether a panic while holding the core lock has broken the core. A

@@ -3,6 +3,7 @@ use serde::Serialize;
 use shepr_api as api;
 use shepr_api::client::ApiClientError;
 use shepr_api::schema::{ClientStatusJson, ServerStatusJson};
+use shepr_remote::{COMMAND_CLIENT, COMMAND_SERVER, FLAG_JSON, option_name_from_flag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -15,8 +16,8 @@ impl Command {
     pub(super) fn name(self) -> Option<&'static str> {
         match self {
             Self::Overview { .. } => None,
-            Self::Server { .. } => Some("server"),
-            Self::Client { .. } => Some("client"),
+            Self::Server { .. } => Some(COMMAND_SERVER),
+            Self::Client { .. } => Some(COMMAND_CLIENT),
         }
     }
 
@@ -29,14 +30,14 @@ impl Command {
 }
 
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
-    let root_json = super::matches::flag(matches, "json");
+    let root_json = super::matches::flag(matches, option_name_from_flag(FLAG_JSON));
     match matches.subcommand() {
         None => Some(Command::Overview { json: root_json }),
-        Some(("server", scope)) => Some(Command::Server {
-            json: root_json || super::matches::flag(scope, "json"),
+        Some((COMMAND_SERVER, scope)) => Some(Command::Server {
+            json: root_json || super::matches::flag(scope, option_name_from_flag(FLAG_JSON)),
         }),
-        Some(("client", scope)) => Some(Command::Client {
-            json: root_json || super::matches::flag(scope, "json"),
+        Some((COMMAND_CLIENT, scope)) => Some(Command::Client {
+            json: root_json || super::matches::flag(scope, option_name_from_flag(FLAG_JSON)),
         }),
         Some(_) => None,
     }

@@ -7,6 +7,10 @@ use shepr_protocol::{AttachScrollDirection, AttachScrollSource, ClientMessage};
 
 type KeyCombo = (KeyCode, KeyModifiers);
 
+pub(super) fn paste_rejected_notice(size: usize, max: usize) -> String {
+    format!("Paste is {size} bytes; Shepr's limit is {max} bytes")
+}
+
 /// What `forward_input` did with its bytes.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ForwardOutcome {
@@ -18,13 +22,11 @@ pub(super) enum ForwardOutcome {
 }
 
 impl ForwardOutcome {
-    /// The notice for a rejected paste, worded like the client shell's.
+    /// The notice for a rejected paste.
     pub(super) fn notice(&self) -> Option<String> {
         match self {
             Self::Sent => None,
-            Self::PasteRejected { size, max } => Some(format!(
-                "Paste is {size} bytes; Shepr's limit is {max} bytes"
-            )),
+            Self::PasteRejected { size, max } => Some(paste_rejected_notice(*size, *max)),
         }
     }
 }

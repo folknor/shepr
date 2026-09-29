@@ -369,6 +369,9 @@ fn agent_name_from_path_token(token: &str, cwd_pid: Option<u32>) -> Option<Strin
         .or_else(|| resolved_agent_name_from_path_token(trimmed, cwd_pid))
 }
 
+// The package layouts matched here are upstream npm layouts, which can change
+// between releases. The `identify_agent_in_job_detects_*` tests use constructed
+// paths, so nothing here notices when an upstream layout moves.
 fn agent_name_from_known_package_path(path: &str) -> Option<String> {
     let raw_components: Vec<&str> = path
         .split('/')

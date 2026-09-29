@@ -156,7 +156,7 @@ pub(super) fn server_status(
 ) -> Result<shepr_api::RuntimeStatus, shepr_api::client::ApiClientError> {
     let probe = || {
         if context.is_remote() {
-            client.status_with_timeout(std::time::Duration::from_secs(15))
+            client.status_with_timeout(shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT)
         } else {
             client.status()
         }

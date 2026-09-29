@@ -15,6 +15,11 @@ use shepr_api::schema::{
     AgentStatus, PaneAgentState, PaneDirection, PaneRightClickTarget, ReadFormat, ReadSource,
     SplitDirection,
 };
+use shepr_remote::{
+    COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
+    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_JSON, FLAG_REMOTE, FLAG_REMOTE_KEYBINDINGS,
+    FLAG_SESSION, KEYBINDINGS_LOCAL, KEYBINDINGS_SERVER, PROGRAM_NAME, option_name_from_flag,
+};
 
 mod machine;
 
@@ -23,31 +28,37 @@ pub(super) fn command() -> Command {
     // only before the subcommand, so text after the subcommand (a command for
     // `pane run`, arguments after `--` for `agent start`) is never mistaken
     // for `--session` or `--remote`.
-    let command = Command::new("shepr")
-        .bin_name("shepr")
+    let command = Command::new(PROGRAM_NAME)
+        .bin_name(PROGRAM_NAME)
         .about("terminal workspace manager for AI coding agents")
         .disable_help_flag(true)
         .disable_version_flag(true)
         .arg(help_flag())
-        .arg(option("session", "NAME").help("Use or create a named persistent session"))
+        .arg(
+            option(option_name_from_flag(FLAG_SESSION), "NAME")
+                .help("Use or create a named persistent session"),
+        )
         .arg(
             option("machine", "LABEL-OR-ID")
                 .value_parser(NonEmptyStringValueParser::new())
                 .conflicts_with_all([
-                    "session",
-                    "remote",
-                    "remote-keybindings",
+                    option_name_from_flag(FLAG_SESSION),
+                    option_name_from_flag(FLAG_REMOTE),
+                    option_name_from_flag(FLAG_REMOTE_KEYBINDINGS),
                     "default-config",
                     "version",
                     "help",
                 ])
                 .help("Run an API command on a saved SSH machine (uses that machine's session)"),
         )
-        .arg(option("remote", "TARGET").help("Attach through SSH to a remote Shepr server"))
         .arg(
-            option("remote-keybindings", "MODE")
-                .value_parser(["local", "server"])
-                .requires("remote")
+            option(option_name_from_flag(FLAG_REMOTE), "TARGET")
+                .help("Attach through SSH to a remote Shepr server"),
+        )
+        .arg(
+            option(option_name_from_flag(FLAG_REMOTE_KEYBINDINGS), "MODE")
+                .value_parser([KEYBINDINGS_LOCAL, KEYBINDINGS_SERVER])
+                .requires(option_name_from_flag(FLAG_REMOTE))
                 .help("Choose local or server keybindings for remote attach"),
         )
         .arg(flag("default-config").help("Print default configuration and exit"))
@@ -70,20 +81,20 @@ pub(super) fn command() -> Command {
         .subcommand(session_command())
         .subcommand(integration_command())
         .subcommand(
-            Command::new("client")
+            Command::new(COMMAND_CLIENT)
                 .hide(true)
                 .about("Connect to a running server's client socket"),
         )
         .subcommand(
-            Command::new("remote-client-bridge")
+            Command::new(COMMAND_REMOTE_CLIENT_BRIDGE)
                 .hide(true)
                 .about("Relay a remote client connection over stdio"),
         )
         .subcommand(
-            Command::new("remote-api-bridge")
+            Command::new(COMMAND_REMOTE_API_BRIDGE)
                 .hide(true)
                 .about("Relay the API socket over stdio")
-                .arg(flag("check")),
+                .arg(flag(option_name_from_flag(FLAG_CHECK))),
         );
     configure_help(command, 0)
 }
@@ -124,18 +135,18 @@ fn group(name: &'static str) -> Command {
 }
 
 fn status_command() -> Command {
-    Command::new("status")
+    Command::new(COMMAND_STATUS)
         .about("Show local client and running server status")
-        .arg(json_flag())
+        .arg(flag(option_name_from_flag(FLAG_JSON)))
         .subcommand(
-            Command::new("server")
+            Command::new(COMMAND_SERVER)
                 .about("Show running server status")
-                .arg(json_flag()),
+                .arg(flag(option_name_from_flag(FLAG_JSON))),
         )
         .subcommand(
-            Command::new("client")
+            Command::new(COMMAND_CLIENT)
                 .about("Show local client status")
-                .arg(json_flag()),
+                .arg(flag(option_name_from_flag(FLAG_JSON))),
         )
 }
 
@@ -147,10 +158,10 @@ fn config_command() -> Command {
 
 fn server_command() -> Command {
     // Bare `shepr server` runs the headless server, so no subcommand is required.
-    Command::new("server")
+    Command::new(COMMAND_SERVER)
         .about("Run or control the headless server")
         .subcommand(
-            Command::new("stop")
+            Command::new(COMMAND_STOP)
                 .about("Stop the running server")
                 .arg(force_stop_flag()),
         )
@@ -386,7 +397,7 @@ pub(super) fn agent_kind_values() -> Vec<&'static str> {
 }
 
 /// Key syntax for `pane send-keys` and `agent send-keys`; the server parses
-/// each key with the keybinding parser (`config::parse_key_combo`).
+/// each key with the keybinding parser's API entry (`config::parse_api_key_combo`).
 const SEND_KEYS_HELP: &str = "Each KEY is a key combo in keybinding syntax: ctrl/alt/shift/super modifiers joined with + (meta is an alias for alt), then a character or a key name: enter, tab, esc, backspace, space, up, down, left, right, home, end, pageup, pagedown, delete, insert, f1..f12. Use esc as the canonical Escape key name; escape is also accepted.";
 
 fn pane_command() -> Command {
@@ -705,7 +716,7 @@ fn session_command() -> Command {
                 .arg(required("name", "NAME")),
         )
         .subcommand(
-            Command::new("stop")
+            Command::new(COMMAND_STOP)
                 .about("Stop a session")
                 .arg(required("name", "NAME"))
                 .arg(json_flag())
@@ -814,14 +825,18 @@ fn text_json_format_option() -> Arg {
 }
 
 fn json_flag() -> Arg {
-    flag("json")
+    flag(option_name_from_flag(FLAG_JSON))
 }
 
 /// `server stop` and `session stop` refuse a server of another build, since
 /// stopping it exits its panes and it may be the installed server a dev build
 /// reached by default; this flag states that stopping it is intended.
 fn force_stop_flag() -> Arg {
-    flag("force").help("Stop the server even when it runs a different shepr build")
+    let long = option_name_from_flag(shepr_api::session::FORCE_STOP_FLAG);
+    Arg::new(long)
+        .long(long)
+        .action(ArgAction::SetTrue)
+        .help("Stop the server even when it runs a different shepr build")
 }
 
 fn help_flag() -> Arg {
@@ -1191,6 +1206,96 @@ mod tests {
     #[test]
     fn spec_passes_clap_invariants() {
         super::command().debug_assert();
+    }
+
+    #[test]
+    fn generated_remote_cli_arguments_parse_with_the_cli_spec() {
+        use shepr_remote::{RemoteCliCommand, RemoteKeybindings};
+
+        use crate::cli::{CliCommand, Invocation, Launch, parse_invocation, server, status};
+
+        // Parses what the producer emits and checks what the parser made of it,
+        // so a spelling that parses into the wrong command or session fails too.
+        fn parse(command: RemoteCliCommand<'_>) -> Invocation {
+            let mut argv = vec![super::PROGRAM_NAME.to_owned()];
+            argv.extend(command.args().into_iter().map(str::to_owned));
+            parse_invocation(&argv)
+                .unwrap_or_else(|code| panic!("{command:?} should parse, exit code {code}"))
+        }
+        let default = shepr_config::DEFAULT_SESSION_NAME;
+        // Remote-host commands spell the default session by omitting the flag.
+        let parsed_session = |session: &str| (session != default).then(|| session.to_owned());
+
+        let invocation = parse(RemoteCliCommand::ClientStatus);
+        assert!(matches!(
+            &invocation.launch,
+            Launch::Cli(command)
+                if matches!(**command, CliCommand::Status(status::Command::Client { json: true }))
+        ));
+        assert_eq!(invocation.session, None);
+
+        for session in [default, "agents"] {
+            let invocation = parse(RemoteCliCommand::ServerStatus { session });
+            assert!(matches!(
+                &invocation.launch,
+                Launch::Cli(command)
+                    if matches!(**command, CliCommand::Status(status::Command::Server { json: true }))
+            ));
+            assert_eq!(invocation.session, parsed_session(session));
+
+            let invocation = parse(RemoteCliCommand::ClientBridge { session });
+            assert!(matches!(invocation.launch, Launch::ClientBridge));
+            assert_eq!(invocation.session, parsed_session(session));
+
+            for check in [false, true] {
+                let invocation = parse(RemoteCliCommand::ApiBridge { session, check });
+                assert!(matches!(
+                    invocation.launch,
+                    Launch::ApiBridge { check: parsed } if parsed == check
+                ));
+                assert_eq!(invocation.session, parsed_session(session));
+            }
+
+            for force in [false, true] {
+                let invocation = parse(RemoteCliCommand::ServerStop { session, force });
+                assert!(matches!(
+                    &invocation.launch,
+                    Launch::Cli(command)
+                        if matches!(
+                            **command,
+                            CliCommand::Server(server::Command::Stop { force: parsed })
+                                if parsed == force
+                        )
+                ));
+                assert_eq!(invocation.session, parsed_session(session));
+            }
+        }
+
+        for session in [None, Some(default), Some("agents")] {
+            for keybindings in [
+                None,
+                Some(RemoteKeybindings::Local),
+                Some(RemoteKeybindings::Server),
+            ] {
+                let invocation = parse(RemoteCliCommand::Attach {
+                    target: "dev@host",
+                    session,
+                    keybindings,
+                });
+                assert!(matches!(
+                    invocation.launch,
+                    Launch::Tui {
+                        attached_session: None
+                    }
+                ));
+                assert_eq!(invocation.remote.as_deref(), Some("dev@host"));
+                assert_eq!(invocation.session.as_deref(), session);
+                assert_eq!(
+                    invocation.remote_keybindings.as_deref(),
+                    keybindings.map(RemoteKeybindings::to_env_value)
+                );
+            }
+        }
     }
 
     #[test]

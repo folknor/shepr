@@ -79,12 +79,6 @@ return one outcome shape formatted in one place.)
   test in `ui/panes.rs` invents a third wording ("Saved directory is
   unavailable. Restart to retry.") and asserts against its own invention, so it
   would not notice either production string changing.
-- The paste-rejection sentence is spelled twice in `shepr-client`:
-  `shell/input/input.rs::push_focused_paste` writes "Paste is {size} bytes;
-  Shepr's limit is {} bytes", and `attach.rs::ForwardOutcome::notice` writes the
-  same sentence under a comment reading "worded like the client shell's".
-  Nothing keeps them in step; the threshold itself is correctly single-owned as
-  `shepr_protocol::MAX_INPUT_PAYLOAD`.
 - Launch-env validation exists twice with different messages: see HYGP-017.
 
 Enforcement named: have each install return a
@@ -135,13 +129,6 @@ work.
 
 Six scopes reported this.
 
-- `shepr-platform`: `api_request_failed` is `warn!` while `pane_exit_failed` and
-  `session_save_failed`/`session_clear_failed` are `error!`, though all four are
-  "an operation the user asked for did not complete".
-  `shutdown.rs` logs the loss of
-  the logind connection while a shutdown is pending (`err`, `retry_seconds`) at
-  `debug!`, below the default `shepr=info` filter, in the case where the session
-  may not be saved.
 - `shepr-pty`/`shepr-mux`: actor read failure, poll failure and wake-drain
   failure are `debug!`; write failure is `warn!`. All of them end the pane's IO
   loop.
@@ -154,16 +141,10 @@ Six scopes reported this.
   "failed to check server socket" (`remote/local_server.rs`), "saved SSH
   endpoint bridge failed" (`remote/bridge.rs`); `error!` for "remote bridge
   failed to prepare client socket" (`remote/bridge.rs`).
-- `shepr-client`: a protocol violation is `ClientError::UnexpectedWelcome` from
-  `handshake.rs` and a `debug!("received unexpected Welcome in main loop")` in
-  `lib.rs` - same class of event (a peer sending a message it must not send at
-  that point), two severities, the second below the default log level. The
-  termio/client hunter noted the project's posture (same build both sides, no
-  wire compatibility) argues for treating it as an error.
 
-Enforcement named: none mechanical for level choice. A documented level policy in
-the logging module, or in each crate's module comment, plus review is the only
-lever; the remote hunter suggested a text rule could at least require every
+Enforcement named: none mechanical for level choice. `shepr-platform`'s logging
+module now states a level policy; the open bullets are the sites that do not
+follow it yet. The remote hunter suggested a text rule could at least require every
 `tracing::` call in that crate to carry the endpoint identifier (HYGC-012).
 
 ## HYGC-011 - One failure, two channels, chosen by which file or which function it landed in
@@ -195,12 +176,6 @@ disagree.
 
 Reported from six scopes.
 
-- `shepr-platform`: `session_restored(workspaces, outcome)` logs no session id
-  and no path, while its siblings `session_saved`/`session_cleared` both log
-  `path`. `shutdown.rs`'s "host shutdown requested; preserving session before
-  pane termination" carries no generation number, though the generation is the
-  whole correctness mechanism of that module and does appear in the `debug!`
-  release line.
 - `shepr-mux/src/persist/io.rs`, twenty lines apart: `load()` logs
   `warn!(event = "persist.restore", subsystem = "persist", outcome =
   "read_error", path = %path.display(), err = %err, "failed to read session
@@ -237,24 +212,6 @@ one helper.
 Gathered from six scopes. The core/platform hunter's note that these are
 judgement calls only review catches applies throughout.
 
-`shepr-platform`:
-
-- `SocketStartupLock` acquisition and release: nothing. Losing the race for it is
-  turned into an `AddrInUse` error message but never logged.
-- `bind_private_local_listener` succeeding via staging versus via the insecure
-  in-place path: only the failure warns, so there is no record of which path a
-  running server actually took.
-- `remote_bridge.rs`'s `std::process::exit(1)` on idle expiry: the bridge dies
-  with no line saying why - the one place a log would explain a mysterious
-  disconnect.
-- `SshAgentRegistry::publish` swapping the published agent symlink to
-  `.unavailable`: no log. The user sees agent forwarding stop working silently.
-
-
-`shepr-mux`: `PaneTerminal::seed_history_ansi` returns `()` and silently does
-nothing when the core lock is poisoned, so restored scrollback is lost with no
-line anywhere (see also HYGC-029).
-
 `shepr-client`: startup host queries now track replies only for writes that
 succeeded. Open: a reactive query that fails to go out still leaves the input
 reader's focus reply window open for its one-flush hold; the framer state is in
@@ -264,35 +221,25 @@ reader's focus reply window open for its one-flush hold; the framer state is in
 `shepr-client/src/shell/endpoints.rs` leaves a `None` as its only trace. (The
 protocol/config hunter filed that swallow itself as a live defect.)
 
-## HYGC-036 - The outdated-registration warning fires on every status check
+## HYGC-037 - Once-only drop and failure reports that lose their subject or their total
 
-`crates/shepr-agent/src/integration/registry.rs::integration_status_at` now
-warns when a hook registration is not current, which answers "why is my agent
-not reporting" - but it fires on every status check, so anything that polls
-status repeats it. Warn once per target per process, or log at the install
-decision rather than the read.
+- `shepr-pty`: the terminal-reply drop counter is reported at the first drop
+  (count 1) and never again, so the total is not visible, for example at pane
+  shutdown.
+- `shepr-mux`: the terminal mutation-failure `error!` names no pane, because
+  `PaneTerminal` does not know its id.
+- `shepr-platform`: `api_request_failed` is now `error!`, including
+  response-write IO failures from clients that disconnect abruptly; watch it for
+  noise and split the disconnect case if it is.
 
 ## HYGC-018 - Drops on the terminal-reply and dirty-patch paths with no counter and no log
 
-`shepr-pty`/`shepr-mux`:
-
-- Terminal replies that overflow the inbox (`push_terminal_response`, and a
-  `let _ =` in `read_chunk`). Documented as deliberate, but a counter or a
-  rate-limited log would let an operator see it happen.
-- Resize replies refused by `reserve` in `replace_resize`.
-- Replies from the timer before the actor handle is set (`timer_writer.get()`
-  returns `None`).
-- `enable_utf8_input` failures.
-- `ghostty_collect_dirty_patch` takes a `fallback!($reason:literal)` and throws
-  the reason away. The reasons are never logged or counted, so a fallback storm
-  is invisible. The same macro pattern appears in `retained_surface.rs`.
-
-Also recorded from the same scope: a poisoned core is logged twice, once by the
-mux reader in `pane/terminal/backend.rs` and again by the actor as "terminal
-core is broken ... closing the pane".
-
-Enforcement named: make the `fallback!` macro record the reason; a counter or
-rate-limited log for the inbox drops.
+Residue. The pty and mux drops are now counted and reported once per actor or
+pane, and the mux dirty-patch fallback carries its reason. Open:
+`crates/shepr-server/src/server/headless/retained_surface.rs` has its own
+`fallback!` macro (seventeen call sites) that still throws the reason away, so
+a fallback storm there is invisible. Carry the reason and log it once, off the
+render loop's hot path.
 
 ## HYGC-022 - Errors that reach an operator naming no subject
 
@@ -360,14 +307,6 @@ Elsewhere:
   recursive delete of a path derived from workspace state is the one operation
   you want logged either way, and suggested a text rule banning
   `remove_dir_all` outside `shepr-test-support`.
-- `shepr-remote`: `SshMetadataCache::store` and `invalidate` both return `()` and
-  swallow every failure at `debug`. A metadata cache that can never be written
-  means every reconnect pays full discovery forever, reported only at `debug`.
-  `store` is also called from `src/cli/machine.rs::add` *after* "Saved SSH
-  machine {id}. Remote server is ready." is printed, so the user is told setup
-  succeeded even when the cache seeding silently failed. Enforcement named:
-  return `io::Result<()>` and let `add` decide whether to mention it; `#[must_use]`
-  or the signature itself holds it.
 
 Enforcement named for the class: `clippy::let_underscore_must_use` in the
 workspace lint table would flag all of them and force an explicit
@@ -379,17 +318,6 @@ fixes.
 
 ## HYGC-029 - Poisoned locks answered with success, a fabricated value, or a silent drop
 
-- `shepr-vt`/`shepr-mux`: `synchronized_output_state` returns `(true, 0)` on a
-  poisoned core - a made-up value rather than an error.
-- `shepr-mux`: `GhosttyPaneTerminal::resize`, `scroll_up`, `scroll_down`,
-  `scroll_reset` and `set_scroll_offset_from_bottom` all use
-  `if let Ok(mut core) = lock_terminal_core(...)` and drop the operation on a
-  poisoned lock. The doc comment on `GhosttyPaneTerminal::core` justifies this
-  policy for *readers* ("readers answer empty or default values rather than
-  error"); it says nothing about writers, and a dropped resize is not the same as
-  a stale read. `PaneTerminal::seed_history_ansi` is the same shape and loses
-  restored scrollback (HYGC-014). Enforcement named: a `#[must_use]` result, or a
-  helper that logs once per pane per poisoning.
 - `shepr-agent/src/detect/manifest.rs` unwraps poisoned locks into inner values
   at five sites (`unwrap_or_else(PoisonError::into_inner)`,
   `Err(poisoned) => poisoned.into_inner()`). The agent hunter's reading: that is
@@ -427,15 +355,6 @@ structurally cannot.
 
 ## HYGC-032 - Failures answered with a valid-looking sentinel instead of a refusal
 
-- `shepr-server/src/app/ids.rs::public_workspace_id` answers an invalid index
-  with an empty string. This is documented as deliberate ("a stale one is a
-  caller bug, reported and answered with an empty id rather than a panic") and it
-  warns, which is right - but the empty `String` then flows into public ids and
-  API responses as a valid-looking value, and a `""` workspace id in a response
-  is indistinguishable from a real one to the client. The sibling functions
-  `public_tab_id` and `public_pane_id` return `Option<String>`.
-- `shepr-vt`'s `synchronized_output_state` returning `(true, 0)` on a poisoned
-  core (HYGC-029) is the same shape.
 
 Enforcement named: return `Option<String>` like the siblings;
 `BootId::for_this_process()` in `shepr-protocol` with `From<String>` restricted

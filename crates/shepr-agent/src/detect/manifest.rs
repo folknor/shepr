@@ -1,104 +1,33 @@
-//! Screen-detection manifests: the format, the loader and the matcher.
+//! Screen-detection manifest format, loading and matching.
 //!
-//! # Where manifests come from
-//!
-//! Every agent marked for screen detection in the agent descriptor table has
-//! a bundled manifest in
-//! `crates/shepr-agent/src/detect/manifests/`. A local override at
-//! `<config dir>/agent-detection/<agent label>.toml` replaces the bundled one
-//! wholesale when its `id` (or one of its `aliases`) names that agent. An
-//! override that does not parse, validate or compile is reported as a typed
-//! error. Diagnostic loading keeps the bundled manifest active and attaches a
-//! warning; startup validation can refuse the invalid override. Manifests are
-//! read once and cached; `shepr server reload-agent-manifests` rereads them.
+//! Bundled manifests are loaded for agents whose descriptors enable screen
+//! detection. A file at `<config dir>/agent-detection/<agent label>.toml`
+//! replaces that agent's bundled manifest when its identity matches. Invalid
+//! overrides retain the bundled manifest with a diagnostic warning, while
+//! startup validation can refuse them. Manifests are cached and reread by
+//! `shepr server reload-agent-manifests`.
 //!
 //! # Format
 //!
 //! ```toml
-//! id = "claude"                  # agent label; must match the file it overrides
-//! aliases = ["claude-code"]      # optional
+//! id = "claude"
 //!
 //! [[rules]]
-//! id = "osc_title_working"       # required, non-empty
-//! state = "working"              # idle | working | blocked | unknown
-//! priority = 1100                # default 0; highest matching rule wins
-//! region = "osc_title"           # default "whole_recent"
-//! visible_working = true         # optional evidence flags, see below
+//! id = "working"
+//! state = "working"
 //! regex = ['^\x{2810} ']
-//! not = [
-//!   { region = "bottom_non_empty_lines(12)", contains = ["esc to cancel"] },
-//! ]
 //! ```
 //!
-//! A rule matches when its own matchers and gates all hold against its
-//! region. Among matching rules the highest `priority` wins; equal priorities
-//! go to the rule listed first. No match gives the agent's fallback state
-//! (`Unknown` for Codex, `Idle` for every other agent).
+//! A manifest identifies an agent and contains ordered rules. Rules combine a
+//! state and priority with matchers, nested gates, evidence flags and a region
+//! selection. See [`AgentManifest`], [`ManifestRule`], [`ManifestGate`],
+//! [`RegionSpec`] and the `MAX_*` constants for schema details and limits.
 //!
-//! Matchers, usable on a rule and on any gate; every listed one must hold:
-//!
-//! - `contains = [..]`: every needle occurs in the region, case-insensitively.
-//! - `regex = [..]`: every pattern matches somewhere in the region text.
-//! - `line_regex = [..]`: every pattern matches at least one line.
-//!
-//! Gates, also usable on a rule and nested inside any gate:
-//!
-//! - `all = [gate, ..]`: every gate matches.
-//! - `any = [gate, ..]`: at least one gate matches.
-//! - `not = [gate, ..]`: no gate matches.
-//!
-//! Each gate is an inline table with the same matcher and gate keys plus an
-//! optional `region`. A gate without `region` reads the region of whatever
-//! encloses it (the rule, or the parent gate). A gate with `region` reads that
-//! region instead, and its nested gates inherit it. This lets one rule combine
-//! controls from different inputs, for example a rule on `osc_title` whose
-//! `not` gate reads `bottom_non_empty_lines(12)` so a title spinner stands
-//! down while a dialog's controls are on screen. Encode invariant controls as
-//! explicit AND (`all` / sibling matchers) and OR (`any`) gates rather than
-//! one loose needle.
-//!
-//! Evidence and skip flags on a rule:
-//!
-//! - `visible_idle`, `visible_working`, `visible_blocker`: the matched screen
-//!   visibly shows that state's live chrome. Each only counts when the rule's
-//!   `state` is the corresponding one.
-//! - `skip_state_update = true`: the screen is an agent-owned viewer (a
-//!   transcript, a picker) that says nothing about the live state; the pane
-//!   keeps its previous state. Requires `state = "unknown"` and no `visible_*`
-//!   flag.
-//!
-//! # Regions
-//!
-//! - `whole_recent`: the whole detection snapshot.
-//! - `osc_title`, `osc_progress`: the last OSC window title / OSC 9;4
-//!   progress string, not the screen.
-//! - `bottom_lines(N)`: the last N lines.
-//! - `bottom_non_empty_lines(N)`: from the Nth-last non-empty line to the end.
-//! - `top_non_empty_lines(N)`: from the start through the Nth non-empty line.
-//!   For all three regions, N is 1..=65535 written without a leading zero.
-//! - `after_last_horizontal_rule`: text after the last `─` rule line.
-//! - `prompt_box_body`: lines between the top border of the bottom-most
-//!   `─`-bordered box and the next rule.
-//! - `above_prompt_box`: everything above that box (the whole snapshot when
-//!   there is no box); `last_non_empty_above_prompt_box` is its last non-empty
-//!   line.
-//! - Codex prompt structure, where a prompt line is `›` or starts with `› `,
-//!   a block marker line starts with `•`, `■`, a cross mark (U+2717) or a
-//!   check mark (U+2713), and the current
-//!   prompt is the last prompt line with no block marker below it:
-//!   `after_last_prompt_marker`, `before_current_prompt_marker`,
-//!   `whole_recent_without_current_prompt_marker` (empty while a current
-//!   prompt exists), `current_prompt_block_marker` (the last block marker line
-//!   above the current prompt) and `after_current_prompt_block_marker`.
-//!
-//! # Limits
-//!
-//! Rule count, gate depth, gate count, matchers per gate, total matchers and
-//! matcher length are capped by the `MAX_*` constants below. Every gate needs a positive matcher (`contains`, `regex`, `line_regex`,
-//! `all` or `any`); a gate inside `not` may consist of nested `not` gates only.
-//! Gate depth counts the rule's root matcher as level one, with at most eight
-//! levels total.
-//! Unknown keys are rejected.
+//! A rule matches only when its conditions hold. The highest-priority match
+//! wins, with manifest order breaking ties. No match uses the agent fallback
+//! (`Unknown` for Codex, `Idle` for other agents). Evidence flags describe
+//! visible state; `skip_state_update` preserves prior state for agent-owned
+//! viewers.
 
 use std::{
     path::{Path, PathBuf},
@@ -338,12 +267,18 @@ struct ManifestRule {
     priority: i32,
     #[serde(default = "default_region")]
     region: String,
+    /// `visible_idle`, `visible_blocker` and `visible_working`: the matched
+    /// screen visibly shows that state's live chrome. Each only counts when the
+    /// rule's `state` is the corresponding one.
     #[serde(default)]
     visible_idle: bool,
     #[serde(default)]
     visible_blocker: bool,
     #[serde(default)]
     visible_working: bool,
+    /// The screen is an agent-owned viewer (a transcript, a picker) that says
+    /// nothing about the live state, so the pane keeps its previous state.
+    /// Requires `state = "unknown"` and no `visible_*` flag.
     #[serde(default)]
     skip_state_update: bool,
     #[serde(default)]
@@ -360,6 +295,16 @@ struct ManifestRule {
     line_regex: Vec<String>,
 }
 
+/// A gate: an inline table with the same matcher and gate keys a rule has,
+/// plus an optional `region`. Every listed matcher must hold: `contains`
+/// needles occur case-insensitively, `regex` patterns match somewhere in the
+/// region, `line_regex` patterns each match at least one line. `all` needs
+/// every nested gate, `any` at least one, `not` none.
+///
+/// Every gate needs a positive matcher (`contains`, `regex`, `line_regex`,
+/// `all` or `any`); a gate inside `not` may consist of nested `not` gates only.
+/// Gate depth counts the rule's root matcher as level one, up to
+/// `MAX_GATE_DEPTH`.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct ManifestGate {
@@ -533,22 +478,50 @@ struct CompiledRegion {
     spec: RegionSpec,
 }
 
+/// The text a rule or gate reads, named in a manifest by the spelling
+/// [`RegionSpec::parse`] accepts.
+///
+/// The Codex prompt regions share one structure: a prompt line is `›` or
+/// starts with `› `, a block marker line starts with `•`, `■`, a cross mark
+/// (U+2717) or a check mark (U+2713), and the current prompt is the last prompt
+/// line with no block marker below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegionSpec {
+    /// `whole_recent`: the whole detection snapshot.
     WholeRecent,
+    /// `after_last_prompt_marker`.
     AfterLastPromptMarker,
+    /// `before_current_prompt_marker`.
     BeforeCurrentPromptMarker,
+    /// `whole_recent_without_current_prompt_marker`: empty while a current
+    /// prompt exists.
     WholeRecentWithoutCurrentPromptMarker,
+    /// `current_prompt_block_marker`: the last block marker line above the
+    /// current prompt.
     CurrentPromptBlockMarker,
+    /// `after_current_prompt_block_marker`.
     AfterCurrentPromptBlockMarker,
+    /// `prompt_box_body`: lines between the top border of the bottom-most
+    /// `─`-bordered box and the next rule.
     PromptBoxBody,
+    /// `above_prompt_box`: everything above that box, or the whole snapshot
+    /// when there is no box.
     AbovePromptBox,
+    /// `last_non_empty_above_prompt_box`: the last non-empty line of
+    /// `above_prompt_box`.
     LastNonEmptyAbovePromptBox,
+    /// `after_last_horizontal_rule`: text after the last `─` rule line.
     AfterLastHorizontalRule,
+    /// `osc_title`: the last OSC window title, not the screen.
     OscTitle,
+    /// `osc_progress`: the last OSC 9;4 progress string, not the screen.
     OscProgress,
+    /// `bottom_lines(N)`: the last N lines. For the three counted regions N is
+    /// 1..=65535, written without a leading zero.
     BottomLines(usize),
+    /// `bottom_non_empty_lines(N)`: from the Nth-last non-empty line to the end.
     BottomNonEmptyLines(usize),
+    /// `top_non_empty_lines(N)`: from the start through the Nth non-empty line.
     TopNonEmptyLines(usize),
 }
 

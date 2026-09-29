@@ -45,6 +45,19 @@ pub struct SocketFileIdentity {
 /// guard drops so later processes always lock the same inode.
 pub struct SocketStartupLock {
     _lock: FlockLock,
+    socket_path: PathBuf,
+}
+
+impl Drop for SocketStartupLock {
+    fn drop(&mut self) {
+        tracing::info!(
+            event = "ipc.socket_lock",
+            subsystem = "ipc",
+            outcome = "released",
+            path = %self.socket_path.display(),
+            "server socket startup lock released"
+        );
+    }
 }
 
 /// An exclusive advisory lock held for the lifetime of this guard.
@@ -131,17 +144,34 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
 /// (`shepr_core::socket_path`).
 pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
     let lock_path = socket_startup_lock_path(socket_path);
-    let lock = acquire_flock_lock(&lock_path, false).map_err(|error| {
-        if error.kind() == io::ErrorKind::WouldBlock {
-            io::Error::new(
+    let lock = match acquire_flock_lock(&lock_path, false) {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            tracing::info!(
+                event = "ipc.socket_lock",
+                subsystem = "ipc",
+                outcome = "busy",
+                path = %socket_path.display(),
+                "server socket startup lock is already held"
+            );
+            return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
                 format!("server startup lock is held for {}", socket_path.display()),
-            )
-        } else {
-            error
+            ));
         }
-    })?;
-    Ok(SocketStartupLock { _lock: lock })
+        Err(error) => return Err(error),
+    };
+    tracing::info!(
+        event = "ipc.socket_lock",
+        subsystem = "ipc",
+        outcome = "acquired",
+        path = %socket_path.display(),
+        "server socket startup lock acquired"
+    );
+    Ok(SocketStartupLock {
+        _lock: lock,
+        socket_path: socket_path.to_path_buf(),
+    })
 }
 
 /// Acquires the startup lock, prepares `path`, and binds a private listener.
@@ -302,7 +332,17 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 /// [`peer_is_same_user`]; the file mode is not the only control.
 pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
     match bind_via_private_staging(path) {
-        Ok(listener) => Ok(listener),
+        Ok(listener) => {
+            tracing::info!(
+                event = "ipc.socket_bind",
+                subsystem = "ipc",
+                outcome = "ok",
+                strategy = "staged",
+                path = %path.display(),
+                "private socket listener bound"
+            );
+            Ok(listener)
+        }
         Err(StagedBindError::Busy) => Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             format!("socket busy at {}", path.display()),
@@ -310,11 +350,23 @@ pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
         Err(StagedBindError::RandomSource(error)) => Err(error),
         Err(StagedBindError::Unavailable(err)) => {
             tracing::warn!(
+                event = "ipc.socket_bind",
+                subsystem = "ipc",
+                outcome = "staging_unavailable",
                 path = %path.display(),
                 err = %err,
                 "private socket staging failed; binding in place"
             );
-            bind_in_place_then_restrict(path)
+            let listener = bind_in_place_then_restrict(path)?;
+            tracing::info!(
+                event = "ipc.socket_bind",
+                subsystem = "ipc",
+                outcome = "ok",
+                strategy = "in_place",
+                path = %path.display(),
+                "private socket listener bound"
+            );
+            Ok(listener)
         }
     }
 }

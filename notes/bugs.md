@@ -18,6 +18,23 @@ pass should expect phantoms.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
+## BUG-105 - A surface update that arrives undecoded ends the whole client
+
+`crates/shepr-client/src/lib.rs`: the main loop answers
+`ServerMessage::SurfaceUpdate` with `Err(SurfaceUpdateBeforeDecode)`, which
+exits the client for every endpoint. The reader decodes surface updates before
+handing them on, so it is probably unreachable, but if it is an internal
+invariant it should say so; if one endpoint can reach it, it should fail that
+endpoint only, as a late Welcome now does.
+
+## BUG-106 - The printed reattach command omits the default session
+
+`crates/shepr-remote/src/remote/saved.rs::reattach_command` leaves out
+`--session` for the default session. Run from inside a named session's pane,
+the exported `SHEPR_SESSION` would redirect it to that session. The bootstrap
+command already names the session always; the reattach spelling is pinned by
+`reattach_command_includes_remote_and_session` and changes with it.
+
 ## BUG-103 - `IsolatedEnv` no longer clears shepr names that are not registry entries
 
 `crates/shepr-test-support/src/lib.rs`: isolation now clears the shepr-core

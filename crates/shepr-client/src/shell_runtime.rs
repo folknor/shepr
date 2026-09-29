@@ -800,7 +800,7 @@ pub(super) fn install_client_shell_snapshot(
 pub(super) fn finish_client_shell_input(
     state: &mut ClientState,
     outcome: shell::ClientShellInput,
-    frame: Option<super::frame_output::ComposedFrame>,
+    frame: Option<shepr_protocol::FrameData>,
     endpoints: &mut endpoint::EndpointRegistry,
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,

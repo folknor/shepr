@@ -72,7 +72,11 @@ pub(super) fn remote_server_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<RemoteServerStatus> {
-    let command = remote_shepr.session_command(ssh.session_name(), &["status", "server", "--json"]);
+    let args = RemoteCliCommand::ServerStatus {
+        session: ssh.session_name(),
+    }
+    .args();
+    let command = remote_shepr.command(&args);
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         return Err(command_failed("remote server status failed", &output));
@@ -230,10 +234,12 @@ pub(super) fn stop_remote_server(
     // Forced: the operator already confirmed this stop, and the server being
     // replaced may be of another build than the remote binary, which an
     // unforced stop refuses.
-    let command = remote_shepr.session_command(
-        ssh.session_name(),
-        &["server", "stop", shepr_api::session::FORCE_STOP_FLAG],
-    );
+    let args = RemoteCliCommand::ServerStop {
+        session: ssh.session_name(),
+        force: true,
+    }
+    .args();
+    let command = remote_shepr.command(&args);
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         return Err(command_failed("remote server stop failed", &output));

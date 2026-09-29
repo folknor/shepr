@@ -46,7 +46,7 @@ const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
 pub(super) const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const BUSY_REQUEST_ID_TIMEOUT: Duration = Duration::from_millis(500);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_INITIAL_REQUEST_BYTES: usize = shepr_protocol::MAX_INITIAL_REQUEST_BYTES;
 /// Bounds API worker threads and request-owned stream state such as subscriptions.
 const MAX_ACTIVE_CONNECTIONS: usize = 64;
 

@@ -2,6 +2,11 @@ use clap::ArgMatches;
 
 use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::{ClientWindowTitleSetParams, EmptyParams, Method, Request};
+use shepr_remote::{
+    COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
+    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_REMOTE, FLAG_REMOTE_KEYBINDINGS, FLAG_SESSION,
+    option_name_from_flag,
+};
 
 macro_rules! print {
     ($($arg:tt)*) => {{
@@ -88,10 +93,10 @@ pub(crate) enum CliCommand {
 impl CliCommand {
     fn from_matches(name: &str, matches: &ArgMatches) -> Option<Self> {
         Some(match name {
-            "status" => Self::Status(status::parse(matches)?),
+            COMMAND_STATUS => Self::Status(status::parse(matches)?),
             "config" => Self::Config(ConfigCommand::parse(matches)?),
             "machine" => Self::Machine(machine::parse(matches)?),
-            "server" => Self::Server(server::parse(matches)?),
+            COMMAND_SERVER => Self::Server(server::parse(matches)?),
             "workspace" => Self::Workspace(workspace::parse(matches)?),
             "tab" => Self::Tab(tab::parse(matches)?),
             "agent" => Self::Agent(agent::parse(matches)?),
@@ -105,10 +110,10 @@ impl CliCommand {
 
     pub(crate) fn name(&self) -> &'static str {
         match self {
-            Self::Status(_) => "status",
+            Self::Status(_) => COMMAND_STATUS,
             Self::Config(_) => "config",
             Self::Machine(_) => "machine",
-            Self::Server(_) => "server",
+            Self::Server(_) => COMMAND_SERVER,
             Self::Workspace(_) => "workspace",
             Self::Tab(_) => "tab",
             Self::Agent(_) => "agent",
@@ -242,7 +247,7 @@ impl SessionCommand {
             Some(("list", command)) => Some(Self::List {
                 json: matches::flag(command, "json"),
             }),
-            Some(("stop", command)) => Some(Self::Stop {
+            Some((COMMAND_STOP, command)) => Some(Self::Stop {
                 name: matches::required(command, "name")?,
                 json: matches::flag(command, "json"),
                 force: matches::flag(command, "force"),
@@ -259,7 +264,7 @@ impl SessionCommand {
     fn name(&self) -> &'static str {
         match self {
             Self::List { .. } => "list",
-            Self::Stop { .. } => "stop",
+            Self::Stop { .. } => COMMAND_STOP,
             Self::Delete { .. } => "delete",
         }
     }
@@ -294,14 +299,14 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                 None => Launch::Tui {
                     attached_session: None,
                 },
-                Some(("server", matches)) if matches.subcommand().is_none() => {
+                Some((COMMAND_SERVER, matches)) if matches.subcommand().is_none() => {
                     Launch::HeadlessServer
                 }
-                Some(("client", _)) => Launch::Client,
-                Some(("remote-api-bridge", matches)) => Launch::ApiBridge {
-                    check: matches::flag(matches, "check"),
+                Some((COMMAND_CLIENT, _)) => Launch::Client,
+                Some((COMMAND_REMOTE_API_BRIDGE, matches)) => Launch::ApiBridge {
+                    check: matches::flag(matches, option_name_from_flag(FLAG_CHECK)),
                 },
-                Some(("remote-client-bridge", _)) => Launch::ClientBridge,
+                Some((COMMAND_REMOTE_CLIENT_BRIDGE, _)) => Launch::ClientBridge,
                 Some(("session", matches))
                     if matches
                         .subcommand()
@@ -327,10 +332,13 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
             };
             Ok(Invocation {
                 launch,
-                session: matches::string(&matches, "session"),
+                session: matches::string(&matches, option_name_from_flag(FLAG_SESSION)),
                 machine: matches::string(&matches, "machine"),
-                remote: matches::string(&matches, "remote"),
-                remote_keybindings: matches::string(&matches, "remote-keybindings"),
+                remote: matches::string(&matches, option_name_from_flag(FLAG_REMOTE)),
+                remote_keybindings: matches::string(
+                    &matches,
+                    option_name_from_flag(FLAG_REMOTE_KEYBINDINGS),
+                ),
                 help: matches::flag(&matches, "help"),
                 version: matches::flag(&matches, "version"),
                 default_config: matches::flag(&matches, "default-config"),

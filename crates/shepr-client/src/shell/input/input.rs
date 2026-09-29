@@ -1033,9 +1033,9 @@ impl ClientShellState {
     fn push_focused_paste(&mut self, text: String, outcome: &mut ClientShellInput) {
         let size = text.len();
         if size > shepr_protocol::MAX_INPUT_PAYLOAD {
-            outcome.repaint |= self.receive_endpoint_error(format!(
-                "Paste is {size} bytes; Shepr's limit is {} bytes",
-                shepr_protocol::MAX_INPUT_PAYLOAD
+            outcome.repaint |= self.receive_endpoint_error(crate::attach::paste_rejected_notice(
+                size,
+                shepr_protocol::MAX_INPUT_PAYLOAD,
             ));
             return;
         }

@@ -146,15 +146,21 @@ pub(super) fn terminal_collect_dirty_patch(
     core: &mut PaneTerminalCore,
     area_width: u16,
     area_height: u16,
-) -> TerminalDirtyPatchOutcome {
+) -> TerminalDirtyPatchCollection {
     macro_rules! finish {
         ($outcome:expr) => {{
-            return $outcome;
+            return TerminalDirtyPatchCollection {
+                outcome: $outcome,
+                fallback_reason: None,
+            };
         }};
     }
     macro_rules! fallback {
         ($reason:literal) => {{
-            finish!(TerminalDirtyPatchOutcome::Fallback);
+            return TerminalDirtyPatchCollection {
+                outcome: TerminalDirtyPatchOutcome::Fallback,
+                fallback_reason: Some($reason),
+            };
         }};
     }
 

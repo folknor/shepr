@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::agent::IntegrationTarget as Target;
@@ -28,7 +30,6 @@ struct IntegrationSpec {
     path: &'static [&'static str],
     version: u32,
     hook_timeout: Option<Duration>,
-    events: &'static [crate::agent::IntegrationHookEvent],
     action_label: &'static str,
     install: fn(&AgentIntegrationPaths) -> io::Result<InstallOutcome>,
     uninstall: fn(&AgentIntegrationPaths) -> io::Result<UninstallOutcome>,
@@ -68,7 +69,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &[super::PI_EXTENSION_INSTALL_NAME],
         version: super::PI_INTEGRATION_VERSION,
         hook_timeout: None,
-        events: Target::Pi.hook_events(),
     },
     IntegrationSpec {
         target: Target::Omp,
@@ -82,7 +82,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &[super::OMP_EXTENSION_INSTALL_NAME],
         version: super::OMP_INTEGRATION_VERSION,
         hook_timeout: None,
-        events: Target::Omp.hook_events(),
     },
     IntegrationSpec {
         target: Target::Claude,
@@ -99,7 +98,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
         version: super::CLAUDE_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Claude.hook_events(),
     },
     IntegrationSpec {
         target: Target::Codex,
@@ -113,7 +111,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &[super::CODEX_HOOK_INSTALL_NAME],
         version: super::CODEX_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Codex.hook_events(),
     },
     IntegrationSpec {
         target: Target::Copilot,
@@ -130,7 +127,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
         version: super::COPILOT_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Copilot.hook_events(),
     },
     IntegrationSpec {
         target: Target::Devin,
@@ -147,7 +143,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &[super::DEVIN_HOOK_INSTALL_NAME],
         version: super::DEVIN_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Devin.hook_events(),
     },
     IntegrationSpec {
         target: Target::Droid,
@@ -164,7 +159,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
         version: super::DROID_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Droid.hook_events(),
     },
     IntegrationSpec {
         target: Target::Kimi,
@@ -178,7 +172,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
         version: super::KIMI_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Kimi.hook_events(),
     },
     IntegrationSpec {
         target: Target::Opencode,
@@ -200,7 +193,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
         version: super::OPENCODE_INTEGRATION_VERSION,
         hook_timeout: None,
-        events: Target::Opencode.hook_events(),
     },
     IntegrationSpec {
         target: Target::Kilo,
@@ -214,7 +206,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
         version: super::KILO_INTEGRATION_VERSION,
         hook_timeout: None,
-        events: Target::Kilo.hook_events(),
     },
     IntegrationSpec {
         target: Target::Qodercli,
@@ -231,7 +222,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::QODERCLI_HOOK_INSTALL_NAME],
         version: super::QODERCLI_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Qodercli.hook_events(),
     },
     IntegrationSpec {
         target: Target::Qwen,
@@ -248,7 +238,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::QWEN_HOOK_INSTALL_NAME],
         version: super::QWEN_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Qwen.hook_events(),
     },
     IntegrationSpec {
         target: Target::Cursor,
@@ -265,7 +254,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &[super::CURSOR_HOOK_INSTALL_NAME],
         version: super::CURSOR_INTEGRATION_VERSION,
         hook_timeout: None,
-        events: Target::Cursor.hook_events(),
     },
     IntegrationSpec {
         target: Target::Mastracode,
@@ -282,7 +270,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
         version: super::MASTRACODE_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Mastracode.hook_events(),
     },
     IntegrationSpec {
         target: Target::AntigravityCli,
@@ -296,7 +283,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
         version: super::ANTIGRAVITY_CLI_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::AntigravityCli.hook_events(),
     },
     IntegrationSpec {
         target: Target::Grok,
@@ -310,7 +296,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
         version: super::GROK_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Grok.hook_events(),
     },
     IntegrationSpec {
         target: Target::Letta,
@@ -327,7 +312,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         path: &["hooks", super::LETTA_HOOK_INSTALL_NAME],
         version: super::LETTA_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
-        events: Target::Letta.hook_events(),
     },
 ];
 
@@ -397,7 +381,7 @@ pub(crate) fn integration_hook_events(
     INTEGRATION_SPECS
         .iter()
         .find(|spec| spec.target == target)
-        .map_or(&[], |spec| spec.events)
+        .map_or(&[], |spec| spec.target.hook_events())
 }
 
 /// One row per supported target, in spec order, for `integration status`.
@@ -752,7 +736,7 @@ fn hook_registration_is_current(
             json_hook_commands_registered(
                 &config(0)?,
                 HooksRoot::HooksKey,
-                &hook_event_commands(hook_path, spec.events),
+                &hook_event_commands(hook_path, spec.target.hook_events()),
                 &JsonHookShape::Nested { matcher: None },
             ) && codex_hooks_feature_enabled(&config(1)?)
         }
@@ -761,7 +745,8 @@ fn hook_registration_is_current(
                 // A direct entry is written for every event, including the
                 // ones whose hook takes no action argument.
                 JsonShape::Direct => spec
-                    .events
+                    .target
+                    .hook_events()
                     .iter()
                     .map(|hook| {
                         (
@@ -773,7 +758,7 @@ fn hook_registration_is_current(
                         )
                     })
                     .collect::<Vec<_>>(),
-                _ => hook_event_commands(hook_path, spec.events),
+                _ => hook_event_commands(hook_path, spec.target.hook_events()),
             };
             let shape = match shape {
                 JsonShape::Nested => JsonHookShape::Nested { matcher: None },
@@ -819,6 +804,28 @@ fn integration_state_for_path(
     Ok((state, installed_version))
 }
 
+fn warn_stale_registration_once(target: Target, path: &Path) {
+    // Status can be polled frequently, so report each target once per process.
+    static WARNED_TARGETS: OnceLock<Mutex<HashSet<Target>>> = OnceLock::new();
+    let mut warned_targets = match WARNED_TARGETS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let should_warn = warned_targets.insert(target);
+    drop(warned_targets);
+
+    if should_warn {
+        tracing::warn!(
+            integration = target.label(),
+            path = %path.display(),
+            "integration hook registration is not current"
+        );
+    }
+}
+
 /// The status of the integration installed at `path`. A stat error on the
 /// installed file (or on a file its validity depends on) is returned, not
 /// reported as `NotInstalled`.
@@ -832,11 +839,7 @@ pub(crate) fn integration_status_at(
     if state == super::IntegrationStatusKind::Current
         && !hook_registration_is_current(spec_for(target)?, &path, expected_version)?
     {
-        tracing::warn!(
-            integration = target.label(),
-            path = %path.display(),
-            "integration hook registration is not current"
-        );
+        warn_stale_registration_once(target, &path);
         state = super::IntegrationStatusKind::Outdated;
     }
 
@@ -876,18 +879,6 @@ mod registration_tests {
             integration_target_label(IntegrationTarget::AntigravityCli),
             crate::agent::Agent::Antigravity.label()
         );
-    }
-
-    #[test]
-    fn installer_hook_events_match_the_integration_spec_rows() {
-        for spec in INTEGRATION_SPECS {
-            assert_eq!(
-                integration_hook_events(spec.target),
-                spec.target.hook_events(),
-                "{} installer events must come from its integration spec",
-                spec.target.label()
-            );
-        }
     }
 
     #[test]

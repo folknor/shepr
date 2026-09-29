@@ -73,7 +73,7 @@ impl HeadlessServer {
             candidate != *sent
         });
         if changed {
-            self.shell_session_generation = self.shell_session_generation.wrapping_add(1);
+            self.shell_session_generation = self.shell_session_generation.saturating_add(1);
         }
         changed
     }
@@ -541,7 +541,7 @@ impl HeadlessServer {
                 .is_none_or(|cache| cache.revision != app_revision);
         if refresh_session {
             self.rebuild_shell_session_cache();
-            self.shell_session_generation = self.shell_session_generation.wrapping_add(1);
+            self.shell_session_generation = self.shell_session_generation.saturating_add(1);
         }
         // (client, is shell client, claimed bytes, frame limit)
         let mut oversized_notices: Vec<(ClientId, bool, usize, usize)> = Vec::new();
@@ -703,22 +703,25 @@ impl HeadlessServer {
                         broken_clients.push(client_id);
                         continue;
                     };
-                    let (synchronized, epoch) = runtime.synchronized_output_state();
-                    if synchronized {
+                    // A poisoned core (`None`) defers like a synchronized
+                    // update: the PTY actor closes that pane shortly.
+                    let Some((false, epoch)) = runtime.synchronized_output_state() else {
                         if let Some(client) = self.clients.get_mut(&client_id) {
                             client.render_state.request_recompute();
                         }
                         continue;
-                    }
+                    };
                     let (buffer, cursor) =
                         crate::server::render_stream::render_terminal_virtual(runtime, area);
                     let hyperlinks = runtime.visible_hyperlinks(area);
-                    let (synchronized, after_epoch) = runtime.synchronized_output_state();
-                    if synchronized || after_epoch != epoch {
+                    let after = runtime.synchronized_output_state();
+                    if after != Some((false, epoch)) {
                         if let Some(client) = self.clients.get_mut(&client_id) {
                             client.render_state.request_recompute();
                         }
-                        if !synchronized {
+                        // Content changed under the render: render again. A
+                        // synchronized update or a poisoned core waits instead.
+                        if matches!(after, Some((false, _))) {
                             self.app.render_dirty.request_generic();
                         }
                         continue;

@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
-pub(super) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+pub(super) const HEARTBEAT_INTERVAL: Duration = shepr_core::limits::HEARTBEAT_INTERVAL;
 pub(super) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
+
+const _: () = assert!(HEARTBEAT_INTERVAL.as_millis() < HEARTBEAT_TIMEOUT.as_millis());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HealthAction {

@@ -178,10 +178,7 @@ impl ClientState {
     /// That holds because the client loop does not advance the pane projection while frozen:
     /// active-endpoint snapshots are cached rather than projected, and non-handoff pane surfaces
     /// and patches are dropped. A handoff commit installs a fresh coherent pair on unfreeze.
-    pub(super) fn present_frozen_chrome(
-        &mut self,
-        frame_data: impl Into<frame_output::ComposedFrame>,
-    ) {
+    pub(super) fn present_frozen_chrome(&mut self, frame_data: shepr_protocol::FrameData) {
         let frozen = self.presentation_frozen;
         self.presentation_frozen = false;
         self.present_frame(frame_data);
@@ -196,7 +193,7 @@ impl ClientState {
     /// that ends the freeze repaints in full.
     pub(super) fn present_chrome(
         &mut self,
-        frame_data: impl Into<frame_output::ComposedFrame>,
+        frame_data: shepr_protocol::FrameData,
         handoff_in_flight: bool,
     ) {
         if handoff_in_flight {
@@ -240,7 +237,7 @@ impl ClientState {
     }
 
     fn write_composed_output(&mut self, encoded: &[u8]) -> io::Result<()> {
-        frame_output::write_composed_frame(&mut self.output_writer, encoded)?;
+        self.output_writer.write_all(encoded)?;
         self.output_writer.flush()
     }
 
@@ -255,11 +252,10 @@ impl ClientState {
     /// next frame repaints in full (`repaint_pending`), and the failure is logged once per cause
     /// through `frame_write_failure` rather than once per frame.
     /// Callers have no separate recovery action, so the write result stays owned by this state.
-    pub(super) fn present_frame(&mut self, frame_data: impl Into<frame_output::ComposedFrame>) {
+    pub(super) fn present_frame(&mut self, frame_data: shepr_protocol::FrameData) {
         if self.presentation_frozen {
             return;
         }
-        let frame_output::ComposedFrame { frame: frame_data } = frame_data.into();
         let frame_data = if self.draw_host_cursor {
             render_ansi::frame_with_drawn_cursor(frame_data)
         } else {
@@ -318,25 +314,17 @@ impl HostWriteFailure {
             }
             Err(error) => {
                 if self.failing != Some(error.kind()) {
-                    if let Some(context) = context {
-                        tracing::warn!(
-                            write,
-                            endpoint = %context.endpoint,
-                            generation = ?context.generation,
-                            projection_revision = ?context.projection_revision,
-                            surface_revision = ?context.surface_revision,
-                            boot_id = ?context.boot_id,
-                            pane_ids = ?context.pane_ids,
-                            error = %error,
-                            "host terminal write failed; repeats of this failure are not logged until a write succeeds"
-                        );
-                    } else {
-                        tracing::warn!(
-                            write,
-                            error = %error,
-                            "host terminal write failed; repeats of this failure are not logged until a write succeeds"
-                        );
-                    }
+                    tracing::warn!(
+                        write,
+                        endpoint = ?context.map(|context| context.endpoint.as_str()),
+                        generation = ?context.and_then(|context| context.generation),
+                        projection_revision = ?context.and_then(|context| context.projection_revision),
+                        surface_revision = ?context.and_then(|context| context.surface_revision),
+                        boot_id = ?context.and_then(|context| context.boot_id.as_deref()),
+                        pane_ids = ?context.map(|context| &context.pane_ids),
+                        error = %error,
+                        "host terminal write failed; repeats of this failure are not logged until a write succeeds"
+                    );
                     self.failing = Some(error.kind());
                 }
                 false

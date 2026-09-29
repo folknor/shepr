@@ -27,9 +27,9 @@ pub(super) enum CandidateVerification<'a> {
 /// [`DiscoveryProgress`] sequences them; the seam exists so that sequencing, and resuming
 /// it, can be tested without a remote host.
 pub(super) trait DiscoverySteps {
-    /// `command -v shepr` through the remote login shell, which sets up the user's PATH.
+    /// `command -v` through the remote login shell, which sets up the user's PATH.
     fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>>;
-    /// `command -v shepr` through `/bin/sh`, for login shells (xonsh) that reject it.
+    /// `command -v` through `/bin/sh`, for login shells (xonsh) that reject it.
     fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>>;
     /// Executables found at the known install locations.
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>>;
@@ -57,7 +57,9 @@ pub(super) struct SshDiscovery<'a> {
 
 impl DiscoverySteps for SshDiscovery<'_> {
     fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
-        let output = self.ssh.posix_user_shell_output("command -v shepr")?;
+        let output = self
+            .ssh
+            .posix_user_shell_output(&format!("command -v {REMOTE_INSTALL_NAME}"))?;
         path_lookup_result_with_rejected_candidate(
             &output,
             &mut self.rejected_shell_unsafe_candidate,
@@ -65,7 +67,9 @@ impl DiscoverySteps for SshDiscovery<'_> {
     }
 
     fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
-        let output = self.ssh.sh_output("command -v shepr\n")?;
+        let output = self
+            .ssh
+            .sh_output(&format!("command -v {REMOTE_INSTALL_NAME}\n"))?;
         path_lookup_result_with_rejected_candidate(
             &output,
             &mut self.rejected_shell_unsafe_candidate,
@@ -120,7 +124,7 @@ pub(super) fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExe
     path_lookup_result_with_rejected_candidate(output, &mut rejected_candidate)
 }
 
-/// Reads a `command -v shepr` result. A failed lookup means no `shepr` on that PATH,
+/// Reads a `command -v` result. A failed lookup means no remote executable on that PATH,
 /// except when the typed failure says ssh itself exited 255: then nothing was learned
 /// about the remote, and recording "not found" would be wrong. A path rejected for
 /// needing shell quoting is recorded in `rejected_candidate`.
@@ -325,22 +329,30 @@ pub(super) fn push_if_new_remote_binary_candidate(
     }
 }
 
-/// Install locations checked before falling back to `command -v shepr`, which
-/// misses these when a non-interactive SSH shell has a minimal PATH.
+/// Cargo's bin directory follows the default destination used by `brokkr install`;
+/// the local bin path also covers manual installs. These are checked before falling
+/// back to `command -v`, which misses them when a non-interactive SSH shell has a
+/// minimal PATH.
 pub(super) fn known_remote_binary_candidate_script() -> String {
-    String::from(
-        r#"home=${HOME:-}
-emit() {
+    format!(
+        r#"home=${{HOME:-}}
+cargo_home=${{CARGO_HOME:-}}
+if [ -z "$cargo_home" ] && [ -n "$home" ]; then
+    cargo_home="$home/.cargo"
+fi
+emit() {{
     path=$1
     if [ -n "$path" ] && [ -x "$path" ]; then
         printf '%s\n' "$path"
     fi
-}
-if [ -n "$home" ]; then
-    emit "$home/.cargo/bin/shepr"
-    emit "$home/.local/bin/shepr"
+}}
+if [ -n "$cargo_home" ]; then
+    emit "$cargo_home/bin/{REMOTE_INSTALL_NAME}"
 fi
-"#,
+if [ -n "$home" ]; then
+    emit "$home/.local/bin/{REMOTE_INSTALL_NAME}"
+fi
+"#
     )
 }
 

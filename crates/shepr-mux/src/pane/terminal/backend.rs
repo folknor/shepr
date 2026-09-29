@@ -1,12 +1,5 @@
 use super::*;
 
-fn report_terminal_mutation_failure(operation: &'static str) {
-    tracing::error!(
-        operation = operation,
-        "terminal core lock poisoned; mutation was not applied"
-    );
-}
-
 impl PaneTerminal {
     pub(crate) fn new(mut terminal: shepr_vt::Terminal) -> Self {
         // Replies to anything written before the pane existed have no reader.
@@ -31,6 +24,8 @@ impl PaneTerminal {
                 osc_debug_tracker: OscDebugTracker::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
             }),
+            mutation_failure_reported: AtomicBool::new(false),
+            dirty_patch_fallback_reported: AtomicBool::new(false),
         }
     }
 
@@ -41,29 +36,37 @@ impl PaneTerminal {
         &self,
         theme: shepr_termio::host_term::theme::TerminalTheme,
     ) {
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            core.host_terminal_theme = theme;
-            if !has_default_color_override(&core.terminal) {
-                core.transient_default_color_owner_pgid = None;
-            }
-
-            let mut palette = shepr_vt::default_palette();
-            for (index, color) in theme.palette.iter().enumerate() {
-                if let Some(color) = color {
-                    palette[index] = *color;
-                }
-            }
-            core.terminal.set_default_palette(&palette);
-            core.terminal
-                .set_default_colors(theme.foreground, theme.background);
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            self.report_terminal_mutation_failure("host theme update");
+            return;
+        };
+        core.host_terminal_theme = theme;
+        if !has_default_color_override(&core.terminal) {
+            core.transient_default_color_owner_pgid = None;
         }
+
+        let mut palette = shepr_vt::default_palette();
+        for (index, color) in theme.palette.iter().enumerate() {
+            if let Some(color) = color {
+                palette[index] = *color;
+            }
+        }
+        core.terminal.set_default_palette(&palette);
+        core.terminal
+            .set_default_colors(theme.foreground, theme.background);
     }
 
     pub(crate) fn apply_host_terminal_appearance(
         &self,
         appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
-        let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let mut core = match shepr_vt::lock_terminal_core(&self.core) {
+            Ok(core) => core,
+            Err(_) => {
+                self.report_terminal_mutation_failure("host appearance update");
+                return None;
+            }
+        };
         let color_scheme = appearance;
         let previous = core.terminal.set_color_scheme(color_scheme);
 
@@ -89,6 +92,7 @@ impl PaneTerminal {
     ) -> bool {
         {
             let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
+                self.report_terminal_mutation_failure("host theme restore");
                 return false;
             };
             if !should_probe_host_terminal_theme_restore(&core) {
@@ -98,6 +102,7 @@ impl PaneTerminal {
 
         let foreground_job = shepr_agent::detect::foreground_job(shell_pid);
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            self.report_terminal_mutation_failure("host theme restore");
             return false;
         };
 
@@ -134,9 +139,11 @@ impl PaneTerminal {
     /// Clears retained OSC title/progress evidence when the pane's foreground
     /// agent changes, so a new agent process starts from a blank OSC slate.
     pub(crate) fn clear_agent_osc_state(&self) {
-        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
-            core.agent_osc_state.clear_retained();
-        }
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            self.report_terminal_mutation_failure("agent OSC state clear");
+            return;
+        };
+        core.agent_osc_state.clear_retained();
     }
 
     pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesResult {
@@ -154,12 +161,9 @@ impl PaneTerminal {
         let mut core = match shepr_vt::lock_terminal_core(&self.core) {
             Ok(core) => core,
             Err(shepr_vt::TerminalCorePoisoned) => {
-                // The core may be inconsistent after a panic. Fail the pane
-                // so its reader stops and the pane is reported dead.
-                error!(
-                    pane = pane_id.raw(),
-                    "terminal core lock poisoned in reader"
-                );
+                // The PTY actor logs and closes the pane for this result. It
+                // also owns the idle-poison path, so logging here would
+                // duplicate the same failure on reader-detected poison.
                 return ProcessBytesResult {
                     core_poisoned: true,
                     ..ProcessBytesResult::default()
@@ -244,6 +248,7 @@ impl PaneTerminal {
             return;
         };
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            self.report_terminal_mutation_failure("default color owner update");
             return;
         };
         if core.default_color_generation == generation && has_default_color_override(&core.terminal)
@@ -300,7 +305,7 @@ impl PaneTerminal {
         // core is shared with runtime tasks. Keep a diagnostic if that
         // invariant ever changes and restored history cannot be seeded.
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            report_terminal_mutation_failure("history seed");
+            self.report_terminal_mutation_failure("history seed");
             return;
         };
         core.terminal.write(ansi.as_bytes());
@@ -321,7 +326,7 @@ impl PaneTerminal {
         let mut core = match shepr_vt::lock_terminal_core(&self.core) {
             Ok(core) => core,
             Err(_) => {
-                report_terminal_mutation_failure("resize");
+                self.report_terminal_mutation_failure("resize");
                 return Vec::new();
             }
         };
@@ -366,7 +371,7 @@ impl PaneTerminal {
 
     pub(crate) fn scroll_up(&self, lines: usize) {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            report_terminal_mutation_failure("scroll up");
+            self.report_terminal_mutation_failure("scroll up");
             return;
         };
         let lines = isize::try_from(lines).unwrap_or(isize::MAX);
@@ -375,7 +380,7 @@ impl PaneTerminal {
 
     pub(crate) fn scroll_down(&self, lines: usize) {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            report_terminal_mutation_failure("scroll down");
+            self.report_terminal_mutation_failure("scroll down");
             return;
         };
         let lines = isize::try_from(lines).unwrap_or(isize::MAX);
@@ -384,7 +389,7 @@ impl PaneTerminal {
 
     pub(crate) fn scroll_reset(&self) {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            report_terminal_mutation_failure("scroll reset");
+            self.report_terminal_mutation_failure("scroll reset");
             return;
         };
         core.terminal.scroll_viewport_bottom();
@@ -399,7 +404,7 @@ impl PaneTerminal {
 
     pub(crate) fn set_scroll_offset_from_bottom(&self, lines: usize) {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            report_terminal_mutation_failure("set scroll offset");
+            self.report_terminal_mutation_failure("set scroll offset");
             return;
         };
         terminal_set_scroll_offset_from_bottom(&mut core.terminal, lines);
@@ -637,18 +642,13 @@ impl PaneTerminal {
             })
     }
 
-    pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
-        // A poisoned core is removed by the PTY actor shortly. Until then the
-        // render callers defer whenever this flag is true, so this fallback
-        // epoch is never compared; changing the result to an error also
-        // requires changing the server render callers.
-        shepr_vt::lock_terminal_core(&self.core).map_or((true, 0), |core| {
-            (
-                core.terminal
-                    .mode_get(shepr_vt::DecMode::SynchronizedOutput),
-                core.synchronized_output_epoch,
-            )
-        })
+    pub(crate) fn synchronized_output_state(&self) -> Option<(bool, u64)> {
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        Some((
+            core.terminal
+                .mode_get(shepr_vt::DecMode::SynchronizedOutput),
+            core.synchronized_output_epoch,
+        ))
     }
 
     pub(crate) fn encode_terminal_key(
@@ -1023,20 +1023,26 @@ impl PaneTerminal {
         area_width: u16,
         area_height: u16,
     ) -> TerminalDirtyPatchOutcome {
-        shepr_vt::lock_terminal_core(&self.core).map_or(
-            TerminalDirtyPatchOutcome::Fallback,
-            |mut core| {
-                if core
-                    .terminal
-                    .mode_get(shepr_vt::DecMode::SynchronizedOutput)
-                {
-                    return TerminalDirtyPatchOutcome::Fallback;
-                }
-                if let Some(hook) = core.dirty_collection_hook.take() {
-                    hook();
-                }
-                terminal_collect_dirty_patch(&mut core, area_width, area_height)
-            },
-        )
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            self.report_dirty_patch_fallback("terminal core lock poisoned");
+            return TerminalDirtyPatchOutcome::Fallback;
+        };
+        if core
+            .terminal
+            .mode_get(shepr_vt::DecMode::SynchronizedOutput)
+        {
+            return TerminalDirtyPatchOutcome::Fallback;
+        }
+        if let Some(hook) = core.dirty_collection_hook.take() {
+            hook();
+        }
+        let collection = terminal_collect_dirty_patch(&mut core, area_width, area_height);
+        let fallback_reason = collection.fallback_reason;
+        let outcome = collection.outcome;
+        drop(core);
+        if let Some(reason) = fallback_reason {
+            self.report_dirty_patch_fallback(reason);
+        }
+        outcome
     }
 }

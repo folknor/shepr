@@ -20,7 +20,6 @@ mod clipboard_forwarding;
 pub mod endpoint;
 mod errors;
 mod events;
-mod frame_output;
 mod handshake;
 pub(crate) mod host_replies;
 mod input;
@@ -88,7 +87,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use interprocess::TryClone as _;
 use interprocess::local_socket::traits::Stream as _;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::{ClientMessage, MAX_FRAME_SIZE, ServerMessage};
@@ -1652,11 +1651,22 @@ impl ClientLoop<'_> {
                 }
             }
             ServerMessage::Welcome { .. } => {
-                debug!(
+                // A protocol violation by this one endpoint. Fail its connection so
+                // the supervisor disconnects, reports and reconnects it; the client
+                // and its other endpoints keep running.
+                warn!(
                     endpoint = %endpoint_id.storage_key(),
                     generation,
-                    "received unexpected Welcome in main loop"
+                    "endpoint sent a Welcome after its handshake; failing its connection"
                 );
+                write_stream.fail(
+                    endpoint_id,
+                    &io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "protocol error: Welcome received after the handshake",
+                    ),
+                );
+                return Ok(ClientLoopAction::NextEvent);
             }
             ServerMessage::SurfaceUpdate(_) => {
                 return Err(ClientError::SurfaceUpdateBeforeDecode);

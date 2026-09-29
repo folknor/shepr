@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use crate::machine::{ProfileId, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
+    DiscoveryProgress, PROGRAM_NAME, RemoteCliCommand, RemoteSsh, SshStdioBridge,
+    resume_installed_remote_shepr_discovery,
 };
 
 pub struct SavedSshBridge {
@@ -432,11 +433,15 @@ impl SavedSshApiBridge {
 }
 
 pub fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
-    format!(
-        "shepr --remote {} --session {}",
-        super::shell_quote(target),
-        super::shell_quote(session)
-    )
+    // Always names the session, the default one included: the operator may run
+    // this from a pane of another session, whose `SHEPR_SESSION` would win.
+    let args = RemoteCliCommand::Attach {
+        target,
+        session: Some(session),
+        keybindings: None,
+    }
+    .args();
+    super::shell_command_line(super::shell_quote(PROGRAM_NAME), args)
 }
 
 fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> io::Result<PathBuf> {
@@ -534,6 +539,13 @@ mod tests {
         assert_eq!(
             saved_ssh_bootstrap_command("build host", "agent work"),
             "shepr --remote 'build host' --session 'agent work'"
+        );
+        assert_eq!(
+            saved_ssh_bootstrap_command("host", shepr_config::DEFAULT_SESSION_NAME),
+            format!(
+                "shepr --remote host --session {}",
+                shepr_config::DEFAULT_SESSION_NAME
+            )
         );
     }
 

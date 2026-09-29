@@ -26,6 +26,9 @@ pub const fn frame_payload_fits(size: usize) -> bool {
     size <= MAX_FRAME_SIZE
 }
 
+/// The one size cap on a single client request, whichever door it comes in
+/// by: pane input, a JSON API request line, or a client-shell endpoint command.
+pub const MAX_CLIENT_REQUEST_BYTES: usize = 1024 * 1024;
 /// Maximum text payload (bytes) the server accepts in one input message: the
 /// data of one `ClientMessage::Input`, or the summed paste, committed text and
 /// generated key text of one `ClientShellPaneInput` batch.
@@ -34,7 +37,11 @@ pub const fn frame_payload_fits(size: usize) -> bool {
 /// in one frame with its envelope. The server answers an oversized paste with a
 /// rejection notice rather than a disconnect; clients check the same limit
 /// before sending so an oversized paste never has to cross the wire.
-pub const MAX_INPUT_PAYLOAD: usize = 1024 * 1024;
+pub const MAX_INPUT_PAYLOAD: usize = MAX_CLIENT_REQUEST_BYTES;
+/// Maximum JSON API request line accepted before parsing.
+pub const MAX_INITIAL_REQUEST_BYTES: usize = MAX_CLIENT_REQUEST_BYTES;
+/// Maximum client-shell endpoint command before forwarding to the API.
+pub const MAX_ENDPOINT_COMMAND_BYTES: usize = MAX_CLIENT_REQUEST_BYTES;
 
 impl crate::ClientPaneInputEvent {
     /// Text bytes this event delivers to the pane, as charged against

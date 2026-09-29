@@ -1,3 +1,8 @@
+//! Platform log levels: debug is routine diagnostic detail; info records
+//! lifecycle and successful state changes; warn records recoverable failures
+//! or degraded operation; error records operations that failed or state that
+//! could not be preserved.
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -213,7 +218,7 @@ pub fn api_request_completed(
 }
 
 pub fn api_request_failed(request_id: &str, method_name: &str, err: &str) {
-    tracing::warn!(
+    tracing::error!(
         event = "api.request.fail",
         subsystem = "api",
         outcome = "error",
@@ -421,11 +426,13 @@ pub fn session_clear_failed(path: &Path, err: &str) {
     );
 }
 
-pub fn session_restored(workspaces: usize, outcome: &'static str) {
+pub fn session_restored(path: &Path, session_id: &str, workspaces: usize, outcome: &'static str) {
     tracing::info!(
         event = "persist.restore",
         subsystem = "persist",
         outcome,
+        session_id,
+        path = %path.display(),
         workspaces,
         "session restore evaluated"
     );
