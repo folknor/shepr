@@ -267,8 +267,8 @@ env_vocabulary! {
         Shell => "SHELL",
         /// `PATH`: the child's executable search path.
         Path => "PATH",
-        /// `SHEPR_BIN_PATH`: the shepr executable, for hook assets and tab-bar
-        /// status commands to call back.
+        /// `SHEPR_BIN_PATH`: the shepr executable, for tab-bar status commands
+        /// to call back.
         SheprBinPath => "SHEPR_BIN_PATH",
         /// `SHEPR_ACTIVE_WORKSPACE_ID`: the focused workspace, for tab-bar
         /// status commands.

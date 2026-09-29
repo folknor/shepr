@@ -50,13 +50,10 @@ pub enum IntegrationTarget {
     Kimi,
     Opencode,
     Kilo,
-    Qodercli,
-    Qwen,
     Cursor,
     Mastracode,
     AntigravityCli,
     Grok,
-    Letta,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,23 +206,8 @@ const GROK_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     None,
     Some(IntegrationHookAction::Session),
 )];
-const LETTA_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
-    "SessionStart",
-    None,
-    Some(IntegrationHookAction::Session),
-)];
 const CURSOR_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     "sessionStart",
-    None,
-    Some(IntegrationHookAction::Session),
-)];
-const QODERCLI_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
-    "SessionStart",
-    None,
-    Some(IntegrationHookAction::Session),
-)];
-const QWEN_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
-    "SessionStart",
     None,
     Some(IntegrationHookAction::Session),
 )];
@@ -607,7 +589,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         label: "qodercli",
         aliases: &["qoderclicn", "qoder", "qodercn"],
         executable: "qodercli",
-        integration_target: Some(IntegrationTarget::Qodercli),
+        integration_target: None,
         integration_source: Some("shepr:qodercli"),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
@@ -619,14 +601,13 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         title_activity_glyphs: "",
         integration_hook_events: &[],
-    }
-    .with_integration_hook_events(QODERCLI_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Qwen,
         label: "qwen",
         aliases: &["qwen-code", "qwen code"],
         executable: "qwen",
-        integration_target: Some(IntegrationTarget::Qwen),
+        integration_target: None,
         integration_source: Some("shepr:qwen"),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
@@ -638,14 +619,13 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         title_activity_glyphs: "",
         integration_hook_events: &[],
-    }
-    .with_integration_hook_events(QWEN_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Letta,
         label: "letta",
         aliases: &["letta-code", "letta code"],
         executable: "letta",
-        integration_target: Some(IntegrationTarget::Letta),
+        integration_target: None,
         integration_source: Some("shepr:letta"),
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
@@ -657,8 +637,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         title_activity_glyphs: "",
         integration_hook_events: &[],
-    }
-    .with_integration_hook_events(LETTA_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Maki,
         label: "maki",
@@ -859,13 +838,10 @@ impl IntegrationTarget {
             Self::Kimi => Agent::Kimi,
             Self::Opencode => Agent::OpenCode,
             Self::Kilo => Agent::Kilo,
-            Self::Qodercli => Agent::Qodercli,
-            Self::Qwen => Agent::Qwen,
             Self::Cursor => Agent::Cursor,
             Self::Mastracode => Agent::Mastracode,
             Self::AntigravityCli => Agent::Antigravity,
             Self::Grok => Agent::Grok,
-            Self::Letta => Agent::Letta,
         }
     }
 
@@ -1033,15 +1009,17 @@ mod tests {
                 assert_eq!(target.agent(), agent);
                 assert_eq!(target.label(), descriptor.label);
                 assert_eq!(target.hook_events(), agent.integration_hook_events());
+                assert!(descriptor.integration_source.is_some());
+            } else {
+                assert!(descriptor.integration_hook_events.is_empty());
+            }
+            // A source without an installable integration is legitimate: it
+            // names an agent whose session reports arrive by the API alone.
+            if let Some(source) = descriptor.integration_source {
                 assert_eq!(
-                    AgentSource::from_pair(
-                        descriptor.integration_source.expect("integration source"),
-                        descriptor.label,
-                    ),
+                    AgentSource::from_pair(source, descriptor.label),
                     Some(AgentSource::Official(agent))
                 );
-            } else {
-                assert!(descriptor.integration_source.is_none());
             }
         }
         assert_eq!(

@@ -25,8 +25,6 @@ const INTEGRATION_PATH_ENV_VARS: &[EnvVar] = &[
     EnvVar::CodexHome,
     EnvVar::KimiCodeHome,
     EnvVar::CopilotHome,
-    EnvVar::QoderConfigDir,
-    EnvVar::QwenHome,
     EnvVar::CursorConfigDir,
     EnvVar::AntigravityCliConfigDir,
     EnvVar::GrokHome,
@@ -83,9 +81,6 @@ pub(crate) enum DirectoryKey {
     Opencode,
     OpencodeState,
     Kilo,
-    Qodercli,
-    Qwen,
-    Letta,
     Cursor,
     Mastracode,
     AntigravityCli,
@@ -122,9 +117,6 @@ impl AgentIntegrationPaths {
                 opencode_state_dir(&environment),
             ),
             (DirectoryKey::Kilo, kilo_dir(&environment)),
-            (DirectoryKey::Qodercli, qodercli_dir(&environment)),
-            (DirectoryKey::Qwen, qwen_dir(&environment)),
-            (DirectoryKey::Letta, letta_dir(&environment)),
             (DirectoryKey::Cursor, cursor_dir(&environment)),
             (DirectoryKey::Mastracode, mastracode_dir(&environment)),
             (
@@ -253,18 +245,6 @@ fn kilo_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(environment.home_dir()?.join(".config/kilo"))
 }
 
-fn qodercli_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    config_dir_from_env_or_home(environment, EnvVar::QoderConfigDir, &[".qoder"])
-}
-
-fn qwen_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    config_dir_from_env_or_home(environment, EnvVar::QwenHome, &[".qwen"])
-}
-
-fn letta_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    Ok(environment.home_dir()?.join(".letta"))
-}
-
 fn cursor_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     config_dir_from_env_or_home(environment, EnvVar::CursorConfigDir, &[".cursor"])
 }
@@ -328,24 +308,25 @@ mod tests {
     fn config_dir_env_override_expands_tilde() {
         let env = paths_with(&[
             (EnvVar::Home, "/test/home"),
-            (EnvVar::QwenHome, "~/qwen-home"),
+            (EnvVar::CursorConfigDir, "~/cursor-home"),
         ]);
         assert_eq!(
-            directory(&env, DirectoryKey::Qwen).expect("test precondition"),
-            PathBuf::from("/test/home/qwen-home")
+            directory(&env, DirectoryKey::Cursor).expect("test precondition"),
+            PathBuf::from("/test/home/cursor-home")
         );
         // Empty is unset; padding is refused naming the variable.
-        let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::QwenHome, "")]);
+        let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::CursorConfigDir, "")]);
         assert_eq!(
-            directory(&env, DirectoryKey::Qwen).expect("test precondition"),
-            PathBuf::from("/test/home/.qwen")
+            directory(&env, DirectoryKey::Cursor).expect("test precondition"),
+            PathBuf::from("/test/home/.cursor")
         );
         let env = paths_with(&[
             (EnvVar::Home, "/test/home"),
-            (EnvVar::QwenHome, "~/qwen-home "),
+            (EnvVar::CursorConfigDir, "~/cursor-home "),
         ]);
-        let error = directory(&env, DirectoryKey::Qwen).expect_err("a padded override is refused");
-        assert!(error.to_string().contains("QWEN_HOME"), "{error}");
+        let error =
+            directory(&env, DirectoryKey::Cursor).expect_err("a padded override is refused");
+        assert!(error.to_string().contains("CURSOR_CONFIG_DIR"), "{error}");
     }
 
     #[test]

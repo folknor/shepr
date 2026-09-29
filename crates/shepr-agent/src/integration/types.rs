@@ -36,8 +36,6 @@ pub(crate) enum ArtifactRole {
     Extension,
     /// Agent settings holding shepr's hook entries.
     Settings,
-    /// Agent settings holding a single shepr hook entry.
-    SingleEntrySettings,
     /// A hooks file shepr ensures its entries in.
     Hooks,
     /// A hooks file shepr rewrites on install (cursor).
@@ -60,9 +58,7 @@ impl ArtifactRole {
         match self {
             Self::Hook => format!("installed {label} integration hook to {path}"),
             Self::Extension => format!("installed {label} integration to {path}"),
-            Self::Settings | Self::SingleEntrySettings => {
-                format!("ensured {label} settings at {path}")
-            }
+            Self::Settings => format!("ensured {label} settings at {path}"),
             Self::Hooks => format!("ensured {label} hooks at {path}"),
             Self::UpdatedHooks => format!("updated {label} hooks at {path}"),
             Self::Config => format!("ensured {label} config at {path}"),
@@ -102,12 +98,6 @@ impl ArtifactRole {
             (Self::HookConfig, Removed) => format!("removed {label} hook config at {path}"),
             (Self::HookConfig, Missing) => format!("no {label} hook config found at {path}"),
             (Self::TuiConfig, Updated) => format!("removed shepr {label} plugin entry from {path}"),
-            (Self::SingleEntrySettings, Updated) => {
-                format!("removed shepr {label} hook entry from {path}")
-            }
-            (Self::SingleEntrySettings, Unchanged) => {
-                format!("no shepr {label} hook entry found in {path}")
-            }
             (Self::Settings | Self::Hooks | Self::UpdatedHooks | Self::Config, Updated) => {
                 format!("removed shepr {label} hook entries from {path}")
             }

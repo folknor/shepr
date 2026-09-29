@@ -49,7 +49,6 @@ enum RegistrationCheck {
 #[derive(Clone, Copy)]
 enum JsonShape {
     Nested,
-    NestedStar,
     NestedClaude,
     Flat,
     Direct,
@@ -208,38 +207,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         hook_timeout: None,
     },
     IntegrationSpec {
-        target: Target::Qodercli,
-        config_files: &[super::QODERCLI_SETTINGS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::NestedStar,
-        },
-        action_label: "qodercli",
-        install: super::targets::install_qodercli,
-        uninstall: super::targets::uninstall_qodercli,
-        assets: &[super::QODERCLI_HOOK_ASSET],
-        directory: DirectoryKey::Qodercli,
-        path: &["hooks", super::QODERCLI_HOOK_INSTALL_NAME],
-        version: super::QODERCLI_INTEGRATION_VERSION,
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Qwen,
-        config_files: &[super::QWEN_SETTINGS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::NestedStar,
-        },
-        action_label: "qwen",
-        install: super::targets::install_qwen,
-        uninstall: super::targets::uninstall_qwen,
-        assets: &[super::QWEN_HOOK_ASSET],
-        directory: DirectoryKey::Qwen,
-        path: &["hooks", super::QWEN_HOOK_INSTALL_NAME],
-        version: super::QWEN_INTEGRATION_VERSION,
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
         target: Target::Cursor,
         config_files: &[super::CURSOR_HOOKS_NAME],
         registration: RegistrationCheck::Json {
@@ -295,22 +262,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         directory: DirectoryKey::Grok,
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
         version: super::GROK_INTEGRATION_VERSION,
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Letta,
-        config_files: &[super::LETTA_SETTINGS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::Nested,
-        },
-        action_label: "letta",
-        install: super::targets::install_letta,
-        uninstall: super::targets::uninstall_letta,
-        assets: &[super::LETTA_HOOK_ASSET],
-        directory: DirectoryKey::Letta,
-        path: &["hooks", super::LETTA_HOOK_INSTALL_NAME],
-        version: super::LETTA_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
 ];
@@ -571,9 +522,9 @@ enum JsonHookShape {
 /// writes the canonical one, so anything this rejects a reinstall repairs.
 ///
 /// There is deliberately no per-entry `disabled` or `enabled` check: none of
-/// these agents documents such a field (Claude Code and Qwen Code only offer
-/// the global `disableAllHooks`, Cursor has neither), so an entry carrying one
-/// still runs and still counts as registered.
+/// these agents documents such a field (Claude Code only offers the global
+/// `disableAllHooks`, Cursor has neither), so an entry carrying one still runs
+/// and still counts as registered.
 fn json_event_has_command(
     entries: &serde_json::Value,
     command: &str,
@@ -762,9 +713,6 @@ fn hook_registration_is_current(
             };
             let shape = match shape {
                 JsonShape::Nested => JsonHookShape::Nested { matcher: None },
-                JsonShape::NestedStar => JsonHookShape::Nested {
-                    matcher: Some("*".to_owned()),
-                },
                 JsonShape::NestedClaude => JsonHookShape::Nested {
                     matcher: Some(super::claude_settings::claude_session_start_matcher()),
                 },
@@ -1198,7 +1146,7 @@ mod registration_tests {
         type Install = fn(&super::super::env::AgentIntegrationPaths) -> io::Result<()>;
         let env = shepr_test_support::IsolatedEnv::new();
         let home = env.home();
-        let cases: [(IntegrationTarget, &[&str], &str, HooksRoot, Install); 10] = [
+        let cases: [(IntegrationTarget, &[&str], &str, HooksRoot, Install); 7] = [
             (
                 IntegrationTarget::Claude,
                 &[".claude"],
@@ -1233,27 +1181,6 @@ mod registration_tests {
                 "settings.json",
                 HooksRoot::HooksKey,
                 |paths| targets::install_droid(paths).map(|_| ()),
-            ),
-            (
-                IntegrationTarget::Qodercli,
-                &[".qoder"],
-                "settings.json",
-                HooksRoot::HooksKey,
-                |paths| targets::install_qodercli(paths).map(|_| ()),
-            ),
-            (
-                IntegrationTarget::Qwen,
-                &[".qwen"],
-                "settings.json",
-                HooksRoot::HooksKey,
-                |paths| targets::install_qwen(paths).map(|_| ()),
-            ),
-            (
-                IntegrationTarget::Letta,
-                &[".letta"],
-                "settings.json",
-                HooksRoot::HooksKey,
-                |paths| targets::install_letta(paths).map(|_| ()),
             ),
             (
                 IntegrationTarget::Cursor,
@@ -1330,35 +1257,6 @@ mod registration_tests {
             let document = fs::read_to_string(&config_path).expect("test precondition");
             assert!(!document.contains("hand-edited"), "{target:?}: {document}");
         }
-    }
-
-    #[test]
-    fn letta_is_listed_and_needs_its_settings_entry() {
-        let dir = base("letta");
-        let hook = dir
-            .join("hooks")
-            .join(super::super::LETTA_HOOK_INSTALL_NAME);
-        write_current_hook(&hook);
-        assert_eq!(
-            state(IntegrationTarget::Letta, &hook),
-            IntegrationStatusKind::Outdated
-        );
-        let settings = serde_json::json!({
-            "hooks": { "SessionStart": [
-                { "hooks": [{ "type": "command", "command": hook_command(&hook, Some("session")) }] }
-            ] }
-        });
-        fs::write(dir.join("settings.json"), settings.to_string()).expect("test precondition");
-        assert_eq!(
-            state(IntegrationTarget::Letta, &hook),
-            IntegrationStatusKind::Current
-        );
-        fs::write(dir.join("settings.json"), "{\"hooks\":{}}").expect("test precondition");
-        assert_eq!(
-            state(IntegrationTarget::Letta, &hook),
-            IntegrationStatusKind::Outdated
-        );
-        assert_eq!(integration_target_label(IntegrationTarget::Letta), "letta");
     }
 
     #[test]

@@ -70,18 +70,6 @@ const KILO_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const KILO_PLUGIN_ASSET: &str = include_str!("assets/kilo/shepr-agent-state.js");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
 const KILO_INTEGRATION_VERSION: u32 = 2;
-const QODERCLI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
-const QODERCLI_HOOK_ASSET: &str = include_str!("assets/qodercli/shepr-agent-state.sh");
-// limits-exempt: format version, matched against the one the adjacent asset carries.
-const QODERCLI_INTEGRATION_VERSION: u32 = 1;
-const QWEN_HOOK_INSTALL_NAME: &str = "shepr-agent-session.sh";
-const QWEN_HOOK_ASSET: &str = include_str!("assets/qwen/shepr-agent-session.sh");
-// limits-exempt: format version, matched against the one the adjacent asset carries.
-const QWEN_INTEGRATION_VERSION: u32 = 1;
-const LETTA_HOOK_INSTALL_NAME: &str = "shepr-agent-session.sh";
-const LETTA_HOOK_ASSET: &str = include_str!("assets/letta/shepr-agent-session.sh");
-// limits-exempt: format version, matched against the one the adjacent asset carries.
-const LETTA_INTEGRATION_VERSION: u32 = 1;
 const CURSOR_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CURSOR_HOOK_ASSET: &str = include_str!("assets/cursor/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
@@ -122,9 +110,6 @@ const KIMI_CONFIG_NAME: &str = "config.toml";
 const OPENCODE_TUI_CONFIG_NAME: &str = "tui.jsonc";
 const OPENCODE_LEGACY_TUI_CONFIG_NAME: &str = "tui.json";
 const OPENCODE_CLI_CONFIG_NAME: &str = "cli.json";
-const QODERCLI_SETTINGS_NAME: &str = "settings.json";
-const QWEN_SETTINGS_NAME: &str = "settings.json";
-const LETTA_SETTINGS_NAME: &str = "settings.json";
 const CURSOR_HOOKS_NAME: &str = "hooks.json";
 const MASTRACODE_HOOKS_NAME: &str = "hooks.json";
 const ANTIGRAVITY_CLI_HOOKS_NAME: &str = "hooks.json";

@@ -23,9 +23,8 @@ so they wait for a decision rather than a fixer.
   environment registry into `print_help` (`src/cli.rs`), with a test that it
   covers every entry. `--help` currently documents only `SHEPR_CONFIG_PATH`.
 - **Hook assets call the CLI.** About fifteen hook assets open the API socket and
-  hand-build the JSON-RPC envelope (two request-id formats, two timeouts), while
-  qwen, qodercli and letta exec `shepr pane report-agent-session`. Moving every
-  asset to the CLI keeps socket framing in Rust only. A rewrite of every shipped
+  hand-build the JSON-RPC envelope (two request-id formats, two timeouts).
+  Moving every asset to the CLI keeps socket framing in Rust only. A rewrite of every shipped
   asset rather than a defect fix.
 - **A visible notice for a partially restored session.** A tab or workspace
   dropped during restore leaves only a server log line and a backup of the
@@ -54,7 +53,7 @@ Do this the next time opencode or Kilo is in use.
 
 - The `permission_required` rules in `crates/shepr-agent/src/detect/manifests/opencode.toml` and `kilo.toml` match "△ Permission required" only when one of the dialog's control labels is also on screen: "allow once", "allow always", "reject" or "enter confirm". Those labels were written from memory of opencode's TUI, not captured.
 - If they are wrong, opencode/Kilo panes never show as blocked on a permission prompt; they read as working or idle while waiting on you.
-- To check: in a shepr pane, get the agent to ask for a permission, run `shepr agent read <pane> --source detection --format text`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
+- To check: in a shepr pane, get the agent to ask for a permission, run `shepr detect capture <pane>`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
 
 ## Finish absolute rows in copy mode
 

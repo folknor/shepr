@@ -195,13 +195,12 @@ mod tests {
     }
 
     #[test]
-    fn letta_is_an_ordinary_target() {
-        assert_eq!(target_from_label("letta"), Some(IntegrationTarget::Letta));
-    }
-
-    #[test]
     fn unknown_labels_do_not_resolve() {
         assert!(target_from_label("nope").is_none());
+        // Detected from the screen only; no hook integration exists.
+        for label in ["letta", "qodercli", "qwen"] {
+            assert!(target_from_label(label).is_none(), "{label}");
+        }
         assert!(target_from_label("").is_none());
         // Process aliases are not integration command labels.
         assert!(target_from_label("antigravity-cli").is_none());
