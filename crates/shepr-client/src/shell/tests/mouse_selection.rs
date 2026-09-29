@@ -61,7 +61,7 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
         press.actions.iter().any(|action| matches!(
             action,
             ClientShellAction::Endpoint { request, .. }
-                if matches!(request.method, shepr_api::schema::Method::PaneFocus(_))
+                if matches!(request.command, EndpointCommand::PaneFocus(_))
         )),
         "the click still focuses the pane"
     );
@@ -95,8 +95,8 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
     assert!(matches!(
         &release.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
-            if matches!(&request.method,
-                shepr_api::schema::Method::PaneSelectionRead(params)
+            if matches!(&request.command,
+                EndpointCommand::PaneSelectionRead(params)
                     if params.cursor == shepr_api::schema::PaneTextPoint {
                         row: shepr_vt::AbsRow(0),
                         col: 2,
@@ -187,8 +187,8 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
         panic!("pane split drag should use endpoint API");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::LayoutSetSplitRatio(params)
+        &request.command,
+        EndpointCommand::LayoutSetSplitRatio(params)
             if params.tab_id.as_deref() == Some("w1:t1")
                 && params.path == vec![false, true]
                 && (params.ratio - 0.6).abs() < f32::EPSILON
@@ -249,8 +249,8 @@ fn disabled_mouse_chrome_keeps_tab_wheel_but_removes_split_drag_hits() {
         &wheel.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "w1:t2"
+                &request.command,
+                EndpointCommand::TabFocus(target) if target.tab_id == "w1:t2"
             )
     ));
 }
@@ -314,7 +314,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
         if copy_on_select {
             assert!(
                 matches!(&actions[..], [ClientShellAction::Endpoint { request, .. }]
-                if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+                if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
                     if params.anchor.col == 6 && params.cursor.col == 10))
             );
             let copied = word_row_reply(&mut state, &word_read_id(&actions), "bravo");
@@ -382,10 +382,7 @@ fn word_read_id(actions: &[ClientShellAction]) -> String {
         .iter()
         .find_map(|action| match action {
             ClientShellAction::Endpoint { request, .. }
-                if matches!(
-                    request.method,
-                    shepr_api::schema::Method::PaneSelectionRead(_)
-                ) =>
+                if matches!(request.command, EndpointCommand::PaneSelectionRead(_)) =>
             {
                 Some(request.id.clone())
             }
@@ -399,7 +396,7 @@ fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<Cli
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             id,
-            Ok(shepr_api::schema::ResponseResult::PaneSelection {
+            Ok(EndpointReply::PaneSelection {
                 pane_id: "w1:p1".into(),
                 text: text.into(),
             }),
@@ -413,7 +410,7 @@ fn start_word_drag(state: &mut ClientShellState) -> String {
     assert!(state.selection.is_none(), "plain clicks must not select");
     let second = word_drag_mouse(state, MouseEventKind::Down(MouseButton::Left), 0, 8);
     assert!(second.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. }
-        if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+        if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
             if params.anchor.col == 0 && params.cursor.col == state.hits.panes[0].inner_rect.width - 1))));
     word_read_id(&second.actions)
 }
@@ -491,14 +488,14 @@ fn double_click_drag_waits_for_latest_row_before_copying() {
         };
         assert!(
             matches!(&final_read[..], [ClientShellAction::Endpoint { request, .. }]
-            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+            if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
                 if params.anchor.row == shepr_vt::AbsRow(2)
                     && params.cursor.row == shepr_vt::AbsRow(2)))
         );
         let copy = word_row_reply(&mut state, &word_read_id(&final_read), "golf hotel india");
         assert!(
             matches!(&copy[..], [ClientShellAction::Endpoint { request, .. }]
-            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+            if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
                 if params.anchor == shepr_api::schema::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 6,
@@ -1179,8 +1176,8 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
         panic!("tab drag should use endpoint API");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::TabMove(params)
+        &request.command,
+        EndpointCommand::TabMove(params)
             if params.tab_id == "w1:t1" && params.insert_index == 3
     ));
 
@@ -1201,7 +1198,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     assert!(matches!(
         &click.actions[0],
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, shepr_api::schema::Method::TabFocus(target) if target.tab_id == "w1:t2")
+            if matches!(&request.command, EndpointCommand::TabFocus(target) if target.tab_id == "w1:t2")
     ));
 }
 
@@ -1277,8 +1274,8 @@ fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
         &outcome.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::TabFocus(target) if target.tab_id == "w1:t1"
+                &request.command,
+                EndpointCommand::TabFocus(target) if target.tab_id == "w1:t1"
             )
     ));
     assert_eq!(state.tab_scroll, 0);

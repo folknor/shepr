@@ -33,7 +33,6 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         .session_snapshot()
         .focused_workspace_id
         .expect("test precondition");
-    let original_size = server.effective_size;
     let (writer, control_rx, render_rx) = test_client_writer();
     let client_id = ClientId::test_new(52);
 
@@ -52,7 +51,8 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     );
     let _ = client_shell_snapshot(&control_rx);
     assert_eq!(server.clients.foreground_client_id(), None);
-    assert_eq!(server.effective_size, original_size);
+    // A metadata-only connection sizes no tab.
+    assert_eq!(server.app.state.tab_area(0, 0), None);
 
     server.render_and_stream();
     assert!(render_rx.try_recv().is_err());
@@ -130,8 +130,8 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     };
     assert_eq!(server.clients.foreground_client_id(), Some(client_id));
     assert_eq!(
-        server.effective_size,
-        shepr_core::geometry::GridSize::clamped(101, 37)
+        server.app.state.tab_area(0, 0),
+        Some(ratatui::layout::Rect::new(0, 0, 101, 37))
     );
 
     server.render_and_stream();

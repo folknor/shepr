@@ -3,9 +3,10 @@
 //! A [`SessionPersister`] holds the data directory lease, the session writer
 //! and the pane history carried between saves, on a thread of its own. The
 //! event loop only captures: the structural snapshot and, per pane, a handle
-//! to its terminal ([`super::PendingHistory`]). Everything that costs time
-//! (formatting new scrollback, serializing, writing and syncing the layout
-//! and history files as one bundle) happens on the persister's thread, one
+//! to its terminal ([`super::PendingHistory`]) and to its shell's cwd
+//! ([`super::PendingCwds`]). Everything that costs time (reading cwds from
+//! /proc, formatting new scrollback, serializing, writing and syncing the
+//! layout and history files as one bundle) happens on the persister's thread, one
 //! job at a time and in the order they were submitted, so a history is always
 //! resolved against the carry state its predecessor left.
 //!
@@ -17,13 +18,18 @@ use std::sync::mpsc;
 use std::time::SystemTime;
 
 use super::lock::DataDirLease;
-use super::snapshot::{HistoryCarry, PendingHistory, SessionSnapshot};
+use super::snapshot::{
+    HistoryCarry, PendingCwds, PendingHistory, ResolvedHistory, SessionSnapshot,
+};
 use super::writer::SessionWriter;
 
 /// What one save puts on disk: the layout and the pane history captured with
 /// it, written together.
 pub struct SessionBundle {
     pub snapshot: SessionSnapshot,
+    /// The shell cwd reads still to do, applied to `snapshot` where the save
+    /// runs.
+    pub cwds: PendingCwds,
     /// `None` when pane history is not persisted.
     pub history: Option<PendingHistory>,
 }
@@ -90,10 +96,42 @@ impl PersistState {
                 self.history.clear();
                 self.writer.clear(now)
             }
-            PersistJob::Save(SessionBundle { snapshot, history }) => {
-                // Formatting pane history is the expensive part of a save.
-                let history = history.map(|history| history.resolve(&snapshot, &mut self.history));
-                self.writer.save(&snapshot, history.as_ref(), now)
+            PersistJob::Save(SessionBundle {
+                mut snapshot,
+                cwds,
+                history,
+            }) => {
+                // The /proc reads the event loop left for here.
+                cwds.resolve(&mut snapshot);
+                let result = match history {
+                    None => {
+                        self.history.forget_saved();
+                        self.writer.save(&snapshot, None, now)
+                    }
+                    Some(history) => {
+                        // Formatting pane history is the expensive part of a
+                        // save; a history that is the file's already is
+                        // neither assembled, serialized nor hashed.
+                        let resolved = history.resolve_for_save(
+                            &snapshot,
+                            &mut self.history,
+                            self.writer.history_is_current(),
+                        );
+                        match resolved {
+                            ResolvedHistory::Unchanged => {
+                                self.writer.save_keeping_history(&snapshot, now)
+                            }
+                            ResolvedHistory::Changed(history) => {
+                                self.writer.save(&snapshot, Some(&history), now)
+                            }
+                        }
+                    }
+                };
+                match &result {
+                    Ok(()) => self.history.note_saved(),
+                    Err(_) => self.history.forget_saved(),
+                }
+                result
             }
         }
     }
@@ -114,7 +152,8 @@ enum Worker {
         commands: mpsc::Sender<Command>,
         thread: std::thread::JoinHandle<()>,
     },
-    /// The thread could not be started: jobs run on the caller's thread.
+    /// No thread (none could be started, or none was asked for): jobs run on
+    /// the caller's thread.
     Inline(Box<PersistState>),
     Retired,
 }
@@ -125,6 +164,18 @@ pub struct SessionPersister {
 }
 
 impl SessionPersister {
+    /// Takes over the data directory `lease` guards without a thread: jobs run
+    /// on the submitting thread. For an owner that persists nothing, which
+    /// only holds the lease, so it does not pay a thread for it.
+    pub fn inline(lease: DataDirLease, protect_unloaded: bool, history: HistoryCarry) -> Self {
+        Self {
+            worker: Worker::Inline(Box::new(PersistState {
+                writer: SessionWriter::new(lease, protect_unloaded),
+                history,
+            })),
+        }
+    }
+
     /// Takes over the data directory `lease` guards. `protect_unloaded`: the
     /// first save must copy the session file aside before replacing it (it
     /// could not be loaded, or restore dropped part of it). `history` is the
@@ -254,6 +305,7 @@ mod tests {
         let saved = persister.submit(
             PersistJob::Save(SessionBundle {
                 snapshot: snapshot(),
+                cwds: PendingCwds::default(),
                 history: None,
             }),
             now,
@@ -279,6 +331,7 @@ mod tests {
         let last = persister.submit(
             PersistJob::Save(SessionBundle {
                 snapshot: snapshot(),
+                cwds: PendingCwds::default(),
                 history: None,
             }),
             now,
@@ -310,6 +363,31 @@ mod tests {
             DataDirLease::acquire(&directory).expect("lease"),
             false,
             HistoryCarry::default(),
+        );
+        drop(persister);
+        DataDirLease::acquire(&directory).expect("the lease is free after the drop");
+    }
+
+    #[test]
+    fn an_inline_persister_runs_jobs_on_the_caller_and_releases_the_lease() {
+        let scratch = crate::test_support::ScratchDir::new("persister-inline");
+        let directory = scratch.join("data");
+        let mut persister = SessionPersister::inline(
+            DataDirLease::acquire(&directory).expect("lease"),
+            false,
+            HistoryCarry::default(),
+        );
+        let saved = persister.submit(
+            PersistJob::Save(SessionBundle {
+                snapshot: snapshot(),
+                cwds: PendingCwds::default(),
+                history: None,
+            }),
+            SystemTime::now(),
+        );
+        assert!(
+            saved.try_finish().is_some_and(|result| result.is_ok()),
+            "the job had finished when submit returned"
         );
         drop(persister);
         DataDirLease::acquire(&directory).expect("the lease is free after the drop");

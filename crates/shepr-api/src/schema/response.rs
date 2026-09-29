@@ -2,14 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use shepr_protocol::PublicPaneId;
 
-use super::panes::{
-    LayoutDescription, PaneFocusDirectionResult, PaneInfo, PaneResizeResult, PaneSwapResult,
-    PaneTextPoint, PaneTextRange, PaneZoomResult,
-};
 use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
-use super::tabs::TabInfo;
-use super::workspaces::WorkspaceInfo;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuccessResponse {
@@ -52,69 +46,6 @@ pub enum ResponseResult {
     SessionSnapshot {
         snapshot: Box<SessionSnapshot>,
     },
-    WorkspaceInfo {
-        workspace: WorkspaceInfo,
-    },
-    WorkspaceCreated {
-        workspace: WorkspaceInfo,
-        tab: TabInfo,
-        root_pane: PaneInfo,
-    },
-    /// The Git checkout root of the asked directory, `None` outside any
-    /// repository, and the home directory of the server's host (`None` when it
-    /// has no usable one), which a directory outside Git is compared with.
-    WorkspaceCheckoutRoot {
-        root: Option<String>,
-        home: Option<String>,
-    },
-    WorkspaceList {
-        workspaces: Vec<WorkspaceInfo>,
-    },
-    TabInfo {
-        tab: TabInfo,
-    },
-    TabCreated {
-        tab: TabInfo,
-        root_pane: PaneInfo,
-    },
-    TabList {
-        tabs: Vec<TabInfo>,
-    },
-    PaneInfo {
-        pane: PaneInfo,
-    },
-    PaneSwap {
-        swap: PaneSwapResult,
-    },
-    PaneZoom {
-        zoom: PaneZoomResult,
-    },
-    LayoutSplitRatioSet {
-        layout: LayoutDescription,
-    },
-    PaneFocusDirection {
-        focus: PaneFocusDirectionResult,
-    },
-    PaneResize {
-        resize: PaneResizeResult,
-    },
-    PaneSelection {
-        pane_id: String,
-        text: String,
-    },
-    PaneCopyMotion {
-        pane_id: String,
-        cursor: PaneTextPoint,
-    },
-    PaneCopySearch {
-        pane_id: String,
-        matches: Vec<PaneTextRange>,
-        total: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        current: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        current_global: Option<u64>,
-    },
     /// The detector's input for one pane: the detection-source screen text.
     DetectCapture {
         pane_id: PublicPaneId,
@@ -122,12 +53,6 @@ pub enum ResponseResult {
     },
     DetectExplain {
         explain: serde_json::Value,
-    },
-    /// Acknowledgement for the client-shell surface interest lease. Its revision-bearing
-    /// result can establish an activation floor.
-    ClientShellSurfaceSet {
-        active: bool,
-        projection_revision: u64,
     },
     Ok {},
 }

@@ -10,8 +10,8 @@ use super::{
     SidebarCollapsedModeConfig, SidebarTokenRule, SshTarget, StatusIndicatorStyle,
     TabBarPositionConfig, TabBarRightEntryConfig, ThemeConfig,
     model::{
-        AdvancedConfig, Config, ExperimentalConfig, KeysConfig, RemoteConfig, ServerConfig,
-        SessionConfig, TerminalConfig, UiConfig,
+        AdvancedConfig, Config, ExperimentalConfig, KeysConfig, ServerConfig, SessionConfig,
+        TerminalConfig, UiConfig,
     },
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SpaceSidebarToken,
@@ -30,7 +30,6 @@ pub(super) struct WireConfig {
     ui: WireUiConfig,
     advanced: AdvancedConfig,
     experimental: WireExperimentalConfig,
-    remote: RemoteConfig,
     machines: Vec<WireMachine>,
 }
 
@@ -70,7 +69,6 @@ impl WireConfig {
             ui: WireUiConfig::from_config(&config.ui),
             advanced: config.advanced.clone(),
             experimental: WireExperimentalConfig::from_config(&config.experimental),
-            remote: config.remote.clone(),
             machines: config
                 .machines
                 .iter()
@@ -92,7 +90,6 @@ impl WireConfig {
             ui: self.ui.into_config(),
             advanced: self.advanced,
             experimental: self.experimental.into_config(),
-            remote: self.remote,
             machines: self
                 .machines
                 .into_iter()

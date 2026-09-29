@@ -134,19 +134,11 @@ pub(crate) enum PaneZoomCommand {
     Off,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PaneZoomNoopReason {
-    SinglePane,
-    AlreadyZoomed,
-    AlreadyUnzoomed,
-}
-
+/// What a zoom command did: whether the tab's zoom and the pane focus moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PaneZoomOutcome {
     pub changed: bool,
     pub focus_changed: bool,
-    pub reason: Option<PaneZoomNoopReason>,
-    pub zoomed: bool,
 }
 
 mod events;

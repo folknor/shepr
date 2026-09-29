@@ -2,7 +2,7 @@ use super::*;
 use crate::limits::{MAX_QUERY_BYTES, MAX_RETURNED_MATCHES};
 
 impl App {
-    pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> shepr_api::error::ApiResult {
+    pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> EndpointResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
@@ -13,15 +13,12 @@ impl App {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
         match runtime.clear_screen() {
-            Ok(()) => success(ResponseResult::Ok {}),
-            Err(err) => failure(shepr_api::error::ApiErrorCode::PaneClearFailed, err),
+            Ok(()) => Ok(EndpointReply::Done),
+            Err(err) => failure(ApiErrorCode::PaneClearFailed, err),
         }
     }
 
-    pub(crate) fn handle_pane_scroll(
-        &mut self,
-        params: &PaneScrollParams,
-    ) -> shepr_api::error::ApiResult {
+    pub(crate) fn handle_pane_scroll(&mut self, params: &PaneScrollParams) -> EndpointResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -37,13 +34,15 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
-        success(ResponseResult::PaneInfo { pane })
+        Ok(EndpointReply::PaneInfo {
+            pane: Box::new(pane),
+        })
     }
 
     pub(crate) fn pane_selection_text(
         &self,
         params: &PaneSelectionReadParams,
-    ) -> Result<String, shepr_api::error::ApiError> {
+    ) -> Result<String, ApiError> {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -59,8 +58,8 @@ impl App {
             shepr_vt::Point::new(params.cursor.row, params.cursor.col),
         );
         let Some(text) = runtime.extract_selection(&selection) else {
-            return Err(shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::SelectionUnavailable,
+            return Err(ApiError::new(
+                ApiErrorCode::SelectionUnavailable,
                 "selection text is unavailable",
             ));
         };
@@ -70,20 +69,18 @@ impl App {
     pub(crate) fn handle_pane_selection_read(
         &mut self,
         params: PaneSelectionReadParams,
-    ) -> shepr_api::error::ApiResult {
-        match self.pane_selection_text(&params) {
-            Ok(text) => success(ResponseResult::PaneSelection {
-                pane_id: params.pane_id,
-                text,
-            }),
-            Err(error) => Err(error),
-        }
+    ) -> EndpointResult {
+        let text = self.pane_selection_text(&params)?;
+        Ok(EndpointReply::PaneSelection {
+            pane_id: params.pane_id,
+            text,
+        })
     }
 
     pub(crate) fn handle_pane_copy_motion(
         &mut self,
         params: PaneCopyMotionParams,
-    ) -> shepr_api::error::ApiResult {
+    ) -> EndpointResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -158,7 +155,7 @@ impl App {
                     },
                 ),
         };
-        success(ResponseResult::PaneCopyMotion {
+        Ok(EndpointReply::PaneCopyMotion {
             pane_id: params.pane_id,
             cursor: PaneTextPoint {
                 row: target.row,
@@ -170,7 +167,7 @@ impl App {
     pub(crate) fn handle_pane_copy_search(
         &mut self,
         params: PaneCopySearchParams,
-    ) -> shepr_api::error::ApiResult {
+    ) -> EndpointResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -228,7 +225,7 @@ impl App {
                 },
             })
             .collect();
-        success(ResponseResult::PaneCopySearch {
+        Ok(EndpointReply::PaneCopySearch {
             pane_id: params.pane_id,
             matches,
             total: u64::try_from(result.total).unwrap_or(u64::MAX),

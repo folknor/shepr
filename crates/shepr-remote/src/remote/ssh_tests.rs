@@ -16,6 +16,16 @@ fn test_control_dir() -> SshControlDir<'static> {
     SshControlDir::unchecked(Path::new("/nonexistent/ssh"))
 }
 
+/// A `RemoteSsh` for `example` over a managed config that names no bindable socket.
+fn test_ssh() -> RemoteSsh {
+    let managed_config = write_managed_ssh_config("example", &test_app_paths(), test_control_dir())
+        .expect("test precondition");
+    RemoteSsh::test_with_state(
+        SshTarget::parse("example").expect("test precondition"),
+        managed_config,
+    )
+}
+
 #[test]
 fn managed_ssh_config_includes_user_config_then_fallback() {
     use std::os::unix::fs::PermissionsExt;
@@ -204,19 +214,6 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
 }
 
 #[test]
-fn unmanaged_ssh_setup_preserves_plain_transport() {
-    let paths = test_app_paths();
-    let ssh = RemoteSsh::new(
-        super::super::SshTarget::parse("example").expect("test precondition"),
-        false,
-        &paths,
-    )
-    .expect("plain SSH setup");
-    assert!(ssh.options().is_none());
-    assert!(!ssh.command().get_args().any(|arg| arg == "-F"));
-}
-
-#[test]
 fn ssh_config_quote_wraps_path_with_spaces() {
     assert_eq!(
         ssh_config_quote("/home/a b/.ssh/config"),
@@ -237,7 +234,7 @@ fn remote_ssh_command_uses_managed_config_when_present() {
         .expect("test precondition");
     let ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
-        Some(managed_config),
+        managed_config,
     );
 
     let command = ssh.command();
@@ -311,13 +308,7 @@ fn exit_sweep_waits_for_owners_that_are_already_dropping() {
 
 #[test]
 fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
-    let paths = test_app_paths();
-    let ssh = RemoteSsh::new(
-        super::super::SshTarget::parse("example").expect("test precondition"),
-        false,
-        &paths,
-    )
-    .expect("plain SSH setup");
+    let ssh = test_ssh();
     let args = ssh
         .command()
         .get_args()
@@ -336,32 +327,15 @@ fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
     ] {
         assert!(args.iter().any(|arg| arg == required), "missing {required}");
     }
-    assert_eq!(args.iter().any(|arg| arg == "-F"), ssh.options().is_some());
-}
-
-#[test]
-fn remote_ssh_commands_compress_without_managed_config() {
-    let ssh = RemoteSsh::test_with_state(
-        SshTarget::parse("example").expect("test precondition"),
-        None,
+    assert!(
+        args.iter().any(|arg| arg == "-F"),
+        "missing the managed config"
     );
-
-    let command = ssh.command();
-    let args = command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-
-    assert_eq!(args[0], "-C");
-    assert_eq!(&args[args.len() - 2..], ["-T", "example"]);
 }
 
 #[test]
 fn an_attempt_deadline_shortens_and_then_refuses_commands() {
-    let mut ssh = RemoteSsh::test_with_state(
-        SshTarget::parse("example").expect("test precondition"),
-        None,
-    );
+    let mut ssh = test_ssh();
     let now = Instant::now();
     assert_eq!(
         ssh.command_timeout(now).expect("no deadline"),

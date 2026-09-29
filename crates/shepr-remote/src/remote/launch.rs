@@ -14,10 +14,9 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 pub fn stop_remote_server(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    settings: super::MachineSshSettings,
     server: &DifferentBuildServer,
 ) -> io::Result<RemoteStop> {
-    let ssh = RemoteSsh::new(target.clone(), settings.manage_ssh_config, paths)?;
+    let ssh = RemoteSsh::new(target.clone(), paths)?;
     let args = RemoteCliCommand::ServerStop {
         expected_boot: &server.boot_id,
     }

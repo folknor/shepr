@@ -24,22 +24,7 @@ fn state_with_workspaces(names: &[&str]) -> AppState {
 }
 
 fn refresh_test_view(state: &mut AppState, area: Rect) {
-    state.view.terminal_area = area;
-    state.view.pane_infos = state
-        .active_index()
-        .and_then(|ws_idx| state.workspaces.get(ws_idx))
-        .map(Workspace::active_tab)
-        .map_or_default(|tab| {
-            state
-                .pane_geometry_in(area)
-                .tab_panes(tab.layout(), tab.zoomed())
-        })
-        .into_iter()
-        .map(|mut pane| {
-            pane.inner_rect = shepr_mux::workspace::pane_inner_rect(pane.rect, pane.borders);
-            pane
-        })
-        .collect();
+    state.test_record_all_tab_areas(area);
 }
 
 fn capture_from_state(state: &AppState) -> SessionSnapshot {

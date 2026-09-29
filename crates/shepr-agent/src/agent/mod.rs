@@ -174,11 +174,16 @@ const CLAUDE_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     None,
     Some(IntegrationHookAction::Session),
 )];
-const CODEX_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
-    "SessionStart",
-    None,
-    Some(IntegrationHookAction::Session),
-)];
+const CODEX_HOOK_EVENTS: &[IntegrationHookEvent] = &[
+    hook_event("SessionStart", None, Some(IntegrationHookAction::Session)),
+    hook_event(
+        "UserPromptSubmit",
+        None,
+        Some(IntegrationHookAction::Working),
+    ),
+    hook_event("Stop", None, Some(IntegrationHookAction::Idle)),
+    hook_event("Interrupt", None, Some(IntegrationHookAction::Idle)),
+];
 const DEVIN_HOOK_EVENTS: &[IntegrationHookEvent] = &[
     hook_event("SessionStart", None, Some(IntegrationHookAction::Session)),
     hook_event(
@@ -305,7 +310,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         executable: "codex",
         integration_target: Some(IntegrationTarget::Codex),
         integration_source: Some("shepr:codex"),
-        reserves_native_state: true,
+        reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
         resume_support: Some(ResumeSupport::new(

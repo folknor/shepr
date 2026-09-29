@@ -173,16 +173,16 @@ fn failed_selection_copy_does_not_send_terminal_input() {
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));
     for result in [
-        Ok(shepr_api::schema::ResponseResult::PaneSelection {
+        Ok(EndpointReply::PaneSelection {
             pane_id: "w1:p1".into(),
             text: String::new(),
         }),
         Err(ClientShellEndpointError {
-            code: Some("endpoint_cancelled".into()),
+            code: "endpoint_cancelled".into(),
             message: "cancelled".into(),
         }),
         Err(ClientShellEndpointError {
-            code: Some("selection_unavailable".into()),
+            code: "selection_unavailable".into(),
             message: "selection text is unavailable".into(),
         }),
     ] {

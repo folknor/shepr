@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use super::{
     AppPaths, Config, SidebarBounds,
     model::{
-        AdvancedConfig, ExperimentalConfig, NewTerminalCwdConfig, RemoteConfig, SessionConfig,
-        TerminalConfig, UiConfig,
+        AdvancedConfig, ExperimentalConfig, NewTerminalCwdConfig, SessionConfig, TerminalConfig,
+        UiConfig,
     },
     tab_bar::ValidatedTabBarRightEntry,
     window_title::WindowTitleTemplate,
@@ -867,10 +867,6 @@ impl ValidatedConfig {
 
     pub fn experimental(&self) -> &ExperimentalConfig {
         &self.config.experimental
-    }
-
-    pub fn remote(&self) -> &RemoteConfig {
-        &self.config.remote
     }
 
     /// The configured machines, in config order. Labels are unique.

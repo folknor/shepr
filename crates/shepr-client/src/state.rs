@@ -1,6 +1,74 @@
 use super::*;
 use std::io::Write as _;
 
+/// Who owns the host presentation: the pane cells on screen and the pane input behind them.
+/// The client shows one endpoint at a time, and this is the one place that says which, or that
+/// a handoff or nothing owns it. Client chrome (machine list, statuses, overlays, notices) is
+/// the client's own and presents in every state except a frozen handoff.
+pub(super) enum Presentation {
+    /// The registry's active endpoint owns the presentation: its pane surfaces and patches
+    /// present, its snapshots project, and a pick of it is a no-op.
+    Owned,
+    /// A handoff owns the presentation lane until it commits (back to `Owned`) or cannot make
+    /// either side safe (`Unavailable`). While its phase has not installed a coherent pair
+    /// (`PendingEndpointActivation::freezes_frame`) the source frame stays authoritative, even
+    /// for chrome; the commit repaints in full.
+    Handoff(Box<endpoint::PendingEndpointActivation>),
+    /// No endpoint has proved it owns the presentation: a handoff could not restore either
+    /// side, the committed endpoint went away, or Local was unreachable at launch. The last
+    /// coherent pane cells stay up and no pane output or projection change is taken, which is
+    /// what lets chrome frames pass. The way out is a handoff: to a reconnected endpoint, to
+    /// the user's next pick (the active endpoint included), or the automatic re-proof of an
+    /// endpoint whose connection survived.
+    Unavailable,
+}
+
+impl Presentation {
+    /// Whether pane frames are held back: always while unavailable, and during a handoff until
+    /// its committing pair is on screen.
+    pub(crate) fn frames_frozen(&self) -> bool {
+        match self {
+            Self::Owned => false,
+            Self::Handoff(activation) => activation.freezes_frame(),
+            Self::Unavailable => true,
+        }
+    }
+
+    pub(crate) fn handoff(&self) -> Option<&endpoint::PendingEndpointActivation> {
+        match self {
+            Self::Handoff(activation) => Some(&**activation),
+            Self::Owned | Self::Unavailable => None,
+        }
+    }
+
+    pub(crate) fn handoff_mut(&mut self) -> Option<&mut endpoint::PendingEndpointActivation> {
+        match self {
+            Self::Handoff(activation) => Some(&mut **activation),
+            Self::Owned | Self::Unavailable => None,
+        }
+    }
+
+    pub(crate) fn handoff_in_flight(&self) -> bool {
+        matches!(self, Self::Handoff(_))
+    }
+
+    pub(crate) fn owned(&self) -> bool {
+        matches!(self, Self::Owned)
+    }
+
+    /// Takes an in-flight handoff out to be abandoned. The presentation is `Unavailable` until
+    /// the caller installs its replacement.
+    pub(crate) fn take_handoff(&mut self) -> Option<Box<endpoint::PendingEndpointActivation>> {
+        match std::mem::replace(self, Self::Unavailable) {
+            Self::Handoff(activation) => Some(activation),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+}
+
 /// State tracking for the thin client.
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
@@ -16,11 +84,12 @@ pub(super) struct ClientState {
     /// The client-rendered shell.
     pub(super) shell: Box<shell::ClientShellState>,
     pub(super) repaint_pending: bool,
-    /// During a source-off-first endpoint activation the currently blitted frame remains
-    /// authoritative until an acknowledged target snapshot/surface pair commits.
-    pub(super) presentation_frozen: bool,
-    /// Latest explicit Local selection awaiting this client's replacement Local connection.
-    pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
+    pub(super) presentation: Presentation,
+    /// The latest explicit Local selection, waiting for a Local connection with metadata. It
+    /// is not a presentation state: whatever owns the presentation keeps it meanwhile, a remote
+    /// handoff in flight included. It is newer than any successor that handoff retains, and a
+    /// newer selection of any endpoint replaces it.
+    pub(super) deferred_local: Option<endpoint::EndpointActivationIntent>,
     pub(super) draw_host_cursor: bool,
     /// Frame and pane surface patch writes, which repeat on every presented frame.
     pub(super) frame_write_failure: HostWriteFailure,
@@ -42,10 +111,6 @@ impl ClientState {
             self.reported_geometry.cell_height(),
             self.reported_geometry.exact,
         );
-    }
-
-    pub(super) fn freeze_presentation(&mut self) {
-        self.presentation_frozen = true;
     }
 
     pub(super) fn record_host_theme_update(
@@ -93,40 +158,33 @@ impl ClientState {
         }
     }
 
-    pub(super) fn unfreeze_presentation(&mut self) {
-        self.presentation_frozen = false;
-        // A resize or metadata event may have happened while frozen. Force a full frame rather
-        // than attempting to patch the old source frame.
+    /// Ends a handoff: `Owned` on a commit, `Unavailable` when neither side can be made safe.
+    /// A resize or metadata event may have happened while the frame was frozen, so the next
+    /// frame is written in full rather than patched over the old source frame.
+    pub(super) fn end_handoff(&mut self, next: Presentation) {
+        self.presentation = next;
         self.request_repaint();
     }
 
-    /// Present a composed error/chrome frame while retaining the handoff input freeze. The pane
-    /// cells are still the last coherent surface; only client chrome (including the error) moves.
-    /// That holds because the client loop does not advance the pane projection while frozen:
-    /// active-endpoint snapshots are cached rather than projected, and non-handoff pane surfaces
-    /// and patches are dropped. A handoff commit installs a fresh coherent pair on unfreeze.
-    pub(super) fn present_frozen_chrome(&mut self, frame_data: shepr_protocol::FrameData) {
-        let frozen = self.presentation_frozen;
-        self.presentation_frozen = false;
-        self.present_frame(frame_data);
-        self.presentation_frozen = frozen;
+    /// Presents a chrome or error frame through any freeze. The pane cells in it are still the
+    /// last coherent surface; only client chrome moves. That holds because nothing advances the
+    /// pane projection while frames are frozen: active-endpoint snapshots are cached rather than
+    /// projected, and pane surfaces and patches outside a handoff are dropped. A handoff commit
+    /// installs a fresh coherent pair.
+    pub(super) fn present_chrome_through_freeze(&mut self, frame_data: shepr_protocol::FrameData) {
+        self.write_frame(frame_data);
     }
 
     /// Presents a frame whose change is client chrome only: machine statuses and diagnostics,
-    /// the machine list, overlays and modes. With no handoff in flight it passes a freeze left
-    /// by `present_handoff_unavailable` (see `present_frozen_chrome` for why that is sound), so
-    /// the machine list keeps showing live status while no endpoint owns presentation. During
-    /// a handoff it obeys the freeze: the source frame stays authoritative, and the commit
-    /// that ends the freeze repaints in full.
-    pub(super) fn present_chrome(
-        &mut self,
-        frame_data: shepr_protocol::FrameData,
-        handoff_in_flight: bool,
-    ) {
-        if handoff_in_flight {
+    /// the machine list, overlays and modes. With no endpoint owning the presentation it passes
+    /// the freeze (see `present_chrome_through_freeze` for why that is sound), so the machine
+    /// list keeps showing live status. During a handoff it obeys the handoff's freeze: the
+    /// source frame stays authoritative, and the commit repaints in full.
+    pub(super) fn present_chrome(&mut self, frame_data: shepr_protocol::FrameData) {
+        if self.presentation.handoff_in_flight() {
             self.present_frame(frame_data);
         } else {
-            self.present_frozen_chrome(frame_data);
+            self.write_frame(frame_data);
         }
     }
 
@@ -134,7 +192,7 @@ impl ClientState {
         &mut self,
         patch: shell::ClientComposedSurfacePatch,
     ) -> io::Result<bool> {
-        if self.presentation_frozen || self.repaint_pending {
+        if self.presentation.frames_frozen() || self.repaint_pending {
             return Ok(false);
         }
         let rows = if self.draw_host_cursor {
@@ -168,15 +226,20 @@ impl ClientState {
         self.output_writer.flush()
     }
 
-    /// Presents and commits a frame only after all terminal output has been written successfully.
+    /// Presents a frame unless pane frames are frozen (see `Presentation::frames_frozen`).
+    pub(super) fn present_frame(&mut self, frame_data: shepr_protocol::FrameData) {
+        if self.presentation.frames_frozen() {
+            return;
+        }
+        self.write_frame(frame_data);
+    }
+
+    /// Writes and commits a frame only after all terminal output has been written successfully.
     /// A failed write is handled here rather than by callers: the frame is not committed, the
     /// next frame repaints in full (`repaint_pending`), and the failure is logged once per cause
     /// through `frame_write_failure` rather than once per frame.
     /// Callers have no separate recovery action, so the write result stays owned by this state.
-    pub(super) fn present_frame(&mut self, frame_data: shepr_protocol::FrameData) {
-        if self.presentation_frozen {
-            return;
-        }
+    fn write_frame(&mut self, frame_data: shepr_protocol::FrameData) {
         let frame_data = if self.draw_host_cursor {
             render_ansi::frame_with_drawn_cursor(frame_data)
         } else {
@@ -269,8 +332,8 @@ impl ClientState {
                 shell::ClientShellConfig::from_validated_config(&config),
             )),
             repaint_pending: false,
-            presentation_frozen: false,
-            deferred_local_activation: None,
+            presentation: Presentation::Owned,
+            deferred_local: None,
             draw_host_cursor: false,
             frame_write_failure: HostWriteFailure::default(),
             title_write_failure: HostWriteFailure::default(),

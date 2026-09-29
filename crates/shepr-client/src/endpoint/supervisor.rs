@@ -140,23 +140,19 @@ impl ReconnectState {
 
 pub(crate) struct EndpointSupervisors {
     endpoints: HashMap<ClientEndpointId, ReconnectState>,
-    /// Launch-time ssh settings (config is read once), applied to every configured machine.
-    ssh_settings: shepr_remote::MachineSshSettings,
     paths: shepr_config::AppPaths,
     next_generation: shepr_protocol::ConnectionGeneration,
     shutdown: Arc<AtomicBool>,
 }
 
 impl EndpointSupervisors {
-    pub(crate) fn with_ssh_settings(
+    pub(crate) fn new(
         paths: &shepr_config::AppPaths,
         machines: &[shepr_config::MachineConfig],
-        settings: shepr_remote::MachineSshSettings,
         now: Instant,
     ) -> io::Result<Self> {
         let mut supervisors = Self {
             endpoints: HashMap::new(),
-            ssh_settings: settings,
             paths: paths.clone(),
             next_generation: shepr_protocol::ConnectionGeneration::new(2),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -166,7 +162,6 @@ impl EndpointSupervisors {
                 paths,
                 &machine.label,
                 &machine.ssh,
-                settings,
             ));
             if let Some(error) = connector.launch_fatal_setup_error() {
                 return Err(error);
@@ -336,7 +331,6 @@ impl EndpointSupervisors {
                 &self.paths,
                 &machine.label,
                 &machine.ssh,
-                self.ssh_settings,
             ))
         }));
     }
@@ -622,7 +616,6 @@ impl EndpointSupervisors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_test_fixtures::*;
 
     fn machine() -> shepr_config::MachineConfig {
         shepr_config::MachineConfig {
@@ -631,28 +624,37 @@ mod tests {
         }
     }
 
-    /// Tests never read the developer's own config file.
+    /// Paths whose XDG runtime directory is as short as a real `/run/user/<uid>` and does
+    /// not exist. These tests never connect, and no directory under the build tree is short
+    /// enough for the SSH control socket's staging path. The missing directory fails the
+    /// connector's runtime directory check with a plain `NotFound`, which is transient, not
+    /// launch-fatal, and it is checked before any path length, so nothing is created or bound
+    /// and the production launch check is untouched. Nothing reads the developer's config.
+    fn short_runtime_paths() -> shepr_config::AppPaths {
+        shepr_config::AppPaths::rooted_at(
+            std::path::Path::new("/nonexistent/shepr-supervisor-tests"),
+            None,
+            None,
+        )
+    }
+
+    /// `_env` is held by the caller only to keep the process environment isolated.
     fn supervisors_for(
+        _env: &shepr_test_support::IsolatedEnv,
         machines: &[shepr_config::MachineConfig],
         now: Instant,
     ) -> EndpointSupervisors {
-        EndpointSupervisors::with_ssh_settings(
-            &shepr_config::AppPaths::test_default(),
-            machines,
-            shepr_remote::MachineSshSettings {
-                manage_ssh_config: false,
-            },
-            now,
-        )
-        .expect("test saved SSH setup is retryable")
+        EndpointSupervisors::new(&short_runtime_paths(), machines, now)
+            .expect("test saved SSH setup is retryable")
     }
 
     #[test]
     fn saved_connector_moves_out_and_back_under_exclusive_ownership() {
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let machine = machine();
         let id = ClientEndpointId::Ssh(machine.label.clone());
-        let mut supervisors = supervisors_for(&[machine], now);
+        let mut supervisors = supervisors_for(&env, &[machine], now);
         let state = supervisors
             .endpoints
             .get_mut(&id)
@@ -695,10 +697,11 @@ mod tests {
 
     #[test]
     fn brief_ssh_reconnections_do_not_reset_backoff() {
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let machine = machine();
         let id = ClientEndpointId::Ssh(machine.label.clone());
-        let mut supervisors = supervisors_for(&[machine], now);
+        let mut supervisors = supervisors_for(&env, &[machine], now);
         supervisors
             .endpoints
             .get_mut(&id)
@@ -733,10 +736,11 @@ mod tests {
     #[test]
     fn a_reconnecting_machine_retries_within_thirty_seconds() {
         // Open clients retry a machine within 30 seconds of it becoming reachable.
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let machine = machine();
         let id = ClientEndpointId::Ssh(machine.label.clone());
-        let mut supervisors = supervisors_for(&[machine], now);
+        let mut supervisors = supervisors_for(&env, &[machine], now);
         supervisors
             .endpoints
             .get_mut(&id)
@@ -754,10 +758,11 @@ mod tests {
 
     #[test]
     fn unavailable_saved_machine_stays_supervised_and_retries() {
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let machine = machine();
         let id = ClientEndpointId::Ssh(machine.label.clone());
-        let mut supervisors = supervisors_for(&[machine], now);
+        let mut supervisors = supervisors_for(&env, &[machine], now);
         supervisors
             .endpoints
             .get_mut(&id)
@@ -785,6 +790,7 @@ mod tests {
         // An attempt that hangs until its budget runs out, at the longest backoff, and the
         // machine becomes reachable just after it started.
         assert!(ATTEMPT_BUDGET < MAX_RETRY_DELAY);
+        let env = shepr_test_support::IsolatedEnv::new();
         for status in [
             ClientEndpointStatus::Reconnecting,
             ClientEndpointStatus::Attention,
@@ -792,7 +798,7 @@ mod tests {
             let started = Instant::now();
             let machine = machine();
             let id = ClientEndpointId::Ssh(machine.label.clone());
-            let mut supervisors = supervisors_for(&[machine], started);
+            let mut supervisors = supervisors_for(&env, &[machine], started);
             {
                 // What `spawn_due` does when it launches an attempt.
                 let state = supervisors
@@ -824,12 +830,13 @@ mod tests {
 
     #[test]
     fn launch_machines_are_supervised_and_due_immediately() {
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
-        let supervisors = supervisors_for(&[machine()], now);
+        let supervisors = supervisors_for(&env, &[machine()], now);
         let id = ClientEndpointId::Ssh(machine().label);
         assert!(supervisors.supervises(&id));
         assert_eq!(supervisors.endpoints[&id].next_attempt, Some(now));
-        assert!(!supervisors_for(&[], now).supervises(&id));
+        assert!(!supervisors_for(&env, &[], now).supervises(&id));
     }
 
     #[test]
@@ -890,15 +897,8 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         let now = Instant::now();
-        let mut supervisors = EndpointSupervisors::with_ssh_settings(
-            &paths,
-            &[],
-            shepr_remote::MachineSshSettings {
-                manage_ssh_config: false,
-            },
-            now,
-        )
-        .expect("test precondition");
+        let mut supervisors =
+            EndpointSupervisors::new(&paths, &[], now).expect("test precondition");
         supervisors.add_local(paths.server_address().client_socket().into(), None, now);
         let ConnectTarget::Local {
             mismatch_guidance, ..
@@ -935,8 +935,9 @@ mod tests {
 
     #[test]
     fn local_in_attention_is_retried() {
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
-        let mut supervisors = supervisors_for(&[], now);
+        let mut supervisors = supervisors_for(&env, &[], now);
         supervisors.add_local(PathBuf::from("local.sock"), Some(1), now);
         assert!(supervisors.record_status(
             &ClientEndpointId::Local,
@@ -952,8 +953,9 @@ mod tests {
 
     #[test]
     fn healthy_local_only_retries_after_its_connection_fails() {
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
-        let mut supervisors = supervisors_for(&[machine()], now);
+        let mut supervisors = supervisors_for(&env, &[machine()], now);
         supervisors.add_local(PathBuf::from("local.sock"), Some(1), now);
         assert!(
             supervisors.endpoints[&ClientEndpointId::Local]
@@ -979,8 +981,9 @@ mod tests {
 
     #[test]
     fn ssh_recovery_rejects_stale_generations_and_rechecks_attention() {
+        let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
-        let mut supervisors = supervisors_for(&[machine()], now);
+        let mut supervisors = supervisors_for(&env, &[machine()], now);
         let endpoint_id = ClientEndpointId::Ssh(machine().label);
         supervisors
             .endpoints

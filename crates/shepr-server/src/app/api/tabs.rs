@@ -1,15 +1,16 @@
-use shepr_api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::ApiErrorCode;
 
 use crate::app::App;
-use shepr_api::schema::{
-    ResponseResult, TabCreateParams, TabMoveParams, TabRenameParams, TabTarget,
+use shepr_protocol::command::{
+    EndpointReply, TabCreateParams, TabMoveParams, TabRenameParams, TabTarget,
 };
 
 use super::super::api_helpers::{active_workspace_not_found, tab_not_found, workspace_not_found};
-use super::responses::{failure, success};
+use super::EndpointResult;
+use super::responses::failure;
 
 impl App {
-    pub(super) fn handle_tab_create(&mut self, params: TabCreateParams) -> ApiResult {
+    pub(super) fn handle_tab_create(&mut self, params: TabCreateParams) -> EndpointResult {
         let TabCreateParams {
             workspace_id,
             cwd,
@@ -81,28 +82,28 @@ impl App {
                     }
                 }
                 self.schedule_session_save();
-                match self.tab_created_result(ws_idx, tab_idx) {
-                    Some(result) => success(result),
-                    None => failure(ApiErrorCode::TabCreateFailed, "new tab is unavailable"),
+                if self.public_tab_id(ws_idx, tab_idx).is_none() {
+                    return failure(ApiErrorCode::TabCreateFailed, "new tab is unavailable");
                 }
+                Ok(EndpointReply::Done)
             }
             Err(err) => failure(ApiErrorCode::TabCreateFailed, err.to_string()),
         }
     }
 
-    pub(super) fn handle_tab_focus(&mut self, target: &TabTarget) -> ApiResult {
+    pub(super) fn handle_tab_focus(&mut self, target: &TabTarget) -> EndpointResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return Err(tab_not_found(&target.tab_id));
         };
         self.state.switch_workspace_tab(ws_idx, tab_idx);
-        let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
+        if self.public_tab_id(ws_idx, tab_idx).is_none() {
             return Err(tab_not_found(&target.tab_id));
-        };
+        }
 
-        success(ResponseResult::TabInfo { tab })
+        Ok(EndpointReply::Done)
     }
 
-    pub(super) fn handle_tab_rename(&mut self, params: TabRenameParams) -> ApiResult {
+    pub(super) fn handle_tab_rename(&mut self, params: TabRenameParams) -> EndpointResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return Err(tab_not_found(&params.tab_id));
         };
@@ -120,14 +121,11 @@ impl App {
         }
         crate::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
-        let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
-            return Err(tab_not_found(&params.tab_id));
-        };
 
-        success(ResponseResult::TabInfo { tab })
+        Ok(EndpointReply::Done)
     }
 
-    pub(super) fn handle_tab_move(&mut self, params: &TabMoveParams) -> ApiResult {
+    pub(super) fn handle_tab_move(&mut self, params: &TabMoveParams) -> EndpointResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return Err(tab_not_found(&params.tab_id));
         };
@@ -147,16 +145,15 @@ impl App {
             .workspaces
             .get_mut(ws_idx)
             .is_some_and(|ws| ws.move_tab(tab_idx, insert_index));
-        let tabs = self.tab_list_info(ws_idx);
         if moved {
             self.state.refresh_active_tab_id();
             self.schedule_session_save();
         }
 
-        success(ResponseResult::TabList { tabs })
+        Ok(EndpointReply::Done)
     }
 
-    pub(super) fn handle_tab_close(&mut self, target: &TabTarget) -> ApiResult {
+    pub(super) fn handle_tab_close(&mut self, target: &TabTarget) -> EndpointResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return Err(tab_not_found(&target.tab_id));
         };
@@ -177,15 +174,7 @@ impl App {
         self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
         self.schedule_session_save();
 
-        success(ResponseResult::Ok {})
-    }
-
-    fn tab_list_info(&self, ws_idx: usize) -> Vec<shepr_api::schema::TabInfo> {
-        self.state.workspaces.get(ws_idx).map_or_default(|ws| {
-            (0..ws.tabs().len())
-                .filter_map(|idx| self.tab_info(ws_idx, idx))
-                .collect()
-        })
+        Ok(EndpointReply::Done)
     }
 }
 
@@ -194,7 +183,6 @@ mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
     use crate::test_support::*;
-    use shepr_api::schema::SuccessResponse;
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
 
@@ -211,8 +199,7 @@ mod tests {
             tab_id: tab_id.to_string(),
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        assert_eq!(success.result, ResponseResult::Ok {});
+        assert_eq!(response, Ok(EndpointReply::Done));
         assert!(app.state.workspaces.is_empty());
         assert!(app.state.active_index().is_none());
     }
@@ -235,8 +222,7 @@ mod tests {
             tab_id: tab_id.to_string(),
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        assert_eq!(success.result, ResponseResult::Ok {});
+        assert_eq!(response, Ok(EndpointReply::Done));
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);
         assert_eq!(app.state.workspaces[0].tabs()[0].root_pane(), survivor_root);
         assert_eq!(app.state.workspaces[0].tabs()[0].panes().len(), 1);
@@ -260,16 +246,12 @@ mod tests {
             insert_index: 3,
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        let ResponseResult::TabList { tabs } = success.result else {
-            panic!("expected tab list");
-        };
+        assert_eq!(response, Ok(EndpointReply::Done));
         assert_eq!(app.state.workspaces[0].tabs()[2].root_pane(), moved_root);
         assert_eq!(
-            tabs[2].tab_id,
-            app.public_tab_id(0, 2).expect("test precondition")
+            app.public_tab_id(0, 2).expect("test precondition"),
+            moved_id
         );
-        assert_eq!(tabs[2].tab_id, moved_id);
     }
 
     #[tokio::test]
@@ -304,8 +286,7 @@ mod tests {
             env: Default::default(),
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
+        assert_eq!(response, Ok(EndpointReply::Done));
         let created = &app.state.workspaces[0].tabs()[1];
         let created_terminal_id = created
             .terminal_id(created.root_pane())

@@ -121,7 +121,6 @@ pub(crate) struct RenderTarget {
     pub(crate) client_id: ClientId,
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
     pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
-    pub(crate) is_foreground: bool,
 }
 
 /// Pure client identity and ownership state for one headless server.
@@ -129,6 +128,14 @@ pub(crate) struct RenderTarget {
 /// Connection accessors support the transport and rendering paths that need to
 /// inspect a connection, while cross-connection decisions and ownership maps
 /// live here and can be tested without a PTY.
+///
+/// Presentation (surface size, outer focus, location, window title, input
+/// modes) lives on each connection; nothing here or in the app mirrors one
+/// client's view as a session-wide one. The registry holds two arbitrations
+/// between clients: which one controls each tab's PTY geometry, and which one
+/// was active most recently (the foreground client). The foreground client
+/// receives clipboard writes from panes and supplies the host theme panes are
+/// coloured with, the two effects a pane has one of whichever client views it.
 pub(crate) struct ClientRegistry {
     connections: HashMap<ClientId, ClientConnection>,
     next_client_id: u64,
@@ -235,10 +242,6 @@ impl ClientRegistry {
         latest_shell_client(&self.connections)
     }
 
-    pub(crate) fn set_foreground_client_id(&mut self, client_id: Option<ClientId>) {
-        self.foreground_client_id = client_id;
-    }
-
     pub(crate) fn promote_to_foreground(&mut self, client_id: ClientId) -> bool {
         let stamp = self.allocate_activity_stamp();
         let Some(client) = self.connections.get_mut(&client_id) else {
@@ -284,10 +287,6 @@ impl ClientRegistry {
         self.connections.clear();
         self.foreground_client_id = None;
         self.geometry_controllers.clear();
-    }
-
-    pub(crate) fn geometry_controllers(&self) -> &HashMap<PublicTabId, ClientId> {
-        &self.geometry_controllers
     }
 
     pub(crate) fn geometry_controller(&self, tab_id: &PublicTabId) -> Option<ClientId> {
@@ -456,6 +455,10 @@ pub(crate) struct ClientConnection {
     pub(crate) host_mouse_capture_active: Option<bool>,
     /// Last SGR pixel provenance mode sent to this client.
     pub(crate) host_sgr_pixels_active: Option<bool>,
+    /// Outer window title last delivered to this client, rendered for its own
+    /// view: `None` when none was delivered, `Some(None)` when it was told to
+    /// fall back to its default title.
+    pub(crate) sent_window_title: Option<Option<String>>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     ///
     /// Always `Some` in production: every accepted connection brings a writer,
@@ -486,6 +489,7 @@ impl ClientConnection {
             oversized_frame_reported: false,
             host_mouse_capture_active: None,
             host_sgr_pixels_active: None,
+            sent_window_title: None,
             writer,
         }
     }
@@ -650,10 +654,9 @@ pub(crate) fn latest_shell_client(
         .map(|(&client_id, _)| client_id)
 }
 
-pub(crate) fn render_targets(
-    clients: &ClientRegistry,
-    foreground_client_id: Option<ClientId>,
-) -> Vec<RenderTarget> {
+/// Every connection with a writer, each rendered at its own surface size, in
+/// a stable order.
+pub(crate) fn render_targets(clients: &ClientRegistry) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
         .filter(|(_, client)| client.writer.is_some())
@@ -661,11 +664,10 @@ pub(crate) fn render_targets(
             client_id,
             terminal_size: client.terminal_size,
             cell_size: client.cell_size,
-            is_foreground: foreground_client_id == Some(client_id),
         })
         .collect();
 
-    targets.sort_by_key(|target| (target.is_foreground, target.client_id));
+    targets.sort_by_key(|target| target.client_id);
     targets
 }
 
@@ -722,6 +724,12 @@ impl ClientId {
 impl ClientRegistry {
     pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
         self.connections.contains_key(&(*client_id).into())
+    }
+
+    /// Sets the foreground client without recording activity, as a fixture
+    /// that has not been through the activity paths needs.
+    pub(crate) fn set_foreground_client_id(&mut self, client_id: Option<ClientId>) {
+        self.foreground_client_id = client_id;
     }
 }
 

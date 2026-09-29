@@ -5,8 +5,9 @@
 //! lease, the writer and the pane history carried between saves on a thread
 //! of its own. This side decides when to save (debounced autosaves, pane-exit
 //! and host-shutdown checkpoints, retries), captures what to save on the
-//! event loop, where only the cheap part happens (the structural snapshot and
-//! a handle to each pane's terminal), and hands the result to the persister.
+//! event loop, where only the cheap part happens (the structural snapshot, a
+//! handle to each pane's terminal and a probe of each shell's cwd), and hands
+//! the result to the persister.
 
 use std::time::{Duration, Instant};
 
@@ -349,14 +350,15 @@ impl App {
     }
 
     /// Runs on the event loop, so it takes only what must be read here: the
-    /// structural snapshot and a handle to each pane's terminal. No terminal
-    /// lock is taken; turning history into its saved form is the persister's
-    /// work.
+    /// structural snapshot, a handle to each pane's terminal and a probe of
+    /// each shell's cwd. No terminal lock is taken and no /proc file is read;
+    /// turning history into its saved form and reading the cwds are the
+    /// persister's work.
     fn capture_session_save_job(&self) -> shepr_mux::persist::PersistJob {
         if self.state.workspaces.is_empty() {
             shepr_mux::persist::PersistJob::Clear
         } else {
-            let snapshot = shepr_mux::persist::capture(
+            let (snapshot, cwds) = shepr_mux::persist::capture_deferred(
                 &self.state.workspaces,
                 &self.state.terminals,
                 &self.terminal_runtimes,
@@ -375,6 +377,7 @@ impl App {
             });
             shepr_mux::persist::PersistJob::Save(shepr_mux::persist::SessionBundle {
                 snapshot,
+                cwds,
                 history,
             })
         }

@@ -34,20 +34,10 @@ impl HeadlessServer {
                 self.send_to_foreground_client(&ServerMessage::Clipboard { data });
                 false
             }
-            // Agent state and hook reports need the latest outer-terminal focus
-            // before application code runs; neither changes geometry, so the
-            // view is not recomputed for them.
-            AppEvent::StateChanged { .. } | AppEvent::HookStateReported { .. } => {
-                self.sync_foreground_focus_state();
-                self.app.handle_internal_event(ev);
-                true
-            }
             AppEvent::PaneDied {
                 pane_id,
                 exit_reason,
             } => {
-                let focus_before = self.shell_focus_targets();
-                let focused_tabs_before = self.focused_shell_tabs();
                 let pane_id_val = *pane_id;
                 if self
                     .app
@@ -75,7 +65,7 @@ impl HeadlessServer {
 
                 self.app.handle_internal_event(ev);
                 self.reconcile_client_shell_locations();
-                self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+                self.sync_pane_focus();
                 self.reapply_controlled_shell_tab_geometry(false);
 
                 true

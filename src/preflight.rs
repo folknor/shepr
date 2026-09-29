@@ -33,10 +33,7 @@ pub(crate) fn run(config: &shepr_config::ValidatedConfig, paths: &shepr_config::
     // the terminal too, so asking needs both to be a terminal.
     let can_prompt = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let machines = config.machines();
-    let settings = shepr_remote::MachineSshSettings {
-        manage_ssh_config: config.remote().manage_ssh_config,
-    };
-    let ssh = shepr_remote::MachineSshPreflight::new(paths, settings);
+    let ssh = shepr_remote::MachineSshPreflight::new(paths);
     let mut outcomes = if machines.is_empty() {
         Vec::new()
     } else {

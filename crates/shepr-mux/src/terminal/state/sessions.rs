@@ -226,6 +226,21 @@ impl TerminalState {
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
         let previous_session = self.current_session_identity_for_persistence();
+        // A replacing Codex session must not stay shadowed by the previous
+        // session's turn report, which would keep supplying the identity.
+        if (source.as_str(), agent_label.as_str()) == ("shepr:codex", "codex")
+            && session_replacement_allowed
+            && self.hook_authority.as_ref().is_some_and(|authority| {
+                authority.source == source
+                    && authority.agent_label == agent_label
+                    && authority
+                        .session_ref
+                        .as_ref()
+                        .is_some_and(|current| current != &session_ref)
+            })
+        {
+            self.hook_authority = None;
+        }
         if session_replacement_allowed || foreground_takeover_allowed {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
         }

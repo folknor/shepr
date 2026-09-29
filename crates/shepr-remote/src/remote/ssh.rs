@@ -233,14 +233,7 @@ pub struct SshAuthenticationCommand {
 pub fn ssh_authentication_command(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    settings: super::MachineSshSettings,
 ) -> io::Result<SshAuthenticationCommand> {
-    if !settings.manage_ssh_config {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "interactive SSH recovery requires remote.manage_ssh_config=true",
-        ));
-    }
     let config = write_managed_ssh_config(target.as_str(), paths, SshControlDir::runtime(paths)?)?;
     Ok(authentication_command_with_config(target, config))
 }
@@ -274,7 +267,7 @@ pub(super) fn authentication_command_with_config(
 /// goes through [`ssh_authentication_command`], not this type.
 pub(crate) struct RemoteSsh {
     target: SshTarget,
-    managed_config: Option<ManagedSshConfig>,
+    managed_config: ManagedSshConfig,
     /// Bounds commands launched by `sh_output` and `posix_user_shell_output`:
     /// each gets the shorter of its own timeout and the time left, and none
     /// starts once it has passed. A machine connection attempt sets it so
@@ -284,20 +277,9 @@ pub(crate) struct RemoteSsh {
 
 impl RemoteSsh {
     /// For long-lived callers that already hold the launch-time config.
-    pub(crate) fn new(
-        target: SshTarget,
-        manage_ssh_config: bool,
-        paths: &shepr_config::AppPaths,
-    ) -> io::Result<Self> {
-        let managed_config = if manage_ssh_config {
-            Some(write_managed_ssh_config(
-                target.as_str(),
-                paths,
-                SshControlDir::runtime(paths)?,
-            )?)
-        } else {
-            None
-        };
+    pub(crate) fn new(target: SshTarget, paths: &shepr_config::AppPaths) -> io::Result<Self> {
+        let managed_config =
+            write_managed_ssh_config(target.as_str(), paths, SshControlDir::runtime(paths)?)?;
         Ok(Self {
             target,
             managed_config,
@@ -326,13 +308,13 @@ impl RemoteSsh {
         self.target.as_str()
     }
 
-    pub(crate) fn options(&self) -> Option<&ManagedSshOptions> {
-        self.managed_config.as_ref().map(|config| &config.options)
+    pub(crate) fn options(&self) -> &ManagedSshOptions {
+        &self.managed_config.options
     }
 
     pub(super) fn command(&self) -> Command {
         let mut command = ssh_command();
-        apply_managed_ssh_options(&mut command, self.options());
+        apply_managed_ssh_options(&mut command, Some(self.options()));
         apply_batch_ssh_options(&mut command);
         command.arg("-T").arg(self.target.as_str());
         command
@@ -583,10 +565,7 @@ pub(super) fn command_failed(context: &str, output: &Output) -> io::Error {
 
 #[cfg(test)]
 impl RemoteSsh {
-    pub(super) fn test_with_state(
-        target: SshTarget,
-        managed_config: Option<ManagedSshConfig>,
-    ) -> Self {
+    pub(super) fn test_with_state(target: SshTarget, managed_config: ManagedSshConfig) -> Self {
         Self {
             target,
             managed_config,

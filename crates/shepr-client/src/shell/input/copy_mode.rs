@@ -93,13 +93,13 @@ impl ClientShellState {
                     && cursor.y >= inner.y
                     && cursor.y < inner.y.saturating_add(inner.height))
                 // Lazily: outside the pane the subtractions would underflow.
-                .then(|| shepr_api::schema::PaneTextPoint {
+                .then(|| shepr_protocol::command::PaneTextPoint {
                     row: metrics
                         .absolute_row_at_viewport(shepr_vt::ViewportRow(cursor.y - inner.y)),
                     col: cursor.x - inner.x,
                 })
             })
-            .unwrap_or(shepr_api::schema::PaneTextPoint {
+            .unwrap_or(shepr_protocol::command::PaneTextPoint {
                 row: metrics.absolute_row_at_viewport(shepr_vt::ViewportRow(
                     hit.inner_rect.height.saturating_sub(1),
                 )),
@@ -210,7 +210,7 @@ impl ClientShellState {
                 return;
             }
             KeyCode::End => {
-                self.request_copy_motion(shepr_api::schema::PaneCopyMotion::LineEnd, outcome);
+                self.request_copy_motion(shepr_protocol::command::PaneCopyMotion::LineEnd, outcome);
                 return;
             }
             _ => {}
@@ -259,42 +259,60 @@ impl ClientShellState {
                 self.sync_copy_selection();
                 outcome.repaint = true;
             }
-            '$' => self.request_copy_motion(shepr_api::schema::PaneCopyMotion::LineEnd, outcome),
-            '^' => {
-                self.request_copy_motion(shepr_api::schema::PaneCopyMotion::FirstNonBlank, outcome);
+            '$' => {
+                self.request_copy_motion(shepr_protocol::command::PaneCopyMotion::LineEnd, outcome)
             }
-            '/' => self.open_copy_search(shepr_api::schema::PaneCopySearchDirection::Forward),
-            '?' => self.open_copy_search(shepr_api::schema::PaneCopySearchDirection::Backward),
+            '^' => {
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::FirstNonBlank,
+                    outcome,
+                );
+            }
+            '/' => self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Forward),
+            '?' => {
+                self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Backward)
+            }
             'n' => self.repeat_copy_search(false, outcome),
             'N' => self.repeat_copy_search(true, outcome),
             'w' => {
-                self.request_copy_motion(shepr_api::schema::PaneCopyMotion::NextWordStart, outcome);
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::NextWordStart,
+                    outcome,
+                );
             }
             'b' => self.request_copy_motion(
-                shepr_api::schema::PaneCopyMotion::PreviousWordStart,
+                shepr_protocol::command::PaneCopyMotion::PreviousWordStart,
                 outcome,
             ),
             'e' => {
-                self.request_copy_motion(shepr_api::schema::PaneCopyMotion::NextWordEnd, outcome);
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::NextWordEnd,
+                    outcome,
+                );
             }
-            'W' => self
-                .request_copy_motion(shepr_api::schema::PaneCopyMotion::NextBigWordStart, outcome),
+            'W' => self.request_copy_motion(
+                shepr_protocol::command::PaneCopyMotion::NextBigWordStart,
+                outcome,
+            ),
             'B' => self.request_copy_motion(
-                shepr_api::schema::PaneCopyMotion::PreviousBigWordStart,
+                shepr_protocol::command::PaneCopyMotion::PreviousBigWordStart,
                 outcome,
             ),
             'E' => {
                 self.request_copy_motion(
-                    shepr_api::schema::PaneCopyMotion::NextBigWordEnd,
+                    shepr_protocol::command::PaneCopyMotion::NextBigWordEnd,
                     outcome,
                 );
             }
             '{' => self.request_copy_motion(
-                shepr_api::schema::PaneCopyMotion::PreviousParagraph,
+                shepr_protocol::command::PaneCopyMotion::PreviousParagraph,
                 outcome,
             ),
             '}' => {
-                self.request_copy_motion(shepr_api::schema::PaneCopyMotion::NextParagraph, outcome);
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::NextParagraph,
+                    outcome,
+                );
             }
             _ => return,
         }
@@ -358,7 +376,7 @@ impl ClientShellState {
         true
     }
 
-    fn open_copy_search(&mut self, direction: shepr_api::schema::PaneCopySearchDirection) {
+    fn open_copy_search(&mut self, direction: shepr_protocol::command::PaneCopySearchDirection) {
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return;
         };
@@ -380,11 +398,11 @@ impl ClientShellState {
         };
         let direction = if reverse {
             match direction {
-                shepr_api::schema::PaneCopySearchDirection::Forward => {
-                    shepr_api::schema::PaneCopySearchDirection::Backward
+                shepr_protocol::command::PaneCopySearchDirection::Forward => {
+                    shepr_protocol::command::PaneCopySearchDirection::Backward
                 }
-                shepr_api::schema::PaneCopySearchDirection::Backward => {
-                    shepr_api::schema::PaneCopySearchDirection::Forward
+                shepr_protocol::command::PaneCopySearchDirection::Backward => {
+                    shepr_protocol::command::PaneCopySearchDirection::Forward
                 }
             }
         } else {
@@ -421,7 +439,7 @@ impl ClientShellState {
     fn request_copy_search(
         &mut self,
         query: String,
-        direction: shepr_api::schema::PaneCopySearchDirection,
+        direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         outcome: &mut ClientShellInput,
     ) {
@@ -440,9 +458,9 @@ impl ClientShellState {
     pub(super) fn apply_copy_search_result(
         &mut self,
         pane_id: &str,
-        origin: shepr_api::schema::PaneTextPoint,
+        origin: shepr_protocol::command::PaneTextPoint,
         query: String,
-        direction: shepr_api::schema::PaneCopySearchDirection,
+        direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         generation: u64,
         result: ClientCopySearchResult,
@@ -735,7 +753,7 @@ impl ClientShellState {
 
     fn request_copy_motion(
         &mut self,
-        motion: shepr_api::schema::PaneCopyMotion,
+        motion: shepr_protocol::command::PaneCopyMotion,
         outcome: &mut ClientShellInput,
     ) {
         if self.copy_mode.is_none() {
@@ -759,10 +777,10 @@ impl ClientShellState {
             let session_generation = self.copy_session_generation;
             let pane_id = copy_mode.pane_id.clone();
             let origin = copy_mode.cursor;
-            let (method, kind) = match operation {
+            let (command, kind) = match operation {
                 ClientCopyOperation::Motion(motion) => (
-                    shepr_api::schema::Method::PaneCopyMotion(
-                        shepr_api::schema::PaneCopyMotionParams {
+                    shepr_protocol::command::EndpointCommand::PaneCopyMotion(
+                        shepr_protocol::command::PaneCopyMotionParams {
                             pane_id: pane_id.to_string(),
                             cursor: origin,
                             motion,
@@ -793,8 +811,8 @@ impl ClientShellState {
                         })
                         .flatten();
                     (
-                        shepr_api::schema::Method::PaneCopySearch(
-                            shepr_api::schema::PaneCopySearchParams {
+                        shepr_protocol::command::EndpointCommand::PaneCopySearch(
+                            shepr_protocol::command::PaneCopySearchParams {
                                 pane_id: pane_id.to_string(),
                                 query: query.clone(),
                                 direction,
@@ -815,7 +833,7 @@ impl ClientShellState {
                 }
             };
             self.copy_operation_in_flight = true;
-            if !self.push_endpoint_method_with_kind(method, kind, outcome) {
+            if !self.push_endpoint_command_with_kind(command, kind, outcome) {
                 self.copy_operation_in_flight = false;
             }
             return;
@@ -825,8 +843,8 @@ impl ClientShellState {
     pub(super) fn apply_copy_motion_target(
         &mut self,
         pane_id: &str,
-        origin: shepr_api::schema::PaneTextPoint,
-        cursor: shepr_api::schema::PaneTextPoint,
+        origin: shepr_protocol::command::PaneTextPoint,
+        cursor: shepr_protocol::command::PaneTextPoint,
         outcome: &mut ClientShellInput,
     ) -> bool {
         let Some(copy_mode) = self.copy_mode.as_mut() else {

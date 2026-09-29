@@ -174,6 +174,30 @@ impl SyncTimeoutRender {
     }
 }
 
+/// Reads a pane shell's live working directory from any thread, so a save can
+/// take the probe on the event loop and do the /proc read where the save runs.
+pub struct PaneCwdProbe {
+    child_liveness: Arc<ChildLiveness>,
+    remembered: Arc<Mutex<Option<std::path::PathBuf>>>,
+}
+
+impl PaneCwdProbe {
+    /// The shell's absolute /proc cwd right now, or `None` when the shell has
+    /// been reaped (its numeric PID may belong to another process by now) or
+    /// the read failed. A successful read is remembered for the pane's later
+    /// saves. Persistence observations must not change OSC authority or
+    /// follow-cwd behavior, so nothing else is touched.
+    pub fn read(&self) -> Option<std::path::PathBuf> {
+        if self.child_liveness.wait_completed() {
+            return None;
+        }
+        let cwd = shepr_agent::detect::process_cwd(self.child_liveness.pid())
+            .filter(|cwd| cwd.is_absolute())?;
+        *shepr_vt::lock_auxiliary(&self.remembered) = Some(cwd.clone());
+        Some(cwd)
+    }
+}
+
 /// PTY runtime for a pane. Owns the terminal, I/O channels, and background tasks.
 /// Dropping this aborts async tasks and closes the PTY.
 pub struct PaneRuntime {
@@ -184,7 +208,7 @@ pub struct PaneRuntime {
     child_liveness: Arc<ChildLiveness>,
     teardown_tracker: Arc<super::teardown::PaneTeardownTracker>,
     reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
-    persistence_cwd: Mutex<Option<std::path::PathBuf>>,
+    persistence_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
     detection_content_seq: Arc<AtomicU64>,
@@ -1179,7 +1203,7 @@ impl PaneRuntime {
             child_liveness,
             teardown_tracker,
             reported_cwd,
-            persistence_cwd: Mutex::new(None),
+            persistence_cwd: Arc::new(Mutex::new(None)),
             content_seq,
             content_write_lock,
             detection_content_seq,
@@ -1215,7 +1239,7 @@ impl PaneRuntime {
             // No child, so no teardown is ever started through this tracker.
             teardown_tracker: Arc::default(),
             reported_cwd: Arc::new(Mutex::new(None)),
-            persistence_cwd: Mutex::new(None),
+            persistence_cwd: Arc::new(Mutex::new(None)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -1592,17 +1616,11 @@ impl PaneRuntime {
         )
     }
 
-    pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
-        let pid = self.child_liveness.pid();
-        if let Some(cwd) = (!self.child_liveness.wait_completed())
-            .then(|| shepr_agent::detect::process_cwd(pid))
-            .flatten()
-            .filter(|cwd| cwd.is_absolute())
-        {
-            // Persistence observations must not change OSC authority or follow-cwd behavior.
-            *shepr_vt::lock_auxiliary(&self.persistence_cwd) = Some(cwd.clone());
-            return Some(cwd);
-        }
+    /// The cwd a save can use without a /proc read: the last one a save
+    /// observed, else the shell's latest OSC 7 report. A save's capture takes
+    /// this on the event loop and lets [`PaneCwdProbe::read`] improve on it
+    /// where the save runs.
+    pub fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
         shepr_vt::lock_auxiliary(&self.persistence_cwd)
             .clone()
             .or_else(|| {
@@ -1610,6 +1628,15 @@ impl PaneRuntime {
                     .as_ref()
                     .map(|reported| reported.path.clone())
             })
+    }
+
+    /// What another thread needs to read this shell's live cwd (see
+    /// [`PaneCwdProbe`]); taking it reads nothing.
+    pub fn cwd_probe(&self) -> PaneCwdProbe {
+        PaneCwdProbe {
+            child_liveness: Arc::clone(&self.child_liveness),
+            remembered: Arc::clone(&self.persistence_cwd),
+        }
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -2438,9 +2465,10 @@ mod tests {
         // A different live process now owns the exited shell's numeric PID.
         runtime.child_liveness.set_pid_for_test(std::process::id());
         runtime.child_liveness.mark_wait_completed();
-        assert_eq!(runtime.cwd_for_persistence(), Some(saved));
+        assert_eq!(runtime.cwd_probe().read(), None);
+        assert_eq!(runtime.remembered_cwd(), Some(saved));
         *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = None;
-        assert_eq!(runtime.cwd_for_persistence(), None);
+        assert_eq!(runtime.remembered_cwd(), None);
     }
 
     #[tokio::test]
@@ -2483,7 +2511,7 @@ mod tests {
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
-            persistence_cwd: Mutex::new(None),
+            persistence_cwd: Arc::new(Mutex::new(None)),
             pane_id,
             terminal,
             io: Box::new(io),
@@ -2513,7 +2541,7 @@ mod tests {
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
-            persistence_cwd: Mutex::new(None),
+            persistence_cwd: Arc::new(Mutex::new(None)),
             pane_id,
             terminal,
             io: Box::new(io),

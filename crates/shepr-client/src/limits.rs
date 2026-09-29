@@ -158,8 +158,6 @@ pub(crate) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 pub(super) const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 /// Same bound as `MAX_RETRY_DELAY`, for the same prompt-retry guarantee.
 pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
-/// What `ATTEMPT_BUDGET` allows beyond one cold SSH round trip.
-pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// The longest one connection attempt may run: the SSH discovery commands, the bridge and
 /// the endpoint handshake all stop at this deadline. Without it an attempt against a host
 /// that stalls could hold the endpoint indefinitely (each discovery command may
@@ -175,7 +173,7 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// The budget is the same for every attempt, including one that has to run full
 /// discovery of the remote executable. Most attempts do not: a reconnect launches the
 /// bridge from the remembered executable.
-/// With the default managed ssh config every command after the first reuses one shared
+/// The managed ssh config makes every command after the first reuse one shared
 /// connection (ControlMaster), so only one cold connect is paid.
 /// The case that can overrun is a cache miss or a stale remembered path on a slow link
 /// without connection sharing, where each of discovery's several round trips, a status
@@ -185,13 +183,12 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// failure (any other error clears it) and the next attempt continues from there, and it
 /// keeps a freshly discovered executable when only the bridge ran out of time. No
 /// discovery round trip may take longer than `SSH_ROUND_TRIP_TIMEOUT`, and the budget
-/// exceeds it by `SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
+/// exceeds it by `shepr_core::limits::SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
 /// completes at least one, and discovery finishes after a bounded number of attempts;
 /// after that the bridge and handshake need to fit one attempt, as on every ordinary
 /// reconnect. A larger discovery budget would stretch the retry bound exactly where
 /// the link is slowest, and would still fail on an even slower link.
-pub(super) const ATTEMPT_BUDGET: Duration =
-    shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
+pub(super) const ATTEMPT_BUDGET: Duration = shepr_core::limits::SSH_CONNECTION_ATTEMPT_BUDGET;
 
 /// Maximum queued frame batches waiting for the endpoint writer.
 ///

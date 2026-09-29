@@ -58,18 +58,10 @@ pub(crate) struct TabSurfaceView<'a> {
     pub(crate) split_borders: &'a [SplitBorder],
 }
 
-pub(crate) fn compute_tab_surface(
-    app: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    area: Rect,
-) -> TabSurfaceLayout {
-    let target = app.active_index().and_then(|workspace_index| {
-        let workspace = app.workspaces.get(workspace_index)?;
-        TabSurfaceTarget::from_indices(app, workspace_index, workspace.active_tab_index())
-    });
-    compute_tab_surface_for(app, terminal_runtimes, target, area)
-}
-
+/// One tab laid out for one client surface of size `area`. Pure: it reads the
+/// state and the runtimes' screen modes and resizes nothing. Each client
+/// renders the tab its own location names at its own size; which size the
+/// tab's PTYs get is decided separately, by the server's geometry rule.
 pub(crate) fn compute_tab_surface_for(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
@@ -98,6 +90,8 @@ pub(crate) fn compute_tab_surface_for(
     }
 }
 
+/// Resizes the visible panes of one tab to their content rects in `area`: the
+/// explicit geometry path the server's PTY size rule runs through.
 pub(crate) fn resize_tab_surface(
     app: &AppState,
     resizer: &PaneResizer<'_>,
@@ -114,29 +108,6 @@ pub(crate) fn resize_tab_surface(
         workspace_index,
         tab_index,
         &pane_infos,
-        cell_size,
-    );
-}
-
-pub(crate) fn resize_tab_surface_layout(
-    app: &AppState,
-    resizer: &PaneResizer<'_>,
-    layout: &TabSurfaceLayout,
-    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
-) {
-    let Some((workspace_index, tab_index)) = layout
-        .target
-        .as_ref()
-        .and_then(|target| target.resolve(app))
-    else {
-        return;
-    };
-    resize_pane_infos(
-        app,
-        resizer,
-        workspace_index,
-        tab_index,
-        &layout.pane_infos,
         cell_size,
     );
 }
@@ -295,12 +266,18 @@ mod tests {
 
         let full_area = Rect::new(0, 0, 106, 20);
         let area = full_area;
-        let surface = compute_tab_surface(&app, &runtimes, area);
+        let surface = compute_tab_surface_for(
+            &app,
+            &runtimes,
+            TabSurfaceTarget::from_indices(&app, 0, 0),
+            area,
+        );
         assert_eq!(surface.pane_infos.len(), 2);
         assert!(!surface.split_borders.is_empty());
 
-        app.view.terminal_area = Rect::new(9, 8, 7, 6);
-        app.view.pane_infos.clear();
+        // The recorded layout area of the tab is session geometry for spawn
+        // sizing; a client surface is drawn from its own layout alone.
+        app.test_record_all_tab_areas(Rect::new(9, 8, 7, 6));
 
         let surface_view = TabSurfaceView {
             target: surface.target.as_ref(),

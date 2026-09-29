@@ -1,11 +1,12 @@
 use std::path::Path;
 
-use shepr_api::error::{ApiErrorCode, ApiResult};
-use shepr_api::schema::{ResponseResult, WorkspaceCheckoutRootParams};
+use shepr_api::error::ApiErrorCode;
+use shepr_protocol::command::{EndpointReply, WorkspaceCheckoutRootParams};
 
 use crate::app::App;
 
-use super::responses::{failure, success};
+use super::EndpointResult;
+use super::responses::failure;
 
 impl App {
     /// `workspace.checkout_root`: the checkout root Git reports for a directory
@@ -16,10 +17,10 @@ impl App {
     pub(super) fn handle_workspace_checkout_root(
         &mut self,
         params: &WorkspaceCheckoutRootParams,
-    ) -> ApiResult {
+    ) -> EndpointResult {
         let cwd = super::cwd::launch_cwd(&params.cwd)?;
         match checkout_root(&cwd) {
-            Ok(root) => success(ResponseResult::WorkspaceCheckoutRoot {
+            Ok(root) => Ok(EndpointReply::WorkspaceCheckoutRoot {
                 root,
                 // An unusable `HOME` just means the `~` label is not offered.
                 home: shepr_core::pathutil::home_dir()
@@ -64,7 +65,6 @@ fn checkout_root(cwd: &Path) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::*;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
 
     fn app() -> App {
@@ -82,8 +82,8 @@ mod tests {
         let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
             cwd: "relative".into(),
         });
-        let error = test_error(&response);
-        assert_eq!(error.error.code, "invalid_cwd");
+        let error = response.expect_err("a relative cwd is refused");
+        assert_eq!(error.code, ApiErrorCode::InvalidCwd);
     }
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
         let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
             cwd: missing.display().to_string(),
         });
-        let Ok(ResponseResult::WorkspaceCheckoutRoot { root, .. }) = response else {
+        let Ok(EndpointReply::WorkspaceCheckoutRoot { root, .. }) = response else {
             panic!("expected a checkout root answer, got {response:?}");
         };
         assert_eq!(root, None);
@@ -114,7 +114,7 @@ mod tests {
         let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
             cwd: nested.display().to_string(),
         });
-        let Ok(ResponseResult::WorkspaceCheckoutRoot {
+        let Ok(EndpointReply::WorkspaceCheckoutRoot {
             root: Some(root), ..
         }) = response
         else {

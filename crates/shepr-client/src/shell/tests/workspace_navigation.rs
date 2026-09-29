@@ -265,7 +265,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     );
     assert!(
         matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-        if matches!(&request.method, shepr_api::schema::Method::WorkspaceCreate(params) if params.source_workspace_id.as_deref() == Some("w1")))
+        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if params.source_workspace_id.as_deref() == Some("w1")))
     );
     preview_key(&mut state, b"\x1b");
     assert!(state.navigate_workspace_id.is_none());
@@ -558,8 +558,8 @@ fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String
         panic!("expected a local workspace focus request");
     };
     assert!(matches!(
-        request.method,
-        shepr_api::schema::Method::WorkspaceFocus(_)
+        request.command,
+        EndpointCommand::WorkspaceFocus(_)
     ));
     request.id.clone()
 }
@@ -620,7 +620,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
                 state.handle_endpoint_result(
                     &crate::tests::test_boot_id("boot-1"),
                     &request_id,
-                    Ok(shepr_api::schema::ResponseResult::Ok {}),
+                    Ok(EndpointReply::Done),
                 );
                 assert_local_highlight(&mut state, "w3");
             }
@@ -632,7 +632,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
                 state.handle_endpoint_result(
                     &crate::tests::test_boot_id("boot-1"),
                     &request_id,
-                    Ok(shepr_api::schema::ResponseResult::Ok {}),
+                    Ok(EndpointReply::Done),
                 );
             }
             set_local_focus(&mut state, "w2", 4);
@@ -654,7 +654,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
                 &crate::tests::test_boot_id("boot-1"),
                 &request_id,
                 Err(ClientShellEndpointError {
-                    code: Some(failure.into()),
+                    code: failure.into(),
                     message: "focus failed".into(),
                 }),
             );
@@ -663,7 +663,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
-            Ok(shepr_api::schema::ResponseResult::Ok {}),
+            Ok(EndpointReply::Done),
         );
         assert_local_highlight(&mut state, "w1");
     }
@@ -686,7 +686,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
-            Ok(shepr_api::schema::ResponseResult::Ok {}),
+            Ok(EndpointReply::Done),
         );
         assert_local_highlight(&mut state, "w3");
         let mut snapshot = workspaces(3);
@@ -745,8 +745,10 @@ fn navigation_highlight_yields_to_new_intent() {
 
     request_local_navigation(&mut state, 2);
     let mut unrelated = ClientShellInput::default();
-    state.push_endpoint_method(
-        shepr_api::schema::Method::SessionSnapshot(shepr_api::schema::EmptyParams::default()),
+    state.push_endpoint_command(
+        EndpointCommand::PaneClear(shepr_protocol::command::PaneTarget {
+            pane_id: "w1:p1".into(),
+        }),
         &mut unrelated,
     );
     let [ClientShellAction::Endpoint { request, .. }] = unrelated.actions.as_slice() else {
@@ -765,7 +767,7 @@ fn navigation_highlight_yields_to_new_intent() {
 
 #[test]
 fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
-    use shepr_api::schema::{Method, PaneDirection, ResponseResult};
+    use shepr_protocol::command::PaneDirection;
 
     for (key, direction) in [
         (b'h', PaneDirection::Left),
@@ -782,7 +784,7 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
             let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
                 panic!("expected a directional pane focus request");
             };
-            let Method::PaneFocusDirection(params) = &request.method else {
+            let EndpointCommand::PaneFocusDirection(params) = &request.command else {
                 panic!("expected PaneFocusDirection");
             };
             assert_eq!(params.direction, direction);
@@ -791,11 +793,11 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
             assert_local_highlight(&mut state, "w1");
             let result = if rejected {
                 Err(ClientShellEndpointError {
-                    code: Some("rejected".into()),
+                    code: "rejected".into(),
                     message: "focus rejected".into(),
                 })
             } else {
-                Ok(ResponseResult::Ok {})
+                Ok(EndpointReply::Done)
             };
             state.handle_endpoint_result(
                 &crate::tests::test_boot_id("boot-1"),
@@ -833,7 +835,7 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
         )]);
         assert!(
             matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-            if matches!(&request.method, shepr_api::schema::Method::PaneFocus(params)
+            if matches!(&request.command, EndpointCommand::PaneFocus(params)
                 if params.pane_id == "w1:p1"))
         );
         assert!(state.pending_workspace_highlight.is_none());
@@ -875,7 +877,7 @@ fn coalesced_navigation_focus_does_not_leave_a_permanent_highlight() {
     state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &request_id,
-        Ok(shepr_api::schema::ResponseResult::Ok {}),
+        Ok(EndpointReply::Done),
     );
     // Another client can focus the original workspace before the server projects
     // either change, so a successful request need not produce a new snapshot.
@@ -896,15 +898,15 @@ fn navigation_highlight_ends_for_noop_focus_and_focused_creation() {
     assert_local_highlight(&mut state, "w2");
 
     for focus in [false, true] {
-        for method in [
-            shepr_api::schema::Method::WorkspaceCreate(shepr_api::schema::WorkspaceCreateParams {
+        for command in [
+            EndpointCommand::WorkspaceCreate(shepr_api::schema::WorkspaceCreateParams {
                 source_workspace_id: None,
                 cwd: None,
                 focus,
                 label: None,
                 env: Default::default(),
             }),
-            shepr_api::schema::Method::TabCreate(shepr_api::schema::TabCreateParams {
+            EndpointCommand::TabCreate(shepr_api::schema::TabCreateParams {
                 workspace_id: Some("w1".into()),
                 cwd: None,
                 focus,
@@ -915,7 +917,7 @@ fn navigation_highlight_ends_for_noop_focus_and_focused_creation() {
             let mut state = local_navigation_state(false);
             request_local_navigation(&mut state, 2);
             let mut outcome = ClientShellInput::default();
-            state.push_endpoint_method(method, &mut outcome);
+            state.push_endpoint_command(command, &mut outcome);
             assert_eq!(state.pending_workspace_highlight.is_none(), focus);
             assert_local_highlight(&mut state, if focus { "w1" } else { "w3" });
         }

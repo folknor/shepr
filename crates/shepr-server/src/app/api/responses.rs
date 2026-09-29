@@ -5,7 +5,11 @@ pub(crate) fn success(result: ResponseResult) -> ApiResult {
     Ok(result)
 }
 
-pub(crate) fn failure(code: impl Into<ApiErrorCode>, message: impl Into<String>) -> ApiResult {
+/// A failed API method or client-shell command.
+pub(crate) fn failure<T>(
+    code: impl Into<ApiErrorCode>,
+    message: impl Into<String>,
+) -> Result<T, ApiError> {
     Err(ApiError::new(code.into(), message))
 }
 
@@ -17,7 +21,7 @@ mod tests {
     fn response_builders_keep_typed_payloads() {
         assert_eq!(success(ResponseResult::Ok {}), Ok(ResponseResult::Ok {}));
         assert_eq!(
-            failure(ApiErrorCode::InvalidRequest, "bad request"),
+            failure::<ResponseResult>(ApiErrorCode::InvalidRequest, "bad request"),
             Err(ApiError::new(ApiErrorCode::InvalidRequest, "bad request")),
         );
     }

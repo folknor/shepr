@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=codex
-# SHEPR_INTEGRATION_VERSION=2
+# SHEPR_INTEGRATION_VERSION=3
 
 set -eu
 
@@ -13,7 +13,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session) ;;
+  session|working|idle) ;;
   *) exit 0 ;;
 esac
 
@@ -54,39 +54,49 @@ if not isinstance(hook_input, dict):
     hook_input = {}
 
 hook_event_name = str(hook_input.get("hook_event_name") or "")
-if hook_event_name and hook_event_name != "SessionStart":
+expected_events = {
+    "session": ("SessionStart",),
+    "working": ("UserPromptSubmit",),
+    "idle": ("Stop", "Interrupt"),
+}
+if hook_event_name and hook_event_name not in expected_events.get(action, ()):
     raise SystemExit(0)
 
 report_seq = time.time_ns()
 request_id = f"{source}:{report_seq}"
 session_id = hook_input.get("session_id")
 agent_session_id = session_id if isinstance(session_id, str) and session_id else None
-transcript_path = hook_input.get("transcript_path")
-if not isinstance(transcript_path, str) or not transcript_path.strip():
+if not agent_session_id:
     raise SystemExit(0)
+# Only a session report needs the transcript; turn reports carry the session
+# id so shepr can tell them from another session's.
+if action == "session":
+    transcript_path = hook_input.get("transcript_path")
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        raise SystemExit(0)
 inherited_session_id = os.environ.get("CODEX_THREAD_ID")
 if inherited_session_id and inherited_session_id != agent_session_id:
     raise SystemExit(0)
-session_start_source = hook_input.get("source") if hook_event_name == "SessionStart" else None
-if not isinstance(session_start_source, str) or not session_start_source:
-    session_start_source = None
-if agent_session_id:
-    params = {
-        "pane_id": pane_id,
-        "source": source,
-        "agent": "codex",
-        "seq": report_seq,
-        "agent_session_id": agent_session_id,
-    }
-    if session_start_source:
+params = {
+    "pane_id": pane_id,
+    "source": source,
+    "agent": "codex",
+    "seq": report_seq,
+    "agent_session_id": agent_session_id,
+}
+if action == "session":
+    session_start_source = hook_input.get("source") if hook_event_name == "SessionStart" else None
+    if isinstance(session_start_source, str) and session_start_source:
         params["session_start_source"] = session_start_source
-    request = {
-        "id": request_id,
-        "method": "pane.report_agent_session",
-        "params": params,
-    }
+    method = "pane.report_agent_session"
 else:
-    raise SystemExit(0)
+    method = "pane.report_agent"
+    params["state"] = action
+request = {
+    "id": request_id,
+    "method": method,
+    "params": params,
+}
 
 try:
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

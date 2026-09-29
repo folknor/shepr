@@ -10,7 +10,18 @@ mod tabs;
 mod workspaces;
 
 use super::{App, Outcome, RenderDemand};
-use shepr_api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
+
+/// A client-shell command's answer, before the server loop puts it on the
+/// client socket.
+pub(crate) type EndpointResult = Result<EndpointReply, ApiError>;
+
+/// What one client-shell command did: its answer and the render it needs.
+pub(crate) struct EndpointOutcome {
+    pub(crate) result: EndpointResult,
+    pub(crate) render: RenderDemand,
+}
 
 impl App {
     pub(crate) fn handle_api_request_with_render(
@@ -18,21 +29,8 @@ impl App {
         request: shepr_api::schema::Request,
     ) -> Outcome {
         let mutates_ui = request.method.traits().mutates_ui;
-        // These methods change scroll position, split ratios or PTY input
-        // only; the shell snapshot carries none of those. Anything the agent
-        // does in response arrives later through its own hook report.
-        let changes_shell_projection = mutates_ui
-            && !matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneScroll(_)
-                    | shepr_api::schema::Method::PaneClear(_)
-                    | shepr_api::schema::Method::PaneResize(_)
-                    | shepr_api::schema::Method::LayoutSetSplitRatio(_)
-            );
         let render = if mutates_ui {
-            if changes_shell_projection {
-                self.state.mark_shell_projection_dirty();
-            }
+            self.state.mark_shell_projection_dirty();
             RenderDemand::Full
         } else {
             RenderDemand::None
@@ -50,14 +48,9 @@ impl App {
 
         let method_name = shepr_api::api_method_name(&request.method);
         match request.method {
-            // Every one of these is answered before a request reaches the app:
-            // the API server handles ping and SSH agent leases on the
-            // connection thread and rejects `client_shell.surface.set`.
-            // Reaching here is a routing bug, reported as such.
-            Method::Ping(_)
-            | Method::ServerStop(_)
-            | Method::ServerSshAgentRegister(_)
-            | Method::ClientShellSurfaceSet(_) => {
+            // The API server answers these on the connection thread; reaching
+            // here is a routing bug, reported as such.
+            Method::Ping(_) | Method::ServerStop(_) | Method::ServerSshAgentRegister(_) => {
                 tracing::warn!(
                     method = method_name,
                     "api request routed to the app by mistake"
@@ -68,36 +61,89 @@ impl App {
                 )
             }
             Method::SessionSnapshot(_) => self.handle_session_snapshot(),
-            Method::WorkspaceCreate(params) => self.handle_workspace_create(params),
-            Method::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
-            Method::WorkspaceRename(params) => self.handle_workspace_rename(params),
-            Method::WorkspaceCheckoutRoot(params) => self.handle_workspace_checkout_root(&params),
-            Method::WorkspaceMove(params) => self.handle_workspace_move(&params),
-            Method::WorkspaceClose(target) => self.handle_workspace_close(&target),
-            Method::TabCreate(params) => self.handle_tab_create(params),
-            Method::TabFocus(target) => self.handle_tab_focus(&target),
-            Method::TabRename(params) => self.handle_tab_rename(params),
-            Method::TabMove(params) => self.handle_tab_move(&params),
-            Method::TabClose(target) => self.handle_tab_close(&target),
             Method::DetectCapture(target) => self.handle_detect_capture(&target),
             Method::DetectExplain(target) => self.handle_detect_explain(&target),
-            Method::PaneSplit(params) => self.handle_pane_split(params),
-            Method::PaneSwap(params) => self.handle_pane_swap(params),
-            Method::PaneZoom(params) => self.handle_pane_zoom(&params),
-            Method::LayoutSetSplitRatio(params) => self.handle_layout_set_split_ratio(&params),
-            Method::PaneFocusDirection(params) => self.handle_pane_focus_direction(&params),
-            Method::PaneResize(params) => self.handle_pane_resize(&params),
-            Method::PaneScroll(params) => self.handle_pane_scroll(&params),
-            Method::PaneClear(target) => self.handle_pane_clear(&target),
-            Method::PaneSelectionRead(params) => self.handle_pane_selection_read(params),
-            Method::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
-            Method::PaneCopySearch(params) => self.handle_pane_copy_search(params),
-            Method::PaneFocus(target) => self.handle_pane_focus(&target),
-            Method::PaneInputSet(params) => self.handle_pane_input_set(&params),
-            Method::PaneRename(params) => self.handle_pane_rename(params),
             Method::PaneReportAgent(params) => self.handle_pane_report_agent(params),
             Method::PaneReportAgentSession(params) => self.handle_pane_report_agent_session(params),
-            Method::PaneClose(target) => self.handle_pane_close(&target),
+        }
+    }
+
+    pub(crate) fn handle_endpoint_command_with_render(
+        &mut self,
+        command: EndpointCommand,
+    ) -> EndpointOutcome {
+        let mutates_ui = command.traits().mutates_ui;
+        // These commands change scroll position, split ratios or PTY input
+        // only; the shell snapshot carries none of those. Anything the agent
+        // does in response arrives later through its own hook report.
+        let changes_shell_projection = mutates_ui
+            && !matches!(
+                &command,
+                EndpointCommand::PaneScroll(_)
+                    | EndpointCommand::PaneClear(_)
+                    | EndpointCommand::PaneResize(_)
+                    | EndpointCommand::LayoutSetSplitRatio(_)
+            );
+        let render = if mutates_ui {
+            if changes_shell_projection {
+                self.state.mark_shell_projection_dirty();
+            }
+            RenderDemand::Full
+        } else {
+            RenderDemand::None
+        };
+        let result = self.handle_endpoint_command_after_internal_events_drained(command);
+        EndpointOutcome { result, render }
+    }
+
+    pub(crate) fn handle_endpoint_command_after_internal_events_drained(
+        &mut self,
+        command: EndpointCommand,
+    ) -> EndpointResult {
+        self.sync_pending_terminal_titles();
+
+        match command {
+            // The server loop answers the surface lease itself, before any
+            // command reaches the app; reaching here is a routing bug.
+            EndpointCommand::ClientShellSurfaceSet(_) => {
+                tracing::warn!("client_shell.surface.set routed to the app by mistake");
+                responses::failure(
+                    ApiErrorCode::InternalError,
+                    "client_shell.surface.set is not handled by the app",
+                )
+            }
+            EndpointCommand::WorkspaceCreate(params) => self.handle_workspace_create(params),
+            EndpointCommand::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
+            EndpointCommand::WorkspaceRename(params) => self.handle_workspace_rename(params),
+            EndpointCommand::WorkspaceCheckoutRoot(params) => {
+                self.handle_workspace_checkout_root(&params)
+            }
+            EndpointCommand::WorkspaceMove(params) => self.handle_workspace_move(&params),
+            EndpointCommand::WorkspaceClose(target) => self.handle_workspace_close(&target),
+            EndpointCommand::TabCreate(params) => self.handle_tab_create(params),
+            EndpointCommand::TabFocus(target) => self.handle_tab_focus(&target),
+            EndpointCommand::TabRename(params) => self.handle_tab_rename(params),
+            EndpointCommand::TabMove(params) => self.handle_tab_move(&params),
+            EndpointCommand::TabClose(target) => self.handle_tab_close(&target),
+            EndpointCommand::PaneSplit(params) => self.handle_pane_split(params),
+            EndpointCommand::PaneSwap(params) => self.handle_pane_swap(&params),
+            EndpointCommand::PaneZoom(params) => self.handle_pane_zoom(&params),
+            EndpointCommand::LayoutSetSplitRatio(params) => {
+                self.handle_layout_set_split_ratio(&params)
+            }
+            EndpointCommand::PaneFocusDirection(params) => {
+                self.handle_pane_focus_direction(&params)
+            }
+            EndpointCommand::PaneResize(params) => self.handle_pane_resize(&params),
+            EndpointCommand::PaneScroll(params) => self.handle_pane_scroll(&params),
+            EndpointCommand::PaneClear(target) => self.handle_pane_clear(&target),
+            EndpointCommand::PaneSelectionRead(params) => self.handle_pane_selection_read(params),
+            EndpointCommand::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
+            EndpointCommand::PaneCopySearch(params) => self.handle_pane_copy_search(params),
+            EndpointCommand::PaneFocus(target) => self.handle_pane_focus(&target),
+            EndpointCommand::PaneInputSet(params) => self.handle_pane_input_set(&params),
+            EndpointCommand::PaneRename(params) => self.handle_pane_rename(params),
+            EndpointCommand::PaneClose(target) => self.handle_pane_close(&target),
         }
     }
 }
@@ -114,6 +160,13 @@ impl App {
             id,
             self.handle_api_request_after_internal_events_drained(request),
         )
+    }
+
+    /// Runs one client-shell command the way the server loop does, after
+    /// draining pending internal events.
+    pub(crate) fn handle_endpoint_command(&mut self, command: EndpointCommand) -> EndpointResult {
+        self.drain_all_internal_events();
+        self.handle_endpoint_command_after_internal_events_drained(command)
     }
 }
 
@@ -163,7 +216,49 @@ mod tests {
             assert_eq!(response["id"], "misrouted", "{name}");
             assert_eq!(response["error"]["code"], "internal_error", "{name}");
         }
+
+        let surface = app.handle_endpoint_command(EndpointCommand::ClientShellSurfaceSet(
+            shepr_protocol::command::ClientShellSurfaceSetParams { active: true },
+        ));
+        assert_eq!(
+            surface
+                .expect_err("surface lease is answered by the loop")
+                .code,
+            ApiErrorCode::InternalError
+        );
         assert!(!app.state.should_quit);
+    }
+
+    #[test]
+    fn read_only_commands_do_not_force_a_render() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &shepr_config::Config::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
+        let read = app.handle_endpoint_command_with_render(EndpointCommand::PaneSelectionRead(
+            shepr_protocol::command::PaneSelectionReadParams {
+                pane_id: "w1:p1".into(),
+                anchor: shepr_protocol::command::PaneTextPoint {
+                    row: shepr_vt::AbsRow(0),
+                    col: 0,
+                },
+                cursor: shepr_protocol::command::PaneTextPoint {
+                    row: shepr_vt::AbsRow(0),
+                    col: 0,
+                },
+            },
+        ));
+        assert_eq!(read.render, RenderDemand::None);
+
+        let rename = app.handle_endpoint_command_with_render(EndpointCommand::PaneRename(
+            shepr_protocol::command::PaneRenameParams {
+                pane_id: "w1:p1".into(),
+                label: Some("logs".into()),
+            },
+        ));
+        assert_eq!(rename.render, RenderDemand::Full);
     }
 
     #[test]

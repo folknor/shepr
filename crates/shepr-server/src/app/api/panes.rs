@@ -1,22 +1,24 @@
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 
 use crate::app::App;
-use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand, PaneZoomNoopReason};
+use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand};
 use shepr_api::schema::{
-    PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams,
-    PaneDirection, PaneFocusDirectionParams, PaneFocusDirectionReason, PaneFocusDirectionResult,
-    PaneInputSetParams, PaneLayoutPane, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
-    PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams, PaneResizeParams,
-    PaneResizeReason, PaneResizeResult, PaneScrollParams, PaneSelectionReadParams, PaneSplitParams,
-    PaneSwapParams, PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange,
-    PaneZoomMode, PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
+    PaneLayoutPane, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneReportAgentParams,
+    PaneReportAgentSessionParams, ResponseResult,
 };
 use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
+use shepr_protocol::command::{
+    EndpointReply, PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection,
+    PaneCopySearchParams, PaneDirection, PaneFocusDirectionParams, PaneInputSetParams,
+    PaneRenameParams, PaneResizeParams, PaneScrollParams, PaneSelectionReadParams, PaneSplitParams,
+    PaneSwapParams, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
+};
 
 use super::super::api_helpers::{
     detect_state_from_api, normalize_reported_agent_label, pane_in_workspace_not_found,
     pane_not_found, workspace_not_found,
 };
+use super::EndpointResult;
 use super::responses::{failure, success};
 
 mod copy;
@@ -24,7 +26,7 @@ mod geometry;
 mod reports;
 
 impl App {
-    pub(super) fn handle_pane_split(&mut self, params: PaneSplitParams) -> ApiResult {
+    pub(super) fn handle_pane_split(&mut self, params: PaneSplitParams) -> EndpointResult {
         let pane_target = match params.target_pane_id.as_deref() {
             Some(pane_id) => match self.parse_pane_id(pane_id) {
                 Some(target) => Some(target),
@@ -65,7 +67,7 @@ impl App {
         let target_pane_id = context.pane_id;
         let target_pane_public_id = self.public_pane_id(ws_idx, target_pane_id);
         let extra_env = super::env::normalize_launch_env(params.env)?;
-        let geometry = self.state.pane_geometry();
+        let geometry = self.state.pane_geometry_for_tab(ws_idx, context.tab_index);
         let split_cwd = match params
             .cwd
             .as_deref()
@@ -97,8 +99,12 @@ impl App {
             ));
         };
         let direction = match params.direction {
-            shepr_api::schema::SplitDirection::Right => shepr_core::layout::Direction::Horizontal,
-            shepr_api::schema::SplitDirection::Down => shepr_core::layout::Direction::Vertical,
+            shepr_protocol::command::SplitDirection::Right => {
+                shepr_core::layout::Direction::Horizontal
+            }
+            shepr_protocol::command::SplitDirection::Down => {
+                shepr_core::layout::Direction::Vertical
+            }
         };
         let shell_config =
             shepr_mux::pane::PaneShellConfig::new(&default_shell, self.state.settings.login_shell);
@@ -160,7 +166,7 @@ impl App {
             params.focus,
             matches!(
                 params.right_click,
-                shepr_api::schema::PaneRightClickTarget::Pane
+                shepr_protocol::command::PaneRightClickTarget::Pane
             ),
             previous_focus,
         ) else {
@@ -176,10 +182,12 @@ impl App {
             return failure(ApiErrorCode::PaneSplitFailed, "new pane is unavailable");
         };
 
-        success(ResponseResult::PaneInfo { pane })
+        Ok(EndpointReply::PaneInfo {
+            pane: Box::new(pane),
+        })
     }
 
-    pub(super) fn handle_pane_focus(&mut self, target: &PaneTarget) -> ApiResult {
+    pub(super) fn handle_pane_focus(&mut self, target: &PaneTarget) -> EndpointResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
@@ -193,10 +201,12 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
-        success(ResponseResult::PaneInfo { pane })
+        Ok(EndpointReply::PaneInfo {
+            pane: Box::new(pane),
+        })
     }
 
-    pub(super) fn handle_pane_input_set(&mut self, params: &PaneInputSetParams) -> ApiResult {
+    pub(super) fn handle_pane_input_set(&mut self, params: &PaneInputSetParams) -> EndpointResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -210,12 +220,12 @@ impl App {
         };
         pane.right_click_passthrough = matches!(
             params.right_click,
-            shepr_api::schema::PaneRightClickTarget::Pane
+            shepr_protocol::command::PaneRightClickTarget::Pane
         );
-        success(ResponseResult::Ok {})
+        Ok(EndpointReply::Done)
     }
 
-    pub(super) fn handle_pane_rename(&mut self, params: PaneRenameParams) -> ApiResult {
+    pub(super) fn handle_pane_rename(&mut self, params: PaneRenameParams) -> EndpointResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
@@ -240,14 +250,14 @@ impl App {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
 
-        success(ResponseResult::PaneInfo { pane })
+        Ok(EndpointReply::PaneInfo {
+            pane: Box::new(pane),
+        })
     }
 
-    pub(super) fn handle_pane_close(&mut self, target: &PaneTarget) -> ApiResult {
-        match self.close_pane(target) {
-            Ok(()) => success(ResponseResult::Ok {}),
-            Err(error) => Err(error),
-        }
+    pub(super) fn handle_pane_close(&mut self, target: &PaneTarget) -> EndpointResult {
+        self.close_pane(target)?;
+        Ok(EndpointReply::Done)
     }
 
     /// Close a pane; errors remain typed until the API response is sent.
@@ -309,7 +319,7 @@ impl App {
     ) -> Option<PaneId> {
         let tab = self.state.workspaces.get(ws_idx)?.tabs().get(tab_idx)?;
         let panes = tab.layout().panes(shepr_mux::workspace::layout_rect(
-            self.state.view.terminal_area,
+            self.state.tab_layout_area(ws_idx, tab_idx),
         ));
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, nav_direction(direction), &panes)
@@ -322,14 +332,13 @@ impl App {
     ) -> Option<PaneLayoutSnapshot> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs().get(tab_idx)?;
-        let area = self.state.view.terminal_area;
+        let area = self.state.tab_layout_area(ws_idx, tab_idx);
         let layout_area = shepr_mux::workspace::layout_rect(area);
         let focused_pane_id = self.public_pane_id(ws_idx, tab.layout().focused())?;
         // The layout reports what is on screen: a zoomed tab shows only its
         // focused pane over the whole area and no split lines, so its hidden
         // panes and the split tree under them are left out (`zoomed` says the
-        // tree exists; the layout description still carries the full split
-        // tree).
+        // tree exists).
         // `tab_panes` is the one place the zoom rule lives, shared with view
         // computation and spawn sizing.
         let panes = self

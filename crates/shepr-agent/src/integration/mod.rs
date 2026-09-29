@@ -33,7 +33,7 @@ const CLAUDE_INTEGRATION_VERSION: u32 = 2;
 const CODEX_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const CODEX_INTEGRATION_VERSION: u32 = 2;
+const CODEX_INTEGRATION_VERSION: u32 = 3;
 const KIMI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.

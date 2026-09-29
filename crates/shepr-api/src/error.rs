@@ -61,7 +61,6 @@ api_error_codes! {
     WorkspaceCreateFailed => "workspace_create_failed",
     WorkspaceMoveFailed => "workspace_move_failed",
     WorkspaceNotFound => "workspace_not_found",
-    ConnectionLocalOnly => "connection_local_only",
     EndpointBusy => "endpoint_busy",
     EndpointResponseTooLarge => "endpoint_response_too_large",
     StaleBoot => "stale_boot",

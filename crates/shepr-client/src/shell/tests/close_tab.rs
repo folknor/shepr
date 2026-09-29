@@ -1,6 +1,5 @@
 use super::*;
 use crossterm::event::{MouseButton, MouseEventKind};
-use shepr_api::schema::Method;
 
 fn close_state(confirm: bool, tab_count: usize) -> ClientShellState {
     let mut projected = snapshot();
@@ -53,21 +52,23 @@ fn assert_no_close(outcome: &ClientShellInput) {
     assert!(outcome.requests.is_empty());
     assert!(outcome.actions.iter().all(|action| {
         !matches!(action, ClientShellAction::Endpoint { request, .. }
-            if matches!(request.method, Method::TabClose(_) | Method::WorkspaceClose(_)))
+            if matches!(request.command, EndpointCommand::TabClose(_) | EndpointCommand::WorkspaceClose(_)))
     }));
 }
 
 fn assert_tab_close(outcome: &ClientShellInput) {
-    let methods = outcome
+    let commands = outcome
         .actions
         .iter()
         .filter_map(|action| match action {
-            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            ClientShellAction::Endpoint { request, .. } => Some(&request.command),
             _ => None,
         })
-        .filter(|method| !matches!(method, Method::TabFocus(_)))
+        .filter(|command| !matches!(command, EndpointCommand::TabFocus(_)))
         .collect::<Vec<_>>();
-    assert!(matches!(methods.as_slice(), [Method::TabClose(target)] if target.tab_id == "w1:t1"));
+    assert!(
+        matches!(commands.as_slice(), [EndpointCommand::TabClose(target)] if target.tab_id == "w1:t1")
+    );
 }
 
 #[test]

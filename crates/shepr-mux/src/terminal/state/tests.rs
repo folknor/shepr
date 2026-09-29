@@ -2282,6 +2282,74 @@ fn codex_lifecycle_session_ref_replaces_existing_session_ref() {
 }
 
 #[test]
+fn codex_hook_turn_lifecycle_preserves_session_and_beats_stale_working_screen() {
+    fn session_id(terminal: &TerminalState) -> Option<String> {
+        terminal
+            .current_session_identity_for_persistence()
+            .map(|session| session.session_ref.value_str().to_owned())
+    }
+    fn turn_report(
+        terminal: &mut TerminalState,
+        state: AgentState,
+        session: &str,
+        seq: u64,
+    ) -> Option<TerminalStateMutation> {
+        terminal.set_hook_authority_with_session_ref(
+            "shepr:codex".into(),
+            "codex".into(),
+            state,
+            None,
+            shepr_agent::agent::resume::AgentSessionRef::id(session),
+            Some(seq),
+        )
+    }
+
+    let mut terminal = test_terminal();
+    terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
+
+    let mut seq = 0;
+    for (session, start_source) in [("first", None), ("second", Some("clear"))] {
+        seq += 1;
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "shepr:codex".into(),
+                "codex".into(),
+                shepr_agent::agent::resume::AgentSessionRef::id(session),
+                Some(seq),
+                start_source,
+            )
+            .unwrap_or_else(|| panic!("{session} session report should be accepted"));
+        assert_eq!(session_id(&terminal).as_deref(), Some(session));
+
+        seq += 1;
+        turn_report(&mut terminal, AgentState::Working, session, seq)
+            .unwrap_or_else(|| panic!("{session} working report should be accepted"));
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(session_id(&terminal).as_deref(), Some(session));
+
+        seq += 1;
+        let change = turn_report(&mut terminal, AgentState::Idle, session, seq)
+            .and_then(|mutation| mutation.effective_state_change)
+            .unwrap_or_else(|| panic!("{session} idle report should end the turn"));
+        assert_eq!(change.previous_state, AgentState::Working);
+        assert_eq!(change.state, AgentState::Idle);
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert_eq!(session_id(&terminal).as_deref(), Some(session));
+    }
+
+    seq += 1;
+    turn_report(&mut terminal, AgentState::Working, "second", seq)
+        .expect("a new turn in the current session should be accepted");
+    assert_eq!(terminal.state, AgentState::Working);
+
+    // A late Stop from the replaced session must not end the current turn.
+    seq += 1;
+    assert!(turn_report(&mut terminal, AgentState::Idle, "first", seq).is_none());
+    assert_eq!(terminal.state, AgentState::Working);
+    assert_eq!(session_id(&terminal).as_deref(), Some("second"));
+}
+
+#[test]
 fn grok_new_session_ref_replaces_existing_session_ref() {
     let mut terminal = test_terminal();
     terminal

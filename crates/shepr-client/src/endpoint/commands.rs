@@ -1,14 +1,15 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use shepr_api::schema::{Request, ResponseResult};
 use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
 use crate::limits::{ENDPOINT_COMMAND_TIMEOUT, MAX_RETIRED_REQUESTS_PER_ENDPOINT};
-use crate::shell::ClientShellEndpointError;
+use crate::shell::{ClientShellEndpointError, ClientShellEndpointRequest};
 
+/// Why an endpoint command failed. The client raises the first three itself;
+/// every server error carries the server's own code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EndpointFailureCode {
     Timeout,
@@ -54,20 +55,10 @@ impl PartialEq<&str> for EndpointFailureCode {
 impl From<EndpointError> for ClientShellEndpointError {
     fn from(error: EndpointError) -> Self {
         Self {
-            code: Some(error.code.into()),
+            code: error.code.into(),
             message: error.message,
         }
     }
-}
-
-/// The shell's view of an endpoint response: the reply read as the API
-/// result it stands for, or the server's error.
-pub(crate) fn shell_result(
-    result: Result<EndpointReply, EndpointError>,
-) -> Result<ResponseResult, ClientShellEndpointError> {
-    result
-        .map(ResponseResult::from)
-        .map_err(ClientShellEndpointError::from)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +71,7 @@ pub(crate) enum CommandResponseKind {
 struct QueuedCommand {
     generation: ConnectionGeneration,
     boot_id: BootId,
-    request: Box<Request>,
+    request: Box<ClientShellEndpointRequest>,
 }
 
 struct InFlightCommand {
@@ -100,7 +91,7 @@ pub(crate) struct EndpointCommandResult {
     pub(crate) generation: u64,
     pub(crate) boot_id: BootId,
     pub(crate) request_id: RequestId,
-    pub(crate) result: Result<ResponseResult, ClientShellEndpointError>,
+    pub(crate) result: Result<EndpointReply, ClientShellEndpointError>,
 }
 
 #[derive(Default)]
@@ -170,7 +161,7 @@ impl EndpointCommands {
         endpoint_id: ClientEndpointId,
         generation: u64,
         boot_id: BootId,
-        request: Box<Request>,
+        request: Box<ClientShellEndpointRequest>,
     ) {
         self.lanes
             .entry(endpoint_id)
@@ -195,23 +186,11 @@ impl EndpointCommands {
             return cancelled;
         }
         while let Some(queued) = lane.queued.pop_front() {
-            let Request { id, method } = *queued.request;
+            let ClientShellEndpointRequest { id, command } = *queued.request;
             if !endpoints.accepts(endpoint_id, queued.generation.get()) {
                 cancelled.push(id);
                 continue;
             }
-            let command = match method.into_endpoint_command() {
-                Ok(command) => command,
-                Err(method) => {
-                    tracing::warn!(
-                        method = method.traits().name,
-                        request_id = %id,
-                        "a client shell cannot ask for this method"
-                    );
-                    cancelled.push(id);
-                    continue;
-                }
-            };
             let request_id = RequestId::from(id);
             let message = ClientMessage::ClientShellEndpointRequest {
                 boot_id: queued.boot_id.clone(),
@@ -284,7 +263,7 @@ impl EndpointCommands {
                     boot_id: command.key.boot_id,
                     request_id: command.key.request_id,
                     result: Err(ClientShellEndpointError {
-                        code: Some(EndpointFailureCode::Timeout),
+                        code: EndpointFailureCode::Timeout,
                         message: "this server did not respond to the action".into(),
                     }),
                 })
@@ -321,7 +300,7 @@ impl EndpointCommands {
             generation: in_flight.key.generation.get(),
             boot_id: in_flight.key.boot_id,
             request_id: in_flight.key.request_id,
-            result: shell_result(result),
+            result: result.map_err(ClientShellEndpointError::from),
         })
     }
 
@@ -394,11 +373,13 @@ mod tests {
         QueuedCommand {
             generation: ConnectionGeneration::new(generation),
             boot_id,
-            request: Box::new(Request {
+            request: Box::new(ClientShellEndpointRequest {
                 id: request_id.into(),
-                method: shepr_api::schema::Method::PaneClear(shepr_api::schema::PaneTarget {
-                    pane_id: "w1:p1".into(),
-                }),
+                command: shepr_protocol::command::EndpointCommand::PaneClear(
+                    shepr_protocol::command::PaneTarget {
+                        pane_id: "w1:p1".into(),
+                    },
+                ),
             }),
         }
     }
@@ -443,7 +424,7 @@ mod tests {
         assert_eq!(completed.request_id, "request-a");
         assert!(matches!(
             completed.result,
-            Ok(ResponseResult::PaneSelection { text, .. }) if text == "selected"
+            Ok(EndpointReply::PaneSelection { text, .. }) if text == "selected"
         ));
         assert!(!has_in_flight(&commands));
     }
@@ -466,7 +447,7 @@ mod tests {
         assert!(matches!(
             completed.result,
             Err(ClientShellEndpointError {
-                code: Some(EndpointFailureCode::ResponseTooLarge),
+                code: EndpointFailureCode::ResponseTooLarge,
                 ..
             })
         ));
@@ -499,10 +480,7 @@ mod tests {
         assert_eq!(expired.request_id, "request-a");
         assert!(matches!(
             expired.result,
-            Err(ClientShellEndpointError {
-                code: Some(code),
-                ..
-            }) if code == "endpoint_timeout"
+            Err(ClientShellEndpointError { code, .. }) if code == "endpoint_timeout"
         ));
         assert!(!has_in_flight(&commands));
         assert!(commands.expire(start + ENDPOINT_COMMAND_TIMEOUT).is_empty());

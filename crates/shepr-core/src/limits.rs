@@ -24,6 +24,15 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// One cold SSH round trip, including a remote command or status probe.
 /// This bounds a slow startup without letting a hung host block the caller.
 pub const SSH_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(15);
+/// What [`SSH_CONNECTION_ATTEMPT_BUDGET`] allows beyond one cold SSH round trip,
+/// for the remaining discovery commands, the bridge and the handshake.
+pub const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
+/// The longest one connection attempt to a configured machine may run: one cold
+/// SSH round trip plus [`SSH_ATTEMPT_SLACK`]. The client's per-attempt deadline
+/// and the startup check of every machine both take it from here, so the two
+/// cannot drift apart.
+pub const SSH_CONNECTION_ATTEMPT_BUDGET: Duration =
+    SSH_ROUND_TRIP_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
 
 /// Minimum number of client heartbeat intervals that a quiet bridge survives.
 /// Several cycles allow delayed probes before the bridge is considered

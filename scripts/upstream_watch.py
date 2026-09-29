@@ -49,8 +49,8 @@ MAPPING = [
 LOOSE = [
     ("src/detect.rs", "crates/shepr-agent/src/detect/"),
     ("src/integration.rs", "crates/shepr-agent/src/integration/"),
-    ("src/agent", "crates/shepr-agent/src/ (agent list, resume definitions)"),
-    ("src/resume", "crates/shepr-agent/src/ (resume definitions)"),
+    ("src/agent", "crates/shepr-agent/src/agent/ (agent list, resume definitions)"),
+    ("src/terminal/state.rs", "crates/shepr-mux/src/terminal/state/ (hook authority, sessions)"),
 ]
 
 WATCHED =["src/integration/", "src/detect/"] + [p for p, _ in LOOSE]

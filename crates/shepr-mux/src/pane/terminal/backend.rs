@@ -804,7 +804,8 @@ impl PaneTerminal {
     /// full-screen program frame. Saves read through a
     /// [`super::PaneHistorySource`] with a cache kept between them instead.
     pub(crate) fn primary_history_ansi(&self) -> Option<String> {
-        self.read_primary_history(&mut super::PaneHistoryCache::default())
+        let mut cache = super::PaneHistoryCache::default();
+        self.read_primary_history(&mut cache).map(|()| cache.text())
     }
 
     pub(crate) fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {

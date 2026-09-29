@@ -10,6 +10,7 @@ mod teardown;
 mod terminal;
 
 pub use launch::{PaneLaunchEnv, PaneShellConfig};
+pub use runtime::PaneCwdProbe;
 pub use runtime::WheelRouting;
 pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};
 pub use runtime_registry::PaneRuntimeRegistry;

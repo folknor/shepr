@@ -264,24 +264,16 @@
 # Milliseconds between automatic agent restores; 0 starts them without spacing.
 # startup_per_agent_delay_ms = 100
 
-[remote]
-# Whether shepr manages the ssh config used for configured machines.
-# When true (default), shepr runs remote ssh through a generated config that
-# includes your ~/.ssh/config first and adds ServerAliveInterval/
-# ServerAliveCountMax as fallbacks (so any keepalive values you set yourself
-# still win) to survive idle network/NAT timeouts. Shepr also uses a private
-# per-attach OpenSSH control socket to reuse the first authenticated connection.
-# Linux's Unix socket path limit leaves 32 bytes for XDG_RUNTIME_DIR when managed
-# SSH is enabled; longer paths make managed SSH fail during setup.
-# Set false to run plain ssh against your ssh config unchanged; this does not
-# force keepalive or multiplexing off, it only stops shepr from adding its own.
-# manage_ssh_config = true
-
 # Machines whose shepr servers this client shows next to the local one. Each
 # entry needs a unique label (how shepr names the machine: nonblank, no control
 # characters, no leading or trailing whitespace) and an ssh target (a host
 # alias, user@host or ssh:// URL, never with a password).
 # Read once at launch; a duplicate label or a malformed target fails the launch.
+# Shepr runs ssh for a machine through a generated config that includes your
+# ~/.ssh/config first and adds ServerAliveInterval/ServerAliveCountMax as
+# fallbacks (values you set yourself win), and reuses the first authenticated
+# connection through a private OpenSSH control socket. Linux's Unix socket path
+# limit leaves 32 bytes for XDG_RUNTIME_DIR; longer paths fail the machine's setup.
 # [[machines]]
 # label = "build"
 # ssh = "dev@build"

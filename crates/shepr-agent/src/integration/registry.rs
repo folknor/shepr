@@ -910,10 +910,18 @@ mod registration_tests {
         let dir = base("codex");
         let hook = dir.join("shepr-agent-state.sh");
         write_current_hook(&hook);
+        let entry = |action| {
+            serde_json::json!([
+                { "hooks": [{ "type": "command", "command": hook_command(&hook, Some(action)), "timeout": 10 }] }
+            ])
+        };
         let hooks_json = serde_json::json!({
-            "hooks": { "SessionStart": [
-                { "hooks": [{ "type": "command", "command": hook_command(&hook, Some("session")), "timeout": 10 }] }
-            ] }
+            "hooks": {
+                "SessionStart": entry("session"),
+                "UserPromptSubmit": entry("working"),
+                "Stop": entry("idle"),
+                "Interrupt": entry("idle"),
+            }
         });
         fs::write(dir.join("hooks.json"), hooks_json.to_string()).expect("test precondition");
         assert_eq!(

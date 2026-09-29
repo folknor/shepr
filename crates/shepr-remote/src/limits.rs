@@ -156,13 +156,12 @@ pub(crate) const REMOTE_COMMAND_ARGS_INITIAL_CAPACITY: usize = 6;
 /// discovery use the same time limit.
 pub(crate) const SSH_COMMAND_TIMEOUT: Duration = shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT;
 
-/// How long the startup check of every configured machine may take in all: one
-/// cold SSH round trip plus slack for the remaining discovery commands. The
+/// How long the startup check of every configured machine may take in all. The
 /// checks run concurrently, so this is a bound on the whole phase, not per
-/// machine. It mirrors the client's per-attempt connection budget, which sits
-/// in a higher crate.
+/// machine. It is the client's per-attempt connection budget, owned by
+/// `shepr-core` so both crates read one value.
 pub(crate) const PREFLIGHT_CHECK_BUDGET: Duration =
-    SSH_COMMAND_TIMEOUT.saturating_add(Duration::from_secs(10));
+    shepr_core::limits::SSH_CONNECTION_ATTEMPT_BUDGET;
 
 /// OpenSSH option limiting connection establishment. This
 /// leaves room for ordinary network setup while bounding unreachable hosts.

@@ -33,6 +33,7 @@
 //! read is the chunks and the screen read joined with the line separator.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use super::*;
@@ -40,12 +41,29 @@ use super::*;
 /// Chunks of formatted history a reader keeps between reads of one pane,
 /// oldest first and contiguous. Only a reader of the same terminal may use
 /// it: a read through another terminal's source starts it afresh.
+///
+/// The cache also keeps the screen part of the last successful read, so the
+/// pane's last primary history can be rebuilt (`text`) while the alternate
+/// screen hides it, and a revision that changes exactly when that text does,
+/// so a save can tell that nothing changed without comparing text.
 #[derive(Default)]
 pub struct PaneHistoryCache {
     terminal: Weak<PaneTerminal>,
     epoch: u64,
     cols: u16,
     chunks: VecDeque<HistoryChunk>,
+    /// The screen part of the last successful read.
+    tail: String,
+    /// Names the current text: taken from `next_revision` whenever a chunk or
+    /// the tail changes. Zero while the cache has never held text.
+    revision: u64,
+}
+
+/// Revisions are unique across every cache, so a replaced or recreated cache
+/// never repeats one a save has already seen.
+fn next_revision() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The VT text of absolute rows `start..end`: whole logical lines, the last
@@ -63,18 +81,19 @@ struct HistoryChunk {
 pub struct PaneHistorySource(pub(crate) Arc<PaneTerminal>);
 
 impl PaneHistorySource {
-    /// The pane's primary-screen history as VT text, formatting only what
-    /// `cache` does not already hold. `None` while the alternate screen is
-    /// active (the inactive primary grid cannot be read, and a full-screen
-    /// program's frame is not history) or when the terminal cannot be read.
-    pub fn read(&self, cache: &mut PaneHistoryCache) -> Option<String> {
+    /// Brings `cache` up to date with the pane's primary-screen history,
+    /// formatting only what it does not already hold. `false`, with the
+    /// cache left as it was, while the alternate screen is active (the
+    /// inactive primary grid cannot be read, and a full-screen program's
+    /// frame is not history) or when the terminal cannot be read.
+    pub fn refresh(&self, cache: &mut PaneHistoryCache) -> bool {
         if !std::ptr::eq(Weak::as_ptr(&cache.terminal), Arc::as_ptr(&self.0)) {
             *cache = PaneHistoryCache {
                 terminal: Arc::downgrade(&self.0),
                 ..PaneHistoryCache::default()
             };
         }
-        self.0.read_primary_history(cache)
+        self.0.read_primary_history(cache).is_some()
     }
 }
 
@@ -128,6 +147,9 @@ impl PaneHistoryCache {
             self.chunks.pop_back();
             changed = true;
         }
+        if changed {
+            self.revision = next_revision();
+        }
         changed
     }
 
@@ -136,26 +158,62 @@ impl PaneHistoryCache {
         self.chunks.back().map(|chunk| chunk.end)
     }
 
-    fn clear(&mut self) {
-        self.chunks.clear();
+    fn push_front(&mut self, chunk: HistoryChunk) {
+        self.chunks.push_front(chunk);
+        self.revision = next_revision();
     }
 
-    /// The cached chunks followed by `tail`, joined as one read would join
-    /// their lines.
-    fn assemble(&self, tail: &str) -> String {
+    fn push_back(&mut self, chunk: HistoryChunk) {
+        self.chunks.push_back(chunk);
+        self.revision = next_revision();
+    }
+
+    /// Forgets all text, the tail included.
+    fn clear(&mut self) {
+        if !self.chunks.is_empty() || !self.tail.is_empty() {
+            self.chunks.clear();
+            self.tail.clear();
+            self.revision = next_revision();
+        }
+    }
+
+    /// Records the screen part of a read.
+    fn set_tail(&mut self, tail: String) {
+        if self.tail != tail {
+            self.tail = tail;
+            self.revision = next_revision();
+        }
+    }
+
+    /// Whether the cache holds any visible text. Every chunk has visible
+    /// text, so only the tail needs looking at when there are none.
+    pub fn has_text(&self) -> bool {
+        !self.chunks.is_empty() || !self.tail.trim().is_empty()
+    }
+
+    /// Names the text this cache holds: it changes whenever the text does and
+    /// is never shared with another cache.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The cached chunks followed by the tail of the last read, joined as one
+    /// read would join their lines: the pane's primary history as of the last
+    /// successful read, even while the alternate screen hides it now.
+    pub fn text(&self) -> String {
         let cached: usize = self.chunks.iter().map(|chunk| chunk.text.len() + 2).sum();
-        let mut text = String::with_capacity(cached + tail.len());
+        let mut text = String::with_capacity(cached + self.tail.len());
         for chunk in &self.chunks {
             if !text.is_empty() {
                 text.push_str("\r\n");
             }
             text.push_str(&chunk.text);
         }
-        if !tail.is_empty() {
+        if !self.tail.is_empty() {
             if !text.is_empty() {
                 text.push_str("\r\n");
             }
-            text.push_str(tail);
+            text.push_str(&self.tail);
         }
         text
     }
@@ -198,8 +256,8 @@ fn format_rows(terminal: &shepr_vt::Terminal, start: AbsRow, last: AbsRow) -> Op
 }
 
 impl PaneTerminal {
-    /// See [`PaneHistorySource::read`].
-    pub(crate) fn read_primary_history(&self, cache: &mut PaneHistoryCache) -> Option<String> {
+    /// See [`PaneHistorySource::refresh`].
+    pub(crate) fn read_primary_history(&self, cache: &mut PaneHistoryCache) -> Option<()> {
         // Where the search for the next chunk boundary resumes: rows between
         // the cache's end and here were searched without finding one.
         let mut probe: Option<AbsRow> = None;
@@ -225,7 +283,7 @@ impl PaneTerminal {
                     cache.clear();
                     return None;
                 };
-                cache.chunks.push_front(HistoryChunk {
+                cache.push_front(HistoryChunk {
                     start: bounds.origin,
                     end,
                     text,
@@ -247,7 +305,7 @@ impl PaneTerminal {
                             cache.clear();
                             return None;
                         };
-                        cache.chunks.push_back(HistoryChunk {
+                        cache.push_back(HistoryChunk {
                             start: next,
                             end,
                             text,
@@ -265,20 +323,46 @@ impl PaneTerminal {
             // The cache reaches the last logical line that ends in history;
             // the rest is read now, under this hold, up to the last row with
             // content or the cursor.
-            let Some((_, end, _)) = terminal_recent_read_range(terminal, usize::MAX).ok()? else {
-                return Some(String::new());
+            let Ok(range) = terminal_recent_read_range(terminal, usize::MAX) else {
+                cache.clear();
+                return None;
+            };
+            let Some((_, end, _)) = range else {
+                // Nothing to read at all: the read is empty, whatever the
+                // cache held.
+                cache.clear();
+                return Some(());
             };
             let tail = match terminal.screen_row_for_absolute(next) {
-                Some(start) if start.0 <= end => format_rows(
-                    terminal,
-                    next,
-                    terminal.absolute_row_for_screen(ScreenRow(end)),
-                )?,
+                Some(start) if start.0 <= end => {
+                    let Some(tail) = format_rows(
+                        terminal,
+                        next,
+                        terminal.absolute_row_for_screen(ScreenRow(end)),
+                    ) else {
+                        // Chunks may have advanced past the old tail.
+                        cache.clear();
+                        return None;
+                    };
+                    tail
+                }
                 _ => String::new(),
             };
             drop(core);
-            return Some(cache.assemble(&tail));
+            cache.set_tail(tail);
+            return Some(());
         }
+    }
+}
+
+#[cfg(test)]
+impl PaneHistorySource {
+    /// The pane's primary-screen history as VT text after a [`refresh`]
+    /// (`None` when that failed).
+    ///
+    /// [`refresh`]: Self::refresh
+    pub fn read(&self, cache: &mut PaneHistoryCache) -> Option<String> {
+        self.refresh(cache).then(|| cache.text())
     }
 }
 

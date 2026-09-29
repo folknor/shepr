@@ -278,7 +278,60 @@ pub enum DirectionSnapshot {
     Vertical,
 }
 
-/// Capture the current app state into a serializable snapshot.
+/// Where a pane sits in a snapshot: workspace index, tab index, pane number.
+type PaneKey = (usize, usize, u32);
+
+/// The live shell cwd reads a capture left for whoever writes the snapshot.
+/// Reading a cwd is a /proc access per pane, which the event loop should not
+/// pay per save, so a capture records the best cwd it knows without one and
+/// hands over a [`PaneCwdProbe`](crate::pane::PaneCwdProbe) per running pane; [`resolve`] applies what
+/// the probes read.
+///
+/// [`resolve`]: Self::resolve
+#[derive(Default)]
+pub struct PendingCwds {
+    probes: Vec<(PaneKey, crate::pane::PaneCwdProbe)>,
+}
+
+impl PendingCwds {
+    /// Reads every probe and stores the result in `snapshot`: a pane's cwd
+    /// where its shell could be read, and each affected workspace's identity
+    /// cwd, which follows its first tab's root pane.
+    pub fn resolve(self, snapshot: &mut SessionSnapshot) {
+        let mut touched = Vec::new();
+        for ((workspace, tab, pane), probe) in self.probes {
+            let Some(cwd) = probe.read() else {
+                continue;
+            };
+            if let Some(saved) = snapshot
+                .workspaces
+                .get_mut(workspace)
+                .and_then(|workspace| workspace.tabs.get_mut(tab))
+                .and_then(|tab| tab.panes.get_mut(&pane))
+            {
+                saved.cwd = cwd;
+                touched.push(workspace);
+            }
+        }
+        for workspace in touched {
+            if let Some(workspace) = snapshot.workspaces.get_mut(workspace)
+                && let Some(cwd) = root_pane_cwd(&workspace.tabs)
+            {
+                workspace.identity_cwd = cwd;
+            }
+        }
+    }
+}
+
+/// The cwd of the first tab's root pane, which names a workspace.
+fn root_pane_cwd(tabs: &[TabSnapshot]) -> Option<PathBuf> {
+    tabs.first()
+        .and_then(|tab| tab.root_pane.and_then(|id| tab.panes.get(&id)))
+        .map(|pane| pane.cwd.clone())
+}
+
+/// Capture the current app state into a serializable snapshot, with every
+/// running pane's cwd read now. A save uses [`capture_deferred`] instead.
 pub fn capture(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
@@ -291,21 +344,60 @@ pub fn capture(
     selected: usize,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
 ) -> SessionSnapshot {
-    SessionSnapshot {
+    let (mut snapshot, cwds) = capture_deferred(
+        workspaces,
+        terminals,
+        terminal_runtimes,
+        fallback_cwd,
+        active,
+        selected,
+        host_theme,
+    );
+    cwds.resolve(&mut snapshot);
+    snapshot
+}
+
+/// Capture the current app state without reading any shell's /proc cwd: the
+/// snapshot holds the cwd each pane is known to have, and the returned
+/// [`PendingCwds`] improves on it where the snapshot is written.
+pub fn capture_deferred(
+    workspaces: &[Workspace],
+    terminals: &std::collections::HashMap<
+        shepr_protocol::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+    terminal_runtimes: &PaneRuntimeRegistry,
+    fallback_cwd: &std::path::Path,
+    active: Option<usize>,
+    selected: usize,
+    host_theme: shepr_termio::host_term::theme::TerminalTheme,
+) -> (SessionSnapshot, PendingCwds) {
+    let mut cwds = PendingCwds::default();
+    let snapshot = SessionSnapshot {
         version: SNAPSHOT_VERSION,
         host_theme: host_theme.into(),
         workspaces: workspaces
             .iter()
-            .map(|workspace| {
-                capture_workspace(workspace, terminals, terminal_runtimes, fallback_cwd)
+            .enumerate()
+            .map(|(index, workspace)| {
+                capture_workspace(
+                    index,
+                    workspace,
+                    terminals,
+                    terminal_runtimes,
+                    fallback_cwd,
+                    &mut cwds,
+                )
             })
             .collect(),
         active,
         selected,
-    }
+    };
+    (snapshot, cwds)
 }
 
 fn capture_workspace(
+    workspace_index: usize,
     ws: &Workspace,
     terminals: &std::collections::HashMap<
         shepr_protocol::TerminalId,
@@ -313,16 +405,24 @@ fn capture_workspace(
     >,
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
+    cwds: &mut PendingCwds,
 ) -> WorkspaceSnapshot {
     let tabs: Vec<_> = ws
         .tabs()
         .iter()
-        .map(|tab| capture_tab(tab, terminals, terminal_runtimes, fallback_cwd))
+        .enumerate()
+        .map(|(tab_index, tab)| {
+            capture_tab(
+                (workspace_index, tab_index),
+                tab,
+                terminals,
+                terminal_runtimes,
+                fallback_cwd,
+                cwds,
+            )
+        })
         .collect();
-    let identity_cwd = tabs
-        .first()
-        .and_then(|tab| tab.root_pane.and_then(|id| tab.panes.get(&id)))
-        .map_or_else(|| ws.identity_cwd.clone(), |pane| pane.cwd.clone());
+    let identity_cwd = root_pane_cwd(&tabs).unwrap_or_else(|| ws.identity_cwd.clone());
     WorkspaceSnapshot {
         id: Some(ws.id.to_string()),
         custom_name: ws.custom_name.clone(),
@@ -345,6 +445,7 @@ fn capture_workspace(
 }
 
 fn capture_tab(
+    (workspace_index, tab_index): (usize, usize),
     tab: &crate::workspace::Tab,
     terminals: &std::collections::HashMap<
         shepr_protocol::TerminalId,
@@ -352,16 +453,21 @@ fn capture_tab(
     >,
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
+    cwds: &mut PendingCwds,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
     for id in tab.panes.keys() {
         let terminal_id = tab.terminal_id(*id);
         let terminal = terminal_id.and_then(|id| terminals.get(id));
-        let cwd = terminal_id
-            .and_then(|id| terminal_runtimes.get(id))
-            .and_then(crate::pane::PaneRuntime::cwd_for_persistence)
+        let runtime = terminal_id.and_then(|id| terminal_runtimes.get(id));
+        let cwd = runtime
+            .and_then(crate::pane::PaneRuntime::remembered_cwd)
             .or_else(|| terminal.map(|terminal| terminal.cwd().to_path_buf()))
             .unwrap_or_else(|| fallback_cwd.to_path_buf());
+        if let Some(runtime) = runtime {
+            cwds.probes
+                .push(((workspace_index, tab_index, id.raw()), runtime.cwd_probe()));
+        }
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
         let agent_session = terminal.and_then(|terminal| {
             let hook_session = terminal.hook_authority.as_ref().and_then(|authority| {
@@ -452,19 +558,41 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     Some(hex)
 }
 
-/// One pane's history kept across saves; see `HistoryCarry`.
-struct CarriedEntry {
+/// The history file's text for a pane that has not run yet; see
+/// `HistoryCarry`.
+struct RestoredEntry {
     ansi: String,
-    /// Where `ansi` came from. `Restored`: the history file loaded at
-    /// startup, for a pane that has not run yet. `Live`: this pane's own
-    /// runtime, on its last successful primary-screen read.
-    origin: CarriedOrigin,
+    /// Names `ansi` the way a `PaneHistoryCache` revision names its text.
+    revision: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CarriedOrigin {
-    Restored,
-    Live,
+/// Names for restored text. A `PaneHistoryCache` numbers its text from a
+/// counter of its own that never reaches the top bit, so a restored name never
+/// equals a live one.
+fn next_restored_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    (1 << 63) | NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What a save's history holds for one pane, by content identity rather than
+/// content: two saves with equal stamps hold equal text.
+type PaneStamp = Option<u64>;
+
+/// What one save's history was made of: the layout its file pairs with and
+/// the content of every pane, per workspace and tab, sorted by pane number.
+#[derive(PartialEq, Eq)]
+struct HistoryStamp {
+    layout_fingerprint: String,
+    panes: Vec<Vec<Vec<(u32, PaneStamp)>>>,
+}
+
+/// What resolving a save's history produced.
+pub enum ResolvedHistory {
+    /// The history file already holds exactly this history: nothing was
+    /// assembled and nothing needs writing. Only ever produced when the
+    /// caller allowed it.
+    Unchanged,
+    Changed(SessionHistorySnapshot),
 }
 
 /// Pane history kept from one save to the next. Restore creates it and hands
@@ -472,24 +600,26 @@ enum CarriedOrigin {
 /// capture is resolved against it, on the persister's thread, in save order,
 /// so nothing else touches it and it needs no lock.
 ///
-/// It keeps two things per pane, keyed by terminal ID:
+/// It keeps, keyed by terminal ID:
 ///
-/// - What a pane's live screen cannot supply (`carried`):
-///   - A restored pane without a runtime (deferred agent resume, failed
-///     restore) keeps its `Restored` history from the loaded file until it
-///     runs. Capture reads live runtimes only, so without this a save made
-///     before the pane runs would lose its saved screen for good. The first
-///     save that sees a runtime for the pane drops that entry: from then on
-///     the pane's own screen supersedes it, even if its first read happens
-///     on the alternate screen.
-///   - A running pane on the alternate screen (vim, an agent TUI) cannot
-///     have its primary screen read, so saves fall back to its `Live` entry,
-///     the last primary history read successfully. Every successful read
-///     replaces it and an empty read removes it, so it never holds anything
-///     older than the pane's own last primary screen.
-/// - The history a live pane's reader formatted before (`readers`), so a
-///   save formats only the lines that are new since the last one
-///   (`PaneHistoryCache`).
+/// - The history a pane's reader formatted before (`readers`, a
+///   `PaneHistoryCache`), so a save formats only the lines that are new since
+///   the last one. This is also the one copy of a pane's history that outlives
+///   a save: a pane on the alternate screen (vim, an agent TUI) cannot have
+///   its primary screen read, so saves use what the cache held at its last
+///   successful read, and a pane that lost its runtime keeps the text it had.
+///   A successful read of an empty screen leaves the cache with no text, which
+///   saves as no history.
+/// - What a pane's live screen cannot supply (`restored`): a restored pane
+///   without a runtime (deferred agent resume, failed restore) keeps its
+///   history from the loaded file until it runs. Capture reads live runtimes
+///   only, so without this a save made before the pane runs would lose its
+///   saved screen for good. The first save that sees a runtime for the pane
+///   drops that entry: from then on the pane's own screen supersedes it, even
+///   if its first read happens on the alternate screen.
+/// - What the last successful save's history was made of (`saved`), so a save
+///   with the same content is recognised without assembling, serializing or
+///   hashing any text.
 ///
 /// Each save drops the entries of panes no longer in its layout. That pruning
 /// is why this belongs to one app's persister instead of being process-wide:
@@ -497,8 +627,12 @@ enum CarriedOrigin {
 /// entries.
 #[derive(Default)]
 pub struct HistoryCarry {
-    carried: HashMap<TerminalId, CarriedEntry>,
+    restored: HashMap<TerminalId, RestoredEntry>,
     readers: HashMap<TerminalId, crate::pane::PaneHistoryCache>,
+    /// The stamp of the history the last successful save wrote.
+    saved: Option<HistoryStamp>,
+    /// The stamp of the history resolved for the save in progress.
+    resolved: Option<HistoryStamp>,
 }
 
 impl HistoryCarry {
@@ -506,11 +640,11 @@ impl HistoryCarry {
     /// has a runtime of its own.
     pub fn carry_restored(&mut self, terminal: &TerminalId, history: Option<&PaneHistorySnapshot>) {
         if let Some(history) = history {
-            self.carried.insert(
+            self.restored.insert(
                 terminal.clone(),
-                CarriedEntry {
+                RestoredEntry {
                     ansi: history.ansi.clone(),
-                    origin: CarriedOrigin::Restored,
+                    revision: next_restored_revision(),
                 },
             );
         }
@@ -518,62 +652,65 @@ impl HistoryCarry {
 
     /// Forgets every pane: a cleared session has none.
     pub(super) fn clear(&mut self) {
-        self.carried.clear();
+        self.restored.clear();
         self.readers.clear();
+        self.forget_saved();
     }
 
-    /// Drops what belongs to panes outside `panes` (the ones a save saw) and
-    /// the readers of panes that no longer have a runtime.
-    fn retain(&mut self, panes: &HashMap<TerminalId, bool>) {
-        self.carried.retain(|id, _| panes.contains_key(id));
+    /// The save whose history was last resolved reached the disk.
+    pub(super) fn note_saved(&mut self) {
+        self.saved = self.resolved.take();
+    }
+
+    /// The history file may not hold what the last resolution said; the next
+    /// save writes its history in full.
+    pub(super) fn forget_saved(&mut self) {
+        self.saved = None;
+        self.resolved = None;
+    }
+
+    /// Drops what belongs to panes outside `panes` (the ones a save saw).
+    fn retain(&mut self, panes: &std::collections::HashSet<&TerminalId>) {
+        self.restored.retain(|id, _| panes.contains(id));
+        self.readers.retain(|id, _| panes.contains(id));
+    }
+
+    /// A pane without a runtime: what is carried for it (its restored
+    /// history, else what its runtime's cache still holds), by content name.
+    fn stamp_runtimeless(&self, terminal: &TerminalId) -> PaneStamp {
+        if let Some(entry) = self.restored.get(terminal) {
+            return Some(entry.revision);
+        }
         self.readers
-            .retain(|id, _| panes.get(id).copied().unwrap_or(false));
+            .get(terminal)
+            .filter(|cache| cache.has_text())
+            .map(crate::pane::PaneHistoryCache::revision)
     }
 
-    /// History carried for a pane without a runtime.
-    fn carried(&self, terminal: &TerminalId) -> Option<String> {
-        self.carried.get(terminal).map(|entry| entry.ansi.clone())
-    }
-
-    /// A live pane's history: reads it through its cache, records a
-    /// successful primary-screen read as the pane's fallback, or falls back to
-    /// the last one while the alternate screen hides the primary screen.
-    fn resolve_live(
+    /// A live pane: brings its cache up to date, or leaves it as it was while
+    /// the alternate screen hides the primary screen, and names what it holds.
+    fn stamp_live(
         &mut self,
         terminal: &TerminalId,
         source: &crate::pane::PaneHistorySource,
-    ) -> Option<String> {
+    ) -> PaneStamp {
         // The pane has a runtime of its own now: its own screen supersedes
         // the history restored for it, permanently, even while that screen is
         // on the alternate buffer and cannot be read.
-        if self
-            .carried
-            .get(terminal)
-            .is_some_and(|entry| entry.origin == CarriedOrigin::Restored)
-        {
-            self.carried.remove(terminal);
-        }
-        let read = source.read(self.readers.entry(terminal.clone()).or_default());
-        match read {
-            Some(ansi) if ansi.trim().is_empty() => {
-                self.carried.remove(terminal);
-                None
-            }
-            Some(ansi) => {
-                self.carried.insert(
-                    terminal.clone(),
-                    CarriedEntry {
-                        ansi: ansi.clone(),
-                        origin: CarriedOrigin::Live,
-                    },
-                );
-                Some(ansi)
-            }
+        self.restored.remove(terminal);
+        let cache = self.readers.entry(terminal.clone()).or_default();
+        source.refresh(cache);
+        cache.has_text().then(|| cache.revision())
+    }
+
+    /// The text a stamped pane saves.
+    fn text(&self, terminal: &TerminalId) -> Option<String> {
+        match self.restored.get(terminal) {
+            Some(entry) => Some(entry.ansi.clone()),
             None => self
-                .carried
+                .readers
                 .get(terminal)
-                .filter(|entry| entry.origin == CarriedOrigin::Live)
-                .map(|entry| entry.ansi.clone()),
+                .map(crate::pane::PaneHistoryCache::text),
         }
     }
 }
@@ -603,25 +740,94 @@ impl PendingHistory {
         snapshot: &SessionSnapshot,
         carry: &mut HistoryCarry,
     ) -> SessionHistorySnapshot {
-        let panes: HashMap<TerminalId, bool> = self
-            .workspaces
-            .iter()
-            .flatten()
-            .flatten()
-            .map(|(_, pending)| match pending {
-                PendingPaneHistory::Runtimeless(terminal) => (terminal.clone(), false),
-                PendingPaneHistory::Live(terminal, _) => (terminal.clone(), true),
-            })
-            .collect();
-        carry.retain(&panes);
-        SessionHistorySnapshot {
-            version: SNAPSHOT_VERSION,
-            // Pair history to this saved layout here: live pane IDs are stable
-            // across saves, while restore allocates fresh IDs and carries the
-            // saved history through the ID remap.
-            layout_fingerprint: layout_fingerprint(snapshot),
-            workspaces: self
+        match self.resolve_for_save(snapshot, carry, false) {
+            ResolvedHistory::Changed(history) => history,
+            // Only produced when the caller allows it.
+            ResolvedHistory::Unchanged => SessionHistorySnapshot {
+                version: SNAPSHOT_VERSION,
+                layout_fingerprint: layout_fingerprint(snapshot),
+                workspaces: Vec::new(),
+            },
+        }
+    }
+
+    /// Like [`resolve`], for the persister: with `allow_unchanged` (the
+    /// history file is known to hold what the last save wrote) a history with
+    /// the same content as that save's is reported as `Unchanged` without
+    /// assembling any text. The caller reports how the save went through
+    /// `HistoryCarry::note_saved` or `forget_saved`.
+    ///
+    /// [`resolve`]: Self::resolve
+    pub(super) fn resolve_for_save(
+        self,
+        snapshot: &SessionSnapshot,
+        carry: &mut HistoryCarry,
+        allow_unchanged: bool,
+    ) -> ResolvedHistory {
+        carry.retain(
+            &self
                 .workspaces
+                .iter()
+                .flatten()
+                .flatten()
+                .map(|(_, pending)| match pending {
+                    PendingPaneHistory::Runtimeless(terminal)
+                    | PendingPaneHistory::Live(terminal, _) => terminal,
+                })
+                .collect(),
+        );
+        // Bring every pane up to date first, naming what each one holds.
+        let mut named: Vec<Vec<Vec<(u32, TerminalId, PaneStamp)>>> =
+            Vec::with_capacity(self.workspaces.len());
+        for tabs in self.workspaces {
+            let mut named_tabs = Vec::with_capacity(tabs.len());
+            for panes in tabs {
+                let mut named_panes: Vec<_> = panes
+                    .into_iter()
+                    .map(|(id, pending)| {
+                        let (terminal, stamp) = match pending {
+                            PendingPaneHistory::Runtimeless(terminal) => {
+                                let stamp = carry.stamp_runtimeless(&terminal);
+                                (terminal, stamp)
+                            }
+                            PendingPaneHistory::Live(terminal, source) => {
+                                let stamp = carry.stamp_live(&terminal, &source);
+                                (terminal, stamp)
+                            }
+                        };
+                        (id, terminal, stamp)
+                    })
+                    .collect();
+                named_panes.sort_unstable_by_key(|(id, _, _)| *id);
+                named_tabs.push(named_panes);
+            }
+            named.push(named_tabs);
+        }
+
+        // Pair history to this saved layout here: live pane IDs are stable
+        // across saves, while restore allocates fresh IDs and carries the
+        // saved history through the ID remap.
+        let layout_fingerprint = layout_fingerprint(snapshot);
+        carry.resolved = layout_fingerprint
+            .clone()
+            .map(|layout_fingerprint| HistoryStamp {
+                layout_fingerprint,
+                panes: named
+                    .iter()
+                    .map(|tabs| {
+                        tabs.iter()
+                            .map(|panes| panes.iter().map(|(id, _, stamp)| (*id, *stamp)).collect())
+                            .collect()
+                    })
+                    .collect(),
+            });
+        if allow_unchanged && carry.resolved.is_some() && carry.resolved == carry.saved {
+            return ResolvedHistory::Unchanged;
+        }
+        ResolvedHistory::Changed(SessionHistorySnapshot {
+            version: SNAPSHOT_VERSION,
+            layout_fingerprint,
+            workspaces: named
                 .into_iter()
                 .map(|tabs| WorkspaceHistorySnapshot {
                     tabs: tabs
@@ -629,15 +835,8 @@ impl PendingHistory {
                         .map(|panes| TabHistorySnapshot {
                             panes: panes
                                 .into_iter()
-                                .filter_map(|(id, pending)| {
-                                    let ansi = match pending {
-                                        PendingPaneHistory::Runtimeless(terminal) => {
-                                            carry.carried(&terminal)
-                                        }
-                                        PendingPaneHistory::Live(terminal, source) => {
-                                            carry.resolve_live(&terminal, &source)
-                                        }
-                                    }?;
+                                .filter_map(|(id, terminal, stamp)| {
+                                    let ansi = carry.text(&terminal).filter(|_| stamp.is_some())?;
                                     Some((id, PaneHistorySnapshot { ansi }))
                                 })
                                 .collect(),
@@ -645,7 +844,7 @@ impl PendingHistory {
                         .collect(),
                 })
                 .collect(),
-        }
+        })
     }
 }
 
@@ -811,6 +1010,68 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Holder>(&json).expect("byte path parses"),
             raw
+        );
+    }
+
+    #[tokio::test]
+    async fn history_with_the_saved_content_is_recognised_without_assembling() {
+        let workspaces = [Workspace::test_new("history-unchanged")];
+        let tab = workspaces[0].tabs().first().expect("test tab");
+        let pane_id = *tab.panes.keys().next().expect("test pane");
+        let terminal_id = tab.terminal_id(pane_id).expect("test terminal").clone();
+        let mut runtimes = PaneRuntimeRegistry::new();
+        runtimes.insert(
+            terminal_id.clone(),
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"ONE\r\n"),
+        );
+        let snapshot = super::capture(
+            &workspaces,
+            &HashMap::new(),
+            &runtimes,
+            PathBuf::from("/").as_path(),
+            None,
+            0,
+            Default::default(),
+        );
+        let mut carry = super::HistoryCarry::default();
+        let resolve = |carry: &mut super::HistoryCarry, allow: bool| {
+            super::capture_pending_history(&workspaces, &runtimes)
+                .resolve_for_save(&snapshot, carry, allow)
+        };
+
+        assert!(matches!(
+            resolve(&mut carry, true),
+            super::ResolvedHistory::Changed(_)
+        ));
+        carry.note_saved();
+        assert!(matches!(
+            resolve(&mut carry, true),
+            super::ResolvedHistory::Unchanged
+        ));
+        assert!(
+            matches!(
+                resolve(&mut carry, false),
+                super::ResolvedHistory::Changed(_)
+            ),
+            "a caller that cannot skip always gets the history"
+        );
+        carry.note_saved();
+
+        runtimes
+            .get(&terminal_id)
+            .expect("test precondition")
+            .test_process_pty_bytes(b"TWO\r\n");
+        assert!(matches!(
+            resolve(&mut carry, true),
+            super::ResolvedHistory::Changed(_)
+        ));
+        carry.forget_saved();
+        assert!(
+            matches!(
+                resolve(&mut carry, true),
+                super::ResolvedHistory::Changed(_)
+            ),
+            "a save that failed leaves nothing to skip against"
         );
     }
 

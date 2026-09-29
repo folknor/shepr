@@ -4,7 +4,7 @@
 //! automatic activation path reads it to know which endpoint should own the pane
 //! surface. A handoff can still fail and roll back to its source, so a failed
 //! handoff restores the previous choice and remembers the failed connection, so
-//! automatic activation does not retry it on every snapshot; a fresh connection
+//! automatic activation does not retry it on every loop turn; a fresh connection
 //! generation or an explicit request clears that memory. The selection is never
 //! written to disk: every client starts on Local.
 //!
@@ -97,13 +97,14 @@ impl EndpointSelectionTracker {
     }
 
     /// Resolves the outstanding attempt once no handoff work remains in flight.
-    /// `busy` covers a pending activation, a deferred Local activation and a queued
-    /// activation event; `active_surface` is whether `active_id` owns the surface.
+    /// `busy` covers a handoff in flight, a deferred Local selection and a queued
+    /// activation event; `active_owns_presentation` is whether `active_id` owns the
+    /// presentation, which a connection that merely kept its surface does not.
     pub(crate) fn settle(
         &mut self,
         busy: bool,
         active_id: &ClientEndpointId,
-        active_surface: bool,
+        active_owns_presentation: bool,
     ) -> SelectionOutcome {
         if busy {
             return SelectionOutcome::Unsettled;
@@ -111,7 +112,7 @@ impl EndpointSelectionTracker {
         let Some(attempt) = self.attempt.take() else {
             return SelectionOutcome::Unsettled;
         };
-        if active_surface && active_id == &attempt.endpoint_id {
+        if active_owns_presentation && active_id == &attempt.endpoint_id {
             return SelectionOutcome::Committed;
         }
         self.selected = attempt.previous;

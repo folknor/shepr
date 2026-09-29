@@ -173,14 +173,20 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
         "codex hooks file",
         "codex hooks file hooks",
     )?;
-    remove_hook_commands(hooks, "SessionStart", &hook_path, Some("session"))?;
-    ensure_command_hook(
-        hooks,
-        "SessionStart",
-        &hook_command(&hook_path, Some("session")),
-        integration_hook_timeout(Target::Codex)?.as_secs(),
-        None,
-    )?;
+    let timeout = integration_hook_timeout(Target::Codex)?.as_secs();
+    for hook in integration_hook_events(Target::Codex) {
+        let Some(action) = hook.action.map(IntegrationHookAction::as_str) else {
+            continue;
+        };
+        remove_hook_commands(hooks, hook.event, &hook_path, Some(action))?;
+        ensure_command_hook(
+            hooks,
+            hook.event,
+            &hook_command(&hook_path, Some(action)),
+            timeout,
+            None,
+        )?;
+    }
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
     let config_path = dir.join(super::CODEX_CONFIG_NAME);

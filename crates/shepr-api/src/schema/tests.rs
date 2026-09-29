@@ -14,17 +14,19 @@ fn method_names_are_unique() {
 fn request_uses_dot_method_names() {
     let request = Request {
         id: "req_1".into(),
-        method: Method::WorkspaceCreate(WorkspaceCreateParams {
-            source_workspace_id: None,
-            cwd: Some("/tmp".into()),
-            focus: true,
-            label: Some("api".into()),
-            env: Default::default(),
+        method: Method::PaneReportAgentSession(PaneReportAgentSessionParams {
+            pane_id: "w1:p1".into(),
+            source: "shepr:pi".into(),
+            agent: "pi".into(),
+            seq: None,
+            agent_session_id: None,
+            agent_session_path: None,
+            session_start_source: None,
         }),
     };
 
     let json = serde_json::to_value(&request).expect("test precondition");
-    assert_eq!(json["method"], "workspace.create");
+    assert_eq!(json["method"], "pane.report_agent_session");
 }
 
 #[test]
@@ -151,6 +153,49 @@ fn removed_uncalled_methods_are_rejected() {
     }
 }
 
+/// A client shell's commands cross the client socket as
+/// `shepr_protocol::command::EndpointCommand`; none of them is a JSON API
+/// method.
+#[test]
+fn client_shell_commands_are_not_api_methods() {
+    for method in [
+        "client_shell.surface.set",
+        "workspace.create",
+        "workspace.focus",
+        "workspace.rename",
+        "workspace.checkout_root",
+        "workspace.move",
+        "workspace.close",
+        "tab.create",
+        "tab.focus",
+        "tab.rename",
+        "tab.move",
+        "tab.close",
+        "pane.split",
+        "pane.swap",
+        "pane.zoom",
+        "layout.set_split_ratio",
+        "pane.focus_direction",
+        "pane.resize",
+        "pane.scroll",
+        "pane.clear",
+        "pane.selection.read",
+        "pane.copy_motion",
+        "pane.copy_search",
+        "pane.focus",
+        "pane.input.set",
+        "pane.rename",
+        "pane.close",
+    ] {
+        let request = serde_json::json!({"id": "req", "method": method, "params": {}});
+        let error = serde_json::from_value::<Request>(request).expect_err("client-shell command");
+        assert!(
+            error.to_string().contains("unknown variant"),
+            "{method}: {error}"
+        );
+    }
+}
+
 #[test]
 fn agent_status_accepts_only_presentable_states() {
     for status in ["idle", "working", "blocked"] {
@@ -220,124 +265,6 @@ fn session_snapshot_request_and_response_round_trip() {
     };
     let json = serde_json::to_string(&response).expect("test precondition");
     assert!(json.contains("\"type\":\"session_snapshot\""));
-    let restored: SuccessResponse = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, response);
-}
-
-#[test]
-fn layout_split_ratio_response_round_trips() {
-    let response = SuccessResponse {
-        id: "layout_ratio".into(),
-        result: ResponseResult::LayoutSplitRatioSet {
-            layout: LayoutDescription {
-                workspace_id: shepr_test_fixtures::id("w1"),
-                tab_id: shepr_test_fixtures::id("w1:t1"),
-                zoomed: false,
-                focused_pane_id: shepr_test_fixtures::id("w1:p1"),
-                root: LayoutNode::Pane {
-                    pane: LayoutPane {
-                        pane_id: Some("w1:p1".into()),
-                        ..Default::default()
-                    },
-                },
-            },
-        },
-    };
-    let json = serde_json::to_string(&response).expect("test precondition");
-    assert!(json.contains("\"type\":\"layout_split_ratio_set\""));
-    let restored: SuccessResponse = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, response);
-}
-
-#[test]
-fn authority_mutation_requests_round_trip() {
-    let workspace_move = Request {
-        id: "move_ws".into(),
-        method: Method::WorkspaceMove(WorkspaceMoveParams {
-            workspace_id: "w1".into(),
-            insert_index: 2,
-        }),
-    };
-    let json = serde_json::to_value(&workspace_move).expect("test precondition");
-    assert_eq!(json["method"], "workspace.move");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, workspace_move);
-
-    let tab_move = Request {
-        id: "move_tab".into(),
-        method: Method::TabMove(TabMoveParams {
-            tab_id: "w1:t1".into(),
-            insert_index: 1,
-        }),
-    };
-    let json = serde_json::to_value(&tab_move).expect("test precondition");
-    assert_eq!(json["method"], "tab.move");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, tab_move);
-
-    let pane_focus = Request {
-        id: "focus_pane".into(),
-        method: Method::PaneFocus(PaneTarget {
-            pane_id: "w1:p1".into(),
-        }),
-    };
-    let json = serde_json::to_value(&pane_focus).expect("test precondition");
-    assert_eq!(json["method"], "pane.focus");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, pane_focus);
-
-    let split_ratio = Request {
-        id: "set_ratio".into(),
-        method: Method::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
-            tab_id: Some("w1:t1".into()),
-            pane_id: None,
-            path: vec![false, true],
-            ratio: 0.6,
-        }),
-    };
-    let json = serde_json::to_value(&split_ratio).expect("test precondition");
-    assert_eq!(json["method"], "layout.set_split_ratio");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, split_ratio);
-}
-
-#[test]
-fn create_response_round_trips_with_root_pane() {
-    let response = SuccessResponse {
-        id: "req_2".into(),
-        result: ResponseResult::TabCreated {
-            tab: TabInfo {
-                tab_id: shepr_test_fixtures::id("w1:t2"),
-                workspace_id: shepr_test_fixtures::id("w1"),
-                number: 2,
-                label: "review".into(),
-                focused: false,
-                pane_count: 1,
-                agent_status: AgentStatus::Idle,
-            },
-            root_pane: PaneInfo {
-                pane_id: shepr_test_fixtures::id("w1:p3"),
-                terminal_id: shepr_test_fixtures::id("term_1_1"),
-                workspace_id: shepr_test_fixtures::id("w1"),
-                tab_id: shepr_test_fixtures::id("w1:t2"),
-                focused: false,
-                cwd: Some("/tmp/review".into()),
-                foreground_cwd: None,
-                restore_error: None,
-                label: None,
-                agent: None,
-                terminal_title: None,
-                terminal_title_stripped: None,
-                agent_status: AgentStatus::Idle,
-                agent_session: None,
-                scroll: None,
-            },
-        },
-    };
-
-    let json = serde_json::to_string(&response).expect("test precondition");
-    assert!(json.contains("\"type\":\"tab_created\""));
-    assert!(json.contains("\"root_pane\""));
     let restored: SuccessResponse = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, response);
 }

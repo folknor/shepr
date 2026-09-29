@@ -55,13 +55,12 @@ use crate::limits::{
     PENDING_AGENT_RESUME_THEME_WAIT,
 };
 
-use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
 use tracing::{info, warn};
 
 use shepr_mux::events::AppEvent;
 
-pub use state::{AppState, Mode, ViewState};
+pub use state::{AppState, Mode};
 
 /// Whether the app restores a saved session at startup and persists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,12 +81,10 @@ impl AppPolicy {
 pub struct App {
     pub state: AppState,
     pub(crate) clock: AppClock,
-    pub(crate) pixel_mouse_available: bool,
     pub(crate) terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
-    pub(crate) last_focus: Option<(usize, shepr_core::layout::PaneId)>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
@@ -209,12 +206,17 @@ impl App {
             (Vec::new(), None, 0)
         };
         // From here on the persister is the one owner of the data directory:
-        // it holds the lease, the writer and the carried pane history.
-        let persister = shepr_mux::persist::SessionPersister::spawn(
-            lease,
-            protect_unloaded,
-            pane_history_carry,
-        );
+        // it holds the lease, the writer and the carried pane history. An app
+        // that persists nothing only holds the lease, so it gets no thread.
+        let persister = if policy.persists_session() {
+            shepr_mux::persist::SessionPersister::spawn(lease, protect_unloaded, pane_history_carry)
+        } else {
+            shepr_mux::persist::SessionPersister::inline(
+                lease,
+                protect_unloaded,
+                pane_history_carry,
+            )
+        };
 
         info!(
             pane_scrollback_limit_bytes = settings.pane_scrollback_limit_bytes,
@@ -242,11 +244,7 @@ impl App {
             selected: selected_id,
             mode,
             should_quit: false,
-            view: state::ViewState {
-                terminal_area: Rect::default(),
-                pane_infos: Vec::new(),
-            },
-            outer_terminal_focus: None,
+            tab_areas: std::collections::HashMap::new(),
             settings,
             next_agent_state_change_seq: 0,
             tab_bar_right: Vec::new(),
@@ -254,7 +252,6 @@ impl App {
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             host_terminal_theme: restored_host_theme,
-            host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             shell_projection_revision: 0,
         };
@@ -267,16 +264,9 @@ impl App {
         // `last_git_remote_status_refresh` below) and discovers every
         // workspace whose resolved cwd differs from its cached identity.
 
-        let last_focus = state.active_index().and_then(|idx| {
-            state
-                .workspaces
-                .get(idx)
-                .map(|ws| (idx, ws.focused_pane_id()))
-        });
         let mut app = Self {
             state,
             clock,
-            pixel_mouse_available: false,
             terminal_runtimes: restored_terminal_runtimes,
             event_tx,
             event_rx,
@@ -294,7 +284,6 @@ impl App {
             last_render_at: None,
             last_presentation_at: None,
             api_rx,
-            last_focus,
             policy,
             render_notify,
             pane_teardowns,
@@ -378,6 +367,10 @@ mod tests {
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
+    use shepr_protocol::command::{
+        EndpointCommand, EndpointReply, PaneRightClickTarget, PaneSplitParams, PaneTarget,
+        SplitDirection,
+    };
 
     // Tests build apps that never persist their session; `AppPolicy::Test`
     // names that intent and behaves exactly as `Suspended`.
@@ -676,83 +669,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn read_only_api_requests_do_not_force_rerender() {
-        let read_only = shepr_api::schema::Request {
-            id: "req_1".into(),
-            method: shepr_api::schema::Method::SessionSnapshot(
-                shepr_api::schema::EmptyParams::default(),
-            ),
-        };
-        let mutating = shepr_api::schema::Request {
-            id: "req_2".into(),
-            method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                workspace_id: "w1".into(),
-            }),
-        };
-        let pane_rename = shepr_api::schema::Request {
-            id: "req_3".into(),
-            method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
-                pane_id: "w1:p1".into(),
-                label: Some("logs".into()),
-            }),
-        };
-        let pane_swap = shepr_api::schema::Request {
-            id: "req_6".into(),
-            method: shepr_api::schema::Method::PaneSwap(shepr_api::schema::PaneSwapParams {
-                pane_id: Some("w1:p1".into()),
-                direction: Some(shepr_api::schema::PaneDirection::Right),
-                ..shepr_api::schema::PaneSwapParams::default()
-            }),
-        };
-        let pane_focus_direction = shepr_api::schema::Request {
-            id: "req_7".into(),
-            method: shepr_api::schema::Method::PaneFocusDirection(
-                shepr_api::schema::PaneFocusDirectionParams {
-                    pane_id: Some("w1:p1".into()),
-                    direction: shepr_api::schema::PaneDirection::Right,
-                },
-            ),
-        };
-        let pane_resize = shepr_api::schema::Request {
-            id: "req_8".into(),
-            method: shepr_api::schema::Method::PaneResize(shepr_api::schema::PaneResizeParams {
-                pane_id: Some("w1:p1".into()),
-                direction: shepr_api::schema::PaneDirection::Right,
-                amount: Some(0.05),
-            }),
-        };
-        assert!(!read_only.method.traits().mutates_ui);
-        assert!(mutating.method.traits().mutates_ui);
-        assert!(pane_rename.method.traits().mutates_ui);
-        assert!(pane_swap.method.traits().mutates_ui);
-        assert!(pane_focus_direction.method.traits().mutates_ui);
-        assert!(pane_resize.method.traits().mutates_ui);
-    }
-
-    #[test]
-    fn workspace_create_response_includes_initial_tab_and_root_pane() {
-        let mut app = test_app();
-        app.state.workspaces = vec![Workspace::test_new("api-root-pane")];
-        app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-
-        let shepr_api::schema::ResponseResult::WorkspaceCreated {
-            workspace,
-            tab,
-            root_pane,
-        } = app.workspace_created_result(0).expect("test precondition")
-        else {
-            panic!("expected workspace_created response");
-        };
-
-        assert_eq!(workspace.label, "api-root-pane");
-        assert_eq!(tab.workspace_id, workspace.workspace_id);
-        assert_eq!(root_pane.workspace_id, workspace.workspace_id);
-        assert_eq!(root_pane.tab_id, tab.tab_id);
-    }
-
     #[tokio::test]
     async fn ensure_default_workspace_creates_one_workspace_only_when_none_exist() {
         let mut app = test_app();
@@ -761,27 +677,6 @@ mod tests {
         assert_eq!(app.state.workspaces.len(), 1);
         assert!(!app.ensure_default_workspace());
         assert_eq!(app.state.workspaces.len(), 1);
-    }
-
-    #[test]
-    fn tab_create_response_includes_root_pane() {
-        let mut app = test_app();
-        let mut workspace = Workspace::test_new("api-tab-root-pane");
-        workspace.test_add_tab(None);
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-
-        let shepr_api::schema::ResponseResult::TabCreated { tab, root_pane } =
-            app.tab_created_result(0, 1).expect("test precondition")
-        else {
-            panic!("expected tab_created response");
-        };
-
-        assert_eq!(tab.workspace_id, root_pane.workspace_id);
-        assert_eq!(root_pane.tab_id, tab.tab_id);
-        assert_eq!(tab.pane_count, 1);
     }
 
     #[test]
@@ -924,66 +819,6 @@ mod tests {
         assert!(!app.state.should_quit);
     }
 
-    #[test]
-    fn pane_rename_request_sets_and_clears_manual_label() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("api-pane-rename");
-        let pane = workspace.tabs()[0].root_pane();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-
-        let pane_id = app.pane_info(0, pane).expect("test precondition").pane_id;
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_pane_rename".into(),
-            method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
-                pane_id: pane_id.clone().to_string(),
-                label: Some("reviewer".into()),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
-
-        assert_eq!(response["result"]["type"], "pane_info");
-        assert_eq!(response["result"]["pane"]["label"], "reviewer");
-        let terminal_id = app.state.workspaces[0]
-            .pane_state(pane)
-            .expect("test precondition")
-            .attached_terminal_id
-            .clone();
-        assert_eq!(
-            app.state
-                .terminals
-                .get(&terminal_id)
-                .expect("test precondition")
-                .manual_label
-                .as_deref(),
-            Some("reviewer")
-        );
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_pane_rename_clear".into(),
-            method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
-                pane_id: pane_id.to_string(),
-                label: None,
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
-
-        assert_eq!(response["result"]["type"], "pane_info");
-        assert!(response["result"]["pane"]["label"].is_null());
-        assert!(
-            app.state
-                .terminals
-                .get(&terminal_id)
-                .expect("test precondition")
-                .manual_label
-                .is_none()
-        );
-    }
-
     #[tokio::test]
     async fn pane_split_request_focuses_new_pane_when_requested() {
         let env = IsolatedEnv::new();
@@ -1007,25 +842,22 @@ mod tests {
             .public_tab_id(0, background_tab)
             .expect("test precondition");
 
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_pane_split_focus_background_tab".into(),
-            method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
-                workspace_id: None,
-                target_pane_id: Some(target_pane_id.to_string()),
-                direction: shepr_api::schema::SplitDirection::Right,
-                ratio: None,
-                cwd: None,
-                focus: true,
-                right_click: Default::default(),
-                env: Default::default(),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+        let result = app.handle_endpoint_command(EndpointCommand::PaneSplit(PaneSplitParams {
+            workspace_id: None,
+            target_pane_id: Some(target_pane_id.to_string()),
+            direction: SplitDirection::Right,
+            ratio: None,
+            cwd: None,
+            focus: true,
+            right_click: Default::default(),
+            env: Default::default(),
+        }));
+        let Ok(EndpointReply::PaneInfo { pane }) = result else {
+            panic!("expected pane info");
+        };
 
-        assert_eq!(response["result"]["type"], "pane_info");
-        assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id.as_str());
-        assert_eq!(response["result"]["pane"]["focused"], true);
+        assert_eq!(pane.tab_id, target_tab_id);
+        assert!(pane.focused);
         assert_eq!(app.state.active_index(), Some(0));
         assert_eq!(app.state.workspaces[0].active_tab_index(), background_tab);
 
@@ -1053,33 +885,27 @@ mod tests {
             .expect("test precondition")
             .pane_id;
 
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_pane_split_ratio".into(),
-            method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
-                workspace_id: None,
-                target_pane_id: Some(target_pane_id.to_string()),
-                direction: shepr_api::schema::SplitDirection::Right,
-                ratio: Some(0.333),
-                cwd: None,
-                focus: false,
-                right_click: shepr_api::schema::PaneRightClickTarget::Pane,
-                env: Default::default(),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+        let result = app.handle_endpoint_command(EndpointCommand::PaneSplit(PaneSplitParams {
+            workspace_id: None,
+            target_pane_id: Some(target_pane_id.to_string()),
+            direction: SplitDirection::Right,
+            ratio: Some(0.333),
+            cwd: None,
+            focus: false,
+            right_click: PaneRightClickTarget::Pane,
+            env: Default::default(),
+        }));
+        let Ok(EndpointReply::PaneInfo { pane }) = result else {
+            panic!("expected pane info");
+        };
 
-        assert_eq!(response["result"]["type"], "pane_info");
         let splits = app.state.workspaces[0].tabs()[0]
             .layout()
             .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
         assert!((splits[0].ratio - 0.333).abs() < f32::EPSILON);
-        let response_pane_id = response["result"]["pane"]["pane_id"]
-            .as_str()
-            .expect("test precondition");
         let (_, response_pane_id) = app
-            .parse_pane_id(response_pane_id)
+            .parse_pane_id(pane.pane_id.as_str())
             .expect("test precondition");
         assert!(
             app.state.workspaces[0]
@@ -1108,23 +934,18 @@ mod tests {
         app.state.set_selected_index(Some(0));
         app.state.focus_pane_in_workspace(0, target_pane);
 
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_pane_split_current".into(),
-            method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
-                workspace_id: None,
-                target_pane_id: None,
-                direction: shepr_api::schema::SplitDirection::Right,
-                ratio: None,
-                cwd: None,
-                focus: false,
-                right_click: Default::default(),
-                env: Default::default(),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+        let result = app.handle_endpoint_command(EndpointCommand::PaneSplit(PaneSplitParams {
+            workspace_id: None,
+            target_pane_id: None,
+            direction: SplitDirection::Right,
+            ratio: None,
+            cwd: None,
+            focus: false,
+            right_click: Default::default(),
+            env: Default::default(),
+        }));
 
-        assert_eq!(response["result"]["type"], "pane_info");
+        assert!(matches!(result, Ok(EndpointReply::PaneInfo { .. })));
         assert_eq!(app.state.workspaces[0].tabs()[0].layout().pane_count(), 2);
         assert_eq!(
             app.state.workspaces[0].tabs()[0].layout().focused(),
@@ -1154,16 +975,11 @@ mod tests {
             .expect("test precondition")
             .pane_id;
 
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_pane_close".into(),
-            method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
-                pane_id: target_pane_id.to_string(),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+        let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
+            pane_id: target_pane_id.to_string(),
+        }));
 
-        assert_eq!(response["result"]["type"], "ok");
+        assert!(matches!(result, Ok(EndpointReply::Done)));
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);
         assert_eq!(app.state.workspaces[0].display_name(), "api-pane-close");
@@ -1184,16 +1000,11 @@ mod tests {
             .expect("test precondition")
             .pane_id;
 
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_pane_close_last".into(),
-            method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
-                pane_id: target_pane_id.to_string(),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+        let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
+            pane_id: target_pane_id.to_string(),
+        }));
 
-        assert_eq!(response["result"]["type"], "ok");
+        assert!(matches!(result, Ok(EndpointReply::Done)));
         assert!(app.state.workspaces.is_empty());
     }
 

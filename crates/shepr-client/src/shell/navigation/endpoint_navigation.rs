@@ -264,19 +264,20 @@ impl ClientShellState {
         if endpoint_id == self.active_endpoint_id
             && !(endpoint_id.is_local() && (self.multi_endpoint_active() || !online))
         {
-            let method = match target {
+            use shepr_protocol::command::{EndpointCommand, PaneTarget, WorkspaceTarget};
+            let command = match target {
                 ClientEndpointFocusTarget::Workspace(workspace_id) => {
-                    shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
+                    EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                         workspace_id: workspace_id.into(),
                     })
                 }
                 ClientEndpointFocusTarget::Pane(pane_id) => {
-                    shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
+                    EndpointCommand::PaneFocus(PaneTarget {
                         pane_id: pane_id.to_string(),
                     })
                 }
             };
-            self.push_endpoint_method(method, outcome);
+            self.push_endpoint_command(command, outcome);
         } else {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
                 endpoint_id,

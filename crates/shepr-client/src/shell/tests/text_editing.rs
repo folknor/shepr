@@ -85,8 +85,11 @@ fn open_new_workspace(state: &mut ClientShellState) -> (String, u64, String) {
     let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
         panic!("expected one endpoint request, got {:?}", outcome.actions);
     };
-    let shepr_api::schema::Method::WorkspaceCheckoutRoot(params) = &request.method else {
-        panic!("expected a checkout root request, got {:?}", request.method);
+    let EndpointCommand::WorkspaceCheckoutRoot(params) = &request.command else {
+        panic!(
+            "expected a checkout root request, got {:?}",
+            request.command
+        );
     };
     let Some(ClientShellOverlay::Rename(ClientRenameOverlay {
         target:
@@ -102,8 +105,8 @@ fn open_new_workspace(state: &mut ClientShellState) -> (String, u64, String) {
     (request.id.clone(), *lookup_id, params.cwd.clone())
 }
 
-fn checkout_root_answer(root: Option<&str>) -> shepr_api::schema::ResponseResult {
-    shepr_api::schema::ResponseResult::WorkspaceCheckoutRoot {
+fn checkout_root_answer(root: Option<&str>) -> EndpointReply {
+    EndpointReply::WorkspaceCheckoutRoot {
         root: root.map(str::to_owned),
         home: None,
     }
@@ -155,7 +158,7 @@ fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggesti
         &boot_id,
         &request,
         Err(ClientShellEndpointError {
-            code: Some("internal_error".into()),
+            code: "internal_error".into(),
             message: "git failed".into(),
         }),
         state.now,
@@ -278,7 +281,6 @@ fn focused_filters_keep_ctrl_n_p_navigation_and_literal_commands() {
 
 #[test]
 fn all_naming_targets_preserve_submission_and_empty_semantics() {
-    use shepr_api::schema::Method;
     for field in 0..5 {
         for empty in [false, true] {
             let mut state = shell(field);
@@ -297,17 +299,17 @@ fn all_naming_targets_preserve_submission_and_empty_semantics() {
                 panic!("naming target {field}");
             };
             let expected = if empty { "" } else { "X  ab" };
-            match &request.method {
-                Method::WorkspaceCreate(v) => {
+            match &request.command {
+                EndpointCommand::WorkspaceCreate(v) => {
                     assert_eq!(v.label.as_deref(), (!empty).then_some(expected));
                 }
-                Method::WorkspaceRename(v) => assert_eq!(v.label, expected),
-                Method::TabCreate(v) => {
+                EndpointCommand::WorkspaceRename(v) => assert_eq!(v.label, expected),
+                EndpointCommand::TabCreate(v) => {
                     assert_eq!(v.label.as_deref(), (!empty).then_some(expected));
                 }
-                Method::TabRename(v) => assert_eq!(v.label, expected),
-                Method::PaneRename(v) => assert_eq!(v.label.as_deref(), Some(expected)),
-                _ => panic!("wrong method"),
+                EndpointCommand::TabRename(v) => assert_eq!(v.label, expected),
+                EndpointCommand::PaneRename(v) => assert_eq!(v.label.as_deref(), Some(expected)),
+                _ => panic!("wrong command"),
             }
         }
     }

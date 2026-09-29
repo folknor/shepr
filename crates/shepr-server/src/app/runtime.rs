@@ -140,16 +140,7 @@ mod tests {
         app.state.workspaces.push(ws);
         app.state.set_active_index(Some(0));
         app.state
-            .view
-            .pane_infos
-            .push(shepr_mux::workspace::PaneChromeInfo {
-                id: pane_id,
-                rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-                inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-                scrollbar_rect: None,
-                borders: ratatui::widgets::Borders::NONE,
-                is_focused: true,
-            });
+            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
         (app, pane_id)
     }
 }

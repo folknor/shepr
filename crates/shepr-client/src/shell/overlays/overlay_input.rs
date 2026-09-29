@@ -175,9 +175,9 @@ impl ClientShellState {
         {
             let id = self.next_workspace_label_lookup_id;
             self.next_workspace_label_lookup_id = id.wrapping_add(1).max(1);
-            let sent = self.push_endpoint_method_with_kind(
-                shepr_api::schema::Method::WorkspaceCheckoutRoot(
-                    shepr_api::schema::WorkspaceCheckoutRootParams {
+            let sent = self.push_endpoint_command_with_kind(
+                shepr_protocol::command::EndpointCommand::WorkspaceCheckoutRoot(
+                    shepr_protocol::command::WorkspaceCheckoutRootParams {
                         cwd: cwd.to_owned(),
                     },
                 ),
@@ -206,7 +206,7 @@ impl ClientShellState {
     pub(super) fn complete_workspace_label_lookup(
         &mut self,
         id: u64,
-        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
+        result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
     ) -> bool {
         let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() else {
             return false;
@@ -224,7 +224,8 @@ impl ClientShellState {
             return false;
         }
         *label_lookup_id = None;
-        let Ok(shepr_api::schema::ResponseResult::WorkspaceCheckoutRoot { root, home }) = result
+        let Ok(shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot { root, home }) =
+            result
         else {
             return false;
         };
@@ -723,14 +724,14 @@ impl ClientShellState {
             return;
         };
         let trimmed = rename.input.trim();
-        let method = match rename.target {
+        let command = match rename.target {
             ClientRenameTarget::NewWorkspace {
                 source_workspace_id,
                 cwd,
                 suggested_name,
                 ..
-            } => Some(shepr_api::schema::Method::WorkspaceCreate(
-                shepr_api::schema::WorkspaceCreateParams {
+            } => Some(shepr_protocol::command::EndpointCommand::WorkspaceCreate(
+                shepr_protocol::command::WorkspaceCreateParams {
                     source_workspace_id: source_workspace_id.map(Into::into),
                     cwd,
                     focus: true,
@@ -740,8 +741,8 @@ impl ClientShellState {
                 },
             )),
             ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
-                shepr_api::schema::Method::WorkspaceRename(
-                    shepr_api::schema::WorkspaceRenameParams {
+                shepr_protocol::command::EndpointCommand::WorkspaceRename(
+                    shepr_protocol::command::WorkspaceRenameParams {
                         workspace_id: workspace_id.into(),
                         label: trimmed.to_owned(),
                     },
@@ -750,8 +751,8 @@ impl ClientShellState {
             ClientRenameTarget::NewTab {
                 workspace_id,
                 default_name,
-            } => Some(shepr_api::schema::Method::TabCreate(
-                shepr_api::schema::TabCreateParams {
+            } => Some(shepr_protocol::command::EndpointCommand::TabCreate(
+                shepr_protocol::command::TabCreateParams {
                     workspace_id: Some(workspace_id.into()),
                     cwd: None,
                     focus: true,
@@ -765,20 +766,24 @@ impl ClientShellState {
                 auto_name,
                 original_name,
             } => (!(trimmed.is_empty() || auto_name && trimmed == original_name)).then(|| {
-                shepr_api::schema::Method::TabRename(shepr_api::schema::TabRenameParams {
-                    tab_id: tab_id.to_string(),
-                    label: trimmed.to_owned(),
-                })
+                shepr_protocol::command::EndpointCommand::TabRename(
+                    shepr_protocol::command::TabRenameParams {
+                        tab_id: tab_id.to_string(),
+                        label: trimmed.to_owned(),
+                    },
+                )
             }),
-            ClientRenameTarget::Pane { pane_id } => Some(shepr_api::schema::Method::PaneRename(
-                shepr_api::schema::PaneRenameParams {
-                    pane_id: pane_id.to_string(),
-                    label: Some(trimmed.to_owned()),
-                },
-            )),
+            ClientRenameTarget::Pane { pane_id } => {
+                Some(shepr_protocol::command::EndpointCommand::PaneRename(
+                    shepr_protocol::command::PaneRenameParams {
+                        pane_id: pane_id.to_string(),
+                        label: Some(trimmed.to_owned()),
+                    },
+                ))
+            }
         };
-        if let Some(method) = method {
-            self.push_endpoint_method(method, outcome);
+        if let Some(command) = command {
+            self.push_endpoint_command(command, outcome);
         }
         outcome.repaint = true;
     }
@@ -803,10 +808,12 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        self.push_endpoint_method(
-            shepr_api::schema::Method::TabClose(shepr_api::schema::TabTarget {
-                tab_id: tab_id.to_string(),
-            }),
+        self.push_endpoint_command(
+            shepr_protocol::command::EndpointCommand::TabClose(
+                shepr_protocol::command::TabTarget {
+                    tab_id: tab_id.to_string(),
+                },
+            ),
             outcome,
         );
     }
@@ -816,7 +823,7 @@ impl ClientShellState {
             return;
         };
         outcome.repaint = true;
-        let method = if let Some(target) = confirm.tab_target {
+        let command = if let Some(target) = confirm.tab_target {
             if target.workspace.endpoint_id != self.active_endpoint_id
                 || !self.navigation_target_valid(&target.workspace)
                 || !self.snapshot.as_deref().is_some_and(|snapshot| {
@@ -831,15 +838,17 @@ impl ClientShellState {
                 );
                 return;
             }
-            shepr_api::schema::Method::TabClose(shepr_api::schema::TabTarget {
+            shepr_protocol::command::EndpointCommand::TabClose(shepr_protocol::command::TabTarget {
                 tab_id: target.tab_id.to_string(),
             })
         } else {
-            shepr_api::schema::Method::WorkspaceClose(shepr_api::schema::WorkspaceCloseParams {
-                workspace_id: confirm.workspace_id.into(),
-            })
+            shepr_protocol::command::EndpointCommand::WorkspaceClose(
+                shepr_protocol::command::WorkspaceCloseParams {
+                    workspace_id: confirm.workspace_id.into(),
+                },
+            )
         };
-        self.push_endpoint_method(method, outcome);
+        self.push_endpoint_command(command, outcome);
     }
 
     pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: shepr_protocol::WorkspaceId) {

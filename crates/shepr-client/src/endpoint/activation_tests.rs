@@ -1227,7 +1227,8 @@ fn local_escape(source_state: &str) {
 #[test]
 fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
     use crate::{
-        ClientState, endpoint::commands::EndpointCommands, shell_runtime::begin_endpoint_activation,
+        ClientState, Presentation, endpoint::commands::EndpointCommands,
+        shell_runtime::begin_endpoint_activation,
     };
     for phase in ["release", "target", "rollback", "restore"] {
         let (shell, mut endpoints, local_sent, _remote_sent) = shell_and_registry();
@@ -1269,7 +1270,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
         let mut state = ClientState::test_new();
         *state.shell = shell;
         let mut commands = EndpointCommands::default();
-        let mut pending = Some(abandoned);
+        state.presentation = Presentation::Handoff(Box::new(abandoned));
         let mut serial = 31;
         let mut scheduled = None;
         for _ in 0..2 {
@@ -1277,7 +1278,6 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
                 &mut state,
                 &mut endpoints,
                 &mut commands,
-                &mut pending,
                 &mut serial,
                 ClientEndpointId::Local,
                 None,
@@ -1288,10 +1288,10 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
             .expect("test precondition");
         }
         assert_eq!(serial, 32, "repeated Local selection must coalesce");
-        let local = pending.as_mut().expect("test precondition");
-        assert_eq!(local.target(), &ClientEndpointId::Local);
         assert!(!endpoints.active_surface_available());
-        assert!(state.presentation_frozen);
+        assert!(state.presentation.frames_frozen());
+        let local = state.presentation.handoff_mut().expect("test precondition");
+        assert_eq!(local.target(), &ClientEndpointId::Local);
         let activations = local_sent
             .lock()
             .expect("test precondition")
@@ -1329,14 +1329,12 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
         let mut state = ClientState::test_new();
         *state.shell = shell;
         let mut commands = EndpointCommands::default();
-        let mut pending = None;
         let mut serial = 40;
         let mut scheduled = None;
         begin_endpoint_activation(
             &mut state,
             &mut endpoints,
             &mut commands,
-            &mut pending,
             &mut serial,
             endpoint(),
             None,
@@ -1363,7 +1361,6 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             &mut state,
             &mut endpoints,
             &mut commands,
-            &mut pending,
             &mut serial,
             ClientEndpointId::Local,
             Some(crate::shell::ClientEndpointFocusTarget::Workspace(
@@ -1375,12 +1372,15 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
         )
         .expect("test precondition");
         assert_eq!(
-            pending.as_ref().map(PendingEndpointActivation::target),
+            state
+                .presentation
+                .handoff()
+                .map(PendingEndpointActivation::target),
             Some(&endpoint())
         );
         assert!(remote_sent.lock().expect("test precondition").is_empty());
         assert_eq!(serial, 41);
-        assert!(state.deferred_local_activation.is_some());
+        assert!(state.deferred_local.is_some());
         assert!(take_ready_local_activation(&mut state, &endpoints).is_none());
         if !replaced_generation {
             endpoints.insert(
@@ -1420,7 +1420,6 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             &mut state,
             &mut endpoints,
             &mut commands,
-            &mut pending,
             &mut serial,
             endpoint_id,
             target,
@@ -1430,12 +1429,16 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
         )
         .expect("test precondition");
         assert_eq!(
-            pending.as_ref().expect("test precondition").target(),
+            state
+                .presentation
+                .handoff()
+                .expect("test precondition")
+                .target(),
             &ClientEndpointId::Local
         );
         assert_eq!(serial, 42);
         assert!(!endpoints.active_surface_available());
-        assert!(state.deferred_local_activation.is_none());
+        assert!(state.deferred_local.is_none());
     }
 }
 
@@ -1448,7 +1451,6 @@ fn newer_remote_selection_cancels_deferred_local_selection() {
     let mut state = ClientState::test_new();
     *state.shell = shell;
     let mut commands = EndpointCommands::default();
-    let mut pending = None;
     let mut serial = 50;
     let mut scheduled = None;
     endpoints.disconnect(&ClientEndpointId::Local);
@@ -1457,7 +1459,6 @@ fn newer_remote_selection_cancels_deferred_local_selection() {
             &mut state,
             &mut endpoints,
             &mut commands,
-            &mut pending,
             &mut serial,
             endpoint_id.clone(),
             None,
@@ -1466,15 +1467,116 @@ fn newer_remote_selection_cancels_deferred_local_selection() {
             &mut scheduled,
         )
         .expect("test precondition");
-        assert_eq!(
-            state.deferred_local_activation.is_some(),
-            endpoint_id.is_local()
-        );
+        assert_eq!(state.deferred_local.is_some(), endpoint_id.is_local());
     }
     assert_eq!(
-        pending.as_ref().expect("test precondition").target(),
+        state
+            .presentation
+            .handoff()
+            .expect("test precondition")
+            .target(),
         &endpoint()
     );
+}
+
+#[test]
+fn picking_the_active_endpoint_reproves_it_only_while_nothing_owns_the_presentation() {
+    use crate::{
+        ClientState, Presentation, endpoint::commands::EndpointCommands,
+        shell_runtime::begin_endpoint_activation,
+    };
+    let (shell, mut endpoints, local_sent, _) = shell_and_registry();
+    let mut state = ClientState::test_new();
+    *state.shell = shell;
+    let mut commands = EndpointCommands::default();
+    let mut serial = 60;
+    let mut scheduled = None;
+    let mut pick_local = |state: &mut ClientState, endpoints: &mut EndpointRegistry| {
+        begin_endpoint_activation(
+            state,
+            endpoints,
+            &mut commands,
+            &mut serial,
+            ClientEndpointId::Local,
+            None,
+            false,
+            Instant::now(),
+            &mut scheduled,
+        )
+        .expect("test precondition");
+    };
+
+    // Local owns the presentation: picking it again changes nothing.
+    pick_local(&mut state, &mut endpoints);
+    assert!(state.presentation.owned());
+    assert!(local_sent.lock().expect("test precondition").is_empty());
+
+    // Nothing owns it although Local kept its surface: the same pick re-proves Local.
+    state.presentation = Presentation::Unavailable;
+    pick_local(&mut state, &mut endpoints);
+    assert!(state.presentation.frames_frozen());
+    assert_eq!(
+        state
+            .presentation
+            .handoff()
+            .map(PendingEndpointActivation::target),
+        Some(&ClientEndpointId::Local)
+    );
+    assert_eq!(
+        local_sent
+            .lock()
+            .expect("test precondition")
+            .iter()
+            .filter_map(surface_set_active)
+            .collect::<Vec<_>>(),
+        vec![true]
+    );
+    assert_eq!(serial, 61);
+}
+
+#[test]
+fn chrome_frames_pass_an_unavailable_freeze_but_not_a_handoff() {
+    use crate::{ClientState, Presentation};
+    let (shell, mut endpoints, _, _) = shell_and_registry();
+    let activation = PendingEndpointActivation::begin(
+        &shell,
+        &mut endpoints,
+        &endpoint(),
+        None,
+        resize(),
+        70,
+        Instant::now(),
+    )
+    .expect("test precondition");
+    let mut state = ClientState::test_new();
+    *state.shell = shell;
+    let compose = |state: &mut ClientState| {
+        let (cols, rows) = (
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        );
+        state
+            .shell
+            .compose(cols, rows)
+            .expect("test shell composes")
+    };
+    state.presentation = Presentation::Handoff(Box::new(activation));
+    state.request_repaint();
+
+    // During a handoff that has not committed a pair, the source frame stays authoritative.
+    let frame = compose(&mut state);
+    state.present_chrome(frame);
+    assert!(
+        state.repaint_pending,
+        "a handoff freeze must hold the frame back"
+    );
+
+    // With no proven owner, machine statuses show while pane output stays frozen.
+    state.presentation = Presentation::Unavailable;
+    let frame = compose(&mut state);
+    state.present_chrome(frame);
+    assert!(!state.repaint_pending, "the chrome frame was presented");
+    assert!(state.presentation.frames_frozen());
 }
 
 #[test]

@@ -57,6 +57,17 @@ enum SnapshotHistoryPlan {
     RetryAfterWrite,
 }
 
+/// What a save does to the history file.
+#[derive(Clone, Copy)]
+enum HistoryIntent<'a> {
+    /// Delete it: history is not persisted.
+    Remove,
+    /// Replace it, unless it already holds exactly these bytes.
+    Write(&'a SessionHistorySnapshot),
+    /// The caller knows it already holds the right history.
+    Keep,
+}
+
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
 pub struct SessionWriter {
     path: PathBuf,
@@ -128,6 +139,44 @@ impl SessionWriter {
         history: Option<&SessionHistorySnapshot>,
         now: SystemTime,
     ) -> io::Result<()> {
+        let history = history.map_or(HistoryIntent::Remove, HistoryIntent::Write);
+        self.save_with(snapshot, history, now)
+    }
+
+    /// Saves the layout and leaves the history file as it is. Only right when
+    /// [`history_is_current`] and the history is known to be the one the file
+    /// holds.
+    ///
+    /// [`history_is_current`]: Self::history_is_current
+    pub fn save_keeping_history(
+        &mut self,
+        snapshot: &SessionSnapshot,
+        now: SystemTime,
+    ) -> io::Result<()> {
+        self.save_with(snapshot, HistoryIntent::Keep, now)
+    }
+
+    /// Whether the history file is still exactly what this writer last put on
+    /// disk (one `stat`), so a caller that knows its history has not changed
+    /// since may skip assembling it.
+    pub fn history_is_current(&self) -> bool {
+        let Some(written) = &self.written_history else {
+            return false;
+        };
+        let history_path =
+            super::io::session_history_path(super::io::containing_directory(&self.path));
+        HistoryFileStamp::read(&history_path)
+            .ok()
+            .flatten()
+            .is_some_and(|file| file == written.file)
+    }
+
+    fn save_with(
+        &mut self,
+        snapshot: &SessionSnapshot,
+        history: HistoryIntent<'_>,
+        now: SystemTime,
+    ) -> io::Result<()> {
         if !self.may_write() {
             return Ok(());
         }
@@ -143,7 +192,7 @@ impl SessionWriter {
         &mut self,
         result: io::Result<super::io::Published>,
         snapshot: &SessionSnapshot,
-        history: Option<&SessionHistorySnapshot>,
+        history: HistoryIntent<'_>,
         snapshot_history_plan: SnapshotHistoryPlan,
         now: SystemTime,
     ) -> io::Result<()> {
@@ -235,15 +284,15 @@ impl SessionWriter {
     /// Writes the history unless the file already holds exactly these bytes
     /// from this writer's previous save. The history names the layout it
     /// pairs with, so a changed layout always changes the bytes.
-    fn save_history(
-        &mut self,
-        history_path: &Path,
-        history: Option<&SessionHistorySnapshot>,
-    ) -> io::Result<()> {
+    fn save_history(&mut self, history_path: &Path, history: HistoryIntent<'_>) -> io::Result<()> {
         use sha2::{Digest, Sha256};
-        let Some(history) = history else {
-            self.written_history = None;
-            return super::io::save_history_to_path(history_path, None);
+        let history = match history {
+            HistoryIntent::Keep => return Ok(()),
+            HistoryIntent::Remove => {
+                self.written_history = None;
+                return super::io::save_history_to_path(history_path, None);
+            }
+            HistoryIntent::Write(history) => history,
         };
         let super::io::SerializedHistory { json, trimmed } = super::io::serialize_history(history)?;
         self.note_history_trim(history_path, trimmed);
@@ -591,7 +640,7 @@ impl SessionWriter {
         self.finish_save_with_snapshot_plan(
             result,
             snapshot,
-            history,
+            history.map_or(HistoryIntent::Remove, HistoryIntent::Write),
             SnapshotHistoryPlan::RetryAfterWrite,
             UNIX_EPOCH,
         )

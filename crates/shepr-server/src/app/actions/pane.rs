@@ -17,33 +17,18 @@ impl AppState {
             .find_tab_index_for_pane(pane_id)?;
         let focus_changed = self.focus_pane_in_workspace(ws_idx, pane_id);
         let tab = self.workspaces.get(ws_idx)?.tabs().get(tab_idx)?;
-        let pane_count = tab.layout().pane_count();
         let zoomed = tab.zoomed();
-        if pane_count <= 1 {
-            return Some(PaneZoomOutcome {
-                changed: false,
-                focus_changed,
-                reason: Some(PaneZoomNoopReason::SinglePane),
-                zoomed,
-            });
-        }
-
         let desired = match command {
             PaneZoomCommand::Toggle => !zoomed,
             PaneZoomCommand::On => true,
             PaneZoomCommand::Off => false,
         };
-        let reason = match (command, zoomed) {
-            (PaneZoomCommand::On, true) => Some(PaneZoomNoopReason::AlreadyZoomed),
-            (PaneZoomCommand::Off, false) => Some(PaneZoomNoopReason::AlreadyUnzoomed),
-            _ => None,
-        };
-        if reason.is_some() {
+        // A lone pane has nothing to zoom over, and a tab already in the
+        // asked state stays as it is.
+        if tab.layout().pane_count() <= 1 || desired == zoomed {
             return Some(PaneZoomOutcome {
                 changed: false,
                 focus_changed,
-                reason,
-                zoomed,
             });
         }
 
@@ -54,42 +39,31 @@ impl AppState {
         {
             return None;
         }
-        let zoomed = desired;
         self.mark_session_dirty();
         Some(PaneZoomOutcome {
             changed: true,
             focus_changed,
-            reason: None,
-            zoomed,
         })
     }
 }
 
 #[cfg(test)]
 impl AppState {
-    pub fn navigate_pane(&mut self, direction: NavDirection) {
-        let Some(ws_idx) = self.active_index() else {
-            return;
-        };
-        let Some(tab) = self
-            .workspaces
-            .get(ws_idx)
-            .map(shepr_mux::workspace::Workspace::active_tab)
-        else {
-            return;
-        };
-        let panes = if tab.zoomed() {
-            tab.layout()
-                .panes(shepr_mux::workspace::layout_rect(self.view.terminal_area))
-        } else {
-            self.view
-                .pane_infos
-                .iter()
-                .cloned()
-                .map(Into::into)
-                .collect()
-        };
+    /// The focused tab of the session as (workspace index, tab index), with
+    /// its tiled layout in the tab's layout area. Direction uses the tiled
+    /// layout even when the tab is zoomed, as the API does.
+    fn focused_tab_layout(&self) -> Option<(usize, usize, Vec<shepr_core::layout::PaneInfo>)> {
+        let ws_idx = self.active_index()?;
+        let workspace = self.workspaces.get(ws_idx)?;
+        let tab_idx = workspace.active_tab_index();
+        let area = shepr_mux::workspace::layout_rect(self.tab_layout_area(ws_idx, tab_idx));
+        Some((ws_idx, tab_idx, workspace.active_tab().layout().panes(area)))
+    }
 
+    pub fn navigate_pane(&mut self, direction: NavDirection) {
+        let Some((ws_idx, _, panes)) = self.focused_tab_layout() else {
+            return;
+        };
         if let Some(focused) = panes.iter().find(|p| p.is_focused)
             && let Some(target) = find_in_direction(focused, direction, &panes)
         {
@@ -98,28 +72,9 @@ impl AppState {
     }
 
     pub fn swap_pane(&mut self, direction: NavDirection) -> bool {
-        let Some(ws_idx) = self.active_index() else {
+        let Some((ws_idx, tab_idx, panes)) = self.focused_tab_layout() else {
             return false;
         };
-        let Some(tab) = self
-            .workspaces
-            .get(ws_idx)
-            .map(shepr_mux::workspace::Workspace::active_tab)
-        else {
-            return false;
-        };
-        let panes = if tab.zoomed() {
-            tab.layout()
-                .panes(shepr_mux::workspace::layout_rect(self.view.terminal_area))
-        } else {
-            self.view
-                .pane_infos
-                .iter()
-                .cloned()
-                .map(Into::into)
-                .collect()
-        };
-
         let Some(focused) = panes.iter().find(|p| p.is_focused) else {
             return false;
         };
@@ -127,49 +82,33 @@ impl AppState {
             return false;
         };
         let source = focused.id;
-        let Some(tab_idx) = self
-            .workspaces
-            .get(ws_idx)
-            .map(shepr_mux::workspace::Workspace::active_tab_index)
-        else {
-            return false;
-        };
         let changed = self
             .workspaces
             .get_mut(ws_idx)
             .is_some_and(|workspace| workspace.swap_panes_in_tab(tab_idx, source, target));
         if changed {
             self.mark_session_dirty();
-            true
-        } else {
-            false
         }
+        changed
     }
 
     pub fn resize_pane(&mut self, direction: NavDirection) {
-        if let Some(first) = self.view.pane_infos.first() {
-            let area = self
-                .view
-                .pane_infos
-                .iter()
-                .fold(first.rect, |acc, p| acc.union(p.rect));
-            if let Some(workspace_index) = self.active_index() {
-                let resized = self
-                    .workspaces
-                    .get_mut(workspace_index)
-                    .is_some_and(|workspace| {
-                        let tab_index = workspace.active_tab_index();
-                        workspace.resize_focused_pane_in_tab(
-                            tab_index,
-                            direction,
-                            0.05,
-                            shepr_mux::workspace::layout_rect(area),
-                        )
-                    });
-                if resized {
-                    self.mark_session_dirty();
-                }
-            }
+        let Some(ws_idx) = self.active_index() else {
+            return;
+        };
+        let Some(tab_idx) = self
+            .workspaces
+            .get(ws_idx)
+            .map(shepr_mux::workspace::Workspace::active_tab_index)
+        else {
+            return;
+        };
+        let area = shepr_mux::workspace::layout_rect(self.tab_layout_area(ws_idx, tab_idx));
+        let resized = self.workspaces.get_mut(ws_idx).is_some_and(|workspace| {
+            workspace.resize_focused_pane_in_tab(tab_idx, direction, 0.05, area)
+        });
+        if resized {
+            self.mark_session_dirty();
         }
     }
 }

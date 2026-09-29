@@ -7,7 +7,8 @@
 //!
 //! The title is rendered on the server so `{hostname}` names the host the panes
 //! actually live on, not the machine a thin remote client runs on. The server
-//! pushes the result to the foreground client, which writes the `OSC 0`.
+//! renders it for each client's own view (`window_title_for`) and pushes it to
+//! that client, which writes the `OSC 0`.
 
 use super::App;
 use shepr_config::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken};

@@ -134,9 +134,8 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(),
 fn install_pending_activation(
     state: &mut ClientState,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
-    pending: &mut Option<endpoint::PendingEndpointActivation>,
     next_surface_serial: &mut u64,
-    activation: endpoint::PendingEndpointActivation,
+    activation: Box<endpoint::PendingEndpointActivation>,
 ) {
     let retired = activation
         .source_command_lane()
@@ -145,8 +144,7 @@ fn install_pending_activation(
         state.shell.cancel_endpoint_request(&request_id);
     }
     *next_surface_serial = next_surface_serial.saturating_add(1);
-    state.freeze_presentation();
-    *pending = Some(activation);
+    state.presentation = Presentation::Handoff(activation);
 }
 
 fn local_activation_metadata_ready(
@@ -174,7 +172,7 @@ pub(super) fn take_ready_local_activation(
         return None;
     }
     state
-        .deferred_local_activation
+        .deferred_local
         .take()
         .map(|intent| ClientLoopEvent::ActivateEndpoint {
             endpoint_id: intent.endpoint_id,
@@ -187,7 +185,6 @@ pub(super) fn begin_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
-    pending: &mut Option<endpoint::PendingEndpointActivation>,
     next_surface_serial: &mut u64,
     endpoint_id: endpoint::ClientEndpointId,
     target: Option<shell::ClientEndpointFocusTarget>,
@@ -195,9 +192,9 @@ pub(super) fn begin_endpoint_activation(
     now: std::time::Instant,
     scheduled_activation: &mut Option<ClientLoopEvent>,
 ) -> Result<(), ClientError> {
-    state.deferred_local_activation = None;
+    state.deferred_local = None;
     if endpoint_id.is_local() && !local_activation_metadata_ready(state, endpoints) {
-        state.deferred_local_activation = Some(endpoint::EndpointActivationIntent {
+        state.deferred_local = Some(endpoint::EndpointActivationIntent {
             endpoint_id,
             target,
         });
@@ -207,28 +204,32 @@ pub(super) fn begin_endpoint_activation(
         return Ok(());
     }
     let replace_pending = endpoint_id.is_local()
-        && pending
-            .as_ref()
+        && state
+            .presentation
+            .handoff()
             .is_some_and(|activation| !activation.can_retarget(&endpoint_id));
-    if !replace_pending && let Some(activation) = pending.as_mut() {
+    if !replace_pending && let Some(activation) = state.presentation.handoff_mut() {
         if activation.can_retarget(&endpoint_id) {
             let retarget_error = activation.retarget(target, endpoints).err();
             if let Some(error) = retarget_error {
-                rollback_endpoint_activation(state, endpoints, pending, &error, false, now);
+                rollback_endpoint_activation(state, endpoints, &error, false, now);
             }
         } else {
             // Once rollback starts, even a request for the original target is a new intent.
             // Retain it until restoration finishes; Local can instead abandon this handoff.
             let outcome = activation.supersede_at(endpoint_id, target, endpoints, now);
             if let endpoint::ActivationRollback::Unavailable(message) = outcome {
-                *pending = None;
+                state.end_handoff(Presentation::Unavailable);
                 present_handoff_unavailable(state, message);
             }
         }
         return Ok(());
     }
+    // Only an endpoint that owns the presentation is already active. With no proven owner
+    // (`Unavailable`) a pick of the active endpoint re-proves ownership through a handoff.
     let already_active = !replace_pending
         && !force
+        && state.presentation.owned()
         && endpoints.active_id() == &endpoint_id
         && endpoints
             .connection(&endpoint_id)
@@ -277,7 +278,7 @@ pub(super) fn begin_endpoint_activation(
     .and_then(|activation| {
         // Preserve the old transaction if Local fails preflight. After retiring it,
         // all send failures belong to the prepared replacement's rollback path.
-        if replace_pending && let Some(previous) = pending.take() {
+        if replace_pending && let Some(previous) = state.presentation.take_handoff() {
             previous.abandon(endpoints);
         }
         activation.start_at(endpoints, now)
@@ -285,9 +286,8 @@ pub(super) fn begin_endpoint_activation(
         Ok(activation) => install_pending_activation(
             state,
             endpoint_commands,
-            pending,
             next_surface_serial,
-            activation,
+            Box::new(activation),
         ),
         Err(endpoint::ActivationBeginError::Preflight(error)) => {
             let message = format!("{}: {error}", state.shell.endpoint_label(&endpoint_id));
@@ -297,21 +297,9 @@ pub(super) fn begin_endpoint_activation(
             // A send error is not evidence that its peer did not observe the write. Freeze and
             // retain the lifecycle object before rollback so no source or target output can be
             // projected until one ownership path has been proved again.
-            install_pending_activation(
-                state,
-                endpoint_commands,
-                pending,
-                next_surface_serial,
-                *activation,
-            );
-            rollback_endpoint_activation(
-                state,
-                endpoints,
-                pending,
-                &format!("{}: {error}", state.shell.endpoint_label(&endpoint_id)),
-                false,
-                now,
-            );
+            install_pending_activation(state, endpoint_commands, next_surface_serial, activation);
+            let error = format!("{}: {error}", state.shell.endpoint_label(&endpoint_id));
+            rollback_endpoint_activation(state, endpoints, &error, false, now);
         }
     }
     Ok(())
@@ -320,19 +308,19 @@ pub(super) fn begin_endpoint_activation(
 pub(super) fn complete_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
-    pending: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     now: std::time::Instant,
 ) -> Result<Option<ClientLoopEvent>, ClientError> {
-    let sync_endpoint = pending
-        .as_ref()
+    let sync_endpoint = state
+        .presentation
+        .handoff()
         .and_then(endpoint::PendingEndpointActivation::presentation_sync_endpoint)
         .cloned();
     if let Some(endpoint_id) = sync_endpoint.as_ref() {
         state.replay_host_theme(endpoints, endpoint_id);
     }
     let completion = {
-        let Some(activation) = pending.as_mut() else {
+        let Some(activation) = state.presentation.handoff_mut() else {
             return Ok(None);
         };
         match activation.complete_at(&mut state.shell, endpoints, now) {
@@ -348,9 +336,11 @@ pub(super) fn complete_endpoint_activation(
         completion,
         endpoint::ActivationCompletion::AwaitingPresentationSync { .. }
     ) {
-        // The coherent target frame can replace the frozen source now, but the registry keeps
-        // pane input disabled until a second projection epoch has replayed host modes/effects.
-        state.unfreeze_presentation();
+        // The coherent target frame replaces the frozen source now (the handoff's phase no
+        // longer freezes frames), but the registry keeps pane input disabled until a second
+        // projection epoch has replayed host modes/effects. Written in full: a resize or
+        // metadata event may have happened while frozen.
+        state.request_repaint();
         let frame = state.shell.compose(
             state.reported_geometry.cols(),
             state.reported_geometry.rows(),
@@ -364,9 +354,11 @@ pub(super) fn complete_endpoint_activation(
         return Ok(None);
     }
 
-    let requested_surface_size = pending
-        .take()
-        .map(|activation| activation.requested_surface_size());
+    let requested_surface_size = state
+        .presentation
+        .handoff()
+        .map(endpoint::PendingEndpointActivation::requested_surface_size);
+    state.end_handoff(Presentation::Owned);
     endpoints.unfreeze_input();
     let successor = match completion {
         endpoint::ActivationCompletion::RestoredSource {
@@ -384,7 +376,6 @@ pub(super) fn complete_endpoint_activation(
         | endpoint::ActivationCompletion::AwaitingPresentationSync { .. }
         | endpoint::ActivationCompletion::AwaitingPresentationEffects => None,
     };
-    state.unfreeze_presentation();
     if successor.is_none() {
         correct_committed_surface_size(state, endpoints, requested_surface_size);
         let active_endpoint = endpoints.active_id().clone();
@@ -401,7 +392,7 @@ pub(super) fn complete_endpoint_activation(
         state.present_frame(frame);
     }
     // A Local selection made while reconnecting is newer than this transaction's successor.
-    if let Some(intent) = successor.filter(|_| state.deferred_local_activation.is_none()) {
+    if let Some(intent) = successor.filter(|_| state.deferred_local.is_none()) {
         return Ok(Some(ClientLoopEvent::ActivateEndpoint {
             endpoint_id: intent.endpoint_id,
             target: intent.target,
@@ -450,17 +441,20 @@ fn committed_resize(
         })
 }
 
+/// Reports that the committed endpoint cannot present. Without a handoff in flight nothing owns
+/// the presentation any more; a handoff in flight keeps it, since its own rollback decides
+/// what owns it next. The notice is client chrome and shows through the freeze.
 pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: String) {
-    // An unavailable committed endpoint has no presentation lease. Keep all pane input and late
-    // source output blocked, while allowing this client-owned chrome frame through the freeze.
-    state.freeze_presentation();
+    if !state.presentation.handoff_in_flight() {
+        state.presentation = Presentation::Unavailable;
+    }
     state.shell.receive_endpoint_unavailable(message);
     let frame = state.shell.compose(
         state.reported_geometry.cols(),
         state.reported_geometry.rows(),
     );
     if let Some(frame) = frame {
-        state.present_frozen_chrome(frame);
+        state.present_chrome_through_freeze(frame);
     }
 }
 
@@ -475,22 +469,21 @@ fn handoff_interrupted_notice(label: &str, notice: &str) -> String {
 pub(super) fn rollback_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
-    pending: &mut Option<endpoint::PendingEndpointActivation>,
     error: &str,
     source_release_rejected: bool,
     now: std::time::Instant,
 ) {
-    let Some(activation) = pending.as_mut() else {
+    let Some(activation) = state.presentation.handoff_mut() else {
         return;
     };
-    match activation.rollback_at(endpoints, error, source_release_rejected, now) {
-        endpoint::ActivationRollback::Pending => state.freeze_presentation(),
-        endpoint::ActivationRollback::Unavailable(message) => {
-            *pending = None;
-            // No endpoint has been proven safe to present. Keep pane input frozen, but render
-            // the client-owned unavailable chrome rather than silently swallowing the error.
-            present_handoff_unavailable(state, message);
-        }
+    // A pending rollback has moved the handoff into a phase that freezes frames again.
+    if let endpoint::ActivationRollback::Unavailable(message) =
+        activation.rollback_at(endpoints, error, source_release_rejected, now)
+    {
+        // No endpoint has been proven safe to present. Keep pane input frozen, but render
+        // the client-owned unavailable chrome rather than silently swallowing the error.
+        state.end_handoff(Presentation::Unavailable);
+        present_handoff_unavailable(state, message);
     }
 }
 
@@ -499,31 +492,22 @@ pub(super) fn handle_endpoint_disconnect(
     endpoints: &mut endpoint::EndpointRegistry,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     supervisors: &mut endpoint::EndpointSupervisors,
-    pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_id: &endpoint::ClientEndpointId,
     generation: u64,
     now: std::time::Instant,
     notice: &str,
 ) -> bool {
     supervisors.disconnected(endpoint_id, generation, now);
-    if let Some(pending) = pending_activation
-        .as_mut()
-        .filter(|pending| pending.involves_endpoint(endpoint_id))
+    let interrupted = handoff_interrupted_notice(state.shell.endpoint_label(endpoint_id), notice);
+    if let Some(activation) = state
+        .presentation
+        .handoff_mut()
+        .filter(|activation| activation.involves_endpoint(endpoint_id))
+        && let endpoint::ActivationRollback::Unavailable(error) =
+            activation.endpoint_disconnected_at(endpoints, endpoint_id, interrupted, now)
     {
-        let label = state.shell.endpoint_label(endpoint_id);
-        let outcome = pending.endpoint_disconnected_at(
-            endpoints,
-            endpoint_id,
-            handoff_interrupted_notice(label, notice),
-            now,
-        );
-        match outcome {
-            endpoint::ActivationRollback::Pending => {}
-            endpoint::ActivationRollback::Unavailable(error) => {
-                *pending_activation = None;
-                present_handoff_unavailable(state, error);
-            }
-        }
+        state.end_handoff(Presentation::Unavailable);
+        present_handoff_unavailable(state, error);
     }
     let endpoint_was_active = endpoints.active_id() == endpoint_id;
     let cancelled = endpoint_commands.disconnect(endpoint_id);
@@ -540,55 +524,60 @@ pub(super) fn handle_endpoint_disconnect(
         state.reported_geometry.rows(),
     ) {
         // A non-active machine going offline only changes its machine-list status.
-        state.present_chrome(frame, pending_activation.is_some());
+        state.present_chrome(frame);
     }
     endpoint_was_active
 }
 
-/// A freeze with no handoff in flight is one `present_handoff_unavailable` left: no endpoint
-/// has proved it owns the presentation, so pane input and output stay blocked. Usually the
-/// owner's connection is gone, and its reconnection (a connection without a surface) or the
-/// user's next pick starts the handoff that ends the freeze. When the selected endpoint is the
-/// active one and its connection is still marked surface-active, neither happens: automatic
-/// activation only targets connections without a surface, and picking the machine that is
-/// already active is a no-op. Pane input would then stay frozen until the user picked some
-/// other machine.
-///
-/// This schedules one forced handoff to that endpoint, which re-proves ownership with a
-/// fresh surface round trip and commits (unfreezing) or reports why not. It fires once per
-/// connection generation and frozen episode, so a handoff that fails again cannot loop.
-pub(super) fn stale_freeze_recovery(
+/// Whether the registry's active endpoint owns the presentation: nothing short of `Owned` with
+/// a live surface counts, so a handoff that ends `Unavailable` is judged failed even when its
+/// endpoint's connection kept its surface.
+pub(super) fn active_endpoint_owns_presentation(
     state: &ClientState,
     endpoints: &endpoint::EndpointRegistry,
-    selected: &endpoint::ClientEndpointId,
-    handoff_busy: bool,
-    attempted: &mut Option<(endpoint::ClientEndpointId, u64)>,
+) -> bool {
+    state.presentation.owned()
+        && endpoints
+            .connection(endpoints.active_id())
+            .is_some_and(|connection| connection.surface_active)
+}
+
+/// The handoff the client starts on its own, judged once no handoff work is in flight: to the
+/// selected endpoint when it does not own the presentation (its connection has no surface, or
+/// nothing owns the presentation) and a handoff could be prepared (metadata for the selected
+/// connection and, when the active one keeps a surface, for that too). That covers a reconnected
+/// endpoint and re-proving an endpoint whose connection survived an `Unavailable`. A handoff
+/// that already failed on this connection is not retried (`EndpointSelectionTracker::suppresses`)
+/// until a new connection or an explicit pick, so a failing one cannot loop.
+pub(super) fn automatic_activation(
+    state: &ClientState,
+    endpoints: &endpoint::EndpointRegistry,
+    selection: &endpoint::selection::EndpointSelectionTracker,
 ) -> Option<ClientLoopEvent> {
-    if !state.presentation_frozen {
-        *attempted = None;
+    let selected = selection.selected_endpoint();
+    let connection = endpoints.connection(&selected)?;
+    let generation = connection.generation.get();
+    let owns_presentation = connection.surface_active && state.presentation.owned();
+    if owns_presentation || selection.suppresses(&selected, Some(generation)) {
         return None;
     }
-    if handoff_busy || endpoints.active_id() != selected {
-        return None;
-    }
-    let shell = &state.shell;
-    let generation = endpoints
-        .connection(selected)
-        .filter(|connection| connection.surface_active)?
-        .generation
-        .get();
-    // Without metadata for this connection the handoff could not even be prepared; the
-    // snapshot that brings it also runs the ordinary activation check.
-    shell.endpoint_snapshot_identity(selected, generation)?;
-    let key = (selected.clone(), generation);
-    if attempted.as_ref() == Some(&key) {
-        return None;
-    }
-    *attempted = Some(key);
-    Some(ClientLoopEvent::ActivateEndpoint {
-        endpoint_id: selected.clone(),
+    state
+        .shell
+        .endpoint_snapshot_identity(&selected, generation)?;
+    let active_id = endpoints.active_id();
+    let source_ready = endpoints
+        .connection(active_id)
+        .filter(|active| active.surface_active)
+        .is_none_or(|active| {
+            state
+                .shell
+                .endpoint_snapshot_identity(active_id, active.generation.get())
+                .is_some()
+        });
+    source_ready.then_some(ClientLoopEvent::ActivateEndpoint {
+        endpoint_id: selected,
         target: None,
-        force: true,
+        force: false,
     })
 }
 
@@ -608,7 +597,7 @@ pub(super) fn install_client_shell_snapshot(
     // snapshot and pane surface are the ones frozen. Metadata is cached instead and projected
     // when the next handoff commits.
     let project_snapshot = !projection_pending
-        && !state.presentation_frozen
+        && !state.presentation.frames_frozen()
         && endpoints.active_id() == endpoint_id
         && connection.surface_active;
     let shell = &mut state.shell;
@@ -660,7 +649,7 @@ pub(super) fn install_client_shell_snapshot(
         if projection_pending {
             state.present_frame(frame);
         } else {
-            state.present_frozen_chrome(frame);
+            state.present_chrome_through_freeze(frame);
         }
     }
     Ok(())
@@ -671,7 +660,6 @@ pub(super) fn finish_client_shell_input(
     outcome: shell::ClientShellInput,
     frame: Option<shepr_protocol::FrameData>,
     endpoints: &mut endpoint::EndpointRegistry,
-    pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     scheduled_activation: &mut Option<ClientLoopEvent>,
     now: std::time::Instant,
@@ -691,16 +679,9 @@ pub(super) fn finish_client_shell_input(
             state.reported_geometry.cell_height(),
             state.reported_geometry.exact,
         );
-        if let Some(activation) = pending_activation.as_mut() {
+        if let Some(activation) = state.presentation.handoff_mut() {
             if let Err(error) = activation.update_resize_at(&resize, endpoints, now) {
-                rollback_endpoint_activation(
-                    state,
-                    endpoints,
-                    pending_activation,
-                    &error,
-                    false,
-                    now,
-                );
+                rollback_endpoint_activation(state, endpoints, &error, false, now);
             }
         } else {
             // A failed send is recorded against the active endpoint; the client timer
@@ -743,17 +724,10 @@ pub(super) fn finish_client_shell_input(
     for request in outcome.requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
-            if let Some(activation) = pending_activation.as_mut() {
+            if let Some(activation) = state.presentation.handoff_mut() {
                 if let Err(error) = activation.update_host_theme_at(update.clone(), endpoints, now)
                 {
-                    rollback_endpoint_activation(
-                        state,
-                        endpoints,
-                        pending_activation,
-                        &error,
-                        false,
-                        now,
-                    );
+                    rollback_endpoint_activation(state, endpoints, &error, false, now);
                 }
                 continue;
             }
@@ -761,16 +735,9 @@ pub(super) fn finish_client_shell_input(
         // Host focus belongs to a pending target even when the source has gone offline or has
         // already had its surface revoked. Route it before the ordinary source-online gate.
         if let ClientMessage::ClientShellFocus { focused } = request {
-            if let Some(activation) = pending_activation.as_mut() {
+            if let Some(activation) = state.presentation.handoff_mut() {
                 if let Err(error) = activation.update_host_focus_at(focused, endpoints, now) {
-                    rollback_endpoint_activation(
-                        state,
-                        endpoints,
-                        pending_activation,
-                        &error,
-                        false,
-                        now,
-                    );
+                    rollback_endpoint_activation(state, endpoints, &error, false, now);
                 }
                 continue;
             }
@@ -783,19 +750,18 @@ pub(super) fn finish_client_shell_input(
         if !active_endpoint_online {
             continue;
         }
-        if pending_activation.is_some() {
+        if state.presentation.handoff_in_flight() {
             // Pane input and non-focus host effects do not cross the frozen handoff boundary.
             continue;
         }
         write_to_server(endpoints, &request).map_err(ClientError::ConnectionLost)?;
     }
     if let Some(frame) = frame {
-        // With no handoff in flight, input frames pass a freeze left by
-        // `present_handoff_unavailable` so mode changes, overlays and the machine list stay
-        // responsive while no endpoint owns presentation. That is sound because nothing moves
+        // While nothing owns the presentation, input frames pass the freeze so mode changes,
+        // overlays and the machine list stay responsive. That is sound because nothing moves
         // the pane projection while frozen (see `install_client_shell_snapshot` and the pane
         // surface arms of the client loop): the pane cells in this frame are the frozen ones.
-        state.present_chrome(frame, pending_activation.is_some());
+        state.present_chrome(frame);
     }
     Ok(false)
 }
@@ -878,7 +844,7 @@ mod tests {
         })
     }
 
-    fn is_forced_activation(
+    fn is_automatic_activation(
         event: Option<ClientLoopEvent>,
         expected: &endpoint::ClientEndpointId,
     ) -> bool {
@@ -887,94 +853,73 @@ mod tests {
             Some(ClientLoopEvent::ActivateEndpoint {
                 endpoint_id,
                 target: None,
-                force: true,
+                force: false,
             }) if &endpoint_id == expected
         )
     }
 
     #[test]
-    fn chrome_frames_pass_an_unavailable_freeze_but_not_a_handoff() {
-        let mut state = ClientState::test_new();
-        let compose = |state: &mut ClientState| {
-            let (cols, rows) = (
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-            );
-            state
-                .shell
-                .compose(cols, rows)
-                .expect("test shell composes")
-        };
-        state.freeze_presentation();
-        state.request_repaint();
-
-        // During a handoff the source frame stays authoritative.
-        let frame = compose(&mut state);
-        state.present_chrome(frame, true);
-        assert!(
-            state.repaint_pending,
-            "a handoff freeze must hold the frame back"
-        );
-
-        // With no handoff in flight (`present_handoff_unavailable`), machine statuses show.
-        let frame = compose(&mut state);
-        state.present_chrome(frame, false);
-        assert!(!state.repaint_pending, "the chrome frame was presented");
-        assert!(
-            state.presentation_frozen,
-            "pane input and output stay frozen"
-        );
-    }
-
-    #[test]
-    fn a_freeze_the_surface_owner_survived_is_recovered_once_per_episode() {
+    fn an_unavailable_owner_whose_connection_survived_is_reproved_once_per_connection() {
         let local = endpoint::ClientEndpointId::Local;
         let mut state = ClientState::test_new();
         state
             .shell
             .set_endpoint_snapshot_for_generation(&local, 1, snapshot("local-boot"));
         let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
-        let mut attempted = None;
+        let mut selection = endpoint::selection::EndpointSelectionTracker::new(Vec::new());
 
-        // Nothing to recover while presentation is live.
-        assert!(stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none());
+        // Nothing to do while Local owns the presentation.
+        assert!(active_endpoint_owns_presentation(&state, &endpoints));
+        assert!(automatic_activation(&state, &endpoints, &selection).is_none());
 
-        // `present_handoff_unavailable` froze presentation although Local still holds the
-        // surface. A handoff in flight owns the freeze and is left alone.
-        state.freeze_presentation();
-        assert!(stale_freeze_recovery(&state, &endpoints, &local, true, &mut attempted).is_none());
-        let other = endpoint::ClientEndpointId::Ssh(
-            endpoint::MachineLabel::parse("build").expect("test precondition"),
-        );
-        assert!(
-            stale_freeze_recovery(&state, &endpoints, &other, false, &mut attempted).is_none(),
-            "a different selected machine is the ordinary activation path's job"
-        );
-
-        assert!(is_forced_activation(
-            stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted),
-            &local
-        ));
-        assert!(
-            stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none(),
-            "a recovery that fails again must not loop"
-        );
-
-        // A later episode may recover again.
-        state.unfreeze_presentation();
-        assert!(stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none());
-        state.freeze_presentation();
-        assert!(is_forced_activation(
-            stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted),
+        // Nothing owns the presentation although Local kept its surface: re-prove it.
+        state.presentation = Presentation::Unavailable;
+        assert!(!active_endpoint_owns_presentation(&state, &endpoints));
+        assert!(is_automatic_activation(
+            automatic_activation(&state, &endpoints, &selection),
             &local
         ));
 
-        // A connection without a surface is reactivated by the ordinary snapshot path.
-        state.unfreeze_presentation();
-        stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted);
-        state.freeze_presentation();
+        // That handoff fails, leaving the presentation unavailable. The selection judges it
+        // failed although the connection kept its surface, and it is not retried.
+        assert!(selection.begin(&local, Some(1)));
+        assert_eq!(
+            selection.settle(
+                false,
+                endpoints.active_id(),
+                active_endpoint_owns_presentation(&state, &endpoints)
+            ),
+            endpoint::selection::SelectionOutcome::Reverted
+        );
+        assert!(
+            automatic_activation(&state, &endpoints, &selection).is_none(),
+            "a re-proof that fails again must not loop"
+        );
+
+        // A new connection may be tried once it has metadata.
+        endpoints.insert(
+            local.clone(),
+            NullTransport,
+            2,
+            true,
+            std::time::Instant::now(),
+        );
+        assert!(automatic_activation(&state, &endpoints, &selection).is_none());
+        state
+            .shell
+            .set_endpoint_snapshot_for_generation(&local, 2, snapshot("local-boot"));
+        assert!(is_automatic_activation(
+            automatic_activation(&state, &endpoints, &selection),
+            &local
+        ));
+
+        // A connection without a surface is activated whatever owns the presentation.
+        state.presentation = Presentation::Owned;
         endpoints.set_surface_active(&local, false);
-        assert!(stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none());
+        assert!(is_automatic_activation(
+            automatic_activation(&state, &endpoints, &selection),
+            &local
+        ));
     }
 
     #[test]

@@ -219,8 +219,8 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         &down.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "w1:p1"
+                &request.command,
+                EndpointCommand::PaneFocus(target) if target.pane_id == "w1:p1"
             )
     ));
     assert!(
@@ -264,8 +264,8 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     };
     let request_id = request.id.clone();
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneSelectionRead(params)
+        &request.command,
+        EndpointCommand::PaneSelectionRead(params)
             if params.pane_id == "w1:p1"
                 && params.anchor == shepr_api::schema::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
@@ -281,7 +281,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
-            Ok(shepr_api::schema::ResponseResult::PaneSelection {
+            Ok(EndpointReply::PaneSelection {
                 pane_id: "w1:p1".into(),
                 text: "LIV".into(),
             }),
@@ -381,7 +381,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     assert!(matches!(
         &copy.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
-            if matches!(request.method, shepr_api::schema::Method::PaneSelectionRead(
+            if matches!(request.command, EndpointCommand::PaneSelectionRead(
                 shepr_api::schema::PaneSelectionReadParams { .. }
             ))
     ));
@@ -394,7 +394,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
-            Ok(shepr_api::schema::ResponseResult::PaneSelection {
+            Ok(EndpointReply::PaneSelection {
                 pane_id: "w1:p1".into(),
                 text: "yIV".into(),
             }),
@@ -433,8 +433,8 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         &drag.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneScroll(params)
+                &request.command,
+                EndpointCommand::PaneScroll(params)
                     if params.offset_from_bottom == 3
             )
     ));
@@ -457,8 +457,8 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         &next_scroll[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneScroll(params)
+                &request.command,
+                EndpointCommand::PaneScroll(params)
                     if params.offset_from_bottom == 4
             )
     ));
@@ -511,8 +511,8 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         &page.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneScroll(params)
+                &request.command,
+                EndpointCommand::PaneScroll(params)
                     if params.offset_from_bottom == 1
             )
     ));
@@ -540,8 +540,8 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         panic!("latest queued scroll should follow the completed request");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneScroll(params)
+        &request.command,
+        EndpointCommand::PaneScroll(params)
             if params.pane_id == "w1:p1" && params.offset_from_bottom == 20
     ));
     let top_request_id = request.id.clone();
@@ -574,14 +574,14 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert!(copy.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(_))
+            if matches!(&request.command, EndpointCommand::PaneSelectionRead(_))
     )));
     assert!(copy.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneScroll(params)
+                &request.command,
+                EndpointCommand::PaneScroll(params)
                     if params.offset_from_bottom == 0
             )
     )));
@@ -640,7 +640,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
         assert!(copied.actions.iter().any(|action| matches!(
             action,
             ClientShellAction::Endpoint { request, .. }
-                if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+                if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
                     if (params.anchor.row, params.anchor.col) == range.0
                         && (params.cursor.row, params.cursor.col) == range.1)
         )));
@@ -695,7 +695,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     assert!(copy.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+            if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
                 if params.anchor == found.start
                     && params.cursor == found.end)
     )));
@@ -775,8 +775,8 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
     };
     let request_id = request.id.clone();
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneCopyMotion(params)
+        &request.command,
+        EndpointCommand::PaneCopyMotion(params)
             if params.cursor == origin
                 && params.motion == shepr_api::schema::PaneCopyMotion::NextWordStart
     ));
@@ -784,7 +784,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
-            Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
+            Ok(EndpointReply::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
                 cursor: shepr_api::schema::PaneTextPoint {
                     row: origin.row,
@@ -840,7 +840,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
     let outcome = state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &request_id,
-        Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
+        Ok(EndpointReply::PaneCopyMotion {
             pane_id: "w1:p1".into(),
             cursor: shepr_api::schema::PaneTextPoint {
                 row: origin.row,
@@ -933,8 +933,8 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     };
     let request_id = request.id.clone();
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneCopySearch(params)
+        &request.command,
+        EndpointCommand::PaneCopySearch(params)
             if params.pane_id == "w1:p1"
                 && params.query == "needle"
                 && params.direction == shepr_api::schema::PaneCopySearchDirection::Forward
@@ -979,8 +979,8 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneScroll(params)
+                &request.command,
+                EndpointCommand::PaneScroll(params)
                     if params.offset_from_bottom == 15
             )
     )));
@@ -988,7 +988,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .iter()
         .find_map(|action| match action {
             ClientShellAction::Endpoint { request, .. }
-                if matches!(request.method, shepr_api::schema::Method::PaneScroll(_)) =>
+                if matches!(request.command, EndpointCommand::PaneScroll(_)) =>
             {
                 Some(request.id.clone())
             }
@@ -1027,8 +1027,8 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     };
     let repeat_id = request.id.clone();
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneCopySearch(params)
+        &request.command,
+        EndpointCommand::PaneCopySearch(params)
             if params.direction == shepr_api::schema::PaneCopySearchDirection::Forward
                 && params.previous == Some(matches[0])
     ));
@@ -1041,7 +1041,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .into_parts();
     if let Some(scroll_id) = repeat_actions.iter().find_map(|action| match action {
         ClientShellAction::Endpoint { request, .. }
-            if matches!(request.method, shepr_api::schema::Method::PaneScroll(_)) =>
+            if matches!(request.command, EndpointCommand::PaneScroll(_)) =>
         {
             Some(request.id.clone())
         }
@@ -1071,8 +1071,8 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         panic!("reverse search should use endpoint search");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneCopySearch(params)
+        &request.command,
+        EndpointCommand::PaneCopySearch(params)
             if params.direction == shepr_api::schema::PaneCopySearchDirection::Backward
                 && params.previous == Some(matches[1])
     ));
@@ -1085,7 +1085,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .into_parts();
     if let Some(scroll_id) = reverse_actions.iter().find_map(|action| match action {
         ClientShellAction::Endpoint { request, .. }
-            if matches!(request.method, shepr_api::schema::Method::PaneScroll(_)) =>
+            if matches!(request.command, EndpointCommand::PaneScroll(_)) =>
         {
             Some(request.id.clone())
         }
@@ -1116,8 +1116,8 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneScroll(params)
+                &request.command,
+                EndpointCommand::PaneScroll(params)
                     if params.offset_from_bottom == 0
             )
     )));
@@ -1419,7 +1419,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     })]);
     assert!(
         matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-        if matches!(&request.method, shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "w1:p2"))
+        if matches!(&request.command, EndpointCommand::PaneFocus(target) if target.pane_id == "w1:p2"))
     );
 }
 
@@ -1955,8 +1955,8 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         panic!("navigator pane click should use endpoint API");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneFocus(target) if target.pane_id == "w1:p1"
+        &request.command,
+        EndpointCommand::PaneFocus(target) if target.pane_id == "w1:p1"
     ));
     assert!(state.overlay.is_none());
 }
@@ -2062,7 +2062,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert!(copy.requests.is_empty());
     assert!(
         matches!(&copy.actions[..], [ClientShellAction::Endpoint { request, .. }]
-        if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
+        if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
             if params.pane_id == "w1:p2"))
     );
 
@@ -2127,7 +2127,7 @@ fn retained_selection_copy_suppresses_key_repeats() {
     assert!(press.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
-            if matches!(request.method, shepr_api::schema::Method::PaneSelectionRead(_))
+            if matches!(request.command, EndpointCommand::PaneSelectionRead(_))
     )));
     let repeat = state.handle_raw_events(vec![RawInputEvent::Key(
         key.clone()
@@ -2178,7 +2178,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &first_id,
-            Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
+            Ok(EndpointReply::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
                 cursor: intermediate,
             }),
@@ -2188,8 +2188,8 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         &follow_up[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneCopyMotion(params)
+                &request.command,
+                EndpointCommand::PaneCopyMotion(params)
                     if params.cursor == intermediate
             )
     ));
@@ -2227,7 +2227,7 @@ fn queued_copy_keys_preserve_prefix_order() {
     state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &motion_id,
-        Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
+        Ok(EndpointReply::PaneCopyMotion {
             pane_id: "w1:p1".into(),
             cursor: origin,
         }),
@@ -2309,7 +2309,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &motion_id,
-            Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
+            Ok(EndpointReply::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
                 cursor: target,
             }),
@@ -2320,8 +2320,8 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(
-                &request.method,
-                shepr_api::schema::Method::PaneSelectionRead(params)
+                &request.command,
+                EndpointCommand::PaneSelectionRead(params)
                     if params.anchor == origin && params.cursor == target
             )
     )));
@@ -2422,7 +2422,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
-            Ok(shepr_api::schema::ResponseResult::PaneSelection {
+            Ok(EndpointReply::PaneSelection {
                 pane_id: "w1:p1".into(),
                 text: "hello world".into(),
             }),
@@ -2497,7 +2497,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         assert!(moved.actions.iter().any(|action| matches!(
             action,
             ClientShellAction::Endpoint { request, .. }
-                if matches!(&request.method, shepr_api::schema::Method::PaneScroll(params)
+                if matches!(&request.command, EndpointCommand::PaneScroll(params)
                     if params.pane_id == "w1:p1" && params.offset_from_bottom == 1)
         )));
         if selection_before_gap.is_some() {

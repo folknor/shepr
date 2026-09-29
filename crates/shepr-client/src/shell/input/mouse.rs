@@ -124,11 +124,13 @@ impl ClientShellState {
             .insert(pane_id.to_owned(), offset_from_bottom);
         self.pane_scroll_in_flight
             .insert(pane_id.to_owned(), serial);
-        if !self.push_endpoint_method_with_kind(
-            shepr_api::schema::Method::PaneScroll(shepr_api::schema::PaneScrollParams {
-                pane_id: pane_id.to_string(),
-                offset_from_bottom: offset_from_bottom as u64,
-            }),
+        if !self.push_endpoint_command_with_kind(
+            shepr_protocol::command::EndpointCommand::PaneScroll(
+                shepr_protocol::command::PaneScrollParams {
+                    pane_id: pane_id.to_string(),
+                    offset_from_bottom: offset_from_bottom as u64,
+                },
+            ),
             PendingEndpointKind::PaneScroll {
                 pane_id: pane_id.to_owned(),
                 serial,
@@ -144,7 +146,7 @@ impl ClientShellState {
         &mut self,
         pane_id: &shepr_protocol::PublicPaneId,
         serial: u64,
-        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
+        result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) -> bool {
@@ -153,7 +155,7 @@ impl ClientShellState {
         }
         self.pane_scroll_in_flight.remove(pane_id);
         let repaint = match result {
-            Ok(shepr_api::schema::ResponseResult::PaneInfo { pane })
+            Ok(shepr_protocol::command::EndpointReply::PaneInfo { pane })
                 if pane.pane_id == pane_id.as_str() =>
             {
                 if let Some(scroll) = pane.scroll
@@ -648,11 +650,11 @@ impl ClientShellState {
             .map(|(_, target)| target)
     }
 
-    fn workspace_move_method(
+    fn workspace_move_command(
         &self,
         source_workspace_id: &shepr_protocol::WorkspaceId,
         before_workspace_id: Option<&shepr_protocol::WorkspaceId>,
-    ) -> Option<shepr_api::schema::Method> {
+    ) -> Option<shepr_protocol::command::EndpointCommand> {
         let snapshot = self.snapshot.as_deref()?;
         let source = snapshot
             .workspaces
@@ -689,8 +691,8 @@ impl ClientShellState {
                         .position(|workspace| workspace.workspace_id == *target)
                 })
                 .unwrap_or(snapshot.workspaces.len());
-            Some(shepr_api::schema::Method::WorkspaceMove(
-                shepr_api::schema::WorkspaceMoveParams {
+            Some(shepr_protocol::command::EndpointCommand::WorkspaceMove(
+                shepr_protocol::command::WorkspaceMoveParams {
                     workspace_id: source.workspace_id.to_string(),
                     insert_index,
                 },
@@ -901,9 +903,9 @@ impl ClientShellState {
                         *throttle = next_throttle;
                     }
                     if should_send {
-                        self.push_endpoint_method(
-                            shepr_api::schema::Method::LayoutSetSplitRatio(
-                                shepr_api::schema::LayoutSetSplitRatioParams {
+                        self.push_endpoint_command(
+                            shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
+                                shepr_protocol::command::LayoutSetSplitRatioParams {
                                     tab_id: Some(tab_id.to_string()),
                                     pane_id: None,
                                     path: hit
@@ -1008,9 +1010,9 @@ impl ClientShellState {
                                 })
                         });
                         if valid_drop {
-                            self.push_endpoint_method(
-                                shepr_api::schema::Method::TabMove(
-                                    shepr_api::schema::TabMoveParams {
+                            self.push_endpoint_command(
+                                shepr_protocol::command::EndpointCommand::TabMove(
+                                    shepr_protocol::command::TabMoveParams {
                                         tab_id: tab_id.to_string(),
                                         insert_index: insert_index.unwrap_or_default(),
                                     },
@@ -1025,12 +1027,12 @@ impl ClientShellState {
                         target,
                     } => {
                         if let Some((before_workspace_id, _)) = target
-                            && let Some(method) = self.workspace_move_method(
+                            && let Some(command) = self.workspace_move_command(
                                 &source_workspace_id,
                                 before_workspace_id.as_ref(),
                             )
                         {
-                            self.push_endpoint_method(method, outcome);
+                            self.push_endpoint_command(command, outcome);
                         }
                         outcome.repaint = true;
                     }
@@ -1070,9 +1072,9 @@ impl ClientShellState {
                             && last_sent_ratio
                                 .is_none_or(|sent| (sent - ratio).abs() > f32::EPSILON)
                         {
-                            self.push_endpoint_method(
-                                shepr_api::schema::Method::LayoutSetSplitRatio(
-                                    shepr_api::schema::LayoutSetSplitRatioParams {
+                            self.push_endpoint_command(
+                                shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
+                                    shepr_protocol::command::LayoutSetSplitRatioParams {
                                         tab_id: Some(tab_id.to_string()),
                                         pane_id: None,
                                         path: hit
@@ -1108,10 +1110,12 @@ impl ClientShellState {
                 return;
             }
             if let Some(press) = self.tab_press.take() {
-                self.push_endpoint_method(
-                    shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
-                        tab_id: press.tab_id.to_string(),
-                    }),
+                self.push_endpoint_command(
+                    shepr_protocol::command::EndpointCommand::TabFocus(
+                        shepr_protocol::command::TabTarget {
+                            tab_id: press.tab_id.to_string(),
+                        },
+                    ),
                     outcome,
                 );
                 return;
@@ -1426,10 +1430,12 @@ impl ClientShellState {
                             mouse.modifiers.difference(stripped_modifiers),
                             outcome,
                         );
-                        self.push_endpoint_method(
-                            shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
-                                pane_id: hit.pane_id.to_string(),
-                            }),
+                        self.push_endpoint_command(
+                            shepr_protocol::command::EndpointCommand::PaneFocus(
+                                shepr_protocol::command::PaneTarget {
+                                    pane_id: hit.pane_id.to_string(),
+                                },
+                            ),
                             outcome,
                         );
                         self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
@@ -1769,10 +1775,12 @@ impl ClientShellState {
                     .find(|(rect, _)| super::contains(*rect, point))
                     .map(|(_, pane_id)| pane_id.clone());
                 if let Some(pane_id) = agent_pane_id {
-                    self.push_endpoint_method(
-                        shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
-                            pane_id: pane_id.to_string(),
-                        }),
+                    self.push_endpoint_command(
+                        shepr_protocol::command::EndpointCommand::PaneFocus(
+                            shepr_protocol::command::PaneTarget {
+                                pane_id: pane_id.to_string(),
+                            },
+                        ),
                         outcome,
                     );
                     return;
@@ -1791,10 +1799,12 @@ impl ClientShellState {
                     .cloned();
                 if let Some(hit) = scrollbar_hit {
                     self.mode = ClientShellMode::Terminal;
-                    self.push_endpoint_method(
-                        shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
-                            pane_id: hit.pane_id.to_string(),
-                        }),
+                    self.push_endpoint_command(
+                        shepr_protocol::command::EndpointCommand::PaneFocus(
+                            shepr_protocol::command::PaneTarget {
+                                pane_id: hit.pane_id.to_string(),
+                            },
+                        ),
                         outcome,
                     );
                     let (Some(track), Some(metrics)) = (hit.scrollbar_rect, hit.scroll) else {
@@ -1900,10 +1910,12 @@ impl ClientShellState {
                             self.selection = None;
                         }
                     }
-                    self.push_endpoint_method(
-                        shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
-                            pane_id: hit.pane_id.to_string(),
-                        }),
+                    self.push_endpoint_command(
+                        shepr_protocol::command::EndpointCommand::PaneFocus(
+                            shepr_protocol::command::PaneTarget {
+                                pane_id: hit.pane_id.to_string(),
+                            },
+                        ),
                         outcome,
                     );
                 }
@@ -1949,10 +1961,12 @@ impl ClientShellState {
                     .cloned()
                 {
                     if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {
-                        self.push_endpoint_method(
-                            shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
-                                pane_id: hit.pane_id.to_string(),
-                            }),
+                        self.push_endpoint_command(
+                            shepr_protocol::command::EndpointCommand::PaneFocus(
+                                shepr_protocol::command::PaneTarget {
+                                    pane_id: hit.pane_id.to_string(),
+                                },
+                            ),
                             outcome,
                         );
                     }

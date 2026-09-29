@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn native_state_reservation_excludes_full_lifecycle_sources() {
         assert!(is_reserved_native_state_source("shepr:claude", "claude"));
-        assert!(is_reserved_native_state_source("shepr:codex", "codex"));
+        assert!(!is_reserved_native_state_source("shepr:codex", "codex"));
         assert!(is_reserved_native_state_source("shepr:devin", "devin"));
         assert!(!is_reserved_native_state_source("shepr:kimi", "kimi"));
         assert!(!is_reserved_native_state_source(

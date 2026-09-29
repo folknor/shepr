@@ -284,43 +284,56 @@ impl HeadlessServer {
         })
     }
 
+    /// Whether a visible pane of `target`'s tab is inside a synchronized
+    /// update, which a resize would tear.
+    fn tab_has_synchronized_pane(&self, target: &crate::ui::TabSurfaceTarget) -> bool {
+        let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
+            return false;
+        };
+        let Some(tab) = self
+            .app
+            .state
+            .workspaces
+            .get(workspace_index)
+            .and_then(|workspace| workspace.tabs().get(tab_index))
+        else {
+            return false;
+        };
+        let visible = if tab.zoomed() {
+            vec![tab.layout().focused()]
+        } else {
+            tab.layout().pane_ids()
+        };
+        visible.into_iter().any(|pane_id| {
+            self.app
+                .state
+                .runtime_for_pane_in_workspace(
+                    &self.app.terminal_runtimes,
+                    workspace_index,
+                    pane_id,
+                )
+                .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
+        })
+    }
+
     pub(super) fn render_and_stream(&mut self) {
-        let render_targets = render_targets(&self.clients, self.clients.foreground_client_id());
+        let render_targets = render_targets(&self.clients);
 
         if render_targets.is_empty() {
-            let (cols, rows) = (
-                self.effective_size.cols.get(),
-                self.effective_size.rows.get(),
-            );
-            let area = Rect::new(0, 0, cols, rows);
-            let resize_panes = self.app.state.view.pane_infos.is_empty();
-            self.app.state.view =
-                crate::ui::compute_view(&self.app.state, &self.app.terminal_runtimes, area);
-            if resize_panes {
-                crate::ui::resize_all_tab_surfaces(
-                    &self.app.state,
-                    &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
-                    area,
-                    shepr_termio::host_term::cell_size::HostCellSize::default(),
-                );
-            }
+            // With nothing to draw, only geometry is due: a tab the server has
+            // not laid out yet (at startup, or created while no client was
+            // attached) gets its PTY size from the PTY size rule.
+            let laid_out = self.app.state.has_tab_without_area() && self.apply_all_tab_geometry();
             self.app.full_redraw_pending = false;
-            debug!(
-                cols,
-                rows, resize_panes, "updated geometry with no attached clients"
-            );
+            debug!(laid_out, "updated geometry with no attached clients");
             return;
         }
+        let render_target_count = render_targets.len();
 
-        // Resize from the controlling client's geometry before drawing any observer.
+        // Resize a tab from its geometry source before drawing any observer.
         // Retained updates fall back here when a pane changes alternate screens.
         for target in &render_targets {
             let client_id = target.client_id;
-            let (cols, rows) = (
-                target.terminal_size.cols.get(),
-                target.terminal_size.rows.get(),
-            );
-            let cell_size = target.cell_size;
             let Some(client) = self.clients.get(&client_id) else {
                 continue;
             };
@@ -330,7 +343,9 @@ impl HeadlessServer {
             let Some(surface_target) = self.shell_target_for_client(client_id) else {
                 continue;
             };
-            if self.clients.geometry_controller(&surface_target.tab_id) != Some(client_id) {
+            if self.tab_geometry_source(&surface_target.tab_id)
+                != Some(super::client_views::TabGeometrySource::Client(client_id))
+            {
                 continue;
             }
             let changed = client
@@ -355,36 +370,10 @@ impl HeadlessServer {
                             })
                     })
                 });
-            if changed && let Some(shell_target) = self.shell_target_for_client(client_id) {
-                let area = Rect::new(0, 0, cols, rows);
-                let layout = crate::ui::compute_tab_surface_for(
-                    &self.app.state,
-                    &self.app.terminal_runtimes,
-                    Some(shell_target.clone()),
-                    area,
-                );
-                let Some((workspace_index, _)) = shell_target.resolve(&self.app.state) else {
-                    continue;
-                };
-                if layout.pane_infos.iter().any(|pane| {
-                    self.app
-                        .state
-                        .runtime_for_pane_in_workspace(
-                            &self.app.terminal_runtimes,
-                            workspace_index,
-                            pane.id,
-                        )
-                        .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
-                }) {
-                    continue;
-                }
-                crate::ui::resize_tab_surface_layout(
-                    &self.app.state,
-                    &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
-                    &layout,
-                    cell_size.or_default(),
-                );
+            if !changed || self.tab_has_synchronized_pane(&surface_target) {
+                continue;
             }
+            self.apply_tab_geometry(&surface_target);
         }
 
         let mut broken_clients: Vec<ClientId> = Vec::new();
@@ -603,14 +592,10 @@ impl HeadlessServer {
             }
         }
 
-        let (cols, rows) = (
-            self.effective_size.cols.get(),
-            self.effective_size.rows.get(),
-        );
         // Full-frame recovery is tracked per connection. A slow client must not
         // keep responsive peers on the global full-render path while it waits
         // for its render slot to drain.
         self.app.full_redraw_pending = false;
-        debug!(cols, rows, foreground_client_id = ?self.clients.foreground_client_id(), "rendered virtual frame(s)");
+        debug!(targets = render_target_count, "rendered virtual frame(s)");
     }
 }

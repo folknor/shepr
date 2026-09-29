@@ -249,7 +249,7 @@ impl HeadlessServer {
         {
             fallback!("unsafe_state");
         }
-        let mut targets = render_targets(&self.clients, self.clients.foreground_client_id());
+        let mut targets = render_targets(&self.clients);
         targets.retain(|target| {
             self.clients
                 .get(&target.client_id)

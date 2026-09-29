@@ -1,19 +1,16 @@
-use shepr_api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::ApiErrorCode;
 
 use crate::app::App;
-use shepr_api::schema::{
-    LayoutDescription, LayoutNode, LayoutPane, LayoutSetSplitRatioParams, ResponseResult,
-    SplitDirection,
-};
-use shepr_core::layout::{Direction, Node, PaneId};
+use shepr_protocol::command::{EndpointReply, LayoutSetSplitRatioParams};
 
-use super::responses::{failure, success};
+use super::EndpointResult;
+use super::responses::failure;
 
 impl App {
     pub(super) fn handle_layout_set_split_ratio(
         &mut self,
         params: &LayoutSetSplitRatioParams,
-    ) -> ApiResult {
+    ) -> EndpointResult {
         if !params.ratio.is_finite() {
             return failure(ApiErrorCode::InvalidRatio, "ratio must be finite");
         }
@@ -23,8 +20,8 @@ impl App {
             return failure(ApiErrorCode::LayoutNotFound, "layout target not found");
         };
 
-        // The API spells a split path as booleans: `true` descends into the
-        // second branch.
+        // A split path is spelled as booleans: `true` descends into the second
+        // branch.
         let path = params
             .path
             .iter()
@@ -46,10 +43,7 @@ impl App {
         }
 
         self.schedule_session_save();
-        let Some(layout) = self.layout_description(ws_idx, tab_idx) else {
-            return failure(ApiErrorCode::LayoutNotFound, "layout unavailable");
-        };
-        success(ResponseResult::LayoutSplitRatioSet { layout })
+        Ok(EndpointReply::Done)
     }
 
     /// The tab a layout request addresses: the tab named by `tab_id`, the tab
@@ -79,72 +73,14 @@ impl App {
             }
         }
     }
-
-    fn layout_description(&self, ws_idx: usize, tab_idx: usize) -> Option<LayoutDescription> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs().get(tab_idx)?;
-        Some(LayoutDescription {
-            workspace_id: self.public_workspace_id(ws_idx)?,
-            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
-            zoomed: tab.zoomed(),
-            focused_pane_id: self.public_pane_id(ws_idx, tab.layout().focused())?,
-            root: self.layout_node_description(ws_idx, tab_idx, tab.layout().root())?,
-        })
-    }
-
-    fn layout_node_description(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-        node: &Node,
-    ) -> Option<LayoutNode> {
-        match node {
-            Node::Pane(pane_id) => Some(LayoutNode::Pane {
-                pane: self.layout_pane_description(ws_idx, tab_idx, *pane_id)?,
-            }),
-            Node::Split {
-                direction,
-                ratio,
-                first,
-                second,
-            } => Some(LayoutNode::Split {
-                direction: match direction {
-                    Direction::Horizontal => SplitDirection::Right,
-                    Direction::Vertical => SplitDirection::Down,
-                },
-                ratio: ratio.get(),
-                first: Box::new(self.layout_node_description(ws_idx, tab_idx, first)?),
-                second: Box::new(self.layout_node_description(ws_idx, tab_idx, second)?),
-            }),
-        }
-    }
-
-    fn layout_pane_description(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-        pane_id: PaneId,
-    ) -> Option<LayoutPane> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs().get(tab_idx)?;
-        let terminal_id = tab.terminal_id(pane_id)?;
-        let terminal = self.state.terminals.get(terminal_id);
-        Some(LayoutPane {
-            pane_id: Some(self.public_pane_id(ws_idx, pane_id)?.to_string()),
-            label: terminal.and_then(|terminal| terminal.manual_label.clone()),
-            cwd: tab
-                .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use shepr_api::schema::{ErrorResponse, SuccessResponse};
     use shepr_config::Config;
+    use shepr_core::layout::Direction;
     use shepr_mux::workspace::Workspace;
 
     fn app_with_workspace() -> App {
@@ -161,18 +97,9 @@ mod tests {
     fn layout_set_split_ratio_updates_existing_split() {
         let mut app = app_with_workspace();
         let root = app.state.workspaces[0].tabs()[0].root_pane();
-        let right = app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.workspaces[0].test_split(Direction::Horizontal);
         app.state.ensure_test_terminals();
         assert!(app.state.workspaces[0].focus_pane_in_tab(0, root));
-        let right_terminal_id = app.state.workspaces[0].tabs()[0]
-            .terminal_id(right)
-            .cloned()
-            .expect("test precondition");
-        app.state
-            .terminals
-            .get_mut(&right_terminal_id)
-            .expect("test precondition")
-            .set_manual_label("tests".into());
 
         let response = app.handle_layout_set_split_ratio(&LayoutSetSplitRatioParams {
             tab_id: None,
@@ -181,37 +108,13 @@ mod tests {
             ratio: 0.72,
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        let ResponseResult::LayoutSplitRatioSet { layout } = success.result else {
-            panic!("expected layout split ratio set response");
-        };
-        assert_eq!(
-            layout.workspace_id,
-            app.public_workspace_id(0).expect("test precondition")
-        );
-        assert_eq!(
-            layout.focused_pane_id,
-            app.public_pane_id(0, root).expect("test precondition")
-        );
-        let LayoutNode::Split {
-            direction,
-            ratio,
-            second,
-            ..
-        } = layout.root
-        else {
-            panic!("expected split layout root");
-        };
-        assert_eq!(direction, SplitDirection::Right);
-        assert!((ratio - 0.72).abs() < f32::EPSILON);
-        let LayoutNode::Pane { pane } = *second else {
-            panic!("expected second pane");
-        };
-        assert_eq!(pane.label.as_deref(), Some("tests"));
-        assert_eq!(
-            pane.pane_id,
-            Some(app.public_pane_id(0, right).expect("test precondition")).map(|id| id.to_string())
-        );
+        assert_eq!(response, Ok(EndpointReply::Done));
+        let splits = app.state.workspaces[0].tabs()[0]
+            .layout()
+            .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
+        assert_eq!(splits.len(), 1);
+        assert!((splits[0].ratio - 0.72).abs() < f32::EPSILON);
+        assert_eq!(app.state.workspaces[0].tabs()[0].layout().focused(), root);
     }
 
     #[test]
@@ -225,7 +128,9 @@ mod tests {
             ratio: 0.72,
         });
 
-        let error: ErrorResponse = crate::test_support::test_error(&response);
-        assert_eq!(error.error.code, "split_not_found");
+        assert_eq!(
+            response.expect_err("a one-pane tab has no split").code,
+            ApiErrorCode::SplitNotFound
+        );
     }
 }

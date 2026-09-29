@@ -167,38 +167,6 @@ impl App {
         })
     }
 
-    pub(super) fn workspace_created_result(
-        &self,
-        ws_idx: usize,
-    ) -> Option<shepr_api::schema::ResponseResult> {
-        Some(shepr_api::schema::ResponseResult::WorkspaceCreated {
-            workspace: self.workspace_info(ws_idx)?,
-            tab: self.tab_info(ws_idx, 0)?,
-            root_pane: self.root_pane_info(ws_idx, 0)?,
-        })
-    }
-
-    pub(super) fn tab_created_result(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Option<shepr_api::schema::ResponseResult> {
-        Some(shepr_api::schema::ResponseResult::TabCreated {
-            tab: self.tab_info(ws_idx, tab_idx)?,
-            root_pane: self.root_pane_info(ws_idx, tab_idx)?,
-        })
-    }
-
-    pub(super) fn root_pane_info(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Option<shepr_api::schema::PaneInfo> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs().get(tab_idx)?;
-        self.pane_info(ws_idx, tab.root_pane())
-    }
-
     pub(super) fn pane_info(
         &self,
         ws_idx: usize,

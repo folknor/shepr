@@ -190,6 +190,19 @@ impl PendingEndpointActivation {
         }
     }
 
+    /// Whether the frame on screen stays frozen. It does until this handoff has installed a
+    /// coherent snapshot and surface pair for the endpoint it commits (the target, or the source
+    /// it restores). From presentation synchronization on that pair is on screen, and only pane
+    /// input stays closed until the effects fence. A rollback out of synchronization re-enters
+    /// a frozen phase.
+    pub(crate) fn freezes_frame(&self) -> bool {
+        !matches!(
+            self.phase,
+            ActivationPhase::SynchronizingPresentation { .. }
+                | ActivationPhase::AwaitingPresentationEffects { .. }
+        )
+    }
+
     /// The complete source command lane cannot safely cross source-off into a later presentation
     /// epoch. Other endpoint lanes are not part of this retirement.
     pub(crate) fn source_command_lane(&self) -> Option<&ClientEndpointId> {

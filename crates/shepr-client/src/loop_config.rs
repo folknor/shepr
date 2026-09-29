@@ -3,7 +3,6 @@
 pub(super) struct ClientSettings {
     host_cursor: shepr_config::HostCursorModeConfig,
     mouse_capture_active: bool,
-    manage_ssh_config: bool,
     modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
     prefers_osc52_clipboard: bool,
 }
@@ -29,7 +28,6 @@ impl ClientSettings {
         Self {
             host_cursor: ui.host_cursor,
             mouse_capture_active: ui.mouse_capture,
-            manage_ssh_config: config.remote().manage_ssh_config,
             modify_other_keys_mode,
             prefers_osc52_clipboard,
         }
@@ -41,10 +39,6 @@ impl ClientSettings {
 
     pub(super) fn mouse_capture_active(&self) -> bool {
         self.mouse_capture_active
-    }
-
-    pub(super) fn manage_ssh_config(&self) -> bool {
-        self.manage_ssh_config
     }
 
     pub(super) fn modify_other_keys_mode(&self) -> Option<shepr_vt::ModifyOtherKeysLevel> {

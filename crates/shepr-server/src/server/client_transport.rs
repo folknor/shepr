@@ -342,12 +342,12 @@ pub(crate) enum ServerEvent {
         request_id: shepr_protocol::RequestId,
         command: Box<shepr_protocol::command::EndpointCommand>,
     },
-    /// The API answered a deferred endpoint operation.
+    /// A deferred endpoint command was answered.
     ClientShellEndpointResponseReady {
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
-        result: Box<shepr_api::error::ApiResult>,
+        result: Box<Result<shepr_protocol::command::EndpointReply, shepr_api::error::ApiError>>,
     },
     /// A client detached gracefully.
     ClientDetach { client_id: ClientId },

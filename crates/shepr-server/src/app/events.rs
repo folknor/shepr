@@ -142,52 +142,9 @@ impl App {
         }
     }
 
-    pub(crate) fn sync_focus_events(&mut self) {
-        self.sync_focus_events_with_outer_event(None);
-    }
-
-    /// Records the current focus as already seen, so the next sync sends no
-    /// focus transition to the panes.
-    pub(crate) fn accept_current_focus(&mut self) {
-        self.last_focus = self.state.active_index().and_then(|idx| {
-            self.state
-                .workspaces
-                .get(idx)
-                .map(|workspace| (idx, workspace.focused_pane_id()))
-        });
-    }
-
-    fn sync_focus_events_with_outer_event(&mut self, outer_event: Option<shepr_vt::FocusEvent>) {
-        let current_focus = self.state.active_index().and_then(|idx| {
-            self.state
-                .workspaces
-                .get(idx)
-                .map(|ws| (idx, ws.focused_pane_id()))
-        });
-        if current_focus == self.last_focus {
-            if let (Some((ws_idx, pane_id)), Some(event)) = (current_focus, outer_event) {
-                self.send_pane_focus_event(ws_idx, pane_id, event);
-            }
-            return;
-        }
-
-        if let Some((ws_idx, pane_id)) = self.last_focus {
-            self.send_pane_focus_event(ws_idx, pane_id, shepr_vt::FocusEvent::Lost);
-        }
-        if let Some((ws_idx, pane_id)) = current_focus {
-            let event = outer_event.unwrap_or_else(|| {
-                if self.state.outer_terminal_focus == Some(false) {
-                    shepr_vt::FocusEvent::Lost
-                } else {
-                    shepr_vt::FocusEvent::Gained
-                }
-            });
-            self.send_pane_focus_event(ws_idx, pane_id, event);
-        }
-
-        self.last_focus = current_focus;
-    }
-
+    /// Tells one pane it gained or lost terminal focus. Which panes hold focus
+    /// is decided per client on the server (`sync_pane_focus`); a pane with no
+    /// live runtime is skipped.
     pub(crate) fn send_pane_focus_event(
         &self,
         ws_idx: usize,

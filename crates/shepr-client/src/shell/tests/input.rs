@@ -244,10 +244,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         .iter()
         .find_map(|action| match action {
             ClientShellAction::Endpoint { request, .. }
-                if matches!(
-                    request.method,
-                    shepr_api::schema::Method::PaneSelectionRead(_)
-                ) =>
+                if matches!(request.command, EndpointCommand::PaneSelectionRead(_)) =>
             {
                 Some(request.id.clone())
             }
@@ -258,7 +255,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &selection_request_id,
-            Ok(shepr_api::schema::ResponseResult::PaneSelection {
+            Ok(EndpointReply::PaneSelection {
                 pane_id: "w1:p1".into(),
                 text: "needle".into(),
             }),
@@ -654,8 +651,8 @@ fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
         panic!("pane rename should use endpoint API");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneRename(params)
+        &request.command,
+        EndpointCommand::PaneRename(params)
             if params.pane_id == "w1:p1" && params.label.as_deref() == Some("")
     ));
 }

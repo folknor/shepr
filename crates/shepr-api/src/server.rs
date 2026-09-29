@@ -556,14 +556,6 @@ fn handle_request(
         return crate::serialize_response_or_error_with_outcome(&request.id, &response);
     }
 
-    if matches!(&request.method, Method::ClientShellSurfaceSet(_)) {
-        return error_response_json(
-            &request.id,
-            crate::error::ApiErrorCode::ConnectionLocalOnly,
-            "client_shell.surface.set is only available through a client shell endpoint".into(),
-        );
-    }
-
     if let Method::ServerStop(params) = &request.method {
         if let Some(server_stop) = server_stop {
             // A stop aimed at one boot must not stop another: the caller
@@ -604,10 +596,7 @@ fn shutdown_rejection(
     server_stop: Option<&Arc<crate::ServerStopSignal>>,
 ) -> Option<crate::error::EncodedApiResponse> {
     if !server_is_stopping(server_stop)
-        || matches!(
-            &request.method,
-            Method::Ping(_) | Method::ServerStop(_) | Method::ClientShellSurfaceSet(_)
-        )
+        || matches!(&request.method, Method::Ping(_) | Method::ServerStop(_))
     {
         return None;
     }

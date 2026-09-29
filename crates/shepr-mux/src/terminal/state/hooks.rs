@@ -15,6 +15,21 @@ impl TerminalState {
         if shepr_agent::detect::session_identity_only_integration(&source, &agent_label) {
             return None;
         }
+        // Codex turn reports carry the id of the session they belong to. One
+        // for another session than the current one (a late Stop from a session
+        // that /new or /resume replaced) must not overwrite this session's state.
+        if (source.as_str(), agent_label.as_str()) == ("shepr:codex", "codex")
+            && let Some(incoming) = session_ref.as_ref()
+            && self
+                .current_session_identity_for_persistence()
+                .is_some_and(|current| {
+                    current.source.as_str() == source
+                        && current.agent.label() == agent_label
+                        && &current.session_ref != incoming
+                })
+        {
+            return None;
+        }
         if !shepr_agent::detect::full_lifecycle_hook_authority(&source, &agent_label)
             && self.recent_agent_process_exit.is_some_and(|exit| {
                 shepr_agent::detect::parse_agent_label(&agent_label) == Some(exit.agent)

@@ -175,12 +175,20 @@ pub(super) struct WorkspaceHit {
     pub(super) workspace_id: shepr_protocol::WorkspaceId,
 }
 
+/// One command bound for the active endpoint, with the id its answer comes
+/// back under.
+#[derive(Debug)]
+pub(crate) struct ClientShellEndpointRequest {
+    pub(crate) id: String,
+    pub(crate) command: shepr_protocol::command::EndpointCommand,
+}
+
 #[derive(Debug)]
 pub(crate) enum ClientShellAction {
     Endpoint {
         endpoint_id: ClientEndpointId,
         boot_id: shepr_protocol::BootId,
-        request: Box<shepr_api::schema::Request>,
+        request: Box<ClientShellEndpointRequest>,
     },
     ClipboardWrite(Vec<u8>),
     ActivateEndpoint {
@@ -471,7 +479,7 @@ pub(super) struct ClientVisibleEndpointNotice {
 }
 
 pub(crate) struct ClientShellEndpointError {
-    pub code: Option<crate::endpoint::commands::EndpointFailureCode>,
+    pub code: crate::endpoint::commands::EndpointFailureCode,
     pub message: String,
 }
 

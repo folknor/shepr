@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use shepr_api::error::{ApiError, ApiErrorCode};
 
-/// The launch cwd named by an API request (`workspace.create`, `tab.create`
-/// and `pane.split`).
+/// The launch cwd named by a client-shell command (`workspace.create`,
+/// `tab.create` and `pane.split`), or the directory `workspace.checkout_root`
+/// asks about.
 ///
 /// A relative path is refused, not resolved: the server's own working
 /// directory means nothing to the caller, and the CLI already absolutises
@@ -27,11 +28,11 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::test_support::*;
-    use shepr_api::schema::{
-        ErrorResponse, PaneRightClickTarget, PaneSplitParams, SplitDirection, TabCreateParams,
+    use shepr_mux::workspace::Workspace;
+    use shepr_protocol::command::{
+        PaneRightClickTarget, PaneSplitParams, SplitDirection, TabCreateParams,
         WorkspaceCreateParams,
     };
-    use shepr_mux::workspace::Workspace;
 
     #[test]
     fn launch_cwd_accepts_absolute_and_names_a_refused_relative_path() {
@@ -49,13 +50,13 @@ mod tests {
         }
     }
 
-    fn assert_refused(response: &shepr_api::error::ApiResult, code: &str) {
-        let error: ErrorResponse = crate::test_support::test_error(response);
-        assert_eq!(error.error.code, code);
+    fn assert_refused(response: super::super::EndpointResult, code: &ApiErrorCode) {
+        let error = response.expect_err("the relative cwd is refused");
+        assert_eq!(&error.code, code);
+        let message = error.into_message();
         assert!(
-            error.error.message.contains("\".\""),
-            "message names the offending cwd: {}",
-            error.error.message
+            message.contains("\".\""),
+            "message names the offending cwd: {message}"
         );
     }
 
@@ -86,7 +87,7 @@ mod tests {
             label: None,
             env: Default::default(),
         });
-        assert_refused(&response, "invalid_cwd");
+        assert_refused(response, &ApiErrorCode::InvalidCwd);
 
         let response = app.handle_tab_create(TabCreateParams {
             workspace_id: None,
@@ -95,7 +96,7 @@ mod tests {
             label: None,
             env: Default::default(),
         });
-        assert_refused(&response, "invalid_cwd");
+        assert_refused(response, &ApiErrorCode::InvalidCwd);
 
         let response = app.handle_pane_split(PaneSplitParams {
             workspace_id: None,
@@ -107,7 +108,7 @@ mod tests {
             right_click: PaneRightClickTarget::default(),
             env: Default::default(),
         });
-        assert_refused(&response, "invalid_cwd");
+        assert_refused(response, &ApiErrorCode::InvalidCwd);
 
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);

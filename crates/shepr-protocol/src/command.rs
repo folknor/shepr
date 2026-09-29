@@ -1,12 +1,14 @@
 //! Typed endpoint operations a client shell sends over the client socket, and
 //! the replies it gets back.
 //!
-//! These are the one definition of the parameter and result types they carry.
-//! The JSON API in `shepr-api` re-exports them for its methods of the same
-//! names, so a client-shell command converts to and from its API method by a
-//! move, and neither end of the client socket does a JSON pass. The types are
-//! positional wire types: no field is skipped or flattened, so an absent
-//! `Option` is written to JSON as `null`.
+//! This is the client shell's whole vocabulary: the server dispatches an
+//! [`EndpointCommand`] straight to its handlers and answers with an
+//! [`EndpointReply`], with no JSON API method in between. The JSON API in
+//! `shepr-api` re-exports some of the parameter and info types here (its
+//! session snapshot carries the same workspace, tab and pane infos), but none
+//! of its methods is a client-shell command. The types are positional wire
+//! types: no field is skipped or flattened, so an absent `Option` is written
+//! to JSON as `null`.
 
 use std::collections::HashMap;
 
@@ -335,8 +337,7 @@ pub struct PaneInfo {
 }
 
 /// One endpoint operation a client shell asks of the server it is connected
-/// to. Each variant is the API method of the same name; nothing outside this
-/// set can be asked through a client shell.
+/// to; nothing outside this set can be asked through a client shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EndpointCommand {
     ClientShellSurfaceSet(ClientShellSurfaceSetParams),
@@ -368,10 +369,71 @@ pub enum EndpointCommand {
     PaneClose(PaneTarget),
 }
 
+/// Facts about one endpoint command, kept in one exhaustive table so the
+/// client's notices, the server's logs and the server loop's routing agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointCommandTraits {
+    /// The dotted name logs and client notices use.
+    pub name: &'static str,
+    /// The command can change what a shell shows, so the server renders after
+    /// it.
+    pub mutates_ui: bool,
+    /// The command creates or removes a workspace, tab or pane, so every shell
+    /// client's location is reconciled after it.
+    pub changes_topology: bool,
+    /// The requesting shell claims the geometry of the tab the command acted
+    /// on.
+    pub claims_shell_geometry: bool,
+}
+
+impl EndpointCommand {
+    pub fn traits(&self) -> EndpointCommandTraits {
+        let (name, mutates_ui, changes_topology, claims_shell_geometry) = match self {
+            Self::ClientShellSurfaceSet(_) => ("client_shell.surface.set", true, false, false),
+            Self::WorkspaceCreate(_) => ("workspace.create", true, true, true),
+            Self::WorkspaceFocus(_) => ("workspace.focus", true, false, true),
+            Self::WorkspaceRename(_) => ("workspace.rename", true, false, true),
+            Self::WorkspaceCheckoutRoot(_) => ("workspace.checkout_root", false, false, false),
+            Self::WorkspaceMove(_) => ("workspace.move", true, false, true),
+            Self::WorkspaceClose(_) => ("workspace.close", true, true, true),
+            Self::TabCreate(_) => ("tab.create", true, true, true),
+            Self::TabFocus(_) => ("tab.focus", true, false, true),
+            Self::TabRename(_) => ("tab.rename", true, false, true),
+            Self::TabMove(_) => ("tab.move", true, false, true),
+            Self::TabClose(_) => ("tab.close", true, true, true),
+            Self::PaneSplit(_) => ("pane.split", true, true, true),
+            Self::PaneSwap(_) => ("pane.swap", true, false, true),
+            Self::PaneZoom(_) => ("pane.zoom", true, false, true),
+            Self::LayoutSetSplitRatio(_) => ("layout.set_split_ratio", true, false, true),
+            Self::PaneFocusDirection(_) => ("pane.focus_direction", true, false, true),
+            Self::PaneResize(_) => ("pane.resize", true, false, true),
+            Self::PaneScroll(_) => ("pane.scroll", true, false, true),
+            Self::PaneClear(_) => ("pane.clear", true, false, true),
+            Self::PaneSelectionRead(_) => ("pane.selection.read", false, false, false),
+            Self::PaneCopyMotion(_) => ("pane.copy_motion", false, false, true),
+            Self::PaneCopySearch(_) => ("pane.copy_search", false, false, true),
+            Self::PaneFocus(_) => ("pane.focus", true, false, true),
+            Self::PaneInputSet(_) => ("pane.input.set", true, false, true),
+            Self::PaneRename(_) => ("pane.rename", true, false, true),
+            Self::PaneClose(_) => ("pane.close", true, true, true),
+        };
+        EndpointCommandTraits {
+            name,
+            mutates_ui,
+            changes_topology,
+            claims_shell_geometry,
+        }
+    }
+
+    /// The command's dotted name, as logs and client notices spell it.
+    pub fn name(&self) -> &'static str {
+        self.traits().name
+    }
+}
+
 /// The successful result of an [`EndpointCommand`], carrying what the client
-/// shell reads. The variants share their names and fields with the API's
-/// results. A result the client shell only acknowledges (a created tab, a
-/// swapped pane, a layout) crosses as `Done`.
+/// shell reads. A command the client shell only acknowledges (a created tab, a
+/// swapped pane, a new split ratio) answers `Done`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EndpointReply {
     Done,
@@ -411,7 +473,7 @@ pub enum EndpointReply {
     },
 }
 
-/// Why an [`EndpointCommand`] failed: the API error code and its message.
+/// Why an [`EndpointCommand`] failed: the server's error code and its message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointError {
     pub code: String,

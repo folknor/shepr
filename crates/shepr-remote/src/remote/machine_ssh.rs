@@ -24,10 +24,9 @@ use super::{
 pub fn check_machine_ssh(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    settings: MachineSshSettings,
     deadline: std::time::Instant,
 ) -> io::Result<MachineSshCheck> {
-    let mut ssh = RemoteSsh::new(target.clone(), settings.manage_ssh_config, paths)?;
+    let mut ssh = RemoteSsh::new(target.clone(), paths)?;
     ssh.set_attempt_deadline(Some(deadline));
     let cache = SshMetadataCache::new(paths, target);
     let remote = resolve_remote_shepr(
@@ -93,13 +92,6 @@ pub struct MachineSshStream {
     pub bridge: MachineSshBridge,
 }
 
-/// Settings a configured-machine connector takes from the config. A client reads its
-/// config once at launch and hands these in, so reconnects never re-read it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MachineSshSettings {
-    pub manage_ssh_config: bool,
-}
-
 /// Connects one configured SSH machine repeatedly. The machine set is fixed at
 /// launch, so a connector lives as long as its client.
 ///
@@ -125,7 +117,6 @@ pub struct MachineSshConnector {
     paths: shepr_config::AppPaths,
     label: MachineLabel,
     target: SshTarget,
-    settings: MachineSshSettings,
     state: ConnectorState,
 }
 
@@ -160,17 +151,11 @@ impl StoredSetupError {
 }
 
 impl MachineSshConnector {
-    pub fn new(
-        paths: &shepr_config::AppPaths,
-        label: &MachineLabel,
-        target: &SshTarget,
-        settings: MachineSshSettings,
-    ) -> Self {
+    pub fn new(paths: &shepr_config::AppPaths, label: &MachineLabel, target: &SshTarget) -> Self {
         let mut connector = Self {
             paths: paths.clone(),
             label: label.clone(),
             target: target.clone(),
-            settings,
             state: ConnectorState::default(),
         };
         connector.prepare_for_launch();
@@ -201,11 +186,7 @@ impl MachineSshConnector {
             }
             return;
         }
-        match RemoteSsh::new(
-            self.target.clone(),
-            self.settings.manage_ssh_config,
-            &self.paths,
-        ) {
+        match RemoteSsh::new(self.target.clone(), &self.paths) {
             Ok(ssh) => self.state.ssh = Some(ssh),
             Err(error) if is_launch_fatal_setup_error(&error) => {
                 self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
@@ -222,17 +203,15 @@ impl MachineSshConnector {
     }
 
     fn validate_local_setup(&self) -> io::Result<()> {
-        // This path is needed even when managed SSH config is disabled. Validate it at
-        // launch so an XDG_RUNTIME_DIR that can never hold the local bridge socket fails
-        // before the endpoint's first scheduled connection attempt.
+        // Validate both paths at launch so an XDG_RUNTIME_DIR that can never hold the
+        // local bridge socket or the shared control socket fails before the
+        // endpoint's first scheduled connection attempt.
         machine_bridge_path(self.paths.xdg_runtime_dir(), &self.label)?;
-        if self.settings.manage_ssh_config {
-            shepr_platform::shared_ssh_control_path(
-                self.paths.xdg_runtime_dir(),
-                self.paths.config_file(),
-                self.target.as_str(),
-            )?;
-        }
+        shepr_platform::shared_ssh_control_path(
+            self.paths.xdg_runtime_dir(),
+            self.paths.config_file(),
+            self.target.as_str(),
+        )?;
         Ok(())
     }
 
@@ -265,11 +244,7 @@ impl MachineSshConnector {
             // A transient local runtime-directory or managed-config failure must not
             // disable this endpoint for the connector's lifetime. Failed setup leaves
             // `ssh` empty, so the next scheduled connection attempt tries it again.
-            state.ssh = Some(RemoteSsh::new(
-                self.target.clone(),
-                self.settings.manage_ssh_config,
-                &self.paths,
-            )?);
+            state.ssh = Some(RemoteSsh::new(self.target.clone(), &self.paths)?);
         }
         let ConnectorState {
             ssh,
@@ -375,8 +350,12 @@ impl MachineSshConnector {
             return Err(super::attempt_deadline_passed());
         }
         let path = machine_bridge_path(paths.xdg_runtime_dir(), label)?;
-        let bridge =
-            SshStdioBridge::start(target.clone(), remote_shepr, path.clone(), ssh.options())?;
+        let bridge = SshStdioBridge::start(
+            target.clone(),
+            remote_shepr,
+            path.clone(),
+            Some(ssh.options()),
+        )?;
         let stream = shepr_platform::ipc::connect_trusted_local_stream(&path)?;
         establish(MachineSshStream {
             stream,

@@ -97,9 +97,6 @@ pane_history = true
 reveal_hidden_cursor_for_cjk_ime = true
 cjk_ime_agents = ["claude", "codex"]
 cjk_ime_cursor_shape = "__IME_CURSOR_SHAPE__"
-
-[remote]
-manage_ssh_config = false
 "##;
 
 #[test]

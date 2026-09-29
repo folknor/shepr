@@ -382,8 +382,8 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         panic!("pane split context action should use endpoint API");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::PaneSplit(params)
+        &request.command,
+        EndpointCommand::PaneSplit(params)
             if params.target_pane_id.as_deref() == Some("w1:p1")
                 && params.direction == shepr_api::schema::SplitDirection::Right
     ));
@@ -477,8 +477,8 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
         panic!("new tab save should use endpoint API");
     };
     assert!(matches!(
-        &request.method,
-        shepr_api::schema::Method::TabCreate(params)
+        &request.command,
+        EndpointCommand::TabCreate(params)
             if params.workspace_id.as_deref() == Some("w1")
                 && params.label.as_deref() == Some("logs")
     ));

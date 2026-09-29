@@ -270,7 +270,6 @@ pub struct Config {
     pub ui: UiConfig,
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
-    pub remote: RemoteConfig,
     /// The `[[machines]]` entries, in file order.
     pub machines: Vec<super::MachineConfig>,
 }
@@ -499,22 +498,6 @@ pub struct AdvancedConfig {
     /// widened keeps the history it already holds rather than dropping it, so
     /// it can exceed the budget until it narrows again. Default: 10000000.
     pub scrollback_limit_bytes: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(default)]
-pub struct RemoteConfig {
-    /// Add keepalive fallbacks and private connection reuse for configured machines.
-    /// Set false to run plain ssh unchanged. Default: true.
-    pub manage_ssh_config: bool,
-}
-
-impl Default for RemoteConfig {
-    fn default() -> Self {
-        Self {
-            manage_ssh_config: true,
-        }
-    }
 }
 
 fn deserialize_cjk_ime_agents<'de, D>(deserializer: D) -> Result<Vec<crate::ConfigAgent>, D::Error>

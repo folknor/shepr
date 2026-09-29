@@ -1,16 +1,20 @@
-use shepr_api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::ApiErrorCode;
 
 use crate::app::{App, actions::PaneContextFallback};
-use shepr_api::schema::{
-    ResponseResult, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceMoveParams,
+use shepr_protocol::command::{
+    EndpointReply, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceMoveParams,
     WorkspaceRenameParams, WorkspaceTarget,
 };
 
 use super::super::api_helpers::workspace_not_found;
-use super::responses::{failure, success};
+use super::EndpointResult;
+use super::responses::failure;
 
 impl App {
-    pub(super) fn handle_workspace_create(&mut self, params: WorkspaceCreateParams) -> ApiResult {
+    pub(super) fn handle_workspace_create(
+        &mut self,
+        params: WorkspaceCreateParams,
+    ) -> EndpointResult {
         let explicit_cwd = params
             .cwd
             .as_deref()
@@ -58,19 +62,19 @@ impl App {
                     workspace.set_custom_name(label);
                     crate::logging::workspace_renamed(&workspace.id);
                 }
-                match self.workspace_created_result(index) {
-                    Some(result) => success(result),
-                    None => failure(
+                if self.workspace_info(index).is_none() {
+                    return failure(
                         ApiErrorCode::WorkspaceCreateFailed,
                         "new workspace is unavailable",
-                    ),
+                    );
                 }
+                Ok(EndpointReply::Done)
             }
             Err(err) => failure(ApiErrorCode::WorkspaceCreateFailed, err.to_string()),
         }
     }
 
-    pub(super) fn handle_workspace_focus(&mut self, target: &WorkspaceTarget) -> ApiResult {
+    pub(super) fn handle_workspace_focus(&mut self, target: &WorkspaceTarget) -> EndpointResult {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return Err(workspace_not_found(&target.workspace_id));
         };
@@ -82,10 +86,13 @@ impl App {
             return Err(workspace_not_found(&target.workspace_id));
         };
 
-        success(ResponseResult::WorkspaceInfo { workspace })
+        Ok(EndpointReply::WorkspaceInfo { workspace })
     }
 
-    pub(super) fn handle_workspace_rename(&mut self, params: WorkspaceRenameParams) -> ApiResult {
+    pub(super) fn handle_workspace_rename(
+        &mut self,
+        params: WorkspaceRenameParams,
+    ) -> EndpointResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return Err(workspace_not_found(&params.workspace_id));
         };
@@ -99,10 +106,10 @@ impl App {
             return Err(workspace_not_found(&params.workspace_id));
         };
 
-        success(ResponseResult::WorkspaceInfo { workspace })
+        Ok(EndpointReply::WorkspaceInfo { workspace })
     }
 
-    pub(super) fn handle_workspace_move(&mut self, params: &WorkspaceMoveParams) -> ApiResult {
+    pub(super) fn handle_workspace_move(&mut self, params: &WorkspaceMoveParams) -> EndpointResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return Err(workspace_not_found(&params.workspace_id));
         };
@@ -116,15 +123,16 @@ impl App {
             );
         }
 
-        // A no-op move (the workspace already sits there) still answers with
-        // the current list.
+        // A no-op move (the workspace already sits there) still succeeds.
         self.state.move_workspace(index, params.insert_index);
-        let workspaces = self.workspace_list_info();
 
-        success(ResponseResult::WorkspaceList { workspaces })
+        Ok(EndpointReply::Done)
     }
 
-    pub(super) fn handle_workspace_close(&mut self, params: &WorkspaceCloseParams) -> ApiResult {
+    pub(super) fn handle_workspace_close(
+        &mut self,
+        params: &WorkspaceCloseParams,
+    ) -> EndpointResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return Err(workspace_not_found(&params.workspace_id));
         };
@@ -135,13 +143,7 @@ impl App {
             self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
         }
 
-        success(ResponseResult::Ok {})
-    }
-
-    fn workspace_list_info(&self) -> Vec<shepr_api::schema::WorkspaceInfo> {
-        (0..self.state.workspaces.len())
-            .filter_map(|idx| self.workspace_info(idx))
-            .collect()
+        Ok(EndpointReply::Done)
     }
 }
 
@@ -149,7 +151,6 @@ impl App {
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use shepr_api::schema::{ErrorResponse, SuccessResponse};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
 
@@ -170,14 +171,14 @@ mod tests {
         app.state.ensure_test_terminals();
 
         // Second tab becomes the focused pane, away from tab 1's root pane.
-        let response = app.handle_tab_create(shepr_api::schema::TabCreateParams {
+        app.handle_tab_create(shepr_protocol::command::TabCreateParams {
             workspace_id: None,
             cwd: None,
             focus: true,
             label: None,
             env: Default::default(),
-        });
-        let _: SuccessResponse = crate::test_support::test_success(&response);
+        })
+        .expect("the tab is created");
         // Drop runtimes so cwd resolution deterministically uses cached state.
         shutdown_test_runtimes(&mut app);
 
@@ -205,11 +206,7 @@ mod tests {
             env: Default::default(),
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        assert!(matches!(
-            success.result,
-            ResponseResult::WorkspaceCreated { .. }
-        ));
+        assert_eq!(response, Ok(EndpointReply::Done));
         let created_cwd = &app.state.workspaces[1].identity_cwd;
         assert_eq!(
             std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.clone()),
@@ -258,11 +255,7 @@ mod tests {
             label: None,
             env: Default::default(),
         });
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        assert!(matches!(
-            success.result,
-            ResponseResult::WorkspaceCreated { .. }
-        ));
+        assert_eq!(response, Ok(EndpointReply::Done));
         assert_eq!(
             std::fs::canonicalize(&app.state.workspaces[2].identity_cwd).unwrap_or_else(|_| app
                 .state
@@ -279,8 +272,10 @@ mod tests {
             label: None,
             env: Default::default(),
         });
-        let error: ErrorResponse = crate::test_support::test_error(&invalid);
-        assert_eq!(error.error.code, "workspace_not_found");
+        assert_eq!(
+            invalid.expect_err("an unknown source is refused").code,
+            ApiErrorCode::WorkspaceNotFound
+        );
 
         let captured = app.handle_workspace_create(WorkspaceCreateParams {
             source_workspace_id: Some("w_999".into()),
@@ -289,11 +284,7 @@ mod tests {
             label: None,
             env: Default::default(),
         });
-        let success: SuccessResponse = crate::test_support::test_success(&captured);
-        assert!(matches!(
-            success.result,
-            ResponseResult::WorkspaceCreated { .. }
-        ));
+        assert_eq!(captured, Ok(EndpointReply::Done));
         assert_eq!(
             std::fs::canonicalize(&app.state.workspaces[3].identity_cwd).unwrap_or_else(|_| app
                 .state
@@ -333,11 +324,11 @@ mod tests {
             insert_index: 3,
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        let ResponseResult::WorkspaceList { workspaces } = success.result else {
-            panic!("expected workspace list");
-        };
-        assert_eq!(workspaces[2].workspace_id, moved_id);
+        assert_eq!(response, Ok(EndpointReply::Done));
+        assert_eq!(
+            app.public_workspace_id(2).expect("test precondition"),
+            moved_id
+        );
         assert_eq!(app.state.workspaces[2].display_name(), "one");
     }
 
@@ -357,8 +348,7 @@ mod tests {
             workspace_id: workspace_id.to_string(),
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        assert_eq!(success.result, ResponseResult::Ok {});
+        assert_eq!(response, Ok(EndpointReply::Done));
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].display_name(), "survivor");
     }
@@ -375,11 +365,11 @@ mod tests {
             insert_index: 1,
         });
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        let ResponseResult::WorkspaceList { workspaces } = success.result else {
-            panic!("expected workspace list");
-        };
-        assert_eq!(workspaces[0].workspace_id, moved_id);
+        assert_eq!(response, Ok(EndpointReply::Done));
+        assert_eq!(
+            app.public_workspace_id(0).expect("test precondition"),
+            moved_id
+        );
         assert_eq!(app.state.workspaces[0].display_name(), "one");
     }
 }

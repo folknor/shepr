@@ -2,6 +2,7 @@ use super::*;
 use crate::tests::{test_pane_id, test_tab_id, test_workspace_id};
 use crossterm::event::MouseEvent;
 use shepr_api::schema::AgentStatus;
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{
     ClientShellAgent, ClientShellPane, ClientShellTab, PaneSurfacePane, PaneSurfaceSplit,
     PaneSurfaceSplitDirection, SurfaceRect,
@@ -148,9 +149,9 @@ fn pane_scroll_result(
     offset_from_bottom: u64,
     max_offset_from_bottom: u64,
     viewport_rows: u64,
-) -> shepr_api::schema::ResponseResult {
-    shepr_api::schema::ResponseResult::PaneInfo {
-        pane: shepr_api::schema::PaneInfo {
+) -> EndpointReply {
+    EndpointReply::PaneInfo {
+        pane: Box::new(shepr_protocol::command::PaneInfo {
             pane_id: shepr_test_fixtures::id("w1:p1"),
             terminal_id: shepr_test_fixtures::id("term_1_1"),
             workspace_id: shepr_test_fixtures::id("w1"),
@@ -165,21 +166,21 @@ fn pane_scroll_result(
             terminal_title_stripped: None,
             agent_status: shepr_api::schema::AgentStatus::Idle,
             agent_session: None,
-            scroll: Some(shepr_api::schema::PaneScrollInfo {
+            scroll: Some(shepr_protocol::command::PaneScrollInfo {
                 offset_from_bottom,
                 max_offset_from_bottom,
                 viewport_rows,
             }),
-        },
+        }),
     }
 }
 
 fn copy_search_result(
-    matches: Vec<shepr_api::schema::PaneTextRange>,
+    matches: Vec<shepr_protocol::command::PaneTextRange>,
     current: Option<u32>,
-) -> shepr_api::schema::ResponseResult {
+) -> EndpointReply {
     let total = matches.len() as u64;
-    shepr_api::schema::ResponseResult::PaneCopySearch {
+    EndpointReply::PaneCopySearch {
         pane_id: "w1:p1".into(),
         matches,
         total,

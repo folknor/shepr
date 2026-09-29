@@ -8,6 +8,7 @@ use crate::server::client_transport::{ClientWriter, RenderLaneReceiver};
 use bytes::Bytes;
 use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
 use shepr_protocol::MAX_FRAME_SIZE;
+use shepr_protocol::command::EndpointCommand;
 
 pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
@@ -132,7 +133,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
-    let effective_size = app.state.settings.headless_size;
     let mut resolved_config = Vec::new();
     shepr_protocol::codec::encode_into(
         &mut resolved_config,
@@ -151,12 +151,11 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         resolved_config,
         shell_session_cache: None,
         shell_session_generation: 0,
-        sent_window_title: None,
+        focused_panes: HashSet::new(),
         immediate_pty_sources_dirty: true,
         host_input_modes_dirty: true,
         retained_surface_fallback_reason: None,
         retained_surface_fallbacks_reported: HashSet::new(),
-        effective_size,
         lifecycle: ShutdownLifecycle::new(stop_requested),
         host_shutdown_monitor: None,
         server_event_rx,
@@ -217,9 +216,10 @@ fn frame_server_message_refuses_payloads_over_the_frame_cap() {
     ));
 }
 
-#[test]
-fn default_headless_size_is_effective_without_clients() {
-    let server = test_headless_server();
+#[tokio::test]
+async fn default_headless_size_lays_out_tabs_without_clients() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
 
     assert_eq!(
         server.app.state.settings.headless_size,
@@ -228,10 +228,23 @@ fn default_headless_size_is_effective_without_clients() {
             shepr_config::DEFAULT_HEADLESS_ROWS
         )
     );
-    assert_eq!(
-        server.effective_size,
-        server.app.state.settings.headless_size
+    assert_eq!(server.app.state.tab_area(0, 0), None);
+    server.render_and_stream();
+    let headless = server.app.state.settings.headless_rect();
+    assert_eq!(server.app.state.tab_area(0, 0), Some(headless));
+    assert_eq!(server.app.state.pane_geometry().area, headless);
+    let layout = crate::ui::compute_tab_surface_for(
+        &server.app.state,
+        &server.app.terminal_runtimes,
+        crate::ui::TabSurfaceTarget::from_indices(&server.app.state, 0, 0),
+        headless,
     );
+    let pane = layout.pane_infos.first().expect("test pane geometry");
+    assert_eq!(
+        server.app.test_runtime(pane_id).current_size(),
+        (pane.inner_rect.height, pane.inner_rect.width)
+    );
+    shutdown_test_runtimes(&mut server);
 }
 
 #[tokio::test]
@@ -258,8 +271,8 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
     let headless_pane_size = (pane.inner_rect.height, pane.inner_rect.width);
 
     assert_eq!(
-        server.effective_size,
-        server.app.state.settings.headless_size
+        server.app.state.tab_area(0, 0),
+        Some(server.app.state.settings.headless_rect())
     );
     assert_ne!(client_size, headless_pane_size);
     assert_eq!(
@@ -513,16 +526,15 @@ fn no_window_title(control_rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> bool {
 }
 
 #[test]
-fn window_title_waits_for_a_foreground_client_to_exist() {
+fn window_title_waits_for_a_client_to_exist() {
     let mut server = test_headless_server();
     server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("herd")];
     server.app.state.set_active_index(Some(0));
     server.app.configure_window_title("{workspace}");
 
     // The server renders before the first client attaches. Nothing was
-    // delivered, so nothing may be recorded as delivered either.
+    // delivered, so the first client is written to when it arrives.
     server.sync_window_title();
-    assert_eq!(server.sent_window_title, None);
 
     let (client_tx, control_rx, _render_rx) = test_client_writer();
     server.clients.insert(
@@ -554,9 +566,8 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
         Some(Some("herd".to_string()))
     );
 
-    // ClientShellConnected assigns the foreground client directly rather than
-    // going through promote_client_to_foreground, so the cache must notice
-    // the new client on its own.
+    // Each client records what it was delivered, so a new client is written
+    // to even though the title is the one the first client already has.
     let (client_tx, second_control_rx, _render_rx) = test_client_writer();
     server.clients.insert(
         2,
@@ -567,20 +578,18 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
             Some(client_tx),
         ),
     );
-    server
-        .clients
-        .set_foreground_client_id(Some(ClientId::test_new(2)));
     server.sync_window_title();
 
     assert_eq!(
         next_window_title(&second_control_rx),
         Some(Some("herd".to_string()))
     );
+    assert!(no_window_title(&first_control_rx));
     shutdown_test_runtimes(&mut server);
 }
 
 #[test]
-fn configured_window_title_reaches_the_foreground_client_once_per_change() {
+fn configured_window_title_reaches_each_client_once_per_change() {
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}/{tab}");
 
@@ -646,7 +655,7 @@ async fn focused_terminal_title_syncs_and_invalidates_shell_metadata() {
 }
 
 #[test]
-fn a_foreground_client_without_a_writer_does_not_cache_the_window_title() {
+fn a_client_without_a_writer_does_not_cache_the_window_title() {
     let (mut server, _control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}");
 
@@ -662,7 +671,7 @@ fn a_foreground_client_without_a_writer_does_not_cache_the_window_title() {
         }
     ));
     server.sync_window_title();
-    assert!(server.sent_window_title.is_none());
+    assert!(server.clients[&1].sent_window_title.is_none());
 
     // Attaching again has to deliver the title rather than skip it as sent.
     let (client_tx, control_rx, _render_rx) = test_client_writer();
@@ -1261,9 +1270,10 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
         .app
         .public_pane_id(0, server.app.state.workspaces[0].tabs()[0].root_pane())
         .expect("pane id");
-    assert!(api_through_server(
+    assert!(command_through_server(
         &mut server,
-        shepr_api::schema::Method::PaneScroll(shepr_api::schema::PaneScrollParams {
+        7,
+        EndpointCommand::PaneScroll(shepr_protocol::command::PaneScrollParams {
             pane_id: pane_id.to_string(),
             offset_from_bottom: 0,
         }),
@@ -1274,21 +1284,16 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
     shutdown_test_runtimes(&mut server);
 }
 
-/// Sends one API request the way the headless loop does and returns whether
-/// it asked for a render.
-fn api_through_server(server: &mut HeadlessServer, method: shepr_api::schema::Method) -> bool {
-    let (respond_to, response_rx) = std::sync::mpsc::channel();
-    let render = server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-        request: shepr_api::schema::Request {
-            id: "projection".into(),
-            method,
-        },
-        respond_to,
-    });
-    let response = response_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("api response");
-    assert!(response.is_ok(), "{response:?}");
+/// Runs one client-shell command for `client_id` the way the headless loop
+/// does and returns whether it asked for a render.
+fn command_through_server(
+    server: &mut HeadlessServer,
+    client_id: u64,
+    command: EndpointCommand,
+) -> bool {
+    let (render, result) =
+        server.handle_client_shell_command(ClientId::test_new(client_id), command);
+    assert!(result.is_ok());
     render
 }
 
@@ -1320,15 +1325,12 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
 
     let outcome = server
         .app
-        .handle_api_request_with_render(shepr_api::schema::Request {
-            id: "rename".into(),
-            method: shepr_api::schema::Method::WorkspaceRename(
-                shepr_api::schema::WorkspaceRenameParams {
-                    workspace_id: first.workspaces[0].workspace_id.to_string(),
-                    label: "renamed".into(),
-                },
-            ),
-        });
+        .handle_endpoint_command_with_render(EndpointCommand::WorkspaceRename(
+            shepr_protocol::command::WorkspaceRenameParams {
+                workspace_id: first.workspaces[0].workspace_id.to_string(),
+                label: "renamed".into(),
+            },
+        ));
     assert_eq!(outcome.render, RenderDemand::Full);
     server.render_and_stream();
     let renamed = client_shell_snapshot(&control);
@@ -1412,7 +1414,10 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
 /// must reach the client as its own fresh projection.
 #[tokio::test]
 async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
-    use shepr_api::schema::Method;
+    use shepr_protocol::command::{
+        PaneInputSetParams, PaneRenameParams, PaneRightClickTarget, PaneZoomMode, PaneZoomParams,
+        TabRenameParams,
+    };
 
     let mut server = test_headless_server();
     let _input = install_focused_test_runtime(&mut server, b"BASE");
@@ -1435,9 +1440,10 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     server.render_and_stream();
     assert!(control.try_recv().is_err());
 
-    assert!(api_through_server(
+    assert!(command_through_server(
         &mut server,
-        Method::PaneRename(shepr_api::schema::PaneRenameParams {
+        7,
+        EndpointCommand::PaneRename(PaneRenameParams {
             pane_id: public_pane_id.clone().to_string(),
             label: Some("manual".into()),
         }),
@@ -1445,9 +1451,10 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     let renamed = next_projection(&mut server, &control, &mut previous);
     assert_eq!(pane(&renamed).label.as_deref(), Some("manual"));
 
-    assert!(api_through_server(
+    assert!(command_through_server(
         &mut server,
-        Method::TabRename(shepr_api::schema::TabRenameParams {
+        7,
+        EndpointCommand::TabRename(TabRenameParams {
             tab_id: tab_id.clone().to_string(),
             label: "named-tab".into(),
         }),
@@ -1456,11 +1463,12 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     assert_eq!(tab.tabs[0].label, "named-tab");
     assert!(tab.tabs[0].custom_label);
 
-    assert!(api_through_server(
+    assert!(command_through_server(
         &mut server,
-        Method::PaneInputSet(shepr_api::schema::PaneInputSetParams {
+        7,
+        EndpointCommand::PaneInputSet(PaneInputSetParams {
             pane_id: public_pane_id.clone().to_string(),
-            right_click: shepr_api::schema::PaneRightClickTarget::Pane,
+            right_click: PaneRightClickTarget::Pane,
         }),
     ));
     assert!(pane(&next_projection(&mut server, &control, &mut previous)).right_click_passthrough);
@@ -1516,11 +1524,12 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         Some("feature")
     );
 
-    assert!(api_through_server(
+    assert!(command_through_server(
         &mut server,
-        Method::PaneZoom(shepr_api::schema::PaneZoomParams {
+        7,
+        EndpointCommand::PaneZoom(PaneZoomParams {
             pane_id: Some(public_pane_id.clone().to_string()),
-            mode: shepr_api::schema::PaneZoomMode::On,
+            mode: PaneZoomMode::On,
         }),
     ));
     assert!(next_projection(&mut server, &control, &mut previous).tabs[0].zoomed);
@@ -1546,9 +1555,10 @@ async fn a_reconnecting_shell_gets_the_config_again_and_later_changes() {
     let mut previous = seed.revision;
     server.render_and_stream();
     assert!(control.try_recv().is_err());
-    assert!(api_through_server(
+    assert!(command_through_server(
         &mut server,
-        shepr_api::schema::Method::WorkspaceRename(shepr_api::schema::WorkspaceRenameParams {
+        8,
+        EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
             workspace_id: seed.workspaces[0].workspace_id.to_string(),
             label: "after-reconnect".into(),
         }),
@@ -2247,7 +2257,7 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
 
 #[tokio::test]
 async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
-    use shepr_api::schema::{Method, PaneSelectionReadParams, PaneTextPoint};
+    use shepr_protocol::command::{PaneSelectionReadParams, PaneTextPoint};
 
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("default-focus-cache");
@@ -2310,28 +2320,26 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
     );
 
     let previous_revision = server.app.state.shell_projection_revision;
-    let (respond_to, response_rx) = std::sync::mpsc::channel();
-    let changed = server.handle_client_shell_api_request(
+    let (changed, result) = server.handle_client_shell_command(
         ClientId::test_new(70),
-        shepr_api::ApiRequestMessage {
-            request: shepr_api::schema::Request {
-                id: "read-selection".into(),
-                method: Method::PaneSelectionRead(PaneSelectionReadParams {
-                    pane_id: first_pane_id.to_string(),
-                    anchor: PaneTextPoint {
-                        row: shepr_vt::AbsRow(0),
-                        col: 0,
-                    },
-                    cursor: PaneTextPoint {
-                        row: shepr_vt::AbsRow(0),
-                        col: 0,
-                    },
-                }),
+        EndpointCommand::PaneSelectionRead(PaneSelectionReadParams {
+            pane_id: first_pane_id.to_string(),
+            anchor: PaneTextPoint {
+                row: shepr_vt::AbsRow(0),
+                col: 0,
             },
-            respond_to,
-        },
+            cursor: PaneTextPoint {
+                row: shepr_vt::AbsRow(0),
+                col: 0,
+            },
+        }),
     );
-    assert!(response_rx.recv().is_ok());
+    // The pane holds no text, so the read itself is refused; what matters is
+    // that any client command reconciles the session default and renders.
+    assert!(
+        matches!(&result, Err(error) if error.code == shepr_api::error::ApiErrorCode::SelectionUnavailable),
+        "{result:?}"
+    );
     assert!(
         changed,
         "changing the session default must request a render"
@@ -2417,21 +2425,24 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(true);
-
-    let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    server.handle_client_shell_api_request(
-        ClientId::test_new(62),
-        shepr_api::ApiRequestMessage {
-            request: shepr_api::schema::Request {
-                id: "focus-own-tab".into(),
-                method: shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
-                    tab_id: second_tab_id.to_string(),
-                }),
-            },
-            respond_to,
-        },
+    // Each focused viewer's pane gains focus once.
+    server.sync_pane_focus();
+    assert_eq!(
+        first_input.try_recv().expect("first viewer focus gained"),
+        Bytes::from_static(b"\x1b[I")
     );
-    server.app.sync_focus_events();
+    assert_eq!(
+        second_input.try_recv().expect("second viewer focus gained"),
+        Bytes::from_static(b"\x1b[I")
+    );
+
+    let (_, result) = server.handle_client_shell_command(
+        ClientId::test_new(62),
+        shepr_protocol::command::EndpointCommand::TabFocus(shepr_protocol::command::TabTarget {
+            tab_id: second_tab_id.to_string(),
+        }),
+    );
+    assert!(result.is_ok());
     assert!(first_input.try_recv().is_err());
     assert!(second_input.try_recv().is_err());
     shutdown_test_runtimes(&mut server);
@@ -2439,7 +2450,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
 
 #[tokio::test]
 async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
-    use shepr_api::schema::{Method, PaneTarget, TabTarget};
+    use shepr_protocol::command::{PaneTarget, TabTarget};
 
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("focus-events");
@@ -2477,48 +2488,30 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
         tab_id: second_tab_id.to_string(),
     };
     let cases = [
-        (61, Method::TabFocus(second_tab.clone())),
-        (62, Method::TabFocus(second_tab.clone())),
-        (61, Method::TabFocus(second_tab.clone())),
-        (61, Method::TabFocus(first_tab)),
+        (61, EndpointCommand::TabFocus(second_tab.clone())),
+        (62, EndpointCommand::TabFocus(second_tab.clone())),
+        (61, EndpointCommand::TabFocus(second_tab.clone())),
+        (61, EndpointCommand::TabFocus(first_tab)),
         (
             62,
-            Method::PaneFocus(PaneTarget {
+            EndpointCommand::PaneFocus(PaneTarget {
                 pane_id: second_pane_id.clone().to_string(),
             }),
         ),
         (
             62,
-            Method::PaneFocus(PaneTarget {
+            EndpointCommand::PaneFocus(PaneTarget {
                 pane_id: first_pane_id.clone().to_string(),
             }),
         ),
-        (61, Method::TabFocus(second_tab.clone())),
-        (61, Method::TabClose(second_tab)),
+        (61, EndpointCommand::TabFocus(second_tab.clone())),
+        (61, EndpointCommand::TabClose(second_tab)),
     ];
-    for (client_id, method) in cases {
+    for (client_id, command) in cases {
         let other_client = ClientId::test_new(if client_id == 61 { 62 } else { 61 });
         let other_focus = server.shell_focus_target(other_client);
-        let (respond_to, response_rx) = std::sync::mpsc::channel();
-        server.handle_client_shell_api_request(
-            client_id.into(),
-            shepr_api::ApiRequestMessage {
-                request: shepr_api::schema::Request {
-                    id: "navigate".into(),
-                    method,
-                },
-                respond_to,
-            },
-        );
-        let response = response_rx.recv().expect("navigation response");
-        assert!(
-            serde_json::from_str::<shepr_api::schema::SuccessResponse>(
-                &crate::test_support::test_json(&response)
-            )
-            .is_ok(),
-            "{response:?}"
-        );
-        server.app.sync_focus_events();
+        let (_, result) = server.handle_client_shell_command(client_id.into(), command);
+        assert!(result.is_ok(), "client {client_id}");
 
         assert_eq!(
             server.shell_focus_target(other_client),
@@ -2530,9 +2523,9 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
 }
 
 #[tokio::test]
-async fn public_focus_moves_shell_focus_between_tabs() {
+async fn navigation_moves_pane_focus_between_tabs_once() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("public-focus-events");
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("navigation-focus-events");
     let first_pane = workspace.tabs()[0].root_pane();
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs()[second_tab].root_pane();
@@ -2581,9 +2574,23 @@ async fn public_focus_moves_shell_focus_between_tabs() {
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(true);
-    assert!(server.app.state.switch_workspace_tab(0, second_tab));
+    server.sync_pane_focus();
+    for input in [&mut first_input, &mut second_input] {
+        assert_eq!(
+            input.try_recv().expect("focused viewer gained focus"),
+            Bytes::from_static(b"\x1b[I")
+        );
+    }
 
-    server.focus_all_shell_clients_on_default_target();
+    // The first viewer joins the second one's tab: its old pane loses focus,
+    // and the pane both now view, already focused, gains nothing again.
+    let (_, result) = server.handle_client_shell_command(
+        ClientId::test_new(63),
+        shepr_protocol::command::EndpointCommand::TabFocus(shepr_protocol::command::TabTarget {
+            tab_id: second_tab_id.to_string(),
+        }),
+    );
+    assert!(result.is_ok());
 
     assert_eq!(
         server
@@ -2626,25 +2633,20 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     let (control, _) = connect_test_shell(&mut server, 65, 100, 30);
     let _ = control.recv().expect("snapshot");
     let before = server.app.test_runtime(first_pane).current_size();
-    let (respond_to, _response_rx) = std::sync::mpsc::channel();
 
-    assert!(server.handle_client_shell_api_request(
+    let (changed, result) = server.handle_client_shell_command(
         ClientId::test_new(65),
-        shepr_api::ApiRequestMessage {
-            request: shepr_api::schema::Request {
-                id: "resize-layout".into(),
-                method: shepr_api::schema::Method::LayoutSetSplitRatio(
-                    shepr_api::schema::LayoutSetSplitRatioParams {
-                        tab_id: Some(tab_id.to_string()),
-                        pane_id: None,
-                        path: Vec::new(),
-                        ratio: 0.8,
-                    },
-                ),
+        shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
+            shepr_protocol::command::LayoutSetSplitRatioParams {
+                tab_id: Some(tab_id.to_string()),
+                pane_id: None,
+                path: Vec::new(),
+                ratio: 0.8,
             },
-            respond_to,
-        },
-    ));
+        ),
+    );
+    assert!(result.is_ok());
+    assert!(changed);
 
     let after = server.app.test_runtime(first_pane).current_size();
     assert_ne!(after, before);
@@ -2652,7 +2654,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
 }
 
 #[tokio::test]
-async fn public_close_reapplies_controller_geometry() {
+async fn pane_close_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("public-close-geometry");
     let first_pane = workspace.tabs()[0].root_pane();
@@ -2680,18 +2682,13 @@ async fn public_close_reapplies_controller_geometry() {
     let shrunk = server.app.test_runtime(first_pane).current_size();
     assert!(shrunk.0 < 30);
 
-    let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    assert!(
-        server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-            request: shepr_api::schema::Request {
-                id: "public-close-geometry".into(),
-                method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
-                    pane_id: second_pane_id.to_string(),
-                }),
-            },
-            respond_to,
-        })
-    );
+    assert!(command_through_server(
+        &mut server,
+        66,
+        EndpointCommand::PaneClose(shepr_protocol::command::PaneTarget {
+            pane_id: second_pane_id.to_string(),
+        }),
+    ));
 
     let runtime = &server.app.test_runtime(first_pane);
     let grown = runtime.current_size();
@@ -2927,7 +2924,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
 }
 
 #[tokio::test]
-async fn public_background_tab_create_preserves_client_locations() {
+async fn background_tab_create_preserves_client_locations() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("background-create");
     let second_tab = workspace.test_add_tab(Some("second"));
@@ -2952,20 +2949,17 @@ async fn public_background_tab_create_preserves_client_locations() {
     let _ = second_control.recv().expect("second snapshot");
     assert!(server.focus_shell_client_on_tab(ClientId::test_new(71), &second_tab_id));
 
-    let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-        request: shepr_api::schema::Request {
-            id: "create-background-tab".into(),
-            method: shepr_api::schema::Method::TabCreate(shepr_api::schema::TabCreateParams {
-                workspace_id: Some(workspace_id.to_string()),
-                cwd: None,
-                focus: false,
-                label: Some("background".into()),
-                env: std::collections::HashMap::new(),
-            }),
-        },
-        respond_to,
-    });
+    assert!(command_through_server(
+        &mut server,
+        72,
+        EndpointCommand::TabCreate(shepr_protocol::command::TabCreateParams {
+            workspace_id: Some(workspace_id.to_string()),
+            cwd: None,
+            focus: false,
+            label: Some("background".into()),
+            env: std::collections::HashMap::new(),
+        }),
+    ));
 
     assert_eq!(
         server
@@ -2983,7 +2977,7 @@ async fn public_background_tab_create_preserves_client_locations() {
 }
 
 #[tokio::test]
-async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
+async fn workspace_focus_moves_only_its_client_and_keeps_remembered_tabs() {
     let mut server = test_headless_server();
     let mut first = shepr_mux::workspace::Workspace::test_new("first");
     let second_tab = first.test_add_tab(Some("second"));
@@ -3010,16 +3004,13 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     let _ = second_control.recv().expect("second snapshot");
     assert!(server.focus_shell_client_on_tab(ClientId::test_new(41), &second_tab_id));
 
-    let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-        request: shepr_api::schema::Request {
-            id: "focus-second-workspace".into(),
-            method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                workspace_id: second_workspace_id.clone().to_string(),
-            }),
-        },
-        respond_to,
-    });
+    assert!(command_through_server(
+        &mut server,
+        41,
+        EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
+            workspace_id: second_workspace_id.clone().to_string(),
+        }),
+    ));
 
     let first_location = server.clients[&41]
         .shell_state()
@@ -3037,7 +3028,7 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     );
     assert_eq!(
         second_location.focused_workspace_id.as_deref(),
-        Some(second_workspace_id.as_str())
+        Some(first_workspace_id.as_str())
     );
     assert_eq!(
         first_location.active_tab_ids[&first_workspace_id].to_string(),
@@ -3051,7 +3042,7 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
 }
 
 #[tokio::test]
-async fn public_pane_focus_replaces_a_diverged_client_shell_projection() {
+async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("first");
     let first_pane = first.tabs()[0].root_pane();
@@ -3103,21 +3094,13 @@ async fn public_pane_focus_replaces_a_diverged_client_shell_projection() {
     let diverged_surface = recv_pane_surface(&mut render_rx, "diverged surface");
     assert!(frame_text(&diverged_surface.frame).contains("SECOND_WORKSPACE"));
 
-    let (respond_to, response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-        request: shepr_api::schema::Request {
-            id: "focus-first-pane".into(),
-            method: shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
-                pane_id: first_pane_id.clone().to_string(),
-            }),
-        },
-        respond_to,
-    });
-    let response: shepr_api::schema::SuccessResponse = serde_json::from_str(
-        &crate::test_support::test_json(&response_rx.recv().expect("pane focus response")),
-    )
-    .expect("test precondition");
-    let shepr_api::schema::ResponseResult::PaneInfo { pane } = response.result else {
+    let (_, result) = server.handle_client_shell_command(
+        ClientId::test_new(9),
+        EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget {
+            pane_id: first_pane_id.clone().to_string(),
+        }),
+    );
+    let Ok(shepr_protocol::command::EndpointReply::PaneInfo { pane }) = result else {
         panic!("expected pane info");
     };
     assert_eq!(pane.pane_id, first_pane_id);
@@ -3150,7 +3133,7 @@ async fn public_pane_focus_replaces_a_diverged_client_shell_projection() {
 }
 
 #[tokio::test]
-async fn public_api_focus_replaces_every_client_shell_projection() {
+async fn workspace_focus_replaces_the_client_shell_projection() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("first");
     let second = shepr_mux::workspace::Workspace::test_new("second");
@@ -3179,16 +3162,13 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
     );
     let initial_revision = client_shell_snapshot(&control_rx).revision;
 
-    let (respond_to, _response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-        request: shepr_api::schema::Request {
-            id: "test.client.shell.workspace.focus".into(),
-            method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                workspace_id: second_id.clone().to_string(),
-            }),
-        },
-        respond_to,
-    });
+    assert!(command_through_server(
+        &mut server,
+        9,
+        EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
+            workspace_id: second_id.clone().to_string(),
+        }),
+    ));
     assert_eq!(server.app.state.active_index(), Some(1));
     server.render_and_stream();
 
@@ -3651,7 +3631,6 @@ fn retained_test_server_with_control(
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(1)));
-    server.sync_foreground_client_state();
     assert!(server.claim_unowned_shell_tab_geometry(ClientId::test_new(1), true));
 
     (server, client_control_rx, client_rx, pane_id)
@@ -3749,7 +3728,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(2)));
-    server.sync_foreground_client_state();
+    assert!(server.sync_host_theme_from_foreground());
     assert_eq!(
         server.app.state.host_terminal_theme.background,
         Some(light.into())
@@ -4662,7 +4641,10 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
     ));
 
     server.render_and_stream();
-    assert_ne!(server.app.state.view.terminal_area, Rect::default());
+    assert_eq!(
+        server.app.state.tab_area(0, 0),
+        Some(server.app.state.settings.headless_rect())
+    );
 
     let now = Instant::now();
     assert!(!server.handle_scheduled_tasks_headless(now));
@@ -4928,7 +4910,6 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
         server
             .clients
             .set_foreground_client_id(Some(ClientId::test_new(2)));
-        server.sync_foreground_client_state();
         assert!(server.claim_unowned_shell_tab_geometry(ClientId::test_new(2), true));
         assert_eq!(
             server
@@ -4948,7 +4929,10 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             server.clients.foreground_client_id(),
             Some(ClientId::test_new(1))
         );
-        assert_eq!(server.app.state.outer_terminal_focus, Some(true));
+        assert_eq!(
+            outer_terminal_focus(server, ClientId::test_new(1)),
+            Some(true)
+        );
         assert_eq!(
             server
                 .app
@@ -4983,7 +4967,10 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             client_id: ClientId::test_new(2),
             focused: false,
         }));
-        assert_eq!(server.app.state.outer_terminal_focus, Some(false));
+        assert_eq!(
+            outer_terminal_focus(server, ClientId::test_new(2)),
+            Some(false)
+        );
         assert_eq!(
             input_rx.try_recv().expect("last viewer focus lost input"),
             Bytes::from_static(b"\x1b[O")
@@ -5018,7 +5005,6 @@ fn clipboard_write_targets_foreground_client_only() {
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(2)));
-    server.sync_foreground_client_state();
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::ClipboardWrite {
         content: b"test".to_vec(),

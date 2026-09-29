@@ -129,12 +129,23 @@ pub(super) fn compute_pane_infos_for_tab(
     for info in &mut pane_infos {
         let pane_inner = pane_inner_rect(info.rect, info.borders);
 
-        let mut inner_rect = pane_inner;
-        let mut scrollbar_rect = None;
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            (inner_rect, scrollbar_rect) =
-                stable_scrollbar_gutter(rt, pane_inner, app.settings.pane_scrollbars);
-        }
+        // A pane without a runtime (one waiting on agent resume, or whose
+        // restore failed) gets the content rect of a fresh shell on the
+        // primary screen: the gutter reserved, as the runtime it starts will
+        // have it. Its resume is spawned at exactly this size, so its first
+        // resize does not change it.
+        let (inner_rect, scrollbar_rect) =
+            match app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
+                Some(rt) => stable_scrollbar_gutter(rt, pane_inner, app.settings.pane_scrollbars),
+                None => (
+                    shepr_mux::workspace::terminal_content_rect(
+                        pane_inner,
+                        app.settings.pane_scrollbars,
+                        false,
+                    ),
+                    None,
+                ),
+            };
 
         info.inner_rect = inner_rect;
         info.scrollbar_rect = scrollbar_rect;
@@ -499,13 +510,30 @@ mod tests {
         registry
     }
 
-    fn render_view_pane_borders(
-        app: &AppState,
-        ws: &Workspace,
-        split_borders: &[shepr_core::layout::SplitBorder],
-        frame: &mut Frame<'_>,
-    ) {
-        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
+    #[test]
+    fn runtimeless_pane_reserves_the_gutter_its_fresh_shell_gets() {
+        let mut app = AppState::test_new();
+        app.settings.pane_scrollbars = true;
+        app.workspaces = vec![Workspace::test_new("resume-pending")];
+        app.set_active_index(Some(0));
+        let area = Rect::new(0, 0, 100, 30);
+
+        let infos = compute_pane_infos(&app, &PaneRuntimeRegistry::new(), area);
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].scrollbar_rect, None);
+        assert_eq!(
+            infos[0].inner_rect,
+            shepr_mux::workspace::terminal_content_rect(
+                pane_inner_rect(infos[0].rect, infos[0].borders),
+                true,
+                false,
+            )
+        );
+        assert_eq!(
+            infos[0].inner_rect.width,
+            pane_inner_rect(infos[0].rect, infos[0].borders).width - 1
+        );
     }
 
     #[test]
@@ -604,10 +632,9 @@ mod tests {
     #[test]
     fn pane_border_renderer_places_adjacent_cjk_by_display_width() {
         let mut app = AppState::test_new();
-        app.view.terminal_area = Rect::new(0, 0, 12, 3);
         let ws = Workspace::test_new("test");
         let pane_id = ws.tabs()[0].root_pane();
-        app.view.pane_infos = vec![PaneInfo {
+        let pane_infos = vec![PaneInfo {
             id: pane_id,
             rect: Rect::new(0, 0, 12, 3),
             inner_rect: Rect::default(),
@@ -624,7 +651,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3))
             .expect("test precondition");
         terminal
-            .draw(|frame| render_view_pane_borders(&app, &ws, &[], frame))
+            .draw(|frame| render_pane_borders(&app, &ws, &pane_infos, &[], frame))
             .expect("test precondition");
 
         let buffer = terminal.backend().buffer();
@@ -832,8 +859,7 @@ mod tests {
     fn global_pane_border_renderer_composes_junctions_and_focus_style() {
         let mut app = AppState::test_new();
         app.settings.pane_gaps = false;
-        app.view.terminal_area = Rect::new(0, 0, 4, 4);
-        app.view.pane_infos = vec![
+        let pane_infos = vec![
             PaneInfo {
                 id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 2),
@@ -888,7 +914,7 @@ mod tests {
             .expect("test precondition");
 
         terminal
-            .draw(|frame| render_view_pane_borders(&app, &ws, &split_borders, frame))
+            .draw(|frame| render_pane_borders(&app, &ws, &pane_infos, &split_borders, frame))
             .expect("test precondition");
 
         let buffer = terminal.backend().buffer();
@@ -902,8 +928,7 @@ mod tests {
     fn gapped_pane_focus_does_not_color_neighbor_border() {
         let mut app = AppState::test_new();
         app.settings.pane_gaps = true;
-        app.view.terminal_area = Rect::new(0, 0, 4, 3);
-        app.view.pane_infos = vec![
+        let pane_infos = vec![
             PaneInfo {
                 id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 3),
@@ -926,7 +951,7 @@ mod tests {
             .expect("test precondition");
 
         terminal
-            .draw(|frame| render_view_pane_borders(&app, &ws, &[], frame))
+            .draw(|frame| render_pane_borders(&app, &ws, &pane_infos, &[], frame))
             .expect("test precondition");
 
         let buffer = terminal.backend().buffer();
@@ -1085,7 +1110,6 @@ mod tests {
                 app.settings.pane_borders = pane_borders;
                 app.settings.pane_scrollbars = pane_scrollbars;
                 let area = Rect::new(2, 1, 101, 31);
-                app.view.terminal_area = area;
                 let mut workspace = Workspace::test_new("test");
                 let root = workspace.tabs()[0].root_pane();
                 let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
@@ -1102,9 +1126,11 @@ mod tests {
                 }
                 app.workspaces = vec![workspace];
                 app.set_active_index(Some(0));
+                app.test_record_all_tab_areas(area);
 
                 let infos = compute_pane_infos(&app, &terminal_runtimes, area);
                 let geometry = app.pane_geometry();
+                assert_eq!(geometry.area, area);
                 assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
                 for info in &infos {
                     assert_eq!(

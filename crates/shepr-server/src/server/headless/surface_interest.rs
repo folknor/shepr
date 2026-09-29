@@ -34,8 +34,6 @@ impl HeadlessServer {
         } else {
             None
         };
-        let focus_before = self.shell_focus_targets();
-        let focused_tabs_before = self.focused_shell_tabs();
         let (changed, projection_revision, held_inputs) = {
             let client = self.clients.get_mut(&client_id)?;
             let (changed, projection_revision) = {
@@ -61,6 +59,10 @@ impl HeadlessServer {
                 client.host_mouse_capture_active = None;
                 client.host_sgr_pixels_active = None;
                 client.shell_state_mut().host_keyboard_report_all_active = None;
+                // Do not emit/cache a title during a frozen target activation.
+                // A committed client explicitly requests the bounded replay
+                // after its coherent frame is visible.
+                client.sent_window_title = None;
             }
             client.clear_deferred_render();
             if !active && let Some(writer) = &client.writer {
@@ -73,16 +75,12 @@ impl HeadlessServer {
         if let Some(held_inputs) = held_inputs {
             self.release_client_shell_inputs(client_id, held_inputs);
         }
-        if changed {
-            self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
-        }
 
         if active {
             self.promote_client_to_foreground(client_id);
-            // Do not emit/cache a title during a frozen target activation. A committed client
-            // explicitly requests the bounded replay after its coherent frame is visible.
-            self.sent_window_title = None;
-            self.resize_foreground_shell_tab_if_controller(true);
+            // A surface that already sizes some tab settles it now, starting
+            // any resume the geometry was holding back.
+            self.resize_shell_tabs_sized_for(client_id, true);
             let focused_viewer_already_owns_tab = self
                 .shell_tab_id_for_client(client_id)
                 .is_some_and(|tab_id| {
@@ -101,12 +99,11 @@ impl HeadlessServer {
             self.clients.remove_geometry_controllers_for(client_id);
             if self.clients.foreground_client_id() == Some(client_id) {
                 self.promote_latest_remaining_client();
-                self.resize_foreground_shell_tab_if_controller(true);
-            } else {
-                self.sync_foreground_client_state();
             }
             self.reapply_controlled_shell_tab_geometry(true);
         }
+        // An inactive surface holds no pane focus; an active one does again.
+        self.sync_pane_focus();
         Some((changed || active, projection_revision.get()))
     }
 }

@@ -109,10 +109,18 @@ mod tests {
         };
 
         assert!(
-            request(Method::PaneRename(crate::schema::PaneRenameParams {
-                pane_id: "w1:p1".into(),
-                label: Some("name".into()),
-            },))
+            request(Method::PaneReportAgent(
+                crate::schema::PaneReportAgentParams {
+                    pane_id: "w1:p1".into(),
+                    source: "shepr:pi".into(),
+                    agent: "pi".into(),
+                    state: crate::schema::PaneAgentState::Working,
+                    message: None,
+                    seq: None,
+                    agent_session_id: None,
+                    agent_session_path: None,
+                }
+            ))
             .method
             .traits()
             .mutates_ui
@@ -150,14 +158,14 @@ mod tests {
         assert!(report.mutates_ui);
         assert!(report.routine);
 
-        let pane_clear = Method::PaneClear(crate::schema::PaneTarget {
+        let capture = Method::DetectCapture(crate::schema::PaneTarget {
             pane_id: "w1:p1".into(),
         })
         .traits();
-        assert_eq!(pane_clear.name, "pane.clear");
-        assert!(!pane_clear.runs_on_socket_thread);
-        assert!(pane_clear.mutates_ui);
-        assert!(!pane_clear.routine);
+        assert_eq!(capture.name, "detect.capture");
+        assert!(!capture.runs_on_socket_thread);
+        assert!(!capture.mutates_ui);
+        assert!(!capture.routine);
     }
 
     #[test]

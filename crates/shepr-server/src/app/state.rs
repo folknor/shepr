@@ -2,17 +2,28 @@ use ratatui::layout::Rect;
 use shepr_config::NewTerminalCwd;
 
 use shepr_core::layout::PaneId;
-use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 
 use shepr_mux::workspace::Workspace;
 use shepr_termio::host_term::theme::{HostAppearance, TerminalTheme};
 
 pub use shepr_config::theme::Palette;
 
-/// Geometry for the server-rendered active-tab pane surface.
-pub struct ViewState {
-    pub terminal_area: Rect,
-    pub(crate) pane_infos: Vec<PaneInfo>,
+/// Identity of a tab for the per-tab layout area: its workspace's public
+/// number and its own. Both are stable for the tab's lifetime, and neither
+/// lookup allocates, which `PublicTabId` would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TabAreaKey {
+    workspace_number: usize,
+    tab_number: usize,
+}
+
+impl TabAreaKey {
+    pub(crate) fn new(workspace_id: &shepr_protocol::WorkspaceId, tab_number: usize) -> Self {
+        Self {
+            workspace_number: workspace_id.number(),
+            tab_number,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,18 +55,23 @@ pub struct AppState {
     pub terminals:
         std::collections::HashMap<shepr_protocol::TerminalId, shepr_mux::terminal::TerminalState>,
     pub workspaces: Vec<Workspace>,
+    /// The session's focused workspace: saved with the session, where a new
+    /// client starts, and what an API call without an explicit target acts
+    /// on. Each client keeps its own location on the server; this is not a
+    /// mirror of any client's view.
     pub active: Option<shepr_protocol::WorkspaceId>,
     pub(crate) active_tab_id: Option<shepr_protocol::PublicTabId>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
     pub selected: Option<shepr_protocol::WorkspaceId>,
     pub mode: Mode,
     pub should_quit: bool,
-    // Geometry of the most recently computed server pane surface.
-    pub view: ViewState,
-    // Client focus
-    /// Last reported focus state for the outer terminal hosting shepr.
-    /// When focus has not been reported, pane focus events default to Gained.
-    pub outer_terminal_focus: Option<bool>,
+    /// The area each tab was last laid out in: where the server last applied
+    /// that tab's PTY geometry. A pane has one PTY size whichever client set
+    /// it, so this is session data, not any client's view. Spawn sizing and
+    /// API geometry (directional focus, resize steps, layout snapshots) read
+    /// it, so they agree with the sizes the panes actually have. Only the
+    /// server's geometry path writes it (`record_tab_area`).
+    pub(crate) tab_areas: std::collections::HashMap<TabAreaKey, Rect>,
     /// Immutable settings resolved from the launch configuration.
     pub(crate) settings: AppSettings,
     pub next_agent_state_change_seq: u64,
@@ -67,8 +83,6 @@ pub struct AppState {
     pub host_terminal_appearance_explicit: bool,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
-    /// Last known foreground host terminal cell size in pixels.
-    pub(crate) host_cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
     /// Invalidates the shell projection after state changes that can affect chrome.
@@ -197,16 +211,82 @@ impl AppState {
         self.shell_projection_revision = self.shell_projection_revision.saturating_add(1);
     }
 
-    /// Geometry a new pane's PTY is sized against: the most recently computed
-    /// pane surface, or the headless size before any view has been computed
-    /// (at startup, or when no client has ever attached).
+    /// Geometry a pane with no laid-out tab yet (a new workspace or tab) is
+    /// spawned against: the area of the tab the session is focused on, or the
+    /// headless area before geometry has been applied to it. A client-shell
+    /// request makes its own tab the session's focus before it runs, so a
+    /// client's new tab starts at that client's size.
     pub(crate) fn pane_geometry(&self) -> shepr_mux::workspace::PaneGeometry {
-        let area = if self.view.terminal_area.is_empty() {
-            self.settings.headless_rect()
-        } else {
-            self.view.terminal_area
-        };
-        self.pane_geometry_in(area)
+        self.pane_geometry_in(self.default_layout_area())
+    }
+
+    /// Geometry of tab `tab_idx` in workspace `ws_idx`: its recorded layout
+    /// area, or the default one when geometry has not been applied to it yet.
+    pub(crate) fn pane_geometry_for_tab(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> shepr_mux::workspace::PaneGeometry {
+        self.pane_geometry_in(self.tab_layout_area(ws_idx, tab_idx))
+    }
+
+    /// The area tab `tab_idx` of workspace `ws_idx` is laid out in: where the
+    /// server last applied its PTY geometry, or the default layout area when
+    /// it has not yet.
+    pub(crate) fn tab_layout_area(&self, ws_idx: usize, tab_idx: usize) -> Rect {
+        self.tab_area(ws_idx, tab_idx)
+            .unwrap_or_else(|| self.default_layout_area())
+    }
+
+    /// The recorded layout area of tab `tab_idx` in workspace `ws_idx`, if the
+    /// server has applied geometry to it.
+    pub(crate) fn tab_area(&self, ws_idx: usize, tab_idx: usize) -> Option<Rect> {
+        let workspace = self.workspaces.get(ws_idx)?;
+        let tab = workspace.tabs().get(tab_idx)?;
+        self.tab_areas
+            .get(&TabAreaKey::new(&workspace.id, tab.number()))
+            .copied()
+    }
+
+    /// Records the area the server just applied a tab's PTY geometry in.
+    pub(crate) fn record_tab_area(&mut self, key: TabAreaKey, area: Rect) {
+        self.tab_areas.insert(key, area);
+    }
+
+    /// Whether some tab has had no geometry applied yet.
+    pub(crate) fn has_tab_without_area(&self) -> bool {
+        self.workspaces.iter().any(|workspace| {
+            workspace.tabs().iter().any(|tab| {
+                !self
+                    .tab_areas
+                    .contains_key(&TabAreaKey::new(&workspace.id, tab.number()))
+            })
+        })
+    }
+
+    /// Drops the recorded areas of tabs that no longer exist.
+    pub(crate) fn retain_live_tab_areas(&mut self) {
+        let live = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| {
+                workspace
+                    .tabs()
+                    .iter()
+                    .map(|tab| TabAreaKey::new(&workspace.id, tab.number()))
+            })
+            .collect::<std::collections::HashSet<_>>();
+        self.tab_areas.retain(|key, _| live.contains(key));
+    }
+
+    /// The area of the tab the session is focused on, or the headless area.
+    fn default_layout_area(&self) -> Rect {
+        self.active_index()
+            .and_then(|ws_idx| {
+                let workspace = self.workspaces.get(ws_idx)?;
+                self.tab_area(ws_idx, workspace.active_tab_index())
+            })
+            .unwrap_or_else(|| self.settings.headless_rect())
     }
 
     /// The configured pane chrome applied to a tab laid out in `area`.
@@ -265,11 +345,7 @@ impl AppState {
             selected: None,
             mode: Mode::Navigate,
             should_quit: false,
-            view: ViewState {
-                terminal_area: Rect::default(),
-                pane_infos: Vec::new(),
-            },
-            outer_terminal_focus: None,
+            tab_areas: std::collections::HashMap::new(),
             settings: AppSettings::from_config(&shepr_config::ValidatedConfig::test_default()),
             next_agent_state_change_seq: 0,
             tab_bar_right: Vec::new(),
@@ -277,9 +353,26 @@ impl AppState {
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             host_terminal_theme: TerminalTheme::default(),
-            host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             shell_projection_revision: 0,
+        }
+    }
+
+    /// Records `area` as the layout area of every tab, as if the server had
+    /// applied geometry to each of them in it.
+    pub fn test_record_all_tab_areas(&mut self, area: Rect) {
+        let keys = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| {
+                workspace
+                    .tabs()
+                    .iter()
+                    .map(|tab| TabAreaKey::new(&workspace.id, tab.number()))
+            })
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.record_tab_area(key, area);
         }
     }
 
@@ -426,13 +519,55 @@ mod tests {
     }
 
     #[test]
+    fn pane_geometry_follows_the_focused_tabs_recorded_area() {
+        let mut state = AppState::test_with_adversarial_identity_state();
+        let mut second = shepr_mux::workspace::Workspace::test_new("second");
+        second.test_add_tab(Some("other"));
+        state.workspaces.push(second);
+        state.ensure_test_terminals();
+        let focused_area = Rect::new(0, 0, 97, 33);
+        let background_area = Rect::new(0, 0, 61, 17);
+        state.test_record_all_tab_areas(background_area);
+        let focused_key = TabAreaKey::new(
+            &state.workspaces[0].id,
+            state.workspaces[0].active_tab().number(),
+        );
+        state.record_tab_area(focused_key, focused_area);
+
+        assert_eq!(state.pane_geometry().area, focused_area);
+        assert_eq!(state.tab_layout_area(1, 1), background_area);
+        assert_eq!(state.pane_geometry_for_tab(1, 1).area, background_area);
+
+        // A tab the server has not laid out yet starts at the focused area.
+        state.tab_areas.clear();
+        state.record_tab_area(focused_key, focused_area);
+        assert!(state.has_tab_without_area());
+        assert_eq!(state.tab_area(1, 1), None);
+        assert_eq!(state.tab_layout_area(1, 1), focused_area);
+
+        // Closed tabs drop their areas.
+        state.workspaces.truncate(1);
+        state.test_record_all_tab_areas(focused_area);
+        state.tab_areas.insert(
+            TabAreaKey {
+                workspace_number: usize::MAX,
+                tab_number: 1,
+            },
+            background_area,
+        );
+        state.retain_live_tab_areas();
+        assert!(!state.has_tab_without_area());
+        assert!(state.tab_areas.values().all(|area| *area == focused_area));
+    }
+
+    #[test]
     fn split_spawn_size_is_the_new_panes_content_size_not_the_first_panes_outer_rect() {
         let mut state = AppState::test_new();
-        state.view.terminal_area = Rect::new(5, 2, 120, 40);
+        let area = Rect::new(5, 2, 120, 40);
         state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         state.settings.pane_scrollbars = true;
-        let geometry = state.pane_geometry();
-        assert_eq!(geometry.area, state.view.terminal_area);
+        let geometry = state.pane_geometry_in(area);
+        assert_eq!(geometry.area, area);
 
         let (mut layout, root) = shepr_core::layout::TileLayout::new();
         let new_pane = layout

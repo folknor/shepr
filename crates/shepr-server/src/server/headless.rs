@@ -121,11 +121,10 @@ pub struct HeadlessServer {
     /// projection that changed. Each shell client records the generation it
     /// last projected.
     shell_session_generation: u64,
-    /// Outer window title last pushed, paired with the client that received it.
-    /// Keying on the client means a newly attached client is written to even
-    /// when the title itself has not changed, without every code path that
-    /// changes the foreground client having to remember to invalidate this.
-    sent_window_title: Option<(ClientId, Option<String>)>,
+    /// Panes last told they hold terminal focus (`sync_pane_focus`), derived
+    /// from the clients' views; the record of what the panes were sent, not a
+    /// view of its own.
+    focused_panes: HashSet<(shepr_protocol::WorkspaceId, shepr_core::layout::PaneId)>,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
     /// the clients and on workspace/tab/pane topology, which change only while
@@ -148,9 +147,6 @@ pub struct HeadlessServer {
     retained_surface_fallback_reason: Option<&'static str>,
     /// Keeps repeated retained-render fallbacks from logging on every PTY wake.
     retained_surface_fallbacks_reported: HashSet<&'static str>,
-    /// Shared pane runtime size derived from the foreground client, or the
-    /// configured headless size when no clients are connected.
-    effective_size: shepr_core::geometry::GridSize,
     /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
     lifecycle: ShutdownLifecycle,
     /// Watches logind for shutdown warnings; `None` before `run` and while the
@@ -211,7 +207,6 @@ impl HeadlessServer {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
 
-        let effective_size = app.state.settings.headless_size;
         Ok(Self {
             app,
             _api_server: api_server,
@@ -223,12 +218,11 @@ impl HeadlessServer {
             resolved_config,
             shell_session_cache: None,
             shell_session_generation: 0,
-            sent_window_title: None,
+            focused_panes: HashSet::new(),
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
             retained_surface_fallback_reason: None,
             retained_surface_fallbacks_reported: HashSet::new(),
-            effective_size,
             lifecycle: ShutdownLifecycle::new(stop_requested),
             host_shutdown_monitor: None,
             server_event_rx,
@@ -322,7 +316,6 @@ impl HeadlessServer {
                 continue;
             }
 
-            self.app.sync_focus_events();
             self.app.sync_session_save_schedule();
 
             // 4. Drain server events from client threads.
@@ -342,6 +335,7 @@ impl HeadlessServer {
 
             if self.clients.latest_shell_client().is_some() && self.app.ensure_default_workspace() {
                 self.immediate_pty_sources_dirty = true;
+                self.sync_pane_focus();
                 render_demand.join(RenderDemand::Full);
             }
             if self.shell_cwd_refresh_due(now) && self.refresh_shell_projection_sources() {
@@ -548,108 +542,48 @@ impl HeadlessServer {
         run_error.map_or(Ok(()), Err)
     }
 
-    /// Re-applies the foreground client's tab geometry when it controls that
-    /// tab. The foreground client is always an active shell connection
-    /// (`promote_client_to_foreground` and registry shell selection admit nothing
-    /// else), so there is no whole-session resize path: pane geometry is owned
-    /// per tab by its shell controller.
-    fn resize_foreground_shell_tab_if_controller(&mut self, start_pending_agent_resumes: bool) {
-        if let Some(client_id) = self.clients.foreground_client_id() {
-            self.resize_shell_tab_if_controller(client_id, start_pending_agent_resumes);
-        }
-    }
-
-    fn sync_runtime_view_geometry(&mut self) {
-        self.app.state.view = crate::ui::compute_view(
-            &self.app.state,
-            &self.app.terminal_runtimes,
-            Rect::new(
-                0,
-                0,
-                self.effective_size.cols.get(),
-                self.effective_size.rows.get(),
-            ),
-        );
-    }
-
-    fn sync_foreground_client_state(&mut self) {
-        let foreground_client_id = self.clients.foreground_client_id();
-        self.app.pixel_mouse_available = foreground_client_id.is_some_and(|id| {
-            self.clients
-                .get(&id)
-                .is_some_and(|client| client.pixel_mouse)
-        });
-        let Some(client_id) = foreground_client_id else {
-            self.effective_size = self.app.state.settings.headless_size;
-            self.app.state.outer_terminal_focus = None;
-            self.app.state.host_cell_size =
-                shepr_termio::host_term::cell_size::HostCellSize::default();
-            self.sync_runtime_view_geometry();
-            return;
-        };
-        let Some(client) = self.clients.get(&client_id) else {
-            self.clients.set_foreground_client_id(None);
-            self.effective_size = self.app.state.settings.headless_size;
-            self.app.state.outer_terminal_focus = None;
-            self.app.state.host_cell_size =
-                shepr_termio::host_term::cell_size::HostCellSize::default();
-            self.sync_runtime_view_geometry();
-            return;
-        };
-        let shell = client.shell_state();
-
-        let terminal_size = client.terminal_size;
-        let host_cell_size = client.cell_size.or_default();
-        let host_terminal_theme = shell.host_terminal_theme;
-        let host_terminal_appearance = shell.host_terminal_appearance;
-        let host_terminal_appearance_explicit = shell.host_terminal_appearance_explicit;
-
-        self.effective_size = terminal_size;
-        self.sync_runtime_view_geometry();
-        self.app.state.host_cell_size = host_cell_size;
-        self.sync_foreground_focus_state();
-        self.app.set_host_terminal_appearance_state(
-            host_terminal_appearance,
-            host_terminal_appearance_explicit,
-        );
-        self.app.set_host_terminal_theme(host_terminal_theme);
-    }
-
-    /// Mirrors the foreground client's outer-terminal focus into `AppState`.
-    ///
-    /// This is all agent state and hook reports need before they are applied:
-    /// they change neither client geometry nor layout, so they do not rerun
-    /// `compute_view` through the full
-    /// `sync_foreground_client_state`.
-    fn sync_foreground_focus_state(&mut self) {
-        let Some(client) = self
+    /// Colours the panes with the foreground client's host theme: panes have
+    /// one theme (their default colours and the answers to colour queries),
+    /// and the client the user was last active in supplies it. A client that
+    /// has reported nothing yet leaves the current theme (a live client's, or
+    /// the one saved with the session) in place. Returns whether it changed.
+    fn sync_host_theme_from_foreground(&mut self) -> bool {
+        let Some(shell) = self
             .clients
             .foreground_client_id()
             .and_then(|client_id| self.clients.get(&client_id))
+            .map(ClientConnection::shell_state)
         else {
-            self.app.state.outer_terminal_focus = None;
-            return;
+            return false;
         };
-        self.app.state.outer_terminal_focus = client.shell_state().outer_terminal_focus;
-    }
-
-    fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
-        // Only an active shell connection may drive session-wide presentation.
-        let changed = self.clients.promote_to_foreground(client_id);
-        if !self
-            .clients
-            .get(&client_id)
-            .is_some_and(crate::server::clients::ClientConnection::is_active_shell_client)
-        {
+        if shell.host_terminal_theme.is_empty() && shell.host_terminal_appearance.is_none() {
             return false;
         }
-        self.sync_foreground_client_state();
+        let theme = shell.host_terminal_theme;
+        let appearance = shell.host_terminal_appearance;
+        let appearance_explicit = shell.host_terminal_appearance_explicit;
+        let mut changed = self
+            .app
+            .set_host_terminal_appearance_state(appearance, appearance_explicit);
+        changed |= self.app.set_host_terminal_theme(theme);
+        changed
+    }
+
+    /// Records activity from `client_id`, making it the foreground client if
+    /// it is an active shell. Returns whether the foreground client changed.
+    fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
+        let changed = self.clients.promote_to_foreground(client_id);
+        if changed {
+            self.sync_host_theme_from_foreground();
+        }
         changed
     }
 
     fn promote_latest_remaining_client(&mut self) -> bool {
         let changed = self.clients.promote_latest_remaining();
-        self.sync_foreground_client_state();
+        if changed {
+            self.sync_host_theme_from_foreground();
+        }
         changed
     }
 
@@ -663,31 +597,13 @@ impl HeadlessServer {
 
     fn remove_client(&mut self, client_id: ClientId) -> bool {
         self.immediate_pty_sources_dirty = true;
-        let disconnected_focus = self
-            .clients
-            .get(&client_id)
-            .filter(|client| {
-                client.is_active_shell_client()
-                    && client.shell_state().outer_terminal_focus == Some(true)
-            })
-            .and_then(|_| self.shell_focus_target(client_id));
-        let should_release_focus = disconnected_focus.as_ref().is_some_and(|target| {
-            !self.clients.iter().any(|(&other_id, client)| {
-                other_id != client_id
-                    && client.is_active_shell_client()
-                    && client.shell_state().outer_terminal_focus == Some(true)
-                    && self.shell_tab_id_for_client(other_id).as_deref()
-                        == Some(target.tab_id.as_str())
-            })
-        });
         let (removed, was_foreground) = self.clients.remove_client(client_id);
         if let Some(mut removed) = removed {
             let held_inputs = removed.drain_shell_held_inputs();
             self.release_client_shell_inputs(client_id, held_inputs);
         }
-        if should_release_focus && let Some(target) = disconnected_focus.as_ref() {
-            self.send_shell_focus_target(target, shepr_vt::FocusEvent::Lost);
-        }
+        // The departed client no longer holds focus on the pane it viewed.
+        self.sync_pane_focus();
         if was_foreground {
             self.promote_latest_remaining_client()
         } else {
@@ -747,21 +663,12 @@ impl HeadlessServer {
     }
 
     fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) {
-        let was_shell_client = self
-            .clients
-            .get(&client_id)
-            .is_some_and(crate::server::clients::ClientConnection::is_active_shell_client);
         self.remove_client(client_id);
-        if self.has_app_client() {
-            // Removing the client dropped its geometry controller mappings.
-            // Hand each tab it controlled to a remaining viewer and resize
-            // to that viewer, so no pane keeps the departed client's size.
-            self.reapply_controlled_shell_tab_geometry(true);
-        } else if was_shell_client {
-            // With no shell surfaces, a departing shell releases its geometry
-            // and settles pending resumes.
-            self.resize_tabs_to_headless_size();
-        }
+        // Removing the client dropped its geometry controller mappings. Each
+        // tab it controlled goes to a remaining viewer, or every tab to the
+        // headless size when no surface remains, so no pane keeps the
+        // departed client's size.
+        self.reapply_controlled_shell_tab_geometry(true);
     }
 
     /// Accepts pending client connections from the non-blocking listener.
@@ -809,27 +716,19 @@ impl HeadlessServer {
         }
     }
 
-    /// Pulls only titles reported dirty by the PTY parser. A focused pane title
-    /// is forwarded as an independent client side effect. Any changed title
-    /// also updates the shell agent metadata, so it requires a projection.
+    /// Pulls only titles reported dirty by the PTY parser. A title of a pane
+    /// some client has focused is forwarded as that client's window title.
+    /// Any changed title also updates the shell agent metadata, so it requires
+    /// a projection.
     fn sync_terminal_title_sources(
         &mut self,
         sources: &HashSet<shepr_core::layout::PaneId>,
     ) -> (bool, bool) {
         let focused_source = self
-            .foreground_window_title_target()
-            .or_else(|| self.default_shell_target())
-            .and_then(|target| {
-                let (workspace_index, tab_index) = target.resolve(&self.app.state)?;
-                self.app
-                    .state
-                    .workspaces
-                    .get(workspace_index)?
-                    .tabs()
-                    .get(tab_index)
-            })
-            .map(|tab| tab.layout().focused())
-            .is_some_and(|pane_id| sources.contains(&pane_id));
+            .window_title_clients()
+            .into_iter()
+            .filter_map(|client_id| self.shell_focus_target(client_id))
+            .any(|target| sources.contains(&target.pane_id));
         let changes = self.app.sync_terminal_titles(sources);
         if changes.raw_changed || changes.stripped_changed {
             self.app.state.mark_shell_projection_dirty();
@@ -844,22 +743,23 @@ impl HeadlessServer {
         )
     }
 
-    fn foreground_window_title_target(&self) -> Option<crate::ui::TabSurfaceTarget> {
-        self.clients
-            .foreground_client_id()
-            .filter(|client_id| {
-                self.clients
-                    .get(client_id)
-                    .is_some_and(ClientConnection::is_active_shell_client)
-            })
-            .and_then(|client_id| self.shell_target_for_client(client_id))
+    /// The clients that show a window title: every active shell surface.
+    fn window_title_clients(&self) -> Vec<ClientId> {
+        let mut clients = self
+            .clients
+            .iter()
+            .filter(|(_, client)| client.is_active_shell_client())
+            .map(|(&client_id, _)| client_id)
+            .collect::<Vec<_>>();
+        clients.sort_unstable();
+        clients
     }
 
-    /// Renders `ui.window_title` against the foreground client view. `None` means
+    /// Renders `ui.window_title` against `client_id`'s own view. `None` means
     /// window titles are disabled or every token resolved empty, which leaves
     /// the client on Shepr's default title.
-    fn configured_window_title(&self) -> Option<String> {
-        self.foreground_window_title_target()
+    fn configured_window_title(&self, client_id: ClientId) -> Option<String> {
+        self.shell_target_for_client(client_id)
             .map_or_else(
                 || self.app.window_title(),
                 |target| {
@@ -873,33 +773,34 @@ impl HeadlessServer {
             .and_then(|title| shepr_config::sanitize_window_title_text(&title))
     }
 
-    /// Pushes the configured outer window title to the foreground client when it
-    /// changed. Shepr consumes each pane's own `OSC 0`/`OSC 2`, so without this
-    /// the host terminal title never follows the session - which is what window
-    /// managers read for tab and group bar labels.
+    /// Pushes each client the configured outer window title of its own view
+    /// when that changed since it was last delivered. Shepr consumes each
+    /// pane's own `OSC 0`/`OSC 2`, so without this the host terminal title
+    /// never follows the session - which is what window managers read for tab
+    /// and group bar labels.
     fn sync_window_title(&mut self) {
         if !self.app.window_title_configured() {
             return;
         }
-        let title = self.configured_window_title();
-        if let (Some(client_id), Some((sent_client_id, sent_title))) = (
-            self.clients.foreground_client_id(),
-            self.sent_window_title.as_ref(),
-        ) && *sent_client_id == client_id
-            && *sent_title == title
-        {
-            return;
+        let pending = self
+            .window_title_clients()
+            .into_iter()
+            .map(|client_id| (client_id, self.configured_window_title(client_id)))
+            .filter(|(client_id, title)| {
+                self.clients
+                    .get(client_id)
+                    .is_some_and(|client| client.sent_window_title.as_ref() != Some(title))
+            })
+            .collect::<Vec<_>>();
+        for (client_id, title) in pending {
+            self.send_window_title(client_id, title);
         }
-        self.send_window_title(title);
     }
 
-    /// Sends a window title and remembers it only when a foreground client took
-    /// it, so the next client to attach is written to rather than skipped.
-    fn send_window_title(&mut self, title: Option<String>) -> bool {
-        let Some(client_id) = self.clients.foreground_client_id() else {
-            self.sent_window_title = None;
-            return false;
-        };
+    /// Sends a client its window title and remembers it only when the client
+    /// took it, so a client that did not is written to again rather than
+    /// skipped.
+    fn send_window_title(&mut self, client_id: ClientId, title: Option<String>) -> bool {
         // `send_to_client` reports false for a missing or writer-less client,
         // so nothing is cached against a client that never got the title.
         let sent = self.send_to_client(
@@ -908,7 +809,9 @@ impl HeadlessServer {
                 title: title.clone(),
             },
         );
-        self.sent_window_title = sent.then_some((client_id, title));
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.sent_window_title = sent.then_some(title);
+        }
         sent
     }
 
@@ -995,8 +898,24 @@ impl HeadlessServer {
         true
     }
 
-    /// Handles a server event. Returns true if the event requires a re-render.
+    /// Handles a server event, then reports any change in which panes hold
+    /// terminal focus. Returns true if the event requires a re-render.
     fn handle_server_event(&mut self, ev: ServerEvent) -> bool {
+        // Pane input and writer drains, the per-keystroke and per-frame
+        // events, move no client's view and no outer focus; a client they
+        // remove on a failed send is settled by `remove_client`.
+        let may_move_focus = !matches!(
+            ev,
+            ServerEvent::ClientShellPaneInput { .. } | ServerEvent::ClientWriterDrained { .. }
+        );
+        let changed = self.apply_server_event(ev);
+        if may_move_focus {
+            self.sync_pane_focus();
+        }
+        changed
+    }
+
+    fn apply_server_event(&mut self, ev: ServerEvent) -> bool {
         self.immediate_pty_sources_dirty = true;
         match ev {
             ServerEvent::ClientShellConnected {
@@ -1058,12 +977,13 @@ impl HeadlessServer {
                 self.clients.insert(client_id, connection);
                 self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
-                    self.clients.set_foreground_client_id(Some(client_id));
+                    self.promote_client_to_foreground(client_id);
                 }
                 if first_app_client {
                     self.app.mark_git_status_refresh_due(self.app.clock.now);
                 }
-                self.sync_foreground_client_state();
+                // A second surface changes no tab's size: controlled tabs
+                // keep their controller and uncontrolled ones keep theirs.
                 self.claim_unowned_shell_tab_geometry(client_id, true);
                 true
             }
@@ -1108,7 +1028,7 @@ impl HeadlessServer {
                 }
                 client.request_repaint();
                 self.promote_client_to_foreground(client_id);
-                self.resize_shell_tab_if_controller(client_id, true);
+                self.resize_shell_tabs_sized_for(client_id, true);
                 true
             }
             ServerEvent::ClientShellHostTheme { client_id, update } => {
@@ -1119,24 +1039,20 @@ impl HeadlessServer {
                 if !client.update_host_theme(&update) {
                     return false;
                 }
-                let shell = client.shell_state();
-                if !shell.surface_active || !is_foreground {
+                if !client.shell_state().surface_active || !is_foreground {
                     return false;
                 }
-                let appearance = shell.host_terminal_appearance;
-                let appearance_explicit = shell.host_terminal_appearance_explicit;
-                let theme = shell.host_terminal_theme;
-                let mut changed = self
-                    .app
-                    .set_host_terminal_appearance_state(appearance, appearance_explicit);
-                changed |= self.app.set_host_terminal_theme(theme);
+                let changed = self.sync_host_theme_from_foreground();
                 if changed {
-                    self.resize_foreground_shell_tab_if_controller(false);
+                    // Pane colours changed under every surface.
+                    for client in self.clients.values_mut() {
+                        client.request_recompute();
+                    }
                 }
                 changed
             }
             ServerEvent::ClientShellFocus { client_id, focused } => {
-                let Some(client) = self.clients.get(&client_id) else {
+                let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
                 if !client.is_active_shell_client()
@@ -1144,36 +1060,14 @@ impl HeadlessServer {
                 {
                     return false;
                 }
-                let tab_id = self.shell_tab_id_for_client(client_id);
-                let another_focused_viewer = self.clients.iter().any(|(&other_id, client)| {
-                    other_id != client_id
-                        && client.is_active_shell_client()
-                        && client.shell_state().outer_terminal_focus == Some(true)
-                        && self.shell_tab_id_for_client(other_id) == tab_id
-                });
-                if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.shell_state_mut().outer_terminal_focus = Some(focused);
-                }
+                // Recorded on this connection only; the panes it views learn
+                // of it through `sync_pane_focus` once the event is applied.
+                client.shell_state_mut().outer_terminal_focus = Some(focused);
                 if focused {
                     self.promote_client_to_foreground(client_id);
                     self.claim_shell_tab_geometry(client_id, false);
-                    if !another_focused_viewer
-                        && let Some(target) = self.shell_focus_target(client_id)
-                    {
-                        self.send_shell_focus_target(&target, shepr_vt::FocusEvent::Gained);
-                    }
-                    true
-                } else {
-                    if self.clients.foreground_client_id() == Some(client_id) {
-                        self.app.state.outer_terminal_focus = Some(false);
-                    }
-                    if !another_focused_viewer
-                        && let Some(target) = self.shell_focus_target(client_id)
-                    {
-                        self.send_shell_focus_target(&target, shepr_vt::FocusEvent::Lost);
-                    }
-                    true
                 }
+                true
             }
             ServerEvent::ClientShellPresentationSync { client_id, token } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
@@ -1185,7 +1079,7 @@ impl HeadlessServer {
                 client.host_mouse_capture_active = None;
                 client.host_sgr_pixels_active = None;
                 client.shell_state_mut().host_keyboard_report_all_active = None;
-                self.sent_window_title = None;
+                client.sent_window_title = None;
                 self.stream_host_mouse_capture_mode();
                 self.stream_shell_keyboard_mode();
                 self.sync_window_title();
@@ -1354,20 +1248,9 @@ impl HeadlessServer {
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
 
-        // The full sync (including the view recompute) stays on this path:
-        // API handlers read `app.state.view` for directional focus, splits and
-        // resume geometry, and an earlier request may have changed the layout
-        // without anything cheaper recording that it did.
-        self.sync_foreground_client_state();
-        // The foreground client is always an active shell connection.
-        if self.clients.foreground_client_id().is_some() {
-            self.app.state.view.terminal_area = Rect::new(
-                0,
-                0,
-                self.effective_size.cols.get(),
-                self.effective_size.rows.get(),
-            );
-        }
+        // API handlers read each tab's recorded layout area for directional
+        // focus, resize steps, layout snapshots and spawn sizes; the geometry
+        // paths keep it current, so there is nothing to project first.
         let outcome = self.app.handle_api_request_with_render(msg.request);
         changed |= outcome.render != RenderDemand::None;
         shepr_api::send_api_response(&msg.respond_to, &request_id, method, outcome.response);

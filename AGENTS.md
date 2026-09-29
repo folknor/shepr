@@ -34,7 +34,10 @@ Kept:
   resume on restore
 - Git status in the sidebar (branch, ahead/behind)
 - Mouse selection, copy mode, keybinding help, window title templating
-- The JSON API over the server socket. The CLI is local-only: every
+- The JSON API over the server socket. The TUI does not act on workspaces,
+  tabs or panes through it: it sends typed client-socket commands
+  (`shepr_protocol::command::EndpointCommand`), none of which is an API
+  method. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
   configured machine. `status`, `server stop`, `detect capture` and `detect explain
   <PANE>` talk to the local server over its socket; `detect explain --file`
@@ -44,10 +47,10 @@ shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr is deliberately not kept, and
 neither is driving panes: no CLI command or API method sends text or keys to
 a pane, waits for pane output or reads pane history, and there is no
-subscription that fires when text appears in a pane. The one pane input method
-the API keeps is pane.input.set, for the TUI context menu. Nor are local
-detection manifest overrides and their reload: a detection change ships as a
-new build.
+subscription that fires when text appears in a pane. The one pane input
+setting kept is the TUI's own pane.input.set command, for its context menu.
+Nor are local detection manifest overrides and their reload: a detection
+change ships as a new build.
 
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
 the subcommands are `status`, `server` and `detect`. Workspaces, tabs and panes are managed from the TUI only; there
@@ -202,11 +205,19 @@ directory.
   `PaneRuntime` (held by `App`, outside `AppState`)
   owns the PTY, its tasks and the state shared with them. `PaneState` is only
   the pane's link to its terminal plus per-pane input flags.
-- **Render is pure.** `compute_view()` in `crates/shepr-server/src/ui.rs`
-  reads `AppState` by shared reference and returns the view its caller stores
-  in `AppState::view`; pane runtimes are resized by explicit geometry paths
-  (the ones taking a `PaneResizer`), and surface drawing takes shared
-  references and only draws.
+- **Render is pure.** `compute_tab_surface_for()` in
+  `crates/shepr-server/src/ui/tab_surface.rs` reads `AppState` by shared
+  reference and returns one tab laid out for one client's surface; pane
+  runtimes are resized by explicit geometry paths (the ones taking a
+  `PaneResizer`), and surface drawing takes shared references and only draws.
+- **Presentation is per client.** Each connection on the server keeps its
+  own surface size, outer focus, location and window title; nothing projects
+  one client's view into `AppState`. What panes have one of is decided from
+  all the views in one place each: PTY size by the PTY size rule
+  (`tab_geometry_source` in `crates/shepr-server/src/server/headless/client_views.rs`,
+  which records each tab's applied area in `AppState`), pane focus reports by
+  `sync_pane_focus`, and the host theme by the foreground client (the one
+  last active).
 - **No god objects.** `AppState` lives in `crates/shepr-server/src/app/state.rs`;
   `App` behavior is organized across modules under
   `crates/shepr-server/src/app/`. Keep it that way.

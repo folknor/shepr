@@ -609,10 +609,21 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
             .expect("test precondition")
             .contains(" session")
     );
-    assert!(hooks["hooks"].get("UserPromptSubmit").is_none());
+    for (event, action) in [
+        ("UserPromptSubmit", " working"),
+        ("Stop", " idle"),
+        ("Interrupt", " idle"),
+    ] {
+        assert!(
+            hooks["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .expect("test precondition")
+                .ends_with(action),
+            "{event}"
+        );
+    }
     assert!(hooks["hooks"].get("PreToolUse").is_none());
     assert!(hooks["hooks"].get("PermissionRequest").is_none());
-    assert!(hooks["hooks"].get("Stop").is_none());
     assert!(config.contains("model = \"gpt-5.4\""));
     assert!(config.contains("[features]"));
     assert!(config.contains("hooks = true"));
@@ -674,10 +685,18 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
             .len(),
         1
     );
-    assert!(hooks["hooks"].get("UserPromptSubmit").is_none());
+    for event in ["UserPromptSubmit", "Stop", "Interrupt"] {
+        assert_eq!(
+            hooks["hooks"][event]
+                .as_array()
+                .expect("test precondition")
+                .len(),
+            1,
+            "{event}"
+        );
+    }
     assert!(hooks["hooks"].get("PreToolUse").is_none());
     assert!(hooks["hooks"].get("PermissionRequest").is_none());
-    assert!(hooks["hooks"].get("Stop").is_none());
     assert_eq!(config.matches("hooks = true").count(), 1);
     assert!(!config.contains("codex_hooks"));
     assert!(config.contains("other = true"));

@@ -292,16 +292,14 @@ pub fn restart_different_builds(
 /// control socket, and [`stop_remote_server`](crate::stop_remote_server).
 pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_config::AppPaths,
-    settings: crate::MachineSshSettings,
     deadline: Mutex<Instant>,
 }
 
 impl<'a> MachineSshPreflight<'a> {
     /// The deadline for the first round of checks starts now.
-    pub fn new(paths: &'a shepr_config::AppPaths, settings: crate::MachineSshSettings) -> Self {
+    pub fn new(paths: &'a shepr_config::AppPaths) -> Self {
         Self {
             paths,
-            settings,
             deadline: Mutex::new(round_deadline()),
         }
     }
@@ -326,14 +324,13 @@ impl PreflightSsh for MachineSshPreflight<'_> {
             .deadline
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::check_machine_ssh(self.paths, &machine.ssh, self.settings, deadline)
+        crate::check_machine_ssh(self.paths, &machine.ssh, deadline)
     }
 
     fn authenticate(&self, machine: &MachineConfig) -> io::Result<()> {
         // The command's owner stays alive until the child has exited: OpenSSH
         // reads its temporary config after spawn.
-        let mut authentication =
-            crate::ssh_authentication_command(self.paths, &machine.ssh, self.settings)?;
+        let mut authentication = crate::ssh_authentication_command(self.paths, &machine.ssh)?;
         let status = authentication.command.status()?;
         if status.success() {
             Ok(())
@@ -347,7 +344,7 @@ impl PreflightSsh for MachineSshPreflight<'_> {
         machine: &MachineConfig,
         server: &DifferentBuildServer,
     ) -> io::Result<RemoteStop> {
-        crate::stop_remote_server(self.paths, &machine.ssh, self.settings, server)
+        crate::stop_remote_server(self.paths, &machine.ssh, server)
     }
 }
 

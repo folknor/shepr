@@ -20,9 +20,11 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
     state
 }
 
-fn refresh_test_view(state: &mut AppState, area: Rect) {
-    state.view.terminal_area = area;
-    state.view.pane_infos = state
+/// Records `area` as every tab's layout area and returns the focused tab's
+/// visible panes laid out in it.
+fn test_view(state: &mut AppState, area: Rect) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
+    state.test_record_all_tab_areas(area);
+    state
         .active_index()
         .and_then(|ws_idx| state.workspaces.get(ws_idx))
         .map(Workspace::active_tab)
@@ -36,7 +38,7 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
             pane.inner_rect = shepr_mux::workspace::pane_inner_rect(pane.rect, pane.borders);
             pane
         })
-        .collect();
+        .collect()
 }
 
 fn toggle_focused_zoom(state: &mut AppState) {
@@ -889,19 +891,19 @@ fn navigate_pane_changes_focus_while_zoomed() {
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].focus_pane_in_tab(0, root);
     state.workspaces[0].set_tab_zoomed(0, true);
-    refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
 
-    assert_eq!(state.view.pane_infos.len(), 1);
-    assert_eq!(state.view.pane_infos[0].id, root);
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].id, root);
 
     state.navigate_pane(NavDirection::Right);
-    refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
 
     assert!(state.workspaces[0].tabs()[0].zoomed());
     assert_eq!(state.workspaces[0].focused_pane_id(), right);
-    assert_eq!(state.view.pane_infos.len(), 1);
-    assert_eq!(state.view.pane_infos[0].id, right);
-    assert!(state.view.pane_infos[0].inner_rect.x > state.view.pane_infos[0].rect.x);
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].id, right);
+    assert!(view[0].inner_rect.x > view[0].rect.x);
 }
 
 #[test]
@@ -910,46 +912,22 @@ fn swap_pane_direction_preserves_focus_and_swaps_layout_cells() {
     let root = state.workspaces[0].tabs()[0].root_pane();
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].focus_pane_in_tab(0, root);
-    refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
-    let before_root_rect = state
-        .view
-        .pane_infos
-        .iter()
-        .find(|info| info.id == root)
-        .expect("test precondition")
-        .rect;
-    let before_right_rect = state
-        .view
-        .pane_infos
-        .iter()
-        .find(|info| info.id == right)
-        .expect("test precondition")
-        .rect;
+    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let rect_of = |view: &[shepr_mux::workspace::PaneChromeInfo], pane_id| {
+        view.iter()
+            .find(|info| info.id == pane_id)
+            .expect("test precondition")
+            .rect
+    };
+    let before_root_rect = rect_of(&view, root);
+    let before_right_rect = rect_of(&view, right);
 
     assert!(state.swap_pane(NavDirection::Right));
-    refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
 
     assert_eq!(state.workspaces[0].focused_pane_id(), root);
-    assert_eq!(
-        state
-            .view
-            .pane_infos
-            .iter()
-            .find(|info| info.id == root)
-            .expect("test precondition")
-            .rect,
-        before_right_rect
-    );
-    assert_eq!(
-        state
-            .view
-            .pane_infos
-            .iter()
-            .find(|info| info.id == right)
-            .expect("test precondition")
-            .rect,
-        before_root_rect
-    );
+    assert_eq!(rect_of(&view, root), before_right_rect);
+    assert_eq!(rect_of(&view, right), before_root_rect);
 }
 
 #[test]
@@ -959,28 +937,24 @@ fn swap_pane_direction_stays_zoomed_and_mutates_hidden_layout() {
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].focus_pane_in_tab(0, root);
     state.workspaces[0].set_tab_zoomed(0, true);
-    refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
+    test_view(&mut state, Rect::new(0, 0, 100, 20));
 
     assert!(state.swap_pane(NavDirection::Right));
-    refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
 
     assert!(state.workspaces[0].tabs()[0].zoomed());
     assert_eq!(state.workspaces[0].focused_pane_id(), root);
-    assert_eq!(state.view.pane_infos.len(), 1);
-    assert_eq!(state.view.pane_infos[0].id, root);
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].id, root);
 
     state.workspaces[0].set_tab_zoomed(0, false);
-    refresh_test_view(&mut state, Rect::new(0, 0, 100, 20));
-    let root_rect = state
-        .view
-        .pane_infos
+    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let root_rect = view
         .iter()
         .find(|info| info.id == root)
         .expect("test precondition")
         .rect;
-    let right_rect = state
-        .view
-        .pane_infos
+    let right_rect = view
         .iter()
         .find(|info| info.id == right)
         .expect("test precondition")
