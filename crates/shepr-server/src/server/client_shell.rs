@@ -75,7 +75,7 @@ pub(super) fn snapshot_from_session(
                 .get(position)
                 .is_some_and(|state| state.id == workspace_id)
                 .then_some(position)
-                .or_else(|| app.parse_workspace_id(&workspace_id));
+                .or_else(|| app.resolve_workspace_id(&workspace_id));
             let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
             let active_tab_id = location
                 .and_then(|location| location.active_tab_ids.get(&workspace_id))

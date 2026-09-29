@@ -32,7 +32,7 @@ At a glance:
 | B9 `#[expect(.., reason)]` instead of `#[allow]` | Adopted now | Done |
 | B10 extra compiler lints and the rustdoc phase | Adopted, later round | Done |
 | B11 release-profile sweep in `brokkr check` | Rejected; release gets `overflow-checks = true` instead | |
-| B12 install shape | Tracked elsewhere (piece 4 of the test-isolation work) | |
+| B12 install shape | Tracked elsewhere (piece 4 of the test-isolation work) | Done |
 | B13 tree debris | Adopted, later round | Done |
 | B14 scripts roster | Adopted, later round | Done |
 | B15 workspace dependency pins | Adopted, later round | Done |
@@ -274,9 +274,7 @@ AGENTS.md multiplicative performance paths"). State the hot-path argument inline
 ## A3. No pre-deployment older-peer compatibility
 
 **Decision:** adopted now. A violation is cleared by deleting the compatibility
-code it sits on, not by rewording the comment; the log-tightening violation
-(formerly HYGP-040, now resolved and removed) and HYGP-036 (the
-finished-migration prose) in `notes/hygiene-policy.md` carried two of them.
+code it sits on, not by rewording the comment.
 
 **Done**, as drafted. The log-permission tightening in `logging.rs` and its
 test half are deleted; the `lines` comment in `snapshot.rs` is gone (no code
@@ -332,8 +330,7 @@ migration gates ... old/candidate captures"), a migration harness named as one.
 
 ## A4. No plan or issue labels in durable text
 
-**Decision:** adopted now, both rules. `raw_input.rs`'s `Issue #3911` comment was
-also HYGG-052 in `notes/hygiene-guards.md`, now resolved and removed.
+**Decision:** adopted now, both rules.
 
 **Done**, both rules as drafted; the eight issue citations are removed.
 
@@ -552,8 +549,7 @@ Not caught (not backticked, or under `research/`), fix by hand in the same pass:
 `Cargo.toml:18` says the reference checkout is in `research/alacritty`, and
 `crates/shepr-mux/src/pane/osc.rs:19` cites `research/vte/src/lib.rs`. Shepr's
 `research/` holds only `broadarrow`; both get reworded to cite the pinned
-`alacritty_terminal` and `vte` sources in the cargo registry (decided; also
-HYGG-113 in `notes/hygiene-guards.md`).
+`alacritty_terminal` and `vte` sources in the cargo registry (decided).
 
 ## A8. `#[allow]` carries a comment saying why
 
@@ -836,8 +832,8 @@ by profile). See the surprises section for the stale comment above it.
 **Decision:** adopted now: the clippy seal, with `try_exists` or a match on
 `NotFound` at each site. Clippy runs over test targets too, so the roughly 40
 test-file sites convert as well. The seal is extended to `Path::is_file` and
-`Path::is_dir`, which swallow stat errors the same way (HYGG-078's
-`ssh_config_include` is one).
+`Path::is_dir`, which swallow stat errors the same way (`ssh_config_include`
+was one).
 
 **Done**: all three paths are in `disallowed-methods`, and no site escapes
 them; presence checks match on `fs::metadata` / `symlink_metadata` and handle
@@ -905,7 +901,7 @@ most remaining test spawns are host programs that piece 3 of the test-isolation
 work removes anyway, so the helper mostly serves the re-exec and stand-in
 spawns. `build_server_daemon_command` becomes a violation and gets a stated
 directory. The seal is about children only: `std::env::current_dir()` read as a
-test input (HYGP-005, HYGG-010) is a different spelling it does not catch.
+test input is a different spelling it does not catch.
 
 **Done**: `std::process::Command::new` is in `disallowed-methods`. Production
 spawns go through `shepr_platform::child_command(program, dir)`, tests through
@@ -953,7 +949,8 @@ textlint.
 in rather than `Instant::now()` / `SystemTime::now()` read inside logic, and each
 subsystem that gets its seam is held by a scoped textlint in the shape of
 broadarrow's `control-loop-reads-the-clock-seam` (the draft below is the
-`shepr-server/src/app/` instance). The tree-wide finding is HYGP-001.
+`shepr-server/src/app/` instance). The remaining scopes are this item's work
+list; no findings document tracks them any more.
 
 **Catches** wall-clock reads in state code. `AGENTS.md` says `AppState` is pure
 data, testable without PTYs or async; it reads `Instant::now()` directly in many
@@ -983,7 +980,8 @@ scope.
 a `limits` module, and once a crate's constants have moved, textlints in the
 shape of `numeric-consts-live-in-limits` and
 `duration-and-capacity-literals-live-in-limits`, scoped to that crate, hold it.
-The tree-wide finding is HYGV-036.
+The remaining crates are this item's work list; no findings document tracks
+them any more.
 
 Broadarrow's `numeric-consts-live-in-limits` and
 `duration-and-capacity-literals-live-in-limits` force every numeric or `Duration`
@@ -1124,8 +1122,10 @@ current tests including
 ## B12. Install shape (native brokkr)
 
 **Decision:** tracked elsewhere: it is the shipped-feature-set gate check of
-piece 4 of the test-isolation work, recorded under HYGP-031
-(`notes/hygiene-policy.md`). Not added separately from here.
+piece 4 of the test-isolation work. Not added separately from here.
+
+**Done**: `brokkr.toml` carries the `[bin]` block below, and the gate runs its
+install-feature phase.
 
 Broadarrow checks the `cargo install` feature graph with a package-unified sweep
 plus two scripts. Shepr's brokkr does it natively:
@@ -1267,9 +1267,9 @@ few lines of Python, or simply a rule to remember. Not recommended now.
   `adapter-group`, `ba-verbs`, `run_spec_gates.py`, every venue, Nautilus, Pine,
   daemon and worker rule: broadarrow domain.
 - The one-owner value rules (`*-spelled-once`, `*-has-one-owner`): the mechanism
-  is generic but every instance is a broadarrow value. Shepr's candidates are
-  the "defined at N sites" findings in `notes/hygiene-values.md`; each one, once
-  collapsed to one owner, is exactly what such a textlint pins. Most are
+  is generic but every instance is a broadarrow value. Shepr's candidates were
+  the "defined at N sites" hygiene findings, all since resolved; a value
+  collapsed to one owner is exactly what such a textlint pins. Most are
   environment variables, which the env seal covers.
 
 ---

@@ -1,5 +1,5 @@
 use std::io;
-use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
+use std::sync::Arc;
 
 use interprocess::local_socket::traits::{Listener as _, Stream as _};
 use tokio::sync::mpsc;
@@ -14,11 +14,11 @@ pub(crate) fn accept_pending_client_connections(
     listener: &LocalListener,
     clients: &mut ClientRegistry,
     session: &shepr_config::SessionId,
-    should_quit: &Arc<AtomicBool>,
+    should_quit: &Arc<shepr_api::ServerStopSignal>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
     loop {
-        if should_quit.load(Ordering::Acquire) {
+        if should_quit.is_requested() {
             break;
         }
         match listener.accept() {

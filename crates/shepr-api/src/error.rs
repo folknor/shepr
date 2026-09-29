@@ -258,17 +258,17 @@ mod tests {
 
     #[test]
     fn missing_pane_has_a_typed_payload_and_preserves_the_wire_error() {
-        let error = ApiError::pane_not_found("pane_7");
+        let error = ApiError::pane_not_found("w1:p7");
         assert_eq!(error.code, ApiErrorCode::PaneNotFound);
         assert_eq!(
             error.payload,
             ApiErrorPayload::PaneNotFound {
-                pane_id: "pane_7".into()
+                pane_id: "w1:p7".into()
             },
         );
         assert_eq!(
             error.into_body(),
-            ErrorBody::new(&ApiErrorCode::PaneNotFound, "pane pane_7 not found")
+            ErrorBody::new(&ApiErrorCode::PaneNotFound, "pane w1:p7 not found")
         );
     }
 

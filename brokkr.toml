@@ -202,6 +202,7 @@ exclude = [
     "crates/shepr-pty/src/command.rs",
     "crates/shepr-server/src/app/git_refresh.rs",
     "crates/shepr-server/src/server/headless/tests/already_running.rs",
+    "crates/shepr-server/src/server/headless/tests/server_stop.rs",
     "crates/shepr-test-support/src/fixture.rs",
     "crates/shepr-test-support/src/lib.rs",
     "crates/shepr-vt/src/locks.rs",

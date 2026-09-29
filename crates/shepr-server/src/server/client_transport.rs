@@ -7,7 +7,6 @@
 use crate::server::ClientId;
 use std::collections::VecDeque;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -568,9 +567,9 @@ pub(crate) fn handle_client_handshake(
     client_id: ClientId,
     session: &shepr_config::SessionId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
-    should_quit: &Arc<AtomicBool>,
+    should_quit: &Arc<shepr_api::ServerStopSignal>,
 ) -> io::Result<()> {
-    if should_quit.load(Ordering::Acquire) {
+    if should_quit.is_requested() {
         return Ok(());
     }
 
@@ -732,7 +731,7 @@ pub(crate) fn handle_client_handshake(
         }
     };
 
-    if should_quit.load(Ordering::Acquire) {
+    if should_quit.is_requested() {
         return Ok(());
     }
 
@@ -765,7 +764,7 @@ pub(crate) fn handle_client_handshake(
         client_writer_loop(write_stream, client_id, &writer_queue, &writer_event_tx);
     });
 
-    if should_quit.load(Ordering::Acquire) {
+    if should_quit.is_requested() {
         send_shutdown_to_unregistered_client(&writer);
         return Ok(());
     }
@@ -904,10 +903,10 @@ fn client_read_loop_with_endpoint_controls(
     client_id: ClientId,
     session: &shepr_config::SessionId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
-    should_quit: &Arc<AtomicBool>,
+    should_quit: &Arc<shepr_api::ServerStopSignal>,
     endpoint_control_writer: Option<&ClientControlWriter>,
 ) -> io::Result<()> {
-    while !should_quit.load(Ordering::Acquire) {
+    while !should_quit.is_requested() {
         let message =
             shepr_protocol::read_message(&mut shepr_platform::ClientStreamReader(&mut stream));
         let msg: ClientMessage = match message {
@@ -1359,7 +1358,7 @@ mod tests {
         stream: LocalStream,
         client_id: ClientId,
         server_event_tx: &mpsc::Sender<ServerEvent>,
-        should_quit: &Arc<AtomicBool>,
+        should_quit: &Arc<shepr_api::ServerStopSignal>,
     ) -> io::Result<()> {
         client_read_loop_with_endpoint_controls(
             stream,
@@ -1715,7 +1714,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-handshake-oversized-terminal");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(
@@ -1760,7 +1759,7 @@ mod tests {
         }
 
         drop(client_stream);
-        should_quit.store(true, Ordering::Release);
+        should_quit.request();
         handle
             .join()
             .expect("handshake thread join")
@@ -1772,7 +1771,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-read-oversized-resize");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -1822,7 +1821,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-handshake-foreign-build");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(
@@ -1934,7 +1933,7 @@ mod tests {
     fn direct_terminal_hello_selects_terminal_ansi_stream() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-handshake-ansi");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(
@@ -1985,7 +1984,7 @@ mod tests {
         }
 
         drop(client_stream);
-        should_quit.store(true, Ordering::Release);
+        should_quit.request();
         handle
             .join()
             .expect("handshake thread join")
@@ -1996,7 +1995,7 @@ mod tests {
     fn dedicated_client_shell_handshake_uses_surface_viewport() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-shell-handshake");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(
@@ -2041,7 +2040,7 @@ mod tests {
         }
 
         drop(client_stream);
-        should_quit.store(true, Ordering::Release);
+        should_quit.request();
         handle
             .join()
             .expect("handshake thread join")
@@ -2065,7 +2064,7 @@ mod tests {
     fn client_read_loop_stops_after_detach() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-detach");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2104,7 +2103,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-read-health-ping");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2138,7 +2137,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-read-unsafe-resize");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2177,7 +2176,7 @@ mod tests {
     fn client_read_loop_rejects_oversized_bracketed_paste_without_disconnect() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-oversized");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2245,7 +2244,7 @@ mod tests {
         }
 
         drop(client_stream);
-        should_quit.store(true, Ordering::Release);
+        should_quit.request();
         handle
             .join()
             .expect("read thread join")
@@ -2257,7 +2256,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-read-oversized-non-paste");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2282,7 +2281,7 @@ mod tests {
         ));
 
         drop(client_stream);
-        should_quit.store(true, Ordering::Release);
+        should_quit.request();
         handle
             .join()
             .expect("read thread join")
@@ -2294,7 +2293,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-read-invalid-utf8-paste");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2330,7 +2329,7 @@ mod tests {
         }
 
         drop(client_stream);
-        should_quit.store(true, Ordering::Release);
+        should_quit.request();
         handle
             .join()
             .expect("read thread join")
@@ -2341,7 +2340,7 @@ mod tests {
     fn client_read_loop_uses_authoritative_shell_resize_surface() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-resize");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2387,7 +2386,7 @@ mod tests {
     fn client_read_loop_keeps_single_host_theme_updates_ordered_and_palette_bounded() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-host-theme");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
+        let should_quit = Arc::new(shepr_api::ServerStopSignal::default());
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(
@@ -2481,7 +2480,7 @@ mod tests {
         ));
 
         drop(client_stream);
-        should_quit.store(true, Ordering::Release);
+        should_quit.request();
         handle
             .join()
             .expect("read thread join")

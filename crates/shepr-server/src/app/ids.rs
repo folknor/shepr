@@ -77,10 +77,19 @@ impl App {
     /// `N`) are deliberately rejected: a mistyped or index-style id must fail
     /// rather than silently target whichever workspace sits at that position.
     pub(crate) fn parse_workspace_id(&self, id: &str) -> Option<usize> {
+        let public_id = id.parse::<shepr_protocol::WorkspaceId>().ok()?;
+        self.resolve_workspace_id(&public_id)
+    }
+
+    /// [`Self::parse_workspace_id`] for an id that is already typed.
+    pub(crate) fn resolve_workspace_id(
+        &self,
+        public_id: &shepr_protocol::WorkspaceId,
+    ) -> Option<usize> {
         self.state
             .workspaces
             .iter()
-            .position(|workspace| workspace.id == id)
+            .position(|workspace| workspace.id == *public_id)
     }
 
     /// Resolves a public tab id (`<workspace_id>:t<n>`) to (workspace, tab)
@@ -96,7 +105,7 @@ impl App {
         &self,
         public_id: &shepr_protocol::PublicTabId,
     ) -> Option<(usize, usize)> {
-        let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
+        let ws_idx = self.resolve_workspace_id(public_id.workspace_id())?;
         let tab_idx = self
             .state
             .workspaces
@@ -124,7 +133,7 @@ impl App {
         public_id: &shepr_protocol::PublicPaneId,
     ) -> Option<(usize, shepr_core::layout::PaneId)> {
         let current_id = (|| {
-            let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
+            let ws_idx = self.resolve_workspace_id(public_id.workspace_id())?;
             let pane_number = public_id.number();
             let ws = self.state.workspaces.get(ws_idx)?;
             let pane_id = ws.pane_id_for_public_number(pane_number)?;

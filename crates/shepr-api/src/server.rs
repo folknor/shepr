@@ -120,7 +120,7 @@ impl ServerHandle {
 pub fn start_server_with_stop_control(
     api_tx: ApiRequestSender,
     event_hub: EventHub,
-    server_stop: Arc<AtomicBool>,
+    server_stop: Arc<crate::ServerStopSignal>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
     let inherited_agent = shepr_platform::ssh_agent::inherited_agent_socket()?;
@@ -145,7 +145,7 @@ fn start_server_inner(
     api_tx: ApiRequestSender,
     event_hub: EventHub,
     mut capabilities: Option<ServerCapabilities>,
-    server_stop: Option<Arc<AtomicBool>>,
+    server_stop: Option<Arc<crate::ServerStopSignal>>,
     inherited_agent: Option<PathBuf>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
@@ -395,7 +395,7 @@ fn handle_connection_with_stop(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
-    server_stop: Option<&Arc<AtomicBool>>,
+    server_stop: Option<&Arc<crate::ServerStopSignal>>,
     ssh_agents: Option<&shepr_platform::ssh_agent::SshAgentRegistry>,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
@@ -599,7 +599,7 @@ fn handle_request(
     request: Request,
     api_tx: &ApiRequestSender,
     capabilities: Option<ServerCapabilities>,
-    server_stop: Option<&Arc<AtomicBool>>,
+    server_stop: Option<&Arc<crate::ServerStopSignal>>,
 ) -> crate::error::EncodedApiResponse {
     if matches!(&request.method, Method::Ping(_)) {
         let response = SuccessResponse {
@@ -623,7 +623,7 @@ fn handle_request(
 
     if matches!(&request.method, Method::ServerStop(_)) {
         if let Some(server_stop) = server_stop {
-            server_stop.store(true, Ordering::Release);
+            server_stop.request();
             let response = SuccessResponse {
                 id: request.id.clone(),
                 result: ResponseResult::Ok {},
@@ -645,13 +645,13 @@ fn handle_request(
     )
 }
 
-pub(super) fn server_is_stopping(server_stop: Option<&Arc<AtomicBool>>) -> bool {
-    server_stop.is_some_and(|stop| stop.load(Ordering::Acquire))
+pub(super) fn server_is_stopping(server_stop: Option<&Arc<crate::ServerStopSignal>>) -> bool {
+    server_stop.is_some_and(|stop| stop.is_requested())
 }
 
 fn shutdown_rejection(
     request: &Request,
-    server_stop: Option<&Arc<AtomicBool>>,
+    server_stop: Option<&Arc<crate::ServerStopSignal>>,
 ) -> Option<crate::error::EncodedApiResponse> {
     if !server_is_stopping(server_stop)
         || matches!(
@@ -753,7 +753,7 @@ fn stream_subscriptions(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
-    server_stop: Option<&Arc<AtomicBool>>,
+    server_stop: Option<&Arc<crate::ServerStopSignal>>,
 ) -> std::io::Result<()> {
     let event_start_sequence = event_hub.current_sequence();
     let mut subscriptions = Vec::with_capacity(params.subscriptions.len());
@@ -1435,7 +1435,7 @@ mod tests {
     #[test]
     fn server_stop_control_bypasses_app_channel() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(crate::ServerStopSignal::default());
         let response = handle_request(
             Request {
                 id: "priority_stop".into(),
@@ -1450,7 +1450,7 @@ mod tests {
             serde_json::from_str(&response.body).expect("test precondition");
         assert_eq!(response["id"], "priority_stop");
         assert_eq!(response["result"]["type"], "ok");
-        assert!(stop.load(Ordering::Acquire));
+        assert!(stop.is_requested());
 
         let rejected = handle_request(
             Request {

@@ -233,7 +233,7 @@ impl HeadlessServer {
         app: app::App,
         api_server: Option<shepr_api::ServerHandle>,
         resolved_config: Vec<u8>,
-        stop_requested: Arc<AtomicBool>,
+        stop_requested: Arc<shepr_api::ServerStopSignal>,
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
         let (listener, client_socket_startup_lock, client_socket_identity) =
@@ -315,10 +315,9 @@ impl HeadlessServer {
         let client_listener_ready = AsyncFd::new(ListenerFd(listener_fd))?;
 
         // Register SIGINT handler for graceful shutdown.
-        let stop_requested = Arc::clone(self.lifecycle.stop_request_flag());
+        let stop_requested = Arc::clone(self.lifecycle.stop_signal());
         let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
-        let quit_notify = self.server_event_tx.clone();
-        ctrlc_handler(stop_requested, signal_quit, quit_notify)?;
+        ctrlc_handler(stop_requested, signal_quit)?;
         self.start_host_shutdown_monitor();
 
         let mut render_demand = RenderDemand::Full;
@@ -489,8 +488,12 @@ impl HeadlessServer {
                 .map_or(next_deadline, |cwd| {
                     Some(next_deadline.map_or(cwd, |current| current.min(cwd)))
                 });
+            let stop_signal = Arc::clone(self.lifecycle.stop_signal());
             let event = {
                 tokio::select! {
+                    // A `server.stop` from the API sets the latch on another
+                    // thread; this is what wakes an idle loop to act on it.
+                    () = stop_signal.notified() => LoopEvent::Timer,
                     maybe_api = self.app.api_rx.recv() => match maybe_api {
                         Some(msg) => LoopEvent::Api(Box::new(msg)),
                         None => LoopEvent::Timer,
@@ -871,7 +874,7 @@ impl HeadlessServer {
             &self.client_listener,
             &mut self.clients,
             self.app.paths.session_id(),
-            self.lifecycle.stop_request_flag(),
+            self.lifecycle.stop_signal(),
             &self.server_event_tx,
         )
     }
@@ -2157,26 +2160,19 @@ impl Drop for HeadlessServer {
 // ---------------------------------------------------------------------------
 
 /// Installs the SIGINT/SIGTERM/SIGHUP handler (ctrlc's `termination`
-/// feature). It marks the quit as signal-driven, sets the stop request flag, and
-/// wakes up the event loop by sending a QuitSignal on the server event channel.
+/// feature). It marks the quit as signal-driven and requests the stop, which
+/// also wakes the event loop.
 ///
 /// Failing to install it is an error: without it a signal kills the server
 /// without the shutdown sequence that saves the session.
 fn ctrlc_handler(
-    stop_requested: Arc<AtomicBool>,
+    stop_requested: Arc<shepr_api::ServerStopSignal>,
     signal_quit: Arc<AtomicBool>,
-    server_event_tx: mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
     ctrlc::set_handler(move || {
         // Before the stop request, so the loop never sees the quit without it.
         signal_quit.store(true, Ordering::Release);
-        stop_requested.store(true, Ordering::Release);
-        // Wake up the event loop so the quit flag is checked promptly. Only a
-        // wakeup, the flags above carry the quit: a full channel already
-        // wakes the loop, and a closed one means the loop has exited.
-        let (Ok(())
-        | Err(mpsc::error::TrySendError::Full(_) | mpsc::error::TrySendError::Closed(_))) =
-            server_event_tx.try_send(ServerEvent::QuitSignal);
+        stop_requested.request();
     })
     .map_err(|err| io::Error::other(format!("installing the termination signal handler: {err}")))
 }

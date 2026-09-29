@@ -28,7 +28,7 @@ pub(super) fn wait_for_event(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
-    server_stop: Option<&Arc<AtomicBool>>,
+    server_stop: Option<&Arc<crate::ServerStopSignal>>,
     clock: &dyn Fn() -> std::time::Instant,
 ) -> std::io::Result<Option<crate::error::EncodedApiResponse>> {
     let deadline = match timeout_deadline(clock(), params.timeout_ms) {

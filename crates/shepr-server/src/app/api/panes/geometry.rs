@@ -795,7 +795,7 @@ impl App {
                         workspace_id,
                         label,
                     } => {
-                        let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
+                        let Some(target_ws_idx) = self.resolve_workspace_id(&workspace_id) else {
                             self.recover_failed_pane_move(recovery_context, moved);
                             return failure(
                                 shepr_api::error::ApiErrorCode::PaneMoveFailed,
@@ -953,7 +953,7 @@ impl App {
         moved: shepr_mux::workspace::MovedPane,
     ) {
         if let Some(ws) = self
-            .parse_workspace_id(&context.previous_workspace_id)
+            .resolve_workspace_id(&context.previous_workspace_id)
             .and_then(|ws_idx| self.state.workspaces.get_mut(ws_idx))
         {
             ws.create_tab_from_existing_pane(moved, context.previous_tab_label);

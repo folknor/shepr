@@ -98,6 +98,8 @@ mod already_running_tests;
 #[cfg(test)]
 #[path = "pane_move.rs"]
 mod pane_move_tests;
+#[path = "server_stop.rs"]
+mod server_stop_tests;
 #[cfg(test)]
 #[path = "surface_delta.rs"]
 mod surface_delta_tests;
@@ -159,7 +161,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         .set_nonblocking(ListenerNonblockingMode::Accept)
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
-    let stop_requested = Arc::new(AtomicBool::new(false));
+    let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
     let effective_size = app.state.settings.headless_size;
     let mut resolved_config = Vec::new();
     shepr_protocol::codec::encode_into(
@@ -397,10 +399,7 @@ fn server_stop_interrupts_server_event_backlog() {
             .expect("test precondition");
     }
 
-    server
-        .lifecycle
-        .stop_request_flag()
-        .store(true, Ordering::Release);
+    server.lifecycle.stop_signal().request();
 
     assert!(!server.drain_server_events());
     assert!(server.server_event_rx.try_recv().is_ok());
@@ -4778,10 +4777,7 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
         .lifecycle
         .signal_quit_request_flag()
         .store(true, Ordering::Release);
-    server
-        .lifecycle
-        .stop_request_flag()
-        .store(true, Ordering::Release);
+    server.lifecycle.stop_signal().request();
 
     // The quit-path drain still consumes the queue ...
     let (had_event, _) =

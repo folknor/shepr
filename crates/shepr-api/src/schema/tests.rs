@@ -155,7 +155,7 @@ fn pane_read_defaults_to_text_format() {
         "id": "req_1",
         "method": "pane.read",
         "params": {
-            "pane_id": "p_1",
+            "pane_id": "w1:p1",
             "source": "visible"
         }
     }
@@ -176,13 +176,13 @@ fn pane_current_request_round_trips() {
     let request = Request {
         id: "req_current".into(),
         method: Method::PaneCurrent(PaneCurrentParams {
-            caller_pane_id: Some("w1-1".into()),
+            caller_pane_id: Some("w1:p1".into()),
         }),
     };
 
     let json = serde_json::to_value(&request).expect("test precondition");
     assert_eq!(json["method"], "pane.current");
-    assert_eq!(json["params"]["caller_pane_id"], "w1-1");
+    assert_eq!(json["params"]["caller_pane_id"], "w1:p1");
     let restored: Request = serde_json::from_value(json).expect("test precondition");
     assert_eq!(restored, request);
 }
@@ -192,13 +192,13 @@ fn pane_process_info_request_round_trips() {
     let request = Request {
         id: "req_process_info".into(),
         method: Method::PaneProcessInfo(PaneProcessInfoParams {
-            pane_id: Some("w1-1".into()),
+            pane_id: Some("w1:p1".into()),
         }),
     };
 
     let json = serde_json::to_value(&request).expect("test precondition");
     assert_eq!(json["method"], "pane.process_info");
-    assert_eq!(json["params"]["pane_id"], "w1-1");
+    assert_eq!(json["params"]["pane_id"], "w1:p1");
     let restored: Request = serde_json::from_value(json).expect("test precondition");
     assert_eq!(restored, request);
 }
@@ -286,12 +286,12 @@ fn subscribe_request_parses_parameterized_subscriptions() {
             "subscriptions": [
                 {
                     "type": "pane.agent_status_changed",
-                    "pane_id": "p_1_1",
+                    "pane_id": "w1:p1",
                     "agent_status": "idle"
                 },
                 {
                     "type": "pane.scroll_changed",
-                    "pane_id": "p_1_1"
+                    "pane_id": "w1:p1"
                 }
             ]
         }
@@ -308,11 +308,11 @@ fn subscribe_request_parses_parameterized_subscriptions() {
         Subscription::PaneAgentStatusChanged {
             pane_id,
             agent_status: Some(AgentStatus::Idle),
-        } if pane_id == "p_1_1"
+        } if pane_id == "w1:p1"
     ));
     assert!(matches!(
         &params.subscriptions[1],
-        Subscription::PaneScrollChanged { pane_id } if pane_id == "p_1_1"
+        Subscription::PaneScrollChanged { pane_id } if pane_id == "w1:p1"
     ));
 }
 
@@ -457,7 +457,7 @@ fn layout_export_apply_round_trip() {
     let export = Request {
         id: "layout_export".into(),
         method: Method::LayoutExport(LayoutExportParams {
-            tab_id: Some("w1:1".into()),
+            tab_id: Some("w1:t1".into()),
             pane_id: None,
         }),
     };
@@ -507,7 +507,7 @@ fn layout_export_apply_round_trip() {
                 focused_pane_id: shepr_test_fixtures::id("w1:p1"),
                 root: LayoutNode::Pane {
                     pane: LayoutPane {
-                        pane_id: Some("w1-1".into()),
+                        pane_id: Some("w1:p1".into()),
                         ..Default::default()
                     },
                 },
@@ -549,7 +549,7 @@ fn authority_mutation_requests_round_trip() {
     let tab_move = Request {
         id: "move_tab".into(),
         method: Method::TabMove(TabMoveParams {
-            tab_id: "w1:1".into(),
+            tab_id: "w1:t1".into(),
             insert_index: 1,
         }),
     };
@@ -561,7 +561,7 @@ fn authority_mutation_requests_round_trip() {
     let pane_focus = Request {
         id: "focus_pane".into(),
         method: Method::PaneFocus(PaneTarget {
-            pane_id: "w1:1".into(),
+            pane_id: "w1:p1".into(),
         }),
     };
     let json = serde_json::to_value(&pane_focus).expect("test precondition");
@@ -572,7 +572,7 @@ fn authority_mutation_requests_round_trip() {
     let split_ratio = Request {
         id: "set_ratio".into(),
         method: Method::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
-            tab_id: Some("w1:1".into()),
+            tab_id: Some("w1:t1".into()),
             pane_id: None,
             path: vec![false, true],
             ratio: 0.6,
@@ -672,7 +672,7 @@ fn event_wait_parses_typed_match() {
         "params": {
             "match_event": {
                 "event": "pane_agent_status_changed",
-                "pane_id": "p_1",
+                "pane_id": "w1:p1",
                 "agent_status": "idle"
             },
             "timeout_ms": 30000
@@ -687,7 +687,7 @@ fn event_wait_parses_typed_match() {
     assert_eq!(
         params.match_event,
         EventMatch::PaneAgentStatusChanged {
-            pane_id: "p_1".into(),
+            pane_id: "w1:p1".into(),
             agent_status: AgentStatus::Idle,
         }
     );
@@ -701,7 +701,7 @@ fn event_wait_rejects_matches_it_cannot_serve_at_parse_time() {
         let json = serde_json::json!({
             "id": "req_unsupported",
             "method": "events.wait",
-            "params": { "match_event": { "event": event, "pane_id": "p_1" } }
+            "params": { "match_event": { "event": event, "pane_id": "w1:p1" } }
         });
         assert!(
             serde_json::from_value::<Request>(json).is_err(),

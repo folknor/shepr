@@ -9,6 +9,7 @@ pub mod schema;
 mod server;
 pub mod session;
 mod status;
+mod stop;
 mod subscriptions;
 mod wait;
 
@@ -16,6 +17,7 @@ pub use event_hub::{EventHistoryError, EventHub};
 pub use server::ServerHandle;
 pub use server::{api_method_name, start_server_with_stop_control};
 pub use status::{RuntimeStatus, read_runtime_status_at};
+pub use stop::ServerStopSignal;
 
 use std::path::PathBuf;
 
@@ -121,7 +123,7 @@ mod tests {
         );
         assert!(
             request(Method::PaneRename(crate::schema::PaneRenameParams {
-                pane_id: "pane_1".into(),
+                pane_id: "w1:p1".into(),
                 label: Some("name".into()),
             },))
             .method
@@ -130,7 +132,7 @@ mod tests {
         );
         assert!(
             !request(Method::PaneRead(crate::schema::PaneReadParams {
-                pane_id: "pane_1".into(),
+                pane_id: "w1:p1".into(),
                 source: crate::schema::ReadSource::Recent,
                 format: crate::schema::ReadFormat::Text,
                 lines: None,
@@ -152,7 +154,7 @@ mod tests {
         assert!(!ping.routine);
 
         let pane_get = Method::PaneGet(crate::schema::PaneTarget {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
         })
         .traits();
         assert_eq!(pane_get.name, "pane.get");

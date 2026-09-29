@@ -228,7 +228,7 @@ impl App {
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
         // Workspace positions can change between state mutation and event emission. Resolve the
         // stable workspace identity carried by the update before building public IDs.
-        let Some(ws_idx) = self.parse_workspace_id(&update.workspace_id) else {
+        let Some(ws_idx) = self.resolve_workspace_id(&update.workspace_id) else {
             return;
         };
         let Some(pane_id) = self.public_pane_id(ws_idx, update.pane_id) else {

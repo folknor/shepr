@@ -59,13 +59,13 @@ impl HostShutdownFreeze {
 pub(super) struct ShutdownLifecycle {
     phase: ShutdownPhase,
     freeze: Option<HostShutdownFreeze>,
-    stop_request: Arc<AtomicBool>,
+    stop_request: Arc<shepr_api::ServerStopSignal>,
     host_shutdown_request: Arc<AtomicBool>,
     signal_quit_request: Arc<AtomicBool>,
 }
 
 impl ShutdownLifecycle {
-    pub(super) fn new(stop_request: Arc<AtomicBool>) -> Self {
+    pub(super) fn new(stop_request: Arc<shepr_api::ServerStopSignal>) -> Self {
         Self {
             phase: ShutdownPhase::Running,
             freeze: None,
@@ -83,12 +83,10 @@ impl ShutdownLifecycle {
     /// already begun. `app_quit` is the in-process input path; the atomic latch
     /// is shared with signal and API server-stop handling.
     pub(super) fn stop_requested(&self, app_quit: bool) -> bool {
-        self.phase == ShutdownPhase::Stopping
-            || app_quit
-            || self.stop_request.load(Ordering::Acquire)
+        self.phase == ShutdownPhase::Stopping || app_quit || self.stop_request.is_requested()
     }
 
-    pub(super) fn stop_request_flag(&self) -> &Arc<AtomicBool> {
+    pub(super) fn stop_signal(&self) -> &Arc<shepr_api::ServerStopSignal> {
         &self.stop_request
     }
 
@@ -196,7 +194,7 @@ impl ShutdownLifecycle {
             return false;
         }
         self.phase = ShutdownPhase::Stopping;
-        self.stop_request.store(true, Ordering::Release);
+        self.stop_request.request();
         true
     }
 
@@ -464,7 +462,7 @@ mod phase_tests {
 
     #[test]
     fn freeze_is_refused_outside_a_warning_and_leaves_the_phase() {
-        let mut lifecycle = ShutdownLifecycle::new(Arc::new(AtomicBool::new(false)));
+        let mut lifecycle = ShutdownLifecycle::new(Arc::default());
         let refused = lifecycle
             .finish_host_shutdown_freeze(freeze())
             .expect_err("a running server cannot freeze");
@@ -479,7 +477,7 @@ mod phase_tests {
 
     #[test]
     fn freeze_lands_from_a_warning() {
-        let mut lifecycle = ShutdownLifecycle::new(Arc::new(AtomicBool::new(false)));
+        let mut lifecycle = ShutdownLifecycle::new(Arc::default());
         assert!(lifecycle.begin_host_shutdown_warning());
         lifecycle
             .finish_host_shutdown_freeze(freeze())

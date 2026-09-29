@@ -137,7 +137,7 @@ pub fn run_server(
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = shepr_api::EventHub::default();
-    let stop_requested = Arc::new(AtomicBool::new(false));
+    let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
     // Start the JSON API socket server.
     let _api_server = match shepr_api::start_server_with_stop_control(
