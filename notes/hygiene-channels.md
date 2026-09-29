@@ -56,32 +56,6 @@ value the binary renders) plus a `clippy.toml disallowed_methods` entry for
 `eprintln!`/`io::stderr` outside that one module and `src/main.rs`. The wording
 and phrasing of the messages themselves cannot be held mechanically.
 
-## HYGC-005 - Operator-facing sentences assembled at the call site, with the phrasing drifting between sites
-
-Reported from five scopes. (The agent install phrasing is resolved: installs
-return one outcome shape formatted in one place.)
-
-- `shepr-mux/src/persist/restore.rs` builds two operator-facing restore failure
-  strings at the failure site ("Saved directory is unavailable. Restore the
-  directory and restart this session." and "Could not start the saved shell:
-  {e}. Fix the shell configuration and restart this session."), both landing in
-  `TerminalState::restore_error: Option<String>` and rendered by
-  `shepr-server/src/ui/panes.rs`. The second interpolates a raw `io::Error`
-  `Display` into a sentence, and the crate has no other user-facing text. The
-  test in `ui/panes.rs` invents a third wording ("Saved directory is
-  unavailable. Restart to retry.") and asserts against its own invention, so it
-  would not notice either production string changing.
-- Launch-env validation exists twice with different messages: see HYGP-017.
-
-Enforcement named: have each install return a
-`Vec<(InstalledArtifact, PathBuf)>` and format once (agent); one guidance
-builder taking a target descriptor (CLI - "not lintable"); make `restore_error` a typed enum
-(`RestoreFailure::DirectoryUnavailable { path }` / `ShellStartFailed { err }`)
-and put the wording in whatever owns presentation - a `String` field invites
-ad-hoc text, an enum does not; one `fn paste_rejected_notice(size, max)`; one
-validator in `shepr-api` returning one `ApiError` (HYGP-017). The wording
-itself is not mechanically holdable.
-
 ## HYGC-009 - The domain event catalogue, and one API level policy, live in the bottom platform crate
 
 `shepr-platform/src/logging.rs` holds 25 functions named after concepts the
@@ -103,108 +77,26 @@ Enforcement named: a `brokkr.toml` text rule forbidding the identifiers
 or simply moving the functions so the existing dependency allowlists do the
 work.
 
-## HYGC-010 - The same class of event is logged at two or three different levels
-
-Six scopes reported this.
-
-- `shepr-pty`/`shepr-mux`: actor read failure, poll failure and wake-drain
-  failure are `debug!`; write failure is `warn!`. All of them end the pane's IO
-  loop.
-- `shepr-remote`: "a remote thing we depend on is unavailable" is logged at
-  three levels - `debug!` for "SSH agent refresh unavailable"
-  (`remote/ssh_agent.rs`), "could not cache SSH machine metadata" and "could not
-  invalidate SSH machine metadata" (`remote/ssh_metadata.rs`), "saved SSH setup
-  failed transiently" (`remote/saved.rs`); `warn!` for "SSH agent refresh
-  unavailable" (`shepr-api/src/server.rs` - the *same message* as the debug one),
-  "failed to check server socket" (`remote/local_server.rs`), "saved SSH
-  endpoint bridge failed" (`remote/bridge.rs`); `error!` for "remote bridge
-  failed to prepare client socket" (`remote/bridge.rs`).
-
-Enforcement named: none mechanical for level choice. `shepr-platform`'s logging
-module now states a level policy; the open bullets are the sites that do not
-follow it yet. The remote hunter suggested a text rule could at least require every
-`tracing::` call in that crate to carry the endpoint identifier (HYGC-012).
-
-## HYGC-011 - One failure, two channels, chosen by which file or which function it landed in
-
-**Decision (partial):** the third bullet is settled by the library-crate
-print-macro textlint (HYGC-001): the `eprintln!` branch in `bridge.rs` is a
-violation, leaving `tracing` as the one channel in the transport. Open: the
-first two bullets.
-
-- `shepr-mux/src/persist/writer.rs::finish_save_with_snapshot_plan` uses the
-  project's owned channel for save outcomes
-  (`shepr_platform::logging::session_save_failed` / `session_saved`) and raw
-  `tracing` for the snapshot-preservation outcomes in the same call path
-  (`tracing::warn!(event = "persist.snapshot", ...)`,
-  `tracing::info!(event = "persist.backup", ...)`). A failed save is an operator
-  event and a failed recovery copy is a log line, for no stated reason.
-- `shepr-remote/src/remote/bridge.rs` picks between `tracing::warn!` and
-  `eprintln!` for the same event depending on the `noninteractive` flag (see
-  HYGC-001).
-
-Enforcement named: add `session_snapshot_failed` / `session_snapshot_preserved`
-to `shepr_platform::logging` and hold it with a text rule banning `tracing::` in
-`shepr-mux/src/persist/`; make both `surface_*::message` functions return
-`Result` and let one caller decide to log-and-fall-back; one
-`fn writer_gone(client_id)` helper for the render branches so they cannot
-disagree.
-
 ## HYGC-013 - Structured field names for the same thing differ across sites
 
-`shepr-client` now keys every failure field `error`. Open: the same audit across
-the other crates, which was never done, and in `shepr-mux/src/persist/writer.rs`
-the `persist.snapshot` line
-omits `subsystem = "persist"` while `persist.backup` includes it.
+`shepr-client` keys every failure field `error`. Every other crate mixes `err`
+and `error` for the same thing in `tracing` fields: a count across the Rust
+sources found both spellings in `shepr-agent`, `shepr-api`, `shepr-mux`,
+`shepr-platform`, `shepr-remote` and `shepr-server`, and only `err` in
+`shepr-pty`. Pick one name and convert the other crates.
 
 Enforcement named: a text rule on the field name, or funnelling failures through
 one helper.
 
-## HYGC-014 - Significant events with no log at all
-
-Gathered from six scopes. The core/platform hunter's note that these are
-judgement calls only review catches applies throughout.
-
-`shepr-client`: startup host queries now track replies only for writes that
-succeeded. Open: a reactive query that fails to go out still leaves the input
-reader's focus reply window open for its one-flush hold; the framer state is in
-`shepr-termio/src/input/raw_input.rs`.
-
-`shepr-protocol`/`shepr-config`: the swallowed remote `ValidatedConfig` decode in
-`shepr-client/src/shell/endpoints.rs` leaves a `None` as its only trace. (The
-protocol/config hunter filed that swallow itself as a live defect.)
-
 ## HYGC-037 - Once-only drop and failure reports that lose their subject or their total
 
-- `shepr-pty`: the terminal-reply drop counter is reported at the first drop
-  (count 1) and never again, so the total is not visible, for example at pane
-  shutdown.
 - `shepr-mux`: the terminal mutation-failure `error!` names no pane, because
   `PaneTerminal` does not know its id.
 - `shepr-platform`: `api_request_failed` is now `error!`, including
   response-write IO failures from clients that disconnect abruptly; watch it for
   noise and split the disconnect case if it is.
 
-## HYGC-018 - Drops on the terminal-reply and dirty-patch paths with no counter and no log
-
-Residue. The pty and mux drops are now counted and reported once per actor or
-pane, and the mux dirty-patch fallback carries its reason. Open:
-`crates/shepr-server/src/server/headless/retained_surface.rs` has its own
-`fallback!` macro (seventeen call sites) that still throws the reason away, so
-a fallback storm there is invisible. Carry the reason and log it once, off the
-render loop's hot path.
-
 ## HYGC-022 - Errors that reach an operator naming no subject
-
-Gathered from six scopes.
-
-`shepr-platform`:
-
-- `UnsafeSshRuntimeDirectory`'s `Display` names the three requirements but not
-  the directory that failed them, and `validate_shared_ssh_dir` has the path in
-  hand. Adding the path means changing the unit value that
-  `shepr-remote/src/remote/saved.rs` downcasts and that its tests construct, so
-  it needs one fixer holding both crates.
 
 `shepr-config`/`shepr-protocol`:
 
@@ -216,27 +108,11 @@ Gathered from six scopes.
 Enforcement named: partly. A typed error per module carrying the subject makes the
 subject impossible to omit; a lint cannot.
 
-## HYGC-023 - Stringly-typed errors, and classification by `ErrorKind`, shed the category
-
-- `shepr-mux`: `AppEvent::TabBarCommandFinished` carries
-  `Result<Option<String>, String>` across an internal channel. The subject
-  (which command, which segment's configured argv) is not in the error, only in
-  the sibling `segment_index` field, and by the time an operator sees the text
-  neither is attached. The rest of `AppEvent` is fully typed.
-  `TerminalState::restore_error: Option<String>` is the same shape (see
-  HYGC-005).
-
-Enforcement named: a typed error carrying the segment's configured command, and
-a typed restore failure (HYGC-005). Also open: `shepr-client/src/lib.rs`'s
-fallback catalog load formats the now-typed `CatalogError` into an `io::Error`,
-losing the category on that route.
-
 ## HYGC-026 - Failures discarded with `let _ =` at cleanup, permission and signal sites
 
-The `shepr-platform` sites are all logged or returned now. Elsewhere:
+The `shepr-platform` and `shepr-pty` sites are all checked, logged or returned
+now. Open:
 
-- `shepr-pty`'s `prepare_pty_child` ignores the return codes of `sigemptyset`
-  and `sigprocmask`.
 - `shepr-server/src/app/api/workspaces.rs`: `let _ =
   std::fs::remove_dir_all(&source_cwd)` - a recursive delete whose failure is
   discarded. The hunter noted it is fixture teardown in test code, but a
@@ -252,21 +128,13 @@ once. The termio/client hunter's dissenting view on the same lint: an allow-list
 for it would be "too noisy to be worth it", and those sites are individual
 fixes.
 
-## HYGC-033 - Aborts and panics on state a caller or operator can reach
+## HYGC-050 - Pane restore failure wording is owned by the UI module and reached from the app layer
 
-**Decision (partial):** the `bridge_upload_cancellation_for_test` bullet goes
-with piece 4 of the test-isolation work adopted from broadarrow (test-only code
-leaves production crates' `test-support` features for dev-only crates, held by
-`never-ships` dependency rules). Open: every other bullet.
-
-- `shepr-agent`: `Agent::descriptor` indexes an array with `&AGENTS[self as
-  usize]` in a `const fn`, relying on `#[repr(usize)]` and on declaration order
-  matching the array. This is a panic on mis-ordering, not on caller input, and
-  `descriptors_are_the_domain_source_for_agent_views` pins it - recorded only
-  because the enforcement is a test rather than a type; a `match` or a build-time
-  `const` assertion per variant would make the mis-ordering unrepresentable.
-- `shepr-remote`: `bridge_upload_cancellation_for_test` is `pub` under
-  `#[cfg(any(test, feature = "test-support"))]` and `expect()`s four times and
-  `assert!`s once, so if anything ever enables `test-support` in a non-test build
-  a panicking API is exported from a library that otherwise bans `unwrap`. (The
-  feature-unification half of that is filed with the test findings.)
+The pane restore failure is now a typed `RestoreFailure`, worded by
+`shepr-server/src/ui/panes.rs::restore_failure_message`. Two costs came with
+that: `app/creation.rs` calls `crate::ui::restore_failure_message` to fill the
+API response, so the app layer reaches into the UI module for API text; and
+`render_panes` builds that `String` on every render for each pane with a
+restore failure, where it used to borrow a `&str`. Give the wording a neutral
+home both can use (a `Display` on the failure, or a presentation module outside
+`ui`), and let the render path borrow or cache it.

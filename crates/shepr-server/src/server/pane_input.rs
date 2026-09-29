@@ -1,4 +1,4 @@
-use crate::server::input_wire::{WireMouseKind, WirePaneInput};
+use crate::server::input_wire::WirePaneInput;
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
@@ -327,8 +327,8 @@ fn apply_client_pane_input_event(
         ..
     } = event
     {
-        let kind = kind.to_crossterm();
-        let modifiers = crate::server::input_wire::host_modifiers(*modifiers);
+        let kind = kind.to_host();
+        let modifiers = modifiers.to_host();
         let position = match position {
             shepr_protocol::ClientMousePosition::Cell { column, row } => {
                 shepr_termio::input::mouse::Position::Cell {

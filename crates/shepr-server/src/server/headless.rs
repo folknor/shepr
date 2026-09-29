@@ -216,6 +216,11 @@ pub struct HeadlessServer {
     /// is followed by another loop iteration, which pushes the modes before
     /// the loop sleeps again.
     host_input_modes_dirty: bool,
+    /// Reason captured by the retained renderer and reported after the full
+    /// render that recovers from it.
+    retained_surface_fallback_reason: Option<&'static str>,
+    /// Keeps repeated retained-render fallbacks from logging on every PTY wake.
+    retained_surface_fallbacks_reported: HashSet<&'static str>,
     /// Shared pane runtime size derived from the foreground client, or the
     /// configured headless size when no clients are connected.
     effective_size: shepr_core::geometry::GridSize,
@@ -305,6 +310,8 @@ impl HeadlessServer {
             agent_manifest_reload_rx,
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
+            retained_surface_fallback_reason: None,
+            retained_surface_fallbacks_reported: HashSet::new(),
             effective_size,
             lifecycle: ShutdownLifecycle::new(stop_requested),
             host_shutdown_monitor: None,
@@ -491,6 +498,7 @@ impl HeadlessServer {
                     // retained pane surface path
                 } else {
                     self.render_and_stream();
+                    self.report_retained_surface_fallback();
                 }
                 self.app.record_render_attempt(now, !hidden_only);
                 render_demand = RenderDemand::None;

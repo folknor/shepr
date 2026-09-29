@@ -2,7 +2,8 @@
 """Witness that no `[[textlint]]` `skip_after` releases production code.
 
 brokkr's `skip_after` is line-based: every line after the first match of its
-pattern (here always a file's first `#[cfg(test)]`) is exempt from the rule.
+pattern (here a file's first `#[cfg(test)]`, possibly indented) is exempt from
+the rule.
 That is the right scope only when the test item runs to the end of the file.
 A file with an early `#[cfg(test)]` item - a gated helper, an out-of-line
 `mod tests;` declared above the production items, a test-only `use` or `impl` -
@@ -11,10 +12,12 @@ the rule silently.
 
 brokkr offers no item-scoped exemption, so the assertion lives here. For every
 textlint carrying `skip_after`, and every file in its scope, this walks the
-top-level items that follow the first `skip_after` line and re-applies the
-rule's own `pattern` (minus its `except` patterns and `allow_marker`) to every
-item that is not itself gated on a test cfg. A hit is a rule violation the
-textlint could not see, reported under the rule's name.
+items after the first `skip_after` line and re-applies the rule's own `pattern`
+(minus its `except` patterns and `allow_marker`) to every item that is not
+itself gated on a test cfg. Parsing starts at the beginning of the file, so an
+indented marker inside a production `impl` keeps its surrounding item context.
+A hit is a rule violation the textlint could not see, reported under the
+rule's name.
 
 The brokkr man page and top-level help describe textlint but expose no
 item-level matcher entry point, so this narrow witness keeps its own glob and
@@ -424,7 +427,13 @@ def main() -> int:
                 continue
             files_walked += 1
             masked = code_mask(text)
-            for number in ungated_lines(lines, first, len(lines)):
+            # Parse the whole file so an indented marker inside an impl or
+            # module does not make the remaining lines look like top-level
+            # items. Brokkr exempts by line, so inspect every production item
+            # that appears after its first matching marker.
+            for number in ungated_lines(lines, 0, len(lines)):
+                if number <= first:
+                    continue
                 if not pattern.search(masked[number]):
                     continue
                 if any(item.search(lines[number]) for item in excepts):

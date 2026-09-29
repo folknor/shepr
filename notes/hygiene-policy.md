@@ -46,27 +46,6 @@ probe and the vt synchronized-update timeout. Open:
   and 20 ms); client `handshake.rs` and `terminal_geometry.rs`; server
   `app/mod.rs`, `tab_bar_status.rs` and `client_transport.rs`.
 
-## HYGP-067 - A failed backup prune now blocks every save of an unloaded session
-
-`crates/shepr-mux/src/persist/writer.rs`: when an old recovery copy cannot be
-pruned, the new backup is removed and the save fails, where it used to warn and
-continue. That keeps the directory bounded, but a single undeletable old copy
-now stops every save of that session. Decide which failure is worse; if the
-save must go through, keep the new copy, warn, and cap retries some other way.
-
-## HYGP-068 - Small leftovers from the clock and guard work
-
-- `crates/shepr-remote/src/remote/bridge.rs`: `BridgeChildStartupGuard` uses
-  `.expect()` in production code, backed by an invariant; make the invariant a
-  type or return an error.
-
-## HYGP-004 - The process id is reached from logic to build names
-
-Residue. Platform, agent and remote names come from platform randomness now,
-and the boot id has its own constructor. Open: `shepr-mux`'s recovery filename
-format still embeds `std::process::id()`, so recovery filenames are not
-reproducible in a test.
-
 ## HYGP-005 - The working directory is a silent dependency on two paths
 
 **Decision (partial):** the owner adopted broadarrow's rule that every child
@@ -77,19 +56,15 @@ direction here - a test's directory comes from a `ScratchDir`, never from where
 the runner was invoked - but the seal covers spawned children only and catches
 none of these sites: `std::env::current_dir()` read as an input and the
 `Path::new(".")` fallback are other spellings (A5's dot-directory textlint needs
-a name after the dot). Open: every site.
+a name after the dot). The platform IPC path and the mux fixtures are fixed.
+Open, all in tests:
 
-- `shepr-platform`: `ipc.rs` falls back to `Path::new(".")` for the staging
-  parent when the socket path has no parent, so a security-relevant 0700
-  directory is created relative to whatever cwd the process happens to have.
-- Tests: `shepr-server/src/app/actions/tests.rs` reads `current_dir()` twice,
-  and `shepr-server/src/test_support.rs` derives a fixture cwd from
-  `current_dir()` with a `/` fallback. The agent, mux and snapshot test sites
-  now use `ScratchDir` or a synthetic absolute path. Also in tests: twelve fixed
-  `/tmp` path literals in server fixtures (`app/mod.rs`, `app/actions/tests.rs`,
-  `ui/panes.rs`) and two in mux (`persist/writer.rs`'s `snapshot()` helper,
-  `workspace/aggregate.rs`), and `src/cli.rs` binding a used `IsolatedEnv` as
-  `_env`.
+- `shepr-server/src/app/actions/tests.rs` reads `current_dir()` twice, and
+  `shepr-server/src/test_support.rs` derives a fixture cwd from `current_dir()`
+  with a `/` fallback.
+- Fixed `/tmp` path literals in server fixtures (`app/mod.rs`,
+  `app/actions/tests.rs`, `ui/panes.rs`).
+- `src/cli.rs` binds a used `IsolatedEnv` as `_env`.
 
 ## HYGP-006 - Retry and backoff are invented per call site, across four crates, with no shared vocabulary
 
@@ -118,10 +93,6 @@ a name after the dot). Open: every site.
   ("Only this read-only probe may rediscover and retry. Requests that follow the
   probe must never be replayed after an ambiguous SSH failure."). Nothing
   enforces it; a second retry loop elsewhere would violate it silently.
-- `shepr-agent`: retry and debounce policy exists in exactly one asset. Only the
-  OMP TypeScript asset has `SHEPR_OMP_IDLE_DEBOUNCE_MS` (250) and
-  `SHEPR_OMP_RETRY_GRACE_MS` (2500); every other asset fires once and gives up,
-  and whether that asymmetry is deliberate is recorded nowhere.
 - `shepr-pty`: the resize retry and backoff machinery in `actor.rs`
   (`RESIZE_RETRY_*`, `RESIZE_HOLD_ATTEMPTS`, the reply-holding logic and three
   tests) may protect against an error retrying cannot fix. The hunter marks this
@@ -171,15 +142,6 @@ scrubbed from a separate list owned by `shepr-agent`
 Reported from every scope. Several scopes found nothing and said so, which is
 recorded here so the absence is not re-hunted.
 
-- `shepr-platform`: `remote_bridge.rs` and `remote_bridge_io.rs` both carry an
-  explicit module-level rule ("input content must stay out of logs and error
-  messages here; byte counts and error kinds only") and honour it. No equivalent
-  note exists on the clipboard path, which handles the same class of content (the
-  user's selection, potentially a token pasted between panes) and spawns it
-  through an argv-visible helper process. Nothing leaks today because no
-  clipboard log line exists at all, which means the first person to add one is
-  the person who will leak it. The whole fix is a module-level comment matching
-  the bridge's.
 - `shepr-config`: `ConfigProvenance` stringifies every config value into
   `ConfigValueOrigin.value` and ships it to every attached client, including
   `terminal.default_shell`, `terminal.new_cwd` (an absolute path),
@@ -253,18 +215,6 @@ are test-only again (`PublicTabId`/`PublicPaneId`'s `From<&str>` are
 `unwrap_or_else` fallback), but `TerminalId::test_new`, `WorkspaceId::new` and
 `WorkspaceId::from(&str)` remain `pub` and ungated, so any caller can still mint
 an identity that is supposed to come from one place.
-
-## HYGP-045 - Branches and checks that cannot run
-
-
-
-- `shepr-client/src/input_wire.rs` and `shepr-server/src/server/input_wire.rs`
-  keep one-line forwarding helpers (`WireMouseKind`, `WireMouseButton`,
-  `wire_modifiers`, `host_modifiers`) over the protocol wire-type methods the
-  conversion moved to; callers can use the protocol methods directly. Its
-  eight call sites are in client `attach.rs`, `shell/input/input.rs`,
-  `shell/input/mouse.rs` and server `server/pane_input.rs`.
-
 
 ## HYGP-058 - Dependencies that production code does not use
 

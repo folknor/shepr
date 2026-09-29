@@ -13,11 +13,34 @@ debug = true
 [rustdoc]
 document_private_items = true
 
+# The compact codec is positional. These serde shapes either omit fields or
+# need self-describing data. Config's two TOML-only enum shapes are mirrored
+# in shepr-config/src/wire.rs and carry the allow marker on the line above
+# their attribute. Protocol messages also reuse selected shepr-core and
+# shepr-vt types directly. The code region masks string literals, quotes
+# included, so a `tag = "..."` argument is matched by the `=` followed by the
+# argument separator, the closing paren or the end of a wrapped line.
+[[textlint]]
+name = "wire-types-use-positional-serde-shapes"
+pattern = '\b(?:skip_serializing_if|flatten|untagged)\b|\btag\s*=\s*(?:,|\)|$)'
+paths = [
+    "crates/shepr-protocol/src/**/*.rs",
+    "crates/shepr-config/src/**/*.rs",
+    "crates/shepr-core/src/**/*.rs",
+    "crates/shepr-vt/src/**/*.rs",
+]
+except = ['(?:\.|::)flatten\b']
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "toml-only-serde-shape"
+allow_marker_above = 1
+message = "positional wire types cannot use skip_serializing_if, flatten, untagged or tagged serde enums; mirror TOML-only config shapes before wire encoding"
+
 [[textlint]]
 name = "persist-clock-is-injected"
 pattern = '\b(?:SystemTime|Instant)::now\s*\('
 paths = ["crates/shepr-mux/src/persist/**/*.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 message = "pass the operation time into persistence from its caller"
 
@@ -26,7 +49,7 @@ name = "app-state-reads-the-clock-seam"
 pattern = '\b(?:Instant|SystemTime)::now\s*\('
 paths = ["crates/shepr-server/src/app/**/*.rs"]
 exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "clock-io-ok"
 allow_marker_above = 3
@@ -37,7 +60,7 @@ name = "remote-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-remote/src/**/*.rs"]
 exclude = ["**/*_tests.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "clock-io-ok"
 allow_marker_above = 3
@@ -53,7 +76,7 @@ paths = [
     "crates/shepr-server/src/server/headless/**/*.rs",
 ]
 exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "headless-clock-sample-ok"
 allow_marker_above = 3
@@ -66,7 +89,7 @@ name = "platform-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-platform/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "clock-io-ok"
 allow_marker_above = 3
@@ -77,7 +100,7 @@ name = "client-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-client/src/**/*.rs"]
 exclude = ["crates/shepr-client/src/lib.rs", "**/tests.rs", "**/tests/**", "**/*_tests.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "clock-io-ok"
 allow_marker_above = 3
@@ -89,7 +112,7 @@ message = "pass time from the client loop or IO owner; mark elapsed real IO read
 name = "client-loop-clock-is-sampled"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-client/src/lib.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "client-clock-sample-ok"
 allow_marker_above = 3
@@ -100,7 +123,7 @@ name = "agent-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-agent/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "clock-io-ok"
 allow_marker_above = 3
@@ -113,7 +136,7 @@ name = "terminal-core-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-vt/src/**/*.rs", "crates/shepr-pty/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "clock-io-ok"
 allow_marker_above = 3
@@ -160,7 +183,7 @@ name = "library-crates-do-not-print"
 pattern = '\b(?:print|println|eprint|eprintln)!\s*[\(\[\{]'
 paths = ["crates/*/src/**/*.rs"]
 exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**"]
-skip_after = '^#\[cfg\(test\)\]'
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 message = "a print macro panics on a closed pipe and reaches no log file; log through tracing, or return the text to the CLI to print"
 

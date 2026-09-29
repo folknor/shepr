@@ -137,12 +137,13 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
     }
 }
 
-/// Acquire the lifetime lock associated with `socket_path`.
+/// Acquire the lifetime lock associated with an absolute `socket_path`.
 ///
 /// The lock file has `.lock` appended to the socket path, so it shares the
 /// socket's parent directory without counting against the socket path limit
 /// (`shepr_core::socket_path`).
 pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
+    socket_parent(socket_path)?;
     let lock_path = socket_startup_lock_path(socket_path);
     let lock = match acquire_flock_lock(&lock_path, false) {
         Ok(lock) => lock,
@@ -174,7 +175,7 @@ pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStart
     })
 }
 
-/// Acquires the startup lock, prepares `path`, and binds a private listener.
+/// Acquires the startup lock, prepares an absolute `path`, and binds a private listener.
 ///
 /// The lock stays alive in the returned tuple and must be held until the
 /// listener has stopped and its socket file has been removed. Keeping these
@@ -313,7 +314,7 @@ pub fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::
 /// Mode applied by [`bind_private_local_listener`]: owner read/write only.
 const PRIVATE_SOCKET_MODE: u32 = 0o600;
 
-/// Binds a listener at `path` so the socket is never reachable with anything
+/// Binds a listener at an absolute `path` so the socket is never reachable with anything
 /// looser than owner-only permissions.
 ///
 /// Binding at `path` and then chmodding leaves the socket connectable with
@@ -331,7 +332,8 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 /// or re-apply the mode afterwards. Access is also checked per connection by
 /// [`peer_is_same_user`]; the file mode is not the only control.
 pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
-    match bind_via_private_staging(path) {
+    let parent = socket_parent(path)?;
+    match bind_via_private_staging(path, parent) {
         Ok(listener) => {
             tracing::info!(
                 event = "ipc.socket_bind",
@@ -398,13 +400,26 @@ enum StagedBindError {
     Unavailable(io::Error),
 }
 
-fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindError> {
+fn socket_parent(path: &Path) -> io::Result<&Path> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket path must be absolute",
+        ));
+    }
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "socket path must name a file inside a directory",
+            )
+        })
+}
+
+fn bind_via_private_staging(path: &Path, parent: &Path) -> Result<LocalListener, StagedBindError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
     // Without a readable identity the directory is staged unmarked, and the
     // sweep never removes an unmarked directory.
     let owner = super::process_identity::ProcessIdentity::current()
@@ -894,6 +909,29 @@ mod tests {
         drop(listener);
         fs::remove_file(&path).expect("remove the bound socket");
         assert_eq!(mode, PRIVATE_SOCKET_MODE);
+    }
+
+    #[test]
+    fn socket_binding_rejects_relative_paths() {
+        for path in [Path::new("socket.sock"), Path::new("runtime/socket.sock")] {
+            let error = match bind_private_local_listener(path) {
+                Ok(_) => panic!("relative socket path unexpectedly bound"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+            let error = match acquire_socket_startup_lock(path) {
+                Ok(_) => panic!("relative socket path unexpectedly locked"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+            let error = match bind_private_socket(path, |_| String::new()) {
+                Ok(_) => panic!("relative socket path unexpectedly bound"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[test]

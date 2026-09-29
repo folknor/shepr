@@ -305,7 +305,10 @@ impl App {
             foreground_cwd: tab
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            restore_error: terminal.restore_error.clone(),
+            restore_error: terminal
+                .restore_error
+                .as_ref()
+                .map(crate::ui::restore_failure_message),
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,

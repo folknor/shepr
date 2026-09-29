@@ -45,6 +45,8 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
   });
 }
 
+// This retry is for socket delivery. Pi's agent_settled event supplies the
+// state boundary, so it does not need OMP's state debounce or retry grace.
 async function sendRequest(request: unknown): Promise<void> {
   if (await sendRequestAttempt(request, 500)) {
     return;

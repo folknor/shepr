@@ -3,7 +3,6 @@
 //! (log content-free kinds instead).
 
 use super::*;
-use crate::input_wire::WireMouseKind;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
 
@@ -1989,9 +1988,7 @@ impl ClientShellState {
         modifiers: crossterm::event::KeyModifiers,
         outcome: &mut ClientShellInput,
     ) {
-        let Some(kind) = shepr_protocol::ClientMouseKind::from_crossterm(mouse.kind) else {
-            return;
-        };
+        let kind = shepr_protocol::ClientMouseKind::from_host(mouse.kind);
         let position = self.pane_mouse_position(hit, mouse);
         let geometry = matches!(position, ClientMousePosition::Pixels { .. }).then_some(
             shepr_protocol::ClientMouseGeometry {
@@ -2007,7 +2004,7 @@ impl ClientShellState {
                 kind,
                 position,
                 geometry,
-                modifiers: crate::input_wire::wire_modifiers(modifiers),
+                modifiers: shepr_protocol::WireModifiers::from_host(modifiers),
                 lines: self.config.mouse_scroll_lines,
             },
             outcome,

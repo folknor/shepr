@@ -9,6 +9,31 @@ use crate::git::{GitStatusCacheEntry, WorkspaceGitStatus};
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 
+/// A status command failure retains its configured shell line and cause until
+/// the server decides how to report it.
+#[derive(Debug)]
+pub struct TabBarCommandError {
+    pub command: String,
+    pub cause: TabBarCommandFailure,
+}
+
+/// Why a configured tab bar status command produced no text.
+#[derive(Debug)]
+pub enum TabBarCommandFailure {
+    /// The command outlived its configured timeout.
+    TimedOut(std::time::Duration),
+    /// The server cancelled the command before it finished.
+    Cancelled,
+    Spawn(std::io::Error),
+    /// Taking a handle on the child's process group failed.
+    ProcessGroup(std::io::Error),
+    Wait(std::io::Error),
+    /// Reading the command's standard output failed.
+    Output(std::io::Error),
+    /// The command exited unsuccessfully.
+    Exited(std::process::ExitStatus),
+}
+
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -101,6 +126,6 @@ pub enum AppEvent {
     /// A configured tab bar status command finished.
     TabBarCommandFinished {
         segment_index: usize,
-        result: Result<Option<String>, String>,
+        result: Result<Option<String>, TabBarCommandError>,
     },
 }

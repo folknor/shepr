@@ -1,6 +1,5 @@
 //! Direct terminal attach input parsing and semantic actions.
 
-use crate::input_wire::WireMouseKind;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
 use shepr_protocol::{AttachScrollDirection, AttachScrollSource, ClientMessage};
@@ -404,7 +403,7 @@ pub(super) fn direct_attach_pixel_mouse(
     };
     let (column, row) = pixels.geometry.cell(pixels.x, pixels.y)?;
     Some((
-        shepr_protocol::ClientMouseKind::from_crossterm(mouse.kind)?,
+        shepr_protocol::ClientMouseKind::from_host(mouse.kind),
         shepr_protocol::ClientMousePosition::Pixels {
             x: pixels.x,
             y: pixels.y,
@@ -439,7 +438,7 @@ fn attach_scroll_action(
                 })
             }
             kind => Some(AttachSemanticAction::Mouse {
-                kind: shepr_protocol::ClientMouseKind::from_crossterm(kind)?,
+                kind: shepr_protocol::ClientMouseKind::from_host(kind),
                 position: shepr_protocol::ClientMousePosition::Cell {
                     column: mouse.column,
                     row: mouse.row,

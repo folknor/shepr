@@ -215,6 +215,17 @@ fn has_synchronized_pane(app: &app::App, surface: &shepr_protocol::PaneSurfaceFr
 }
 
 impl HeadlessServer {
+    /// Reports retained-render fallback reasons after the full renderer has
+    /// recovered the surface. Each reason is emitted once per server lifetime.
+    pub(super) fn report_retained_surface_fallback(&mut self) {
+        let Some(reason) = self.retained_surface_fallback_reason.take() else {
+            return;
+        };
+        if self.retained_surface_fallbacks_reported.insert(reason) {
+            debug!(reason, "retained pane surface fell back to a full render");
+        }
+    }
+
     /// Applies terminal dirty rows to the committed origin-relative pane surface.
     /// Any presentation or geometry uncertainty falls back to the complete renderer.
     pub(super) fn render_retained_pane_surface_and_stream(
@@ -223,6 +234,7 @@ impl HeadlessServer {
     ) -> bool {
         macro_rules! fallback {
             ($reason:literal) => {{
+                self.retained_surface_fallback_reason = Some($reason);
                 return false;
             }};
         }

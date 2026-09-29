@@ -176,6 +176,22 @@ pub struct TerminalStateMutation {
     pub agent_released: bool,
 }
 
+/// Why a saved pane has no running shell. Presentation belongs to the client
+/// surface and API boundary, so restore paths retain only the failure facts.
+#[derive(Debug)]
+pub enum RestoreFailure {
+    DirectoryUnavailable {
+        path: PathBuf,
+    },
+    DirectoryUnreadable {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    ShellStartFailed {
+        error: std::io::Error,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentNameOwner {
     agent_label: String,
@@ -229,7 +245,7 @@ pub struct TerminalState {
     pub launch_argv: Option<Vec<String>>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
-    pub restore_error: Option<String>,
+    pub restore_error: Option<RestoreFailure>,
 }
 
 mod detection;

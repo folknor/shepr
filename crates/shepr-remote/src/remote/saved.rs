@@ -129,7 +129,7 @@ impl SavedSshConnector {
             if is_launch_fatal_setup_error(&error) {
                 self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
             } else {
-                tracing::debug!(
+                tracing::warn!(
                     %error,
                     profile = %self.profile_id,
                     target = %self.target.as_str(),
@@ -148,7 +148,7 @@ impl SavedSshConnector {
                 self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
             }
             Err(error) => {
-                tracing::debug!(
+                tracing::warn!(
                     %error,
                     profile = %self.profile_id,
                     target = %self.target.as_str(),
@@ -287,8 +287,8 @@ impl SavedSshConnector {
             &mut establish,
         ) {
             Ok(connected) => {
-                // The connection is up and this connector keeps the hint in memory;
-                // only later processes and reconnects after a restart lose it.
+                // A cache failure does not undo this connection or this connector's
+                // in-memory hint; later processes must rediscover the executable.
                 if let Err(error) = metadata_cache.store(&discovered) {
                     tracing::warn!(
                         %error,
@@ -414,7 +414,7 @@ impl SavedSshApiBridge {
 
     /// Removes the shared hint this bridge started from. A failure leaves the stale
     /// hint for the next command, which then pays one failed attempt before it
-    /// rediscovers; the caller decides whether to report it.
+    /// rediscovers; the caller decides whether to report it with endpoint context.
     pub fn invalidate_metadata(&self) -> io::Result<()> {
         self.metadata_cache.invalidate()
     }
@@ -481,7 +481,7 @@ mod tests {
     fn launch_setup_input_and_runtime_policy_errors_are_fatal() {
         let policy = io::Error::new(
             io::ErrorKind::PermissionDenied,
-            shepr_platform::UnsafeSshRuntimeDirectory,
+            shepr_platform::UnsafeSshRuntimeDirectory::new(std::path::Path::new("/runtime")),
         );
         assert!(is_launch_fatal_setup_error(&policy));
         let ordinary = io::Error::new(io::ErrorKind::PermissionDenied, policy.to_string());

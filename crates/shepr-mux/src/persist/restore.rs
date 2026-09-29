@@ -9,7 +9,7 @@ use crate::events::AppEvent;
 use crate::pane::PaneRuntime;
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
-use crate::terminal::TerminalState;
+use crate::terminal::{RestoreFailure, TerminalState};
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
 use shepr_core::layout::{InvalidSavedLayout, Node, PaneId, SplitRatio, TileLayout};
@@ -87,7 +87,7 @@ enum RestoredPaneStart {
     PendingResume(shepr_agent::agent::resume::AgentResumePlan),
     /// Nothing could be started (the reason is shown in the pane). The pane
     /// keeps its saved state verbatim so the next start can try again.
-    Unavailable(String),
+    Unavailable(RestoreFailure),
 }
 
 type RestoredWorkspace = (
@@ -457,7 +457,7 @@ fn restored_terminal(
         RestoredPaneStart::Unavailable(reason) => {
             warn!(
                 cwd = %pane.cwd.display(),
-                reason = %reason,
+                reason = ?reason,
                 "preserving unavailable restored pane"
             );
             terminal.restore_error = Some(reason);
@@ -530,24 +530,23 @@ fn restore_tab(
         // something that is still there.
         let cwd_unavailable = match std::fs::metadata(&saved_pane.cwd) {
             Ok(metadata) if metadata.is_dir() => None,
-            Ok(_) => Some(
-                "Saved directory is unavailable. Restore the directory and restart this session."
-                    .to_string(),
-            ),
+            Ok(_) => Some(RestoreFailure::DirectoryUnavailable {
+                path: saved_pane.cwd.clone(),
+            }),
             Err(error)
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
                 ) =>
             {
-                Some(
-                    "Saved directory is unavailable. Restore the directory and restart this session."
-                        .to_string(),
-                )
+                Some(RestoreFailure::DirectoryUnavailable {
+                    path: saved_pane.cwd.clone(),
+                })
             }
-            Err(error) => Some(format!(
-                "Saved directory cannot be read ({error}). Fix its access and restart this session."
-            )),
+            Err(error) => Some(RestoreFailure::DirectoryUnreadable {
+                path: saved_pane.cwd.clone(),
+                error,
+            }),
         };
         if let Some(reason) = cwd_unavailable {
             let terminal = restored_terminal(
@@ -664,9 +663,7 @@ fn restore_tab(
                 );
                 let terminal = restored_terminal(
                     saved_pane,
-                    RestoredPaneStart::Unavailable(format!(
-                        "Could not start the saved shell: {e}. Fix the shell configuration and restart this session."
-                    )),
+                    RestoredPaneStart::Unavailable(RestoreFailure::ShellStartFailed { error: e }),
                     runtime_context.now,
                 );
                 runtime_context

@@ -121,6 +121,8 @@ impl SshStdioBridge {
                         let stream = match prepare_remote_bridge_stream(stream) {
                             Ok(stream) => stream,
                             Err(err) => {
+                                // This local setup failure drops the accepted request; the
+                                // bridge remains available for later connections.
                                 tracing::error!(
                                     error = %err,
                                     target = %target.as_str(),
@@ -142,10 +144,9 @@ impl SshStdioBridge {
                             noninteractive,
                             &thread_stop,
                         ) {
-                            // Logged, never printed: this thread runs under a
-                            // TUI (the interactive client) or a background
-                            // supervisor. The owner reads the error back
-                            // through `reported_failure` and presents it.
+                            // Use tracing in both modes. The owner reads the error back
+                            // through `reported_failure` and presents it; noninteractive
+                            // is context on the event, not a choice of output channel.
                             tracing::warn!(
                                 error = %err,
                                 noninteractive,
@@ -437,16 +438,16 @@ pub(super) fn bridge_connection(
         .map_err(|err| io::Error::new(err.kind(), format!("failed to start ssh bridge: {err}")))?;
     let mut child = BridgeChildStartupGuard::new(child);
     let child_stdin = child
-        .child()
+        .child()?
         .stdin
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stdin missing"))?;
     let child_stdout =
-        child.child().stdout.take().ok_or_else(|| {
+        child.child()?.stdout.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stdout missing")
         })?;
     let stderr_reader = if noninteractive {
-        let child_stderr = child.child().stderr.take().ok_or_else(|| {
+        let child_stderr = child.child()?.stderr.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stderr missing")
         })?;
         Some(PipeCapture::spawn(
@@ -464,7 +465,7 @@ pub(super) fn bridge_connection(
     let connection_stop = Arc::new(AtomicBool::new(false));
     let download_done = Arc::new(AtomicBool::new(false));
     let upload = BridgeUpload::spawn(stream_to_child, child_stdin, Arc::clone(bridge_stop))?;
-    let mut child = child.into_child();
+    let mut child = child.into_child()?;
     let upload_stop = upload.stop_handle();
     let download_stop = Arc::clone(&connection_stop);
     let download_bridge_stop = Arc::clone(bridge_stop);
@@ -666,13 +667,16 @@ impl BridgeChildStartupGuard {
         Self(Some(child))
     }
 
-    fn child(&mut self) -> &mut std::process::Child {
-        // The guard is armed until `into_child` transfers ownership to the bridge loop.
-        self.0.as_mut().expect("bridge startup owns its child")
+    fn child(&mut self) -> io::Result<&mut std::process::Child> {
+        self.0
+            .as_mut()
+            .ok_or_else(|| io::Error::other("ssh bridge child ownership was already transferred"))
     }
 
-    fn into_child(mut self) -> std::process::Child {
-        self.0.take().expect("bridge startup owns its child")
+    fn into_child(mut self) -> io::Result<std::process::Child> {
+        self.0
+            .take()
+            .ok_or_else(|| io::Error::other("ssh bridge child ownership was already transferred"))
     }
 }
 

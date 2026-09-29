@@ -177,11 +177,9 @@ fn run_client_with_launch_state(
     let endpoint_catalog = if client_rendered_shell && role == ClientProcessRole::Local {
         match initial_catalog {
             Some(catalog) => catalog,
-            None => endpoint::EndpointCatalog::load(paths).map_err(|error| {
-                io::Error::other(format!(
-                    "saved SSH endpoint catalog is unavailable: {error}"
-                ))
-            })?,
+            None => {
+                endpoint::EndpointCatalog::load(paths).map_err(ClientRunError::LaunchCatalog)?
+            }
         }
     } else {
         endpoint::EndpointCatalog::default()

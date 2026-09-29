@@ -160,6 +160,8 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         agent_manifest_reload_rx,
         immediate_pty_sources_dirty: true,
         host_input_modes_dirty: true,
+        retained_surface_fallback_reason: None,
+        retained_surface_fallbacks_reported: HashSet::new(),
         effective_size,
         lifecycle: ShutdownLifecycle::new(stop_requested),
         host_shutdown_monitor: None,

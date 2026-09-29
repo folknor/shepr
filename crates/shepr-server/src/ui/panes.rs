@@ -12,6 +12,7 @@ use super::text::display_width;
 use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
+use shepr_mux::terminal::RestoreFailure;
 #[cfg(test)]
 use shepr_mux::workspace::apply_pane_chrome;
 use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
@@ -19,6 +20,20 @@ use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.scroll_metrics()
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
+}
+
+pub(crate) fn restore_failure_message(failure: &RestoreFailure) -> String {
+    match failure {
+        RestoreFailure::DirectoryUnavailable { .. } => {
+            "Saved directory is unavailable. Restore the directory and restart this session.".into()
+        }
+        RestoreFailure::DirectoryUnreadable { error, .. } => format!(
+            "Saved directory cannot be read ({error}). Fix its access and restart this session."
+        ),
+        RestoreFailure::ShellStartFailed { error } => format!(
+            "Could not start the saved shell: {error}. Fix the shell configuration and restart this session."
+        ),
+    }
 }
 
 fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
@@ -184,10 +199,10 @@ pub(super) fn render_panes(
             .get(tab_idx)
             .and_then(|tab| tab.terminal_id(info.id))
             .and_then(|id| app.terminals.get(id))
-            .and_then(|terminal| terminal.restore_error.as_deref())
+            .and_then(|terminal| terminal.restore_error.as_ref())
         {
             frame.render_widget(
-                Paragraph::new(reason).wrap(Wrap { trim: false }),
+                Paragraph::new(restore_failure_message(reason)).wrap(Wrap { trim: false }),
                 info.inner_rect,
             );
         }
@@ -510,7 +525,9 @@ mod tests {
         app.terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .restore_error = Some("Saved directory is unavailable. Restart to retry.".into());
+            .restore_error = Some(RestoreFailure::DirectoryUnavailable {
+            path: "/missing".into(),
+        });
         let runtimes = PaneRuntimeRegistry::new();
         let area = Rect::new(0, 0, 80, 24);
         let layout = crate::ui::compute_tab_surface_for(
@@ -537,6 +554,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains("Saved directory is unavailable."));
+        assert!(text.contains("Restore the directory and restart this session."));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
     }
 

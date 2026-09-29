@@ -107,11 +107,12 @@ impl SessionWriter {
 
     fn preserve_snapshot_history(&self, now: SystemTime) {
         if let Err(err) = preserve_snapshot_after_write(&self.path, now) {
-            // `shepr_platform::logging` names save, clear and restore outcomes
-            // only. A failed snapshot copy is not a failed save, so it logs
-            // here under its own event rather than through `session_save_failed`.
+            // The platform's session helpers also emit tracing events, but
+            // cover save, clear and restore outcomes only. Keep this distinct
+            // so a snapshot failure is not mislabeled as a failed session save.
             tracing::warn!(
-                event = "persist.snapshot", outcome = "error", path = %self.path.display(),
+                event = "persist.snapshot", subsystem = "persist", outcome = "error",
+                path = %self.path.display(),
                 err = %err, "failed to preserve session snapshot"
             );
         }
@@ -204,8 +205,8 @@ impl SessionWriter {
         replacement: &SessionSnapshot,
         now: SystemTime,
     ) -> SnapshotHistoryPlan {
-        // Snapshot-preservation outcomes log here, not through
-        // `shepr_platform::logging`, so they stay distinct from save failures.
+        // Preserve snapshot errors as their own tracing events; the platform's
+        // session helpers emit through tracing too but label save outcomes.
         match snapshot_history_decision(&self.path, Some(replacement), now) {
             Ok(SnapshotHistoryPlan::PreserveBeforeWrite) => {
                 match preserve_existing_in(
@@ -216,7 +217,11 @@ impl SessionWriter {
                 ) {
                     Ok(_) => SnapshotHistoryPlan::Skip,
                     Err(err) => {
-                        tracing::warn!(event = "persist.snapshot", outcome = "error", path = %self.path.display(), err = %err, "failed to preserve session snapshot");
+                        tracing::warn!(
+                            event = "persist.snapshot", subsystem = "persist", outcome = "error",
+                            path = %self.path.display(), err = %err,
+                            "failed to preserve session snapshot"
+                        );
                         SnapshotHistoryPlan::RetryAfterWrite
                     }
                 }
@@ -224,7 +229,8 @@ impl SessionWriter {
             Ok(plan) => plan,
             Err(err) => {
                 tracing::warn!(
-                    event = "persist.snapshot", outcome = "error", path = %self.path.display(),
+                    event = "persist.snapshot", subsystem = "persist", outcome = "error",
+                    path = %self.path.display(),
                     err = %err, "failed to inspect session snapshot history"
                 );
                 SnapshotHistoryPlan::RetryAfterWrite
@@ -325,9 +331,25 @@ impl SessionWriter {
 const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const SNAPSHOT_LIMIT: usize = 48;
 const RECOVERY_TIMESTAMP_DIGITS: usize = 39;
+const RECOVERY_SEQUENCE_DIGITS: usize = 3;
+/// Name attempts per recovery timestamp. The copy is created exclusively, so a
+/// concurrent writer that picked the same timestamp moves on to the next one.
+const RECOVERY_SEQUENCE_LIMIT: usize = 128;
+// Every sequence must fit the fixed width `recovery_timestamp` parses.
+const _: () = {
+    let mut largest = RECOVERY_SEQUENCE_LIMIT - 1;
+    let mut digits = 1;
+    while largest >= 10 {
+        largest /= 10;
+        digits += 1;
+    }
+    assert!(digits <= RECOVERY_SEQUENCE_DIGITS);
+};
 
-fn recovery_filename(timestamp: u128, process_id: u32, sequence: usize) -> String {
-    format!("session-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-{process_id}-{sequence}.json")
+fn recovery_filename(timestamp: u128, sequence: usize) -> String {
+    format!(
+        "session-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-{sequence:0RECOVERY_SEQUENCE_DIGITS$}.json"
+    )
 }
 
 /// Decides which layout needs preserving before the caller replaces the file.
@@ -447,25 +469,22 @@ fn preserve_existing_in(
         ),
         None => timestamp_now,
     };
-    for sequence in 0..128 {
-        let backup = directory.join(recovery_filename(timestamp, std::process::id(), sequence));
+    for sequence in 0..RECOVERY_SEQUENCE_LIMIT {
+        let backup = directory.join(recovery_filename(timestamp, sequence));
         match copy_recovery(&mut source, &backup) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
         }
-        // A recovery copy is its own outcome, not a session write, so it logs
-        // here rather than through `shepr_platform::logging::session_saved`.
-        tracing::info!(
-            event = "persist.backup", subsystem = "persist", outcome = "ok",
-            path = %path.display(), backup_path = %backup.display(),
-            "preserved session recovery copy"
-        );
+        // Recovery-copy events use their own labels; the platform's session
+        // helpers emit through tracing too but only cover session mutations.
+        log_recovery_preserved(path, directory, &backup);
         if let Err(err) = prune_backups(&older, keep) {
-            // A failed prune must not leave one more recovery copy behind on
-            // every retry; the source file is still intact for its caller.
-            std::fs::remove_file(&backup)?;
-            return Err(err);
+            // The new copy is durable, so preserve it and let the caller
+            // complete its save or clear. The unloaded-session guard consumes
+            // this copy once, and snapshot saves use their normal cadence;
+            // either path can prune it on a later preservation attempt.
+            log_recovery_prune_failure(path, directory, &err);
         }
         return Ok(true);
     }
@@ -473,6 +492,38 @@ fn preserve_existing_in(
         io::ErrorKind::AlreadyExists,
         "could not allocate session recovery copy",
     ))
+}
+
+fn log_recovery_preserved(path: &Path, directory: &Path, backup: &Path) {
+    if directory == super::io::snapshot_directory(path).as_path() {
+        tracing::info!(
+            event = "persist.snapshot", subsystem = "persist", outcome = "ok",
+            path = %path.display(), backup_path = %backup.display(),
+            "preserved session snapshot"
+        );
+    } else {
+        tracing::info!(
+            event = "persist.backup", subsystem = "persist", outcome = "ok",
+            path = %path.display(), backup_path = %backup.display(),
+            "preserved session recovery copy"
+        );
+    }
+}
+
+fn log_recovery_prune_failure(path: &Path, directory: &Path, err: &io::Error) {
+    if directory == super::io::snapshot_directory(path).as_path() {
+        tracing::warn!(
+            event = "persist.snapshot", subsystem = "persist", outcome = "prune_error",
+            path = %path.display(), recovery_directory = %directory.display(), err = %err,
+            "preserved session snapshot but could not prune old copies"
+        );
+    } else {
+        tracing::warn!(
+            event = "persist.backup", subsystem = "persist", outcome = "prune_error",
+            path = %path.display(), recovery_directory = %directory.display(), err = %err,
+            "preserved session recovery copy but could not prune old copies"
+        );
+    }
 }
 
 fn copy_recovery(source: &mut impl io::Read, backup: &Path) -> io::Result<()> {
@@ -533,8 +584,9 @@ fn prune_backups(older: &[(u128, PathBuf)], keep: usize) -> io::Result<()> {
 fn recovery_timestamp(name: &str) -> Option<u128> {
     let fields = name.strip_prefix("session-")?.strip_suffix(".json")?;
     let fields: Vec<_> = fields.split('-').collect();
-    if fields.len() == 3
+    if fields.len() == 2
         && fields[0].len() == RECOVERY_TIMESTAMP_DIGITS
+        && fields[1].len() == RECOVERY_SEQUENCE_DIGITS
         && fields
             .iter()
             .all(|field| !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit()))
@@ -579,11 +631,11 @@ mod tests {
             "version": super::super::snapshot::SNAPSHOT_VERSION,
             "workspaces": [{
                 "id": "w1",
-                "identity_cwd": "/tmp/shepr-writer-test",
+                "identity_cwd": "/shepr-writer-test",
                 "tabs": [{
                     "layout": { "Pane": 0 },
                     "panes": {
-                        "0": { "cwd": "/tmp/shepr-writer-test" }
+                        "0": { "cwd": "/shepr-writer-test" }
                     },
                     "zoomed": false,
                     "focused": 0,
@@ -662,7 +714,7 @@ mod tests {
         std::fs::write(&manual, b"manual").expect("test precondition");
         for i in 0..SNAPSHOT_LIMIT {
             std::fs::write(
-                directory.join(format!("session-{i:039}-1-0.json")),
+                directory.join(format!("session-{i:039}-000.json")),
                 b"old snapshot",
             )
             .expect("test precondition");
@@ -679,7 +731,7 @@ mod tests {
         assert_eq!(snapshots(&writer).len(), SNAPSHOT_LIMIT);
         assert!(
             !directory
-                .join(format!("session-{:039}-1-0.json", 0))
+                .join(format!("session-{:039}-000.json", 0))
                 .try_exists()
                 .expect("test stat")
         );
@@ -688,7 +740,7 @@ mod tests {
         for (_, path) in snapshots(&writer) {
             std::fs::remove_file(path).expect("test precondition");
         }
-        let old = directory.join(format!("session-{:039}-1-0.json", 1));
+        let old = directory.join(format!("session-{:039}-000.json", 1));
         let saved = std::fs::read(&writer.path).expect("test precondition");
         let reordered: serde_json::Value =
             serde_json::from_slice(&saved).expect("test precondition");
@@ -1101,7 +1153,11 @@ mod tests {
     #[test]
     fn recovery_filename_timestamp_round_trips() {
         let timestamp = 1_729_123_456_789_012_345_678_901_234_567_890u128;
-        let filename = recovery_filename(timestamp, 42, 7);
+        let filename = recovery_filename(timestamp, 7);
+        assert_eq!(
+            filename,
+            format!("session-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-007.json")
+        );
         assert_eq!(recovery_timestamp(&filename), Some(timestamp));
     }
 
@@ -1179,7 +1235,7 @@ mod tests {
         let writer = writer(true);
         let backup = writer
             .path
-            .with_file_name("session-000000000000000000000000000000000000001-1-0.json");
+            .with_file_name("session-000000000000000000000000000000000000001-000.json");
         let mut source = io::Cursor::new(b"partial").chain(Interrupted);
         #[expect(
             clippy::disallowed_methods,
@@ -1212,7 +1268,7 @@ mod tests {
         let writer = writer(true);
         let directory = super::super::io::backup_directory(&writer.path);
         std::fs::create_dir(&directory).expect("test precondition");
-        let backup = directory.join(recovery_filename(123, 42, 0));
+        let backup = directory.join(recovery_filename(123, 0));
         let pending = backup.with_extension("pending");
         std::fs::write(&pending, b"interrupted copy prefix").expect("test precondition");
 
@@ -1235,7 +1291,7 @@ mod tests {
         let future = 1_000_000_000_000_000_000_000u128;
         for i in 0..2u8 {
             std::fs::write(
-                directory.join(format!("session-{:039}-1-0.json", future + u128::from(i))),
+                directory.join(format!("session-{:039}-000.json", future + u128::from(i))),
                 [i],
             )
             .expect("test precondition");

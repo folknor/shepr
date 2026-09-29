@@ -1,5 +1,5 @@
 use super::*;
-use crate::input_wire::{WireMouseButton, WirePaneInput};
+use crate::input_wire::WirePaneInput;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use shepr_protocol::ClientPaneInputEvent;
 use shepr_termio::input::raw_input::RawInputEvent;
@@ -482,11 +482,11 @@ impl ClientShellState {
                 gesture.hit.pane_id,
                 ClientPaneInputEvent::Mouse {
                     kind: shepr_protocol::ClientMouseKind::Up(
-                        shepr_protocol::ClientMouseButton::from_crossterm(gesture.button),
+                        shepr_protocol::ClientMouseButton::from_host(gesture.button),
                     ),
                     position: gesture.last_position,
                     geometry,
-                    modifiers: crate::input_wire::wire_modifiers(modifiers),
+                    modifiers: shepr_protocol::WireModifiers::from_host(modifiers),
                     lines: self.config.mouse_scroll_lines,
                 },
                 outcome,

@@ -21,6 +21,7 @@ pub struct LiveKeybindConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+// toml-only-serde-shape: `wire::WireBindingConfig` carries this on the wire.
 #[serde(untagged)]
 pub enum BindingConfig {
     One(String),

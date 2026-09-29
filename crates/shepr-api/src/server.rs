@@ -185,6 +185,7 @@ fn start_server_inner(
     ) {
         Ok(registry) => Some(registry),
         Err(error) => {
+            // Setup failure disables SSH agent registration for this server process.
             warn!(%error, "SSH agent refresh unavailable; retaining inherited pane environment");
             None
         }

@@ -263,6 +263,9 @@ impl HostReplyPolicy for HostReplies {
             }
             RawInputEvent::HostCellSizeReport { .. } => self.cell_size = false,
             RawInputEvent::OuterFocusGained if self.query_appearance_on_focus => {
+                // The blocking reader cannot see whether the main-loop query write
+                // succeeded. Keep the window for a split terminal reply; timeout
+                // handling delays an ambiguous Escape by only one flush.
                 self.appearance = true;
             }
             RawInputEvent::HostColorSchemeChanged(_) => {

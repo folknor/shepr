@@ -38,6 +38,7 @@ fn default_command_timeout_seconds() -> u64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+// toml-only-serde-shape: `wire::WireTabBarRightEntry` carries this on the wire.
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TabBarRightEntryConfig {
     Zoom,

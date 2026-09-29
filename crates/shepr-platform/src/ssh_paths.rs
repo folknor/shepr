@@ -263,12 +263,12 @@ pub(super) fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
     let metadata = std::fs::symlink_metadata(dir)?;
     if !metadata.is_dir() || metadata.uid() != effective_uid() || metadata.mode() & 0o7777 != 0o700
     {
-        // Keep this unit error as io::Error's direct payload: shepr-remote
-        // downcasts it to classify launch failures and constructs the unit
-        // value in its tests. Path context needs a coordinated caller update.
+        // Keep this typed error as io::Error's direct payload: shepr-remote
+        // downcasts it to classify launch failures. Carry the rejected path so
+        // the operator can identify which runtime directory failed validation.
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            UnsafeSshRuntimeDirectory,
+            UnsafeSshRuntimeDirectory::new(dir),
         ));
     }
     Ok(())
@@ -276,12 +276,25 @@ pub(super) fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
 
 /// A deterministic policy failure, distinct from filesystem permission errors.
 #[derive(Debug)]
-pub struct UnsafeSshRuntimeDirectory;
+pub struct UnsafeSshRuntimeDirectory {
+    path: PathBuf,
+}
+
+impl UnsafeSshRuntimeDirectory {
+    /// Builds the typed policy error while preserving the path that failed validation.
+    pub fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+        }
+    }
+}
 
 impl std::fmt::Display for UnsafeSshRuntimeDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "SSH runtime directory must be owned by the current user, mode 0700, and not a symlink",
+        write!(
+            f,
+            "SSH runtime directory {} must be owned by the current user, mode 0700, and not a symlink",
+            self.path.display(),
         )
     }
 }

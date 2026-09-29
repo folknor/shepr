@@ -36,7 +36,7 @@ impl Registration {
             Ok(None) => return None,
             Ok(stream) => stream,
             Err(error) => {
-                tracing::debug!(%error, "SSH agent refresh unavailable; retrying while attached");
+                tracing::warn!(%error, "SSH agent refresh unavailable; retrying while attached");
                 None
             }
         };

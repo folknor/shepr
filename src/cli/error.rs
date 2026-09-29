@@ -100,6 +100,9 @@ impl CliError {
             Self::Client(shepr_client::ClientRunError::Launch(error)) => {
                 eprintln!("shepr: {error}");
             }
+            Self::Client(error @ shepr_client::ClientRunError::LaunchCatalog(_)) => {
+                eprintln!("shepr: {error}");
+            }
             Self::Client(shepr_client::ClientRunError::Session(exit)) => {
                 print_client_lines(exit);
             }

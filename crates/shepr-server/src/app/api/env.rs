@@ -5,6 +5,8 @@ use shepr_api::error::ApiError;
 pub(super) fn normalize_launch_env(
     env: HashMap<String, String>,
 ) -> Result<Vec<(String, String)>, ApiError> {
+    // Keep all pane launch environment checks in the API validator so every
+    // creation route returns the same error code and wording.
     shepr_api::launch_env::validate_launch_env(
         env.iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),

@@ -349,6 +349,11 @@ fn shared_ssh_control_path_validates_the_runtime_directory_first() {
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(
         error
+            .to_string()
+            .contains(&runtime_dir.display().to_string())
+    );
+    assert!(
+        error
             .get_ref()
             .and_then(|source| source.downcast_ref::<UnsafeSshRuntimeDirectory>())
             .is_some()

@@ -438,7 +438,9 @@ impl App {
         if !directory_available {
             if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                 terminal.abandon_agent_resume(
-                    "Saved directory is unavailable. Restore the directory and restart this session.".into(),
+                    shepr_mux::terminal::RestoreFailure::DirectoryUnavailable {
+                        path: cwd.to_path_buf(),
+                    },
                     now,
                 );
             }
@@ -474,9 +476,7 @@ impl App {
                 );
                 if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                     terminal.abandon_agent_resume(
-                        format!(
-                            "Could not start the saved shell: {err}. Fix the shell configuration and restart this session."
-                        ),
+                        shepr_mux::terminal::RestoreFailure::ShellStartFailed { error: err },
                         now,
                     );
                 }

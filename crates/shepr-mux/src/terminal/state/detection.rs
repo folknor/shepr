@@ -66,7 +66,7 @@ impl TerminalState {
     /// pane empty it would show an idle agent on a dead pane indefinitely.
     /// The managed name and saved session stay, as for any unavailable
     /// restored pane, so a later save writes them back.
-    pub fn abandon_agent_resume(&mut self, error: String, now: Instant) {
+    pub fn abandon_agent_resume(&mut self, error: super::RestoreFailure, now: Instant) {
         self.pending_agent_resume_plan = None;
         self.restore_error = Some(error);
         if self.detected_agent.is_some() {

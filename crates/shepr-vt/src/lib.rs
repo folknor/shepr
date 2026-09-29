@@ -153,6 +153,8 @@ const MIN_SCROLLBACK_LINES: usize = 1_000;
 /// [`Terminal::resize`]) all go past it.
 const MAX_SCROLLBACK_LINES: usize = 1_000_000;
 
+// This parser boundary returns clipboard effects as data and has no logging
+// dependency; oversize-store diagnostics belong with the pane-level consumer.
 const MAX_CLIPBOARD_BYTES: usize = 192 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

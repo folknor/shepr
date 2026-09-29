@@ -4,22 +4,6 @@
 //! `shepr-protocol`. Conversion to `RawInputEvent` remains here because
 //! that type belongs to `shepr-termio`, which the protocol must not depend on.
 
-pub(crate) fn host_modifiers(
-    modifiers: shepr_protocol::WireModifiers,
-) -> crossterm::event::KeyModifiers {
-    modifiers.to_host()
-}
-
-pub(crate) trait WireMouseKind: Sized {
-    fn to_crossterm(self) -> crossterm::event::MouseEventKind;
-}
-
-impl WireMouseKind for shepr_protocol::ClientMouseKind {
-    fn to_crossterm(self) -> crossterm::event::MouseEventKind {
-        self.to_host()
-    }
-}
-
 pub(crate) trait WirePaneInput: Sized {
     fn to_raw_input_event(&self) -> shepr_termio::input::raw_input::RawInputEvent;
 }

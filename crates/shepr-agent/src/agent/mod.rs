@@ -745,6 +745,50 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
 ];
 
+// `Agent::descriptor` indexes this table by the enum discriminant. Keep a
+// table reorder or a new variant from silently changing that lookup.
+const _: () = {
+    // Exhaustive on purpose: a new variant fails to compile here until it is
+    // classified. The one arm returning true must be the enum's last declared
+    // variant, and it must also end the table, so a variant with no
+    // descriptor cannot index past it.
+    const fn is_last_variant(agent: Agent) -> bool {
+        match agent {
+            Agent::Muse => true,
+            Agent::Pi
+            | Agent::Claude
+            | Agent::Codex
+            | Agent::Gemini
+            | Agent::Cursor
+            | Agent::Devin
+            | Agent::Antigravity
+            | Agent::Cline
+            | Agent::Omp
+            | Agent::Mastracode
+            | Agent::OpenCode
+            | Agent::GithubCopilot
+            | Agent::Kimi
+            | Agent::Kiro
+            | Agent::Droid
+            | Agent::Amp
+            | Agent::Grok
+            | Agent::Kilo
+            | Agent::Qodercli
+            | Agent::Qwen
+            | Agent::Letta
+            | Agent::Maki => false,
+        }
+    }
+    // With the loop below, the last variant sits at the table's last index,
+    // so the table covers every discriminant.
+    assert!(is_last_variant(AGENTS[AGENTS.len() - 1].agent));
+    let mut index = 0;
+    while index < AGENTS.len() {
+        assert!(AGENTS[index].agent as usize == index);
+        index += 1;
+    }
+};
+
 impl AgentDescriptor {
     const fn with_integration_hook_events(
         mut self,

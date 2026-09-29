@@ -20,56 +20,6 @@ pass should expect that.
 
 ---
 
-## HYGG-067 - Claim: "Wire types must not use `skip_serializing_if`, `flatten`, `untagged` or tagged enums"
-
-`AGENTS.md` and the `shepr-protocol/src/codec.rs` module doc. The hunter's
-verdict: **true today for the types that actually cross the codec, not enforced
-by anything, and the runtime backstop is data-dependent.**
-
-- Nothing in `brokkr.toml`, `clippy.toml` or the workspace lint table mentions
-  these attributes.
-- The runtime backstop is incomplete and, for one of the four, conditional:
-  `codec.rs`'s own test asserts `to_vec(&Skipping { value: None })` yields
-  `CodecError::SkippedField` but `to_vec(&Skipping { value: Some(1) })` succeeds
-  and returns `[1, 1]`. So a wire type carrying `skip_serializing_if` encodes
-  fine for every value where the predicate is false and fails only in
-  production, on the first message where the field happens to be absent - a
-  guard keyed on data, not on shape.
-- There is no test that `flatten`, `untagged` or an internally or adjacently
-  tagged enum is rejected. `unsupported_shapes_are_rejected` covers a manual
-  `serialize_seq(None)` and `IgnoredAny`, not the four named shapes. In practice
-  `flatten` dies as `CodecError::UnknownLength` and `untagged` as
-  `NotSelfDescribing` on decode, but only if a test happens to exercise that
-  message.
-- `shepr-config` contains four shapes the codec cannot encode, all `pub` or
-  reachable from `pub` types: `BindingConfig` (`#[serde(untagged)]`,
-  `keybinds.rs`); `TabBarRightEntryConfig` (`#[serde(tag = "type", ...)]`, an
-  internally tagged enum, `tab_bar.rs`); `RawRule` behind `SidebarTokenRule`'s
-  `#[serde(try_from, into)]` with ten `skip_serializing_if =
-  "Option::is_none"` fields (`sidebar/rules.rs`); and
-  `AgentSidebarToken`/`SpaceSidebarToken`, whose hand-written `Serialize` uses
-  `serializer.serialize_map(None)` in `serialize_styled_token`, i.e.
-  `CodecError::UnknownLength` (`sidebar.rs`). None reach the codec solely
-  because `shepr-config/src/wire.rs` hand-mirrors each one.
-- But `WireConfig` *does* reuse raw config types unmirrored: `ThemeConfig`,
-  `SessionConfig`, `ServerConfig`, `AdvancedConfig`, `RemoteConfig`,
-  `SidebarCollapsedModeConfig`, `PaneBordersConfig`, `TabBarPositionConfig`,
-  `StatusIndicatorStyle`, `AgentPanelSortConfig`, `ConfigAgent`,
-  `ImeCursorShape`. So the boundary is not "config types never cross the wire";
-  it is "these twelve do and those four do not", with no marker, trait or naming
-  rule distinguishing them. Adding a `skip_serializing_if` to `ServerConfig` for
-  nicer TOML output would compile, pass every existing test, and break attach at
-  runtime.
-
-Enforcement named, both called cheap: (1) a gremlin-style text rule in
-`brokkr.toml` forbidding `skip_serializing_if`, `flatten`, `untagged` and
-`serde(tag` under `crates/shepr-protocol/src`, excluding `#[cfg(test)]` - the one
-legitimate occurrence is `codec.rs`'s `Skipping` fixture, so either exempt that
-file or move the fixture; (2) a marker trait (`trait WireSafe {}`) implemented
-only by mirrored types, with `WireConfig`'s fields bounded on it, so reusing a
-TOML-facing type in `WireConfig` stops compiling. Neither is possible today. See
-HYGG-023 for the data half.
-
 ## HYGG-068 - Claim: "Config is read and validated once at launch. No reload, no fallbacks. Any config problem fails the launch"
 
 `AGENTS.md`. Five scopes report this claim as **partly false today**, at
@@ -80,11 +30,13 @@ for the claim.
   the forced cross-host revalidation in the `AGENTS.md` sentence, which reads
   as absolute.
 - XDG path variables get four empty/relative rules and `XDG_CONFIG_HOME` falls
-  back silently: HYGV-008.
-- `SHEPR_DEBUG_OSC_EVIDENCE` is read per pane and documented nowhere: HYGV-013.
-- A manifest override that does not compile only warns: HYGC-023.
-- Sidebar chrome preferences discover an unwritable state dir mid-session:
-  HYGV-104.
+  back silently.
+- `SHEPR_DEBUG_OSC_EVIDENCE` is read per pane and documented nowhere.
+- A manifest override that does not compile only warns.
+- Sidebar chrome preferences discover an unwritable state dir mid-session.
+
+The entries these bullets once pointed to are gone, and nobody has checked the
+bullets since; verify each before acting on it.
 
 The `shepr-protocol`/`shepr-config` hunter also records the contrasting
 positive: everything else in that crate is genuinely front-loaded, including the
@@ -115,15 +67,6 @@ responsibility (HYGG-085). `shepr-agent` reports the same shape: `AGENTS.md`
 restates the agent state vocabulary and the crate layering, the latter enforced
 by `brokkr.toml` and the former not.
 
-## HYGG-091 - `AGENTS.md`'s "No god objects" principle names only `shepr-server/src/app/`, so it does not reach the crate's actual largest types
-
-The `shepr-mux` hunter's reading: `PaneRuntime` is 2960 lines with about 90
-public methods, roughly forty of them one-line delegations, and the principle as
-written does not cover it; `terminal/metadata.rs` (1438 lines) and
-`persist/restore.rs` (2365) are in the same position. If the principle is meant
-generally, the enforcement should be a per-file or per-impl size rule in
-`brokkr.toml`. Overlaps with HYGG-090's proposed file-length rule.
-
 ## HYGG-092 - Claim: `PaneState` is separate from `PaneRuntime`
 
 `AGENTS.md`. The `shepr-mux` hunter's verdict: technically yes, vacuously.
@@ -139,12 +82,11 @@ four `Arc`-shared atomics, three mutexes, a `Cell` and forty pure-read
 delegations in one type. The claim is "true about the name and misleading about
 the shape."
 
-## HYGG-126 - The `skip_after` test marker is anchored to column 0
+## HYGG-150 - Unverified claim: a failed reactive host query delays an ambiguous Escape by only one flush
 
-Every `skip_after = '^#\[cfg\(test\)\]'` textlint (the persist clock rule, the
-library print rule) releases only a top-level `#[cfg(test)]`. A test-only
-helper inside a production `impl` is indented, so it is flagged rather than
-skipped. That errs safe, but it pushed one fixer into rewriting test helpers to
-dodge the rule, which changed what the tests exercised. Either allow leading
-whitespace in the pattern and teach `scripts/check_skip_after_scopes.py` the
-same, or state at the rules that test helpers belong in `mod tests`.
+A comment in `shepr-termio/src/input/raw_input.rs`, at the transition where
+focus gain opens the appearance reply window, says that when the query write
+fails the input reader holds an ambiguous Escape for at most one flush. The
+fixer who wrote it read that from the timeout path; the reviewer could not
+confirm it. A test that fails the query write and asserts when the Escape is
+delivered would settle it.

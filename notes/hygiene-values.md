@@ -211,8 +211,10 @@ host clipboard reads, the 192 KiB `shepr-vt` cap bounds terminal-originated OSC
 
 Open: `shepr-vt`'s `MAX_CLIPBOARD_BYTES` drops an OSC 52 payload over 192 KiB
 with no log line, so a copy from a pane that silently does nothing cannot be
-diagnosed. A rate-limited log with the byte count (never the content) is the
-fix.
+diagnosed. `shepr-vt` has no `tracing` dependency and returns clipboard effects
+as data, so the fix is for it to return the dropped store's byte count as an
+effect and for the pane layer in `shepr-mux` to log it, rate-limited, never the
+content.
 
 ## HYGV-072 - Three boolean-from-string parsers, no owner, and one is an incomplete implementation of an external grammar
 

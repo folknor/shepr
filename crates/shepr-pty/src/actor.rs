@@ -138,7 +138,7 @@ struct PtyIoInbox {
     next_entry_id: u64,
     latest_resize: Option<QueuedResize>,
     terminal_response_drops: u64,
-    terminal_response_drop_reported: bool,
+    terminal_response_drop_reported_count: u64,
     shutdown: bool,
 }
 
@@ -251,11 +251,17 @@ impl PtyIoInbox {
 
     fn note_terminal_response_drop(&mut self) -> bool {
         self.terminal_response_drops = self.terminal_response_drops.saturating_add(1);
-        if self.terminal_response_drop_reported {
-            return false;
+        // Only the first drop is reported as it happens; later drops wait for
+        // the actor's shutdown total.
+        self.terminal_response_drops == 1
+    }
+
+    fn mark_terminal_response_drops_reported(&mut self) -> Option<u64> {
+        if self.terminal_response_drops <= self.terminal_response_drop_reported_count {
+            return None;
         }
-        self.terminal_response_drop_reported = true;
-        true
+        self.terminal_response_drop_reported_count = self.terminal_response_drops;
+        Some(self.terminal_response_drops)
     }
 
     fn push_submission(
@@ -322,7 +328,11 @@ impl PtyIoInbox {
             retry_at: None,
             attempts: 0,
         });
-        should_report_drop.then_some(self.terminal_response_drops)
+        if should_report_drop {
+            self.mark_terminal_response_drops_reported()
+        } else {
+            None
+        }
     }
 
     /// The entry the actor should handle next. A write already under way
@@ -501,7 +511,11 @@ impl PtyIoActorHandle {
                 should_report_drop |= first_drop_count;
             }
         }
-        let reported_drop_count = should_report_drop.then_some(inbox.terminal_response_drops);
+        let reported_drop_count = if should_report_drop {
+            inbox.mark_terminal_response_drops_reported()
+        } else {
+            None
+        };
         drop(inbox);
         drop(order);
         if let Some(dropped_responses) = reported_drop_count {
@@ -561,6 +575,13 @@ fn report_terminal_response_drops(pane_id: PaneId, dropped_responses: u64) {
     warn!(
         pane = pane_id.raw(),
         dropped_responses, "PTY terminal reply inbox is full; dropped terminal replies"
+    );
+}
+
+fn report_terminal_response_drop_total(pane_id: PaneId, total_dropped_responses: u64) {
+    warn!(
+        pane = pane_id.raw(),
+        total_dropped_responses, "PTY actor stopped after dropping terminal replies"
     );
 }
 
@@ -679,6 +700,11 @@ enum ReadOutcome {
     Closed,
 }
 
+fn pty_master_error_means_child_closed(error: &std::io::Error) -> bool {
+    // Linux reports EIO on the master after the child closes the slave.
+    error.raw_os_error() == Some(libc::EIO)
+}
+
 impl PtyIoActorRunner {
     fn run(&mut self) {
         loop {
@@ -760,7 +786,9 @@ impl PtyIoActorRunner {
             }
         }
 
-        self.close_inbox();
+        if let Some(total_dropped_responses) = self.close_inbox() {
+            report_terminal_response_drop_total(self.pane_id, total_dropped_responses);
+        }
         if let Some(on_reader_exit) = self.on_reader_exit.take() {
             // `Closed` lets the mux defer pane removal to the child watcher.
             // `IoFailed` makes a live-but-unreadable child's pane removable;
@@ -994,7 +1022,19 @@ impl PtyIoActorRunner {
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => ReadOutcome::WouldBlock,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => ReadOutcome::Interrupted,
             Err(err) => {
-                debug!(pane = self.pane_id.raw(), err = %err, "PTY actor read failed");
+                if pty_master_error_means_child_closed(&err) {
+                    debug!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        "PTY actor read ended after the child closed its terminal"
+                    );
+                } else {
+                    error!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        "PTY actor read failed; closing the pane"
+                    );
+                }
                 ReadOutcome::Closed
             }
             Ok(n) => {
@@ -1044,8 +1084,11 @@ impl PtyIoActorRunner {
                         }
                     }
                 }
-                let reported_drop_count =
-                    should_report_drop.then_some(inbox.terminal_response_drops);
+                let reported_drop_count = if should_report_drop {
+                    inbox.mark_terminal_response_drops_reported()
+                } else {
+                    None
+                };
                 drop(inbox);
                 drop(_order);
                 if let Some(dropped_responses) = reported_drop_count {
@@ -1230,9 +1273,9 @@ impl PtyIoActorRunner {
         .unwrap_or(ACTOR_IDLE_POLL_MS)
     }
 
-    fn close_inbox(&mut self) {
+    fn close_inbox(&mut self) -> Option<u64> {
         let mut queued_submissions = Vec::new();
-        {
+        let unreported_drop_total = {
             let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
             inbox.shutdown = true;
             for entry in inbox.entries.drain(..) {
@@ -1243,7 +1286,10 @@ impl PtyIoActorRunner {
             inbox.latest_resize = None;
             inbox.pending_bytes = 0;
             inbox.pending_items = 0;
-        }
+            // The first overflow is reported immediately; include later drops
+            // in one final total when the actor stops.
+            inbox.mark_terminal_response_drops_reported()
+        };
         let error = input_submission_closed_error();
         if let Some(submission) = self.active_submission.take() {
             lock_state(&submission.state).finish();
@@ -1259,6 +1305,7 @@ impl PtyIoActorRunner {
                 Err(std::io::Error::new(error.kind(), error.to_string())),
             );
         }
+        unreported_drop_total
     }
 
     /// Take one write step on the next writable entry. The inbox lock is
@@ -1342,7 +1389,19 @@ impl PtyIoActorRunner {
                 Ok(WriteStep::Progress(None))
             }
             Err(err) => {
-                warn!(pane = self.pane_id.raw(), err = %err, "PTY actor write failed");
+                if pty_master_error_means_child_closed(&err) {
+                    debug!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        "PTY actor write ended after the child closed its terminal"
+                    );
+                } else {
+                    error!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        "PTY actor write failed; closing the pane"
+                    );
+                }
                 Err(err)
             }
         }
@@ -2405,6 +2464,13 @@ mod tests {
             (false, false)
         );
         assert_eq!(inbox.terminal_response_drops, 2);
+        assert_eq!(inbox.mark_terminal_response_drops_reported(), Some(2));
+        assert_eq!(inbox.mark_terminal_response_drops_reported(), None);
+        assert_eq!(
+            inbox.push_terminal_response(Bytes::from_static(b"third")),
+            (false, false)
+        );
+        assert_eq!(inbox.mark_terminal_response_drops_reported(), Some(3));
     }
 
     #[test]

@@ -25,6 +25,9 @@
 //! `untagged`, internally/adjacently tagged enums and anything else that needs
 //! `deserialize_any` or `deserialize_identifier` cannot be used on wire types.
 //! The serializer rejects skipped fields and the decoder rejects those calls.
+//! A brokkr textlint rule rejects these serde shapes in protocol, config, core
+//! and VT source; custom serde implementations still rely on the runtime
+//! backstop.
 //!
 //! Hardening against hostile or corrupt input: every length prefix is checked
 //! against the remaining input before allocation (so variable sequences of

@@ -74,6 +74,11 @@ type QueuedState = {
   seq: number;
 };
 
+// These timers describe OMP state events, not socket delivery retries. OMP can
+// report agent_end while an automatic provider retry is starting, so retain
+// Working during the retry window and delay Idle across a quick new turn. Pi's
+// separate agent_settled event already denotes settlement; other integrations
+// report their own lifecycle hooks, so this is not a shared agent policy.
 const idleDebounceMs = parseDurationEnv("SHEPR_OMP_IDLE_DEBOUNCE_MS", 250);
 const retryGraceMs = parseDurationEnv("SHEPR_OMP_RETRY_GRACE_MS", 2500);
 const retryableErrorPattern =

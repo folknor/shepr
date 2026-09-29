@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use shepr_mux::events::{TabBarCommandError, TabBarCommandFailure};
 use tokio::io::AsyncReadExt;
 
 use super::{App, state::TabBarStatusSegment};
@@ -295,7 +296,7 @@ impl App {
     pub(super) fn handle_tab_bar_command_finished(
         &mut self,
         segment_index: usize,
-        result: Result<Option<String>, String>,
+        result: Result<Option<String>, TabBarCommandError>,
     ) -> bool {
         let Some(runtime) = self
             .tab_bar_status
@@ -314,7 +315,9 @@ impl App {
             }
             Err(error) => {
                 if !runtime.failure_logged {
-                    tracing::warn!(segment_index, %error, "tab bar status command failed");
+                    tracing::warn!(segment_index, command = %error.command,
+                        cause = %tab_bar_command_failure_message(&error.cause),
+                        "tab bar status command failed");
                     runtime.failure_logged = true;
                 }
                 None
@@ -381,8 +384,16 @@ impl TabBarText {
     }
 }
 
-fn status_command_timeout_error(timeout: Duration) -> String {
-    format!("timed out after {timeout:?}")
+fn tab_bar_command_failure_message(cause: &TabBarCommandFailure) -> String {
+    match cause {
+        TabBarCommandFailure::TimedOut(timeout) => format!("timed out after {timeout:?}"),
+        TabBarCommandFailure::Cancelled => "status command was cancelled".into(),
+        TabBarCommandFailure::Spawn(error)
+        | TabBarCommandFailure::ProcessGroup(error)
+        | TabBarCommandFailure::Wait(error)
+        | TabBarCommandFailure::Output(error) => error.to_string(),
+        TabBarCommandFailure::Exited(status) => format!("exited with {status}"),
+    }
 }
 
 fn is_unicode_format_control(character: char) -> bool {
@@ -581,13 +592,14 @@ fn spawn_status_command(
     let task = tokio::spawn(async move {
         let result = run_status_command(
             task_control.as_ref(),
-            command,
+            command.clone(),
             timeout,
             deadline,
             environment,
             cwd,
         )
-        .await;
+        .await
+        .map_err(|cause| TabBarCommandError { command, cause });
         task_control.terminate();
         // Fails only once the app dropped its event receiver, when no tab
         // bar is left to show the result.
@@ -612,10 +624,10 @@ async fn run_status_command(
     deadline: tokio::time::Instant,
     environment: Vec<(String, String)>,
     cwd: std::path::PathBuf,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, TabBarCommandFailure> {
     // clock-io-ok: a task may first be polled after its subprocess deadline.
     if control.is_terminated() || tokio::time::Instant::now() >= deadline {
-        return Err(status_command_timeout_error(timeout));
+        return Err(TabBarCommandFailure::TimedOut(timeout));
     }
 
     // host-program-ok: a status command is the user's shell command line
@@ -633,11 +645,12 @@ async fn run_status_command(
 
     let mut process = tokio::process::Command::from(process);
     process.kill_on_drop(true);
-    let mut child = process.spawn().map_err(|error| error.to_string())?;
-    let process_group = StatusCommandGuard::new(&child).map_err(|error| error.to_string())?;
+    let mut child = process.spawn().map_err(TabBarCommandFailure::Spawn)?;
+    let process_group =
+        StatusCommandGuard::new(&child).map_err(TabBarCommandFailure::ProcessGroup)?;
     control.register(process_group);
     if control.is_terminated() {
-        return Err("status command was cancelled".into());
+        return Err(TabBarCommandFailure::Cancelled);
     }
 
     let operation = async {
@@ -649,17 +662,17 @@ async fn run_status_command(
             read_last_output_line(stdout).await
         };
         let (status, output) = tokio::join!(child.wait(), read_output);
-        let status = status.map_err(|error| error.to_string())?;
-        let output = output.map_err(|error| error.to_string())?;
+        let status = status.map_err(TabBarCommandFailure::Wait)?;
+        let output = output.map_err(TabBarCommandFailure::Output)?;
         if status.success() {
             Ok(command_output_text(&output))
         } else {
-            Err(format!("exited with {status}"))
+            Err(TabBarCommandFailure::Exited(status))
         }
     };
     match tokio::time::timeout_at(deadline, operation).await {
         Ok(result) => result,
-        Err(_) => Err(status_command_timeout_error(timeout)),
+        Err(_) => Err(TabBarCommandFailure::TimedOut(timeout)),
     }
 }
 
@@ -750,7 +763,7 @@ mod tests {
         spawn_status_command(
             event_tx,
             3,
-            command,
+            command.clone(),
             Duration::from_secs(1),
             tokio::time::Instant::now() - Duration::from_secs(2),
             Vec::new(),
@@ -767,7 +780,7 @@ mod tests {
             AppEvent::TabBarCommandFinished {
                 result: Err(ref error),
                 ..
-            } if error == "timed out after 1s"
+            } if error.command == command && matches!(&error.cause, TabBarCommandFailure::TimedOut(duration) if *duration == Duration::from_secs(1))
         ));
         assert!(!command_ran, "status command ran after its deadline");
     }
@@ -970,7 +983,9 @@ mod tests {
     #[test]
     fn timeout_error_keeps_subsecond_precision() {
         assert_eq!(
-            status_command_timeout_error(Duration::from_millis(500)),
+            tab_bar_command_failure_message(&TabBarCommandFailure::TimedOut(
+                Duration::from_millis(500)
+            )),
             "timed out after 500ms"
         );
     }
@@ -987,9 +1002,13 @@ mod tests {
             " ",
         );
 
-        app.handle_tab_bar_command_finished(0, Err("exited with status 1".into()));
+        let failure = || TabBarCommandError {
+            command: "false".into(),
+            cause: TabBarCommandFailure::Cancelled,
+        };
+        app.handle_tab_bar_command_finished(0, Err(failure()));
         assert!(app.tab_bar_status.commands[0].failure_logged);
-        app.handle_tab_bar_command_finished(0, Err("exited with status 1".into()));
+        app.handle_tab_bar_command_finished(0, Err(failure()));
         assert!(app.tab_bar_status.commands[0].failure_logged);
         app.handle_tab_bar_command_finished(0, Ok(Some("healthy".into())));
         assert!(!app.tab_bar_status.commands[0].failure_logged);

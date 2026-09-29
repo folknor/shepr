@@ -49,7 +49,7 @@ mod tests {
     fn terminal_for_pane(ws: &Workspace, pane_id: PaneId) -> TerminalState {
         TerminalState::new(
             ws.terminal_id(pane_id).expect("test precondition").clone(),
-            "/tmp".into(),
+            "/shepr-aggregate-test".into(),
         )
     }
 
