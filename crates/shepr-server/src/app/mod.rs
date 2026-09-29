@@ -131,7 +131,6 @@ impl App {
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         event_hub: shepr_api::EventHub,
-        agent_manifest_summaries: Vec<shepr_agent::detect::manifest::AgentManifestSummary>,
         clock: AppClock,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
@@ -140,9 +139,6 @@ impl App {
         let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
         let hostname = shepr_platform::hostname().unwrap_or_default();
-
-        // `agent_manifest_summaries` come from bootstrap, which builds the
-        // process-wide registry before restore can start PTY detection.
 
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
@@ -268,7 +264,6 @@ impl App {
             tab_bar_right_separator: String::new(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
-            agent_manifest_summaries,
             host_terminal_theme: restored_host_theme,
             host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
@@ -435,7 +430,6 @@ mod tests {
                 policy,
                 api_rx,
                 event_hub,
-                Vec::new(),
                 test_clock(),
             )
         }

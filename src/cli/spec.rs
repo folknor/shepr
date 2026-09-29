@@ -163,15 +163,6 @@ fn server_command() -> Command {
                 .about("Stop the running server")
                 .arg(force_stop_flag()),
         )
-        .subcommand(
-            Command::new("agent-manifests")
-                .about("Show active agent detection manifests")
-                .arg(json_flag()),
-        )
-        .subcommand(
-            Command::new("reload-agent-manifests")
-                .about("Reload local agent detection manifest overrides"),
-        )
 }
 
 fn workspace_command() -> Command {

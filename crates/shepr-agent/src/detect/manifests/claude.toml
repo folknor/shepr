@@ -1,5 +1,4 @@
 id = "claude"
-aliases = ["claude-code"]
 
 [[rules]]
 id = "osc_title_working"

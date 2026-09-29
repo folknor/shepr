@@ -893,7 +893,6 @@ mod tests {
             super::super::AppPolicy::Production,
             api_rx,
             shepr_api::EventHub::default(),
-            Vec::new(),
             super::super::tests::test_clock(),
         );
         let tab_names = |workspaces: Vec<Vec<Option<String>>>| workspaces.concat();

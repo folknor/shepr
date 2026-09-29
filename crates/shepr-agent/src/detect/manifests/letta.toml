@@ -1,5 +1,4 @@
 id = "letta"
-aliases = ["letta-code", "letta code"]
 
 # Letta keeps completed tool rows and spinners in the transcript. A standalone
 # screen spinner is not working evidence. Prefer its live OSC title/progress

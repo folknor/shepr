@@ -1363,10 +1363,6 @@ impl PaneRuntime {
         self.detect_reset_notify.notify_one();
     }
 
-    pub fn reset_agent_detection(&self) {
-        self.detect_reset_notify.notify_one();
-    }
-
     pub fn set_full_lifecycle_authority_active(&self, active: bool) {
         let previous = self
             .full_lifecycle_authority_active

@@ -155,7 +155,6 @@ impl From<shepr_server::server::headless::RunServerError> for CliError {
                 message: ALREADY_RUNNING.into(),
                 hints: vec![format!("session data: {}", directory.display())],
             },
-            RunServerError::ManifestOverride(error) => Self::Config(vec![error.to_string()]),
             RunServerError::Io(error) => Self::Io(error),
         }
     }

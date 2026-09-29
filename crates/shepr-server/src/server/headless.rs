@@ -88,15 +88,9 @@ enum LoopEvent {
     Timer,
     Internal(AppEvent),
     Api(Box<shepr_api::ApiRequestMessage>),
-    AgentManifestReload(AgentManifestReloadCompletion),
     ServerEvent(ServerEvent),
     RenderRequested,
     ClientListenerReady,
-}
-
-pub(super) struct AgentManifestReloadCompletion {
-    pub(super) request_token: u64,
-    pub(super) result: Result<Vec<shepr_agent::detect::manifest::AgentManifestSummary>, String>,
 }
 
 /// Whether one direct terminal-attach input reached the pane, for
@@ -181,15 +175,6 @@ pub struct HeadlessServer {
     /// Alternate-screen reads that are being captured without an attached client.
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
     deferred_alt_screen_reads: Vec<shepr_api::ApiRequestMessage>,
-    /// Requests answered by the running manifest reload; empty when none runs.
-    running_agent_manifest_reload: Vec<shepr_api::ApiRequestMessage>,
-    /// Requests that arrived while a reload was running. They get a fresh
-    /// reload once it finishes, so they see files changed since it started.
-    queued_agent_manifest_reloads: Vec<shepr_api::ApiRequestMessage>,
-    /// Identifies the running manifest reload's completion.
-    agent_manifest_reload_token: u64,
-    agent_manifest_reload_tx: mpsc::UnboundedSender<AgentManifestReloadCompletion>,
-    agent_manifest_reload_rx: mpsc::UnboundedReceiver<AgentManifestReloadCompletion>,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
     /// the clients and on workspace/tab/pane topology, which change only while
@@ -274,7 +259,6 @@ impl HeadlessServer {
 
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
-        let (agent_manifest_reload_tx, agent_manifest_reload_rx) = mpsc::unbounded_channel();
 
         let effective_size = app.state.settings.headless_size;
         Ok(Self {
@@ -292,11 +276,6 @@ impl HeadlessServer {
             api_window_title: None,
             pending_alt_screen_reads: Vec::new(),
             deferred_alt_screen_reads: Vec::new(),
-            running_agent_manifest_reload: Vec::new(),
-            queued_agent_manifest_reloads: Vec::new(),
-            agent_manifest_reload_token: 0,
-            agent_manifest_reload_tx,
-            agent_manifest_reload_rx,
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
             retained_surface_fallback_reason: None,
@@ -516,10 +495,6 @@ impl HeadlessServer {
                         Some(msg) => LoopEvent::Api(Box::new(msg)),
                         None => LoopEvent::Timer,
                     },
-                    maybe_reload = self.agent_manifest_reload_rx.recv() => match maybe_reload {
-                        Some(completion) => LoopEvent::AgentManifestReload(completion),
-                        None => LoopEvent::Timer,
-                    },
                     maybe_ev = self.app.event_rx.recv() => match maybe_ev {
                         Some(ev) => LoopEvent::Internal(ev),
                         None => LoopEvent::Timer,
@@ -592,12 +567,6 @@ impl HeadlessServer {
                 }
                 LoopEvent::Api(msg) => {
                     if self.handle_api_request_with_shutdown_check(*msg) {
-                        render_demand.join(RenderDemand::Full);
-                    }
-                }
-                LoopEvent::AgentManifestReload(completion) => {
-                    if self.complete_agent_manifest_reload(completion) {
-                        self.app.state.mark_shell_projection_dirty();
                         render_demand.join(RenderDemand::Full);
                     }
                 }

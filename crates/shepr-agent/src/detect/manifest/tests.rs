@@ -24,55 +24,19 @@ id = "codex"
     )
 }
 
-/// A private manifest registry over a private override directory. Loader
-/// tests go through this instead of the process-wide registry, so they change
-/// no environment variable and no global cache: other tests in the same
-/// process (plain `cargo test` runs them on parallel threads) keep seeing the
-/// bundled manifests.
-///
-/// The scratch tree is left in place afterwards, as every `ScratchDir` is: the
-/// next run clears it when it is handed out.
+/// A synthetic manifest compiled in memory and evaluated directly, so rule
+/// behaviour tests never read or change the process-wide bundled set that
+/// other tests in the same process see.
 struct TestManifests {
-    override_dir: PathBuf,
-    registry: ManifestRegistry,
+    loaded: LoadedManifest,
 }
 
 impl TestManifests {
-    fn new(name: &str) -> Self {
-        let dir = shepr_test_support::ScratchDir::new(name).to_path_buf();
-        let override_dir = manifest_override_dir(&dir);
-        std::fs::create_dir_all(&override_dir).expect("create manifest override directory");
-        let registry = ManifestRegistry::new(Some(&override_dir));
+    fn new(content: &str) -> Self {
+        let manifest = parse_manifest(content).expect("test precondition");
         Self {
-            override_dir,
-            registry,
+            loaded: loaded_manifest(manifest).expect("test precondition"),
         }
-    }
-
-    fn write_codex_without_reload(&self, content: &str) {
-        std::fs::write(override_path(&self.override_dir, Agent::Codex), content)
-            .expect("test precondition");
-    }
-
-    fn write_codex(&self, content: &str) {
-        self.write_codex_without_reload(content);
-        self.reload();
-    }
-
-    fn reload(&self) {
-        self.registry.reload(&self.override_dir);
-    }
-
-    fn validate_overrides(&self) -> Result<(), ManifestOverrideError> {
-        let config_dir = self
-            .override_dir
-            .parent()
-            .expect("override directory has a config directory");
-        validate_manifest_overrides(config_dir)
-    }
-
-    fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
-        self.registry.get(agent)
     }
 
     fn explain(&self, agent: Agent, screen: &str) -> DetectionExplain {
@@ -80,7 +44,7 @@ impl TestManifests {
     }
 
     fn explain_input(&self, agent: Agent, input: DetectionInput<'_>) -> DetectionExplain {
-        explain_with_manifest(agent, input, self.get(agent).as_deref())
+        explain_with_manifest(agent, input, Some(&self.loaded))
     }
 
     fn detect(&self, agent: Agent, screen: &str) -> AgentDetection {
@@ -88,7 +52,7 @@ impl TestManifests {
     }
 
     fn detect_input(&self, agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
-        detect_with_manifest(agent, input, self.get(agent).as_deref())
+        detect_with_manifest(agent, input, Some(&self.loaded))
     }
 }
 
@@ -100,14 +64,9 @@ fn screen_input(screen: &str) -> DetectionInput<'_> {
     }
 }
 
-fn loaded_rule_matches(loaded: &LoadedManifest, rule: usize, screen: &str) -> bool {
-    let mut texts = RegionTexts::new(screen_input(screen));
-    compiled_rule_matches(&loaded.compiled_rules[rule], &loaded.regions, &mut texts)
-}
-
 fn synthetic_loaded(rules: &str) -> LoadedManifest {
     let manifest = parse_manifest(&rules_manifest(rules)).expect("test precondition");
-    loaded_manifest(manifest, ManifestSource::Bundled).expect("test precondition")
+    loaded_manifest(manifest).expect("test precondition")
 }
 
 fn detect_loaded(loaded: &LoadedManifest, input: DetectionInput<'_>) -> Option<String> {
@@ -295,8 +254,6 @@ all = [{ region = "bottom_lines", contains = ["y"] }]
     );
 }
 
-// Bundled-manifest tests load the bundled file directly, so a local override
-// in the developer's config directory cannot change their outcome.
 fn bundled_loaded(agent: Agent) -> LoadedManifest {
     bundled_loaded_manifest(agent, bundled_manifest(agent).expect("test precondition"))
         .expect("test precondition")
@@ -349,8 +306,7 @@ fn opencode_permission_header_needs_live_dialog_controls() {
 
 #[test]
 fn codex_no_match_is_unknown_without_changing_other_agents() {
-    let manifests = TestManifests::new("no-match");
-    manifests.write_codex(&local_manifest("working", "active-marker"));
+    let manifests = TestManifests::new(&local_manifest("working", "active-marker"));
     let explain = manifests.explain(Agent::Codex, "unmatched-marker");
 
     assert_eq!(explain.state, AgentState::Unknown);
@@ -387,50 +343,23 @@ fn agents_without_a_screen_manifest_are_unknown_not_idle() {
 }
 
 #[test]
-fn private_registry_leaves_the_process_wide_registry_alone() {
-    let manifests = TestManifests::new("isolation");
-    manifests.write_codex(&local_manifest("blocked", "isolation-marker"));
-    assert_eq!(
-        manifests.explain(Agent::Codex, "isolation-marker").state,
-        AgentState::Blocked
-    );
-    // The process-wide registry reads the real config directory; the private
-    // override must not leak into it.
-    let global = explain(Agent::Codex, "isolation-marker");
-    assert_ne!(
-        global.matched_rule.map(|rule| rule.id).as_deref(),
-        Some("test")
-    );
-    assert_ne!(
-        detect(Agent::Codex, "isolation-marker").state,
-        AgentState::Blocked
-    );
-}
+fn explain_for_label_evaluates_the_bundled_manifest_and_names_an_unknown_label() {
+    let screen =
+        "Bash command\n  rm -rf build\nDo you want to proceed?\n 1. Yes\n  2. No\nEsc to cancel\n";
+    let by_label = explain_for_label("claude", screen);
+    let direct = explain(Agent::Claude, screen);
+    assert_eq!(by_label, direct);
+    assert_eq!(by_label.state, AgentState::Blocked);
 
-#[test]
-fn explain_for_label_loads_the_supplied_config_directory_override() {
-    let config_dir = shepr_test_support::ScratchDir::new("explain-override").to_path_buf();
-    let override_dir = manifest_override_dir(&config_dir);
-    std::fs::create_dir_all(&override_dir).expect("create manifest override directory");
-    let path = override_path(&override_dir, Agent::Codex);
-    std::fs::write(&path, local_manifest("blocked", "cli-override-marker"))
-        .expect("write manifest override");
-
-    let explain = explain_for_label("codex", "cli-override-marker", &config_dir);
-
-    assert_eq!(explain.state, AgentState::Blocked);
-    assert_eq!(explain.source, Some(ManifestSource::Override(path)));
-    assert_eq!(
-        explain.matched_rule.map(|rule| rule.id).as_deref(),
-        Some("test")
-    );
+    let unknown = explain_for_label("no-such-agent", screen);
+    assert_eq!(unknown.state, AgentState::Unknown);
+    assert_eq!(unknown.fallback_reason.as_deref(), Some("unknown_agent"));
 }
 
 #[test]
 fn rule_semantics_apply_gates_priority_and_line_regex() {
-    let manifests = TestManifests::new("rule-semantics");
     {
-        manifests.write_codex(&rules_manifest(
+        let manifests = TestManifests::new(&rules_manifest(
             r#"
 [[rules]]
 id = "low_contains"
@@ -482,159 +411,18 @@ line_regex = ["^exact line$", "^before$"]
 }
 
 #[test]
-fn local_override_replaces_bundled_manifest() {
-    let manifests = TestManifests::new("local-override");
-    manifests.write_codex(&local_manifest("idle", "local-ready"));
-
-    let explain = manifests.explain(Agent::Codex, "local-ready");
-
-    assert_eq!(explain.state, AgentState::Idle);
-    assert!(matches!(explain.source, Some(ManifestSource::Override(_))));
-}
-
-#[test]
-fn invalid_local_override_falls_back_to_bundled_manifest() {
-    let manifests = TestManifests::new("invalid-local-bundled-fallback");
-    manifests.write_codex("id = ");
-
-    let explain = manifests.explain(Agent::Codex, "ordinary prompt text");
-
-    assert!(matches!(explain.source, Some(ManifestSource::Bundled)));
-    assert!(explain.warning.is_some());
-}
-
-#[test]
-fn override_validation_reports_typed_load_identity_and_compile_failures() {
-    let manifests = TestManifests::new("typed-override-errors");
-
-    manifests.write_codex_without_reload("id = ");
-    assert!(matches!(
-        manifests.validate_overrides(),
-        Err(ManifestOverrideError::Load { .. })
-    ));
-
-    manifests.write_codex_without_reload(
-        r#"
-id = "pi"
-
-[[rules]]
-id = "test"
-state = "idle"
-contains = ["ready"]
-"#,
-    );
-    assert!(matches!(
-        manifests.validate_overrides(),
-        Err(ManifestOverrideError::IdMismatch { .. })
-    ));
-
-    manifests.write_codex_without_reload(
-        r#"
-id = "codex"
-
-[[rules]]
-id = "test"
-state = "working"
-regex = ["["]
-"#,
-    );
-    assert!(matches!(
-        manifests.validate_overrides(),
-        Err(ManifestOverrideError::Compile { .. })
-    ));
-}
-
-#[test]
-fn detection_uses_cached_manifest_until_explicit_reload() {
-    let manifests = TestManifests::new("cache-boundary");
-    manifests.write_codex(&local_manifest("blocked", "cached-ready"));
-
-    let cached = manifests.explain(Agent::Codex, "cached-ready");
-    assert_eq!(cached.state, AgentState::Blocked);
-    assert_eq!(
-        cached.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("test")
-    );
-
-    manifests.write_codex_without_reload(&local_manifest("working", "new-ready"));
-
-    let unchanged = manifests.explain(Agent::Codex, "new-ready");
-    assert_eq!(unchanged.state, AgentState::Unknown);
-    assert_eq!(
-        unchanged.fallback_reason.as_deref(),
-        Some("codex_state_ambiguous")
-    );
-
-    manifests.reload();
-
-    let reloaded = manifests.explain(Agent::Codex, "new-ready");
-    assert_eq!(reloaded.state, AgentState::Working);
-    assert_eq!(
-        reloaded.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("test")
-    );
-}
-
-#[test]
-fn compiled_rules_are_shared_until_manifest_reload() {
-    let manifests = TestManifests::new("shared-compiled-rules");
-    manifests.write_codex(&format!(
-        "{}\nregex = ['^cached-[a-z]+$']\n",
-        local_manifest("blocked", "cached-ready")
-    ));
-    let first = manifests.get(Agent::Codex).expect("test precondition");
-    let second = manifests.get(Agent::Codex).expect("test precondition");
+fn bundled_manifests_compile_once_and_are_shared_across_threads() {
+    let first = loaded(Agent::Claude).expect("claude has a bundled manifest");
     assert!(!first.compiled_rules.is_empty());
-    assert_eq!(
-        first.compiled_rules.as_ptr(),
-        second.compiled_rules.as_ptr(),
-        "cached loads must retain the same compiled rules and regex search caches"
-    );
-
-    manifests.write_codex_without_reload(&format!(
-        "{}\nregex = ['^new-[a-z]+$']\n",
-        local_manifest("working", "new-ready")
-    ));
-    let unchanged = manifests.get(Agent::Codex).expect("test precondition");
-    assert_eq!(
-        first.compiled_rules.as_ptr(),
-        unchanged.compiled_rules.as_ptr()
-    );
-
-    manifests.reload();
-    let reloaded = manifests.get(Agent::Codex).expect("test precondition");
-    let shared_reload = manifests.get(Agent::Codex).expect("test precondition");
-    assert_ne!(
-        first.compiled_rules.as_ptr(),
-        reloaded.compiled_rules.as_ptr()
-    );
-    assert_eq!(
-        reloaded.compiled_rules.as_ptr(),
-        shared_reload.compiled_rules.as_ptr()
-    );
-    assert!(loaded_rule_matches(&first, 0, "cached-ready"));
-    assert!(!loaded_rule_matches(&first, 0, "new-ready"));
-    assert_eq!(
-        manifests.explain(Agent::Codex, "new-ready").state,
-        AgentState::Working
-    );
-
     std::thread::scope(|scope| {
         for _ in 0..4 {
-            let reloaded = &reloaded;
-            let manifests = &manifests;
             scope.spawn(move || {
-                let loaded = manifests.get(Agent::Codex).expect("test precondition");
+                let again = loaded(Agent::Claude).expect("claude has a bundled manifest");
                 assert_eq!(
-                    loaded.compiled_rules.as_ptr(),
-                    reloaded.compiled_rules.as_ptr()
+                    first.compiled_rules.as_ptr(),
+                    again.compiled_rules.as_ptr(),
+                    "every caller must share one compiled rule set and its regex search caches"
                 );
-                for _ in 0..8 {
-                    assert_eq!(
-                        manifests.detect(Agent::Codex, "new-ready").state,
-                        AgentState::Working
-                    );
-                }
             });
         }
     });
@@ -642,9 +430,8 @@ fn compiled_rules_are_shared_until_manifest_reload() {
 
 #[test]
 fn osc_regions_use_separate_inputs_and_share_rule_priority() {
-    let manifests = TestManifests::new("osc-regions");
     {
-        manifests.write_codex(&rules_manifest(
+        let manifests = TestManifests::new(&rules_manifest(
             r#"
 [[rules]]
 id = "screen"
@@ -729,9 +516,8 @@ regex = ['^progress-marker$']
 
 #[test]
 fn skip_rule_suppresses_state_update_without_visible_state_evidence() {
-    let manifests = TestManifests::new("skip-rule");
     {
-        manifests.write_codex(&rules_manifest(
+        let manifests = TestManifests::new(&rules_manifest(
             r#"
 [[rules]]
 id = "activity"
@@ -851,7 +637,7 @@ fn all_bundled_manifests_parse_validate_and_compile() {
         );
         let manifest = parse_bundled_manifest(key, content)
             .unwrap_or_else(|error| panic!("bundled {key} manifest: {error}"));
-        if let Err(error) = loaded_manifest(manifest, ManifestSource::Bundled) {
+        if let Err(error) = loaded_manifest(manifest) {
             panic!("bundled {key} manifest could not be compiled: {error}");
         }
     }

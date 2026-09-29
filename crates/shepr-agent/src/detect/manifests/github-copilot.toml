@@ -1,5 +1,4 @@
 id = "copilot"
-aliases = ["github-copilot", "ghcs"]
 
 [[rules]]
 id = "selection_blocker"

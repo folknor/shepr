@@ -28,9 +28,6 @@ pub enum RunServerError {
     /// directory, the canonical `directory`. The lease is taken before either
     /// socket is bound.
     SessionDataHeld { directory: PathBuf },
-    /// A local agent detection manifest override is invalid. Like any other
-    /// config problem it refuses the launch.
-    ManifestOverride(shepr_agent::detect::manifest::ManifestOverrideError),
     /// Startup or the event loop failed.
     Io(io::Error),
 }
@@ -48,7 +45,6 @@ impl std::fmt::Display for RunServerError {
                 "shepr server is already running (session data: {})",
                 directory.display()
             ),
-            Self::ManifestOverride(error) => error.fmt(f),
             Self::Io(error) => error.fmt(f),
         }
     }
@@ -58,7 +54,6 @@ impl std::error::Error for RunServerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::AlreadyRunning { .. } | Self::SessionDataHeld { .. } => None,
-            Self::ManifestOverride(error) => Some(error),
             Self::Io(error) => Some(error),
         }
     }
@@ -135,14 +130,10 @@ pub fn run_server(
         &session_data_dir,
         shepr_platform::logging::SERVER_LOG_FILE,
     )?;
-    // Compile the full registry off the tokio loop, and before App restores PTYs
-    // whose detection workers can consult it. After logging starts, so manifest
-    // override diagnostics reach the server log. An invalid override refuses the
-    // launch like any other config problem; only the runtime reload keeps the
-    // bundled manifest and reports.
-    let agent_manifest_summaries =
-        shepr_agent::detect::manifest::try_reload_manifests(paths.config_dir())
-            .map_err(RunServerError::ManifestOverride)?;
+    // Compile the bundled detection manifests off the tokio loop, before App
+    // restores PTYs whose detection workers consult them, and after logging
+    // starts, so a bundled manifest that fails to compile reaches the log.
+    shepr_agent::detect::manifest::compile_bundled_manifests();
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = shepr_api::EventHub::default();
@@ -173,7 +164,6 @@ pub fn run_server(
             app::AppPolicy::Production,
             api_rx,
             event_hub,
-            agent_manifest_summaries,
             super::sample_app_clock(),
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);

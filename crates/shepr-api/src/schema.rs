@@ -136,16 +136,6 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: true, routine: false,
     };
-    ServerAgentManifests(EmptyParams) => "server.agent_manifests" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    ServerReloadAgentManifests(EmptyParams) => "server.reload_agent_manifests" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     ClientWindowTitleSet(ClientWindowTitleSetParams) => "client.window_title.set" {
         client_shell: false, mutates_ui: true, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,

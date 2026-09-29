@@ -25,7 +25,7 @@ Kept:
   (`crates/shepr-pty/src/`), PTY hosting
 - Workspaces, tabs, panes, layout, the tab bar, the agent sidebar
 - Agent detection from bundled manifests (`crates/shepr-agent/src/detect/manifests/*.toml`),
-  plus local override files and `shepr server reload-agent-manifests`
+  compiled into the binary
 - Agent integrations (`crates/shepr-agent/src/integration/`): hooks installed into each agent's
   own config that report state and session IDs back to shepr
 - Session restore (layout saved to disk, rebuilt with fresh shells) and agent
@@ -43,22 +43,17 @@ agent prompt, agent send-keys and agent wait) is deliberately not kept. Pane
 driving commands (send-text, send-keys, run, wait-for-output and input) and
 their JSON API methods are also not kept; pane.input.set remains for the TUI
 context menu. Nor is the pane.output_matched subscription, which let a script
-wait for text to appear in a pane.
+wait for text to appear in a pane. Nor are local detection manifest overrides
+and their reload: a detection change ships as a new build.
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.
-Two things qualify that:
-
-- A client validates each server's config again when it decodes the attach
-  snapshot, with the checks that only mean something on the sending host
-  (the new-pane cwd exists, the shell resolves) skipped. The server's config
-  crosses hosts, and the client rebuilds its runtime values from it; the
-  build-identity handshake is what guarantees both ends run the same
-  validator.
-- Detection manifest overrides are the one input that reloads, through
-  `shepr server reload-agent-manifests`. A bad override fails the launch;
-  on reload it leaves that agent on its bundled manifest and the reply
-  carries the warning.
+One thing qualifies that: a client validates each server's config again when
+it decodes the attach snapshot, with the checks that only mean something on
+the sending host (the new-pane cwd exists, the shell resolves) skipped. The
+server's config crosses hosts, and the client rebuilds its runtime values from
+it; the build-identity handshake is what guarantees both ends run the same
+validator.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 

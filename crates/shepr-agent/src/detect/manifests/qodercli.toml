@@ -1,5 +1,4 @@
 id = "qodercli"
-aliases = ["qoderclicn", "qoder", "qodercn"]
 
 [[rules]]
 id = "confirmation_or_input_blocker"

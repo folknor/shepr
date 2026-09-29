@@ -1,5 +1,4 @@
 id = "kiro"
-aliases = ["kiro-cli"]
 
 [[rules]]
 id = "live_prompt_idle"

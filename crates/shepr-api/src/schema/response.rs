@@ -156,12 +156,6 @@ pub enum ResponseResult {
         changed: bool,
         reason: ClientWindowTitleReason,
     },
-    AgentManifestReload {
-        manifests: Vec<AgentManifestInfo>,
-    },
-    AgentManifestStatus {
-        manifests: Vec<AgentManifestInfo>,
-    },
     /// Acknowledgement for the client-shell surface interest lease. Its revision-bearing
     /// result can establish an activation floor.
     ClientShellSurfaceSet {
@@ -169,13 +163,4 @@ pub enum ResponseResult {
         projection_revision: u64,
     },
     Ok {},
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentManifestInfo {
-    pub agent: String,
-    pub source: String,
-    pub source_kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warning: Option<String>,
 }

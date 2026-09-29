@@ -1,5 +1,4 @@
 id = "agy"
-aliases = ["antigravity", "antigravity-cli"]
 
 [[rules]]
 id = "permission_prompt"

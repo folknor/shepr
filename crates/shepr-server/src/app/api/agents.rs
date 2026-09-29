@@ -100,7 +100,6 @@ impl App {
             let explain = serde_json::json!({
                 "agent": terminal.effective_agent_label().unwrap_or("unknown"),
                 "state": shepr_agent::detect::manifest::agent_state_label(terminal.state),
-                "manifest_source": null,
                 "matched_rule": null,
                 "visible_idle": false,
                 "visible_blocker": false,
@@ -110,7 +109,6 @@ impl App {
                 "skip_state_update": false,
                 "skipped_update_reason": null,
                 "fallback_reason": null,
-                "warning": null,
                 "evaluated_rules": [],
             });
             return success(ResponseResult::AgentExplain { explain });

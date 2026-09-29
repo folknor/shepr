@@ -1,5 +1,4 @@
 id = "opencode"
-aliases = ["open-code", "shepr:opencode"]
 
 [[rules]]
 id = "permission_required"

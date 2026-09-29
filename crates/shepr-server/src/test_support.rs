@@ -27,12 +27,6 @@ pub(crate) trait PaneRuntimeFixture: Sized {
         rows: u16,
         capacity: usize,
     ) -> (Self, mpsc::Receiver<Bytes>);
-    /// Also returns the signal a detection task would wait on, so a test can
-    /// see the detection resets the runtime is asked for.
-    fn test_with_channel_and_reset_notify(
-        cols: u16,
-        rows: u16,
-    ) -> (Self, mpsc::Receiver<Bytes>, Arc<Notify>);
     fn test_with_screen_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Self;
     fn test_with_scrollback_bytes(
         cols: u16,
@@ -73,16 +67,6 @@ impl PaneRuntimeFixture for PaneRuntime {
         capacity: usize,
     ) -> (Self, mpsc::Receiver<Bytes>) {
         Self::test_with_channel_and_scrollback_bytes(cols, rows, 0, &[], capacity)
-    }
-
-    fn test_with_channel_and_reset_notify(
-        cols: u16,
-        rows: u16,
-    ) -> (Self, mpsc::Receiver<Bytes>, Arc<Notify>) {
-        let (io, rx) = shepr_test_fixtures::ChannelChildIo::new(4);
-        let reset = Arc::new(Notify::new());
-        let runtime = Self::with_child_io(cols, rows, 0, &[], Box::new(io), Arc::clone(&reset));
-        (runtime, rx, reset)
     }
 
     fn test_with_screen_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Self {

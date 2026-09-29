@@ -1,5 +1,4 @@
 id = "grok"
-aliases = ["grok-build"]
 
 # Evidence: Grok Build 0.2.101 source and 1.0.34 live pane reads.
 #

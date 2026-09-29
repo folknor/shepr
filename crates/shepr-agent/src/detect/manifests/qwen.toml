@@ -1,5 +1,4 @@
 id = "qwen"
-aliases = ["qwen-code", "qwen code"]
 
 # Qwen Code keeps its composer visible while responding, so the prompt box is
 # not idle evidence by itself. Its status-prefixed terminal titles are the

@@ -116,11 +116,7 @@ fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super:
             }
         };
         shepr_agent::detect::manifest::explain_to_json_value(
-            &shepr_agent::detect::manifest::explain_for_label(
-                &agent_label,
-                &content,
-                paths.config_dir(),
-            ),
+            &shepr_agent::detect::manifest::explain_for_label(&agent_label, &content),
         )
     } else {
         let target = args.target.ok_or_else(|| {
@@ -154,10 +150,6 @@ fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super:
 fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
     println!("agent: {}", explain["agent"].as_str().unwrap_or("unknown"));
     println!("state: {}", explain["state"].as_str().unwrap_or("unknown"));
-    println!(
-        "manifest: {}",
-        explain["manifest_source"].as_str().unwrap_or("none")
-    );
     if let Some(rule) = explain["matched_rule"].as_object() {
         let rule_id = rule
             .get("id")
@@ -187,9 +179,6 @@ fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
     }
     if let Some(reason) = explain["skipped_update_reason"].as_str() {
         println!("skipped_update_reason: {reason}");
-    }
-    if let Some(warning) = explain["warning"].as_str() {
-        println!("warning: {warning}");
     }
 
     if !verbose {

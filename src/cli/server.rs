@@ -4,22 +4,18 @@ use shepr_remote::COMMAND_STOP;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
     Stop { force: bool },
-    AgentManifests { json: bool },
-    ReloadAgentManifests,
 }
 
 impl Command {
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::Stop { .. } => COMMAND_STOP,
-            Self::AgentManifests { .. } => "agent-manifests",
-            Self::ReloadAgentManifests => "reload-agent-manifests",
         }
     }
 
     pub(super) fn can_run_on_machine(self) -> bool {
         match self {
-            Self::Stop { .. } | Self::AgentManifests { .. } | Self::ReloadAgentManifests => true,
+            Self::Stop { .. } => true,
         }
     }
 }
@@ -29,10 +25,6 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
         Some((COMMAND_STOP, command)) => Some(Command::Stop {
             force: super::matches::flag(command, "force"),
         }),
-        Some(("agent-manifests", command)) => Some(Command::AgentManifests {
-            json: super::matches::flag(command, "json"),
-        }),
-        Some(("reload-agent-manifests", _)) => Some(Command::ReloadAgentManifests),
         _ => None,
     }
 }
@@ -43,8 +35,6 @@ pub(super) fn run_server_command(
 ) -> super::CliResult<i32> {
     match command {
         Command::Stop { force } => server_stop(paths, force),
-        Command::AgentManifests { json } => server_agent_manifests(paths, json),
-        Command::ReloadAgentManifests => server_reload_agent_manifests(paths),
     }
 }
 
@@ -95,44 +85,4 @@ fn server_stop(paths: &super::target::CliContext, force: bool) -> super::CliResu
     shepr_api::session::stop_active_server(paths, force)
         .map_err(|error| super::CliError::Session(super::error::SessionCliError::Stop(error)))?;
     Ok(0)
-}
-
-fn server_agent_manifests(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {
-    let response = super::send_request(
-        paths,
-        &Request {
-            id: "cli:server:agent-manifests".into(),
-            method: Method::ServerAgentManifests(EmptyParams::default()),
-        },
-    )?;
-    if json || response.get("error").is_some() {
-        return super::print_response(&response);
-    }
-
-    print_agent_manifest_status(&response);
-    Ok(0)
-}
-
-fn server_reload_agent_manifests(paths: &super::target::CliContext) -> super::CliResult<i32> {
-    super::print_response(&super::send_request(
-        paths,
-        &Request {
-            id: "cli:server:reload-agent-manifests".into(),
-            method: Method::ServerReloadAgentManifests(EmptyParams::default()),
-        },
-    )?)
-}
-
-fn print_agent_manifest_status(response: &serde_json::Value) {
-    let Some(manifests) = response["result"]["manifests"].as_array() else {
-        return;
-    };
-    for manifest in manifests {
-        let agent = manifest["agent"].as_str().unwrap_or("-");
-        let source = manifest["source"].as_str().unwrap_or("-");
-        println!("{agent:<11} {source}");
-        if let Some(warning) = manifest["warning"].as_str() {
-            println!("  {warning}");
-        }
-    }
 }

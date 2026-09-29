@@ -1,5 +1,4 @@
 id = "amp"
-aliases = ["amp-local"]
 
 [[rules]]
 id = "osc_title_plugin_confirmation_blocked"

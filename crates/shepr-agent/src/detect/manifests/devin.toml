@@ -1,5 +1,4 @@
 id = "devin"
-aliases = ["devin-cli", "devin cli"]
 
 [[rules]]
 id = "workspace_trust_prompt"

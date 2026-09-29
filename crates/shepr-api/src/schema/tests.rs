@@ -82,32 +82,6 @@ fn request_round_trips_for_server_stop() {
 }
 
 #[test]
-fn request_round_trips_for_server_reload_agent_manifests() {
-    let request = Request {
-        id: "req_reload_agent_manifests".into(),
-        method: Method::ServerReloadAgentManifests(EmptyParams::default()),
-    };
-
-    let json = serde_json::to_value(&request).expect("test precondition");
-    assert_eq!(json["method"], "server.reload_agent_manifests");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, request);
-}
-
-#[test]
-fn request_round_trips_for_server_agent_manifests() {
-    let request = Request {
-        id: "req_agent_manifests".into(),
-        method: Method::ServerAgentManifests(EmptyParams::default()),
-    };
-
-    let json = serde_json::to_value(&request).expect("test precondition");
-    assert_eq!(json["method"], "server.agent_manifests");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, request);
-}
-
-#[test]
 fn request_round_trips_for_agent_explain() {
     let request = Request {
         id: "req_agent_explain".into(),
@@ -156,12 +130,14 @@ fn unknown_method_is_rejected() {
 }
 
 #[test]
-fn removed_pane_driving_methods_are_rejected() {
+fn removed_methods_are_rejected() {
     for method in [
         "pane.send_text",
         "pane.send_keys",
         "pane.send_input",
         "pane.wait_for_output",
+        "server.agent_manifests",
+        "server.reload_agent_manifests",
     ] {
         let request = serde_json::json!({"id": "req", "method": method, "params": {}});
         let error = serde_json::from_value::<Request>(request).expect_err("removed method");

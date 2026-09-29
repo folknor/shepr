@@ -1,5 +1,4 @@
 id = "kilo"
-aliases = ["kilo-code", "kilo code", "shepr:kilo"]
 
 [[rules]]
 id = "opencode_permission"

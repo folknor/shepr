@@ -748,7 +748,7 @@ fn navigation_highlight_yields_to_new_intent() {
     request_local_navigation(&mut state, 2);
     let mut unrelated = ClientShellInput::default();
     state.push_endpoint_method(
-        shepr_api::schema::Method::ServerAgentManifests(shepr_api::schema::EmptyParams::default()),
+        shepr_api::schema::Method::SessionSnapshot(shepr_api::schema::EmptyParams::default()),
         &mut unrelated,
     );
     let [ClientShellAction::Endpoint { request, .. }] = unrelated.actions.as_slice() else {

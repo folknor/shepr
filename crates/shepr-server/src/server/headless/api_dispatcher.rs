@@ -1,4 +1,3 @@
-use crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY;
 use crate::server::ClientId;
 
 pub(super) enum AltScreenReadConflict {
@@ -20,14 +19,6 @@ impl super::HeadlessServer {
         &mut self,
         mut msg: shepr_api::ApiRequestMessage,
     ) -> bool {
-        if matches!(
-            &msg.request.method,
-            shepr_api::schema::Method::ServerReloadAgentManifests(_)
-        ) {
-            self.defer_agent_manifest_reload(msg);
-            return false;
-        }
-
         let request_id = msg.request.id.clone();
         let method_traits = msg.request.method.traits();
         let method = method_traits.name;
@@ -136,14 +127,6 @@ impl super::HeadlessServer {
         client_id: ClientId,
         msg: shepr_api::ApiRequestMessage,
     ) -> bool {
-        if matches!(
-            &msg.request.method,
-            shepr_api::schema::Method::ServerReloadAgentManifests(_)
-        ) {
-            self.defer_agent_manifest_reload(msg);
-            return false;
-        }
-
         let method_traits = msg.request.method.traits();
         let focus_before = self.shell_focus_target(client_id);
         let focused_tabs_before = self.focused_shell_tabs();
@@ -235,122 +218,6 @@ impl super::HeadlessServer {
         for read in self.take_pending_alt_screen_reads() {
             read.finish_for_shutdown();
         }
-        let reloads = std::mem::take(&mut self.running_agent_manifest_reload)
-            .into_iter()
-            .chain(std::mem::take(&mut self.queued_agent_manifest_reloads));
-        for msg in reloads {
-            self.reject_api_request_for_shutdown(&msg);
-        }
-    }
-
-    /// Keep manifest parsing and regex compilation off the tokio event loop.
-    /// The app updates summaries and resets detection only after the registry
-    /// worker has atomically installed its complete replacement. One reload
-    /// runs at a time, so registry installs and applied summaries stay in the
-    /// same order.
-    fn defer_agent_manifest_reload(&mut self, msg: shepr_api::ApiRequestMessage) {
-        if self.running_agent_manifest_reload.is_empty() {
-            self.running_agent_manifest_reload.push(msg);
-            self.start_agent_manifest_reload();
-        } else if self.queued_agent_manifest_reloads.len() >= AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY {
-            shepr_api::send_api_response(
-                &msg.respond_to,
-                &msg.request.id,
-                msg.request.method.traits().name,
-                Err(shepr_api::error::ApiError::new(
-                    shepr_api::error::ApiErrorCode::EndpointBusy,
-                    format!(
-                        "agent manifest reload queue is full (limit {AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY})"
-                    ),
-                )),
-            );
-        } else {
-            self.queued_agent_manifest_reloads.push(msg);
-        }
-    }
-
-    fn start_agent_manifest_reload(&mut self) {
-        self.agent_manifest_reload_token = self.agent_manifest_reload_token.wrapping_add(1);
-        let token = self.agent_manifest_reload_token;
-        let config_dir = self.app.paths.config_dir().to_path_buf();
-        let completion_tx = self.agent_manifest_reload_tx.clone();
-        let reload_task = tokio::task::spawn_blocking(move || {
-            shepr_agent::detect::manifest::reload_manifests(&config_dir)
-        });
-        let _completion_task = tokio::spawn(async move {
-            let result = reload_task
-                .await
-                .map_err(|error| format!("manifest reload worker failed: {error}"));
-            if completion_tx
-                .send(super::AgentManifestReloadCompletion {
-                    request_token: token,
-                    result,
-                })
-                .is_err()
-            {
-                tracing::debug!("manifest reload completion receiver closed");
-            }
-        });
-    }
-
-    pub(super) fn complete_agent_manifest_reload(
-        &mut self,
-        completion: super::AgentManifestReloadCompletion,
-    ) -> bool {
-        if completion.request_token != self.agent_manifest_reload_token
-            || self.running_agent_manifest_reload.is_empty()
-        {
-            return false;
-        }
-        let answered = std::mem::take(&mut self.running_agent_manifest_reload);
-
-        if self.lifecycle.stop_requested(self.app.state.should_quit) {
-            self.initiate_shutdown();
-        }
-        if self.lifecycle.phase() == super::ShutdownPhase::Stopping {
-            for msg in &answered {
-                self.reject_api_request_for_shutdown(msg);
-            }
-            return false;
-        }
-
-        let mut changed = self.drain_all_internal_events_with_forwarding();
-        if self.lifecycle.stop_requested(self.app.state.should_quit) {
-            self.initiate_shutdown();
-        }
-        if self.lifecycle.phase() == super::ShutdownPhase::Stopping {
-            for msg in &answered {
-                self.reject_api_request_for_shutdown(msg);
-            }
-            return changed;
-        }
-
-        let response = match completion.result {
-            Ok(summaries) => {
-                changed = true;
-                Ok(self.app.complete_agent_manifest_reload(summaries))
-            }
-            Err(error) => Err(shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::InternalError,
-                format!("agent manifest reload failed: {error}"),
-            )),
-        };
-        for msg in &answered {
-            shepr_api::send_api_response(
-                &msg.respond_to,
-                &msg.request.id,
-                msg.request.method.traits().name,
-                response.clone(),
-            );
-        }
-        // Apply this run's summaries before a queued worker can install a newer
-        // registry. Both changes are observed by detection on the event loop.
-        if !self.queued_agent_manifest_reloads.is_empty() {
-            self.running_agent_manifest_reload =
-                std::mem::take(&mut self.queued_agent_manifest_reloads);
-            self.start_agent_manifest_reload();
-        }
-        changed
     }
 
     pub(super) fn reject_api_request_for_shutdown(&self, msg: &shepr_api::ApiRequestMessage) {
@@ -589,49 +456,6 @@ impl super::HeadlessServer {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn excess_manifest_reloads_are_rejected_when_the_queue_is_full() {
-        let mut server = crate::server::headless::tests::test_headless_server();
-        let reload = |id: &str| {
-            let (respond_to, response_rx) = std::sync::mpsc::channel();
-            let msg = shepr_api::ApiRequestMessage {
-                request: shepr_api::schema::Request {
-                    id: id.into(),
-                    method: shepr_api::schema::Method::ServerReloadAgentManifests(
-                        shepr_api::schema::EmptyParams::default(),
-                    ),
-                },
-                respond_to,
-            };
-            (msg, response_rx)
-        };
-
-        let (running, _running_rx) = reload("running");
-        server.running_agent_manifest_reload.push(running);
-        for index in 0..crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY {
-            let id = format!("queued-{index}");
-            let (msg, _response_rx) = reload(&id);
-            assert!(!server.handle_api_request_with_shutdown_check(msg));
-        }
-        assert_eq!(
-            server.queued_agent_manifest_reloads.len(),
-            crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY
-        );
-
-        let (overflow, response_rx) = reload("overflow");
-        assert!(!server.handle_api_request_with_shutdown_check(overflow));
-        let error = response_rx
-            .recv()
-            .expect("full reload queue responds immediately")
-            .expect_err("full reload queue must be rejected");
-        assert_eq!(error.code, shepr_api::error::ApiErrorCode::EndpointBusy);
-        assert_eq!(
-            server.queued_agent_manifest_reloads.len(),
-            crate::limits::AGENT_MANIFEST_RELOAD_QUEUE_CAPACITY
-        );
-        crate::server::headless::tests::shutdown_test_runtimes(&mut server);
-    }
-
-    #[test]
     fn deferred_requests_are_owned_until_the_headless_loop_retries_them() {
         let (respond_to, _response_rx) = std::sync::mpsc::channel();
         let request = shepr_api::schema::Request {
@@ -650,102 +474,6 @@ mod tests {
         assert_eq!(deferred.len(), 1);
         assert_eq!(deferred[0].request.id, "queued");
         assert!(!server.has_deferred_alt_screen_read_requests());
-        crate::server::headless::tests::shutdown_test_runtimes(&mut server);
-    }
-
-    #[tokio::test]
-    async fn agent_manifest_reload_request_completes_after_background_load() {
-        let mut server = crate::server::headless::tests::test_headless_server();
-        let (respond_to, response_rx) = std::sync::mpsc::channel();
-        let request = shepr_api::schema::Request {
-            id: "reload-manifests".into(),
-            method: shepr_api::schema::Method::ServerReloadAgentManifests(
-                shepr_api::schema::EmptyParams::default(),
-            ),
-        };
-        let msg = shepr_api::ApiRequestMessage {
-            request,
-            respond_to,
-        };
-
-        assert!(!server.handle_api_request_with_shutdown_check(msg));
-        assert!(response_rx.try_recv().is_err());
-        let completion = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            server.agent_manifest_reload_rx.recv(),
-        )
-        .await
-        .expect("manifest reload worker should complete")
-        .expect("manifest reload completion channel should remain open");
-        assert!(server.complete_agent_manifest_reload(completion));
-
-        let response = response_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("manifest reload should answer the request")
-            .expect("manifest reload should succeed");
-        let shepr_api::schema::ResponseResult::AgentManifestReload { manifests } = response else {
-            panic!("expected manifest reload response");
-        };
-        assert!(!manifests.is_empty());
-        crate::server::headless::tests::shutdown_test_runtimes(&mut server);
-    }
-
-    async fn next_reload_completion(
-        server: &mut crate::server::headless::HeadlessServer,
-    ) -> crate::server::headless::AgentManifestReloadCompletion {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            server.agent_manifest_reload_rx.recv(),
-        )
-        .await
-        .expect("manifest reload worker should complete")
-        .expect("manifest reload completion channel should remain open")
-    }
-
-    #[tokio::test]
-    async fn a_reload_requested_during_another_waits_for_its_own_run() {
-        let mut server = crate::server::headless::tests::test_headless_server();
-        let reload = |id: &str| {
-            let (respond_to, response_rx) = std::sync::mpsc::channel();
-            let msg = shepr_api::ApiRequestMessage {
-                request: shepr_api::schema::Request {
-                    id: id.into(),
-                    method: shepr_api::schema::Method::ServerReloadAgentManifests(
-                        shepr_api::schema::EmptyParams::default(),
-                    ),
-                },
-                respond_to,
-            };
-            (msg, response_rx)
-        };
-        let (first, first_rx) = reload("first");
-        let (second, second_rx) = reload("second");
-
-        assert!(!server.handle_api_request_with_shutdown_check(first));
-        assert!(!server.handle_api_request_with_shutdown_check(second));
-        let completion = next_reload_completion(&mut server).await;
-        assert!(server.complete_agent_manifest_reload(completion));
-        assert!(first_rx.try_recv().is_ok_and(|response| response.is_ok()));
-        assert!(
-            second_rx.try_recv().is_err(),
-            "the queued request is answered by the reload started after the first"
-        );
-        // The queued request's worker starts only once the first run's
-        // summaries are applied and answered, under a fresh token.
-        assert_eq!(server.agent_manifest_reload_token, 2);
-        assert!(server.queued_agent_manifest_reloads.is_empty());
-        assert_eq!(
-            server
-                .running_agent_manifest_reload
-                .iter()
-                .map(|msg| msg.request.id.as_str())
-                .collect::<Vec<_>>(),
-            ["second"]
-        );
-
-        let completion = next_reload_completion(&mut server).await;
-        assert!(server.complete_agent_manifest_reload(completion));
-        assert!(second_rx.try_recv().is_ok_and(|response| response.is_ok()));
         crate::server::headless::tests::shutdown_test_runtimes(&mut server);
     }
 }

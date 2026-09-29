@@ -1,11 +1,9 @@
 //! Screen-detection manifest format, loading and matching.
 //!
-//! Bundled manifests are loaded for agents whose descriptors enable screen
-//! detection. A file at `<config dir>/agent-detection/<agent label>.toml`
-//! replaces that agent's bundled manifest when its identity matches. Invalid
-//! overrides retain the bundled manifest with a diagnostic warning, while
-//! startup validation can refuse them. Manifests are cached and reread by
-//! `shepr server reload-agent-manifests`.
+//! Bundled manifests are compiled into the binary for agents whose descriptors
+//! enable screen detection, and compiled once per process on first use. There
+//! are no local overrides and no reload: a detection change ships as a new
+//! build.
 //!
 //! # Format
 //!
@@ -29,10 +27,7 @@
 //! visible state; `skip_state_update` preserves prior state for agent-owned
 //! viewers.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
-};
+use std::sync::OnceLock;
 
 use regex::Regex;
 use serde::Deserialize;
@@ -63,7 +58,6 @@ pub struct DetectionInput<'a> {
 pub struct DetectionExplain {
     pub agent: Option<String>,
     pub state: AgentState,
-    pub source: Option<ManifestSource>,
     pub matched_rule: Option<MatchedRule>,
     pub screen_detection_skipped: bool,
     pub visible_idle: bool,
@@ -73,122 +67,6 @@ pub struct DetectionExplain {
     pub skipped_update_reason: Option<String>,
     pub fallback_reason: Option<String>,
     pub evaluated_rules: Vec<EvaluatedRule>,
-    pub warning: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ManifestSource {
-    Bundled,
-    Override(PathBuf),
-}
-
-impl ManifestSource {
-    pub fn label(&self) -> String {
-        match self {
-            Self::Bundled => "bundled".to_string(),
-            Self::Override(path) => path.display().to_string(),
-        }
-    }
-
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Bundled => "bundled",
-            Self::Override(_) => "local override",
-        }
-    }
-}
-
-/// A local detection manifest override failed before it could be activated.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ManifestOverrideError {
-    Load {
-        agent: Agent,
-        path: PathBuf,
-        detail: String,
-    },
-    IdMismatch {
-        agent: Agent,
-        path: PathBuf,
-        manifest_id: String,
-    },
-    Compile {
-        agent: Agent,
-        path: PathBuf,
-        detail: String,
-    },
-}
-
-impl ManifestOverrideError {
-    pub const fn agent(&self) -> Agent {
-        match self {
-            Self::Load { agent, .. }
-            | Self::IdMismatch { agent, .. }
-            | Self::Compile { agent, .. } => *agent,
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        match self {
-            Self::Load { path, .. }
-            | Self::IdMismatch { path, .. }
-            | Self::Compile { path, .. } => path,
-        }
-    }
-
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::Load { .. } => "load",
-            Self::IdMismatch { .. } => "id_mismatch",
-            Self::Compile { .. } => "compile",
-        }
-    }
-}
-
-impl std::fmt::Display for ManifestOverrideError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Load {
-                agent,
-                path,
-                detail,
-            } => write!(
-                formatter,
-                "agent detection manifest override {} for {} could not be read or parsed: {detail}",
-                path.display(),
-                agent_label(*agent)
-            ),
-            Self::IdMismatch {
-                agent,
-                path,
-                manifest_id,
-            } => write!(
-                formatter,
-                "agent detection manifest override {} declares id {}, expected {}",
-                path.display(),
-                manifest_id,
-                agent_label(*agent)
-            ),
-            Self::Compile {
-                agent,
-                path,
-                detail,
-            } => write!(
-                formatter,
-                "agent detection manifest override {} for {} could not be compiled: {detail}",
-                path.display(),
-                agent_label(*agent)
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ManifestOverrideError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentManifestSummary {
-    pub agent: Agent,
-    pub active_source: ManifestSource,
-    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,9 +99,9 @@ pub struct RuleEvidence {
     pub region_preview: String,
 }
 
-/// A manifest ready for evaluation. The cache hands these out behind an `Arc`,
-/// so a detection tick never clones the rule tree, and the compiled regexes
-/// keep their search caches warm across ticks and panes.
+/// A manifest ready for evaluation. The process-wide set hands these out by
+/// shared reference, so a detection tick never clones the rule tree, and the
+/// compiled regexes keep their search caches warm across ticks and panes.
 #[derive(Debug)]
 struct LoadedManifest {
     manifest: AgentManifest,
@@ -236,8 +114,6 @@ struct LoadedManifest {
     /// The first match in this order is the rule `explain` would select, so the
     /// detection path can stop there.
     priority_order: Vec<usize>,
-    source: ManifestSource,
-    warning: Option<String>,
 }
 
 #[derive(Debug)]
@@ -246,18 +122,10 @@ struct CompiledManifest {
     regions: Vec<CompiledRegion>,
 }
 
-#[derive(Debug, Clone)]
-struct ManifestCache {
-    manifests: Vec<(Agent, Option<Arc<LoadedManifest>>)>,
-    override_errors: Vec<ManifestOverrideError>,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgentManifest {
     id: String,
-    #[serde(default)]
-    aliases: Vec<String>,
     #[serde(default)]
     rules: Vec<ManifestRule>,
     #[serde(skip)]
@@ -644,229 +512,42 @@ const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
     ("copilot", include_str!("manifests/github-copilot.toml")),
 ];
 
-/// The process-wide registry. Production code reaches it only through
-/// `registry()`; tests build their own `ManifestRegistry` over a private
-/// override directory instead, so they never touch this, `XDG_CONFIG_HOME`,
-/// or anything else another test running in the same process could observe.
-static MANIFESTS: OnceLock<ManifestRegistry> = OnceLock::new();
-static MANIFEST_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// Every screen-manifest agent's bundled manifest, compiled once per process
+/// on first use and never replaced.
+static MANIFESTS: OnceLock<Vec<(Agent, Option<LoadedManifest>)>> = OnceLock::new();
 
-/// Manifest data and initialization state remain usable after a panic, so all
-/// manifest locks recover their inner guard by the same policy.
-fn recover_poison<T>(result: std::sync::LockResult<T>) -> T {
-    match result {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+fn manifests() -> &'static [(Agent, Option<LoadedManifest>)] {
+    MANIFESTS.get_or_init(|| {
+        Agent::screen_manifest_agents()
+            .map(|agent| {
+                let loaded = bundled_manifest(agent)
+                    .and_then(|manifest| bundled_loaded_manifest(agent, manifest));
+                (agent, loaded)
+            })
+            .collect()
+    })
 }
 
-/// Loaded manifests for every screen-manifest agent, read from the bundled
-/// set plus local overrides in one directory, and swapped wholesale on reload.
-#[derive(Debug)]
-struct ManifestRegistry {
-    cache: RwLock<ManifestCache>,
-    /// Serialises reloads so two concurrent reloads cannot interleave their
-    /// directory reads and leave the older one installed last.
-    reload_lock: Mutex<()>,
+/// Compile every bundled manifest now, so the first detection tick does not
+/// pay for it. Server startup calls this before restoring panes.
+pub fn compile_bundled_manifests() {
+    manifests();
 }
 
-impl ManifestRegistry {
-    fn new(override_dir: Option<&Path>) -> Self {
-        Self::from_cache(build_manifest_cache(override_dir))
-    }
-
-    fn from_cache(cache: ManifestCache) -> Self {
-        Self {
-            cache: RwLock::new(cache),
-            reload_lock: Mutex::new(()),
-        }
-    }
-
-    fn lock_reload(&self) -> MutexGuard<'_, ()> {
-        recover_poison(self.reload_lock.lock())
-    }
-
-    fn read_cache(&self) -> RwLockReadGuard<'_, ManifestCache> {
-        recover_poison(self.cache.read())
-    }
-
-    fn write_cache(&self) -> RwLockWriteGuard<'_, ManifestCache> {
-        recover_poison(self.cache.write())
-    }
-
-    fn reload(&self, override_dir: &Path) -> Vec<AgentManifestSummary> {
-        let _reload_guard = self.lock_reload();
-        let cache = build_manifest_cache(Some(override_dir));
-        let summaries = manifest_summaries_from_cache(&cache);
-        *self.write_cache() = cache;
-        summaries
-    }
-
-    fn try_reload(
-        &self,
-        override_dir: &Path,
-    ) -> Result<Vec<AgentManifestSummary>, ManifestOverrideError> {
-        let _reload_guard = self.lock_reload();
-        let cache = build_manifest_cache(Some(override_dir));
-        if let Some(error) = cache.override_errors.first() {
-            return Err(error.clone());
-        }
-        let summaries = manifest_summaries_from_cache(&cache);
-        *self.write_cache() = cache;
-        Ok(summaries)
-    }
-
-    fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
-        let guard = self.read_cache();
-        guard
-            .manifests
-            .iter()
-            .find(|(cached_agent, _)| *cached_agent == agent)
-            .and_then(|(_, loaded)| loaded.clone())
-    }
-
-    fn summaries(&self) -> Vec<AgentManifestSummary> {
-        let guard = self.read_cache();
-        manifest_summaries_from_cache(&guard)
-    }
-}
-
-/// Reload manifests, reading local overrides from `<config_dir>/agent-detection`.
-pub fn reload_manifests(config_dir: &Path) -> Vec<AgentManifestSummary> {
-    let override_dir = manifest_override_dir(config_dir);
-    if let Some(registry) = MANIFESTS.get() {
-        return registry.reload(&override_dir);
-    }
-
-    let _init_guard = recover_poison(MANIFEST_INIT_LOCK.get_or_init(|| Mutex::new(())).lock());
-    if let Some(registry) = MANIFESTS.get() {
-        return registry.reload(&override_dir);
-    }
-
-    // The first caller knows the config directory, so include overrides in
-    // the initial build instead of compiling the bundled set twice.
-    MANIFESTS
-        .get_or_init(|| ManifestRegistry::new(Some(&override_dir)))
-        .summaries()
-}
-
-/// Validate every local screen-detection override in `<config_dir>/agent-detection`.
-pub fn validate_manifest_overrides(config_dir: &Path) -> Result<(), ManifestOverrideError> {
-    let override_dir = manifest_override_dir(config_dir);
-    for agent in Agent::screen_manifest_agents() {
-        let path = override_path(&override_dir, agent);
-        let exists = path
-            .try_exists()
-            .map_err(|err| ManifestOverrideError::Load {
-                agent,
-                path: path.clone(),
-                detail: err.to_string(),
-            })?;
-        if exists {
-            read_override_manifest(agent, &path)?;
-        }
-    }
-    Ok(())
-}
-
-/// Reload the registry and refuse to replace it if a local override is invalid.
-/// Server startup uses this before restoring panes that start detection workers.
-pub fn try_reload_manifests(
-    config_dir: &Path,
-) -> Result<Vec<AgentManifestSummary>, ManifestOverrideError> {
-    let override_dir = manifest_override_dir(config_dir);
-    if let Some(registry) = MANIFESTS.get() {
-        return registry.try_reload(&override_dir);
-    }
-
-    let _init_guard = recover_poison(MANIFEST_INIT_LOCK.get_or_init(|| Mutex::new(())).lock());
-    if let Some(registry) = MANIFESTS.get() {
-        return registry.try_reload(&override_dir);
-    }
-
-    let cache = build_manifest_cache(Some(&override_dir));
-    if let Some(error) = cache.override_errors.first() {
-        return Err(error.clone());
-    }
-    let summaries = manifest_summaries_from_cache(&cache);
-    let registry = ManifestRegistry::from_cache(cache);
-    match MANIFESTS.set(registry) {
-        Ok(()) => Ok(summaries),
-        Err(_) => MANIFESTS
-            .get()
-            .map_or(Ok(summaries), |registry| registry.try_reload(&override_dir)),
-    }
-}
-
-// One shepr process owns one headless server. Bootstrap reloads its resolved
-// config before constructing the app (which restores panes) or opening the API
-// socket; later reloads use that app's config. CLI file explain builds a
-// private registry, so no production consumer reads this cache before reload.
-fn registry() -> &'static ManifestRegistry {
-    if let Some(registry) = MANIFESTS.get() {
-        return registry;
-    }
-    let _init_guard = recover_poison(MANIFEST_INIT_LOCK.get_or_init(|| Mutex::new(())).lock());
-    MANIFESTS.get_or_init(|| ManifestRegistry::new(None))
-}
-
-fn build_manifest_cache(override_dir: Option<&Path>) -> ManifestCache {
-    let mut override_errors = Vec::new();
-    let manifests = Agent::screen_manifest_agents()
-        .map(|agent| {
-            let loaded = match load_manifest_uncached(agent, override_dir) {
-                Ok(loaded) => loaded,
-                Err(error) => {
-                    tracing::warn!(
-                        agent = agent_label(agent),
-                        path = %error.path().display(),
-                        error_kind = error.kind(),
-                        error = %error,
-                        "agent detection manifest override was rejected"
-                    );
-                    override_errors.push(error.clone());
-                    let mut fallback = bundled_manifest(agent)
-                        .and_then(|manifest| bundled_loaded_manifest(agent, manifest));
-                    if let Some(loaded) = &mut fallback {
-                        loaded.warning = Some(error.to_string());
-                    }
-                    fallback
-                }
-            };
-            (agent, loaded.map(Arc::new))
-        })
-        .collect();
-    ManifestCache {
-        manifests,
-        override_errors,
-    }
-}
-
-fn manifest_summaries_from_cache(cache: &ManifestCache) -> Vec<AgentManifestSummary> {
-    cache
-        .manifests
+/// The compiled bundled manifest for `agent`, or `None` for an agent without
+/// screen detection or whose bundled manifest failed to compile (logged once).
+fn loaded(agent: Agent) -> Option<&'static LoadedManifest> {
+    manifests()
         .iter()
-        .filter_map(|(agent, loaded)| {
-            loaded
-                .as_deref()
-                .map(|loaded| manifest_summary_from_loaded(*agent, loaded))
-        })
-        .collect()
-}
-
-fn manifest_summary_from_loaded(agent: Agent, loaded: &LoadedManifest) -> AgentManifestSummary {
-    AgentManifestSummary {
-        agent,
-        active_source: loaded.source.clone(),
-        warning: loaded.warning.clone(),
-    }
+        .find(|(candidate, _)| *candidate == agent)
+        .and_then(|(_, loaded)| loaded.as_ref())
 }
 
 /// Production detection path. Runs per identified pane on every detection
 /// tick, so it evaluates rules in priority order, stops at the first match,
 /// and builds none of the evidence `explain` reports.
 pub fn detect_with_osc(agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
-    detect_with_manifest(agent, input, registry().get(agent).as_deref())
+    detect_with_manifest(agent, input, loaded(agent))
 }
 
 fn detect_with_manifest(
@@ -896,7 +577,7 @@ fn detect_with_manifest(
 /// (Omp, Mastracode) are only ever reported `Unknown` by the screen, so
 /// consumers that wait for a screen-derived `Idle` must not wait on them.
 pub fn has_screen_manifest(agent: Agent) -> bool {
-    registry().get(agent).is_some()
+    loaded(agent).is_some()
 }
 
 pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
@@ -911,7 +592,7 @@ pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
 }
 
 pub fn explain_with_input(agent: Agent, input: DetectionInput<'_>) -> DetectionExplain {
-    explain_with_manifest(agent, input, registry().get(agent).as_deref())
+    explain_with_manifest(agent, input, loaded(agent))
 }
 
 fn explain_with_manifest(
@@ -925,17 +606,12 @@ fn explain_with_manifest(
     explain_loaded_manifest(agent, input, loaded)
 }
 
-/// Explain a captured screen using manifests loaded from the supplied config directory.
-pub fn explain_for_label(
-    agent_label: &str,
-    screen_content: &str,
-    config_dir: &Path,
-) -> DetectionExplain {
+/// Explain a captured screen against the bundled manifest for `agent_label`.
+pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionExplain {
     let Some(agent) = parse_agent_label(agent_label) else {
         return DetectionExplain {
             agent: Some(agent_label.to_string()),
             state: AgentState::Unknown,
-            source: None,
             matched_rule: None,
             screen_detection_skipped: false,
             visible_idle: false,
@@ -945,20 +621,9 @@ pub fn explain_for_label(
             skipped_update_reason: None,
             fallback_reason: Some("unknown_agent".to_string()),
             evaluated_rules: Vec::new(),
-            warning: None,
         };
     };
-    let override_dir = manifest_override_dir(config_dir);
-    let registry = ManifestRegistry::new(Some(&override_dir));
-    explain_with_manifest(
-        agent,
-        DetectionInput {
-            screen: screen_content,
-            osc_title: "",
-            osc_progress: "",
-        },
-        registry.get(agent).as_deref(),
-    )
+    explain(agent, screen_content)
 }
 
 fn rule_state(rule: &ManifestRule) -> AgentState {
@@ -1052,7 +717,6 @@ fn explain_loaded_manifest(
     DetectionExplain {
         agent: Some(agent_label(agent).to_string()),
         state: detection.state,
-        source: Some(loaded.source.clone()),
         matched_rule: Some(MatchedRule {
             id: rule.id.clone(),
             priority: rule.priority,
@@ -1067,7 +731,6 @@ fn explain_loaded_manifest(
         skipped_update_reason,
         fallback_reason: None,
         evaluated_rules,
-        warning: loaded.warning.clone(),
     }
 }
 
@@ -1076,21 +739,13 @@ fn fallback_explain(
     context: Option<(&LoadedManifest, Vec<EvaluatedRule>)>,
 ) -> DetectionExplain {
     let has_manifest = context.is_some();
-    let (source, evaluated_rules, warning) =
-        context.map_or((None, Vec::new(), None), |(loaded, evaluated)| {
-            (
-                Some(loaded.source.clone()),
-                evaluated,
-                loaded.warning.clone(),
-            )
-        });
+    let evaluated_rules = context.map_or_else(Vec::new, |(_, evaluated)| evaluated);
 
     DetectionExplain {
         agent: agent.map(|agent| agent_label(agent).to_string()),
         state: agent.map_or(AgentState::Unknown, |agent| {
             fallback_state(agent, has_manifest)
         }),
-        source,
         matched_rule: None,
         screen_detection_skipped: false,
         visible_idle: false,
@@ -1105,46 +760,10 @@ fn fallback_explain(
             None => None,
         },
         evaluated_rules,
-        warning,
     }
 }
 
-fn load_manifest_uncached(
-    agent: Agent,
-    override_dir: Option<&Path>,
-) -> Result<Option<LoadedManifest>, ManifestOverrideError> {
-    let bundled = bundled_manifest(agent);
-    let Some(path) = override_dir.map(|directory| override_path(directory, agent)) else {
-        return Ok(bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest)));
-    };
-    let override_exists = match path.try_exists() {
-        Ok(exists) => exists,
-        Err(err) => {
-            return Err(ManifestOverrideError::Load {
-                agent,
-                path,
-                detail: err.to_string(),
-            });
-        }
-    };
-    if !override_exists {
-        return Ok(bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest)));
-    }
-
-    let manifest = read_override_manifest(agent, &path)?;
-    loaded_manifest(manifest, ManifestSource::Override(path.clone()))
-        .map(Some)
-        .map_err(|detail| ManifestOverrideError::Compile {
-            agent,
-            path,
-            detail,
-        })
-}
-
-fn loaded_manifest(
-    mut manifest: AgentManifest,
-    source: ManifestSource,
-) -> Result<LoadedManifest, String> {
+fn loaded_manifest(mut manifest: AgentManifest) -> Result<LoadedManifest, String> {
     let CompiledManifest {
         compiled_rules,
         regions,
@@ -1161,13 +780,11 @@ fn loaded_manifest(
         compiled_rules,
         regions,
         priority_order,
-        source,
-        warning: None,
     })
 }
 
 fn bundled_loaded_manifest(agent: Agent, manifest: AgentManifest) -> Option<LoadedManifest> {
-    match loaded_manifest(manifest, ManifestSource::Bundled) {
+    match loaded_manifest(manifest) {
         Ok(loaded) => Some(loaded),
         Err(err) => {
             tracing::error!(agent = agent_label(agent), error = %err, "bundled manifest could not be compiled");
@@ -1190,8 +807,8 @@ fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
         })
 }
 
-/// Parse a bundled manifest and hold it to the same identity check overrides
-/// get: the file's `id` must be the registry key it is filed under.
+/// Parse a bundled manifest and check its identity: the file's `id` must be
+/// the registry key it is filed under.
 fn parse_bundled_manifest(key: &str, content: &str) -> Result<AgentManifest, String> {
     let manifest = parse_manifest(content)?;
     if manifest.id != key {
@@ -1200,39 +817,6 @@ fn parse_bundled_manifest(key: &str, content: &str) -> Result<AgentManifest, Str
             manifest.id
         ));
     }
-    Ok(manifest)
-}
-
-fn read_override_manifest(
-    agent: Agent,
-    path: &Path,
-) -> Result<AgentManifest, ManifestOverrideError> {
-    let content = std::fs::read_to_string(path).map_err(|err| ManifestOverrideError::Load {
-        agent,
-        path: path.to_path_buf(),
-        detail: err.to_string(),
-    })?;
-    let mut manifest =
-        toml::from_str::<AgentManifest>(&content).map_err(|err| ManifestOverrideError::Load {
-            agent,
-            path: path.to_path_buf(),
-            detail: err.to_string(),
-        })?;
-    if !manifest_matches_agent(&manifest, agent) {
-        return Err(ManifestOverrideError::IdMismatch {
-            agent,
-            path: path.to_path_buf(),
-            manifest_id: manifest.id,
-        });
-    }
-    manifest.compiled =
-        Some(
-            validate_manifest(&manifest).map_err(|detail| ManifestOverrideError::Compile {
-                agent,
-                path: path.to_path_buf(),
-                detail,
-            })?,
-        );
     Ok(manifest)
 }
 
@@ -1247,9 +831,9 @@ pub fn agent_state_label(state: AgentState) -> &'static str {
 
 pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
     // The server uses this payload for explicit agent.explain requests. Its
-    // bounded preview contains pane text, and an override source includes the
-    // config path; both help the caller diagnose the selected rule. Keep this
-    // diagnostic payload out of logs and unsolicited broadcasts.
+    // bounded preview contains pane text, which helps the caller diagnose the
+    // selected rule. Keep this diagnostic payload out of logs and unsolicited
+    // broadcasts.
     let matched_rule = explain.matched_rule.as_ref().map(|rule| {
         serde_json::json!({
             "id": rule.id,
@@ -1285,7 +869,6 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
     serde_json::json!({
         "agent": explain.agent,
         "state": agent_state_label(explain.state),
-        "manifest_source": explain.source.as_ref().map(ManifestSource::label),
         "matched_rule": matched_rule,
         "visible_idle": explain.visible_idle,
         "visible_blocker": explain.visible_blocker,
@@ -1294,7 +877,6 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
         "skip_state_update": explain.skip_state_update,
         "skipped_update_reason": explain.skipped_update_reason,
         "fallback_reason": explain.fallback_reason,
-        "warning": explain.warning,
         "evaluated_rules": evaluated_rules,
     })
 }
@@ -1475,25 +1057,6 @@ fn validate_region_name(spec: &str) -> Result<(), String> {
     RegionSpec::parse(spec)
         .map(|_| ())
         .ok_or_else(|| spec.trim().to_string())
-}
-
-fn manifest_override_dir(config_dir: &Path) -> PathBuf {
-    config_dir.join("agent-detection")
-}
-
-fn override_path(override_dir: &Path, agent: Agent) -> PathBuf {
-    override_dir.join(format!("{}.toml", agent_label(agent)))
-}
-
-fn manifest_matches_agent(manifest: &AgentManifest, agent: Agent) -> bool {
-    let id = agent_label(agent);
-    manifest.id == id
-        || manifest.aliases.iter().any(|alias| alias == id)
-        || parse_agent_label(&manifest.id) == Some(agent)
-        || manifest
-            .aliases
-            .iter()
-            .any(|alias| parse_agent_label(alias) == Some(agent))
 }
 
 fn manifest_gate_from_rule(rule: &ManifestRule) -> ManifestGate {

@@ -1,5 +1,4 @@
 id = "muse"
-aliases = ["muse-code", "muse-cli"]
 
 # Evidence: live bottom-buffer captures from Muse Code 0.2.1 in Shepr, using a local
 # deterministic Responses provider so each UI state could be held and inspected.

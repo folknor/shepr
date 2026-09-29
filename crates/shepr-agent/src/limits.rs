@@ -1,8 +1,7 @@
 use std::time::Duration;
 
-/// Maximum rules in one manifest. This leaves local overrides well past the
-/// size of the bundled manifests while keeping override compilation and
-/// per-screen evaluation bounded.
+/// Maximum rules in one manifest. This sits well past the size of the bundled
+/// manifests while keeping compilation and per-screen evaluation bounded.
 pub(crate) const MAX_RULES_PER_MANIFEST: usize = 128;
 
 /// Maximum nested gate depth, including the root gate. The bound covers the

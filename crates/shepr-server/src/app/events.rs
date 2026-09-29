@@ -205,12 +205,6 @@ impl App {
         }
     }
 
-    pub(super) fn reset_all_agent_detection_runtimes(&self) {
-        for runtime in self.terminal_runtimes.values() {
-            runtime.reset_agent_detection();
-        }
-    }
-
     pub(crate) fn sync_full_lifecycle_authority_detection_pauses(&self) {
         for workspace in &self.state.workspaces {
             for tab in workspace.tabs() {

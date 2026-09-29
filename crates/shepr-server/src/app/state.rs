@@ -71,8 +71,6 @@ pub struct AppState {
     pub host_terminal_appearance: Option<HostAppearance>,
     /// True when the foreground host explicitly reported appearance via Mode 2031.
     pub host_terminal_appearance_explicit: bool,
-    /// Cached detection manifest summaries.
-    pub agent_manifest_summaries: Vec<shepr_agent::detect::manifest::AgentManifestSummary>,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
     /// Last known foreground host terminal cell size in pixels.
@@ -286,7 +284,6 @@ impl AppState {
             tab_bar_right_separator: " ".into(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
-            agent_manifest_summaries: Vec::new(),
             host_terminal_theme: TerminalTheme::default(),
             host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,

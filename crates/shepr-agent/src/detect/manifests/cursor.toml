@@ -1,5 +1,4 @@
 id = "cursor"
-aliases = ["cursor-agent"]
 
 [[rules]]
 id = "write_file_approval"

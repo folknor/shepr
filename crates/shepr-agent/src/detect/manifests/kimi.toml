@@ -1,5 +1,4 @@
 id = "kimi"
-aliases = ["kimi-code", "kimi code"]
 
 [[rules]]
 id = "current_approval_panel"

@@ -600,17 +600,7 @@ fn config_check_from_paths(paths: &shepr_config::AppPaths) -> i32 {
             path_sources.client_socket
         ),
     ]);
-    // An invalid agent detection override refuses server startup, so the
-    // check reports it with the config's own diagnostics.
-    let mut diagnostics = loaded.diagnostics;
-    if let Err(error) =
-        shepr_agent::detect::manifest::validate_manifest_overrides(paths.config_dir())
-    {
-        diagnostics.push(shepr_config::ConfigDiagnostic::Validation(
-            error.to_string(),
-        ));
-    }
-    print_config_check(&diagnostics, sources)
+    print_config_check(&loaded.diagnostics, sources)
 }
 
 fn print_config_check(

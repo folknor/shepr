@@ -45,19 +45,18 @@ impl App {
         request: shepr_api::schema::Request,
     ) -> ApiResult {
         self.sync_pending_terminal_titles();
-        use shepr_api::schema::{Method, ResponseResult};
+        use shepr_api::schema::Method;
 
         let method_name = shepr_api::api_method_name(&request.method);
-        let response = match request.method {
+        match request.method {
             // Every one of these is answered before a request reaches the app:
             // the API server handles ping, SSH agent leases, subscriptions and
             // waits on the connection thread and rejects
             // `client_shell.surface.set`; the headless server intercepts window
-            // titles and manifest reloads before calling this function.
+            // titles before calling this function.
             // Reaching here is a routing bug, reported as such.
             Method::Ping(_)
             | Method::ServerStop(_)
-            | Method::ServerReloadAgentManifests(_)
             | Method::ServerSshAgentRegister(_)
             | Method::ClientWindowTitleSet(_)
             | Method::ClientWindowTitleClear(_)
@@ -68,137 +67,70 @@ impl App {
                     method = method_name,
                     "api request routed to the app by mistake"
                 );
-                return responses::failure(
+                responses::failure(
                     ApiErrorCode::InternalError,
                     format!("{method_name} is not handled by the app"),
-                );
+                )
             }
-            Method::ServerAgentManifests(_) => ResponseResult::AgentManifestStatus {
-                manifests: self
-                    .state
-                    .agent_manifest_summaries
-                    .clone()
-                    .into_iter()
-                    .map(agent_manifest_info)
-                    .collect(),
-            },
-            Method::SessionSnapshot(_) => return self.handle_session_snapshot(),
-            Method::WorkspaceList(_) => return self.handle_workspace_list(),
-            Method::WorkspaceGet(target) => return self.handle_workspace_get(&target),
-            Method::WorkspaceCreate(params) => {
-                return self.handle_workspace_create(params);
-            }
-            Method::WorkspaceFocus(target) => {
-                return self.handle_workspace_focus(&target);
-            }
-            Method::WorkspaceRename(params) => {
-                return self.handle_workspace_rename(params);
-            }
-            Method::WorkspaceMove(params) => {
-                return self.handle_workspace_move(&params);
-            }
-            Method::WorkspaceMoveBlock(params) => {
-                return self.handle_workspace_move_block(params);
-            }
+            Method::SessionSnapshot(_) => self.handle_session_snapshot(),
+            Method::WorkspaceList(_) => self.handle_workspace_list(),
+            Method::WorkspaceGet(target) => self.handle_workspace_get(&target),
+            Method::WorkspaceCreate(params) => self.handle_workspace_create(params),
+            Method::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
+            Method::WorkspaceRename(params) => self.handle_workspace_rename(params),
+            Method::WorkspaceMove(params) => self.handle_workspace_move(&params),
+            Method::WorkspaceMoveBlock(params) => self.handle_workspace_move_block(params),
             Method::WorkspaceReportMetadata(params) => {
-                return self.handle_workspace_report_metadata(params);
+                self.handle_workspace_report_metadata(params)
             }
-            Method::WorkspaceClose(target) => {
-                return self.handle_workspace_close(&target);
-            }
-            Method::TabList(params) => return self.handle_tab_list(params),
-            Method::TabGet(target) => return self.handle_tab_get(&target),
-            Method::TabCreate(params) => return self.handle_tab_create(params),
-            Method::TabFocus(target) => return self.handle_tab_focus(&target),
-            Method::TabRename(params) => return self.handle_tab_rename(params),
-            Method::TabMove(params) => return self.handle_tab_move(&params),
-            Method::TabClose(target) => return self.handle_tab_close(&target),
-            Method::AgentList(_) => return self.handle_agent_list(),
-            Method::AgentGet(target) => return self.handle_agent_get(&target),
-            Method::AgentFocus(target) => return self.handle_agent_focus(&target),
-            Method::AgentRename(params) => return self.handle_agent_rename(params),
-            Method::AgentRead(params) => return self.handle_agent_read(&params),
-            Method::AgentExplain(target) => return self.handle_agent_explain(&target),
-            Method::PaneSplit(params) => return self.handle_pane_split(params),
-            Method::PaneSwap(params) => return self.handle_pane_swap(params),
-            Method::PaneMove(params) => return self.handle_pane_move(params),
-            Method::PaneZoom(params) => return self.handle_pane_zoom(&params),
-            Method::PaneLayout(params) => return self.handle_pane_layout(&params),
-            Method::PaneProcessInfo(params) => {
-                return self.handle_pane_process_info(&params);
-            }
-            Method::LayoutExport(params) => {
-                return self.handle_layout_export(&params);
-            }
-            Method::LayoutApply(params) => return self.handle_layout_apply(&params),
-            Method::LayoutSetSplitRatio(params) => {
-                return self.handle_layout_set_split_ratio(params);
-            }
-            Method::PaneNeighbor(params) => return self.handle_pane_neighbor(&params),
-            Method::PaneEdges(params) => return self.handle_pane_edges(&params),
-            Method::PaneFocusDirection(params) => {
-                return self.handle_pane_focus_direction(&params);
-            }
-            Method::PaneResize(params) => return self.handle_pane_resize(&params),
-            Method::PaneScroll(params) => return self.handle_pane_scroll(&params),
-            Method::PaneClear(target) => return self.handle_pane_clear(&target),
-            Method::PaneSelectionRead(params) => {
-                return self.handle_pane_selection_read(params);
-            }
-            Method::PaneCopyMotion(params) => {
-                return self.handle_pane_copy_motion(params);
-            }
-            Method::PaneCopySearch(params) => {
-                return self.handle_pane_copy_search(params);
-            }
-            Method::PaneList(params) => return self.handle_pane_list(&params),
-            Method::PaneCurrent(params) => return self.handle_pane_current(&params),
-            Method::PaneGet(target) => return self.handle_pane_get(&target),
-            Method::PaneFocus(target) => return self.handle_pane_focus(&target),
-            Method::PaneInputSet(params) => return self.handle_pane_input_set(&params),
-            Method::PaneRename(params) => return self.handle_pane_rename(params),
-            Method::PaneRead(params) => return self.handle_pane_read(&params),
-            Method::PaneReportAgent(params) => {
-                return self.handle_pane_report_agent(params);
-            }
-            Method::PaneReportAgentSession(params) => {
-                return self.handle_pane_report_agent_session(params);
-            }
-            Method::PaneReportMetadata(params) => {
-                return self.handle_pane_report_metadata(params);
-            }
+            Method::WorkspaceClose(target) => self.handle_workspace_close(&target),
+            Method::TabList(params) => self.handle_tab_list(params),
+            Method::TabGet(target) => self.handle_tab_get(&target),
+            Method::TabCreate(params) => self.handle_tab_create(params),
+            Method::TabFocus(target) => self.handle_tab_focus(&target),
+            Method::TabRename(params) => self.handle_tab_rename(params),
+            Method::TabMove(params) => self.handle_tab_move(&params),
+            Method::TabClose(target) => self.handle_tab_close(&target),
+            Method::AgentList(_) => self.handle_agent_list(),
+            Method::AgentGet(target) => self.handle_agent_get(&target),
+            Method::AgentFocus(target) => self.handle_agent_focus(&target),
+            Method::AgentRename(params) => self.handle_agent_rename(params),
+            Method::AgentRead(params) => self.handle_agent_read(&params),
+            Method::AgentExplain(target) => self.handle_agent_explain(&target),
+            Method::PaneSplit(params) => self.handle_pane_split(params),
+            Method::PaneSwap(params) => self.handle_pane_swap(params),
+            Method::PaneMove(params) => self.handle_pane_move(params),
+            Method::PaneZoom(params) => self.handle_pane_zoom(&params),
+            Method::PaneLayout(params) => self.handle_pane_layout(&params),
+            Method::PaneProcessInfo(params) => self.handle_pane_process_info(&params),
+            Method::LayoutExport(params) => self.handle_layout_export(&params),
+            Method::LayoutApply(params) => self.handle_layout_apply(&params),
+            Method::LayoutSetSplitRatio(params) => self.handle_layout_set_split_ratio(params),
+            Method::PaneNeighbor(params) => self.handle_pane_neighbor(&params),
+            Method::PaneEdges(params) => self.handle_pane_edges(&params),
+            Method::PaneFocusDirection(params) => self.handle_pane_focus_direction(&params),
+            Method::PaneResize(params) => self.handle_pane_resize(&params),
+            Method::PaneScroll(params) => self.handle_pane_scroll(&params),
+            Method::PaneClear(target) => self.handle_pane_clear(&target),
+            Method::PaneSelectionRead(params) => self.handle_pane_selection_read(params),
+            Method::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
+            Method::PaneCopySearch(params) => self.handle_pane_copy_search(params),
+            Method::PaneList(params) => self.handle_pane_list(&params),
+            Method::PaneCurrent(params) => self.handle_pane_current(&params),
+            Method::PaneGet(target) => self.handle_pane_get(&target),
+            Method::PaneFocus(target) => self.handle_pane_focus(&target),
+            Method::PaneInputSet(params) => self.handle_pane_input_set(&params),
+            Method::PaneRename(params) => self.handle_pane_rename(params),
+            Method::PaneRead(params) => self.handle_pane_read(&params),
+            Method::PaneReportAgent(params) => self.handle_pane_report_agent(params),
+            Method::PaneReportAgentSession(params) => self.handle_pane_report_agent_session(params),
+            Method::PaneReportMetadata(params) => self.handle_pane_report_metadata(params),
             Method::PaneClearAgentAuthority(params) => {
-                return self.handle_pane_clear_agent_authority(params);
+                self.handle_pane_clear_agent_authority(params)
             }
-            Method::PaneReleaseAgent(params) => {
-                return self.handle_pane_release_agent(params);
-            }
-            Method::PaneClose(target) => return self.handle_pane_close(&target),
-        };
-
-        Ok(response)
-    }
-
-    pub(crate) fn complete_agent_manifest_reload(
-        &mut self,
-        summaries: Vec<shepr_agent::detect::manifest::AgentManifestSummary>,
-    ) -> shepr_api::schema::ResponseResult {
-        self.state.agent_manifest_summaries = summaries.clone();
-        self.reset_all_agent_detection_runtimes();
-        shepr_api::schema::ResponseResult::AgentManifestReload {
-            manifests: summaries.into_iter().map(agent_manifest_info).collect(),
+            Method::PaneReleaseAgent(params) => self.handle_pane_release_agent(params),
+            Method::PaneClose(target) => self.handle_pane_close(&target),
         }
-    }
-}
-
-fn agent_manifest_info(
-    summary: shepr_agent::detect::manifest::AgentManifestSummary,
-) -> shepr_api::schema::AgentManifestInfo {
-    shepr_api::schema::AgentManifestInfo {
-        agent: shepr_agent::detect::agent_label(summary.agent).to_string(),
-        source: summary.active_source.label(),
-        source_kind: summary.active_source.kind().to_string(),
-        warning: summary.warning,
     }
 }
 
@@ -238,92 +170,6 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
-    use shepr_api::schema::ResponseResult;
-
-    #[tokio::test]
-    async fn completed_server_agent_manifest_reload_resets_detection_runtimes() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &shepr_config::Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("manifest-reload")];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let (runtime, _rx, reset_notify) =
-            shepr_mux::pane::PaneRuntime::test_with_channel_and_reset_notify(80, 24);
-        app.terminal_runtimes.insert(terminal_id, runtime);
-
-        let summaries = shepr_agent::detect::manifest::reload_manifests(app.paths.config_dir());
-        let ResponseResult::AgentManifestReload { manifests } =
-            app.complete_agent_manifest_reload(summaries)
-        else {
-            panic!("expected manifest reload result");
-        };
-        assert!(!manifests.is_empty());
-
-        tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            reset_notify.notified(),
-        )
-        .await
-        .expect("manual manifest reload should reset detection runtimes");
-    }
-
-    #[tokio::test]
-    async fn server_agent_manifests_reports_status_without_resetting_runtimes() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &shepr_config::Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
-        app.state.agent_manifest_summaries =
-            vec![shepr_agent::detect::manifest::AgentManifestSummary {
-                agent: Agent::Codex,
-                active_source: shepr_agent::detect::manifest::ManifestSource::Bundled,
-                warning: None,
-            }];
-        let cached_summaries = app.state.agent_manifest_summaries.clone();
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("manifest-status")];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let (runtime, _rx, reset_notify) =
-            shepr_mux::pane::PaneRuntime::test_with_channel_and_reset_notify(80, 24);
-        app.terminal_runtimes.insert(terminal_id, runtime);
-
-        let response =
-            app.handle_api_request_after_internal_events_drained(shepr_api::schema::Request {
-                id: "manifest_status".into(),
-                method: shepr_api::schema::Method::ServerAgentManifests(
-                    shepr_api::schema::EmptyParams::default(),
-                ),
-            });
-        let ResponseResult::AgentManifestStatus { manifests } = response.expect("status succeeds")
-        else {
-            panic!("expected manifest status result");
-        };
-        assert_eq!(manifests.len(), 1);
-        assert_eq!(app.state.agent_manifest_summaries, cached_summaries);
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(10),
-                reset_notify.notified(),
-            )
-            .await
-            .is_err(),
-            "status request should not reset detection runtimes"
-        );
-    }
 
     #[tokio::test]
     async fn agent_explain_evaluates_with_server_manifest_cache() {
