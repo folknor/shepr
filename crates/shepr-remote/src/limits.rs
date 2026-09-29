@@ -52,6 +52,16 @@ pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// overloaded local server check.
 pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Time allowed for the sibling `shepr-server --version` that `status client`
+/// runs to report the installed pair. It prints one line and exits, so a longer
+/// wait means a broken or hung binary; the deadline keeps a remote discovery
+/// probe from hanging on it.
+pub(crate) const SIBLING_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The most of the sibling's `--version` output that is read. The real output
+/// is one short line; the cap bounds what a wrong binary can make us hold.
+pub(crate) const SIBLING_VERSION_OUTPUT_BYTES: u64 = 512;
+
 /// Maximum time for a newly spawned server to answer a status request with
 /// this build's identity. The deadline allows normal startup while keeping a
 /// failed launch finite.

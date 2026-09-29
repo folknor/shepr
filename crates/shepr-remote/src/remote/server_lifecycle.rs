@@ -7,10 +7,6 @@ pub(super) enum RemoteServerStatus {
     Running {
         version: Option<String>,
         build_id: Option<String>,
-        /// Started as a detached daemon, so an SSH drop disconnects only the
-        /// client. A daemon lifecycle requirement; `ensure_remote_server_build`
-        /// checks the build separately.
-        detached_server_daemon: bool,
     },
     NotRunning,
 }
@@ -68,9 +64,6 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
     Ok(RemoteServerStatus::Running {
         version: parsed.version,
         build_id: parsed.build_id,
-        detached_server_daemon: parsed
-            .capabilities
-            .is_some_and(|capabilities| capabilities.detached_server_daemon),
     })
 }
 
@@ -87,23 +80,6 @@ fn remote_server_compatibility_error(
             "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To use this build, stop the remote server and retry",
             shepr_protocol::build_version(),
             shepr_protocol::BUILD_ID
-        ),
-    )
-}
-
-/// The error for a remote server that is running but was not started as a
-/// detached daemon, so an SSH drop could take its panes with it. The remedy is
-/// the operator's to apply: this crate never stops a server on its own.
-pub(super) fn remote_server_not_detached_error(
-    machine: &str,
-    target: &str,
-    version: Option<&str>,
-) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "the remote shepr server (v{}) for machine {machine} on {target} was not started as a detached daemon and may not survive SSH connection loss. On that host run `shepr server stop`, which ends its panes including shells, agents and tests, then start shepr again so the bridge starts a detached server",
-            printable_remote_value(version)
         ),
     )
 }
@@ -147,7 +123,6 @@ mod tests {
         RemoteServerStatus::Running {
             version,
             build_id: build_id.map(str::to_owned),
-            detached_server_daemon: true,
         }
     }
 
@@ -172,21 +147,6 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::Unsupported);
             assert!(error.to_string().contains("compatibility error on host"));
         }
-    }
-
-    /// A non-daemon server is an error that tells the operator what to run,
-    /// and remote-supplied text in it is filtered.
-    #[test]
-    fn a_non_detached_server_is_an_error_with_instructions() {
-        let error = remote_server_not_detached_error("build", "dev@host", Some("1.0"));
-        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-        let message = error.to_string();
-        assert!(message.contains("machine build on dev@host"), "{message}");
-        assert!(message.contains("`shepr server stop`"), "{message}");
-
-        let injected = remote_server_not_detached_error("build", "host", Some("\x1b[2J"));
-        assert!(injected.to_string().contains("vunknown"));
-        assert!(!injected.to_string().contains('\x1b'));
     }
 
     #[test]

@@ -116,23 +116,10 @@ fn launch() -> CliResult<i32> {
         return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
     }
 
-    // The server daemon runs in the home directory; its current directory is
-    // the launch directory the spawning client hands over.
-    let resolved_paths = if matches!(invocation.launch, cli::Launch::HeadlessServer) {
-        shepr_config::AppPaths::resolve_for_server()
-    } else {
-        shepr_config::AppPaths::resolve()
-    };
-    let loaded_config = load_validated_config(resolved_paths)?;
+    let loaded_config = load_validated_config(shepr_config::AppPaths::resolve())?;
     let paths = loaded_config.paths();
 
     match invocation.launch {
-        cli::Launch::HeadlessServer => {
-            shepr_server::server::headless::run_server(&loaded_config, paths, |ready| {
-                cli::print_notice(ready);
-            })?;
-            return Ok(0);
-        }
         cli::Launch::Client => {
             refuse_if_nested_disabled(&loaded_config)?;
             init_client_logging(paths)?;

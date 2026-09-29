@@ -1,0 +1,22 @@
+[package]
+name = "shepr-daemon"
+version = "0.1.0"
+edition = "2024"
+description = "the shepr-server executable: the headless server a shepr client launches"
+publish = false
+
+# The executable is `shepr-server`, the name the client resolves next to itself;
+# the package is `shepr-daemon` because `shepr-server` is the library it runs.
+[[bin]]
+name = "shepr-server"
+path = "src/main.rs"
+
+[dependencies]
+shepr-api = { path = "../shepr-api" }
+shepr-config = { path = "../shepr-config" }
+shepr-platform = { path = "../shepr-platform" }
+shepr-protocol = { path = "../shepr-protocol" }
+shepr-server = { path = "../shepr-server" }
+
+[lints]
+workspace = true

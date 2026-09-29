@@ -106,19 +106,6 @@ fn proc_stat_yields_session_and_controlling_tty() {
 }
 
 #[test]
-fn only_a_session_leader_without_a_terminal_counts_as_detached() {
-    // The setsid daemon spawn: leads its session, no controlling tty.
-    assert!(is_detached_session(4242, 4242, 0));
-    // `terminal -e shepr server` or `ssh -t host shepr server`: a session
-    // leader too, but the terminal is its controlling tty.
-    assert!(!is_detached_session(77, 77, 34817));
-    // A server started from an interactive shell belongs to the shell's
-    // session.
-    assert!(!is_detached_session(90, 70, 34817));
-    assert!(!is_detached_session(90, 70, 0));
-}
-
-#[test]
 fn bridge_socket_names_carry_a_random_token_before_the_extension() {
     assert_eq!(
         with_name_token("shepr-r-42-dev.sock", 0xab),

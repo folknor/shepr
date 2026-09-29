@@ -5,15 +5,12 @@ use std::io;
 pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
 /// Checks, without prompting, that the configured machine can be served: SSH
-/// works, a matching shepr is found, and any server already running there is
-/// this build and a detached daemon. A stopped server passes, since the
-/// bridge starts a detached one on attach. A running server that is not a
-/// detached daemon is an `Unsupported` error whose text says how to fix it.
-/// `machine` is the label named in that text. No SSH command starts once
-/// `deadline` has passed, and each is cut short at it.
+/// works, a matching shepr and sibling `shepr-server` pair is found (discovery
+/// checks both builds), and any server already running there is this build. A
+/// stopped server passes, since the bridge starts one on attach. No SSH
+/// command starts once `deadline` has passed, and each is cut short at it.
 pub fn check_saved_ssh(
     paths: &shepr_config::AppPaths,
-    machine: &MachineLabel,
     target: &SshTarget,
     settings: super::SavedSshSettings,
     deadline: std::time::Instant,
@@ -23,19 +20,7 @@ pub fn check_saved_ssh(
     ssh.set_attempt_deadline(Some(deadline));
     let remote = locate_remote_shepr(&ssh)?;
     let status = remote_server_status(&ssh, &remote)?;
-    ensure_remote_server_build(ssh.target(), &status)?;
-    match status {
-        RemoteServerStatus::Running {
-            version,
-            detached_server_daemon: false,
-            ..
-        } => Err(remote_server_not_detached_error(
-            &shell_quote(machine.as_str()),
-            ssh.target(),
-            version.as_deref(),
-        )),
-        RemoteServerStatus::Running { .. } | RemoteServerStatus::NotRunning => Ok(()),
-    }
+    ensure_remote_server_build(ssh.target(), &status)
 }
 
 impl RemoteExecutable {

@@ -115,6 +115,8 @@ orientation, and nothing checks them:
 - `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
 - `shepr-server`: application state, UI and serving.
 - `shepr-client`: endpoint management and TUI presentation.
+- `shepr-daemon`: the `shepr-server` executable, a thin `main` over
+  `shepr-server` (the one package the client binary never links).
 
 `shepr-test-fixtures` (dev-only) sits above config, protocol, pty and termio,
 so only crates above those can take it.
@@ -131,12 +133,16 @@ so only crates above those can take it.
 | `cargo fmt` | `brokkr fmt` |
 | `cargo install --path .` | `brokkr install` |
 
-- The root package builds two executables, `shepr` (client and CLI) and
-  `shepr-server` (`src/bin/shepr-server.rs`, the headless server), and
-  `brokkr install` installs the pair. `brokkr run` builds and runs only the
-  one target it names (`shepr` by default), so a run that needs the sibling
-  builds it first; a build of one binary is never a usable installation
-  alone.
+- Two executables make one installation: `shepr` (client and CLI, the root
+  package) and `shepr-server` (the headless server, in the `shepr-daemon`
+  package under `crates/shepr-daemon`). They are separate packages so the
+  `shepr` binary links neither `shepr-server` nor `shepr-mux`; both take
+  their build id from the one `shepr-protocol` they link. `brokkr install`
+  installs both packages, and the client launches `shepr-server` from its own
+  directory. `brokkr run` builds and runs only the one target it names
+  (`shepr` by default), so a run that needs the sibling builds it first
+  (`brokkr run shepr-server` builds it and runs it in the foreground); a
+  build of one binary is never a usable installation alone.
 - `brokkr check` is the gate; run it before every commit.
 - `brokkr test -p <pkg> <name>` is a substring filter over one package's unit
   and integration tests; this is a workspace with no default package, so `-p`
@@ -160,7 +166,9 @@ as well as the source, so a dev and a release build never talk to each other's
 server: one that is reached anyway is refused with guidance.
 
 Run it with plain `brokkr run -- [<command>]`, including from inside a pane
-of the installed server. Every pane exports `SHEPR_SOCKET_PATH` and
+of the installed server. The dev client launches the `shepr-server` beside it
+in `target/debug`, which `brokkr run` does not build: build it first with
+`brokkr run shepr-server -- --version`, or through `brokkr check`. Every pane exports `SHEPR_SOCKET_PATH` and
 `SHEPR_CLIENT_SOCKET_PATH`, which normally win over the per-profile runtime
 directory, and also `SHEPR_BUILD_PROFILE`, the profile (`release` or `dev`) of
 the server that owns the pane. A process whose own profile differs from that

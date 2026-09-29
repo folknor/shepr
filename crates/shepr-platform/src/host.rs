@@ -1,4 +1,3 @@
-use super::*;
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -98,28 +97,6 @@ pub fn detach_server_daemon_command(command: &mut Command) {
             Ok(())
         });
     }
-}
-
-/// Whether this server runs detached from any terminal, so closing the
-/// terminal or SSH session that started it cannot hang it up. Remote attach
-/// restarts a server that is not detached as a daemon.
-///
-/// Leading a session is not enough on its own: a terminal emulator or sshd
-/// also makes the program it starts a session leader, but gives that session
-/// the terminal as its controlling tty, and closing it sends SIGHUP. The
-/// daemon spawn path calls setsid and never opens a terminal, so it leads its
-/// session with no controlling tty; that pair is the test.
-pub fn current_process_is_detached_server_daemon() -> bool {
-    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
-        return false;
-    };
-    // Compare /proc/self/stat's session leader with this process's kernel PID.
-    session_and_tty_from_stat(&stat)
-        .is_some_and(|(session, tty_nr)| is_detached_session(std::process::id(), session, tty_nr))
-}
-
-pub(super) fn is_detached_session(pid: u32, session: i32, tty_nr: i32) -> bool {
-    i64::from(session) == i64::from(pid) && tty_nr == 0
 }
 
 /// The path to run to start this program again. Use this, never raw

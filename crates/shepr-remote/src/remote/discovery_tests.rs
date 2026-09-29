@@ -320,6 +320,7 @@ fn remote_client_status_requires_an_exact_build_id() {
         version: Some("old-version".into()),
         build_id: Some(shepr_protocol::BUILD_ID.into()),
         binary: None,
+        server: None,
     };
     assert!(ensure_remote_client_build("build", &matching).is_ok());
 
@@ -332,6 +333,7 @@ fn remote_client_status_requires_an_exact_build_id() {
         version: Some(shepr_protocol::build_version()),
         build_id: Some(other_build.into()),
         binary: None,
+        server: None,
     };
     let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
@@ -344,6 +346,7 @@ fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
         version: Some("1.0\x1b[2J".into()),
         build_id: Some("build id".into()),
         binary: None,
+        server: None,
     };
     let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
     assert!(
@@ -352,6 +355,85 @@ fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
             .contains("found version unknown build build id")
     );
     assert!(!error.to_string().contains('\x1b'));
+}
+
+fn client_status_with_sibling(
+    server: Option<shepr_api::schema::SiblingServerJson>,
+) -> shepr_api::schema::ClientStatusJson {
+    shepr_api::schema::ClientStatusJson {
+        version: Some(shepr_protocol::build_version()),
+        build_id: Some(shepr_protocol::BUILD_ID.into()),
+        binary: None,
+        server,
+    }
+}
+
+fn sibling(build_id: Option<&str>, error: Option<&str>) -> shepr_api::schema::SiblingServerJson {
+    shepr_api::schema::SiblingServerJson {
+        binary: Some("/home/u/.cargo/bin/shepr-server".into()),
+        version: build_id.map(|_| "1.0".into()),
+        build_id: build_id.map(str::to_owned),
+        error: error.map(str::to_owned),
+    }
+}
+
+#[test]
+fn the_remote_pair_check_requires_a_sibling_of_this_build() {
+    let matching = client_status_with_sibling(Some(sibling(Some(shepr_protocol::BUILD_ID), None)));
+    assert!(ensure_remote_sibling_build("host", &matching).is_ok());
+
+    let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+        "0000000000000000"
+    } else {
+        "ffffffffffffffff"
+    };
+    let stale = client_status_with_sibling(Some(sibling(Some(other_build), None)));
+    let error = ensure_remote_sibling_build("host", &stale).expect_err("stale sibling");
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert!(error.to_string().contains(other_build), "{error}");
+    assert!(error.to_string().contains("shepr-server"), "{error}");
+}
+
+#[test]
+fn a_missing_or_unreported_remote_sibling_is_an_install_error() {
+    let unreported = client_status_with_sibling(None);
+    let error = ensure_remote_sibling_build("host", &unreported).expect_err("no report");
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert!(error.to_string().contains("did not report"), "{error}");
+
+    let missing = client_status_with_sibling(Some(sibling(
+        None,
+        Some("shepr-server was not found at /home/u/.cargo/bin/shepr-server"),
+    )));
+    let error = ensure_remote_sibling_build("host", &missing).expect_err("missing sibling");
+    assert!(error.to_string().contains("was not found"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("/home/u/.cargo/bin/shepr-server"),
+        "{error}"
+    );
+}
+
+#[test]
+fn remote_sibling_text_is_filtered_before_local_output() {
+    let hostile = client_status_with_sibling(Some(shepr_api::schema::SiblingServerJson {
+        binary: Some("/bin/\x1b[2Jshepr-server".into()),
+        version: Some("1.0\x1b[2J".into()),
+        build_id: Some("\x1b[2J".into()),
+        error: Some("boom\x1b[2J".into()),
+    }));
+    let error = ensure_remote_sibling_build("host", &hostile).expect_err("hostile report");
+    assert!(!error.to_string().contains('\x1b'), "{error}");
+
+    let hostile = client_status_with_sibling(Some(shepr_api::schema::SiblingServerJson {
+        binary: None,
+        version: Some("1.0\x1b[2J".into()),
+        build_id: Some("\x1b[2J".into()),
+        error: None,
+    }));
+    let error = ensure_remote_sibling_build("host", &hostile).expect_err("hostile report");
+    assert!(!error.to_string().contains('\x1b'), "{error}");
 }
 
 #[test]

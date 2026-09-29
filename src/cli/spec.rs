@@ -94,9 +94,8 @@ fn status_command() -> Command {
 }
 
 fn server_command() -> Command {
-    // Bare `shepr server` runs the headless server, so no subcommand is required.
-    Command::new(COMMAND_SERVER)
-        .about("Run or control the headless server")
+    group(COMMAND_SERVER)
+        .about("Control the running server")
         .subcommand(
             Command::new(COMMAND_STOP)
                 .about("Stop the running server")

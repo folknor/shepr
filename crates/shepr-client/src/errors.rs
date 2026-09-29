@@ -97,7 +97,7 @@ impl std::fmt::Display for ClientError {
                 write!(f, "failed to connect to server: {err}")?;
                 write!(
                     f,
-                    "\nIs shepr server running? Start it with `shepr server`."
+                    "\nIs the shepr server running? Running `shepr` starts one."
                 )
             }
             ClientError::HostTerminal(err) => write!(f, "host terminal error: {err}"),

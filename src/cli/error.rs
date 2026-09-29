@@ -10,11 +10,6 @@ pub(crate) enum CliError {
     ServerStop(shepr_api::session::SessionError),
     Usage(String),
     Io(std::io::Error),
-    /// A failure reported as prose, followed by operator hint lines.
-    Failed {
-        message: String,
-        hints: Vec<String>,
-    },
     /// The configuration or the paths it resolves could not be loaded; one
     /// entry per diagnostic.
     Config(Vec<String>),
@@ -55,12 +50,6 @@ impl CliError {
                 eprintln!("run 'shepr --help' for usage");
             }
             Self::Io(error) => eprintln!("error: {error}"),
-            Self::Failed { message, hints } => {
-                eprintln!("error: {message}");
-                for hint in hints {
-                    eprintln!("{hint}");
-                }
-            }
             Self::Config(diagnostics) => {
                 eprintln!("shepr: configuration error:");
                 for diagnostic in diagnostics {
@@ -112,33 +101,12 @@ pub(crate) fn print_notice(notice: &dyn std::fmt::Display) {
     eprintln!("{notice}");
 }
 
-/// How a headless server that refused to start or stopped with an error is
-/// reported. A server already holding the runtime, by either socket or by the
-/// data lock, reads the same to the operator.
-impl From<shepr_server::server::headless::RunServerError> for CliError {
-    fn from(error: shepr_server::server::headless::RunServerError) -> Self {
-        use shepr_server::server::headless::RunServerError;
-        const ALREADY_RUNNING: &str = "shepr server is already running";
-        match error {
-            RunServerError::AlreadyRunning { socket, path } => Self::Failed {
-                message: ALREADY_RUNNING.into(),
-                hints: vec![format!("{socket}: {}", path.display())],
-            },
-            RunServerError::SessionDataHeld { directory } => Self::Failed {
-                message: ALREADY_RUNNING.into(),
-                hints: vec![format!("data directory: {}", directory.display())],
-            },
-            RunServerError::Io(error) => Self::Io(error),
-        }
-    }
-}
-
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Response(response) => f.write_str(&response.error.message),
             Self::ServerStop(error) => error.fmt(f),
-            Self::Usage(message) | Self::Failed { message, .. } => f.write_str(message),
+            Self::Usage(message) => f.write_str(message),
             Self::Io(error) => error.fmt(f),
             Self::Config(diagnostics) => {
                 write!(f, "configuration error:\n  {}", diagnostics.join("\n  "))
@@ -176,10 +144,6 @@ mod tests {
         assert_eq!(CliError::Usage("bad".into()).exit_code(), 2);
         for error in [
             CliError::Io(std::io::Error::other("io")),
-            CliError::Failed {
-                message: "failed".into(),
-                hints: vec!["hint: retry".into()],
-            },
             CliError::Config(vec!["bad key".into()]),
             CliError::Nested { quip: "deeper" },
             CliError::BridgeIdle,

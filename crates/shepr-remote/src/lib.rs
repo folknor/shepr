@@ -26,7 +26,7 @@ mod ssh;
 #[path = "remote/ssh_agent.rs"]
 mod ssh_agent;
 
-use crate::machine::{MachineLabel, RemoteExecutable};
+use crate::machine::RemoteExecutable;
 use bridge::*;
 use discovery::*;
 use launch::*;

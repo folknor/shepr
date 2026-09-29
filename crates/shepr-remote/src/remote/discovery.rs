@@ -84,8 +84,12 @@ impl DiscoverySteps for SshDiscovery<'_> {
         };
         // This command reports the candidate binary's identity. Reject a
         // different build here instead of accepting it and failing later
-        // during the server bridge's build-identity preamble.
+        // during the server bridge's build-identity preamble. The same probe
+        // carries the sibling `shepr-server` the candidate would start, which
+        // must be this build too: a stale or missing sibling is an install
+        // error, never a reason to fall back to another server binary.
         ensure_remote_client_build(self.target(), &status)?;
+        ensure_remote_sibling_build(self.target(), &status)?;
         Ok(true)
     }
 
@@ -373,6 +377,56 @@ fn ensure_remote_client_build(
     } else {
         Err(remote_compatibility_error(target, status))
     }
+}
+
+/// Requires the remote client's sibling server to be this build, so the pair
+/// installed on the host is the pair this client can use. A candidate whose
+/// status does not report a sibling at all is one that predates the report.
+fn ensure_remote_sibling_build(
+    target: &str,
+    status: &shepr_api::schema::ClientStatusJson,
+) -> io::Result<()> {
+    let install_hint =
+        "Install shepr and shepr-server together from the same build on the host and retry";
+    let Some(sibling) = status.server.as_ref() else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "remote Shepr installation error on {target}: shepr did not report a shepr-server beside it. {install_hint}"
+            ),
+        ));
+    };
+    if let Some(error) = sibling.error.as_deref() {
+        let binary = sibling
+            .binary
+            .as_deref()
+            .map(super::server_lifecycle::printable_remote_text)
+            .map_or_else(String::new, |binary| format!(" ({binary})"));
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {}. {install_hint}",
+                super::server_lifecycle::printable_remote_text(error)
+            ),
+        ));
+    }
+    if sibling
+        .build_id
+        .as_deref()
+        .is_some_and(shepr_protocol::is_this_build)
+    {
+        return Ok(());
+    }
+    let version = super::server_lifecycle::printable_remote_value(sibling.version.as_deref());
+    let build_id = super::server_lifecycle::printable_remote_value(sibling.build_id.as_deref());
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "remote Shepr installation error on {target}: the shepr-server beside shepr is version {version} build {build_id}; this client is version {} build {}. {install_hint}",
+            shepr_protocol::build_version(),
+            shepr_protocol::BUILD_ID
+        ),
+    ))
 }
 
 fn remote_compatibility_error(

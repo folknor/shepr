@@ -11,7 +11,6 @@ pub struct ServerSshAgentRegisterParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerCapabilities {
-    pub detached_server_daemon: bool,
     /// Supports connection-scoped `server.ssh_agent.register` on the local JSON API.
     pub ssh_agent_registration: bool,
 }
@@ -22,6 +21,23 @@ pub struct ClientStatusJson {
     pub version: Option<String>,
     pub build_id: Option<String>,
     pub binary: Option<String>,
+    /// The `shepr-server` installed beside this client, as that host resolved
+    /// it. `None` from a client that predates the field, which discovery treats
+    /// as an installation without a usable server.
+    pub server: Option<SiblingServerJson>,
+}
+
+/// The identity of the `shepr-server` executable beside a client, read by
+/// running its `--version`. Either the identity (`version` and `build_id`) is
+/// present, or `error` says why it could not be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiblingServerJson {
+    /// The path the client resolved for the sibling, when it got that far.
+    pub binary: Option<String>,
+    pub version: Option<String>,
+    pub build_id: Option<String>,
+    /// Why the sibling is missing, not executable or unreadable.
+    pub error: Option<String>,
 }
 
 /// JSON emitted by `shepr status server --json`, also read by saved-machine checks.

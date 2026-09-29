@@ -132,7 +132,6 @@ pub fn start_server_with_stop_control(
 
 fn default_capabilities() -> Option<ServerCapabilities> {
     Some(ServerCapabilities {
-        detached_server_daemon: shepr_platform::current_process_is_detached_server_daemon(),
         ssh_agent_registration: false,
     })
 }
@@ -1151,7 +1150,6 @@ mod tests {
             },
             &tx,
             Some(ServerCapabilities {
-                detached_server_daemon: true,
                 ssh_agent_registration: false,
             }),
             None,

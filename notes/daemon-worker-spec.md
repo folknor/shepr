@@ -66,8 +66,10 @@ compatibility layer.
 
 ## Executables and commands
 
-The root package produces `shepr` and `shepr-server`, the second as a bin
-target under `src/bin/`. List both in `brokkr.toml`'s `[bin] install` so
+The root package produces `shepr`; `shepr-server` is the bin target of the
+separate `crates/shepr-daemon` package, because cargo shares one dependency
+graph per package and the `shepr` binary must not link `shepr-server` or
+`shepr-mux`. List both in `brokkr.toml`'s `[bin] install` so
 `brokkr install` installs the pair together. Keep both binaries in the same
 directory; neither a PATH lookup nor an environment override chooses the
 local daemon. Resolve the running client with

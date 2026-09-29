@@ -31,7 +31,12 @@ use shepr_platform::SpawnedDaemon;
 use shepr_platform::ipc::FlockLock;
 use tracing::info;
 
-use crate::limits::{LAUNCH_LOCK_WAIT_GRACE, SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT};
+use shepr_api::schema::SiblingServerJson;
+
+use crate::limits::{
+    LAUNCH_LOCK_WAIT_GRACE, SIBLING_VERSION_OUTPUT_BYTES, SIBLING_VERSION_TIMEOUT,
+    SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT,
+};
 
 pub use crate::limits::SERVER_READY_TIMEOUT;
 
@@ -261,6 +266,121 @@ fn sibling_server_executable(client: &Path) -> io::Result<PathBuf> {
         ));
     }
     Ok(server)
+}
+
+/// The identity of the `shepr-server` installed beside the running client, for
+/// `status client`: its resolved path and the build its `--version` reports, or
+/// why neither could be had. It never fails, since a broken installation is what
+/// the report exists to show; a remote client's discovery reads it to check
+/// that the installed pair is one build.
+pub fn sibling_server_status() -> SiblingServerJson {
+    let client = match shepr_platform::launch_executable() {
+        Ok(client) => client,
+        Err(error) => {
+            return SiblingServerJson {
+                binary: None,
+                version: None,
+                build_id: None,
+                error: Some(format!(
+                    "failed to determine the shepr executable path: {error}"
+                )),
+            };
+        }
+    };
+    let binary = client.with_file_name(SERVER_BINARY_NAME);
+    let identity = sibling_server_executable(&client)
+        .and_then(|server| read_server_version_line(&server, SIBLING_VERSION_TIMEOUT))
+        .and_then(|line| {
+            parse_server_version_line(&line).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unrecognized --version output {:?}", line.trim()),
+                )
+            })
+        });
+    match identity {
+        Ok((version, build_id)) => SiblingServerJson {
+            binary: Some(binary.display().to_string()),
+            version: Some(version),
+            build_id: Some(build_id),
+            error: None,
+        },
+        Err(error) => SiblingServerJson {
+            binary: Some(binary.display().to_string()),
+            version: None,
+            build_id: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+/// Splits the `shepr-server <version>+<build id>` line that `--version` prints
+/// into the version and the build id. `None` for any other text.
+fn parse_server_version_line(line: &str) -> Option<(String, String)> {
+    let identity = line.trim().strip_prefix(SERVER_BINARY_NAME)?.trim();
+    let (version, build_id) = identity.rsplit_once('+')?;
+    if version.is_empty() || build_id.is_empty() || identity.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((version.to_owned(), build_id.to_owned()))
+}
+
+/// Runs `server --version` under a deadline and returns its first output line.
+/// A child that outlives the deadline is killed and reaped.
+fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<String> {
+    use std::io::Read as _;
+
+    let mut command = shepr_platform::child_command(server, Path::new("/"));
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to run {} --version: {error}", server.display()),
+        )
+    })?;
+    let deadline = real_now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                drop(child.kill());
+                drop(child.wait());
+                return Err(error);
+            }
+        }
+        if real_now() >= deadline {
+            drop(child.kill());
+            drop(child.wait());
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "{} --version did not finish within {}s",
+                    server.display(),
+                    timeout.as_secs()
+                ),
+            ));
+        }
+        std::thread::sleep(SOCKET_POLL_INTERVAL);
+    };
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "{} --version failed ({status})",
+            server.display()
+        )));
+    }
+    let mut output = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        stdout
+            .take(SIBLING_VERSION_OUTPUT_BYTES)
+            .read_to_end(&mut output)?;
+    }
+    let text = String::from_utf8_lossy(&output);
+    Ok(text.lines().next().unwrap_or_default().to_owned())
 }
 
 // ---------------------------------------------------------------------------

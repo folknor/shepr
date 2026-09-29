@@ -1282,11 +1282,9 @@ dependencies = [
  "shepr-client",
  "shepr-config",
  "shepr-core",
- "shepr-mux",
  "shepr-platform",
  "shepr-protocol",
  "shepr-remote",
- "shepr-server",
  "shepr-test-fixtures",
  "shepr-test-support",
  "tokio",
@@ -1382,6 +1380,17 @@ name = "shepr-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "shepr-daemon"
+version = "0.1.0"
+dependencies = [
+ "shepr-api",
+ "shepr-config",
+ "shepr-platform",
+ "shepr-protocol",
+ "shepr-server",
 ]
 
 [[package]]

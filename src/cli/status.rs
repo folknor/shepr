@@ -63,8 +63,7 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
     }
 
     println!("local client:");
-    println!("  version: {}", shepr_protocol::build_version());
-    println!("  build_id: {}", shepr_protocol::BUILD_ID);
+    print_client_status_body(&client_status_json(), "  ");
     println!();
     println!("server:");
     print_server_status_body(paths, &server, "  ");
@@ -86,15 +85,49 @@ fn print_server_status(paths: &super::target::CliContext, json: bool) -> super::
 }
 
 fn print_client_status(json: bool) -> super::CliResult<()> {
+    let status = client_status_json();
     if json {
-        print_json(&client_status_json())?;
+        print_json(&status)?;
         return Ok(());
     }
 
-    println!("version: {}", shepr_protocol::build_version());
-    println!("build_id: {}", shepr_protocol::BUILD_ID);
-    println!("binary: {}", current_exe_label());
+    print_client_status_body(&status, "");
     Ok(())
+}
+
+/// The client's identity and the identity of the `shepr-server` installed
+/// beside it, which a remote client's discovery checks against its own build.
+fn print_client_status_body(status: &ClientStatusJson, indent: &str) {
+    println!(
+        "{indent}version: {}",
+        option_label(status.version.as_deref())
+    );
+    println!(
+        "{indent}build_id: {}",
+        option_label(status.build_id.as_deref())
+    );
+    if let Some(binary) = status.binary.as_deref() {
+        println!("{indent}binary: {binary}");
+    }
+    let Some(server) = status.server.as_ref() else {
+        return;
+    };
+    if let Some(binary) = server.binary.as_deref() {
+        println!("{indent}server_binary: {binary}");
+    }
+    match &server.error {
+        Some(error) => println!("{indent}server_error: {error}"),
+        None => {
+            println!(
+                "{indent}server_version: {}",
+                option_label(server.version.as_deref())
+            );
+            println!(
+                "{indent}server_build_id: {}",
+                option_label(server.build_id.as_deref())
+            );
+        }
+    }
 }
 
 fn print_server_status_body(
@@ -172,6 +205,7 @@ fn client_status_json() -> ClientStatusJson {
         version: Some(shepr_protocol::build_version()),
         build_id: Some(shepr_protocol::BUILD_ID.to_owned()),
         binary: Some(current_exe_label()),
+        server: Some(shepr_remote::local_server::sibling_server_status()),
     }
 }
 
@@ -262,7 +296,6 @@ mod tests {
             version: version.map(str::to_owned),
             build_id: build_id.to_owned(),
             capabilities: Some(shepr_api::schema::ServerCapabilities {
-                detached_server_daemon: true,
                 ssh_agent_registration: false,
             }),
         }
@@ -278,7 +311,6 @@ mod tests {
         assert_eq!(
             value["capabilities"],
             serde_json::json!({
-                "detached_server_daemon": true,
                 "ssh_agent_registration": false,
             })
         );

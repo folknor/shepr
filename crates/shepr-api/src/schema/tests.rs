@@ -195,7 +195,6 @@ fn success_response_round_trips() {
             version: "0.1.2".into(),
             build_id: "0123456789abcdef".into(),
             capabilities: Some(ServerCapabilities {
-                detached_server_daemon: true,
                 ssh_agent_registration: false,
             }),
         },

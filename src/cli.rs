@@ -35,7 +35,6 @@ pub(crate) type CliResult<T> = Result<T, CliError>;
 /// command groups are explicit, and CLI groups already contain typed values.
 pub(crate) enum Launch {
     Tui,
-    HeadlessServer,
     Client,
     ClientBridge,
     Cli(Box<CliCommand>),
@@ -76,9 +75,6 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
         Ok(matches) => {
             let launch = match matches.subcommand() {
                 None => Launch::Tui,
-                Some((COMMAND_SERVER, matches)) if matches.subcommand().is_none() => {
-                    Launch::HeadlessServer
-                }
                 Some((COMMAND_CLIENT, _)) => Launch::Client,
                 Some((COMMAND_REMOTE_CLIENT_BRIDGE, _)) => Launch::ClientBridge,
                 Some((name, matches)) => match CliCommand::from_matches(name, matches) {
@@ -120,7 +116,7 @@ impl Invocation {
     }
 
     /// The CLI command this invocation runs, or `None` for a launch mode
-    /// (TUI, server, client) that is not a CLI command.
+    /// (TUI, client, remote bridge) that is not a CLI command.
     pub(crate) fn cli_command(&self) -> Option<&CliCommand> {
         match &self.launch {
             Launch::Cli(command) => Some(command.as_ref()),
@@ -386,6 +382,7 @@ mod tests {
         for args in [
             &["frobnicate"][..],
             &["--bogus"],
+            &["server"],
             &["--session", "work"],
             &["--session=work", "server", "stop"],
             &["server", "stop", "--session=api"],

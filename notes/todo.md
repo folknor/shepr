@@ -74,8 +74,9 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
   wording in `src/autodetect.rs` and client comments, now configured machines.
 - **Preflight findings are dropped.** `src/preflight.rs` prints nothing for
   `MachineCheck::Incompatible`, and the client's connectors never call
-  `check_saved_ssh`, so a remote server that is not a detached daemon is
-  attached to anyway and its error never shown.
+  `check_saved_ssh`, so an incompatible remote (another build, a stale or
+  missing sibling `shepr-server`) is only reported later by the handshake and
+  its error never shown.
 - **Discovery ignores the metadata cache.** `check_saved_ssh` runs full remote
   discovery for every machine at every launch and neither reads nor writes
   `SshMetadataCache`.
@@ -97,9 +98,8 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
   `agent_state_sequences_track_transitions_for_waiters` is misnamed now that
   there are no waiters; `Start::Branch` in shepr-agent `resume.rs` is only used
   by a parse test.
-- **More stale wording.** `current_process_is_detached_server_daemon`'s doc says
-  remote attach restarts a non-detached server (it no longer does);
-  `RunServerError::SessionDataHeld` talks about a session data directory.
+- **More stale wording.** `RunServerError::SessionDataHeld` talks about a
+  session data directory.
 - **Launcher connect deadline and boot log size.** The launcher bounds a status
   response but not the blocking `connect` inside `ipc::probe` and the API client,
   which could hang on a full backlog; nothing limits how much a server writes

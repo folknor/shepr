@@ -259,8 +259,12 @@ fn client_error_display_connection_failed() {
         "should mention connection failure: {msg}"
     );
     assert!(
-        msg.contains("shepr server"),
+        msg.contains("Running `shepr` starts one"),
         "should suggest starting server: {msg}"
+    );
+    assert!(
+        !msg.contains("`shepr server`"),
+        "there is no shepr server command: {msg}"
     );
 }
 
@@ -277,7 +281,7 @@ fn client_error_display_host_terminal_does_not_claim_server_connection_failed() 
         "should identify the host terminal: {msg}"
     );
     assert!(msg.contains("terminal output was closed"));
-    assert!(!msg.contains("Is shepr server running?"));
+    assert!(!msg.contains("Is the shepr server running?"));
 }
 
 #[test]

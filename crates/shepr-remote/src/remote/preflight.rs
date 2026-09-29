@@ -41,8 +41,9 @@ pub enum MachineCheck {
     Offline(SshFailureDiagnostic),
     /// The host key is unknown or changed. Never accepted automatically.
     HostKey(SshFailureDiagnostic),
-    /// The machine answered but cannot be served: no shepr, another build, or
-    /// a running server that is not a detached daemon.
+    /// The machine answered but cannot be served: no shepr, another build, a
+    /// shepr-server beside it that is missing or another build, or a running
+    /// server of another build.
     Incompatible(SshFailureDiagnostic),
     /// Any other failure.
     Failed(SshFailureDiagnostic),
@@ -157,13 +158,7 @@ impl<'a> SavedSshPreflight<'a> {
 
 impl PreflightSsh for SavedSshPreflight<'_> {
     fn check(&self, machine: &MachineConfig) -> io::Result<()> {
-        crate::check_saved_ssh(
-            self.paths,
-            &machine.label,
-            &machine.ssh,
-            self.settings,
-            self.deadline,
-        )
+        crate::check_saved_ssh(self.paths, &machine.ssh, self.settings, self.deadline)
     }
 
     fn authenticate(&self, machine: &MachineConfig) -> io::Result<()> {

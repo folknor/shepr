@@ -284,6 +284,61 @@ fn a_directory_named_like_the_server_is_an_install_error() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 }
 
+#[test]
+fn the_version_line_yields_the_version_and_build_id() {
+    assert_eq!(
+        parse_server_version_line("shepr-server 0.6.0+0123456789abcdef\n"),
+        Some(("0.6.0".to_owned(), "0123456789abcdef".to_owned()))
+    );
+    for bad in [
+        "",
+        "shepr 0.6.0+0123456789abcdef",
+        "shepr-server 0.6.0",
+        "shepr-server +0123456789abcdef",
+        "shepr-server 0.6.0+",
+        "shepr-server 0.6.0+abc def",
+    ] {
+        assert_eq!(parse_server_version_line(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn the_sibling_version_is_read_from_its_first_output_line() {
+    let dir = ScratchDir::new("sibling-version");
+    let server = fixture::stand_in(
+        dir.path(),
+        SERVER_BINARY_NAME,
+        &[
+            Step::Print("shepr-server 0.6.0+0123456789abcdef\nnoise\n".into()),
+            Step::Exit(0),
+        ],
+    );
+    let line = read_server_version_line(&server, Duration::from_secs(5)).expect("version runs");
+    assert_eq!(line, "shepr-server 0.6.0+0123456789abcdef");
+}
+
+#[test]
+fn a_failing_sibling_version_is_an_error() {
+    let dir = ScratchDir::new("sibling-version-fails");
+    let server = fixture::stand_in(dir.path(), SERVER_BINARY_NAME, &[Step::Exit(3)]);
+    let error = read_server_version_line(&server, Duration::from_secs(5))
+        .expect_err("a nonzero exit is not an identity");
+    assert!(error.to_string().contains("--version failed"), "{error}");
+}
+
+#[test]
+fn a_hung_sibling_version_is_cut_off_at_the_deadline() {
+    let dir = ScratchDir::new("sibling-version-hangs");
+    let server = fixture::stand_in(
+        dir.path(),
+        SERVER_BINARY_NAME,
+        &[Step::Sleep(Duration::from_secs(60))],
+    );
+    let error = read_server_version_line(&server, Duration::from_millis(200))
+        .expect_err("a hung binary times out");
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+}
+
 // ---------------------------------------------------------------------------
 // The launch lock
 // ---------------------------------------------------------------------------
