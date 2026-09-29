@@ -41,21 +41,18 @@ impl SshStdioBridge {
         target: SshTarget,
         remote_shepr: &RemoteExecutable,
         local_socket: PathBuf,
-        session_name: &str,
         ssh_options: Option<&ManagedSshOptions>,
     ) -> io::Result<Self> {
         let target_id = target.as_str().to_owned();
         let executable_path = remote_shepr.as_str().to_owned();
-        let session = session_name.to_owned();
         let bridge = Self::start_command(
             target,
-            remote_shepr.bridge_command(session_name),
+            remote_shepr.bridge_command(),
             local_socket,
             ssh_options,
         )?;
         tracing::info!(
             target = %target_id,
-            session = %session,
             executable = %executable_path,
             socket = %bridge.local_socket.display(),
             "remote SSH stdio bridge listening"

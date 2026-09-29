@@ -8,25 +8,18 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 use shepr_remote::{
     COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP,
-    FLAG_JSON, FLAG_SESSION, PROGRAM_NAME, option_name_from_flag,
+    FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
 };
 
 mod machine;
 
 pub(super) fn command() -> Command {
-    // Launch options are root arguments, not `global` ones: clap accepts them
-    // only before the subcommand, so a trailing `--session` is a
-    // usage error instead of a silent retarget.
     let command = Command::new(PROGRAM_NAME)
         .bin_name(PROGRAM_NAME)
         .about("terminal workspace manager for AI coding agents")
         .disable_help_flag(true)
         .disable_version_flag(true)
         .arg(help_flag())
-        .arg(
-            option(option_name_from_flag(FLAG_SESSION), "NAME")
-                .help("Use or create a named persistent session"),
-        )
         .arg(
             Arg::new("version")
                 .short('V')
@@ -38,7 +31,6 @@ pub(super) fn command() -> Command {
         .subcommand(machine::command())
         .subcommand(server_command())
         .subcommand(detect_command())
-        .subcommand(session_command())
         .subcommand(integration_command())
         .subcommand(
             Command::new(COMMAND_CLIENT)
@@ -170,31 +162,6 @@ fn pane_id(value: &str) -> Result<String, String> {
         .map_err(|_| format!("{value:?} is not a pane id (expected e.g. w1:p1)"))
 }
 
-fn session_command() -> Command {
-    group("session")
-        .about("Manage named persistent sessions")
-        .subcommand(Command::new("list").about("List sessions").arg(json_flag()))
-        .subcommand(
-            Command::new("attach")
-                .about("Attach to a session")
-                .arg(required("name", "NAME")),
-        )
-        .subcommand(
-            Command::new(COMMAND_STOP)
-                .about("Stop a session")
-                .arg(required("name", "NAME"))
-                .arg(json_flag())
-                .arg(force_stop_flag())
-                .after_help("Use 'default' as NAME to stop the default session."),
-        )
-        .subcommand(
-            Command::new("delete")
-                .about("Delete a stopped session")
-                .arg(required("name", "NAME"))
-                .arg(json_flag()),
-        )
-}
-
 fn integration_command() -> Command {
     group("integration")
         .about("Manage built-in agent integrations")
@@ -233,9 +200,8 @@ fn json_flag() -> Arg {
     flag(option_name_from_flag(FLAG_JSON))
 }
 
-/// `server stop` and `session stop` refuse a server of another build, since
-/// stopping it exits its panes and it may be the installed server a dev build
-/// reached by default; this flag states that stopping it is intended.
+/// `server stop` refuses a server of another build, since stopping it exits
+/// its panes; this flag states that stopping it is intended.
 fn force_stop_flag() -> Arg {
     let long = option_name_from_flag(shepr_api::session::FORCE_STOP_FLAG);
     Arg::new(long)
@@ -265,10 +231,6 @@ fn option(name: &'static str, value_name: &'static str) -> Arg {
 
 fn path_option(name: &'static str, value_name: &'static str) -> Arg {
     option(name, value_name).value_hint(ValueHint::AnyPath)
-}
-
-fn required(name: &'static str, value_name: &'static str) -> Arg {
-    Arg::new(name).value_name(value_name).required(true)
 }
 
 #[cfg(test)]
@@ -459,16 +421,13 @@ mod tests {
         use crate::cli::{CliCommand, Invocation, Launch, parse_invocation, server, status};
 
         // Parses what the producer emits and checks what the parser made of it,
-        // so a spelling that parses into the wrong command or session fails too.
-        fn parse(command: RemoteCliCommand<'_>) -> Invocation {
+        // so a spelling that parses into the wrong command fails too.
+        fn parse(command: RemoteCliCommand) -> Invocation {
             let mut argv = vec![super::PROGRAM_NAME.to_owned()];
             argv.extend(command.args().into_iter().map(str::to_owned));
             parse_invocation(&argv)
                 .unwrap_or_else(|code| panic!("{command:?} should parse, exit code {code}"))
         }
-        let default = shepr_config::DEFAULT_SESSION_NAME;
-        // Remote-host commands spell the default session by omitting the flag.
-        let parsed_session = |session: &str| (session != default).then(|| session.to_owned());
 
         let invocation = parse(RemoteCliCommand::ClientStatus);
         assert!(matches!(
@@ -476,34 +435,28 @@ mod tests {
             Launch::Cli(command)
                 if matches!(**command, CliCommand::Status(status::Command::Client { json: true }))
         ));
-        assert_eq!(invocation.session, None);
 
-        for session in [default, "agents"] {
-            let invocation = parse(RemoteCliCommand::ServerStatus { session });
+        let invocation = parse(RemoteCliCommand::ServerStatus);
+        assert!(matches!(
+            &invocation.launch,
+            Launch::Cli(command)
+                if matches!(**command, CliCommand::Status(status::Command::Server { json: true }))
+        ));
+
+        let invocation = parse(RemoteCliCommand::ClientBridge);
+        assert!(matches!(invocation.launch, Launch::ClientBridge));
+
+        for force in [false, true] {
+            let invocation = parse(RemoteCliCommand::ServerStop { force });
             assert!(matches!(
                 &invocation.launch,
                 Launch::Cli(command)
-                    if matches!(**command, CliCommand::Status(status::Command::Server { json: true }))
+                    if matches!(
+                        **command,
+                        CliCommand::Server(server::Command::Stop { force: parsed })
+                            if parsed == force
+                    )
             ));
-            assert_eq!(invocation.session, parsed_session(session));
-
-            let invocation = parse(RemoteCliCommand::ClientBridge { session });
-            assert!(matches!(invocation.launch, Launch::ClientBridge));
-            assert_eq!(invocation.session, parsed_session(session));
-
-            for force in [false, true] {
-                let invocation = parse(RemoteCliCommand::ServerStop { session, force });
-                assert!(matches!(
-                    &invocation.launch,
-                    Launch::Cli(command)
-                        if matches!(
-                            **command,
-                            CliCommand::Server(server::Command::Stop { force: parsed })
-                                if parsed == force
-                        )
-                ));
-                assert_eq!(invocation.session, parsed_session(session));
-            }
         }
     }
 
@@ -517,9 +470,7 @@ mod tests {
         let mut classified = 0;
 
         for path in paths {
-            if launch_only.contains(&path[0].as_str())
-                || path.iter().map(String::as_str).eq(["session", "attach"])
-            {
+            if launch_only.contains(&path[0].as_str()) {
                 continue;
             }
             let argv = sample_leaf_invocation(&spec, &path);
@@ -594,7 +545,6 @@ mod tests {
                 "machine",
                 "remote-client-bridge",
                 "server",
-                "session",
                 "status",
             ]
         );

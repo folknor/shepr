@@ -320,7 +320,6 @@ fn remote_client_status_requires_an_exact_build_id() {
         version: Some("old-version".into()),
         build_id: Some(shepr_protocol::BUILD_ID.into()),
         binary: None,
-        session: None,
     };
     assert!(ensure_remote_client_build("build", &matching).is_ok());
 
@@ -333,31 +332,10 @@ fn remote_client_status_requires_an_exact_build_id() {
         version: Some(shepr_protocol::build_version()),
         build_id: Some(other_build.into()),
         binary: None,
-        session: None,
     };
     let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     assert!(error.to_string().contains(other_build));
-}
-
-#[test]
-fn client_build_mismatch_offers_a_separate_remote_session() {
-    let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-        "0000000000000000"
-    } else {
-        "ffffffffffffffff"
-    };
-    let mismatched = shepr_api::schema::ClientStatusJson {
-        version: Some(shepr_protocol::build_version()),
-        build_id: Some(other_build.into()),
-        binary: None,
-        session: None,
-    };
-    let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
-    assert!(
-        error.to_string().contains("--remote-session <name>"),
-        "{error}"
-    );
 }
 
 #[test]
@@ -366,7 +344,6 @@ fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
         version: Some("1.0\x1b[2J".into()),
         build_id: Some("build id".into()),
         binary: None,
-        session: None,
     };
     let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
     assert!(
@@ -431,7 +408,7 @@ fn remote_path_discovery_uses_path_binary() {
         remote_executable_from_path_discovery("/usr/bin/shepr\n").expect("path binary");
 
     assert_eq!(
-        remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME),
+        remote_shepr.bridge_command(),
         format!(
             "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
         )

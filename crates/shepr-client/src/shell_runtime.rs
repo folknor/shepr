@@ -593,7 +593,7 @@ pub(super) fn stale_freeze_recovery(
 }
 
 /// Makes an open client follow a newer copy of the saved-machine catalog: machines that
-/// were removed or pointed at another target or session are disconnected and stop being
+/// were removed or pointed at another target are disconnected and stop being
 /// supervised; added or re-pointed ones start connecting; labels update.
 /// Config is still read once at launch; the catalog is state that `shepr machine` edits.
 ///
@@ -1067,7 +1067,7 @@ mod tests {
         let local_socket_path = scratch.join("shepr-client.sock");
         let mut catalog = endpoint::EndpointCatalog::default();
         let build = catalog
-            .add_ssh("Build", "build", "agents")
+            .add_ssh("Build", "build")
             .expect("test precondition");
         let build_id = endpoint::ClientEndpointId::Ssh(build.clone());
         let local = endpoint::ClientEndpointId::Local;
@@ -1098,9 +1098,7 @@ mod tests {
 
         // The active machine is re-pointed at another target and another machine is added.
         let mut added = endpoint::EndpointCatalog::default();
-        let docs = added
-            .add_ssh("Docs", "docs", "default")
-            .expect("test precondition");
+        let docs = added.add_ssh("Docs", "docs").expect("test precondition");
         let docs_id = endpoint::ClientEndpointId::Ssh(docs);
         let mut profiles = catalog.ssh.clone();
         profiles[0].target =

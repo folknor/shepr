@@ -109,8 +109,8 @@ pub fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> 
 /// - Runs in its own session (setsid) so it survives the client exiting
 /// - Stdin/stdout/stderr are redirected to /dev/null
 /// - Inherits the surrounding environment and gets the already-resolved
-///   session and socket target on its child command, including removals for
-///   inherited overrides that were superseded by an explicit session.
+///   socket target on its child command, including removals for inherited
+///   overrides that were superseded.
 ///
 /// Returns the PID of the spawned server process.
 pub fn spawn_server_daemon(paths: &shepr_config::AppPaths) -> io::Result<u32> {
@@ -180,7 +180,6 @@ fn build_server_daemon_command(
         command.env_remove(EnvVar::SheprStartupCwd);
     }
 
-    paths.session_id().apply_to_child_command(&mut command);
     paths.server_address().apply_to_child_command(&mut command);
 
     command
@@ -235,9 +234,7 @@ fn wait_for_server_socket_with(
             "server did not become ready within {}s (socket: {}). The background server may still be starting; try `shepr` again, or check {}",
             timeout.as_secs(),
             socket_path.display(),
-            shepr_api::session::data_dir(paths)
-                .join("shepr-server.log")
-                .display()
+            paths.data_dir().join("shepr-server.log").display()
         ),
     ))
 }
@@ -297,13 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn server_daemon_command_clears_socket_overrides_for_explicit_session() {
+    fn server_daemon_command_clears_superseded_socket_overrides() {
         let env = IsolatedEnv::new();
         env.set(EnvVar::SheprSocketPath, "/tmp/inherited.sock");
         env.set(EnvVar::SheprClientSocketPath, "/tmp/inherited-client.sock");
-        let session = shepr_config::SessionId::parse("work").expect("test precondition");
-        let paths = shepr_config::AppPaths::resolve_with_session(Some(session))
-            .expect("isolated paths resolve");
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
 
         let command = build_server_daemon_command(
             &PathBuf::from("/tmp/shepr-test"),
@@ -313,14 +308,14 @@ mod tests {
         );
         let envs: Vec<_> = command.get_envs().collect();
 
+        // The API override outranks the client one, so the child gets the API
+        // override as resolved and the superseded client override is removed.
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(EnvVar::SheprSocketPath.name()) && value.is_none()
+            *key == OsStr::new(EnvVar::SheprSocketPath.name())
+                && *value == Some(OsStr::new("/tmp/inherited.sock"))
         }));
         assert!(envs.iter().any(|(key, value)| {
             *key == OsStr::new(EnvVar::SheprClientSocketPath.name()) && value.is_none()
-        }));
-        assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(EnvVar::SheprSession.name()) && value == &Some(OsStr::new("work"))
         }));
     }
 
@@ -528,11 +523,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_running_server_compatibility_names_session_commands_for_build_mismatch() {
-        let env = IsolatedEnv::new();
-        env.set(EnvVar::SheprSession, "work");
+    fn validate_running_server_compatibility_names_the_restart_for_build_mismatch() {
+        let _env = IsolatedEnv::new();
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-        let path = paths.session_id().api_socket_path(&paths);
+        let path = shepr_api::socket_path(&paths);
         std::fs::create_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener = UnixListener::bind(&path).expect("test precondition");
@@ -562,15 +556,7 @@ mod tests {
 
         handle.join().expect("fake server thread");
         assert!(
-            message.contains("run this build in a session of its own"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("Run `shepr session stop work --force`"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("then run `shepr session attach work` again"),
+            message.contains("different build"),
             "unexpected error: {message}"
         );
     }

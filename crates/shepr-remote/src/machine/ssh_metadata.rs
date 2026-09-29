@@ -9,7 +9,6 @@ use crate::limits::MAX_METADATA_BYTES;
 #[derive(Serialize, Deserialize)]
 struct StoredMetadata {
     target: String,
-    session: String,
     executable: String,
 }
 
@@ -17,28 +16,21 @@ pub struct SshMetadataCache {
     // Saved endpoint discovery and the machine commands use this same per-profile hint.
     path: PathBuf,
     target: String,
-    session: String,
 }
 
 impl SshMetadataCache {
-    pub fn new(
-        paths: &shepr_config::AppPaths,
-        profile_id: &ProfileId,
-        target: &str,
-        session: &str,
-    ) -> Self {
+    pub fn new(paths: &shepr_config::AppPaths, profile_id: &ProfileId, target: &str) -> Self {
         Self {
             path: paths
                 .client_state_dir()
                 .join("ssh-metadata")
                 .join(format!("{profile_id}.json")),
             target: target.to_owned(),
-            session: session.to_owned(),
         }
     }
 
     pub fn load(&self) -> Option<RemoteExecutable> {
-        load_metadata(&self.path, &self.target, &self.session)
+        load_metadata(&self.path, &self.target)
     }
 
     /// The cache file, for callers naming it when a store or invalidate fails.
@@ -52,7 +44,6 @@ impl SshMetadataCache {
     pub fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
         let stored = StoredMetadata {
             target: self.target.clone(),
-            session: self.session.clone(),
             executable: executable.as_str().to_owned(),
         };
         let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
@@ -61,7 +52,6 @@ impl SshMetadataCache {
         tracing::debug!(
             path = %self.path.display(),
             target = %self.target,
-            session = %self.session,
             executable = %executable.as_str(),
             "cached SSH machine metadata"
         );
@@ -78,7 +68,7 @@ impl SshMetadataCache {
     }
 }
 
-fn load_metadata(path: &Path, target: &str, session: &str) -> Option<RemoteExecutable> {
+fn load_metadata(path: &Path, target: &str) -> Option<RemoteExecutable> {
     let file_type = std::fs::symlink_metadata(path).ok()?.file_type();
     if !file_type.is_file() {
         return None;
@@ -93,7 +83,7 @@ fn load_metadata(path: &Path, target: &str, session: &str) -> Option<RemoteExecu
         return None;
     }
     let stored: StoredMetadata = serde_json::from_slice(&bytes).ok()?;
-    if stored.target != target || stored.session != session {
+    if stored.target != target {
         return None;
     }
     RemoteExecutable::parse(stored.executable).ok()
@@ -110,20 +100,17 @@ mod tests {
         let first = SshMetadataCache {
             path: root.join("first.json"),
             target: "mac".into(),
-            session: "fleet".into(),
         };
         let second = SshMetadataCache {
             path: root.join("second.json"),
             target: "mac".into(),
-            session: "fleet".into(),
         };
         let metadata = RemoteExecutable::parse("/some-path/shepr").expect("test precondition");
         assert!(first.load().is_none());
         first.store(&metadata).expect("first store");
         second.store(&metadata).expect("second store");
         assert_eq!(first.load(), Some(metadata.clone()));
-        assert!(load_metadata(&first.path, "different-host", "fleet").is_none());
-        assert!(load_metadata(&first.path, "mac", "different-session").is_none());
+        assert!(load_metadata(&first.path, "different-host").is_none());
         {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
@@ -169,7 +156,6 @@ mod tests {
         let cache = SshMetadataCache {
             path: root.join("cache.json"),
             target: "mac".into(),
-            session: "fleet".into(),
         };
         let other = root.join("other");
         std::fs::write(&other, "untouched").expect("test precondition");

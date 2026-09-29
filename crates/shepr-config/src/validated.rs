@@ -22,8 +22,6 @@ pub enum ConfigSource {
     Default,
     ConfigFileKey,
     EnvironmentVariable(String),
-    /// The session was selected with the `--session` flag.
-    CliFlag,
 }
 
 impl fmt::Display for ConfigSource {
@@ -34,7 +32,6 @@ impl fmt::Display for ConfigSource {
             Self::EnvironmentVariable(variable) => {
                 write!(formatter, "environment variable {variable}")
             }
-            Self::CliFlag => formatter.write_str("CLI flag --session"),
         }
     }
 }

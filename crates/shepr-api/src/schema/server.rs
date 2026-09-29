@@ -22,7 +22,6 @@ pub struct ClientStatusJson {
     pub version: Option<String>,
     pub build_id: Option<String>,
     pub binary: Option<String>,
-    pub session: Option<String>,
 }
 
 /// JSON emitted by `shepr status server --json`, also read by saved-machine checks.
@@ -36,6 +35,5 @@ pub struct ServerStatusJson {
     pub capabilities: Option<ServerCapabilities>,
     pub compatible: Option<bool>,
     pub socket: String,
-    pub session: Option<String>,
     pub restart_needed: bool,
 }

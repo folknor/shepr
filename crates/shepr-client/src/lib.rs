@@ -140,12 +140,7 @@ fn run_client_with_launch_state(
                 true,
                 None,
             )
-            .map_err(|error| {
-                io::Error::other(format!(
-                    "endpoint local (session {}): {error}",
-                    paths.session_id().display_name()
-                ))
-            })?;
+            .map_err(|error| io::Error::other(format!("endpoint local: {error}")))?;
             Ok(stream)
         })
         .transpose();
@@ -804,7 +799,7 @@ impl ClientLoop {
                 let shell = &mut state.shell;
                 shell.set_endpoint_status(&endpoint_id, status);
                 shell.set_machine_diagnostic(&endpoint_id, &message);
-                // Handshake diagnostics carry session context; the status line supplies
+                // Handshake diagnostics carry only the failing phase; the status line supplies
                 // the configured endpoint label once.
                 let unavailable = (status == endpoint::ClientEndpointStatus::Attention
                     && shell.endpoint_is_active(&endpoint_id))

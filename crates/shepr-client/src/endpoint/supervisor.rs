@@ -79,15 +79,15 @@ type OwnedConnector = Box<shepr_remote::SavedSshConnector>;
 
 enum ConnectTarget {
     /// The Local server's client socket, and the guidance a build mismatch on
-    /// it names: the session-aware stop and attach commands, and running this
-    /// build in a session of its own. Resolved once from the client's paths,
-    /// so the diagnostic every retry shows is the one the launch check would
-    /// have printed.
+    /// it names: the plain `shepr` and `shepr server stop` commands, with
+    /// `--force` where the build differs. Resolved once from the client's
+    /// paths, so the diagnostic every retry shows is the one the launch check
+    /// would have printed.
     Local {
         path: PathBuf,
         mismatch_guidance: Arc<str>,
     },
-    /// One connector per saved machine with the same target and session: it carries the
+    /// One connector per saved machine with the same target: it carries the
     /// launch-time ssh settings, the temporary ssh config and the remembered remote
     /// executable from one attempt to the next. An attempt takes ownership and returns it
     /// in its event. A catalog change that retires the machine drops it when that event
@@ -102,11 +102,9 @@ enum AttemptTarget {
     Local {
         path: PathBuf,
         mismatch_guidance: Arc<str>,
-        session: String,
     },
     Ssh {
         connector: OwnedConnector,
-        session: String,
     },
 }
 
@@ -178,7 +176,6 @@ impl EndpointSupervisors {
                 paths,
                 &profile.id,
                 &profile.target,
-                &profile.session,
                 settings,
             ));
             if let Some(error) = connector.launch_fatal_setup_error() {
@@ -197,7 +194,6 @@ impl EndpointSupervisors {
             &self.paths,
             &profile.id,
             &profile.target,
-            &profile.session,
             self.ssh_settings,
         ));
         self.start_ssh_with_connector(profile, connector, now);
@@ -287,16 +283,12 @@ impl EndpointSupervisors {
                 } => AttemptTarget::Local {
                     path: path.clone(),
                     mismatch_guidance: Arc::clone(mismatch_guidance),
-                    session: self.paths.session_id().display_name().to_owned(),
                 },
-                ConnectTarget::Ssh { connector, profile } => {
+                ConnectTarget::Ssh { connector, .. } => {
                     let Some(connector) = connector.take() else {
                         continue;
                     };
-                    AttemptTarget::Ssh {
-                        connector,
-                        session: profile.session.clone(),
-                    }
+                    AttemptTarget::Ssh { connector }
                 }
             };
             state.in_flight = true;
@@ -396,7 +388,6 @@ impl EndpointSupervisors {
                 &self.paths,
                 &profile.id,
                 &profile.target,
-                &profile.session,
                 self.ssh_settings,
             ))
         }));
@@ -500,7 +491,6 @@ fn connect_once(
         AttemptTarget::Local {
             path,
             mismatch_guidance,
-            session,
         } => {
             let stream = shepr_platform::ipc::connect_local_stream(path).map_err(|error| {
                 // An absent Local socket is transient, unlike a missing SSH install.
@@ -520,18 +510,16 @@ fn connect_once(
                 },
                 options,
                 endpoint_id,
-                session.as_str(),
                 generation,
                 deadline,
             )
         }
-        AttemptTarget::Ssh { connector, session } => connector.connect(deadline, |connected| {
+        AttemptTarget::Ssh { connector } => connector.connect(deadline, |connected| {
             establish(
                 connected.stream,
                 EndpointLink::Ssh(connected.bridge),
                 options,
                 endpoint_id.clone(),
-                session.as_str(),
                 generation,
                 deadline,
             )
@@ -551,7 +539,6 @@ fn establish(
     link: EndpointLink<'_>,
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
-    session: &str,
     generation: u64,
     deadline: Instant,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
@@ -568,7 +555,7 @@ fn establish(
         Some(deadline),
     )
     .map_err(|error| {
-        let error = handshake_error(error, mismatch_guidance, session);
+        let error = handshake_error(error, mismatch_guidance);
         // An SSH endpoint that closes before Welcome usually means ssh itself failed
         // (network drop, auth, remote server launch). The bridge holds the real stderr;
         // prefer it so both the diagnostic and the attention classification see it.
@@ -579,7 +566,7 @@ fn establish(
                 .map(|failure| {
                     let kind = failure.kind();
                     let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&failure)
-                        .with_context(handshake_context(session));
+                        .with_context(HANDSHAKE_CONTEXT);
                     std::io::Error::new(kind, diagnostic)
                 })
         {
@@ -606,13 +593,9 @@ fn establish(
     })
 }
 
-/// `mismatch_guidance` is the Local endpoint's session-aware way out of a
-/// build mismatch; a saved machine has none here, its bridge reports its own.
-fn handshake_error(
-    error: crate::ClientError,
-    mismatch_guidance: Option<&str>,
-    session: &str,
-) -> std::io::Error {
+/// `mismatch_guidance` is the Local endpoint's way out of a build mismatch;
+/// a saved machine has none here, its bridge reports its own.
+fn handshake_error(error: crate::ClientError, mismatch_guidance: Option<&str>) -> std::io::Error {
     use crate::ClientError;
     use shepr_protocol::FramingError;
     let error = match error {
@@ -659,19 +642,17 @@ fn handshake_error(
         ),
     };
     let kind = error.kind();
-    let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error)
-        .with_context(handshake_context(session));
+    let diagnostic =
+        shepr_remote::SshFailureDiagnostic::from_error(&error).with_context(HANDSHAKE_CONTEXT);
     std::io::Error::new(kind, diagnostic)
 }
 
 /// The shell status line and machine notice title supply the endpoint label;
-/// keep only session context here so it is not repeated in the displayed error.
-fn handshake_context(session: &str) -> String {
-    format!("session {session} handshake failed")
-}
+/// keep only the failing phase here so it is not repeated in the displayed error.
+const HANDSHAKE_CONTEXT: &str = "handshake failed";
 
 /// The Local endpoint's build-mismatch diagnostic, on one line for the
-/// endpoint status: both builds, then the session-aware guidance the launch
+/// endpoint status: both builds, then the guidance the launch
 /// check prints when no saved machines keep the client running.
 fn local_build_mismatch(running: &str, guidance: &str) -> String {
     format!(
@@ -707,7 +688,6 @@ mod tests {
             id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
             label: "Build".into(),
             target: shepr_remote::SshTarget::parse("build").expect("test precondition"),
-            session: "agents".into(),
         }
     }
 
@@ -958,7 +938,6 @@ mod tests {
                 "timed out",
             )),
             None,
-            "work",
         );
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
         let rejected = handshake_error(
@@ -968,7 +947,6 @@ mod tests {
                 ),
             },
             None,
-            "work",
         );
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
         assert!(shepr_remote::SshFailureDiagnostic::from_error(&rejected).needs_attention());
@@ -979,15 +957,10 @@ mod tests {
         let eof = handshake_error(
             crate::ClientError::Protocol(shepr_protocol::FramingError::UnexpectedEof),
             None,
-            "work",
         );
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&eof).needs_attention());
-        let shutdown = handshake_error(
-            crate::ClientError::ServerShutdown { reason: None },
-            None,
-            "work",
-        );
+        let shutdown = handshake_error(crate::ClientError::ServerShutdown { reason: None }, None);
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
         let malformed = handshake_error(
             crate::ClientError::Protocol(shepr_protocol::FramingError::Oversized {
@@ -995,7 +968,6 @@ mod tests {
                 max: 1,
             }),
             None,
-            "work",
         );
         assert!(shepr_remote::SshFailureDiagnostic::from_error(&malformed).needs_attention());
     }
@@ -1008,15 +980,13 @@ mod tests {
         ))
     }
 
-    /// With saved machines the launch check's session-aware refusal cannot
-    /// fail the launch, so the Local endpoint's own diagnostic carries it: both
-    /// builds, the separate-session way out and the session's forced stop.
+    /// With saved machines the launch check's refusal cannot fail the launch,
+    /// so the Local endpoint's own diagnostic carries it: both builds, the
+    /// forced stop and the plain attach command.
     #[test]
-    fn a_local_build_mismatch_names_the_session_guidance() {
+    fn a_local_build_mismatch_names_the_restart_guidance() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let session = shepr_config::SessionId::parse("work").expect("test precondition");
-        let paths = shepr_config::AppPaths::resolve_with_session(Some(session))
-            .expect("isolated paths resolve");
+        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         let now = Instant::now();
         let mut supervisors = EndpointSupervisors::with_ssh_settings(
             &paths,
@@ -1035,22 +1005,17 @@ mod tests {
             panic!("Local must have a Local target");
         };
 
-        let error = handshake_error(
-            different_build(),
-            Some(&**mismatch_guidance),
-            paths.session_id().display_name(),
-        );
+        let error = handshake_error(different_build(), Some(&**mismatch_guidance));
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
         let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error);
         assert!(diagnostic.needs_attention());
         let message = diagnostic.to_string();
         for expected in [
-            "session work handshake failed",
+            "handshake failed",
             "00000000deadbeef",
             shepr_protocol::BUILD_ID,
-            "--session <name>",
-            "`shepr session stop work --force`",
-            "`shepr session attach work`",
+            "`shepr server stop --force`",
+            "`shepr`",
         ] {
             assert!(message.contains(expected), "{expected}: {message}");
         }
@@ -1061,10 +1026,9 @@ mod tests {
     /// and remote checks report the machine-specific way out.
     #[test]
     fn a_machine_build_mismatch_keeps_the_preamble_text() {
-        let profile = profile();
-        let error = handshake_error(different_build(), None, &profile.session);
+        let error = handshake_error(different_build(), None);
         assert!(error.to_string().contains("Install the same shepr build"));
-        assert!(error.to_string().contains("session agents"));
+        assert!(error.to_string().contains("handshake failed"));
     }
 
     #[test]

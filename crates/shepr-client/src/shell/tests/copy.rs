@@ -1835,8 +1835,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_tabs_and_panes() {
         })
         .collect::<Vec<_>>();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let remote =
-        SavedSshEndpoint::new("Remote", "dev@example.invalid", "test").expect("test precondition");
+    let remote = SavedSshEndpoint::new("Remote", "dev@example.invalid").expect("test precondition");
     let remote_id = ClientEndpointId::Ssh(remote.id.clone());
     state.set_endpoint_catalog(&[remote]);
     state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);

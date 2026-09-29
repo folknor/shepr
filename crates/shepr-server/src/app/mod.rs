@@ -206,7 +206,6 @@ impl App {
                 &lease
                     .directory()
                     .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
-                paths.session_id().display_name(),
                 restored.workspaces.len(),
                 outcome,
             );
@@ -414,9 +413,8 @@ mod tests {
                 None,
                 paths.clone(),
             );
-            let lease =
-                shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
-                    .expect("test session lease");
+            let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
+                .expect("test session lease");
             Self::with_paths(
                 &config,
                 &paths,
@@ -1304,7 +1302,8 @@ mod tests {
         assert!(app.session_saver.session_save_deadline.is_none());
         app.save_session_now();
         assert!(
-            shepr_api::session::data_dir(&app.paths)
+            app.paths
+                .data_dir()
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("stat session file")
@@ -1411,8 +1410,7 @@ mod tests {
         app.retire_session_writer();
 
         let lease =
-            shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&app.paths))
-                .expect("test lease");
+            shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir()).expect("test lease");
         let snapshot =
             shepr_mux::persist::load(&lease).expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
@@ -1436,7 +1434,8 @@ mod tests {
         // The app still holds the data-dir lease, so the checkpoint is parsed
         // directly rather than through `persist::load`.
         let checkpoint = std::fs::read_to_string(
-            shepr_api::session::data_dir(&app.paths)
+            app.paths
+                .data_dir()
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
         )
         .expect("the pane exit writes a checkpoint");
@@ -1460,7 +1459,8 @@ mod tests {
         app.retire_session_writer();
 
         assert!(
-            !shepr_api::session::data_dir(&app.paths)
+            !app.paths
+                .data_dir()
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat")
@@ -1484,7 +1484,8 @@ mod tests {
 
         assert!(app.state.workspaces.is_empty());
         assert!(
-            !shepr_api::session::data_dir(&app.paths)
+            !app.paths
+                .data_dir()
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat")
@@ -1519,10 +1520,8 @@ mod tests {
             app.save_session_before_teardown();
             app.retire_session_writer();
 
-            let lease = shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(
-                &app.paths,
-            ))
-            .expect("test lease");
+            let lease = shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir())
+                .expect("test lease");
             let snapshot = shepr_mux::persist::load(&lease).expect("newer session should be saved");
             assert_eq!(snapshot.workspaces.len(), 1);
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));

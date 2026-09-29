@@ -830,7 +830,7 @@ mod tests {
             None,
             paths.clone(),
         );
-        let data_dir = shepr_api::session::data_dir(&paths);
+        let data_dir = paths.data_dir().to_path_buf();
         let lease =
             shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
 

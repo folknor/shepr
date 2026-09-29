@@ -114,7 +114,7 @@ fn refuse_a_held_session_lease() {
         paths.clone(),
     );
     // What a running server holds: the lease on the session data directory.
-    let held = shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
+    let held = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
         .expect("hold the session lease");
 
     let ready = AtomicBool::new(false);

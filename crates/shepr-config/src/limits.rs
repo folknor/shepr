@@ -23,12 +23,6 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 /// attached client's real geometry is available.
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
-/// Maximum byte length of a session name.
-///
-/// Session names are ASCII path-safe identifiers; the byte cap bounds the name
-/// while leaving room for descriptive names.
-pub(crate) const MAX_SESSION_NAME_LEN: usize = 64;
-
 /// Maximum rows accepted in each configured sidebar layout.
 ///
 /// The row cap permits detailed layouts while bounding config-authored UI

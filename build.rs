@@ -275,6 +275,22 @@ pub(crate) fn build_id(root: &Path, profile: &ProfileInputs) -> Result<String, B
     Ok(format!("{:016x}", hash.0))
 }
 
+/// The cargo profile name as a build script sees it (`PROFILE`): `release`
+/// for the release profile and every profile inheriting from it, `debug` for
+/// the dev profile and its descendants.
+///
+/// Emitted as its own constant, independent of the build identity, because the
+/// identity only tells two builds apart while nothing in it says which paths a
+/// build should use. `shepr-config` reads it to give dev builds a runtime and
+/// saved-layout namespace of their own, so a dev server and the installed
+/// release server neither share sockets nor overwrite each other's layout.
+pub(crate) fn profile_constant_source(profile: &str) -> String {
+    format!(
+        "/// The cargo profile this crate was built with: `release` or `debug`.\n\
+         pub(crate) const BUILD_PROFILE: &str = \"{profile}\";\n"
+    )
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "a build script reads cargo's own variables; shepr_core::env governs the variables shepr processes interpret"
@@ -290,10 +306,11 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,
     );
-    let root = if manifest_dir
-        .file_name()
-        .is_some_and(|name| name == "shepr-protocol")
-    {
+    let crate_dir_name = manifest_dir.file_name().and_then(|name| name.to_str());
+    // shepr-config includes this script only for the profile constant, so it
+    // skips the identity, which would hash the whole tree a second time.
+    let stamps_identity = crate_dir_name != Some("shepr-config");
+    let root = if matches!(crate_dir_name, Some("shepr-protocol" | "shepr-config")) {
         manifest_dir
             .parent()
             .and_then(Path::parent)
@@ -303,6 +320,17 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
         manifest_dir
     };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
+
+    let profile = std::env::var("PROFILE")
+        .map_err(|error| format!("cargo did not hand the build script PROFILE: {error}"))?;
+    fs::write(
+        out_dir.join("build_profile.rs"),
+        profile_constant_source(&profile),
+    )?;
+    println!("cargo:rerun-if-changed={}", root.join("build.rs").display());
+    if !stamps_identity {
+        return Ok(());
+    }
 
     let build_id = build_id(&root, &ProfileInputs::from_env(&root))?;
 

@@ -85,9 +85,8 @@ mod tests {
 
     #[test]
     fn machine_resolution_requires_a_unique_saved_machine() {
-        let mac = SavedSshEndpoint::new("mac", "mac-ssh", "agents").expect("test precondition");
-        let other =
-            SavedSshEndpoint::new("build", "builder", "default").expect("test precondition");
+        let mac = SavedSshEndpoint::new("mac", "mac-ssh").expect("test precondition");
+        let other = SavedSshEndpoint::new("build", "builder").expect("test precondition");
         let profiles = vec![mac.clone(), other];
         assert_eq!(
             resolve_machine(&profiles, "mac").expect("test precondition"),
@@ -97,16 +96,14 @@ mod tests {
             resolve_machine(&profiles, mac.id.as_str()).expect("test precondition"),
             &mac
         );
-        let shadow =
-            SavedSshEndpoint::new(mac.id.as_str(), "shadow", "default").expect("test precondition");
+        let shadow = SavedSshEndpoint::new(mac.id.as_str(), "shadow").expect("test precondition");
         assert_eq!(
             resolve_machine(&[mac.clone(), shadow], mac.id.as_str()).expect("test precondition"),
             &mac
         );
         assert!(resolve_machine(&profiles, "mac-ssh").is_err());
         assert!(resolve_machine(&profiles, "missing").is_err());
-        let duplicate =
-            SavedSshEndpoint::new("mac", "other", "default").expect("test precondition");
+        let duplicate = SavedSshEndpoint::new("mac", "other").expect("test precondition");
         assert!(resolve_machine(&[mac.clone(), duplicate], "mac").is_err());
     }
 }

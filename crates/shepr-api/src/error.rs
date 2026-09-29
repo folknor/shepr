@@ -78,9 +78,7 @@ api_error_codes! {
     StaleBoot => "stale_boot",
     SurfaceInactive => "surface_inactive",
     BuildMismatch => "build_mismatch",
-    InvalidSessionName => "invalid_session_name",
     ServerNotRunning => "server_not_running",
-    SessionDeleteFailed => "session_delete_failed",
     SessionStopFailed => "session_stop_failed",
 }
 

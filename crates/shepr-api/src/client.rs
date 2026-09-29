@@ -117,30 +117,11 @@ impl ApiClient {
     }
 
     pub fn status(&self) -> Result<crate::RuntimeStatus, ApiClientError> {
-        self.read_status(None)
-    }
-
-    pub fn status_with_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<crate::RuntimeStatus, ApiClientError> {
-        self.read_status(Some(timeout))
-    }
-
-    fn read_status(
-        &self,
-        timeout: Option<Duration>,
-    ) -> Result<crate::RuntimeStatus, ApiClientError> {
         let request = Request {
             id: "api-client:status".into(),
             method: Method::Ping(PingParams::default()),
         };
-        let response = match timeout {
-            Some(timeout) => {
-                parse_response_value(self.request_value_with_timeout(&request, timeout)?)?
-            }
-            None => self.request(&request)?,
-        };
+        let response = self.request(&request)?;
         match response.result {
             ResponseResult::Pong {
                 version,
@@ -276,44 +257,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_session_target_resolves_named_session_socket() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.set(shepr_core::env::EnvVar::SheprSession, "work");
+    fn local_client_targets_the_build_runtime_socket() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         let client = ApiClient::local(&paths);
-        let socket = client.socket_path();
-        assert!(socket.ends_with("sessions/work/shepr.sock"), "{socket:?}");
-        assert!(socket.starts_with(paths.runtime_dir()), "{socket:?}");
-    }
-
-    #[test]
-    fn status_timeout_closes_a_stalled_probe() {
-        use interprocess::local_socket::traits::Listener as _;
-        let scratch = shepr_test_support::ScratchDir::new("status-timeout");
-        let path = scratch.join("api.sock");
-        let listener =
-            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
-        let server = std::thread::spawn(move || {
-            let stream = listener.accept().expect("test precondition");
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).expect("test precondition");
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&line).expect("test precondition")["method"],
-                "ping"
-            );
-            std::thread::sleep(Duration::from_millis(300));
-        });
-        let client = ApiClient::for_socket(path.clone());
-        let error = client
-            .status_with_timeout(Duration::from_millis(100))
-            .expect_err("test precondition");
-        assert!(matches!(
-            error,
-            ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut
-        ));
-        server.join().expect("test precondition");
-        std::fs::remove_file(path).expect("test precondition");
+        assert_eq!(client.socket_path(), paths.runtime_dir().join("shepr.sock"));
     }
 
     #[test]

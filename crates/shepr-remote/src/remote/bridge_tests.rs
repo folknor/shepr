@@ -184,7 +184,6 @@ fn bridge_socket_is_user_only() {
         SshTarget::parse("example").expect("test precondition"),
         &remote_shepr,
         socket.clone(),
-        "default",
         None,
     )
     .expect("start bridge listener");
@@ -218,7 +217,6 @@ fn bridge_on_a_held_socket_names_the_path() {
             SshTarget::parse("example").expect("test precondition"),
             &remote_shepr,
             socket.clone(),
-            "default",
             None,
         )
     };
@@ -287,7 +285,6 @@ fn bridge_drop_while_waiting_for_client_is_bounded() {
         SshTarget::parse("example").expect("test precondition"),
         &remote_shepr,
         socket.clone(),
-        "default",
         None,
     )
     .expect("start bridge listener");

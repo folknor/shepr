@@ -10,14 +10,10 @@ pub fn check_saved_ssh(
     paths: &shepr_config::AppPaths,
     machine: &str,
     target: &SshTarget,
-    session: &str,
     settings: super::SavedSshSettings,
 ) -> io::Result<()> {
-    shepr_api::session::validate_name(session)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let mut ssh =
+    let ssh =
         RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
-    ssh.set_session_name(session.to_owned());
     let remote = locate_remote_shepr(&ssh)?;
     let status = remote_server_status(&ssh, &remote)?;
     ensure_remote_server_build(ssh.target(), &status)?;
@@ -36,35 +32,26 @@ pub fn check_saved_ssh(
 pub fn prepare_saved_ssh(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    session_name: &str,
     settings: super::SavedSshSettings,
     operator: &mut dyn Operator,
 ) -> Result<RemoteExecutable, super::SshFailureDiagnostic> {
-    prepare_saved_ssh_inner(paths, target, session_name, settings, operator)
+    prepare_saved_ssh_inner(paths, target, settings, operator)
         .map_err(|error| super::SshFailureDiagnostic::from_error(&error))
 }
 
 fn prepare_saved_ssh_inner(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    session_name: &str,
     settings: super::SavedSshSettings,
     operator: &mut dyn Operator,
 ) -> io::Result<RemoteExecutable> {
-    shepr_api::session::validate_name(session_name)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let ssh = RemoteSsh::new(
-        target.clone(),
-        settings.manage_ssh_config,
-        session_name.to_owned(),
-        paths,
-    )?;
+    let ssh = RemoteSsh::new(target.clone(), settings.manage_ssh_config, paths)?;
     let remote_shepr = locate_remote_shepr(&ssh)?;
     ensure_remote_server_ready(operator, &ssh, &remote_shepr)?;
 
     // The bridge already owns daemon startup. EOF closes only this temporary attachment,
-    // leaving the named server running even when no local TUI is open yet.
-    let command = remote_shepr.saved_bridge_command(session_name);
+    // leaving the server running even when no local TUI is open yet.
+    let command = remote_shepr.saved_bridge_command();
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         return Err(command_failed("remote server startup failed", &output));
@@ -102,11 +89,8 @@ impl RemoteExecutable {
         format!("test -x {} && {}", self.quoted(), self.command(&args))
     }
 
-    pub(super) fn bridge_command(&self, session_name: &str) -> String {
-        let args = RemoteCliCommand::ClientBridge {
-            session: session_name,
-        }
-        .args();
+    pub(super) fn bridge_command(&self) -> String {
+        let args = RemoteCliCommand::ClientBridge.args();
         // sshd hands this string to the user's login shell, which need not be POSIX
         // (xonsh, fish, nushell). Run the script under /bin/sh (discovery feeds its
         // script to `/bin/sh -s` instead), so the login shell only has to launch one
@@ -114,11 +98,8 @@ impl RemoteExecutable {
         posix_shell_command(&posix_remote_output_command(&self.command(&args)))
     }
 
-    pub(super) fn saved_bridge_command(&self, session_name: &str) -> String {
-        let args = RemoteCliCommand::ClientBridge {
-            session: session_name,
-        }
-        .args();
+    pub(super) fn saved_bridge_command(&self) -> String {
+        let args = RemoteCliCommand::ClientBridge.args();
         // This redirects bridge stdin to /dev/null. The bridge forwards EOF as a
         // socket write shutdown, so the server's handshake reader returns without
         // waiting for its deadline.

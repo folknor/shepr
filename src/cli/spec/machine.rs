@@ -10,8 +10,8 @@ pub(super) fn command() -> Command {
 A missing or incompatible remote Shepr binary fails with an error; install Shepr on
 the remote host yourself and retry.
 Changes apply automatically to open local Shepr clients.
-Removing a machine leaves its remote sessions running.
-Saved machines contain only a label, SSH target, and explicit Shepr session.
+Removing a machine leaves its remote server running.
+Saved machines contain only a label and an SSH target.
 SSH credentials and key material remain owned by OpenSSH.",
         )
         .subcommand(
@@ -42,10 +42,6 @@ SSH credentials and key material remain owned by OpenSSH.",
                     option("label", "LABEL")
                         .required(true)
                         .help("Set the machine label shown in the sidebar"),
-                )
-                .arg(
-                    option("remote-session", "NAME")
-                        .help("Set the explicit Shepr session on the remote machine"),
                 ),
         )
         .subcommand(

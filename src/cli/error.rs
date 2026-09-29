@@ -6,7 +6,8 @@ use shepr_api::schema::ErrorResponse;
 #[derive(Debug)]
 pub(crate) enum CliError {
     Response(ErrorResponse),
-    Session(SessionCliError),
+    /// `server stop` could not stop the server.
+    ServerStop(shepr_api::session::SessionError),
     Usage(String),
     Io(std::io::Error),
     /// A failure reported as prose, followed by operator hint lines.
@@ -29,31 +30,6 @@ pub(crate) enum CliError {
     BridgeIdle,
 }
 
-#[derive(Debug)]
-pub(crate) enum SessionCliError {
-    InvalidName(shepr_api::session::SessionError),
-    Stop(shepr_api::session::SessionError),
-    Delete(shepr_api::session::SessionError),
-}
-
-impl SessionCliError {
-    fn code(&self) -> shepr_api::error::ApiErrorCode {
-        match self {
-            Self::InvalidName(_) => shepr_api::error::ApiErrorCode::InvalidSessionName,
-            Self::Stop(_) => shepr_api::error::ApiErrorCode::SessionStopFailed,
-            Self::Delete(_) => shepr_api::error::ApiErrorCode::SessionDeleteFailed,
-        }
-    }
-}
-
-impl std::fmt::Display for SessionCliError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidName(error) | Self::Stop(error) | Self::Delete(error) => error.fmt(f),
-        }
-    }
-}
-
 impl CliError {
     pub(crate) fn exit_code(&self) -> i32 {
         if matches!(self, Self::Usage(_)) { 2 } else { 1 }
@@ -65,11 +41,11 @@ impl CliError {
                 Ok(json) => eprintln!("{json}"),
                 Err(error) => eprintln!("error: {error}"),
             },
-            Self::Session(error) => eprintln!(
+            Self::ServerStop(error) => eprintln!(
                 "{}",
                 serde_json::json!({
                     "error": shepr_api::schema::ErrorBody::new(
-                        &error.code(),
+                        &shepr_api::error::ApiErrorCode::SessionStopFailed,
                         error.to_string(),
                     )
                 })
@@ -140,8 +116,8 @@ pub(crate) fn print_notice(notice: &dyn std::fmt::Display) {
 }
 
 /// How a headless server that refused to start or stopped with an error is
-/// reported. A server already holding the session, by either socket or by the
-/// session data lock, reads the same to the operator.
+/// reported. A server already holding the runtime, by either socket or by the
+/// data lock, reads the same to the operator.
 impl From<shepr_server::server::headless::RunServerError> for CliError {
     fn from(error: shepr_server::server::headless::RunServerError) -> Self {
         use shepr_server::server::headless::RunServerError;
@@ -153,7 +129,7 @@ impl From<shepr_server::server::headless::RunServerError> for CliError {
             },
             RunServerError::SessionDataHeld { directory } => Self::Failed {
                 message: ALREADY_RUNNING.into(),
-                hints: vec![format!("session data: {}", directory.display())],
+                hints: vec![format!("data directory: {}", directory.display())],
             },
             RunServerError::Io(error) => Self::Io(error),
         }
@@ -164,7 +140,7 @@ impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Response(response) => f.write_str(&response.error.message),
-            Self::Session(error) => error.fmt(f),
+            Self::ServerStop(error) => error.fmt(f),
             Self::Usage(message) | Self::Failed { message, .. } => f.write_str(message),
             Self::Io(error) => error.fmt(f),
             Self::Config(diagnostics) => {
@@ -180,11 +156,7 @@ impl std::fmt::Display for CliError {
 impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Session(
-                SessionCliError::InvalidName(error)
-                | SessionCliError::Stop(error)
-                | SessionCliError::Delete(error),
-            ) => Some(error),
+            Self::ServerStop(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Client(error) => Some(error),
             _ => None,
@@ -217,13 +189,5 @@ mod tests {
         ] {
             assert_eq!(error.exit_code(), 1, "{error}");
         }
-    }
-
-    #[test]
-    fn invalid_session_name_preserves_its_error_source() {
-        let error = shepr_api::session::SessionError::InvalidName("bad name".into());
-        let cli_error = CliError::Session(SessionCliError::InvalidName(error));
-
-        assert!(std::error::Error::source(&cli_error).is_some());
     }
 }

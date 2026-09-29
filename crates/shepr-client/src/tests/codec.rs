@@ -121,13 +121,7 @@ fn maximal_validated_config_codec_round_trips_wire_variants() {
     let tab_bar_positions = ["top", "bottom"];
     let agent_sorts = ["spaces", "priority"];
     let status_indicators = ["dots", "symbols"];
-    let default_session_paths =
-        shepr_config::AppPaths::resolve_with_session(Some(shepr_config::SessionId::Default))
-            .expect("isolated default-session paths resolve");
-    let named_session =
-        shepr_config::SessionId::parse("codec-session").expect("test session name is valid");
-    let named_session_paths = shepr_config::AppPaths::resolve_with_session(Some(named_session))
-        .expect("isolated named-session paths resolve");
+    let default_paths = shepr_config::AppPaths::resolve().expect("isolated default paths resolve");
 
     env.set(
         shepr_core::env::EnvVar::SheprSocketPath,
@@ -144,12 +138,7 @@ fn maximal_validated_config_codec_round_trips_wire_variants() {
     let client_override_paths =
         shepr_config::AppPaths::resolve().expect("client socket override resolves");
     env.remove(shepr_core::env::EnvVar::SheprClientSocketPath);
-    let path_variants = [
-        default_session_paths,
-        named_session_paths,
-        api_override_paths,
-        client_override_paths,
-    ];
+    let path_variants = [default_paths, api_override_paths, client_override_paths];
 
     for index in 0..ime_cursor_shapes.len() {
         let source = MAXIMAL_CONFIG

@@ -34,8 +34,8 @@ Kept:
 - Mouse selection, copy mode, keybinding help, window title templating
 - The JSON API over the server socket. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
-  saved machine. `status`, `detect capture` and `detect explain <PANE>` query
-  the local server over its socket; `server stop`, `session`, `integration`,
+  saved machine. `status`, `server stop`, `detect capture` and `detect explain
+  <PANE>` talk to the local server over its socket; `session`, `integration`,
   `machine` and `detect explain --file` manage local state in the CLI process
 
 shepr is for overseeing agents across machines, not for driving them.
@@ -138,29 +138,26 @@ so only crates above those can take it.
 
 ### Running a dev build next to the installed one
 
-Every build profile uses the same config, state and runtime directories.
-What keeps a dev run apart from the installed server is a named session, and
-what keeps them from talking is the build identity: it covers the build
-profile as well as the source, so a dev and a release build of one tree
-differ, and a server of another build is always refused with guidance. To
-try a new build from inside a running shepr session, give it a session of
-its own:
+The build profile selects the runtime directory and the data directory (saved
+layout, history, server log, lease). A release build keeps the plain XDG
+locations; a dev build uses sibling `shepr-dev` directories, so it has its own
+sockets, saved layout and history with no flag. Config and the saved-machine
+catalog are shared by every profile. The build identity also covers the profile
+as well as the source, so a dev and a release build never talk to each other's
+server: one that is reached anyway is refused with guidance.
 
-`env -u SHEPR_SOCKET_PATH -u SHEPR_CLIENT_SOCKET_PATH brokkr run -- --session dev [<command>]`
+The one thing that defeats the separation is the socket override variables.
+`SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` win over the per-profile
+runtime directory, and every pane exports them, so inside a running shepr
+session a dev build would resolve the installed server's sockets. Drop them:
 
-- Use the `--session` flag, not `SHEPR_SESSION`: only an explicit
-  `--session` outranks a socket override.
-- The `env -u` prefix drops the socket overrides every pane exports, so the
-  dev build resolves its sockets from the session alone.
-- Without `--session` the dev build targets the installed server's default
-  session, and while that server runs the dev build is refused. Its `server
-  stop` is refused too, naming both builds; `--force` overrides that and
-  stops the installed server with every pane in it.
-- A named session has its own saved layout and history. A dev server run
-  without `--session` shares the default session's: if the installed server
-  is down, it restores that layout and saves over it. That is by design, since
-  the session is what separates them. Config and the saved-machine catalog
-  are shared whatever the session.
+`env -u SHEPR_SOCKET_PATH -u SHEPR_CLIENT_SOCKET_PATH brokkr run -- [<command>]`
+
+- Outside a shepr pane the variables are unset and plain `brokkr run --` is
+  enough.
+- The saved layout is not affected by the overrides, only the sockets are.
+- `server stop` against a server of another build is refused, naming both
+  builds; `--force` overrides that and stops it with every pane in it.
 
 ## Principles
 

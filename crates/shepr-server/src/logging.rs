@@ -95,17 +95,11 @@ pub(crate) fn tab_renamed(workspace_id: &str, tab_id: &str) {
     );
 }
 
-pub(crate) fn session_restored(
-    path: &Path,
-    session_id: &str,
-    workspaces: usize,
-    outcome: &'static str,
-) {
+pub(crate) fn session_restored(path: &Path, workspaces: usize, outcome: &'static str) {
     tracing::info!(
         event = "persist.restore",
         subsystem = "persist",
         outcome,
-        session_id,
         path = %path.display(),
         workspaces,
         "session restore evaluated"

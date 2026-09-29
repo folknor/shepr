@@ -7,12 +7,12 @@ use std::time::Duration;
 /// Checks the local server, starts it when needed, then runs the client.
 ///
 /// A running server of a different build fails the launch with guidance for
-/// the resolved session and socket target. With saved machines configured, a
+/// the resolved socket target. With saved machines configured, a
 /// local startup failure does not end the launch, so the remote machines stay
 /// reachable. It is still refused, not swallowed: the failure is printed to
 /// stderr before the TUI takes the terminal, where it is on screen again once
 /// the TUI exits, and the Local endpoint's handshake reports a build mismatch
-/// with the same session-aware guidance as its status in the sidebar.
+/// with the same guidance as its status in the sidebar.
 ///
 /// A launch failure before the client runs is the error; once the client has
 /// run, its own result is handed back untouched for the caller to report.
@@ -84,7 +84,6 @@ mod tests {
         ));
         let notice = local_startup_notice(&error);
         assert!(notice.contains("saved machines stay available"), "{notice}");
-        assert!(notice.contains("--session <name>"), "{notice}");
         assert!(notice.contains("`shepr server stop --force`"), "{notice}");
     }
 }

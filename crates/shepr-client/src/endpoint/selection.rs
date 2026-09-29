@@ -189,7 +189,7 @@ mod tests {
     fn catalog_with_machine() -> (EndpointCatalog, ProfileId) {
         let mut catalog = EndpointCatalog::default();
         let id = catalog
-            .add_ssh("Build", "build", "agents")
+            .add_ssh("Build", "build")
             .expect("test precondition");
         (catalog, id)
     }
@@ -251,9 +251,7 @@ mod tests {
     fn unknown_machines_cannot_be_selected() {
         let (catalog, _) = catalog_with_machine();
         let mut other = EndpointCatalog::default();
-        let unknown = other
-            .add_ssh("Other", "other", "agents")
-            .expect("test precondition");
+        let unknown = other.add_ssh("Other", "other").expect("test precondition");
         let mut tracker = EndpointSelectionTracker::with_selection(None);
         assert!(!tracker.begin(&catalog, &ClientEndpointId::Ssh(unknown), Some(1)));
         assert_eq!(tracker.selected_endpoint(), ClientEndpointId::Local);
@@ -263,7 +261,7 @@ mod tests {
     fn superseded_request_keeps_the_original_restore_point() {
         let (mut catalog, first) = catalog_with_machine();
         let second = catalog
-            .add_ssh("Other", "other", "agents")
+            .add_ssh("Other", "other")
             .expect("test precondition");
         let mut tracker = EndpointSelectionTracker::with_selection(None);
         assert!(tracker.begin(&catalog, &ClientEndpointId::Ssh(first), Some(2)));
@@ -279,7 +277,7 @@ mod tests {
     fn a_revert_never_restores_a_machine_the_catalog_lost_meanwhile() {
         let (mut catalog, first) = catalog_with_machine();
         let second = catalog
-            .add_ssh("Other", "other", "agents")
+            .add_ssh("Other", "other")
             .expect("test precondition");
         let mut tracker = EndpointSelectionTracker::with_selection(Some(first));
         assert!(tracker.begin(&catalog, &ClientEndpointId::Ssh(second), Some(3)));

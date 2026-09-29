@@ -1300,20 +1300,6 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_uses_named_session_dir() {
-        let env = IsolatedEnv::new();
-        env.set(shepr_core::env::EnvVar::SheprSession, "work");
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-        let expected = paths
-            .runtime_dir()
-            .join("sessions")
-            .join("work")
-            .join("shepr.sock");
-        assert_eq!(socket_path(&paths), expected);
-    }
-
-    #[test]
     fn api_socket_is_bound_owner_only() {
         let dir = ScratchDir::new("socket-perms");
         let path = dir.join("api.sock");

@@ -53,35 +53,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_session_address_ignores_both_socket_overrides() {
-        let env = IsolatedEnv::new();
-        let scratch = ScratchDir::new("socket-paths-session-overrides");
-        let api_socket = scratch.join("other-api.sock");
-        let client_socket = scratch.join("other-client.sock");
-        env.set(
-            shepr_core::env::EnvVar::SheprSocketPath,
-            api_socket.as_os_str(),
-        );
-        env.set(
-            shepr_core::env::EnvVar::SheprClientSocketPath,
-            client_socket.as_os_str(),
-        );
-        let session = shepr_config::SessionId::parse("work").expect("test precondition");
-        let paths = shepr_config::AppPaths::resolve_with_session(Some(session.clone()))
-            .expect("explicit session resolves");
-        let address = paths.server_address();
-        let expected_api = session.api_socket_path_under(paths.runtime_dir());
-        let expected_client = session.client_socket_path_under(paths.runtime_dir());
-
-        assert_eq!(address.api_socket(), expected_api.as_path());
-        assert_eq!(address.client_socket(), expected_client.as_path());
-        assert_eq!(
-            address.attach_command(&session),
-            "shepr session attach work"
-        );
-    }
-
-    #[test]
     fn client_socket_path_respects_client_override_without_api_override() {
         let env = IsolatedEnv::new();
         let scratch = ScratchDir::new("socket-paths-client-override");
@@ -104,17 +75,6 @@ mod tests {
         let address = paths.server_address();
         let expected_client = paths.runtime_dir().join("shepr-client.sock");
         assert_eq!(address.client_socket(), expected_client.as_path());
-    }
-
-    #[test]
-    fn named_session_client_socket_matches_derived_api_socket_name() {
-        let runtime = ScratchDir::new("socket-paths-runtime");
-        let session = shepr_config::SessionId::parse("work").expect("test precondition");
-        let api = session.api_socket_path_under(runtime.path());
-        let client = session.client_socket_path_under(runtime.path());
-        let derived = derive_client_socket_from_api_socket(&api);
-        assert_eq!(client, derived);
-        assert_eq!(client, runtime.join("sessions/work/shepr-client.sock"));
     }
 
     #[test]

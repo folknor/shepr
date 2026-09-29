@@ -17,7 +17,7 @@ pub(crate) const MAX_SSH_TARGET_BYTES: usize = 1024;
 pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
 
 /// Maximum bytes in the saved endpoint catalog. The cap covers a useful
-/// catalog of profiles with typical labels, targets, sessions, and JSON
+/// catalog of profiles with typical labels, targets, and JSON
 /// overhead while bounding file reads.
 pub(crate) const MAX_CATALOG_BYTES: u64 = 64 * 1024;
 

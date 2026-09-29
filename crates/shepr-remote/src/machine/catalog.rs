@@ -114,22 +114,16 @@ pub struct SavedSshEndpoint {
     pub id: ProfileId,
     pub label: String,
     pub target: SshTarget,
-    pub session: String,
 }
 
 impl SavedSshEndpoint {
-    pub fn new(
-        label: impl Into<String>,
-        target: impl IntoSshTarget,
-        session: impl Into<String>,
-    ) -> Result<Self, CatalogError> {
+    pub fn new(label: impl Into<String>, target: impl IntoSshTarget) -> Result<Self, CatalogError> {
         let profile = Self {
             id: ProfileId::generate().map_err(|error| {
                 CatalogError::caused_by_io("failed to generate endpoint profile id", &error)
             })?,
             label: label.into(),
             target: target.into_ssh_target()?,
-            session: session.into(),
         };
         profile.validate()?;
         Ok(profile)
@@ -151,9 +145,6 @@ impl SavedSshEndpoint {
                 ),
             ));
         }
-        shepr_api::session::validate_name(&self.session).map_err(|error| {
-            CatalogError::from_display(CatalogErrorKind::InvalidInput, "", &error)
-        })?;
         Ok(())
     }
 }
@@ -288,7 +279,6 @@ impl EndpointCatalog {
         &mut self,
         label: impl Into<String>,
         target: impl IntoSshTarget,
-        session: impl Into<String>,
     ) -> Result<ProfileId, CatalogError> {
         if self.ssh.len() >= MAX_PROFILES {
             return Err(CatalogError::new(
@@ -296,7 +286,7 @@ impl EndpointCatalog {
                 format!("at most {MAX_PROFILES} SSH endpoints can be saved"),
             ));
         }
-        let profile = SavedSshEndpoint::new(label, target, session)?;
+        let profile = SavedSshEndpoint::new(label, target)?;
         let id = profile.id.clone();
         self.ssh.push(profile);
         Ok(id)
@@ -550,7 +540,7 @@ impl EndpointCatalogWatch {
 }
 
 /// What a catalog change means for connections: which saved machines stop being
-/// supervised and which start. A machine whose target or session changed is both retired
+/// supervised and which start. A machine whose target changed is both retired
 /// and started, because its connector, bridge and remote server belong to the old target.
 /// Although the CLI exposes only add and remove, the watcher can read a valid catalog
 /// replacement with a re-pointed profile, so this keeps the active connector in sync.
@@ -564,7 +554,7 @@ pub struct EndpointCatalogChanges {
 impl EndpointCatalogChanges {
     pub fn between(previous: &[SavedSshEndpoint], next: &[SavedSshEndpoint]) -> Self {
         fn same_machine(a: &SavedSshEndpoint, b: &SavedSshEndpoint) -> bool {
-            a.id == b.id && a.target == b.target && a.session == b.session
+            a.id == b.id && a.target == b.target
         }
         let retired = previous
             .iter()
@@ -788,7 +778,7 @@ mod tests {
         let path = path("roundtrip");
         let mut catalog = EndpointCatalog::default();
         let id = catalog
-            .add_ssh("Build", "ssh://dev@build.example:2222", "agents")
+            .add_ssh("Build", "ssh://dev@build.example:2222")
             .expect("test precondition");
         catalog.store_to_path(&path).expect("test precondition");
 
@@ -816,10 +806,10 @@ mod tests {
         };
         let mut seed = load();
         let kept = seed
-            .add_ssh("Kept", "kept.example", "default")
+            .add_ssh("Kept", "kept.example")
             .expect("test precondition");
         let removed = seed
-            .add_ssh("Removed", "removed.example", "default")
+            .add_ssh("Removed", "removed.example")
             .expect("test precondition");
         seed.store_profiles().expect("seed store");
 
@@ -827,7 +817,7 @@ mod tests {
         let mut adder = load();
         let mut remover = load();
         let added = adder
-            .add_ssh("Added", "added.example", "default")
+            .add_ssh("Added", "added.example")
             .expect("test precondition");
         assert!(remover.remove_ssh(&removed));
         adder.store_profiles().expect("adder store");
@@ -854,14 +844,10 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_target_and_session_profiles_keep_distinct_opaque_ids() {
+    fn duplicate_target_profiles_keep_distinct_opaque_ids() {
         let mut catalog = EndpointCatalog::default();
-        let first = catalog
-            .add_ssh("One", "build", "default")
-            .expect("test precondition");
-        let second = catalog
-            .add_ssh("Two", "build", "default")
-            .expect("test precondition");
+        let first = catalog.add_ssh("One", "build").expect("test precondition");
+        let second = catalog.add_ssh("Two", "build").expect("test precondition");
         assert_ne!(first, second);
     }
 
@@ -870,21 +856,17 @@ mod tests {
         let mut catalog = EndpointCatalog::default();
         assert!(
             catalog
-                .add_ssh("Build", "ssh://dev:secret@build.example", "default")
+                .add_ssh("Build", "ssh://dev:secret@build.example")
                 .expect_err("test precondition")
                 .to_string()
                 .contains("must not contain a password")
         );
         assert!(
             catalog
-                .add_ssh("Build", "dev:secret@build.example", "default")
+                .add_ssh("Build", "dev:secret@build.example")
                 .is_err()
         );
-        assert!(
-            catalog
-                .add_ssh("Build", "ssh://dev@[::1]:2222", "default")
-                .is_ok()
-        );
+        assert!(catalog.add_ssh("Build", "ssh://dev@[::1]:2222").is_ok());
     }
 
     #[test]
@@ -899,7 +881,6 @@ mod tests {
                 "id": "0123456789abcdef0123456789abcdef",
                 "label": "Build",
                 "target": "build",
-                "session": "default",
                 "enabled": true
               }]
             }"#,
@@ -921,7 +902,7 @@ mod tests {
         let selection_path = catalog_path.with_file_name("selection.json");
         let mut catalog = EndpointCatalog::default();
         let id = catalog
-            .add_ssh("Build", "build", "agents")
+            .add_ssh("Build", "build")
             .expect("test precondition");
         catalog
             .store_to_path(&catalog_path)
@@ -955,7 +936,7 @@ mod tests {
         let selection_path = catalog_path.with_file_name("selection.json");
         let mut catalog = EndpointCatalog::default();
         let id = catalog
-            .add_ssh("Build", "build", "agents")
+            .add_ssh("Build", "build")
             .expect("test precondition");
         catalog
             .store_to_path(&catalog_path)
@@ -977,7 +958,7 @@ mod tests {
         let selection_path = catalog_path.with_file_name("selection.json");
         let mut catalog = EndpointCatalog::default();
         let saved = catalog
-            .add_ssh("Build", "build", "agents")
+            .add_ssh("Build", "build")
             .expect("test precondition");
         catalog
             .store_to_path(&catalog_path)
@@ -1007,7 +988,6 @@ mod tests {
             id: ProfileId::parse(id).expect("test precondition"),
             label: "Build".into(),
             target: SshTarget::parse(target).expect("test precondition"),
-            session: "agents".into(),
         }
     }
 
@@ -1066,7 +1046,7 @@ mod tests {
 
         let mut catalog = EndpointCatalog::default();
         catalog
-            .add_ssh("Build", "build", "agents")
+            .add_ssh("Build", "build")
             .expect("test precondition");
         catalog.store_to_path(&path).expect("test precondition");
         // Not due yet: at most one stat per interval.
@@ -1098,7 +1078,7 @@ mod tests {
         let path = path("watch-stat-failure");
         let mut catalog = EndpointCatalog::default();
         catalog
-            .add_ssh("Build", "build", "agents")
+            .add_ssh("Build", "build")
             .expect("test precondition");
         catalog.store_to_path(&path).expect("test precondition");
 

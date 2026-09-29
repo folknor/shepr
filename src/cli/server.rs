@@ -23,14 +23,11 @@ pub(super) fn run_server_command(
     }
 }
 
-/// Skips the per-command build check, like `session stop`: the build-mismatch
-/// error tells the user to stop the server, so this must be able to stop a
-/// server from another build. It is not silent, though: a server of another
-/// build is stopped only with `--force`, because the one a dev build reaches
-/// without `--session` is the installed server with every live pane in it.
+/// Skips the per-command build check: the build-mismatch error tells the user
+/// to stop the server, so this must be able to stop a server from another
+/// build. It is not silent, though: a server of another build is stopped only
+/// with `--force`, because stopping it ends every live pane in it.
 fn server_stop(paths: &super::target::CliContext, force: bool) -> super::CliResult<i32> {
-    // Reported like `session stop`.
-    shepr_api::session::stop_active_server(paths, force)
-        .map_err(|error| super::CliError::Session(super::error::SessionCliError::Stop(error)))?;
+    shepr_api::session::stop_active_server(paths, force).map_err(super::CliError::ServerStop)?;
     Ok(0)
 }

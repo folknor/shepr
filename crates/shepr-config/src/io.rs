@@ -10,15 +10,53 @@ use super::{
     validated::{CwdCheck, ShellCheck},
 };
 
-/// The directory name shepr uses under every XDG base directory.
+include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
+
+/// The directory name shepr uses under an XDG base directory for state that
+/// every build shares: the config and the saved-machine catalog. The catalog
+/// lives in `client/` below the state directory of this name.
+const SHARED_APP_DIR_NAME: &str = "shepr";
+
+/// The build profile a binary was compiled with, which decides where it keeps
+/// its runtime sockets and its saved layout and history.
 ///
-/// Every build profile uses the same name: a dev build and the installed
-/// release build share config, state and runtime directories. A dev run is
-/// kept apart from the installed server by running it in a named session
-/// (`--session <name>`), and a server of another build is refused by the
-/// build-identity checks, which cover the build profile as well as the source.
-pub(crate) fn app_dir_name() -> &'static str {
-    "shepr"
+/// A release build uses the default XDG locations. Every other build (the
+/// cargo dev profile) uses `shepr-dev` in place of `shepr` for the runtime
+/// directory and the saved-layout directory, so a dev server and the installed
+/// release server hold different sockets, locks and saved layouts without any
+/// flag. Config and the saved-machine catalog stay shared by every profile.
+/// A server of another build is still refused by the build-identity checks,
+/// which is what tells the two apart once they can no longer collide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuildProfile {
+    Release,
+    Dev,
+}
+
+impl BuildProfile {
+    /// The profile this crate was built with, from cargo's `PROFILE`.
+    pub const fn current() -> Self {
+        Self::from_cargo_profile(BUILD_PROFILE)
+    }
+
+    /// `release` (and any profile inheriting from it) is [`Release`](Self::Release);
+    /// everything else is [`Dev`](Self::Dev).
+    pub(crate) const fn from_cargo_profile(profile: &str) -> Self {
+        // A const fn cannot compare strs with `==`.
+        match profile.as_bytes() {
+            b"release" => Self::Release,
+            _ => Self::Dev,
+        }
+    }
+
+    /// The directory name this profile uses under the XDG runtime directory
+    /// and beside the shared state directory.
+    pub const fn app_dir_name(self) -> &'static str {
+        match self {
+            Self::Release => SHARED_APP_DIR_NAME,
+            Self::Dev => "shepr-dev",
+        }
+    }
 }
 
 /// Paths and the local target resolved once at the process boundary and
@@ -28,12 +66,12 @@ pub(crate) fn app_dir_name() -> &'static str {
 pub struct AppPaths {
     config_dir: PathBuf,
     state_dir: PathBuf,
+    data_dir: PathBuf,
     xdg_runtime_dir: PathBuf,
     runtime_dir: PathBuf,
     config_file: PathBuf,
     home_dir: Option<PathBuf>,
     current_dir: Option<PathBuf>,
-    session_id: super::SessionId,
     server_address: super::ServerAddress,
     provenance: PathProvenance,
 }
@@ -47,12 +85,12 @@ impl<'de> Deserialize<'de> for AppPaths {
         struct Wire {
             config_dir: PathBuf,
             state_dir: PathBuf,
+            data_dir: PathBuf,
             xdg_runtime_dir: PathBuf,
             runtime_dir: PathBuf,
             config_file: PathBuf,
             home_dir: Option<PathBuf>,
             current_dir: Option<PathBuf>,
-            session_id: super::SessionId,
             server_address: super::ServerAddress,
             provenance: PathProvenance,
         }
@@ -61,12 +99,12 @@ impl<'de> Deserialize<'de> for AppPaths {
         let paths = Self {
             config_dir: wire.config_dir,
             state_dir: wire.state_dir,
+            data_dir: wire.data_dir,
             xdg_runtime_dir: wire.xdg_runtime_dir,
             runtime_dir: wire.runtime_dir,
             config_file: wire.config_file,
             home_dir: wire.home_dir,
             current_dir: wire.current_dir,
-            session_id: wire.session_id,
             server_address: wire.server_address,
             provenance: wire.provenance,
         };
@@ -88,7 +126,6 @@ pub struct PathProvenance {
     /// the launch directory handed over as `SHEPR_STARTUP_CWD`. No config
     /// setting selects it.
     pub current_dir: ConfigSource,
-    pub session_id: ConfigSource,
     pub api_socket: ConfigSource,
     pub client_socket: ConfigSource,
 }
@@ -98,6 +135,7 @@ impl AppPaths {
         for (name, path) in [
             ("config_dir", self.config_dir()),
             ("state_dir", self.state_dir()),
+            ("data_dir", self.data_dir()),
             ("XDG runtime directory", self.xdg_runtime_dir()),
             ("runtime_dir", self.runtime_dir()),
             ("config_file", self.config_file()),
@@ -121,12 +159,23 @@ impl AppPaths {
         &self.config_dir
     }
 
+    /// The state directory shared by every build profile. It holds the
+    /// client-owned state (the saved-machine catalog); the saved layout and
+    /// history live in [`data_dir`](Self::data_dir).
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
 
+    /// The directory of the saved layout, pane history, server log and the
+    /// lease that keeps one server per directory. For a release build it is
+    /// [`state_dir`](Self::state_dir) itself; a dev build gets a `shepr-dev`
+    /// sibling of it.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     /// The client-owned state directory beneath the shared application state
-    /// directory.
+    /// directory. Shared by every build profile.
     pub fn client_state_dir(&self) -> PathBuf {
         self.state_dir.join("client")
     }
@@ -136,6 +185,8 @@ impl AppPaths {
         &self.xdg_runtime_dir
     }
 
+    /// The build profile's runtime directory: `shepr` under the XDG runtime
+    /// directory for a release build, `shepr-dev` for a dev build.
     pub fn runtime_dir(&self) -> &Path {
         &self.runtime_dir
     }
@@ -152,10 +203,6 @@ impl AppPaths {
         self.current_dir.as_deref()
     }
 
-    pub fn session_id(&self) -> &super::SessionId {
-        &self.session_id
-    }
-
     pub fn server_address(&self) -> &super::ServerAddress {
         &self.server_address
     }
@@ -164,25 +211,10 @@ impl AppPaths {
         &self.provenance
     }
 
-    /// Resolve XDG directories, session identity and socket target once from
-    /// the inherited process environment.
+    /// Resolve XDG directories and the local socket target once from the
+    /// inherited process environment, for this build's profile.
     pub fn resolve() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(None, None, false, CurrentDirOrigin::Process)
-    }
-
-    /// Resolve paths and the local session/socket target from one environment
-    /// snapshot. `Some(Default)` represents an explicit request for the
-    /// default session and therefore takes precedence over socket overrides.
-    pub fn resolve_with_session(
-        requested_session: Option<super::SessionId>,
-    ) -> Result<Self, Vec<String>> {
-        let session_source = requested_session.as_ref().map(|_| ConfigSource::CliFlag);
-        resolve_paths_from_env(
-            requested_session,
-            session_source,
-            false,
-            CurrentDirOrigin::Process,
-        )
+        resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::Process)
     }
 
     /// Resolve paths for the headless server process. The server daemon runs
@@ -193,32 +225,14 @@ impl AppPaths {
     /// relative `new_terminal_cwd` and the new-terminal fallback resolve
     /// against. A server started without the handoff (by hand, from a shell)
     /// uses its own working directory.
-    pub fn resolve_for_server(
-        requested_session: Option<super::SessionId>,
-    ) -> Result<Self, Vec<String>> {
-        let session_source = requested_session.as_ref().map(|_| ConfigSource::CliFlag);
-        resolve_paths_from_env(
-            requested_session,
-            session_source,
-            false,
-            CurrentDirOrigin::StartupHandoff,
-        )
-    }
-
-    /// Resolve only the machine catalog's local paths, without allowing local
-    /// session or socket environment values to affect a remote command.
-    pub fn resolve_for_machine() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(
-            Some(super::SessionId::Default),
-            None,
-            true,
-            CurrentDirOrigin::Process,
-        )
+    pub fn resolve_for_server() -> Result<Self, Vec<String>> {
+        resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::StartupHandoff)
     }
 
     /// Paths laid out under one directory: `config`, `state` and `runtime`
-    /// below `root`, with `root` as the XDG runtime directory, the default
-    /// session and its sockets, and every value's source the default. Nothing
+    /// below `root`, with `root` as the XDG runtime directory, the saved
+    /// layout in the state directory (the release profile's layout, whatever
+    /// profile built the caller) and every value's source the default. Nothing
     /// is resolved or checked, so the caller passes absolute paths; this is
     /// how a caller that is not a launch, which resolves from the
     /// environment, places a config somewhere it chose.
@@ -226,19 +240,13 @@ impl AppPaths {
         Self {
             config_dir: root.join("config"),
             state_dir: root.join("state"),
+            data_dir: root.join("state"),
             xdg_runtime_dir: root.to_path_buf(),
             runtime_dir: root.join("runtime"),
             config_file: root.join("config/config.toml"),
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
-            session_id: super::SessionId::Default,
-            server_address: super::ServerAddress::resolve_paths(
-                &root.join("runtime"),
-                &super::SessionId::Default,
-                false,
-                None,
-                None,
-            ),
+            server_address: super::ServerAddress::resolve_paths(&root.join("runtime"), None, None),
             provenance: PathProvenance {
                 config_dir: ConfigSource::Default,
                 state_dir: ConfigSource::Default,
@@ -246,7 +254,6 @@ impl AppPaths {
                 config_file: ConfigSource::Default,
                 home_dir: ConfigSource::Default,
                 current_dir: ConfigSource::Default,
-                session_id: ConfigSource::Default,
                 api_socket: ConfigSource::Default,
                 client_socket: ConfigSource::Default,
             },
@@ -254,7 +261,7 @@ impl AppPaths {
     }
 }
 
-/// An XDG base directory for shepr. Unset or empty falls back under `HOME`;
+/// An XDG base directory for shepr, with `app_dir` appended. Unset or empty falls back under `HOME`;
 /// a relative, padded or non-UTF-8 value is refused rather than ignored, so a
 /// mistyped variable fails the launch instead of silently moving shepr's
 /// config or state back under `HOME`.
@@ -262,20 +269,21 @@ fn platform_xdg_dir(
     variable: EnvVar,
     home_suffix: &str,
     home_dir: Option<&Path>,
+    app_dir: &str,
 ) -> io::Result<(PathBuf, ConfigSource)> {
     // Empty follows the XDG Base Directory spec, which treats it as unset
     // (the registry reads empty as unset). Relative is refused, which the
     // spec also calls invalid.
     if let Some(directory) = shepr_core::env::read_path(variable)? {
         return Ok((
-            directory.join(app_dir_name()),
+            directory.join(app_dir),
             ConfigSource::EnvironmentVariable(variable.name().to_owned()),
         ));
     }
 
     let home_dir = home_dir.ok_or_else(shepr_core::pathutil::missing_home_error)?;
     Ok((
-        home_dir.join(home_suffix).join(app_dir_name()),
+        home_dir.join(home_suffix).join(app_dir),
         ConfigSource::Default,
     ))
 }
@@ -323,65 +331,48 @@ fn resolve_current_dir(
 }
 
 fn resolve_paths_from_env(
-    requested_session: Option<super::SessionId>,
-    requested_session_source: Option<ConfigSource>,
-    ignore_local_target_env: bool,
+    profile: BuildProfile,
     current_dir_origin: CurrentDirOrigin,
 ) -> Result<AppPaths, Vec<String>> {
-    let session_selection_was_forced = requested_session.is_some();
     let mut target_env_diagnostics = Vec::new();
-    let (api_socket_override, client_socket_override, inherited_session) =
-        if ignore_local_target_env {
-            (None, None, None)
-        } else {
-            let api_socket_override =
-                socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
-            let client_socket_override =
-                socket_path_override(EnvVar::SheprClientSocketPath, &mut target_env_diagnostics);
-            let inherited_session = if requested_session.is_some() {
-                None
-            } else {
-                shepr_core::env::read_text(EnvVar::SheprSession).unwrap_or_else(|error| {
-                    target_env_diagnostics.push(error.to_string());
-                    None
-                })
-            };
-            (
-                api_socket_override,
-                client_socket_override,
-                inherited_session,
-            )
-        };
+    let api_socket_override =
+        socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
+    let client_socket_override =
+        socket_path_override(EnvVar::SheprClientSocketPath, &mut target_env_diagnostics);
     if !target_env_diagnostics.is_empty() {
         return Err(target_env_diagnostics);
     }
-    let inherited_session_accepted = inherited_session
-        .as_deref()
-        .is_some_and(|name| super::SessionId::parse(name).is_ok());
-    let (session_id, session_was_requested) =
-        super::SessionId::resolve(requested_session, inherited_session.as_deref())
-            .map_err(|error| vec![format!("session selection error: {error}")])?;
 
     let home_dir = shepr_core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
     let (current_dir, current_dir_source) =
         resolve_current_dir(current_dir_origin).map_err(|error| vec![error])?;
-    let (config_dir, config_dir_source) =
-        platform_xdg_dir(EnvVar::XdgConfigHome, ".config", Some(&home_dir)).map_or_else(
-            |error| (Err(error), ConfigSource::Default),
-            |(path, source)| (Ok(path), source),
-        );
-    let (state_dir, state_dir_source) =
-        platform_xdg_dir(EnvVar::XdgStateHome, ".local/state", Some(&home_dir)).map_or_else(
-            |error| (Err(error), ConfigSource::Default),
-            |(path, source)| (Ok(path), source),
-        );
+    let (config_dir, config_dir_source) = platform_xdg_dir(
+        EnvVar::XdgConfigHome,
+        ".config",
+        Some(&home_dir),
+        SHARED_APP_DIR_NAME,
+    )
+    .map_or_else(
+        |error| (Err(error), ConfigSource::Default),
+        |(path, source)| (Ok(path), source),
+    );
+    let (state_dir, state_dir_source) = platform_xdg_dir(
+        EnvVar::XdgStateHome,
+        ".local/state",
+        Some(&home_dir),
+        SHARED_APP_DIR_NAME,
+    )
+    .map_or_else(
+        |error| (Err(error), ConfigSource::Default),
+        |(path, source)| (Ok(path), source),
+    );
     // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Unset
     // and empty are an error for shepr because its runtime sockets need a
     // user-private runtime directory; a relative value is refused by the
     // environment policy.
     let xdg_runtime_dir = shepr_core::env::read_path(EnvVar::XdgRuntimeDir);
     let runtime_dir = match &xdg_runtime_dir {
-        Ok(Some(path)) => Ok(path.join(app_dir_name())),
+        Ok(Some(path)) => Ok(path.join(profile.app_dir_name())),
         Ok(None) => Err(io::Error::other(
             "XDG_RUNTIME_DIR must be set to an absolute path",
         )),
@@ -464,50 +455,36 @@ fn resolve_paths_from_env(
         ) if diagnostics.is_empty() => {
             let server_address = super::ServerAddress::resolve_paths(
                 &runtime_dir,
-                &session_id,
-                session_was_requested,
                 api_socket_override.as_deref(),
                 client_socket_override.as_deref(),
             );
+            // The saved layout sits beside the shared state directory under the
+            // profile's directory name: the state directory itself for release.
+            let data_dir = state_dir.with_file_name(profile.app_dir_name());
             let home_dir_source = ConfigSource::EnvironmentVariable(EnvVar::Home.name().to_owned());
             let runtime_dir_source =
                 ConfigSource::EnvironmentVariable(EnvVar::XdgRuntimeDir.name().to_owned());
-            let session_source = if let Some(source) = requested_session_source {
-                source
-            } else if inherited_session_accepted && !session_selection_was_forced {
-                ConfigSource::EnvironmentVariable(EnvVar::SheprSession.name().to_owned())
-            } else {
-                ConfigSource::Default
-            };
-            let api_socket_source = if session_selection_was_forced {
-                session_source.clone()
-            } else if api_socket_override.is_some() {
+            let api_socket_source = if api_socket_override.is_some() {
                 ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
-            } else if inherited_session_accepted {
-                session_source.clone()
             } else {
                 runtime_dir_source.clone()
             };
-            let client_socket_source = if session_selection_was_forced {
-                session_source.clone()
-            } else if api_socket_override.is_some() {
+            let client_socket_source = if api_socket_override.is_some() {
                 ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
             } else if client_socket_override.is_some() {
                 ConfigSource::EnvironmentVariable(EnvVar::SheprClientSocketPath.name().to_owned())
-            } else if inherited_session_accepted {
-                session_source.clone()
             } else {
                 runtime_dir_source.clone()
             };
             Ok(AppPaths {
                 config_dir,
                 state_dir,
+                data_dir,
                 xdg_runtime_dir,
                 runtime_dir,
                 config_file,
                 home_dir: Some(home_dir),
                 current_dir,
-                session_id,
                 server_address,
                 provenance: PathProvenance {
                     config_dir: config_dir_source,
@@ -516,16 +493,14 @@ fn resolve_paths_from_env(
                     config_file: config_file_source,
                     home_dir: home_dir_source,
                     current_dir: current_dir_source,
-                    session_id: session_source,
                     api_socket: api_socket_source,
                     client_socket: client_socket_source,
                 },
             })
         }
-        _ if diagnostics.is_empty() => Err(vec![format!(
-            "session `{}` paths could not be resolved; no path-specific error was reported",
-            session_id.display_name()
-        )]),
+        _ if diagnostics.is_empty() => Err(vec![
+            "paths could not be resolved; no path-specific error was reported".to_owned(),
+        ]),
         _ => Err(diagnostics),
     }
 }
@@ -1059,7 +1034,7 @@ tab_bar_right = [
                 .config_file(),
             env.home()
                 .join(".config")
-                .join(app_dir_name())
+                .join(SHARED_APP_DIR_NAME)
                 .join("config.toml")
                 .as_path()
         );
@@ -1079,7 +1054,7 @@ tab_bar_right = [
             paths.config_file(),
             env.home()
                 .join(".config")
-                .join(app_dir_name())
+                .join(SHARED_APP_DIR_NAME)
                 .join("config.toml")
                 .as_path()
         );
@@ -1104,12 +1079,12 @@ tab_bar_right = [
         assert_ne!(process_dir.as_deref(), Some(launch.as_path()));
 
         // Without the handoff the server uses its own working directory.
-        let paths = AppPaths::resolve_for_server(None).expect("server paths resolve");
+        let paths = AppPaths::resolve_for_server().expect("server paths resolve");
         assert_eq!(paths.current_dir(), process_dir.as_deref());
         assert_eq!(paths.provenance().current_dir, ConfigSource::Default);
 
         env.set(EnvVar::SheprStartupCwd, &launch);
-        let paths = AppPaths::resolve_for_server(None).expect("server paths resolve");
+        let paths = AppPaths::resolve_for_server().expect("server paths resolve");
         assert_eq!(paths.current_dir(), Some(launch.as_path()));
         assert_eq!(
             paths.provenance().current_dir,
@@ -1135,7 +1110,7 @@ tab_bar_right = [
         assert_eq!(config.paths().current_dir(), Some(launch.as_path()));
 
         env.set(EnvVar::SheprStartupCwd, "relative/launch");
-        let errors = AppPaths::resolve_for_server(None).expect_err("a relative handoff is refused");
+        let errors = AppPaths::resolve_for_server().expect_err("a relative handoff is refused");
         assert!(
             errors
                 .iter()
@@ -1178,7 +1153,7 @@ tab_bar_right = [
     }
 
     #[test]
-    fn invalid_socket_and_session_environment_fails_resolution() {
+    fn invalid_socket_environment_fails_resolution() {
         let env = shepr_test_support::IsolatedEnv::new();
         for variable in [EnvVar::SheprSocketPath, EnvVar::SheprClientSocketPath] {
             for (value, expected) in [
@@ -1194,45 +1169,83 @@ tab_bar_right = [
                         .any(|error| error.contains(variable.name()) && error.contains(expected)),
                     "{variable}={value:?}: {errors:?}"
                 );
-                // Remote commands never consult the local target environment.
-                assert!(AppPaths::resolve_for_machine().is_ok());
             }
             env.remove(variable);
         }
-
-        // An empty inherited session is refused rather than read as default.
-        env.set(EnvVar::SheprSession, "");
-        let errors = AppPaths::resolve().expect_err("empty SHEPR_SESSION");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("SHEPR_SESSION") && error.contains("set but empty")),
-            "{errors:?}"
-        );
-
-        // A socket override does not excuse a malformed inherited session.
-        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
-        env.set(EnvVar::SheprSession, "bad/name");
-        let errors = AppPaths::resolve().expect_err("malformed SHEPR_SESSION");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("session selection error")),
-            "{errors:?}"
-        );
     }
 
     #[test]
-    fn path_provenance_distinguishes_cli_and_internal_session_selection() {
+    fn release_profile_keeps_the_default_locations_and_dev_gets_its_own() {
         let env = shepr_test_support::IsolatedEnv::new();
-        env.set(EnvVar::SheprSession, "inherited");
+        let release = resolve_paths_from_env(BuildProfile::Release, CurrentDirOrigin::Process)
+            .expect("release paths resolve");
+        let dev = resolve_paths_from_env(BuildProfile::Dev, CurrentDirOrigin::Process)
+            .expect("dev paths resolve");
+        let state = env.home().join(".local/state");
+        let runtime = env.path().join("runtime");
 
-        let cli = AppPaths::resolve_with_session(Some(crate::SessionId::Default))
-            .expect("CLI session paths resolve");
-        assert_eq!(cli.provenance().session_id, ConfigSource::CliFlag);
+        // Release: exactly the locations every release install has used.
+        assert_eq!(release.data_dir(), state.join("shepr"));
+        assert_eq!(release.data_dir(), release.state_dir());
+        assert_eq!(release.runtime_dir(), runtime.join("shepr"));
+        assert_eq!(
+            release.server_address().api_socket(),
+            runtime.join("shepr/shepr.sock")
+        );
+        assert_eq!(
+            release.server_address().client_socket(),
+            runtime.join("shepr/shepr-client.sock")
+        );
 
-        let machine = AppPaths::resolve_for_machine().expect("machine paths resolve");
-        assert_eq!(machine.provenance().session_id, ConfigSource::Default);
+        // Dev: its own runtime and saved layout, distinct sockets.
+        assert_eq!(dev.data_dir(), state.join("shepr-dev"));
+        assert_eq!(dev.runtime_dir(), runtime.join("shepr-dev"));
+        assert_eq!(
+            dev.server_address().api_socket(),
+            runtime.join("shepr-dev/shepr.sock")
+        );
+        assert_eq!(
+            dev.server_address().client_socket(),
+            runtime.join("shepr-dev/shepr-client.sock")
+        );
+
+        // Config, the shared state directory (with the machine catalog below
+        // it) and the XDG runtime root are the same in both profiles.
+        assert_eq!(release.config_dir(), dev.config_dir());
+        assert_eq!(release.config_file(), dev.config_file());
+        assert_eq!(release.state_dir(), dev.state_dir());
+        assert_eq!(release.client_state_dir(), dev.client_state_dir());
+        assert_eq!(release.xdg_runtime_dir(), dev.xdg_runtime_dir());
+    }
+
+    #[test]
+    fn socket_overrides_beat_the_profile_runtime_directory() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
+        for profile in [BuildProfile::Release, BuildProfile::Dev] {
+            let paths = resolve_paths_from_env(profile, CurrentDirOrigin::Process)
+                .expect("override resolves");
+            assert_eq!(
+                paths.server_address().api_socket(),
+                env.path().join("api.sock")
+            );
+            assert_eq!(
+                paths.runtime_dir().file_name(),
+                Some(std::ffi::OsStr::new(profile.app_dir_name()))
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_profile_names_map_to_build_profiles() {
+        assert_eq!(
+            BuildProfile::from_cargo_profile("release"),
+            BuildProfile::Release
+        );
+        assert_eq!(BuildProfile::from_cargo_profile("debug"), BuildProfile::Dev);
+        assert_eq!(BuildProfile::from_cargo_profile(""), BuildProfile::Dev);
+        assert_eq!(BuildProfile::Release.app_dir_name(), "shepr");
+        assert_eq!(BuildProfile::Dev.app_dir_name(), "shepr-dev");
     }
 
     #[test]
@@ -1349,16 +1362,18 @@ id = "example"
         let paths = AppPaths::resolve().expect("default paths resolve");
         assert_eq!(
             paths.config_dir(),
-            env.home().join(".config").join(app_dir_name())
+            env.home().join(".config").join(SHARED_APP_DIR_NAME)
         );
         assert_eq!(
             paths.state_dir(),
-            env.home().join(".local/state").join(app_dir_name())
+            env.home().join(".local/state").join(SHARED_APP_DIR_NAME)
         );
         assert_eq!(paths.xdg_runtime_dir(), env.path().join("runtime"));
         assert_eq!(
             paths.runtime_dir(),
-            env.path().join("runtime").join(app_dir_name())
+            env.path()
+                .join("runtime")
+                .join(BuildProfile::current().app_dir_name())
         );
 
         for (key, suffix) in [
@@ -1367,7 +1382,7 @@ id = "example"
         ] {
             env.set(key, "");
             let paths = AppPaths::resolve().expect("an empty XDG base reads as unset");
-            let expected = env.home().join(suffix).join(app_dir_name());
+            let expected = env.home().join(suffix).join(SHARED_APP_DIR_NAME);
             let actual = if key == "XDG_CONFIG_HOME" {
                 paths.config_dir()
             } else {
@@ -1384,7 +1399,7 @@ id = "example"
             }
             env.set(key, env.path().join(key));
             let paths = AppPaths::resolve().expect("absolute XDG base is accepted");
-            let expected = env.path().join(key).join(app_dir_name());
+            let expected = env.path().join(key).join(SHARED_APP_DIR_NAME);
             let actual = if key == "XDG_CONFIG_HOME" {
                 paths.config_dir()
             } else {
@@ -1424,7 +1439,13 @@ id = "example"
         let wire = serde_json::to_value(&paths).expect("serialize test paths");
         assert!(serde_json::from_value::<AppPaths>(wire.clone()).is_ok());
 
-        for field in ["config_dir", "state_dir", "runtime_dir", "config_file"] {
+        for field in [
+            "config_dir",
+            "state_dir",
+            "data_dir",
+            "runtime_dir",
+            "config_file",
+        ] {
             let mut invalid = wire.clone();
             invalid[field] = serde_json::json!("relative/path");
             assert!(

@@ -21,8 +21,8 @@
 //! One rule holds for every variable:
 //!
 //! - unset and empty are the same answer: unset. A shell `VAR=` is not a value.
-//!   A selector ([`EnvKind::Selector`], [`EnvKind::SelectorPath`]) refuses
-//!   empty instead: unset falls back to the default session's server, so an
+//!   A selector ([`EnvKind::SelectorPath`]) refuses empty instead: unset
+//!   falls back to the build's default server, so an
 //!   empty override (a shell `VAR=$UNSET`, or a pane launched with an empty
 //!   socket path) would otherwise silently retarget the process at a
 //!   different server.
@@ -40,7 +40,7 @@
 //! belongs to Git;
 //! only empty reads as unset.
 //!
-//! What a value means beyond its kind (a session name's grammar, a log filter's
+//! What a value means beyond its kind (a log filter's
 //! syntax, which directory a relative path is joined to) stays with the site
 //! that owns the variable.
 //!
@@ -129,10 +129,6 @@ env_vocabulary! {
         /// `SHEPR_CONFIG_PATH`: the config file, explicitly; a relative value
         /// is joined to the current directory.
         SheprConfigPath => "SHEPR_CONFIG_PATH",
-        /// `SHEPR_SESSION`: the session a process targets when no `--session`
-        /// is given. Written into the server daemon's environment for a named
-        /// session, so panes inherit it.
-        SheprSession => "SHEPR_SESSION",
         /// `SHEPR_SOCKET_PATH`: the API socket of the server to target. Written
         /// into every pane as the socket of the server that owns it.
         SheprSocketPath => "SHEPR_SOCKET_PATH",
@@ -324,17 +320,13 @@ pub enum EnvKind {
     Flag,
     /// Text the owning site parses further.
     Text,
-    /// Text that selects which shepr server a process talks to. Read as
-    /// [`Text`](Self::Text), except that an empty value is refused rather than
-    /// read as unset (the module doc, first rule).
-    Selector,
     /// A filesystem path; the owning site decides what a relative one means.
     Path,
     /// A filesystem path that must be absolute.
     AbsolutePath,
     /// An absolute path that selects which shepr server a process talks to:
-    /// [`AbsolutePath`](Self::AbsolutePath) that refuses empty, as
-    /// [`Selector`](Self::Selector) does.
+    /// [`AbsolutePath`](Self::AbsolutePath) that refuses empty rather than
+    /// reading it as unset (the module doc, first rule).
     SelectorPath,
     /// Presence alone is the answer; the value is never interpreted.
     Presence,
@@ -358,7 +350,6 @@ impl EnvVar {
             | Self::TermProgram
             | Self::GitCeilingDirectories
             | Self::GitConfigNoSystem => EnvKind::Text,
-            Self::SheprSession => EnvKind::Selector,
             Self::SheprConfigPath
             | Self::SshAuthSock
             | Self::PiCodingAgentDir
@@ -510,7 +501,7 @@ pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, Env
     let text = raw.to_str().ok_or_else(|| refuse(EnvRefusal::NotUtf8))?;
     if text.is_empty() {
         return match kind {
-            EnvKind::Selector | EnvKind::SelectorPath => Err(refuse(EnvRefusal::EmptySelector)),
+            EnvKind::SelectorPath => Err(refuse(EnvRefusal::EmptySelector)),
             EnvKind::Flag
             | EnvKind::Text
             | EnvKind::Path
@@ -537,9 +528,7 @@ pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, Env
                 Err(refuse(EnvRefusal::NotAbsolute(text.to_owned())))
             }
         }
-        EnvKind::Text | EnvKind::Selector | EnvKind::Path => {
-            Ok(Some(EnvValue::Text(text.to_owned())))
-        }
+        EnvKind::Text | EnvKind::Path => Ok(Some(EnvValue::Text(text.to_owned()))),
         EnvKind::Handoff | EnvKind::Raw => Ok(Some(EnvValue::Raw(raw.to_owned()))),
     }
 }
@@ -582,11 +571,7 @@ fn is_presence(kind: EnvKind) -> bool {
 fn is_text(kind: EnvKind) -> bool {
     matches!(
         kind,
-        EnvKind::Text
-            | EnvKind::Selector
-            | EnvKind::Path
-            | EnvKind::AbsolutePath
-            | EnvKind::SelectorPath
+        EnvKind::Text | EnvKind::Path | EnvKind::AbsolutePath | EnvKind::SelectorPath
     )
 }
 
@@ -945,12 +930,9 @@ mod tests {
     /// The table: every interpreted variable's name and kind, spelled out.
     #[test]
     fn every_variable_has_its_documented_name_and_kind() {
-        use EnvKind::{
-            AbsolutePath, Flag, Handoff, Path, Presence, Raw, Selector, SelectorPath, Text,
-        };
+        use EnvKind::{AbsolutePath, Flag, Handoff, Path, Presence, Raw, SelectorPath, Text};
         let table: &[(EnvVar, &str, EnvKind)] = &[
             (EnvVar::SheprConfigPath, "SHEPR_CONFIG_PATH", Path),
-            (EnvVar::SheprSession, "SHEPR_SESSION", Selector),
             (EnvVar::SheprSocketPath, "SHEPR_SOCKET_PATH", SelectorPath),
             (
                 EnvVar::SheprClientSocketPath,
@@ -1188,7 +1170,7 @@ mod tests {
         for &var in EnvVar::ALL {
             assert_eq!(resolve(var, None), Ok(None), "{var} unset");
             let kind = var.kind();
-            if !matches!(kind, EnvKind::Selector | EnvKind::SelectorPath) {
+            if kind != EnvKind::SelectorPath {
                 assert_eq!(resolve(var, Some(OsStr::new(""))), Ok(None), "{var} empty");
             }
             if matches!(kind, EnvKind::Handoff | EnvKind::Raw) {
@@ -1219,7 +1201,6 @@ mod tests {
                 EnvKind::Flag => "1",
                 EnvKind::AbsolutePath | EnvKind::SelectorPath => "/abs/value",
                 EnvKind::Text
-                | EnvKind::Selector
                 | EnvKind::Path
                 | EnvKind::Presence
                 | EnvKind::Handoff
@@ -1241,15 +1222,11 @@ mod tests {
         let selectors: Vec<EnvVar> = EnvVar::ALL
             .iter()
             .copied()
-            .filter(|var| matches!(var.kind(), EnvKind::Selector | EnvKind::SelectorPath))
+            .filter(|var| var.kind() == EnvKind::SelectorPath)
             .collect();
         assert_eq!(
             selectors,
-            [
-                EnvVar::SheprSession,
-                EnvVar::SheprSocketPath,
-                EnvVar::SheprClientSocketPath
-            ]
+            [EnvVar::SheprSocketPath, EnvVar::SheprClientSocketPath]
         );
         for var in selectors {
             let error = resolve(var, Some(OsStr::new(""))).expect_err("an empty selector refuses");
@@ -1260,10 +1237,6 @@ mod tests {
                 "{rendered}"
             );
         }
-        assert_eq!(
-            resolve_text(EnvVar::SheprSession, Some(OsStr::new("work"))),
-            Ok(Some("work".to_owned()))
-        );
     }
 
     /// A flag accepts exactly four spellings.

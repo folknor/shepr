@@ -71,10 +71,7 @@ pub(super) fn remote_server_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<RemoteServerStatus> {
-    let args = RemoteCliCommand::ServerStatus {
-        session: ssh.session_name(),
-    }
-    .args();
+    let args = RemoteCliCommand::ServerStatus.args();
     let command = remote_shepr.command(&args);
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
@@ -112,7 +109,7 @@ fn remote_server_compatibility_error(
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To keep that server and its panes, save the machine with a session of its own instead: `shepr machine add <ssh-target> --label <label> --remote-session <name>`. To replace it with this build instead, stop the remote server and retry",
+            "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To use this build, stop the remote server and retry",
             shepr_protocol::build_version(),
             shepr_protocol::BUILD_ID
         ),
@@ -233,11 +230,7 @@ pub(super) fn stop_remote_server(
     // Forced: the operator already confirmed this stop, and the server being
     // replaced may be of another build than the remote binary, which an
     // unforced stop refuses.
-    let args = RemoteCliCommand::ServerStop {
-        session: ssh.session_name(),
-        force: true,
-    }
-    .args();
+    let args = RemoteCliCommand::ServerStop { force: true }.args();
     let command = remote_shepr.command(&args);
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
@@ -444,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn server_build_mismatch_offers_a_separate_remote_session_before_a_stop() {
+    fn server_build_mismatch_says_to_stop_the_remote_server() {
         let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
             "0000000000000000"
         } else {
@@ -453,15 +446,11 @@ mod tests {
         let stale = running(Some(shepr_protocol::build_version()), Some(other_build));
         let error = ensure_remote_server_build("host", &stale).expect_err("stale daemon");
         let message = error.to_string();
-        assert!(message.contains("--remote-session <name>"), "{message}");
-        let session_offer = message
-            .find("--remote-session <name>")
-            .expect("checked above");
-        let stop_mention = message.find("stop").expect("mentions stopping the server");
         assert!(
-            session_offer < stop_mention,
-            "the separate-session offer should come before the stop instruction: {message}"
+            message.contains("stop the remote server and retry"),
+            "{message}"
         );
+        assert!(!message.contains("session"), "{message}");
     }
 }
 

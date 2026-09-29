@@ -1,8 +1,7 @@
 //! Session persistence - save/restore workspaces, layouts, and working directories.
 //!
-//! Files live in the session data directory passed by the runtime:
-//! the state directory itself for the default session, `sessions/<name>/`
-//! under it for a named one. The layout is `session.json`; optional pane
+//! Files live in the data directory passed by the runtime (per build
+//! profile). The layout is `session.json`; optional pane
 //! screen history is stored separately in `session-history.json`. One server
 //! at a time owns a data directory, enforced by a lease on `session.lock`
 //! there (see `lock`).

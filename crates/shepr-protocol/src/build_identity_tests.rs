@@ -6,7 +6,9 @@ use std::path::Path;
 
 use shepr_test_support::ScratchDir;
 
-use super::build_script::{ProfileInputs, UNIDENTIFIABLE_BUILD_ID, build_id};
+use super::build_script::{
+    ProfileInputs, UNIDENTIFIABLE_BUILD_ID, build_id, profile_constant_source,
+};
 use super::{builds_match, is_identifiable_build_id};
 
 /// A minimal tree with every required source input.
@@ -188,4 +190,16 @@ fn only_sixteen_lowercase_hex_digits_are_an_identity() {
         );
         assert!(!builds_match(not_an_identity, not_an_identity));
     }
+}
+
+#[test]
+fn profile_constant_states_the_cargo_profile_verbatim() {
+    assert!(
+        profile_constant_source("release")
+            .contains("pub(crate) const BUILD_PROFILE: &str = \"release\";")
+    );
+    assert!(
+        profile_constant_source("debug")
+            .contains("pub(crate) const BUILD_PROFILE: &str = \"debug\";")
+    );
 }

@@ -6,7 +6,6 @@ mod keybinding_table;
 mod keybinds;
 mod limits;
 mod model;
-mod session_id;
 mod sidebar;
 mod tab_bar;
 pub mod theme;
@@ -26,13 +25,10 @@ pub use self::limits::{
 /// [`ValidatedConfig`]; raw values become one only through validation
 /// ([`ValidatedConfig::from_values`] or a launch load).
 pub use self::model::Config;
-pub use self::session_id::{
-    DEFAULT_SESSION_NAME, SessionId, SessionName, SessionNameError, validate_session_name,
-};
 pub use self::theme_config::CustomThemeColors;
 pub use self::{
     diagnostic::ConfigDiagnostic,
-    io::{AppPaths, load_validated},
+    io::{AppPaths, BuildProfile, load_validated},
     keybinds::{
         ActionKeybinds, BindingConfig, BindingKey, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_combo, normalize_key_combo, terminal_key_matches_combo,

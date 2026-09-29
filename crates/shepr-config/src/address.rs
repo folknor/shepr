@@ -35,7 +35,8 @@ impl<'de> Deserialize<'de> for ServerAddress {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum AddressSource {
-    Session,
+    /// The build's runtime directory: no socket override applies.
+    Runtime,
     ApiOverride,
     ClientOverride,
 }
@@ -51,19 +52,14 @@ impl ServerAddress {
         Ok(())
     }
 
-    // Address construction needs a resolved runtime directory, session, and socket overrides.
+    // Address construction needs a resolved runtime directory and the socket overrides.
     // A context-free default cannot describe the selected server target or guarantee valid paths.
     pub(crate) fn resolve_paths(
         runtime_dir: &Path,
-        session: &super::SessionId,
-        session_was_requested: bool,
         api_socket_override: Option<&Path>,
         client_socket_override: Option<&Path>,
     ) -> Self {
-        let session_api = session.api_socket_path_under(runtime_dir);
-        if session_was_requested {
-            return Self::for_session(session_api);
-        }
+        let runtime_api = runtime_dir.join(API_SOCKET_FILE_NAME);
         if let Some(api_socket) = api_socket_override {
             let api_socket = api_socket.to_path_buf();
             return Self {
@@ -74,20 +70,16 @@ impl ServerAddress {
         }
         if let Some(client_socket) = client_socket_override {
             return Self {
-                api_socket: session_api,
+                api_socket: runtime_api,
                 client_socket: client_socket.to_path_buf(),
                 source: AddressSource::ClientOverride,
             };
         }
-        Self::for_session(session_api)
-    }
-
-    fn for_session(api_socket: PathBuf) -> Self {
-        let client_socket = derive_client_socket_from_api_socket(&api_socket);
+        let client_socket = derive_client_socket_from_api_socket(&runtime_api);
         Self {
-            api_socket,
+            api_socket: runtime_api,
             client_socket,
-            source: AddressSource::Session,
+            source: AddressSource::Runtime,
         }
     }
 
@@ -99,63 +91,37 @@ impl ServerAddress {
         &self.client_socket
     }
 
-    pub fn attach_command(&self, session: &super::SessionId) -> String {
+    /// The command that attaches to this server: plain `shepr` for the
+    /// build's own runtime directory, prefixed with the socket override that
+    /// selected it otherwise.
+    pub fn attach_command(&self) -> String {
+        self.command("shepr")
+    }
+
+    /// The command that stops this server, as [`attach_command`](Self::attach_command).
+    pub fn stop_command(&self) -> String {
+        self.command("shepr server stop")
+    }
+
+    fn command(&self, command: &str) -> String {
         match self.source {
-            AddressSource::Session => session.attach_command(),
-            AddressSource::ApiOverride => {
-                self.command_with_api_override(session, &self.api_socket, "shepr")
-            }
-            AddressSource::ClientOverride => {
-                self.command_with_client_override(session, &self.client_socket, "shepr")
-            }
+            AddressSource::Runtime => command.to_owned(),
+            AddressSource::ApiOverride => format!(
+                "{}={} {command}",
+                EnvVar::SheprSocketPath,
+                shell_quote(&self.api_socket.to_string_lossy())
+            ),
+            AddressSource::ClientOverride => format!(
+                "{}={} {command}",
+                EnvVar::SheprClientSocketPath,
+                shell_quote(&self.client_socket.to_string_lossy())
+            ),
         }
-    }
-
-    pub fn stop_command(&self, session: &super::SessionId) -> String {
-        match self.source {
-            AddressSource::Session => session.stop_command(),
-            AddressSource::ApiOverride => {
-                self.command_with_api_override(session, &self.api_socket, "shepr server stop")
-            }
-            AddressSource::ClientOverride => {
-                self.command_with_client_override(session, &self.client_socket, "shepr server stop")
-            }
-        }
-    }
-
-    fn command_with_api_override(
-        &self,
-        session: &super::SessionId,
-        api_socket: &Path,
-        command: &str,
-    ) -> String {
-        format!(
-            "{}={} {}={} {command}",
-            EnvVar::SheprSession,
-            shell_quote(session.display_name()),
-            EnvVar::SheprSocketPath,
-            shell_quote(&api_socket.to_string_lossy())
-        )
-    }
-
-    fn command_with_client_override(
-        &self,
-        session: &super::SessionId,
-        client_socket: &Path,
-        command: &str,
-    ) -> String {
-        format!(
-            "{}={} {}={} {command}",
-            EnvVar::SheprSession,
-            shell_quote(session.display_name()),
-            EnvVar::SheprClientSocketPath,
-            shell_quote(&client_socket.to_string_lossy())
-        )
     }
 
     pub fn apply_to_child_command(&self, command: &mut Command) {
         match self.source {
-            AddressSource::Session => {
+            AddressSource::Runtime => {
                 command
                     .env_remove(EnvVar::SheprSocketPath)
                     .env_remove(EnvVar::SheprClientSocketPath);
@@ -173,6 +139,9 @@ impl ServerAddress {
         }
     }
 }
+
+/// File name of the API socket inside a runtime directory.
+const API_SOCKET_FILE_NAME: &str = "shepr.sock";
 
 pub fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> PathBuf {
     let stem = api_socket_path
@@ -197,4 +166,43 @@ fn shell_quote(value: &str) -> String {
         return value.to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_address_guidance_is_plain() {
+        let address = ServerAddress::resolve_paths(Path::new("/run/user/1/shepr"), None, None);
+        assert_eq!(
+            address.api_socket(),
+            Path::new("/run/user/1/shepr/shepr.sock")
+        );
+        assert_eq!(
+            address.client_socket(),
+            Path::new("/run/user/1/shepr/shepr-client.sock")
+        );
+        assert_eq!(address.attach_command(), "shepr");
+        assert_eq!(address.stop_command(), "shepr server stop");
+    }
+
+    #[test]
+    fn override_guidance_names_the_override() {
+        let runtime = Path::new("/run/user/1/shepr");
+        let api = ServerAddress::resolve_paths(runtime, Some(Path::new("/x/a b.sock")), None);
+        assert_eq!(
+            api.stop_command(),
+            "SHEPR_SOCKET_PATH='/x/a b.sock' shepr server stop"
+        );
+        let client = ServerAddress::resolve_paths(runtime, None, Some(Path::new("/x/c.sock")));
+        assert_eq!(
+            client.attach_command(),
+            "SHEPR_CLIENT_SOCKET_PATH=/x/c.sock shepr"
+        );
+        assert_eq!(
+            client.api_socket(),
+            Path::new("/run/user/1/shepr/shepr.sock")
+        );
+    }
 }

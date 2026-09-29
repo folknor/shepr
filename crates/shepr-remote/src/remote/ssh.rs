@@ -274,7 +274,6 @@ pub(super) fn authentication_command_with_config(
 
 pub(crate) struct RemoteSsh {
     target: SshTarget,
-    session_name: String,
     managed_config: Option<ManagedSshConfig>,
     noninteractive: bool,
     /// Bounds noninteractive commands launched by `sh_output` and
@@ -288,7 +287,6 @@ impl RemoteSsh {
     pub(super) fn new(
         target: SshTarget,
         manage_ssh_config: bool,
-        session_name: String,
         paths: &shepr_config::AppPaths,
     ) -> io::Result<Self> {
         let control_dir = if manage_ssh_config {
@@ -296,7 +294,7 @@ impl RemoteSsh {
         } else {
             None
         };
-        Self::with_control_dir(target, control_dir, session_name, paths)
+        Self::with_control_dir(target, control_dir, paths)
     }
 
     /// As [`RemoteSsh::new`], with the managed config's control directory
@@ -304,7 +302,6 @@ impl RemoteSsh {
     pub(super) fn with_control_dir(
         target: SshTarget,
         control_dir: Option<SshControlDir<'_>>,
-        session_name: String,
         paths: &shepr_config::AppPaths,
     ) -> io::Result<Self> {
         let managed_config = match control_dir {
@@ -318,7 +315,6 @@ impl RemoteSsh {
 
         Ok(Self {
             target,
-            session_name,
             managed_config,
             noninteractive: false,
             attempt_deadline: None,
@@ -331,22 +327,9 @@ impl RemoteSsh {
         manage_ssh_config: bool,
         paths: &shepr_config::AppPaths,
     ) -> io::Result<Self> {
-        let mut ssh = Self::new(
-            target,
-            manage_ssh_config,
-            shepr_config::DEFAULT_SESSION_NAME.into(),
-            paths,
-        )?;
+        let mut ssh = Self::new(target, manage_ssh_config, paths)?;
         ssh.noninteractive = true;
         Ok(ssh)
-    }
-
-    pub(super) fn set_session_name(&mut self, session_name: String) {
-        self.session_name = session_name;
-    }
-
-    pub(super) fn session_name(&self) -> &str {
-        &self.session_name
     }
 
     pub(crate) fn set_attempt_deadline(&mut self, deadline: Option<Instant>) {
@@ -371,7 +354,7 @@ impl RemoteSsh {
     }
 
     pub(super) fn destination(&self) -> String {
-        format!("{} (session {})", self.target, self.session_name)
+        self.target.to_string()
     }
 
     pub(crate) fn options(&self) -> Option<&ManagedSshOptions> {
@@ -747,13 +730,11 @@ pub(super) fn command_failed(context: &str, output: &Output) -> io::Error {
 impl RemoteSsh {
     pub(super) fn test_with_state(
         target: SshTarget,
-        session_name: String,
         managed_config: Option<ManagedSshConfig>,
         noninteractive: bool,
     ) -> Self {
         Self {
             target,
-            session_name,
             managed_config,
             noninteractive,
             attempt_deadline: None,

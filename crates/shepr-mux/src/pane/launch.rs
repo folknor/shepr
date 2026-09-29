@@ -25,7 +25,6 @@ fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
         EnvVar::SheprStartupCwd | EnvVar::SheprDebugOscEvidence => PaneEnvPolicy::ServerOnly,
         EnvVar::Tmux | EnvVar::WeztermPane => PaneEnvPolicy::Scrubbed,
         EnvVar::SheprConfigPath
-        | EnvVar::SheprSession
         | EnvVar::SheprSocketPath
         | EnvVar::SheprClientSocketPath
         | EnvVar::SheprPaneId
@@ -152,8 +151,8 @@ pub struct PaneLaunchEnv {
     /// environment carries.
     pane_id: Option<PublicPaneId>,
     purpose: LaunchPurpose,
-    /// Resolved API socket path supplied by the server. An explicit
-    /// `--session` can select a socket that is not present in the environment.
+    /// Resolved API socket path supplied by the server, which need not be
+    /// present in the environment.
     api_socket_path: std::path::PathBuf,
 }
 

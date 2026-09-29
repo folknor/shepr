@@ -1,41 +1,18 @@
 use super::*;
 
 #[test]
-fn saved_machine_server_commands_are_scoped_to_the_explicit_session() {
+fn remote_server_commands_name_no_session() {
     let shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    for (named_command, default_command, line) in [
+    for (command, line) in [
+        (RemoteCliCommand::ServerStatus, "status server --json"),
         (
-            RemoteCliCommand::ServerStatus { session: "agents" },
-            RemoteCliCommand::ServerStatus {
-                session: shepr_config::DEFAULT_SESSION_NAME,
-            },
-            "status server --json",
-        ),
-        (
-            RemoteCliCommand::ServerStop {
-                session: "agents",
-                force: true,
-            },
-            RemoteCliCommand::ServerStop {
-                session: shepr_config::DEFAULT_SESSION_NAME,
-                force: true,
-            },
+            RemoteCliCommand::ServerStop { force: true },
             "server stop --force",
         ),
-        (
-            RemoteCliCommand::ClientBridge { session: "agents" },
-            RemoteCliCommand::ClientBridge {
-                session: shepr_config::DEFAULT_SESSION_NAME,
-            },
-            "remote-client-bridge",
-        ),
+        (RemoteCliCommand::ClientBridge, "remote-client-bridge"),
     ] {
         assert_eq!(
-            shepr.command(&named_command.args()),
-            format!("{} --session agents {line}", shepr.as_str())
-        );
-        assert_eq!(
-            shepr.command(&default_command.args()),
+            shepr.command(&command.args()),
             format!("{} {line}", shepr.as_str())
         );
     }
@@ -57,27 +34,17 @@ fn remote_executable_rejects_paths_that_need_shell_quoting() {
 }
 
 #[test]
-fn remote_bridge_command_passes_a_named_session() {
-    let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    assert!(
-        remote
-            .bridge_command("agents")
-            .contains(" --session agents remote-client-bridge; shepr_exit_status=")
-    );
-}
-
-#[test]
 fn remote_bridge_command_uses_installed_binary() {
     let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
     assert_eq!(
-        remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME),
+        remote_shepr.bridge_command(),
         format!(
             "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
         )
     );
     assert_eq!(
-        remote_shepr.saved_bridge_command("agents"),
-        "/usr/bin/shepr --session agents remote-client-bridge </dev/null"
+        remote_shepr.saved_bridge_command(),
+        "/usr/bin/shepr remote-client-bridge </dev/null"
     );
 }
 
@@ -86,7 +53,7 @@ fn remote_bridge_command_uses_installed_binary() {
 #[test]
 fn saved_bridge_command_does_not_depend_on_a_posix_login_shell() {
     let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    let command = remote.bridge_command("agents");
+    let command = remote.bridge_command();
     let script = command
         .strip_prefix("/bin/sh -c '")
         .and_then(|rest| rest.strip_suffix('\''))

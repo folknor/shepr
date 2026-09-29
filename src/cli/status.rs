@@ -34,7 +34,7 @@ pub(super) fn run_status_command(
         Command::Overview { json } => print_full_status(paths, json),
         Command::Server { json } => print_server_status(paths, json),
         Command::Client { json } => {
-            print_client_status(json, paths)?;
+            print_client_status(json)?;
             Ok(0)
         }
     }
@@ -55,7 +55,7 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
 
     if json {
         print_json(&FullStatusJson {
-            local_client: client_status_json(paths),
+            local_client: client_status_json(),
             server: server_status_json(paths, &server),
             update: update_status_json(&server),
         })?;
@@ -85,9 +85,9 @@ fn print_server_status(paths: &super::target::CliContext, json: bool) -> super::
     Ok(0)
 }
 
-fn print_client_status(json: bool, paths: &shepr_config::AppPaths) -> super::CliResult<()> {
+fn print_client_status(json: bool) -> super::CliResult<()> {
     if json {
-        print_json(&client_status_json(paths))?;
+        print_json(&client_status_json())?;
         return Ok(());
     }
 
@@ -167,12 +167,11 @@ struct UpdateStatusJson {
     restart_needed: bool,
 }
 
-fn client_status_json(paths: &shepr_config::AppPaths) -> ClientStatusJson {
+fn client_status_json() -> ClientStatusJson {
     ClientStatusJson {
         version: Some(shepr_protocol::build_version()),
         build_id: Some(shepr_protocol::BUILD_ID.to_owned()),
         binary: Some(current_exe_label()),
-        session: paths.session_id().name().map(str::to_owned),
     }
 }
 
@@ -192,7 +191,6 @@ fn server_status_json(
             capabilities: capabilities.clone(),
             compatible: build_compatible_bool(server),
             socket: api::socket_path(paths).display().to_string(),
-            session: paths.session_id().name().map(str::to_owned),
             restart_needed: restart_needed_bool(server),
         },
         ServerRuntimeStatus::NotRunning => ServerStatusJson {
@@ -202,7 +200,6 @@ fn server_status_json(
             capabilities: None,
             compatible: None,
             socket: api::socket_path(paths).display().to_string(),
-            session: paths.session_id().name().map(str::to_owned),
             restart_needed: false,
         },
     }

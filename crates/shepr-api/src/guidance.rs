@@ -41,7 +41,7 @@ pub fn operator_guidance(target: OperatorGuidance<'_>) -> String {
                 ),
             };
             format!(
-                "To keep the running server and its panes, run this build in a session of its own: pass `--session <name>` with a name no running server uses.\nTo use this build here instead, stop the running server; stopping exits its pane processes. {restart}"
+                "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes. {restart}"
             )
         }
         OperatorGuidance::ServerNotRunning {

@@ -215,7 +215,6 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
             .expect("test precondition"),
         label: "Remote".into(),
         target: shepr_remote::SshTarget::parse("dev@example.com").expect("test precondition"),
-        session: "main".into(),
     };
     let target = ClientEndpointId::Ssh(profile.id.clone());
     shell.set_endpoint_catalog(&[profile]);

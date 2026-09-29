@@ -92,18 +92,10 @@ fn launch() -> CliResult<i32> {
         Err(exit_code) => return Ok(exit_code),
     };
 
-    let requested_session = invocation
-        .requested_session()
-        .map_err(CliError::Usage)?
-        .as_deref()
-        .map(shepr_config::SessionId::parse)
-        .transpose()
-        .map_err(|err| CliError::Usage(err.to_string()))?;
-
     // Root-level `--help` and `--version` win over any
     // subcommand given with them.
     if invocation.help_requested() {
-        cli::print_help(requested_session.clone());
+        cli::print_help();
         return Ok(0);
     }
 
@@ -114,11 +106,11 @@ fn launch() -> CliResult<i32> {
     }
 
     if let Some(command) = invocation.cli_command() {
-        return cli::run(command, requested_session.clone());
+        return cli::run(command);
     }
 
     if matches!(invocation.launch, cli::Launch::ClientBridge) {
-        let paths = resolve_bridge_paths(requested_session.clone())?;
+        let paths = resolve_bridge_paths()?;
         init_client_logging(&paths)?;
         return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
     }
@@ -126,9 +118,9 @@ fn launch() -> CliResult<i32> {
     // The server daemon runs in the home directory; its current directory is
     // the launch directory the spawning client hands over.
     let resolved_paths = if matches!(invocation.launch, cli::Launch::HeadlessServer) {
-        shepr_config::AppPaths::resolve_for_server(requested_session)
+        shepr_config::AppPaths::resolve_for_server()
     } else {
-        shepr_config::AppPaths::resolve_with_session(requested_session)
+        shepr_config::AppPaths::resolve()
     };
     let loaded_config = load_validated_config(resolved_paths)?;
     let paths = loaded_config.paths();
@@ -145,7 +137,7 @@ fn launch() -> CliResult<i32> {
             init_client_logging(paths)?;
             return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
         }
-        cli::Launch::Tui { .. } => {}
+        cli::Launch::Tui => {}
         cli::Launch::ClientBridge | cli::Launch::Cli(_) => {
             return Err(io::Error::other("launch was already handled").into());
         }
@@ -202,10 +194,8 @@ fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32>
 /// stderr.
 fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
-    let outcome = shepr_platform::logging::init_client_file_logging(
-        &shepr_api::session::data_dir(paths),
-        logging_config,
-    )?;
+    let outcome =
+        shepr_platform::logging::init_client_file_logging(paths.data_dir(), logging_config)?;
     if let Some(unavailable) = outcome.unavailable {
         cli::print_notice(&format!(
             "shepr: could not initialize file logging at {}: {}",
@@ -216,10 +206,8 @@ fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
     Ok(())
 }
 
-fn resolve_bridge_paths(
-    requested_session: Option<shepr_config::SessionId>,
-) -> CliResult<shepr_config::AppPaths> {
-    shepr_config::AppPaths::resolve_with_session(requested_session).map_err(|errors| {
+fn resolve_bridge_paths() -> CliResult<shepr_config::AppPaths> {
+    shepr_config::AppPaths::resolve().map_err(|errors| {
         CliError::Io(io::Error::other(format!(
             "application paths could not be resolved: {}",
             errors.join("; ")

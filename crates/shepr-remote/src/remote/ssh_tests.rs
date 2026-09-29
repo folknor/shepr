@@ -176,7 +176,6 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
     let setup = RemoteSsh::with_control_dir(
         super::super::SshTarget::parse("example").expect("test precondition"),
         Some(control_dir),
-        "other-session".into(),
         &paths,
     )
     .expect("managed SSH setup");
@@ -221,7 +220,6 @@ fn unmanaged_ssh_setup_preserves_plain_transport() {
     let ssh = RemoteSsh::new(
         super::super::SshTarget::parse("example").expect("test precondition"),
         false,
-        "main".into(),
         &paths,
     )
     .expect("plain SSH setup");
@@ -250,7 +248,6 @@ fn remote_ssh_command_uses_managed_config_when_present() {
         .expect("test precondition");
     let ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
-        shepr_config::DEFAULT_SESSION_NAME.into(),
         Some(managed_config),
         false,
     );
@@ -372,7 +369,6 @@ fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
 fn remote_ssh_commands_compress_without_managed_config() {
     let ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
-        shepr_config::DEFAULT_SESSION_NAME.into(),
         None,
         false,
     );
@@ -390,7 +386,6 @@ fn remote_ssh_commands_compress_without_managed_config() {
 fn an_attempt_deadline_shortens_and_then_refuses_noninteractive_commands() {
     let mut ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
-        shepr_config::DEFAULT_SESSION_NAME.into(),
         None,
         true,
     );

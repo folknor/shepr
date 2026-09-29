@@ -40,7 +40,6 @@ struct MachineListRow<'a> {
     id: &'a str,
     label: &'a str,
     target: &'a str,
-    session: &'a str,
     selected: bool,
 }
 
@@ -70,7 +69,6 @@ fn list(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
             id: profile.id.as_str(),
             label: &profile.label,
             target: profile.target.as_str(),
-            session: &profile.session,
             selected: selected_profile.as_ref() == Some(&profile.id),
         })
         .collect::<Vec<_>>();
@@ -88,7 +86,7 @@ fn list(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
         return Ok(0);
     }
     for row in rows {
-        println!("{}\t{}\t{}\t{}", row.id, row.label, row.target, row.session);
+        println!("{}\t{}\t{}", row.id, row.label, row.target);
     }
     Ok(0)
 }
@@ -121,7 +119,6 @@ fn status(
                 paths,
                 profile.id.as_str(),
                 &profile.target,
-                &profile.session,
                 settings,
             ) {
                 Ok(()) => ("reachable", None),
@@ -194,13 +191,7 @@ fn reconnect(
             "SSH authentication failed; the saved machine was not changed.",
         ));
     }
-    shepr_remote::check_saved_ssh(
-        paths,
-        profile.id.as_str(),
-        &profile.target,
-        &profile.session,
-        settings,
-    )?;
+    shepr_remote::check_saved_ssh(paths, profile.id.as_str(), &profile.target, settings)?;
     println!(
         "Machine {} is reachable. Open Shepr clients retry within {} seconds.",
         profile.id,
@@ -213,15 +204,12 @@ fn reconnect(
 pub(crate) struct AddArgs {
     target: String,
     label: String,
-    session: String,
 }
 
 fn add_args(matches: &ArgMatches) -> Option<AddArgs> {
     Some(AddArgs {
         target: required(matches, "ssh-target")?,
         label: required(matches, "label")?,
-        session: string(matches, "remote-session")
-            .unwrap_or_else(|| shepr_config::DEFAULT_SESSION_NAME.to_owned()),
     })
 }
 
@@ -230,23 +218,18 @@ fn add(
     args: AddArgs,
     settings: shepr_remote::SavedSshSettings,
 ) -> super::CliResult<i32> {
-    let AddArgs {
-        target,
-        label,
-        session,
-    } = args;
+    let AddArgs { target, label } = args;
     let target = SshTarget::parse(target).map_err(|error| CliError::Usage(error.to_string()))?;
     let mut catalog = load_catalog(paths)?;
     // This preflight validates fields and capacity before remote setup can wait. Its ID is
     // intentionally discarded; IDs identify saved rows. Duplicate labels are permitted,
     // and selectors report ambiguity so callers can use the profile ID.
     catalog
-        .add_ssh(label.clone(), target.clone(), session.clone())
+        .add_ssh(label.clone(), target.clone())
         .map_err(|error| CliError::Usage(error.to_string()))?;
     let executable = shepr_remote::prepare_saved_ssh(
         paths,
         &target,
-        &session,
         settings,
         &mut super::operator::TerminalOperator,
     )
@@ -261,7 +244,7 @@ fn add(
         ))
     })?;
     let id = catalog
-        .add_ssh(label, target.clone(), &session)
+        .add_ssh(label, target.clone())
         .map_err(|error| CliError::Usage(error.to_string()))?;
     store_catalog(&mut catalog).map_err(|error| {
         std::io::Error::other(format!(
@@ -271,7 +254,7 @@ fn add(
     // The machine is saved and reachable either way; a missing cache only means
     // the first connection discovers the remote shepr again, so this is a warning
     // and not a failed add.
-    let metadata_cache = SshMetadataCache::new(paths, &id, &target, &session);
+    let metadata_cache = SshMetadataCache::new(paths, &id, &target);
     if let Err(error) = metadata_cache.store(&executable) {
         eprintln!(
             "warning: could not cache the remote shepr location in {}: {error}; \
@@ -299,8 +282,7 @@ fn remove(paths: &shepr_config::AppPaths, selector: &str) -> super::CliResult<i3
         super::target::resolve_machine(&catalog.ssh, selector).map_err(CliError::Usage)?;
     let id = profile.id.clone();
     let was_selected = catalog.load_selection().as_ref() == Some(&id);
-    let metadata_cache =
-        SshMetadataCache::new(paths, &id, profile.target.as_str(), &profile.session);
+    let metadata_cache = SshMetadataCache::new(paths, &id, profile.target.as_str());
     if !catalog.remove_ssh(&id) {
         return Err(failed(&format!("machine profile {id} was not found")));
     }
@@ -415,27 +397,10 @@ mod tests {
 
     #[test]
     fn add_parser_preserves_values_across_argument_orders() {
-        for (args, session) in [
-            (vec!["--label", "coder", "workstation.coder"], "default"),
-            (vec!["workstation.coder", "--label", "coder"], "default"),
-            (
-                vec![
-                    "--remote-session",
-                    "agents",
-                    "workstation.coder",
-                    "--label",
-                    "coder",
-                ],
-                "agents",
-            ),
-            (
-                vec![
-                    "--label=coder",
-                    "--remote-session=agents",
-                    "workstation.coder",
-                ],
-                "agents",
-            ),
+        for args in [
+            vec!["--label", "coder", "workstation.coder"],
+            vec!["workstation.coder", "--label", "coder"],
+            vec!["--label=coder", "workstation.coder"],
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(
@@ -443,7 +408,6 @@ mod tests {
                 AddArgs {
                     target: "workstation.coder".into(),
                     label: "coder".into(),
-                    session: session.into(),
                 },
                 "{args:?}"
             );
@@ -457,20 +421,17 @@ mod tests {
             vec!["--label", "coder"],
             vec!["workstation.coder"],
             vec!["workstation.coder", "--label"],
-            vec!["workstation.coder", "--label", "coder", "--remote-session"],
-            vec!["--label", "coder", "--label", "other", "workstation.coder"],
             vec![
                 "workstation.coder",
                 "--label",
                 "coder",
                 "--remote-session",
                 "a",
-                "--remote-session",
-                "b",
             ],
+            vec!["--label", "coder", "--label", "other", "workstation.coder"],
             vec!["--label", "coder", "workstation.coder", "other-host"],
             vec!["--unknown", "workstation.coder", "--label", "coder"],
-            vec!["--label", "--remote-session", "agents", "workstation.coder"],
+            vec!["--label", "--other", "workstation.coder"],
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert!(parse_add_args(&args).is_err(), "{args:?}");
@@ -481,7 +442,7 @@ mod tests {
     fn add_label_does_not_swallow_the_next_option() {
         // `--label` needs a value; a following option is not taken as one, so
         // the missing label is what gets reported.
-        let args = ["workstation.coder", "--label", "--remote-session", "agents"]
+        let args = ["workstation.coder", "--label", "--label", "coder"]
             .map(str::to_owned)
             .to_vec();
         let error = parse_add_args(&args).expect_err("test precondition");
@@ -494,7 +455,6 @@ mod tests {
             id: "0123456789abcdef0123456789abcdef",
             label: "Build",
             target: "dev@build",
-            session: "agents",
             selected: false,
         })
         .expect("test precondition");

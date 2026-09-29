@@ -384,7 +384,7 @@ fn remote_compatibility_error(
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To use this client build without touching that host, save it as a machine with a session of its own: `shepr machine add <ssh-target> --label <label> --remote-session <name>`. To use the host as is instead, install the same Shepr build on it and retry",
+            "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. Install the same Shepr build on the host and retry",
             shepr_protocol::build_version(),
             shepr_protocol::BUILD_ID
         ),

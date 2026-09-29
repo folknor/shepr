@@ -33,7 +33,7 @@ pub struct SavedSshSettings {
 }
 
 /// Connects one saved SSH machine repeatedly while it remains in the catalog with the same
-/// target and session (the client follows catalog edits and builds a new connector when a
+/// target (the client follows catalog edits and builds a new connector when a
 /// machine is removed, re-added or re-pointed).
 ///
 /// It owns what used to be rebuilt on every attempt: the ssh settings fixed at
@@ -58,7 +58,6 @@ pub struct SavedSshConnector {
     paths: shepr_config::AppPaths,
     profile_id: ProfileId,
     target: SshTarget,
-    session: String,
     settings: SavedSshSettings,
     state: ConnectorState,
 }
@@ -98,14 +97,12 @@ impl SavedSshConnector {
         paths: &shepr_config::AppPaths,
         profile_id: &ProfileId,
         target: &SshTarget,
-        session: &str,
         settings: SavedSshSettings,
     ) -> Self {
         let mut connector = Self {
             paths: paths.clone(),
             profile_id: profile_id.clone(),
             target: target.clone(),
-            session: session.to_owned(),
             settings,
             state: ConnectorState::default(),
         };
@@ -158,8 +155,6 @@ impl SavedSshConnector {
     }
 
     fn validate_local_setup(&self) -> io::Result<()> {
-        shepr_api::session::validate_name(&self.session)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         // This path is needed even when managed SSH config is disabled. Validate it at
         // launch so an XDG_RUNTIME_DIR that can never hold the local bridge socket fails
         // before the endpoint's first scheduled connection attempt.
@@ -189,15 +184,8 @@ impl SavedSshConnector {
         deadline: std::time::Instant,
         mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
-        shepr_api::session::validate_name(&self.session)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let target = &self.target;
-        let metadata_cache = SshMetadataCache::new(
-            &self.paths,
-            &self.profile_id,
-            target.as_str(),
-            &self.session,
-        );
+        let metadata_cache = SshMetadataCache::new(&self.paths, &self.profile_id, target.as_str());
         let state = &mut self.state;
         if let Some(error) = &state.launch_fatal_setup_error {
             return Err(error.to_io_error());
@@ -234,7 +222,6 @@ impl SavedSshConnector {
             match Self::attempt(
                 &self.paths,
                 &self.profile_id,
-                &self.session,
                 ssh,
                 target,
                 &known,
@@ -278,7 +265,6 @@ impl SavedSshConnector {
         match Self::attempt(
             &self.paths,
             &self.profile_id,
-            &self.session,
             ssh,
             target,
             &discovered,
@@ -311,7 +297,6 @@ impl SavedSshConnector {
     fn attempt<T>(
         paths: &shepr_config::AppPaths,
         profile_id: &ProfileId,
-        session: &str,
         ssh: &RemoteSsh,
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
@@ -323,13 +308,8 @@ impl SavedSshConnector {
             return Err(super::attempt_deadline_passed());
         }
         let path = saved_bridge_path(paths.xdg_runtime_dir(), profile_id)?;
-        let bridge = SshStdioBridge::start(
-            target.clone(),
-            remote_shepr,
-            path.clone(),
-            session,
-            ssh.options(),
-        )?;
+        let bridge =
+            SshStdioBridge::start(target.clone(), remote_shepr, path.clone(), ssh.options())?;
         let stream = shepr_platform::ipc::connect_local_stream(&path)?;
         establish(SavedSshStream {
             stream,
@@ -355,8 +335,8 @@ fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> i
 }
 
 fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
-    // This launch-time classifier is only called for local session validation, saved bridge
-    // paths, and SSH path setup. RemoteExecutable parsing happens during discovery after this
+    // This launch-time classifier is only called for saved bridge
+    // paths and SSH path setup. RemoteExecutable parsing happens during discovery after this
     // point and cannot reach it; those local InvalidInput failures are permanent setup errors.
     if error.kind() == io::ErrorKind::InvalidInput {
         return true;
@@ -371,7 +351,6 @@ fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_test_fixtures::AppPathsFixture as _;
 
     #[test]
     fn launch_setup_input_and_runtime_policy_errors_are_fatal() {
@@ -388,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_paths_use_profile_identity_not_target_or_session() {
+    fn bridge_paths_use_profile_identity_not_target() {
         let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-paths");
         let first = saved_bridge_path(
             runtime_dir.path(),
@@ -452,27 +431,6 @@ mod tests {
             .map(|entry| entry.expect("test precondition").file_name())
             .collect();
         assert!(left.is_empty(), "bridges left files behind: {left:?}");
-    }
-
-    #[test]
-    fn connector_rejects_invalid_session_before_touching_ssh() {
-        let settings = SavedSshSettings {
-            manage_ssh_config: false,
-        };
-        let mut connector = SavedSshConnector::new(
-            &shepr_config::AppPaths::test_default(),
-            &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
-            &SshTarget::parse("build").expect("test precondition"),
-            "bad session/name",
-            settings,
-        );
-        let error = connector
-            .connect(
-                std::time::Instant::now() + std::time::Duration::from_secs(30),
-                |_| -> io::Result<()> { panic!("no attempt may start") },
-            )
-            .expect_err("test precondition");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

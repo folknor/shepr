@@ -120,14 +120,13 @@ pub fn run_server(
     // launch path scrubs it instead of the server unsetting it here.
     let startup_cwd = read_startup_cwd();
 
-    let session_data_dir = shepr_api::session::data_dir(paths);
-    let lease =
-        shepr_mux::persist::DataDirLease::acquire(&session_data_dir).map_err(lease_error)?;
+    let session_data_dir = paths.data_dir();
+    let lease = shepr_mux::persist::DataDirLease::acquire(session_data_dir).map_err(lease_error)?;
 
     // A log file that cannot be opened does not stop the server; the ready
     // notice says so instead of naming a log that is not being written.
     let file_logging = shepr_platform::logging::init_file_logging(
-        &session_data_dir,
+        session_data_dir,
         shepr_platform::logging::SERVER_LOG_FILE,
     )?;
     // Compile the bundled detection manifests off the tokio loop, before App
