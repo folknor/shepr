@@ -309,7 +309,7 @@ impl SavedSshConnector {
         let path = saved_bridge_path(paths.xdg_runtime_dir(), label)?;
         let bridge =
             SshStdioBridge::start(target.clone(), remote_shepr, path.clone(), ssh.options())?;
-        let stream = shepr_platform::ipc::connect_local_stream(&path)?;
+        let stream = shepr_platform::ipc::connect_trusted_local_stream(&path)?;
         establish(SavedSshStream {
             stream,
             bridge: SavedSshBridge { bridge },

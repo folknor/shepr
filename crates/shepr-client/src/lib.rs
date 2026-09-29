@@ -98,7 +98,7 @@ fn run_launched_client(
     let machines = config.machines().to_vec();
     let local_failure_policy = endpoint::LocalFailurePolicy::for_machines(&machines);
 
-    let initial_stream = match shepr_platform::ipc::connect_local_stream(&socket_path) {
+    let initial_stream = match shepr_platform::ipc::connect_trusted_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
         Err(error) if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) => {
             warn!(%error, "Local is unavailable; keeping saved machines available");

@@ -125,7 +125,9 @@ impl ApiClient {
     }
 
     fn connect(&self) -> io::Result<LocalStream> {
-        shepr_platform::ipc::connect_local_stream(&self.socket_path)
+        // Every request (status, stop, detect) checks who serves the socket
+        // before the first byte is written to it.
+        shepr_platform::ipc::connect_trusted_local_stream(&self.socket_path)
     }
 }
 

@@ -430,17 +430,18 @@ fn connect_once(
             path,
             mismatch_guidance,
         } => {
-            let stream = shepr_platform::ipc::connect_local_stream(path).map_err(|error| {
-                // An absent Local socket is transient, unlike a missing SSH install.
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    std::io::Error::new(
-                        std::io::ErrorKind::ConnectionRefused,
-                        "Local is unavailable; start its server to reconnect",
-                    )
-                } else {
-                    error
-                }
-            })?;
+            let stream =
+                shepr_platform::ipc::connect_trusted_local_stream(path).map_err(|error| {
+                    // An absent Local socket is transient, unlike a missing SSH install.
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            "Local is unavailable; start its server to reconnect",
+                        )
+                    } else {
+                        error
+                    }
+                })?;
             establish(
                 stream,
                 EndpointLink::Local {

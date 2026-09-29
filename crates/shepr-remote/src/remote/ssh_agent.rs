@@ -149,7 +149,7 @@ fn connect(path: &Path, socket_path: &Path) -> io::Result<Option<LocalStream>> {
             "SSH agent path is not valid UTF-8",
         )
     })?;
-    let mut stream = shepr_platform::ipc::connect_local_stream(socket_path)?;
+    let mut stream = shepr_platform::ipc::connect_trusted_local_stream(socket_path)?;
     let request = Request {
         id: "remote:ssh-agent".into(),
         method: Method::ServerSshAgentRegister(ServerSshAgentRegisterParams {

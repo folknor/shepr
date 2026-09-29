@@ -456,6 +456,37 @@ pub fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
     LocalStream::connect(name)
 }
 
+/// Connects to a server socket and checks its owner before returning the
+/// stream, so no request or attach byte is ever written to a socket served by
+/// another user.
+///
+/// This is the client-side counterpart of the accept-side [`peer_is_same_user`]
+/// check. The peer of a stream that connected is a listener, so its
+/// credentials are the ones the listening process had when it bound the
+/// socket. A foreign or unverifiable owner is a `PermissionDenied` error that
+/// names the socket; every connect error of [`connect_local_stream`] is passed
+/// through unchanged.
+pub fn connect_trusted_local_stream(path: &Path) -> io::Result<LocalStream> {
+    let stream = connect_local_stream(path)?;
+    match peer_is_same_user(&stream) {
+        Ok(true) => Ok(stream),
+        Ok(false) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "the server socket {} is served by another user; refusing to send it anything",
+                path.display()
+            ),
+        )),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!(
+                "could not verify who serves the socket {}: {error}",
+                path.display()
+            ),
+        )),
+    }
+}
+
 pub fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
     use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
 
@@ -1380,6 +1411,22 @@ mod tests {
         let (client, server) = connected_pair("peercred");
         assert!(peer_is_same_user(&server).expect("SO_PEERCRED"));
         assert!(peer_is_same_user(&client).expect("SO_PEERCRED"));
+    }
+
+    #[test]
+    fn trusted_connect_admits_a_socket_served_by_this_user() {
+        let path = test_socket_path("trusted-connect");
+        let _listener = bind_local_listener(&path).expect("test precondition");
+        connect_trusted_local_stream(&path).expect("a same-user server is trusted");
+    }
+
+    #[test]
+    fn trusted_connect_passes_connect_errors_through() {
+        let path = test_socket_path("trusted-connect-absent");
+        let Err(error) = connect_trusted_local_stream(&path) else {
+            panic!("nothing listens at the path");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     fn connected_pair(name: &str) -> (LocalStream, LocalStream) {

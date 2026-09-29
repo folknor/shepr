@@ -1,4 +1,5 @@
 pub mod client;
+pub mod daemon_exit;
 pub mod error;
 pub mod guidance;
 pub mod launch_env;

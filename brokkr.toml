@@ -211,7 +211,8 @@ exclude = [
 message = "a new clippy seal escape; use the sanctioned alternative the seal's reason names (shepr_core::env, try_exists, a stated current_dir, a returned status), or add this file to the exclude list as the reviewed exception"
 
 # Library crates do not print: a print macro panics on a closed pipe and
-# reaches no log file (the server daemon's stderr is /dev/null). The CLI in
+# reaches no log file (a client-launched server daemon's stderr is only its
+# boot log, which a print after startup would fill). The CLI in
 # `src/` resets SIGPIPE before printing and is not held by this rule. The
 # test-code excludes and `skip_after` spare tests; `check_skip_after_scopes.py`
 # re-checks the production items under a file's first `#[cfg(test)]`.
@@ -690,7 +691,14 @@ build_packages = ["shepr-test-support"]
 # checks `shepr` as `cargo install` resolves it, with nothing a sibling member
 # or a dev-dependency contributes. It is a `cargo check` (no codegen) in the
 # profile `brokkr install` uses; it builds and runs nothing.
+#
+# `shepr` and `shepr-server` are two bin targets of the one root package, and
+# `cargo install --path` installs every bin a package carries, so listing the
+# package installs the pair together. `brokkr run` runs a single named target
+# and builds only that one, so the default is the client; the client launches
+# its sibling `shepr-server` from its own directory.
 [bin]
+default = "shepr"
 install = ["shepr"]
 install_feature_check = "always"
 

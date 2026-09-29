@@ -12,6 +12,11 @@ pub(super) const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 /// The retry cap makes collision handling finite while keeping exhaustion unlikely.
 pub(super) const RANDOM_NAME_ATTEMPTS: u32 = 16;
 
+/// Bytes of a server boot log quoted in a failed-launch message. The tail is
+/// where a boot failure ends up, and the cap keeps a runaway log out of an
+/// error line.
+pub(super) const BOOT_LOG_TAIL_BYTES: u64 = 4096;
+
 /// Largest single-use socket lock sidecar the abandoned-socket sweep reads.
 /// An owner identity tag is well under this, so anything larger is not a
 /// marker and is left alone unread.

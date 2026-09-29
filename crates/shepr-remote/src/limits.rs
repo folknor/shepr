@@ -42,17 +42,25 @@ pub(crate) const SSH_AGENT_REGISTRATION_TIMEOUT: Duration = Duration::from_milli
 /// the API worker time to answer without a tight polling loop.
 pub(crate) const SSH_AGENT_RESPONSE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// How often a client checks for the newly spawned server socket. The interval
-/// makes startup visible promptly without a busy wait.
+/// How often a launching client checks its spawned server and the launch lock.
+/// The interval notices a daemon that died during boot and makes startup
+/// visible promptly without a busy wait.
 pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Time allowed for the stable status API check before attaching. The timeout
-/// bounds an unavailable or overloaded local server check.
+/// Time allowed for one status request to a local server, the response
+/// deadline of every launch probe. The timeout bounds an unavailable or
+/// overloaded local server check.
 pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Maximum time for a newly spawned server to expose its client socket. The
-/// deadline allows normal startup while keeping a failed launch finite.
+/// Maximum time for a newly spawned server to answer a status request with
+/// this build's identity. The deadline allows normal startup while keeping a
+/// failed launch finite.
 pub const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Slack added to [`SERVER_READY_TIMEOUT`] for a client waiting on the launch
+/// lock. The holder may spend its whole readiness window launching, so a
+/// waiter that gave up sooner would fail a launch that is about to succeed.
+pub(crate) const LAUNCH_LOCK_WAIT_GRACE: Duration = Duration::from_secs(5);
 
 /// Delay between checks that an SSH child process has exited. It bounds
 /// completion latency without spinning on `try_wait`.

@@ -100,6 +100,13 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
 - **More stale wording.** `current_process_is_detached_server_daemon`'s doc says
   remote attach restarts a non-detached server (it no longer does);
   `RunServerError::SessionDataHeld` talks about a session data directory.
+- **Launcher connect deadline and boot log size.** The launcher bounds a status
+  response but not the blocking `connect` inside `ipc::probe` and the API client,
+  which could hang on a full backlog; nothing limits how much a server writes
+  to `server-boot.log`.
+- **Runtime directory permissions.** `prepare_socket_path` and the server
+  create the runtime directory with `create_dir_all`, so it gets umask
+  permissions; only the launcher creates it 0700.
 - **Re-prompting for SSH authentication.** A machine that still needs
   authentication after a failed or skipped startup prompt is not prompted again
   until the next launch, and there is no TUI action to suspend the screen and

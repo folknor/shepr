@@ -1,20 +1,48 @@
-//! Shared local server startup and build checks for direct and SSH clients.
+//! Local server rendezvous for the TUI and the SSH bridge: find the running
+//! server, or start one and wait until it proves itself.
+//!
+//! The server is the `shepr-server` executable installed beside the running
+//! `shepr`. A launch is:
+//!
+//! 1. Probe the client socket and ask a live listener for its status. A live
+//!    server that answers is used as it is (its build is checked below); one
+//!    that listens but does not answer, or whose socket is inaccessible or
+//!    served by another user, is a failure and never a reason to start a
+//!    second server.
+//! 2. Only for the build profile's own runtime address: take the launch lock
+//!    in the runtime directory, so simultaneous first clients start one
+//!    server, and probe again under it.
+//! 3. Start `shepr-server --client-spawned` detached in its own session, its
+//!    stderr going to a boot log in the runtime directory, and hold it in a
+//!    guard that kills its process group on every unsuccessful exit.
+//! 4. Poll until the child answers a status request with this build's
+//!    identity, noticing a child that dies on the way. Only then is the guard
+//!    disarmed and the lock released.
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
+use shepr_api::RuntimeStatus;
+use shepr_api::daemon_exit::DaemonExit;
 use shepr_core::env::EnvVar;
+use shepr_platform::SpawnedDaemon;
+use shepr_platform::ipc::FlockLock;
 use tracing::info;
 
-use crate::limits::{SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT};
+use crate::limits::{LAUNCH_LOCK_WAIT_GRACE, SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT};
 
 pub use crate::limits::SERVER_READY_TIMEOUT;
 
-fn client_socket_path(paths: &shepr_config::AppPaths) -> std::path::PathBuf {
-    paths.server_address().client_socket().to_path_buf()
-}
+use shepr_api::daemon_exit::{CLIENT_SPAWNED_FLAG, SERVER_BINARY_NAME};
+
+/// The launch lock inside the runtime directory. It is never removed, so
+/// every contender locks the same inode.
+const LAUNCH_LOCK_FILE_NAME: &str = "launch.lock";
+
+/// Where a launched server's stderr goes, inside the runtime directory.
+const BOOT_LOG_FILE_NAME: &str = "server-boot.log";
 
 /// A direct client checks the build before attaching. An SSH bridge leaves the
 /// check to the client's typed protocol handshake so mismatch errors retain it.
@@ -25,119 +53,471 @@ pub enum BuildCheck {
 }
 
 /// Ensures a server is listening, with the caller's build-check policy.
+///
+/// A server this call starts is verified to be this build before it returns,
+/// whatever the policy: the policy governs only a server that was already
+/// running.
 pub fn ensure_running(
     paths: &shepr_config::AppPaths,
     timeout: Duration,
     build_check: BuildCheck,
 ) -> io::Result<()> {
-    if is_server_listening(paths)? {
-        info!("server already running");
-        return match build_check {
-            BuildCheck::BeforeAttach => validate_running_server_compatibility(paths),
-            BuildCheck::AtClientHandshake => Ok(()),
-        };
-    }
-    info!("no server running, spawning server daemon");
-    spawn_server_daemon(paths)?;
-    wait_for_server_socket(&client_socket_path(paths), timeout, paths)
-}
-
-// ---------------------------------------------------------------------------
-// Server detection
-// ---------------------------------------------------------------------------
-
-/// Checks whether a shepr server is currently listening on the client socket.
-///
-/// This works by attempting to connect to the client socket. If the connection
-/// succeeds, a server is running. If the socket path is missing or the
-/// connection is refused, no server is running. Other errors are returned so
-/// an inaccessible socket is not mistaken for permission to start another
-/// daemon.
-pub fn is_server_listening(paths: &shepr_config::AppPaths) -> io::Result<bool> {
-    is_server_listening_at(&client_socket_path(paths))
-}
-
-/// Checks whether a shepr server is listening at a specific socket path.
-fn is_server_listening_at(socket_path: &Path) -> io::Result<bool> {
-    match shepr_platform::ipc::probe(socket_path) {
-        shepr_platform::ipc::Liveness::Live => Ok(true),
-        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => Ok(false),
-        shepr_platform::ipc::Liveness::Unreachable(err) => {
-            tracing::warn!(path = %socket_path.display(), error = %err, "failed to check server socket");
-            Err(err)
+    match probe_server(paths)? {
+        Probed::Running(status) => {
+            info!("server already running");
+            return accept_running(paths, &status, build_check);
         }
+        Probed::Unresponsive => return Err(unresponsive_error(paths)),
+        Probed::NoServer => {}
+    }
+    require_own_runtime_address(paths)?;
+    let server = server_executable()?;
+
+    let _lock = acquire_launch_lock(paths, timeout.saturating_add(LAUNCH_LOCK_WAIT_GRACE))?;
+    // A client that held the lock before us may have finished its launch.
+    match probe_server(paths)? {
+        Probed::Running(status) => {
+            info!("server started by another client");
+            return accept_running(paths, &status, build_check);
+        }
+        Probed::Unresponsive => return Err(unresponsive_error(paths)),
+        Probed::NoServer => {}
+    }
+
+    info!(server = %server.display(), "no server running, starting the server daemon");
+    let status = launch_daemon(paths, &server, timeout)?;
+    accept_running(paths, &status, build_check)
+}
+
+// ---------------------------------------------------------------------------
+// Probing
+// ---------------------------------------------------------------------------
+
+/// What a probe of the local server found.
+enum Probed {
+    /// Nothing listens: the socket is absent or stale.
+    NoServer,
+    /// A server listens and answered a status request.
+    Running(RuntimeStatus),
+    /// Something listens but gave no status answer within the deadline.
+    Unresponsive,
+}
+
+fn probe_server(paths: &shepr_config::AppPaths) -> io::Result<Probed> {
+    probe_server_at(
+        paths.server_address().client_socket(),
+        &shepr_api::socket_path(paths),
+    )
+}
+
+/// Probes the client socket, and follows a live one with a bounded status
+/// request on the API socket rather than trusting that a connect succeeded.
+///
+/// Only an absent or stale client socket proves that no server is there. An
+/// unreachable one (permission, a non-socket in the way, a symlink loop) and a
+/// listener served by another user are errors: neither proves absence, so
+/// neither may lead to a second server. The status request itself checks who
+/// serves the API socket before writing to it.
+fn probe_server_at(client_socket: &Path, api_socket: &Path) -> io::Result<Probed> {
+    match shepr_platform::ipc::probe(client_socket) {
+        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => {
+            return Ok(Probed::NoServer);
+        }
+        shepr_platform::ipc::Liveness::Unreachable(error) => {
+            tracing::warn!(path = %client_socket.display(), %error, "failed to check server socket");
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot tell whether a shepr server listens at {}: {error}",
+                    client_socket.display()
+                ),
+            ));
+        }
+        shepr_platform::ipc::Liveness::Live => {}
+    }
+    match shepr_api::read_runtime_status_at(api_socket, STATUS_REQUEST_TIMEOUT) {
+        Ok(Some(status)) => Ok(Probed::Running(status)),
+        Ok(None) => Ok(Probed::Unresponsive),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!(
+                "the shepr server at {} did not give a usable status answer: {error}",
+                client_socket.display()
+            ),
+        )),
     }
 }
 
-fn read_server_status(
-    paths: &shepr_config::AppPaths,
-) -> io::Result<Option<shepr_api::RuntimeStatus>> {
-    shepr_api::read_runtime_status_at(&shepr_api::socket_path(paths), STATUS_REQUEST_TIMEOUT)
+fn unresponsive_error(paths: &shepr_config::AppPaths) -> io::Error {
+    io::Error::other(format!(
+        "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
+        paths.server_address().client_socket().display(),
+        shepr_api::session::restart_after_update_guidance_for(paths)
+    ))
 }
 
-/// Checks a local server before attaching. Saved-machine status queries the
-/// remote server through `check_saved_ssh` and its status JSON parser.
-pub fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::Result<()> {
-    let Some(status) = read_server_status(paths)? else {
-        return Err(io::Error::other(format!(
-            "a shepr server is listening, but its status API is unavailable, so its build cannot be confirmed.\n\n{}\nIf that fails, stop the server process manually.",
-            shepr_api::session::restart_after_update_guidance_for(paths)
-        )));
-    };
-
+/// Applies the caller's policy to a running server's build.
+fn accept_running(
+    paths: &shepr_config::AppPaths,
+    status: &RuntimeStatus,
+    build_check: BuildCheck,
+) -> io::Result<()> {
     if shepr_protocol::is_this_build(&status.build_id) {
         return Ok(());
     }
+    match build_check {
+        BuildCheck::BeforeAttach => Err(running_build_mismatch(paths, status)),
+        BuildCheck::AtClientHandshake => Ok(()),
+    }
+}
 
-    Err(io::Error::other(format!(
+fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus) -> io::Error {
+    io::Error::other(format!(
         "the running shepr server is a different build; restart it before attaching.\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
         status.version.as_deref().unwrap_or("unknown"),
         status.build_id,
         shepr_protocol::build_version(),
         shepr_protocol::BUILD_ID,
         shepr_api::session::restart_after_update_guidance_for(paths)
-    )))
+    ))
+}
+
+/// A client starts a server only for its profile's own runtime address. A
+/// socket override names a server that is already running (a pane's own, or a
+/// test's); a server started for it would only meet the data directory lease
+/// the profile's real server holds.
+fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> io::Result<()> {
+    let address = paths.server_address();
+    if address.is_runtime_address() {
+        return Ok(());
+    }
+    let selected_by = address.override_variable().map_or_else(
+        || "a socket override".to_owned(),
+        |variable| variable.to_string(),
+    );
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "no shepr server is running at {}, which {selected_by} selects. A client starts a server only for its own runtime address ({}); a socket override names a server that is already running.",
+            address.client_socket().display(),
+            paths.runtime_dir().display()
+        ),
+    ))
 }
 
 // ---------------------------------------------------------------------------
-// Server spawning
+// The server executable
 // ---------------------------------------------------------------------------
 
-/// Spawns the shepr server as a background daemon process.
+/// The `shepr-server` installed beside the running client.
 ///
-/// The server process is fully detached:
-/// - Runs in its own session (setsid) so it survives the client exiting
-/// - Stdin/stdout/stderr are redirected to /dev/null
-/// - Inherits the surrounding environment and gets the already-resolved
-///   socket target on its child command, including removals for inherited
-///   overrides that were superseded.
-///
-/// Returns the PID of the spawned server process.
-pub fn spawn_server_daemon(paths: &shepr_config::AppPaths) -> io::Result<u32> {
-    // After an install replaces the binary, raw `current_exe()` names the
-    // running one "/…/shepr (deleted)"; this resolves to the new install.
-    let exe = shepr_platform::launch_executable().map_err(|err| {
+/// The client is found through `launch_executable`, which follows an
+/// executable an install replaced on disk, and only its file name is swapped:
+/// no `PATH` lookup and no environment override chooses the server. A missing
+/// or non-executable sibling is an install error naming the path.
+pub fn server_executable() -> io::Result<PathBuf> {
+    let client = shepr_platform::launch_executable().map_err(|error| {
         io::Error::new(
-            err.kind(),
-            format!("failed to determine shepr executable path: {err}"),
+            error.kind(),
+            format!("failed to determine the shepr executable path: {error}"),
         )
     })?;
+    sibling_server_executable(&client)
+}
 
-    info!(exe = %exe.display(), "spawning server daemon");
-
-    let mut command = build_server_daemon_command(
-        &exe,
-        &server_daemon_working_dir(paths),
-        paths.current_dir(),
-        paths,
+fn sibling_server_executable(client: &Path) -> io::Result<PathBuf> {
+    let server = client.with_file_name(SERVER_BINARY_NAME);
+    let install_hint = format!(
+        "shepr starts its server from the same directory as itself; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`)"
     );
+    match std::fs::metadata(&server) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file; {install_hint}", server.display()),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{SERVER_BINARY_NAME} was not found at {}; {install_hint}",
+                    server.display()
+                ),
+            ));
+        }
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("cannot inspect {}: {error}", server.display()),
+            ));
+        }
+    }
+    if !shepr_platform::has_execute_access(&server) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is not executable; {install_hint}", server.display()),
+        ));
+    }
+    Ok(server)
+}
 
-    let pid = command.spawn().map(|child| child.id()).map_err(|err| {
-        io::Error::new(err.kind(), format!("failed to spawn shepr server: {err}"))
+// ---------------------------------------------------------------------------
+// The launch lock
+// ---------------------------------------------------------------------------
+
+/// Takes the launch lock of the profile's runtime directory, polling without
+/// blocking for at most `wait`.
+///
+/// The lock is keyed to the profile, not to a socket pair: socket overrides
+/// move only the sockets, so every server of one profile competes for the same
+/// data directory lease anyway.
+fn acquire_launch_lock(paths: &shepr_config::AppPaths, wait: Duration) -> io::Result<FlockLock> {
+    shepr_platform::create_private_directory_all(paths.runtime_dir()).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot create the runtime directory {}: {error}",
+                paths.runtime_dir().display()
+            ),
+        )
     })?;
-    info!(pid, "server daemon spawned");
+    acquire_launch_lock_with(
+        &paths.runtime_dir().join(LAUNCH_LOCK_FILE_NAME),
+        wait,
+        &mut real_now,
+        &mut std::thread::sleep,
+    )
+}
 
-    Ok(pid)
+fn acquire_launch_lock_with(
+    lock_path: &Path,
+    wait: Duration,
+    now: &mut impl FnMut() -> Instant,
+    sleep: &mut impl FnMut(Duration),
+) -> io::Result<FlockLock> {
+    let deadline = now() + wait;
+    loop {
+        match shepr_platform::ipc::acquire_flock_lock(lock_path, false) {
+            Ok(lock) => return Ok(lock),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "another shepr is still starting the server: it has held {} for {}s",
+                            lock_path.display(),
+                            wait.as_secs()
+                        ),
+                    ));
+                }
+                sleep(SOCKET_POLL_INTERVAL);
+            }
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "cannot take the launch lock {}: {error}",
+                        lock_path.display()
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// The production clock of the launch loops.
+fn real_now() -> Instant {
+    // clock-io-ok: the production adapter measures actual launch wait time.
+    Instant::now()
+}
+
+// ---------------------------------------------------------------------------
+// Starting the daemon
+// ---------------------------------------------------------------------------
+
+/// The files a launch names in its failure messages.
+struct LaunchFiles<'a> {
+    /// The `shepr-server` being started.
+    server: &'a Path,
+    /// Where its stderr goes while it boots.
+    boot_log: &'a Path,
+    /// Where it logs once tracing is up.
+    server_log: &'a Path,
+}
+
+fn launch_daemon(
+    paths: &shepr_config::AppPaths,
+    server: &Path,
+    timeout: Duration,
+) -> io::Result<RuntimeStatus> {
+    let boot_log = paths.runtime_dir().join(BOOT_LOG_FILE_NAME);
+    let server_log = paths
+        .data_dir()
+        .join(shepr_platform::logging::SERVER_LOG_FILE);
+    let working_dir = server_daemon_working_dir(paths);
+    launch_with(
+        &LaunchFiles {
+            server,
+            boot_log: &boot_log,
+            server_log: &server_log,
+        },
+        timeout,
+        |stderr| {
+            let mut command =
+                build_server_daemon_command(server, &working_dir, paths.current_dir(), paths);
+            command.stderr(stderr);
+            command.spawn()
+        },
+        || probe_server(paths),
+        &mut real_now,
+        &mut std::thread::sleep,
+    )
+}
+
+/// Starts the daemon through `spawn` (handed the boot log as its stderr) and
+/// polls `probe` until the daemon answers with this build's identity.
+///
+/// Every way out but that answer kills and reaps the daemon's process group:
+/// a probe failure, the timeout, a build mismatch and a child that died. The
+/// daemon exiting because another server already holds the runtime is not a
+/// failure yet: the occupant is what the client will attach to, so polling
+/// goes on for it until the deadline. An occupant of another build that
+/// answers is returned for the caller's build-check policy.
+fn launch_with(
+    files: &LaunchFiles<'_>,
+    timeout: Duration,
+    spawn: impl FnOnce(Stdio) -> io::Result<Child>,
+    mut probe: impl FnMut() -> io::Result<Probed>,
+    now: &mut impl FnMut() -> Instant,
+    sleep: &mut impl FnMut(Duration),
+) -> io::Result<RuntimeStatus> {
+    let boot_log = shepr_platform::open_boot_log(files.boot_log).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot open the server boot log {}: {error}",
+                files.boot_log.display()
+            ),
+        )
+    })?;
+    let child = spawn(Stdio::from(boot_log)).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to start {}: {error}", files.server.display()),
+        )
+    })?;
+    info!(pid = child.id(), "server daemon spawned");
+    let mut daemon = SpawnedDaemon::new(child);
+
+    let deadline = now() + timeout;
+    let mut exited: Option<ExitStatus> = None;
+    loop {
+        if exited.is_none() {
+            exited = daemon.try_wait().map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("cannot check the server daemon: {error}"),
+                )
+            })?;
+            if let Some(status) = exited {
+                info!(%status, "server daemon exited during boot");
+            }
+        }
+
+        // A daemon that failed outright takes precedence over what the probe
+        // says, unless a server is up: the failure may be a race that some
+        // other server won.
+        let failed = exited
+            .filter(|status| DaemonExit::from_code(status.code()) != DaemonExit::AlreadyRunning);
+        let probed = match probe() {
+            Ok(probed) => probed,
+            Err(error) => {
+                return Err(failed.map_or(error, |status| boot_failure(files, status)));
+            }
+        };
+        if let Probed::Running(status) = probed {
+            if shepr_protocol::is_this_build(&status.build_id) {
+                daemon.disarm();
+                return Ok(status);
+            }
+            if exited.is_none() {
+                return Err(sibling_build_mismatch(files, &status));
+            }
+            // The daemon is gone and another server of another build answers.
+            return Ok(status);
+        }
+        if let Some(status) = failed {
+            return Err(boot_failure(files, status));
+        }
+        if now() >= deadline {
+            return Err(boot_timeout(files, timeout, exited.is_some()));
+        }
+        sleep(SOCKET_POLL_INTERVAL);
+    }
+}
+
+/// The daemon exited during boot: how, and what it printed.
+fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> io::Error {
+    let class = DaemonExit::from_code(status.code());
+    let mut message = format!(
+        "{SERVER_BINARY_NAME} {} ({status})",
+        class.describe_boot_end()
+    );
+    append_boot_log(&mut message, files);
+    io::Error::other(message)
+}
+
+/// The daemon did not answer with this build's identity in time.
+fn boot_timeout(files: &LaunchFiles<'_>, timeout: Duration, occupant_only: bool) -> io::Error {
+    let mut message = if occupant_only {
+        format!(
+            "{SERVER_BINARY_NAME} found another server already running, but that server did not answer a status request within {}s",
+            timeout.as_secs()
+        )
+    } else {
+        format!(
+            "{SERVER_BINARY_NAME} did not become ready within {}s and was stopped",
+            timeout.as_secs()
+        )
+    };
+    append_boot_log(&mut message, files);
+    io::Error::new(io::ErrorKind::TimedOut, message)
+}
+
+fn append_boot_log(message: &mut String, files: &LaunchFiles<'_>) {
+    match shepr_platform::read_boot_log_tail(files.boot_log) {
+        Ok(tail) if !tail.is_empty() => message.push_str(&format!(
+            "\nserver output ({}):\n{tail}",
+            files.boot_log.display()
+        )),
+        Ok(_) => message.push_str(&format!(
+            "\nthe server printed nothing during boot ({})",
+            files.boot_log.display()
+        )),
+        Err(error) => message.push_str(&format!(
+            "\ncould not read the server boot log {}: {error}",
+            files.boot_log.display()
+        )),
+    }
+    message.push_str(&format!(
+        "\nonce it is running, the server logs to {}",
+        files.server_log.display()
+    ));
+}
+
+/// The daemon this client just started answered as another build, so the
+/// installed pair is inconsistent.
+fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> io::Error {
+    io::Error::other(format!(
+        "{} is a different build than this shepr and was stopped; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`).\n\nserver: v{} build {}\nclient: v{} build {}",
+        files.server.display(),
+        status.version.as_deref().unwrap_or("unknown"),
+        status.build_id,
+        shepr_protocol::build_version(),
+        shepr_protocol::BUILD_ID
+    ))
 }
 
 /// The working directory the server daemon runs in: the user's home
@@ -157,6 +537,13 @@ fn server_daemon_working_dir(paths: &shepr_config::AppPaths) -> PathBuf {
         .map_or_else(|| PathBuf::from("/"), Path::to_path_buf)
 }
 
+/// The command that starts the server daemon, fully detached:
+/// - runs in its own session (setsid), so it survives the client exiting and
+///   leads a process group the launch guard can kill as a whole;
+/// - stdin and stdout are `/dev/null`; stderr is `/dev/null` here and the
+///   launch replaces it with the boot log;
+/// - inherits the surrounding environment and gets the already-resolved socket
+///   target, including removals for inherited overrides that were superseded.
 fn build_server_daemon_command(
     exe: &Path,
     working_dir: &Path,
@@ -165,11 +552,10 @@ fn build_server_daemon_command(
 ) -> Command {
     let mut command = shepr_platform::child_command(exe, working_dir);
     command
-        .arg("server")
-        // Redirect stdio to /dev/null
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .arg(CLIENT_SPAWNED_FLAG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     shepr_platform::detach_server_daemon_command(&mut command);
 
     // A private daemon-start hint that seeds a fresh headless server from the
@@ -185,379 +571,6 @@ fn build_server_daemon_command(
     command
 }
 
-// ---------------------------------------------------------------------------
-// Socket readiness
-// ---------------------------------------------------------------------------
-
-/// Waits for the server's client socket to become ready for connections.
-///
-/// Polls the socket path at regular intervals until a connection succeeds
-/// or the timeout elapses. Returns an error if the server doesn't become
-/// ready within the timeout.
-fn wait_for_server_socket(
-    socket_path: &Path,
-    timeout: Duration,
-    paths: &shepr_config::AppPaths,
-) -> io::Result<()> {
-    wait_for_server_socket_with(
-        socket_path,
-        timeout,
-        paths,
-        // clock-io-ok: the production adapter measures actual socket readiness time.
-        std::time::Instant::now,
-        is_server_listening_at,
-        std::thread::sleep,
-    )
-}
-
-fn wait_for_server_socket_with(
-    socket_path: &Path,
-    timeout: Duration,
-    paths: &shepr_config::AppPaths,
-    mut now: impl FnMut() -> std::time::Instant,
-    mut probe: impl FnMut(&Path) -> io::Result<bool>,
-    mut sleep: impl FnMut(Duration),
-) -> io::Result<()> {
-    let deadline = now() + timeout;
-
-    while now() < deadline {
-        if probe(socket_path)? {
-            info!(path = %socket_path.display(), "server socket ready");
-            return Ok(());
-        }
-        sleep(SOCKET_POLL_INTERVAL);
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!(
-            "server did not become ready within {}s (socket: {}). The background server may still be starting; try `shepr` again, or check {}",
-            timeout.as_secs(),
-            socket_path.display(),
-            paths.data_dir().join("shepr-server.log").display()
-        ),
-    ))
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use shepr_test_fixtures::AppPathsFixture as _;
-    use shepr_test_support::{IsolatedEnv, ScratchDir, drop_dac_capabilities_on_this_thread};
-    use std::ffi::OsStr;
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::fs::PermissionsExt as _;
-    use std::os::unix::net::UnixListener;
-    use std::path::PathBuf;
-
-    #[test]
-    fn is_server_listening_returns_false_for_nonexistent_path() {
-        let dir = ScratchDir::new("nonexistent");
-        let path = dir.join("s.sock");
-        assert!(!is_server_listening_at(&path).expect("socket lookup succeeds"));
-    }
-
-    #[test]
-    fn is_server_listening_returns_permission_errors_instead_of_false() {
-        let dir = ScratchDir::new("inaccessible");
-        let parent = dir.join("private");
-        std::fs::create_dir(&parent).expect("create inaccessible directory");
-        let mut permissions = std::fs::metadata(&parent)
-            .expect("read inaccessible directory metadata")
-            .permissions();
-        permissions.set_mode(0o000);
-        std::fs::set_permissions(&parent, permissions).expect("restrict directory permissions");
-
-        let path = parent.join("s.sock");
-        let probe = std::thread::spawn(move || {
-            drop_dac_capabilities_on_this_thread();
-            is_server_listening_at(&path)
-        })
-        .join();
-
-        let mut permissions = std::fs::metadata(&parent)
-            .expect("read inaccessible directory metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&parent, permissions).expect("restore directory permissions");
-        let result = probe.expect("permission probe thread completes");
-        assert_eq!(
-            result
-                .expect_err("permission errors must not mean no server")
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-    }
-
-    #[test]
-    fn server_daemon_command_clears_superseded_socket_overrides() {
-        let env = IsolatedEnv::new();
-        env.set(EnvVar::SheprSocketPath, "/tmp/inherited.sock");
-        env.set(EnvVar::SheprClientSocketPath, "/tmp/inherited-client.sock");
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-        let command = build_server_daemon_command(
-            &PathBuf::from("/tmp/shepr-test"),
-            Path::new("/"),
-            Some(Path::new("/home/test")),
-            &paths,
-        );
-        let envs: Vec<_> = command.get_envs().collect();
-
-        // The API override outranks the client one, so the child gets the API
-        // override as resolved and the superseded client override is removed.
-        assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(EnvVar::SheprSocketPath.name())
-                && *value == Some(OsStr::new("/tmp/inherited.sock"))
-        }));
-        assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(EnvVar::SheprClientSocketPath.name()) && value.is_none()
-        }));
-    }
-
-    #[test]
-    fn server_daemon_command_passes_current_dir_as_startup_cwd() {
-        let expected = Path::new("/home/test");
-        let paths = shepr_config::AppPaths::test_default();
-        let command = build_server_daemon_command(
-            &PathBuf::from("/tmp/shepr-test"),
-            Path::new("/"),
-            Some(expected),
-            &paths,
-        );
-        let envs: Vec<_> = command.get_envs().collect();
-
-        assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(EnvVar::SheprStartupCwd.name())
-                && value == &Some(expected.as_os_str())
-        }));
-    }
-
-    #[test]
-    fn server_daemon_runs_in_home_not_the_launch_directory() {
-        let scratch = ScratchDir::new("daemon-working-dir");
-        let paths = shepr_config::AppPaths::test_at(scratch.path());
-        let working_dir = server_daemon_working_dir(&paths);
-        assert_eq!(
-            Some(working_dir.as_path()),
-            paths.home_dir().or(Some(Path::new("/")))
-        );
-
-        let launch_dir = scratch.join("launch");
-        let command = build_server_daemon_command(
-            &PathBuf::from("/tmp/shepr-test"),
-            &working_dir,
-            Some(&launch_dir),
-            &paths,
-        );
-        assert_eq!(command.get_current_dir(), Some(working_dir.as_path()));
-        assert_ne!(command.get_current_dir(), Some(launch_dir.as_path()));
-    }
-
-    #[test]
-    fn is_server_listening_returns_true_for_live_socket() {
-        let dir = ScratchDir::new("live");
-        let path = dir.join("s.sock");
-
-        let _listener = UnixListener::bind(&path).expect("test precondition");
-        assert!(is_server_listening_at(&path).expect("socket lookup succeeds"));
-    }
-
-    #[test]
-    fn is_server_listening_returns_false_for_stale_socket() {
-        let dir = ScratchDir::new("stale");
-        let path = dir.join("s.sock");
-
-        // Create a socket and immediately drop the listener.
-        // This leaves a stale socket file with nobody listening.
-        {
-            let _listener = UnixListener::bind(&path).expect("test precondition");
-        }
-
-        // The socket file exists but nobody is listening.
-        assert!(!is_server_listening_at(&path).expect("socket lookup succeeds"));
-    }
-
-    #[test]
-    fn is_server_listening_returns_false_when_listener_dropped() {
-        let dir = ScratchDir::new("dropped");
-        let path = dir.join("s.sock");
-
-        // Bind and immediately drop the listener.
-        drop(UnixListener::bind(&path).expect("test precondition"));
-
-        // Socket is stale - should return false.
-        assert!(!is_server_listening_at(&path).expect("socket lookup succeeds"));
-    }
-
-    #[test]
-    fn wait_for_server_socket_succeeds_immediately() {
-        let dir = ScratchDir::new("wait-ok");
-        let path = dir.join("s.sock");
-
-        let _listener = UnixListener::bind(&path).expect("test precondition");
-
-        // Should succeed immediately (socket is already ready).
-        let result = wait_for_server_socket(
-            &path,
-            Duration::from_millis(100),
-            &shepr_config::AppPaths::test_at(dir.path()),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn wait_for_server_socket_times_out() {
-        let dir = ScratchDir::new("wait-timeout");
-        let path = dir.join("s.sock");
-
-        // No listener - should time out.
-        let result = wait_for_server_socket(
-            &path,
-            Duration::from_millis(50),
-            &shepr_config::AppPaths::test_at(dir.path()),
-        );
-        assert!(result.is_err());
-        assert_eq!(
-            result.expect_err("test precondition").kind(),
-            io::ErrorKind::TimedOut
-        );
-    }
-
-    #[test]
-    fn wait_for_server_socket_succeeds_after_delay() {
-        use std::cell::Cell;
-
-        let dir = ScratchDir::new("wait-delay");
-        let path = dir.join("s.sock");
-        let clock = Cell::new(std::time::Instant::now());
-        let probes = Cell::new(0);
-        let result = wait_for_server_socket_with(
-            &path,
-            Duration::from_secs(2),
-            &shepr_config::AppPaths::test_at(dir.path()),
-            || clock.get(),
-            |_| {
-                probes.set(probes.get() + 1);
-                Ok(probes.get() == 2)
-            },
-            |duration| clock.set(clock.get() + duration),
-        );
-        assert!(result.is_ok());
-        assert_eq!(probes.get(), 2);
-    }
-
-    #[test]
-    fn wait_for_server_socket_stops_probing_when_the_clock_reaches_the_deadline() {
-        use std::cell::Cell;
-
-        let dir = ScratchDir::new("wait-deadline");
-        let path = dir.join("s.sock");
-        let timeout = SOCKET_POLL_INTERVAL * 4;
-        let clock = Cell::new(std::time::Instant::now());
-        let probes = Cell::new(0_u32);
-        let result = wait_for_server_socket_with(
-            &path,
-            timeout,
-            &shepr_config::AppPaths::test_at(dir.path()),
-            || clock.get(),
-            |_| {
-                probes.set(probes.get() + 1);
-                Ok(false)
-            },
-            |duration| clock.set(clock.get() + duration),
-        );
-        assert_eq!(
-            result.expect_err("the socket never becomes ready").kind(),
-            io::ErrorKind::TimedOut
-        );
-        // One probe per poll interval before the deadline, none at it.
-        assert_eq!(probes.get(), 4);
-    }
-
-    #[test]
-    fn read_server_status_at_reads_ping_response() {
-        let dir = ScratchDir::new("status");
-        let path = dir.join("api.sock");
-        let listener = UnixListener::bind(&path).expect("test precondition");
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("test precondition");
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("test precondition"))
-                .read_line(&mut request)
-                .expect("test precondition");
-            assert!(request.contains("ping"));
-            stream
-                .write_all(
-                    b"{\"id\":\"autodetect:server:status\",\"result\":{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"0123456789abcdef\"}}\n",
-                )
-                .expect("test precondition");
-            stream.flush().expect("test precondition");
-        });
-
-        let status = shepr_api::read_runtime_status_at(&path, Duration::from_millis(200))
-            .expect("test precondition")
-            .expect("test precondition");
-        handle.join().expect("fake server thread");
-        assert_eq!(status.version.as_deref(), Some("0.5.5"));
-        assert_eq!(status.build_id, "0123456789abcdef");
-    }
-
-    #[test]
-    fn validate_running_server_compatibility_fails_when_status_api_missing() {
-        let env = IsolatedEnv::new();
-        let path = env.path().join("api.sock");
-        env.set(EnvVar::SheprSocketPath, &path);
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-        let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
-
-        assert!(
-            err.to_string().contains("status API is unavailable"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_running_server_compatibility_names_the_restart_for_build_mismatch() {
-        let _env = IsolatedEnv::new();
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-        let path = shepr_api::socket_path(&paths);
-        std::fs::create_dir_all(path.parent().expect("test precondition"))
-            .expect("test precondition");
-        let listener = UnixListener::bind(&path).expect("test precondition");
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("test precondition");
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("test precondition"))
-                .read_line(&mut request)
-                .expect("test precondition");
-            assert!(request.contains("ping"));
-            let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-                "0000000000000000"
-            } else {
-                "ffffffffffffffff"
-            };
-            let body = format!(
-                "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{other_build}\"}}}}\n"
-            );
-            stream
-                .write_all(body.as_bytes())
-                .expect("test precondition");
-            stream.flush().expect("test precondition");
-        });
-
-        let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
-        let message = err.to_string();
-
-        handle.join().expect("fake server thread");
-        assert!(
-            message.contains("different build"),
-            "unexpected error: {message}"
-        );
-    }
-}
+#[path = "local_server_tests.rs"]
+mod local_server_tests;

@@ -131,6 +131,12 @@ so only crates above those can take it.
 | `cargo fmt` | `brokkr fmt` |
 | `cargo install --path .` | `brokkr install` |
 
+- The root package builds two executables, `shepr` (client and CLI) and
+  `shepr-server` (`src/bin/shepr-server.rs`, the headless server), and
+  `brokkr install` installs the pair. `brokkr run` builds and runs only the
+  one target it names (`shepr` by default), so a run that needs the sibling
+  builds it first; a build of one binary is never a usable installation
+  alone.
 - `brokkr check` is the gate; run it before every commit.
 - `brokkr test -p <pkg> <name>` is a substring filter over one package's unit
   and integration tests; this is a workspace with no default package, so `-p`

@@ -67,7 +67,7 @@ impl From<io::Error> for RunServerError {
 
 /// Where a started server listens and logs, handed to the `on_ready` callback
 /// of [`run_server`] once both sockets are bound. Its `Display` form is the
-/// operator notice a foreground `shepr server` shows.
+/// operator notice a foreground server shows.
 #[derive(Clone, Debug)]
 pub struct ServerReady {
     pub api_socket: PathBuf,
@@ -82,7 +82,7 @@ impl std::fmt::Display for ServerReady {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "shepr server running; you can use any shepr CLI command in another terminal."
+            "the shepr server is running; you can use any shepr CLI command in another terminal."
         )?;
         writeln!(f, "api socket: {}", self.api_socket.display())?;
         writeln!(f, "client socket: {}", self.client_socket.display())?;
@@ -97,7 +97,7 @@ impl std::fmt::Display for ServerReady {
         }
         write!(
             f,
-            "did you mean to open the Shepr TUI? run `shepr`; you do not need `shepr server`."
+            "did you mean to open the Shepr TUI? run `shepr`, which starts the server itself."
         )
     }
 }

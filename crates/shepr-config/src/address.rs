@@ -91,6 +91,22 @@ impl ServerAddress {
         &self.client_socket
     }
 
+    /// Whether this is the build profile's own runtime address, as opposed to
+    /// one a socket override picked. Only the runtime address is one a client
+    /// may start a server for.
+    pub fn is_runtime_address(&self) -> bool {
+        self.source == AddressSource::Runtime
+    }
+
+    /// The socket override variable that picked this address, if one did.
+    pub fn override_variable(&self) -> Option<EnvVar> {
+        match self.source {
+            AddressSource::Runtime => None,
+            AddressSource::ApiOverride => Some(EnvVar::SheprSocketPath),
+            AddressSource::ClientOverride => Some(EnvVar::SheprClientSocketPath),
+        }
+    }
+
     /// The command that attaches to this server: plain `shepr` for the
     /// build's own runtime directory, prefixed with the socket override that
     /// selected it otherwise.
@@ -185,6 +201,22 @@ mod tests {
         );
         assert_eq!(address.attach_command(), "shepr");
         assert_eq!(address.stop_command(), "shepr server stop");
+        assert!(address.is_runtime_address());
+        assert_eq!(address.override_variable(), None);
+    }
+
+    #[test]
+    fn an_override_is_not_the_runtime_address() {
+        let runtime = Path::new("/run/user/1/shepr");
+        let api = ServerAddress::resolve_paths(runtime, Some(Path::new("/x/a.sock")), None);
+        assert!(!api.is_runtime_address());
+        assert_eq!(api.override_variable(), Some(EnvVar::SheprSocketPath));
+        let client = ServerAddress::resolve_paths(runtime, None, Some(Path::new("/x/c.sock")));
+        assert!(!client.is_runtime_address());
+        assert_eq!(
+            client.override_variable(),
+            Some(EnvVar::SheprClientSocketPath)
+        );
     }
 
     #[test]
