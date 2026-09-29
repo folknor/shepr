@@ -131,103 +131,25 @@ impl Tab {
         launch_env: &PaneLaunchEnv,
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
-        Self::new_with_runtime(
-            number,
-            initial_cwd,
+        let (layout, root_id) = TileLayout::new();
+        let runtime = PaneRuntime::spawn(
+            root_id,
             rows,
             cols,
+            &initial_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
             shell_config,
             launch_env,
-            spawn,
-            None,
-        )
-    }
-
-    pub(crate) fn new_argv_command(
-        number: usize,
-        initial_cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-        argv: &[String],
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        launch_env: &PaneLaunchEnv,
-        spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
-        Self::new_with_runtime(
-            number,
-            initial_cwd,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", false),
-            launch_env,
-            spawn,
-            Some(argv),
-        )
-    }
-
-    fn new_with_runtime(
-        number: usize,
-        initial_cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        launch_env: &PaneLaunchEnv,
-        spawn: &PaneSpawnHandles,
-        argv: Option<&[String]>,
-    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
-        let (layout, root_id) = TileLayout::new();
-        let runtime = if let Some(argv) = argv {
-            PaneRuntime::spawn_argv_command(
-                root_id,
-                rows,
-                cols,
-                &initial_cwd,
-                argv,
-                launch_env,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                &spawn.events,
-                &spawn.render_notify,
-                &spawn.render_dirty,
-                &spawn.pane_teardowns,
-            )?
-        } else {
-            PaneRuntime::spawn(
-                root_id,
-                rows,
-                cols,
-                &initial_cwd,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                launch_env,
-                &spawn.events,
-                &spawn.render_notify,
-                &spawn.render_dirty,
-                &spawn.pane_teardowns,
-            )?
-        };
+            &spawn.events,
+            &spawn.render_notify,
+            &spawn.render_dirty,
+            &spawn.pane_teardowns,
+        )?;
 
         let terminal_id = TerminalId::alloc();
-        let terminal = match argv {
-            Some(argv) => {
-                TerminalState::new(terminal_id.clone(), initial_cwd).with_launch_argv(argv.to_vec())
-            }
-            None => TerminalState::new(terminal_id.clone(), initial_cwd),
-        };
+        let terminal = TerminalState::new(terminal_id.clone(), initial_cwd);
         let mut panes = HashMap::new();
         panes.insert(root_id, TabPane::new(PaneState::new(terminal_id)));
 
@@ -327,85 +249,6 @@ impl Tab {
         launch_env: &PaneLaunchEnv,
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<NewPane> {
-        self.split_pane_with_runtime(
-            target,
-            focus_new_pane,
-            direction,
-            ratio,
-            geometry,
-            cwd,
-            default_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            launch_env,
-            spawn,
-            None,
-        )
-    }
-
-    /// Split `target` with an argv-command pane. Same focus contract as
-    /// `split_pane_shell`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an argv split mirrors the shell split's arguments plus the command"
-    )]
-    pub fn split_pane_argv(
-        &self,
-        target: PaneId,
-        focus_new_pane: bool,
-        direction: Direction,
-        ratio: Option<f32>,
-        geometry: &super::PaneGeometry,
-        cwd: Option<PathBuf>,
-        default_cwd: PathBuf,
-        argv: &[String],
-        launch_env: &PaneLaunchEnv,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<NewPane> {
-        self.split_pane_with_runtime(
-            target,
-            focus_new_pane,
-            direction,
-            ratio,
-            geometry,
-            cwd,
-            default_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", false),
-            launch_env,
-            spawn,
-            Some(argv),
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "split construction threads geometry, host context, launch policy, and command state"
-    )]
-    fn split_pane_with_runtime(
-        &self,
-        target: PaneId,
-        focus_new_pane: bool,
-        direction: Direction,
-        ratio: Option<f32>,
-        geometry: &super::PaneGeometry,
-        cwd: Option<PathBuf>,
-        default_cwd: PathBuf,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        launch_env: &PaneLaunchEnv,
-        spawn: &PaneSpawnHandles,
-        argv: Option<&[String]>,
-    ) -> std::io::Result<NewPane> {
         let mut prepared_layout = self.layout.clone();
         let Some(new_id) = prepared_layout.split_pane(target, direction, ratio.unwrap_or(0.5))
         else {
@@ -419,47 +262,23 @@ impl Tab {
             .pane_size(&prepared_layout, false, new_id)
             .unwrap_or_else(|| geometry.sole_pane_size());
         let actual_cwd = cwd.unwrap_or(default_cwd);
-        let launch_argv = argv.map(<[String]>::to_vec);
-        let runtime = match argv {
-            Some(argv) => PaneRuntime::spawn_argv_command(
-                new_id,
-                rows,
-                cols,
-                &actual_cwd,
-                argv,
-                launch_env,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                &spawn.events,
-                &spawn.render_notify,
-                &spawn.render_dirty,
-                &spawn.pane_teardowns,
-            ),
-            None => PaneRuntime::spawn(
-                new_id,
-                rows,
-                cols,
-                &actual_cwd,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                launch_env,
-                &spawn.events,
-                &spawn.render_notify,
-                &spawn.render_dirty,
-                &spawn.pane_teardowns,
-            ),
-        };
-        let runtime = runtime?;
+        let runtime = PaneRuntime::spawn(
+            new_id,
+            rows,
+            cols,
+            &actual_cwd,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            launch_env,
+            &spawn.events,
+            &spawn.render_notify,
+            &spawn.render_dirty,
+            &spawn.pane_teardowns,
+        )?;
         let terminal_id = TerminalId::alloc();
-        let terminal = match launch_argv {
-            Some(argv) => {
-                TerminalState::new(terminal_id.clone(), actual_cwd).with_launch_argv(argv)
-            }
-            None => TerminalState::new(terminal_id.clone(), actual_cwd),
-        };
+        let terminal = TerminalState::new(terminal_id.clone(), actual_cwd);
         if focus_new_pane {
             prepared_layout.focus_pane(new_id);
         }

@@ -288,6 +288,7 @@ mod tests {
                     serde_json::json!({"id": request["id"], "result": {
                         "type": "pong", "version": "test",
                         "build_id": shepr_protocol::BUILD_ID,
+                        "boot_id": "4242-1700000000",
                         "capabilities": {"ssh_agent_registration": true}
                     }})
                 } else {
@@ -328,6 +329,7 @@ mod tests {
                 serde_json::json!({"id": request["id"], "result": {
                     "type": "pong", "version": "test",
                     "build_id": shepr_protocol::BUILD_ID,
+                    "boot_id": "4242-1700000000",
                     "capabilities": {"ssh_agent_registration": true}
                 }})
             )
@@ -389,6 +391,7 @@ mod tests {
             let result = if expected == "ping" {
                 serde_json::json!({"type": "pong", "version": "test",
                     "build_id": shepr_protocol::BUILD_ID,
+                    "boot_id": "4242-1700000000",
                     "capabilities": {"ssh_agent_registration": true}})
             } else {
                 serde_json::json!({"type": "ok"})

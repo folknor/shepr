@@ -90,7 +90,7 @@ fn report_server_error(error: RunServerError) -> ExitCode {
             eprintln!("{socket}: {}", path.display());
             exit_with(ALREADY_RUNNING_EXIT_CODE)
         }
-        RunServerError::SessionDataHeld { directory } => {
+        RunServerError::DataDirHeld { directory } => {
             eprintln!("error: {ALREADY_RUNNING}");
             eprintln!("data directory: {}", directory.display());
             exit_with(ALREADY_RUNNING_EXIT_CODE)

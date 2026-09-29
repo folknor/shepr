@@ -1,6 +1,7 @@
 use std::{
     fmt,
     ops::Deref,
+    sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,13 +18,20 @@ use std::{
 pub struct BootId(String);
 
 impl BootId {
-    /// Builds the boot identity for this server process.
+    /// The boot identity of this server process, built on first use and the
+    /// same value on every later call, so every place that reports the boot
+    /// (the client shell lane and the API's `ping`) reports one identity.
     pub fn for_this_process() -> Self {
-        let since_epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => Ok(duration),
-            Err(error) => Err(error.duration()),
-        };
-        Self::from_process_clock(std::process::id(), since_epoch)
+        static THIS_PROCESS: OnceLock<BootId> = OnceLock::new();
+        THIS_PROCESS
+            .get_or_init(|| {
+                let since_epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                    Ok(duration) => Ok(duration),
+                    Err(error) => Err(error.duration()),
+                };
+                Self::from_process_clock(std::process::id(), since_epoch)
+            })
+            .clone()
     }
 
     pub fn as_str(&self) -> &str {
@@ -223,6 +231,11 @@ mod tests {
     use std::time::Duration;
 
     use super::BootId;
+
+    #[test]
+    fn a_process_has_one_boot_id() {
+        assert_eq!(BootId::for_this_process(), BootId::for_this_process());
+    }
 
     #[test]
     fn process_clock_before_epoch_keeps_its_offset() {

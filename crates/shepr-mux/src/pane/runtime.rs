@@ -741,54 +741,6 @@ impl PaneRuntime {
         clippy::too_many_arguments,
         reason = "runtime construction needs to thread PTY size, environment, theme, and render hooks together"
     )]
-    pub(crate) fn spawn_argv_command(
-        pane_id: PaneId,
-        rows: u16,
-        cols: u16,
-        cwd: &std::path::Path,
-        argv: &[String],
-        launch_env: &PaneLaunchEnv,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        events: &mpsc::Sender<AppEvent>,
-        render_notify: &Arc<Notify>,
-        render_dirty: &Arc<RenderSignal>,
-        pane_teardowns: &Arc<PaneTeardownTracker>,
-    ) -> std::io::Result<Self> {
-        let Some((program, args)) = argv.split_first() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "argv must not be empty",
-            ));
-        };
-        let mut cmd = PtyCommand::new(program);
-        cmd.args(args);
-        cmd.cwd(cwd);
-        apply_pane_terminal_env(&mut cmd);
-        apply_pane_launch_env(&mut cmd, launch_env);
-        Self::spawn_command_builder(
-            pane_id,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            events,
-            render_notify,
-            render_dirty,
-            pane_teardowns,
-            &cmd,
-            "failed to spawn argv command pane",
-            None,
-            launch_env.purpose(),
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "runtime construction needs to thread PTY size, environment, theme, and render hooks together"
-    )]
     fn spawn_command_builder(
         pane_id: PaneId,
         rows: u16,

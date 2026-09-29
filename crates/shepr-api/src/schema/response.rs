@@ -44,6 +44,9 @@ pub enum ResponseResult {
     Pong {
         version: String,
         build_id: String,
+        /// Identifies this server process, which a build id cannot: a
+        /// conditional `server.stop` names the boot it expects.
+        boot_id: String,
         capabilities: Option<ServerCapabilities>,
     },
     SessionSnapshot {

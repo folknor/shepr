@@ -22,12 +22,12 @@ impl std::fmt::Display for ServerSocket {
 /// prints nothing itself: the binary renders this and picks the exit status.
 #[derive(Debug)]
 pub enum RunServerError {
-    /// Another server for this session already listens on `path`.
+    /// Another server already listens on `path`.
     AlreadyRunning { socket: ServerSocket, path: PathBuf },
-    /// Another server for this session already holds the lease on its data
+    /// Another server already holds the lease on this profile's data
     /// directory, the canonical `directory`. The lease is taken before either
     /// socket is bound.
-    SessionDataHeld { directory: PathBuf },
+    DataDirHeld { directory: PathBuf },
     /// Startup or the event loop failed.
     Io(io::Error),
 }
@@ -40,9 +40,9 @@ impl std::fmt::Display for RunServerError {
                 "another server listens on the {socket} ({})",
                 path.display()
             ),
-            Self::SessionDataHeld { directory } => write!(
+            Self::DataDirHeld { directory } => write!(
                 f,
-                "another server holds the session data directory {}",
+                "another server holds the data directory {}",
                 directory.display()
             ),
             Self::Io(error) => error.fmt(f),
@@ -53,7 +53,7 @@ impl std::fmt::Display for RunServerError {
 impl std::error::Error for RunServerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::AlreadyRunning { .. } | Self::SessionDataHeld { .. } => None,
+            Self::AlreadyRunning { .. } | Self::DataDirHeld { .. } => None,
             Self::Io(error) => Some(error),
         }
     }
@@ -120,13 +120,13 @@ pub fn run_server(
     // launch path scrubs it instead of the server unsetting it here.
     let startup_cwd = read_startup_cwd();
 
-    let session_data_dir = paths.data_dir();
-    let lease = shepr_mux::persist::DataDirLease::acquire(session_data_dir).map_err(lease_error)?;
+    let data_dir = paths.data_dir();
+    let lease = shepr_mux::persist::DataDirLease::acquire(data_dir).map_err(lease_error)?;
 
     // A log file that cannot be opened does not stop the server; the ready
     // notice says so instead of naming a log that is not being written.
     let file_logging = shepr_platform::logging::init_file_logging(
-        session_data_dir,
+        data_dir,
         shepr_platform::logging::SERVER_LOG_FILE,
     )?;
     // Compile the bundled detection manifests off the tokio loop, before App
@@ -174,7 +174,7 @@ pub fn run_server(
         let ready = ServerReady {
             api_socket,
             client_socket,
-            log_file: session_data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
+            log_file: data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
             log_file_unavailable: file_logging.unavailable,
         };
         info!(
@@ -260,7 +260,7 @@ fn startup_error(socket: ServerSocket, error: io::Error) -> RunServerError {
     RunServerError::AlreadyRunning { socket, path }
 }
 
-/// Classifies a failure taking the session data-directory lease. Only the
+/// Classifies a failure taking the data-directory lease. Only the
 /// held-lease refusal from `shepr_mux::persist` means a server is already
 /// running; any other error stays an IO failure. Unlike [`startup_error`] this
 /// is not logged: file logging starts only once the lease is held, and the log
@@ -269,7 +269,7 @@ fn lease_error(error: io::Error) -> RunServerError {
     let Some(held) = shepr_mux::persist::DataDirLeaseHeld::from_io(&error) else {
         return RunServerError::Io(error);
     };
-    RunServerError::SessionDataHeld {
+    RunServerError::DataDirHeld {
         directory: held.directory().to_path_buf(),
     }
 }

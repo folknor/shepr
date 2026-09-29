@@ -69,15 +69,29 @@ fn request_uses_dot_method_names() {
 
 #[test]
 fn request_round_trips_for_server_stop() {
-    let request = Request {
-        id: "req_stop".into(),
-        method: Method::ServerStop(EmptyParams::default()),
-    };
+    for expected_boot_id in [None, Some("17-23".to_owned())] {
+        let request = Request {
+            id: "req_stop".into(),
+            method: Method::ServerStop(ServerStopParams { expected_boot_id }),
+        };
 
-    let json = serde_json::to_value(&request).expect("test precondition");
-    assert_eq!(json["method"], "server.stop");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, request);
+        let json = serde_json::to_value(&request).expect("test precondition");
+        assert_eq!(json["method"], "server.stop");
+        let restored: Request = serde_json::from_value(json).expect("test precondition");
+        assert_eq!(restored, request);
+    }
+}
+
+#[test]
+fn server_stop_without_params_is_unconditional() {
+    let request: Request = serde_json::from_str(r#"{"id":"s","method":"server.stop","params":{}}"#)
+        .expect("test precondition");
+    assert_eq!(
+        request.method,
+        Method::ServerStop(ServerStopParams {
+            expected_boot_id: None
+        })
+    );
 }
 
 #[test]
@@ -194,6 +208,7 @@ fn success_response_round_trips() {
         result: ResponseResult::Pong {
             version: "0.1.2".into(),
             build_id: "0123456789abcdef".into(),
+            boot_id: "17-23".into(),
             capabilities: Some(ServerCapabilities {
                 ssh_agent_registration: false,
             }),

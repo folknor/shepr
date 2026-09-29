@@ -1,4 +1,4 @@
-//! `run_server` against a socket or session data lease another server already
+//! `run_server` against a socket or data-directory lease another server already
 //! holds. The server installs the process-wide file logger, so each run
 //! happens in a re-executed test process instead of the shared test binary.
 
@@ -11,14 +11,14 @@ use crate::test_support::{
 };
 
 /// Names what the re-executed child holds before it starts a server: a
-/// socket, or the session data-directory lease.
+/// socket, or the data-directory lease.
 const CHILD_MARKER: &str = "SERVER_ALREADY_RUNNING_TEST_CHILD";
 const ENTRY_POINT: &str =
     "server::headless::tests::already_running_tests::already_running_subprocess_entry_point";
 
 #[test]
-fn run_server_refuses_a_busy_socket_or_session_lease_as_already_running() {
-    for held in ["api", "client", "session"] {
+fn run_server_refuses_a_busy_socket_or_data_dir_lease_as_already_running() {
+    for held in ["api", "client", "data_dir"] {
         let output = shepr_test_support::command_in_scratch(
             std::env::current_exe().expect("test executable"),
             "already-running",
@@ -43,7 +43,7 @@ fn run_server_refuses_a_busy_socket_or_session_lease_as_already_running() {
 }
 
 #[test]
-#[ignore = "subprocess entry point, exercised by run_server_refuses_a_busy_socket_or_session_lease_as_already_running"]
+#[ignore = "subprocess entry point, exercised by run_server_refuses_a_busy_socket_or_data_dir_lease_as_already_running"]
 fn already_running_subprocess_entry_point() {
     // `brokkr test` passes `--include-ignored`, which runs this entry point
     // directly in the shared test process. Only the re-exec sets the marker.
@@ -57,7 +57,7 @@ fn already_running_subprocess_entry_point() {
     let busy = match marker.to_str() {
         Some("api") => ServerSocket::Api,
         Some("client") => ServerSocket::Client,
-        Some("session") => return refuse_a_held_session_lease(),
+        Some("data_dir") => return refuse_a_held_data_dir_lease(),
         other => panic!("unknown {CHILD_MARKER} value {other:?}"),
     };
 
@@ -102,30 +102,30 @@ fn already_running_subprocess_entry_point() {
     }
 }
 
-/// The session data lease is taken before either socket, so a server that
+/// The data-directory lease is taken before either socket, so a server that
 /// finds it held refuses without binding anything.
-fn refuse_a_held_session_lease() {
+fn refuse_a_held_data_dir_lease() {
     let _env = IsolatedEnv::new();
-    let scratch = ScratchDir::new("already-running-session");
+    let scratch = ScratchDir::new("already-running-data-dir");
     let paths = shepr_config::AppPaths::test_at(&scratch);
     let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
         shepr_config::Config::default(),
         None,
         paths.clone(),
     );
-    // What a running server holds: the lease on the session data directory.
+    // What a running server holds: the lease on the data directory.
     let held = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
-        .expect("hold the session lease");
+        .expect("hold the data-directory lease");
 
     let ready = AtomicBool::new(false);
     let error = run_server(&config, &paths, |_| ready.store(true, Ordering::Relaxed))
-        .expect_err("a server holding the session lease refuses the second");
+        .expect_err("a server holding the data-directory lease refuses the second");
 
     match error {
-        RunServerError::SessionDataHeld { directory } => {
+        RunServerError::DataDirHeld { directory } => {
             assert_eq!(directory, held.directory());
         }
-        other => panic!("expected SessionDataHeld, got {other:?}"),
+        other => panic!("expected DataDirHeld, got {other:?}"),
     }
     assert!(
         !ready.load(Ordering::Relaxed),

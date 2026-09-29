@@ -7,7 +7,7 @@ use shepr_api::schema::ErrorResponse;
 pub(crate) enum CliError {
     Response(ErrorResponse),
     /// `server stop` could not stop the server.
-    ServerStop(shepr_api::session::SessionError),
+    ServerStop(shepr_api::server_stop::ServerStopError),
     Usage(String),
     Io(std::io::Error),
     /// The configuration or the paths it resolves could not be loaded; one
@@ -27,7 +27,15 @@ pub(crate) enum CliError {
 
 impl CliError {
     pub(crate) fn exit_code(&self) -> i32 {
-        if matches!(self, Self::Usage(_)) { 2 } else { 1 }
+        match self {
+            Self::Usage(_) => 2,
+            // A caller that ran a conditional stop over SSH tells "the server
+            // was replaced, nothing stopped" from every other failure by this.
+            Self::ServerStop(error) if error.is_boot_mismatch() => {
+                shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
+            }
+            _ => 1,
+        }
     }
 
     pub(crate) fn print(&self) {
@@ -40,7 +48,7 @@ impl CliError {
                 "{}",
                 serde_json::json!({
                     "error": shepr_api::schema::ErrorBody::new(
-                        &shepr_api::error::ApiErrorCode::SessionStopFailed,
+                        &error.error_code(),
                         error.to_string(),
                     )
                 })
@@ -150,5 +158,22 @@ mod tests {
         ] {
             assert_eq!(error.exit_code(), 1, "{error}");
         }
+    }
+
+    #[test]
+    fn a_refused_conditional_stop_has_its_own_exit_code() {
+        let refused = CliError::ServerStop(shepr_api::server_stop::ServerStopError::BootMismatch {
+            label: "the server".into(),
+            expected_boot_id: "1-1".into(),
+            detail: "this server is boot 2-2".into(),
+        });
+        assert_eq!(
+            refused.exit_code(),
+            shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
+        );
+        let failed = CliError::ServerStop(shepr_api::server_stop::ServerStopError::Protocol(
+            "bad".into(),
+        ));
+        assert_eq!(failed.exit_code(), 1);
     }
 }

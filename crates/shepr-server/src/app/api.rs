@@ -147,7 +147,7 @@ mod tests {
         );
 
         for method in [
-            shepr_api::schema::Method::ServerStop(shepr_api::schema::EmptyParams::default()),
+            shepr_api::schema::Method::ServerStop(shepr_api::schema::ServerStopParams::default()),
             shepr_api::schema::Method::Ping(shepr_api::schema::PingParams::default()),
         ] {
             let name = shepr_api::api_method_name(&method);

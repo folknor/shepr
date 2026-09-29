@@ -60,14 +60,10 @@ pub(crate) const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 /// latency during persistent resource failures while exponential backoff rests.
 pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 
-/// Maximum time a session stop waits for both session sockets to disappear,
+/// Maximum time a server stop waits for both server sockets to disappear,
 /// leaving time for orderly shutdown before reporting a stall.
 pub(crate) const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Poll interval while waiting for session sockets to disappear. It bounds
+/// Poll interval while waiting for server sockets to disappear. It bounds
 /// shutdown detection latency without rapid repeated probes.
 pub(crate) const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
-
-/// Status probe deadline before a stop treats the server build as unknown. It
-/// gives a local server time to answer while keeping stop responsive.
-pub(crate) const STOP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);

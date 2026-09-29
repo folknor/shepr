@@ -135,7 +135,7 @@ mod tests {
             shepr_api::schema::PingParams::default(),
         )));
         assert!(!supports_client_shell_method(&Method::ServerStop(
-            shepr_api::schema::EmptyParams::default(),
+            shepr_api::schema::ServerStopParams::default(),
         )));
     }
 

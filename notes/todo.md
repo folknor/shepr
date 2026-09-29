@@ -45,9 +45,6 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
   group can go (`notes/cli-ux.md`).
 - **Flatten workspaces and tabs.** The owner considers the two grouping levels
   one too many. Touches the data model, persistence, sidebar and tab bar.
-- **Rename `shepr_api::session`.** It now holds local server stop, restart
-  guidance and the stop-target build guard; `SessionError` and
-  `ApiErrorCode::SessionStopFailed` are misnomers too.
 - **Hook assets and the CLI.** The item above proposes moving hook assets to
   the CLI, but the CLI no longer has report commands; that direction now means
   adding them back.
@@ -88,18 +85,14 @@ Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
 - **Redundant build hash in the root package.** The root package appears to
   run the workspace `build.rs` too, hashing the tree and writing build id files
   nothing in `src/` includes.
-- **Dead after the API pruning.** With `layout.apply` gone nothing passes an
-  argv to a new tab or split (`Tab::new_argv_command`, `Tab::split_pane_argv`,
-  the `argv` parameters of `create_tab_with_runtime` and
-  `split_pane_with_runtime`, `PaneRuntime::spawn_argv_command`);
-  `dispatch_to_app_result` in shepr-api `server.rs` keeps an unused no-timeout
-  branch; `ApiErrorCode` lists variants nothing returns (`PaneClosed`,
-  `UnsupportedMethod`, `ClientMissing`); the test
-  `agent_state_sequences_track_transitions_for_waiters` is misnamed now that
-  there are no waiters; `Start::Branch` in shepr-agent `resume.rs` is only used
-  by a parse test.
-- **More stale wording.** `RunServerError::SessionDataHeld` talks about a
-  session data directory.
+- **Dead after the API pruning.** `dispatch_to_app_result` in shepr-api
+  `server.rs` keeps an unused no-timeout branch; `ApiErrorCode` lists variants
+  nothing returns (`PaneClosed`, `UnsupportedMethod`, `ClientMissing`).
+- **`launch_argv` is never set.** Nothing launches a pane from an argv any
+  more, so `TerminalState::launch_argv` is always `None`, yet the snapshot
+  persists and restores it and `crates/shepr-server/src/app/api/layouts.rs`
+  reads it. `spawn_command_builder` in shepr-mux's pane runtime could also fold
+  into its one remaining caller.
 - **Launcher connect deadline and boot log size.** The launcher bounds a status
   response but not the blocking `connect` inside `ipc::probe` and the API client,
   which could hang on a full backlog; nothing limits how much a server writes

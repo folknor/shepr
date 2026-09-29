@@ -593,7 +593,7 @@ fn state_changed_updates_pane() {
 }
 
 #[test]
-fn agent_state_sequences_track_transitions_for_waiters() {
+fn state_changed_events_advance_the_agent_state_change_sequence() {
     let mut app = app_with_workspaces(&["active", "background"]);
     let pane_id = app.workspaces[1].tabs()[0].root_pane();
     let terminal_id = app.workspaces[1].tabs()[0].panes()[&pane_id]

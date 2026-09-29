@@ -79,6 +79,7 @@ mod tests {
         ));
         let notice = local_startup_notice(&error);
         assert!(notice.contains("saved machines stay available"), "{notice}");
-        assert!(notice.contains("`shepr server stop --force`"), "{notice}");
+        assert!(notice.contains("`shepr server stop`"), "{notice}");
+        assert!(!notice.contains("--force"), "{notice}");
     }
 }

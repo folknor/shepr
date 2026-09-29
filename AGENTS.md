@@ -179,8 +179,11 @@ directory.
   matching marker still win over the runtime directory.
 - A marker that is neither `release` nor `dev` fails the launch.
 - The saved layout is not affected by the overrides, only the sockets are.
-- `server stop` against a server of another build is refused, naming both
-  builds; `--force` overrides that and stops it with every pane in it.
+- `server stop` stops whatever server answers, whatever its build, with every
+  pane in it. Its hidden `--expect-boot <boot id>` makes the stop conditional:
+  the server compares the id (from its `status server` output) with its own
+  boot and refuses a stop aimed at another one, so a server that replaced the
+  observed one keeps running (exit status 3).
 
 ## Principles
 

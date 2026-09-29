@@ -161,7 +161,7 @@ pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
 fn dispatch(command: &CliCommand, context: &target::CliContext) -> CliResult<i32> {
     match command {
         CliCommand::Status(command) => status::run_status_command(*command, context),
-        CliCommand::Server(command) => server::run_server_command(*command, context),
+        CliCommand::Server(command) => server::run_server_command(command.clone(), context),
         CliCommand::Detect(command) => detect::run_detect_command(command.clone(), context),
         CliCommand::Integration(command) => {
             integration::run_integration_command(command.clone(), context)
@@ -330,14 +330,17 @@ mod tests {
         command.clone()
     }
 
-    /// `--force` is the stated intent to stop a server of another build, and
-    /// it is spelled as the refusal names it.
+    /// A bare `server stop` is unconditional; the hidden `--expect-boot` makes it
+    /// conditional on the named boot.
     #[test]
-    fn server_stop_parses_the_force_flag() {
-        let force = shepr_api::session::FORCE_STOP_FLAG;
-        for (args, forced) in [
-            (&["server", "stop", force][..], true),
-            (&["server", "stop"][..], false),
+    fn server_stop_parses_the_expected_boot() {
+        let expect_boot = shepr_remote::FLAG_EXPECT_BOOT;
+        for (args, expected) in [
+            (
+                &["server", "stop", expect_boot, "4242-17"][..],
+                Some("4242-17"),
+            ),
+            (&["server", "stop"][..], None),
         ] {
             let invocation = parse(args);
             let Launch::Cli(command) = invocation.launch else {
@@ -345,8 +348,9 @@ mod tests {
             };
             assert!(
                 matches!(
-                    *command,
-                    CliCommand::Server(super::server::Command::Stop { force }) if force == forced
+                    &*command,
+                    CliCommand::Server(super::server::Command::Stop { expected_boot })
+                        if expected_boot.as_deref() == expected
                 ),
                 "{args:?}"
             );
@@ -386,6 +390,7 @@ mod tests {
             &["--session", "work"],
             &["--session=work", "server", "stop"],
             &["server", "stop", "--session=api"],
+            &["server", "stop", "--force"],
             &["session", "list"],
             &["session", "stop", "work"],
             &["session", "attach", "work"],

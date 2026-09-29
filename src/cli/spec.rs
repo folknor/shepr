@@ -8,7 +8,7 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 use shepr_remote::{
     COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP,
-    FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
+    FLAG_EXPECT_BOOT, FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
 };
 
 pub(super) fn command() -> Command {
@@ -98,8 +98,8 @@ fn server_command() -> Command {
         .about("Control the running server")
         .subcommand(
             Command::new(COMMAND_STOP)
-                .about("Stop the running server")
-                .arg(force_stop_flag()),
+                .about("Stop the running server, whatever its build")
+                .arg(expect_boot_option()),
         )
 }
 
@@ -196,14 +196,25 @@ fn json_flag() -> Arg {
     flag(option_name_from_flag(FLAG_JSON))
 }
 
-/// `server stop` refuses a server of another build, since stopping it exits
-/// its panes; this flag states that stopping it is intended.
-fn force_stop_flag() -> Arg {
-    let long = option_name_from_flag(shepr_api::session::FORCE_STOP_FLAG);
+/// Shepr's own use over SSH: stop the server only if it is the boot that was
+/// observed, so a server that replaced it is left running. Malformed identities
+/// are rejected by the parser (a usage error), before any request is sent.
+fn expect_boot_option() -> Arg {
+    let long = option_name_from_flag(FLAG_EXPECT_BOOT);
     Arg::new(long)
         .long(long)
-        .action(ArgAction::SetTrue)
-        .help("Stop the server even when it runs a different shepr build")
+        .value_name("BOOT")
+        .action(ArgAction::Set)
+        .value_parser(boot_id)
+        .hide(true)
+        .help("Stop only the server process with this boot identity")
+}
+
+fn boot_id(value: &str) -> Result<String, String> {
+    value
+        .parse::<shepr_protocol::BootId>()
+        .map(|_| value.to_owned())
+        .map_err(|_| format!("{value:?} is not a server boot identity"))
 }
 
 fn help_flag() -> Arg {
@@ -417,7 +428,7 @@ mod tests {
 
         // Parses what the producer emits and checks what the parser made of it,
         // so a spelling that parses into the wrong command fails too.
-        fn parse(command: RemoteCliCommand) -> Invocation {
+        fn parse(command: RemoteCliCommand<'_>) -> Invocation {
             let mut argv = vec![super::PROGRAM_NAME.to_owned()];
             argv.extend(command.args().into_iter().map(str::to_owned));
             parse_invocation(&argv)
@@ -441,18 +452,18 @@ mod tests {
         let invocation = parse(RemoteCliCommand::ClientBridge);
         assert!(matches!(invocation.launch, Launch::ClientBridge));
 
-        for force in [false, true] {
-            let invocation = parse(RemoteCliCommand::ServerStop { force });
-            assert!(matches!(
-                &invocation.launch,
-                Launch::Cli(command)
-                    if matches!(
-                        **command,
-                        CliCommand::Server(server::Command::Stop { force: parsed })
-                            if parsed == force
-                    )
-            ));
-        }
+        let invocation = parse(RemoteCliCommand::ServerStop {
+            expected_boot: "4242-1700000000",
+        });
+        assert!(matches!(
+            &invocation.launch,
+            Launch::Cli(command)
+                if matches!(
+                    &**command,
+                    CliCommand::Server(server::Command::Stop { expected_boot: Some(boot) })
+                        if boot == "4242-1700000000"
+                )
+        ));
     }
 
     #[test]

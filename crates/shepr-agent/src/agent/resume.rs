@@ -21,7 +21,6 @@ pub enum AgentSessionStartSource {
     Resume,
     Clear,
     Compact,
-    Branch,
     New,
     Load,
     Fork,
@@ -266,12 +265,11 @@ pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
 }
 
 impl AgentSessionStartSource {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Startup,
         Self::Resume,
         Self::Clear,
         Self::Compact,
-        Self::Branch,
         Self::New,
         Self::Load,
         Self::Fork,
@@ -284,7 +282,6 @@ impl AgentSessionStartSource {
             Self::Resume => "resume",
             Self::Clear => "clear",
             Self::Compact => "compact",
-            Self::Branch => "branch",
             Self::New => "new",
             Self::Load => "load",
             Self::Fork => "fork",
@@ -684,10 +681,6 @@ mod tests {
         assert_eq!(
             normalize_session_start_source(Some("compact")),
             Some(AgentSessionStartSource::Compact)
-        );
-        assert_eq!(
-            normalize_session_start_source(Some("branch")),
-            Some(AgentSessionStartSource::Branch)
         );
         assert_eq!(
             normalize_session_start_source(Some("new")),

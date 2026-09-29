@@ -157,7 +157,7 @@ fn unresponsive_error(paths: &shepr_config::AppPaths) -> io::Error {
     io::Error::other(format!(
         "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
         paths.server_address().client_socket().display(),
-        shepr_api::session::restart_after_update_guidance_for(paths)
+        shepr_api::server_stop::restart_after_update_guidance_for(paths)
     ))
 }
 
@@ -183,7 +183,7 @@ fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus
         status.build_id,
         shepr_protocol::build_version(),
         shepr_protocol::BUILD_ID,
-        shepr_api::session::restart_after_update_guidance_for(paths)
+        shepr_api::server_stop::restart_after_update_guidance_for(paths)
     ))
 }
 

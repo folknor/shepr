@@ -8,6 +8,9 @@ use crate::schema::{Method, Request, ResponseResult};
 pub struct RuntimeStatus {
     pub version: Option<String>,
     pub build_id: String,
+    /// The server process's boot identity: what a conditional stop names to
+    /// stop this instance and no other.
+    pub boot_id: String,
     pub capabilities: Option<crate::schema::ServerCapabilities>,
 }
 
@@ -63,10 +66,12 @@ pub fn read_runtime_status_at(
         ResponseResult::Pong {
             version,
             build_id,
+            boot_id,
             capabilities,
         } => Ok(Some(RuntimeStatus {
             version: Some(version),
             build_id,
+            boot_id,
             capabilities,
         })),
         result => Err(io::Error::other(format!(

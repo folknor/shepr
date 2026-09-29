@@ -124,7 +124,7 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: true, routine: false,
     };
-    ServerStop(EmptyParams) => "server.stop" {
+    ServerStop(ServerStopParams) => "server.stop" {
         client_shell: false, mutates_ui: false, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: true, routine: false,

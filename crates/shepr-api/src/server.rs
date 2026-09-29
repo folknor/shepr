@@ -537,6 +537,7 @@ fn handle_request(
             result: ResponseResult::Pong {
                 version: shepr_protocol::build_version(),
                 build_id: shepr_protocol::BUILD_ID.to_owned(),
+                boot_id: shepr_protocol::BootId::for_this_process().to_string(),
                 capabilities,
             },
         };
@@ -551,8 +552,23 @@ fn handle_request(
         );
     }
 
-    if matches!(&request.method, Method::ServerStop(_)) {
+    if let Method::ServerStop(params) = &request.method {
         if let Some(server_stop) = server_stop {
+            // A stop aimed at one boot must not stop another: the caller
+            // observed that instance, and the occupant may have been replaced
+            // since. The refusal leaves this server running.
+            if let Some(expected) = &params.expected_boot_id {
+                let actual = shepr_protocol::BootId::for_this_process();
+                if actual != expected.as_str() {
+                    return error_response_json(
+                        &request.id,
+                        crate::error::ApiErrorCode::ServerBootMismatch,
+                        format!(
+                            "refusing to stop: this server is boot {actual}, not the expected boot {expected}"
+                        ),
+                    );
+                }
+            }
             server_stop.request();
             let response = SuccessResponse {
                 id: request.id.clone(),
@@ -1168,7 +1184,7 @@ mod tests {
         let response = handle_request(
             Request {
                 id: "priority_stop".into(),
-                method: Method::ServerStop(crate::schema::EmptyParams::default()),
+                method: Method::ServerStop(crate::schema::ServerStopParams::default()),
             },
             &tx,
             None,
@@ -1194,6 +1210,48 @@ mod tests {
             serde_json::from_str(&rejected.body).expect("test precondition");
         assert_eq!(rejected["error"]["code"], "server_unavailable");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn ping_reports_the_boot_id_a_conditional_stop_must_match() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ping = handle_request(
+            Request {
+                id: "ping".into(),
+                method: Method::Ping(crate::schema::PingParams::default()),
+            },
+            &tx,
+            None,
+            None,
+        );
+        let ping: SuccessResponse = serde_json::from_str(&ping.body).expect("test precondition");
+        let ResponseResult::Pong { boot_id, .. } = ping.result else {
+            panic!("ping did not answer with a pong");
+        };
+        let stop_with = |expected_boot_id: Option<String>, stop: &Arc<crate::ServerStopSignal>| {
+            let response = handle_request(
+                Request {
+                    id: "stop".into(),
+                    method: Method::ServerStop(crate::schema::ServerStopParams {
+                        expected_boot_id,
+                    }),
+                },
+                &tx,
+                None,
+                Some(stop),
+            );
+            serde_json::from_str::<serde_json::Value>(&response.body).expect("test precondition")
+        };
+
+        let other_boot = Arc::new(crate::ServerStopSignal::default());
+        let refused = stop_with(Some(format!("{boot_id}0")), &other_boot);
+        assert_eq!(refused["error"]["code"], "server_boot_mismatch");
+        assert!(!other_boot.is_requested());
+
+        let this_boot = Arc::new(crate::ServerStopSignal::default());
+        let stopped = stop_with(Some(boot_id), &this_boot);
+        assert_eq!(stopped["result"]["type"], "ok");
+        assert!(this_boot.is_requested());
     }
 
     #[test]

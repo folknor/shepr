@@ -40,7 +40,7 @@ pub(super) fn api_client(context: &CliContext) -> ApiClient {
 }
 
 pub(super) fn restart_guidance(context: &CliContext) -> String {
-    shepr_api::session::restart_after_update_guidance_for(context)
+    shepr_api::server_stop::restart_after_update_guidance_for(context)
 }
 
 pub(super) fn socket_label(context: &CliContext) -> String {

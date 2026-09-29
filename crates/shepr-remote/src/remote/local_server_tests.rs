@@ -16,6 +16,7 @@ fn status_of_build(build_id: &str) -> RuntimeStatus {
     RuntimeStatus {
         version: Some("0.0.0".to_owned()),
         build_id: build_id.to_owned(),
+        boot_id: "4242-1700000000".to_owned(),
         capabilities: None,
     }
 }
@@ -49,7 +50,7 @@ fn serve_status_once(
             .expect("test precondition");
         assert!(request.contains("ping"));
         let body = format!(
-            "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\"}}}}\n"
+            "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\",\"boot_id\":\"4242-1700000000\"}}}}\n"
         );
         stream
             .write_all(body.as_bytes())

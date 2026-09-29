@@ -29,15 +29,9 @@ pub fn operator_guidance(target: OperatorGuidance<'_>) -> String {
             attach_command,
         } => {
             let restart = match attach_command {
-                Some(command) => {
-                    format!(
-                        "Run `{stop_command} {}`, then run `{command}` again.",
-                        crate::session::FORCE_STOP_FLAG
-                    )
-                }
+                Some(command) => format!("Run `{stop_command}`, then run `{command}` again."),
                 None => format!(
-                    "Run `{stop_command} {}`, then restart Shepr with the same socket override.",
-                    crate::session::FORCE_STOP_FLAG
+                    "Run `{stop_command}`, then restart Shepr with the same socket override."
                 ),
             };
             format!(

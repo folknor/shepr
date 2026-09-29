@@ -3,6 +3,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PingParams {}
 
+/// Params of `server.stop`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ServerStopParams {
+    /// Stop only the server process whose `ping` reported this boot identity.
+    /// A server of any other boot refuses with `server_boot_mismatch` and keeps
+    /// running. Absent: stop whatever server answers.
+    #[serde(default)]
+    pub expected_boot_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerSshAgentRegisterParams {
     /// Absolute remote-host agent socket. Registration lasts until this API connection closes.
@@ -48,6 +58,9 @@ pub struct ServerStatusJson {
     pub running: bool,
     pub version: Option<String>,
     pub build_id: Option<String>,
+    /// The running server process's boot identity, which a conditional stop
+    /// (`shepr server stop --expect-boot`) names.
+    pub boot_id: Option<String>,
     pub capabilities: Option<ServerCapabilities>,
     pub compatible: Option<bool>,
     pub socket: String,

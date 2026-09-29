@@ -365,7 +365,7 @@ fn shutdown_test_request(
             request: shepr_api::schema::Request {
                 id: id.into(),
                 method: shepr_api::schema::Method::ServerStop(
-                    shepr_api::schema::EmptyParams::default(),
+                    shepr_api::schema::ServerStopParams::default(),
                 ),
             },
             respond_to,

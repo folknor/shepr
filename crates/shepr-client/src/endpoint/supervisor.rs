@@ -79,9 +79,8 @@ type OwnedConnector = Box<shepr_remote::SavedSshConnector>;
 
 enum ConnectTarget {
     /// The Local server's client socket, and the guidance a build mismatch on
-    /// it names: the plain `shepr` and `shepr server stop` commands, with
-    /// `--force` where the build differs. Resolved once from the client's
-    /// paths, so the diagnostic every retry shows is the one the launch check
+    /// it names: the plain `shepr` and `shepr server stop` commands, plus the
+    /// socket overrides in effect. Resolved once from the client's paths, so the diagnostic every retry shows is the one the launch check
     /// would have printed.
     Local {
         path: PathBuf,
@@ -190,7 +189,7 @@ impl EndpointSupervisors {
 
     pub(crate) fn add_local(&mut self, path: PathBuf, generation: Option<u64>, now: Instant) {
         let mismatch_guidance =
-            shepr_api::session::restart_after_update_guidance_for(&self.paths).into();
+            shepr_api::server_stop::restart_after_update_guidance_for(&self.paths).into();
         let mut state = ReconnectState::new(
             ConnectTarget::Local {
                 path,
@@ -920,7 +919,7 @@ mod tests {
             "handshake failed",
             "00000000deadbeef",
             shepr_protocol::BUILD_ID,
-            "`shepr server stop --force`",
+            "`shepr server stop`",
             "`shepr`",
         ] {
             assert!(message.contains(expected), "{expected}: {message}");

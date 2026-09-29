@@ -45,6 +45,7 @@ enum ServerRuntimeStatus {
     Running {
         version: Option<String>,
         build_id: String,
+        boot_id: String,
         capabilities: Option<shepr_api::schema::ServerCapabilities>,
     },
     NotRunning,
@@ -137,11 +138,15 @@ fn print_server_status_body(
 ) {
     match server {
         ServerRuntimeStatus::Running {
-            version, build_id, ..
+            version,
+            build_id,
+            boot_id,
+            ..
         } => {
             println!("{indent}status: running");
             println!("{indent}version: {}", option_label(version.as_deref()));
             println!("{indent}build_id: {build_id}");
+            println!("{indent}boot_id: {boot_id}");
             println!(
                 "{indent}build_compatible: {}",
                 build_compatible_label(server)
@@ -163,6 +168,7 @@ fn read_server_runtime_status(
         Ok(status) => Ok(ServerRuntimeStatus::Running {
             version: status.version,
             build_id: status.build_id,
+            boot_id: status.boot_id,
             capabilities: status.capabilities,
         }),
         Err(ApiClientError::Io(error)) => {
@@ -217,11 +223,13 @@ fn server_status_json(
         ServerRuntimeStatus::Running {
             version,
             build_id,
+            boot_id,
             capabilities,
         } => ServerStatusJson {
             running: true,
             version: version.clone(),
             build_id: Some(build_id.clone()),
+            boot_id: Some(boot_id.clone()),
             capabilities: capabilities.clone(),
             compatible: build_compatible_bool(server),
             socket: api::socket_path(paths).display().to_string(),
@@ -231,6 +239,7 @@ fn server_status_json(
             running: false,
             version: None,
             build_id: None,
+            boot_id: None,
             capabilities: None,
             compatible: None,
             socket: api::socket_path(paths).display().to_string(),
@@ -295,6 +304,7 @@ mod tests {
         ServerRuntimeStatus::Running {
             version: version.map(str::to_owned),
             build_id: build_id.to_owned(),
+            boot_id: "4242-1700000000".to_owned(),
             capabilities: Some(shepr_api::schema::ServerCapabilities {
                 ssh_agent_registration: false,
             }),
@@ -315,6 +325,7 @@ mod tests {
             })
         );
         assert_eq!(value["running"], true);
+        assert_eq!(value["boot_id"], "4242-1700000000");
         assert!(value.get("status").is_none());
     }
 

@@ -74,7 +74,7 @@ fn idle_server_stop_subprocess_entry_point() {
                 let request = shepr_api::schema::Request {
                     id: "idle-stop".into(),
                     method: shepr_api::schema::Method::ServerStop(
-                        shepr_api::schema::EmptyParams::default(),
+                        shepr_api::schema::ServerStopParams::default(),
                     ),
                 };
                 shepr_api::client::ApiClient::for_socket(api_socket)

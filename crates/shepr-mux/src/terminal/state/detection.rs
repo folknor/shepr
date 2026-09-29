@@ -37,11 +37,6 @@ impl TerminalState {
         }
     }
 
-    pub fn with_launch_argv(mut self, argv: Vec<String>) -> Self {
-        self.launch_argv = Some(argv);
-        self
-    }
-
     pub fn with_pending_agent_resume_plan(
         mut self,
         plan: shepr_agent::agent::resume::AgentResumePlan,

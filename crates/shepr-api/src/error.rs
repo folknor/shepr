@@ -73,7 +73,8 @@ api_error_codes! {
     SurfaceInactive => "surface_inactive",
     BuildMismatch => "build_mismatch",
     ServerNotRunning => "server_not_running",
-    SessionStopFailed => "session_stop_failed",
+    ServerStopFailed => "server_stop_failed",
+    ServerBootMismatch => "server_boot_mismatch",
 }
 
 impl From<&String> for ApiErrorCode {

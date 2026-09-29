@@ -7,7 +7,7 @@ mod limits;
 pub(crate) mod logging;
 pub mod schema;
 mod server;
-pub mod session;
+pub mod server_stop;
 mod status;
 mod stop;
 
@@ -71,7 +71,7 @@ pub struct ApiRequestMessage {
 pub type ApiRequestSender = mpsc::UnboundedSender<ApiRequestMessage>;
 
 pub fn socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
-    crate::session::active_api_socket_path(paths)
+    crate::server_stop::active_api_socket_path(paths)
 }
 
 #[cfg(test)]

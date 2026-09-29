@@ -492,7 +492,6 @@ impl Workspace {
             host_terminal_appearance,
             shell_config,
             spawn,
-            None,
             extra_env,
         )
     }
@@ -506,39 +505,23 @@ impl Workspace {
         host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         spawn: &PaneSpawnHandles,
-        argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let id = generate_workspace_id();
         let launch_env = PaneLaunchEnv::from_extra(extra_env, spawn.api_socket_path.clone())
             .with_pane_id(PublicPaneId::new(&id, 1));
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
-            Tab::new_argv_command(
-                1,
-                initial_cwd.to_path_buf(),
-                rows,
-                cols,
-                argv,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                &launch_env,
-                spawn,
-            )?
-        } else {
-            Tab::new(
-                1,
-                initial_cwd.to_path_buf(),
-                rows,
-                cols,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                &launch_env,
-                spawn,
-            )?
-        };
+        let (tab, terminal, runtime) = Tab::new(
+            1,
+            initial_cwd.to_path_buf(),
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            &launch_env,
+            spawn,
+        )?;
         let root_pane = tab.root_pane;
         Ok((
             Self::with_first_tab(id, None, initial_cwd, tab, root_pane),
@@ -593,7 +576,6 @@ impl Workspace {
             host_terminal_theme,
             host_terminal_appearance,
             shell_config,
-            None,
             extra_env,
             spawn,
         )
@@ -609,7 +591,6 @@ impl Workspace {
         host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
         host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
-        argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<(Tab, TerminalState, PaneRuntime)> {
@@ -617,33 +598,18 @@ impl Workspace {
         let pane_number = self.next_public_pane_number;
         let launch_env = self.launch_env_for_new_pane(pane_number, extra_env, spawn);
 
-        let (mut tab, terminal, runtime) = if let Some(argv) = argv {
-            Tab::new_argv_command(
-                number,
-                cwd,
-                rows,
-                cols,
-                argv,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                &launch_env,
-                spawn,
-            )?
-        } else {
-            Tab::new(
-                number,
-                cwd,
-                rows,
-                cols,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                &launch_env,
-                spawn,
-            )?
-        };
+        let (mut tab, terminal, runtime) = Tab::new(
+            number,
+            cwd,
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            &launch_env,
+            spawn,
+        )?;
         let root_pane = tab.root_pane;
         if let Some(pane) = tab.panes.get_mut(&root_pane) {
             pane.public_number = pane_number;
@@ -754,7 +720,6 @@ impl Workspace {
             shell_config,
             extra_env,
             focus_new_pane,
-            None,
             spawn,
         )
     }
@@ -792,7 +757,6 @@ impl Workspace {
             shell_config,
             extra_env,
             focus_new_pane,
-            None,
             spawn,
         )
     }
@@ -815,46 +779,27 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
         focus_new_pane: bool,
-        argv: Option<&[String]>,
         spawn: &PaneSpawnHandles,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         let pane_number = self.next_public_pane_number;
         let launch_env = self.launch_env_for_new_pane(pane_number, extra_env, spawn);
         let tab = &self.tabs[tab_idx];
-        let new_pane = match if let Some(argv) = argv {
-            tab.split_pane_argv(
-                pane_id,
-                focus_new_pane,
-                direction,
-                ratio,
-                geometry,
-                cwd,
-                default_cwd,
-                argv,
-                &launch_env,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                spawn,
-            )
-        } else {
-            tab.split_pane_shell(
-                pane_id,
-                focus_new_pane,
-                direction,
-                ratio,
-                geometry,
-                cwd,
-                default_cwd,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                &launch_env,
-                spawn,
-            )
-        } {
+        let new_pane = match tab.split_pane_shell(
+            pane_id,
+            focus_new_pane,
+            direction,
+            ratio,
+            geometry,
+            cwd,
+            default_cwd,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            &launch_env,
+            spawn,
+        ) {
             Ok(new_pane) => new_pane,
             Err(err) => return Some(Err(err)),
         };
