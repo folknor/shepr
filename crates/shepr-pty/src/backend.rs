@@ -376,7 +376,10 @@ mod tests {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let before = parent_pty_fd_count();
         let mut cmd = fixture_command(&[Step::Cat]);
-        cmd.env("SHEPR_ENV", "1");
+        cmd.env(
+            shepr_core::env::EnvVar::SheprEnv,
+            shepr_core::env::SHEPR_ENV_IN_PANE,
+        );
 
         let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
         let after_spawn = parent_pty_fd_count();

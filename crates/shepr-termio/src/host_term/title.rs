@@ -38,15 +38,19 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// written and flushed to the host terminal (whether the terminal honours
 /// OSC 52 cannot be observed). `Err` means the copy did not happen; the caller
 /// logs it with its own context.
-pub fn write_clipboard_bytes<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {
-    if native_clipboard_write_succeeded(bytes) {
+pub fn write_clipboard_bytes<W: Write>(
+    bytes: &[u8],
+    prefers_osc52_clipboard: bool,
+    writer: &mut W,
+) -> io::Result<()> {
+    if native_clipboard_write_succeeded(bytes, prefers_osc52_clipboard) {
         return Ok(());
     }
     write_osc52(bytes, writer)
 }
 
-fn native_clipboard_write_succeeded(bytes: &[u8]) -> bool {
-    !shepr_platform::prefers_osc52_clipboard() && shepr_platform::write_clipboard(bytes)
+fn native_clipboard_write_succeeded(bytes: &[u8], prefers_osc52_clipboard: bool) -> bool {
+    !prefers_osc52_clipboard && shepr_platform::write_clipboard(bytes)
 }
 
 fn write_osc52<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {

@@ -111,11 +111,11 @@ impl HeadlessServer {
             let workspace_id = workspace.id.clone();
             let active_tab_id = shepr_protocol::PublicTabId::new(
                 workspace_id.as_str(),
-                workspace.active_tab().number,
+                workspace.active_tab().number(),
             );
             active_tab_ids.insert(workspace_id.clone(), active_tab_id);
             for tab in workspace.tabs() {
-                let tab_id = shepr_protocol::PublicTabId::new(workspace_id.as_str(), tab.number);
+                let tab_id = shepr_protocol::PublicTabId::new(workspace_id.as_str(), tab.number());
                 tab_workspace_ids.insert(tab_id, workspace_id.clone());
             }
         }
@@ -293,7 +293,7 @@ impl HeadlessServer {
             .get(workspace_index)?
             .tabs()
             .get(tab_index)?
-            .layout
+            .layout()
             .focused();
         Some(ShellFocusTarget {
             tab_id: target.tab_id,
@@ -441,10 +441,10 @@ impl HeadlessServer {
         else {
             return false;
         };
-        if tab.zoomed {
-            tab.layout.focused() == pane_id
+        if tab.zoomed() {
+            tab.layout().focused() == pane_id
         } else {
-            tab.layout.pane_ids().contains(&pane_id)
+            tab.layout().pane_ids().contains(&pane_id)
         }
     }
 
@@ -713,7 +713,7 @@ impl HeadlessServer {
                     .iter()
                     .enumerate()
                     .find_map(|(tab_index, tab)| {
-                        tab.panes
+                        tab.panes()
                             .values()
                             .any(|pane| pane.attached_terminal_id.as_str() == terminal_id)
                             .then(|| {

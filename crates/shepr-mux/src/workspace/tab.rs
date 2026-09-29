@@ -56,17 +56,59 @@ pub struct NewPane {
 }
 
 pub struct Tab {
-    pub custom_name: Option<String>,
-    pub number: usize,
+    // Persistence reads tabs for snapshots and fills detached tabs during
+    // restore; other crates use these accessors and workspace mutators.
+    pub(crate) custom_name: Option<String>,
+    pub(crate) number: usize,
     /// Identity source for this tab's pane tree.
-    pub root_pane: PaneId,
-    pub layout: TileLayout,
+    pub(crate) root_pane: PaneId,
+    pub(crate) layout: TileLayout,
     /// Runtime-independent pane records, keyed by internal ID.
-    pub panes: HashMap<PaneId, TabPane>,
-    pub zoomed: bool,
+    pub(crate) panes: HashMap<PaneId, TabPane>,
+    pub(crate) zoomed: bool,
 }
 
 impl Tab {
+    /// A detached one-pane tab around `root`, with no runtime behind it. The
+    /// layout is built here, so its pane set and the record always agree;
+    /// admitting the tab (`Workspace::commit_new_tab`) still checks its number
+    /// and pane identities against the workspace.
+    pub fn single_pane(custom_name: Option<String>, number: usize, root: TabPane) -> Self {
+        let (layout, root_pane) = TileLayout::new();
+        Self {
+            custom_name,
+            number,
+            root_pane,
+            layout,
+            panes: HashMap::from([(root_pane, root)]),
+            zoomed: false,
+        }
+    }
+
+    pub fn custom_name(&self) -> Option<&str> {
+        self.custom_name.as_deref()
+    }
+
+    pub fn number(&self) -> usize {
+        self.number
+    }
+
+    pub fn root_pane(&self) -> PaneId {
+        self.root_pane
+    }
+
+    pub fn layout(&self) -> &TileLayout {
+        &self.layout
+    }
+
+    pub fn panes(&self) -> &HashMap<PaneId, TabPane> {
+        &self.panes
+    }
+
+    pub fn zoomed(&self) -> bool {
+        self.zoomed
+    }
+
     pub(super) fn has_consistent_panes(&self) -> bool {
         let layout_ids = self.layout.pane_ids();
         let layout_set: HashSet<_> = layout_ids.iter().copied().collect();
@@ -209,6 +251,57 @@ impl Tab {
 
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
+    }
+
+    pub(super) fn clear_custom_name(&mut self) {
+        self.custom_name = None;
+    }
+
+    pub(super) fn set_zoomed(&mut self, zoomed: bool) {
+        self.zoomed = zoomed;
+    }
+
+    pub(super) fn focus_pane(&mut self, pane_id: PaneId) -> bool {
+        if !self.has_consistent_panes() || !self.panes.contains_key(&pane_id) {
+            return false;
+        }
+        self.layout.focus_pane(pane_id);
+        true
+    }
+
+    pub(super) fn swap_panes(&mut self, first: PaneId, second: PaneId) -> bool {
+        self.has_consistent_panes() && self.layout.swap_panes(first, second)
+    }
+
+    pub(super) fn resize_focused_pane(
+        &mut self,
+        direction: shepr_core::layout::NavDirection,
+        delta: f32,
+        area: ratatui::layout::Rect,
+    ) -> bool {
+        if !self.has_consistent_panes() {
+            return false;
+        }
+        self.layout.resize_focused(direction, delta, area);
+        true
+    }
+
+    pub(super) fn resize_pane(
+        &mut self,
+        pane_id: PaneId,
+        direction: shepr_core::layout::NavDirection,
+        delta: f32,
+        area: ratatui::layout::Rect,
+    ) -> bool {
+        self.has_consistent_panes() && self.layout.resize_pane(pane_id, direction, delta, area)
+    }
+
+    pub(super) fn set_split_ratio_at(
+        &mut self,
+        path: &[shepr_core::geometry::SplitBranch],
+        ratio: f32,
+    ) -> bool {
+        self.has_consistent_panes() && self.layout.set_ratio_at(path, ratio)
     }
 
     /// Prepare a shell split on a cloned layout and start its runtime. The

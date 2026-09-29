@@ -91,7 +91,7 @@ impl HeadlessServer {
             .get(workspace_index)?
             .tabs()
             .get(tab_index)?;
-        let pane_id = tab.layout.focused();
+        let pane_id = tab.layout().focused();
         self.app
             .state
             .runtime_for_pane_in_workspace(&self.app.terminal_runtimes, workspace_index, pane_id)
@@ -314,17 +314,17 @@ impl HeadlessServer {
                 else {
                     continue;
                 };
-                if tab.zoomed {
-                    pane_ids.insert(tab.layout.focused());
+                if tab.zoomed() {
+                    pane_ids.insert(tab.layout().focused());
                 } else {
-                    pane_ids.extend(tab.layout.pane_ids());
+                    pane_ids.extend(tab.layout().pane_ids());
                 }
             }
         }
         if !direct_terminal_targets.is_empty() {
             for workspace in &self.app.state.workspaces {
                 for tab in workspace.tabs() {
-                    pane_ids.extend(tab.panes.iter().filter_map(|(&pane_id, pane)| {
+                    pane_ids.extend(tab.panes().iter().filter_map(|(&pane_id, pane)| {
                         direct_terminal_targets
                             .contains(pane.attached_terminal_id.as_str())
                             .then_some(pane_id)
@@ -414,7 +414,8 @@ impl HeadlessServer {
             else {
                 return false;
             };
-            tab.panes.contains_key(&pane_id) && (!tab.zoomed || tab.layout.focused() == pane_id)
+            tab.panes().contains_key(&pane_id)
+                && (!tab.zoomed() || tab.layout().focused() == pane_id)
         })
     }
 

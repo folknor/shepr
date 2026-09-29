@@ -813,7 +813,7 @@ mod tests {
         let mut workspace = Workspace::test_new("api-tab-public-number");
         let removed_tab = workspace.test_add_tab(None);
         let survivor_tab = workspace.test_add_tab(None);
-        let survivor_pane = workspace.tabs()[survivor_tab].root_pane;
+        let survivor_pane = workspace.tabs()[survivor_tab].root_pane();
         assert!(workspace.close_tab(removed_tab).is_some());
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
@@ -838,8 +838,8 @@ mod tests {
         workspace.test_add_tab(None);
         let public_four_tab = workspace.test_add_tab(None);
         let fourth_position_tab = workspace.test_add_tab(None);
-        let public_four_pane = workspace.tabs()[public_four_tab].root_pane;
-        let fourth_position_pane = workspace.tabs()[fourth_position_tab].root_pane;
+        let public_four_pane = workspace.tabs()[public_four_tab].root_pane();
+        let fourth_position_pane = workspace.tabs()[fourth_position_tab].root_pane();
         assert!(workspace.close_tab(removed_tab).is_some());
         app.state.workspaces = vec![workspace];
 
@@ -850,9 +850,9 @@ mod tests {
             .find_tab_index_for_pane(fourth_position_pane)
             .expect("test precondition");
 
-        assert_eq!(app.state.workspaces[0].tabs()[public_four_idx].number, 4);
+        assert_eq!(app.state.workspaces[0].tabs()[public_four_idx].number(), 4);
         assert_eq!(
-            app.state.workspaces[0].tabs()[fourth_position_idx].number,
+            app.state.workspaces[0].tabs()[fourth_position_idx].number(),
             5
         );
         assert_eq!(
@@ -951,7 +951,7 @@ mod tests {
     fn pane_rename_request_sets_and_clears_manual_label() {
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-rename");
-        let pane = workspace.tabs()[0].root_pane;
+        let pane = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
@@ -1011,7 +1011,7 @@ mod tests {
     fn terminal_and_agent_targets_treat_terminal_ids_differently() {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-id");
-        let pane = workspace.tabs()[0].root_pane;
+        let pane = workspace.tabs()[0].root_pane();
         let terminal_id = workspace
             .terminal_id(pane)
             .expect("test precondition")
@@ -1036,7 +1036,7 @@ mod tests {
     fn agent_target_rejects_a_pane_that_only_has_a_launch_command() {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-command");
-        let pane = workspace.tabs()[0].root_pane;
+        let pane = workspace.tabs()[0].root_pane();
         let terminal_id = workspace
             .terminal_id(pane)
             .expect("test precondition")
@@ -1061,7 +1061,7 @@ mod tests {
     fn terminal_target_resolves_pane_id_for_an_agent() {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-pane");
-        let pane = workspace.tabs()[0].root_pane;
+        let pane = workspace.tabs()[0].root_pane();
         let terminal_id = workspace
             .terminal_id(pane)
             .expect("test precondition")
@@ -1096,7 +1096,7 @@ mod tests {
     fn terminal_target_resolves_unique_agent_name() {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-name");
-        let pane = workspace.tabs()[0].root_pane;
+        let pane = workspace.tabs()[0].root_pane();
         let terminal_id = workspace
             .terminal_id(pane)
             .expect("test precondition")
@@ -1128,7 +1128,7 @@ mod tests {
     fn terminal_target_matches_detected_agent_but_agent_target_needs_name() {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-detected-agent");
-        let pane = workspace.tabs()[0].root_pane;
+        let pane = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         let terminal_id = app.state.workspaces[0]
@@ -1158,7 +1158,7 @@ mod tests {
     fn agent_target_treats_legacy_pane_syntax_as_a_name() {
         let mut app = test_app();
         let workspace = Workspace::test_new("agent-target-name");
-        let pane = workspace.tabs()[0].root_pane;
+        let pane = workspace.tabs()[0].root_pane();
         let terminal_id = workspace
             .terminal_id(pane)
             .expect("test precondition")
@@ -1205,7 +1205,7 @@ mod tests {
     fn terminal_target_reports_ambiguous_duplicate_agent_name() {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("terminal-target-ambiguous");
-        let first = workspace.tabs()[0].root_pane;
+        let first = workspace.tabs()[0].root_pane();
         let second = workspace.test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
@@ -1268,7 +1268,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let target_pane = app.state.workspaces[0].tabs()[background_tab].root_pane;
+        let target_pane = app.state.workspaces[0].tabs()[background_tab].root_pane();
         let target_pane_id = app
             .pane_info(0, target_pane)
             .expect("test precondition")
@@ -1312,7 +1312,7 @@ mod tests {
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-ratio");
-        let target_pane = workspace.tabs()[0].root_pane;
+        let target_pane = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
@@ -1341,7 +1341,7 @@ mod tests {
 
         assert_eq!(response["result"]["type"], "pane_info");
         let splits = app.state.workspaces[0].tabs()[0]
-            .layout
+            .layout()
             .splits(ratatui::layout::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
         assert!((splits[0].ratio - 0.333).abs() < f32::EPSILON);
@@ -1371,7 +1371,7 @@ mod tests {
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-current");
-        let target_pane = workspace.tabs()[0].root_pane;
+        let target_pane = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
@@ -1395,9 +1395,9 @@ mod tests {
             serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
-        assert_eq!(app.state.workspaces[0].tabs()[0].layout.pane_count(), 2);
+        assert_eq!(app.state.workspaces[0].tabs()[0].layout().pane_count(), 2);
         assert_eq!(
-            app.state.workspaces[0].tabs()[0].layout.focused(),
+            app.state.workspaces[0].tabs()[0].layout().focused(),
             target_pane
         );
 
@@ -1411,7 +1411,7 @@ mod tests {
     async fn unavailable_agent_start_does_not_mutate_topology() {
         let mut app = test_app();
         let workspace = Workspace::test_new("agent-start-target");
-        let root = workspace.tabs()[0].root_pane;
+        let root = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
@@ -1432,7 +1432,7 @@ mod tests {
             serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["error"]["code"], "agent_pane_unavailable");
-        assert_eq!(app.state.workspaces[0].tabs()[0].layout.pane_count(), 1);
+        assert_eq!(app.state.workspaces[0].tabs()[0].layout().pane_count(), 1);
         assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
     }
 
@@ -1440,13 +1440,13 @@ mod tests {
     async fn failed_agent_start_input_rolls_back_and_can_retry() {
         let mut app = test_app();
         let workspace = Workspace::test_new("agent-start-input-failure");
-        let root = workspace.tabs()[0].root_pane;
+        let root = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
         let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&root]
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&root]
             .attached_terminal_id
             .clone();
         app.state
@@ -1538,7 +1538,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let target_pane = app.state.workspaces[0].tabs()[second_tab].root_pane;
+        let target_pane = app.state.workspaces[0].tabs()[second_tab].root_pane();
         let target_pane_id = app
             .pane_info(0, target_pane)
             .expect("test precondition")
@@ -1568,7 +1568,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let target_pane = app.state.workspaces[0].tabs()[0].root_pane;
+        let target_pane = app.state.workspaces[0].tabs()[0].root_pane();
         let target_pane_id = app
             .pane_info(0, target_pane)
             .expect("test precondition")
@@ -1731,7 +1731,7 @@ mod tests {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
         let mut workspace = Workspace::test_new("preserved");
-        let first_pane = workspace.tabs()[0].root_pane;
+        let first_pane = workspace.tabs()[0].root_pane();
         let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
@@ -1765,7 +1765,7 @@ mod tests {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
         let workspace = Workspace::test_new("closed");
-        let pane_id = workspace.tabs()[0].root_pane;
+        let pane_id = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
@@ -1813,7 +1813,7 @@ mod tests {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
         let workspace = Workspace::test_new("broken");
-        let pane_id = workspace.tabs()[0].root_pane;
+        let pane_id = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
@@ -1838,7 +1838,7 @@ mod tests {
             let mut app = test_app();
             app.policy = AppPolicy::Production;
             let workspace = Workspace::test_new("old");
-            let pane_id = workspace.tabs()[0].root_pane;
+            let pane_id = workspace.tabs()[0].root_pane();
             app.state.workspaces = vec![workspace];
             app.state.set_active_index(Some(0));
             app.state.ensure_test_terminals();
@@ -1853,7 +1853,7 @@ mod tests {
             app.state.mark_session_dirty();
             if another_interrupted_exit {
                 app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-                    pane_id: app.state.workspaces[0].tabs()[0].root_pane,
+                    pane_id: app.state.workspaces[0].tabs()[0].root_pane(),
                     exit_reason: shepr_platform::ChildExitReason::Interrupted,
                 });
             }
@@ -1874,7 +1874,7 @@ mod tests {
     async fn full_internal_event_queue_eventually_applies_working_to_idle_transition() {
         let mut app = test_app();
         let ws = Workspace::test_new("test");
-        let pane_id = ws.tabs()[0].root_pane;
+        let pane_id = ws.tabs()[0].root_pane();
 
         app.state.workspaces = vec![ws];
         app.state.ensure_test_terminals();

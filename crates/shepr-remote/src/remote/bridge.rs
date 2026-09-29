@@ -47,13 +47,24 @@ impl SshStdioBridge {
         ssh_options: Option<&ManagedSshOptions>,
         noninteractive: bool,
     ) -> io::Result<Self> {
-        Self::start_command(
+        let target_id = target.as_str().to_owned();
+        let executable_path = remote_shepr.as_str().to_owned();
+        let session = session_name.to_owned();
+        let bridge = Self::start_command(
             target,
             remote_shepr.bridge_command(session_name),
             local_socket,
             ssh_options,
             noninteractive,
-        )
+        )?;
+        tracing::info!(
+            target = %target_id,
+            session = %session,
+            executable = %executable_path,
+            socket = %bridge.local_socket.display(),
+            "remote SSH stdio bridge listening"
+        );
+        Ok(bridge)
     }
 
     pub(crate) fn start_command(
@@ -126,9 +137,10 @@ impl SshStdioBridge {
                                 continue;
                             }
                         };
-                        // Each local API request has its own stream and therefore its
-                        // own SSH stdio process. The streams are served serially because
-                        // one SSH process can carry only one local stream.
+                        // Each local API request has its own stream and SSH stdio
+                        // process. Keep `bridge_connection` inline in this accept loop:
+                        // a second stream waits until this one returns because one SSH
+                        // process can carry only one local stream.
                         if let Err(err) = bridge_connection(
                             stream,
                             &target,

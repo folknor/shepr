@@ -74,8 +74,8 @@ impl App {
                 .get(ws_idx)?
                 .tabs()
                 .get(tab_idx)?
-                .custom_name
-                .clone()
+                .custom_name()
+                .map(str::to_string)
         });
         let replace_was_active = replace_target.is_some_and(|(target_ws, target_tab)| {
             self.state.active_index() == Some(target_ws)
@@ -145,7 +145,7 @@ impl App {
             Ok(result) => result,
             Err(err) => return failure(ApiErrorCode::LayoutApplyFailed, err.to_string()),
         };
-        let new_root_pane = tab.root_pane;
+        let new_root_pane = tab.root_pane();
         let root_terminal_id = terminal.id.clone();
         let root_cwd = terminal.cwd().to_path_buf();
         let mut pane_terminals = std::collections::HashMap::from([(new_root_pane, terminal)]);
@@ -227,7 +227,7 @@ impl App {
             });
         }
         for pane_id in self.state.workspaces[ws_idx].tabs()[new_tab_idx]
-            .layout
+            .layout()
             .pane_ids()
         {
             if let Some(pane) = self.pane_info(ws_idx, pane_id) {
@@ -275,8 +275,7 @@ impl App {
             .state
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
-            .is_some_and(|tab| tab.layout.set_ratio_at(&path, params.ratio));
+            .is_some_and(|ws| ws.set_tab_split_ratio_at(tab_idx, &path, params.ratio));
         if !changed {
             return failure(ApiErrorCode::SplitNotFound, "split path not found");
         }
@@ -316,9 +315,9 @@ impl App {
         Some(LayoutDescription {
             workspace_id: self.public_workspace_id(ws_idx)?,
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
-            zoomed: tab.zoomed,
-            focused_pane_id: self.public_pane_id(ws_idx, tab.layout.focused())?,
-            root: self.layout_node_description(ws_idx, tab_idx, tab.layout.root())?,
+            zoomed: tab.zoomed(),
+            focused_pane_id: self.public_pane_id(ws_idx, tab.layout().focused())?,
+            root: self.layout_node_description(ws_idx, tab_idx, tab.layout().root())?,
         })
     }
 
@@ -386,7 +385,7 @@ impl App {
                 .get(ws_idx)?
                 .tabs()
                 .get(tab_idx)?
-                .layout
+                .layout()
                 .focused();
             self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id)
         });
@@ -671,15 +670,11 @@ mod tests {
     #[test]
     fn layout_export_returns_portable_tree() {
         let mut app = app_with_workspace();
-        let root = app.state.workspaces[0].tabs()[0].root_pane;
+        let root = app.state.workspaces[0].tabs()[0].root_pane();
         let right = app.state.workspaces[0].test_split(Direction::Horizontal);
         app.state.ensure_test_terminals();
-        app.state.workspaces[0].tabs_mut()[0]
-            .layout
-            .focus_pane(root);
-        app.state.workspaces[0].tabs_mut()[0]
-            .layout
-            .set_ratio_at(&[], 0.65);
+        assert!(app.state.workspaces[0].focus_pane_in_tab(0, root));
+        assert!(app.state.workspaces[0].set_tab_split_ratio_at(0, &[], 0.65));
         let right_terminal_id = app.state.workspaces[0].tabs()[0]
             .terminal_id(right)
             .cloned()
@@ -775,7 +770,7 @@ mod tests {
     async fn layout_apply_replaces_tab_with_requested_tree() {
         let mut app = app_with_workspace();
         let original_tab_id = app.public_tab_id(0, 0).expect("test precondition");
-        let original_root = app.state.workspaces[0].tabs()[0].root_pane;
+        let original_root = app.state.workspaces[0].tabs()[0].root_pane();
         let original_pane_id = app
             .public_pane_id(0, original_root)
             .expect("test precondition");
@@ -798,10 +793,9 @@ mod tests {
                     pane: LayoutPane {
                         label: Some("tests".into()),
                         command: Some(vec![exiting_test_command().into()]),
-                        env: std::collections::HashMap::from([(
-                            "SHEPR_ROLE".into(),
-                            "tests".into(),
-                        )]),
+                        // Layout environment keys are caller-defined; this
+                        // example does not claim a shepr-owned variable.
+                        env: std::collections::HashMap::from([("ROLE".into(), "tests".into())]),
                         ..Default::default()
                     },
                 }),
@@ -866,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn layout_apply_new_tab_follows_cached_focused_pane_cwd_without_runtime() {
         let mut app = app_with_workspace();
-        let focused_pane = app.state.workspaces[0].tabs()[0].root_pane;
+        let focused_pane = app.state.workspaces[0].tabs()[0].root_pane();
         let scratch = crate::test_support::ScratchDir::new("cached-cwd");
         let cached_cwd = scratch.to_path_buf();
         let terminal_id = app.state.workspaces[0]
@@ -893,7 +887,7 @@ mod tests {
         assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
         let created = &app.state.workspaces[0].tabs()[1];
         let created_terminal_id = created
-            .terminal_id(created.root_pane)
+            .terminal_id(created.root_pane())
             .expect("test precondition");
         let created_cwd = app
             .state

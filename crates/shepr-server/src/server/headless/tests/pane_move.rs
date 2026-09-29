@@ -45,7 +45,7 @@ fn public_move(
 #[tokio::test]
 async fn public_pane_move_focus_follows_the_moved_pane() {
     let mut server = pane_move_server();
-    let source = server.app.state.workspaces[0].tabs()[0].root_pane;
+    let source = server.app.state.workspaces[0].tabs()[0].root_pane();
     let terminal_id = server.app.state.workspaces[0].tabs()[0]
         .terminal_id(source)
         .expect("test precondition")
@@ -137,7 +137,7 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
     // One creates a workspace; the other moves into an already-focused split tab.
     for new_workspace in [true, false] {
         let mut server = pane_move_server();
-        let source = server.app.state.workspaces[0].tabs()[0].root_pane;
+        let source = server.app.state.workspaces[0].tabs()[0].root_pane();
         let source_id = server
             .app
             .public_pane_id(0, source)
@@ -211,7 +211,7 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
 async fn public_pane_move_without_effective_focus_preserves_client_views() {
     for case in ["no-focus", "same-tab", "zoomed", "invalid"] {
         let mut server = pane_move_server();
-        let source = server.app.state.workspaces[0].tabs()[0].root_pane;
+        let source = server.app.state.workspaces[0].tabs()[0].root_pane();
         let source_id = server
             .app
             .public_pane_id(0, source)
@@ -229,7 +229,7 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
             .shell_state()
             .map_or(0, |shell| shell.projection_revision.get());
         if case == "zoomed" {
-            server.app.state.workspaces[0].tabs_mut()[0].zoomed = true;
+            server.app.state.workspaces[0].set_tab_zoomed(0, true);
         }
         let tab_id = match case {
             "same-tab" => server.app.public_tab_id(0, 0).expect("test precondition"),

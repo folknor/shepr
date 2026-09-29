@@ -20,17 +20,6 @@ pass should expect that.
 
 ---
 
-## HYGG-004 - `failed_cli_registration_preserves_existing_config` re-executes the test binary through the host `bash`
-
-**Decision:** the host `bash` re-exec is resolved: the test now re-executes
-itself through `shepr_test_support::fixture::command` (`Ignore`, `LimitFileSize`
-and `Exec` steps), so it no longer depends on the host shell or on `trap ''
-XFSZ` semantics. Open: `SHEPR_TEST_3970_CONFIG_DIR` is still a raw
-`std::env::var_os` read under a scoped `#[expect]`, carries an issue number
-nobody can look up in this repository, and is a test-only name in a
-production-visible namespace; neither a registry entry nor another naming
-scheme was chosen for it.
-
 ## HYGG-005 - Tests that assert on the wall clock
 
 **Decision (partial):** the clock seam is adopted from broadarrow, incrementally
@@ -146,28 +135,6 @@ rather than the network.
 Enforcement rule named: a brokkr text rule forbidding `"/tmp` literals and
 `env::var("HOME")` in `crates/*/src` outside `shepr-test-support`.
 
-## HYGG-011 - `clear_integration_path_env` is a hand-maintained duplicate of the agent env-var inventory
-
-**Decision:** piece 1 (the `shepr-core` environment registry, after broadarrow's
-`core::env`): every agent directory variable is a registry entry and
-`IsolatedEnv` isolates from the registry, so the hand list is replaced by the
-one inventory the readers themselves go through.
-
-`shepr-agent/src/integration/tests.rs` lists fifteen variables to remove so
-paths resolve against the fake `HOME`. `env.rs` defines fourteen `*_ENV_VAR`
-constants plus the two XDG names. Add an agent env var and forget this list, and
-every install test for that agent silently inherits the developer's real value:
-the test passes on the author's machine, writes into the author's real agent
-config, and means nothing. The hunter calls this the clearest example in the
-crate of a test that depends on the environment it runs in.
-
-Enforcement rule named: expose `pub(crate) const INTEGRATION_PATH_ENV_VARS:
-&[&str]` in `env.rs`, have both the `resolve()`-adjacent code and the test
-helper read it, and add a test asserting the list covers every variable the
-resolvers consult - checkable by construction if the resolvers take their
-variable name from the list. Related: HYGG-053 (the same shape one layer up, in
-`IsolatedEnv`).
-
 ## HYGG-012 - Fixed `/tmp` literals remain in test data, standing in for a scratch directory
 
 **Decision (partial):** piece 2 of the test-isolation work adopted from
@@ -230,52 +197,6 @@ tests use it (for example `app/api/panes/tests.rs`,
 history is empty cannot distinguish "no events were emitted" from "the lock is
 poisoned" - a test that can pass for the wrong reason. Enforcement named: delete
 `events_after` and have tests use `events_after_checked(..).expect(..)`.
-
-## HYGG-053 - `IsolatedEnv` guarantees isolation from a list it does not own
-
-**Decision:** piece 1 (the `shepr-core` environment registry, after broadarrow's
-`core::env`) is the `shepr-platform` hunter's fix: `IsolatedEnv` iterates the
-registry rather than its own lists, which means `shepr-test-support`'s
-`["libc"]` allowlist widens to `shepr-core`, and raw environment reads are banned
-in `clippy.toml` so a variable cannot be read without being an entry.
-
-`shepr-test-support`'s doc comment claims the guard means "nothing under test
-can reach the user's real config, state or agent directories, or the live shepr
-server a test run was started from". That guarantee rests on three name lists
-inside the crate: `XDG_BASE_DIR_VARS` (four names), the `SHEPR_` prefix, and
-`HOME`/`XDG_RUNTIME_DIR`. `shepr-config/src/io.rs` reads `XDG_CONFIG_HOME`,
-`XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `HOME`, `SHEPR_CONFIG_PATH`,
-`SHEPR_SOCKET_PATH`, `SHEPR_CLIENT_SOCKET_PATH` and `SHEPR_SESSION`;
-`shepr-agent/src/integration/env.rs` reads a per-agent set of `*_HOME`-style
-variables (`GROK_HOME` among them, per its own tests). The day a variable is
-added on the reading side and not here, every test keeps passing while reaching
-into the developer's real `$HOME`-adjacent state, and reports nothing.
-
-The `shepr-protocol`/`shepr-config` hunter reports the same thing from the other
-end and adds that the duplication is *forced* by the layering:
-`shepr-test-support`'s dependency allowlist in `brokkr.toml` is `["libc"]`, so
-it cannot import the names from anywhere - and calls for it to be reported as a
-duplication with a reason rather than dismissed. Its proposed fixes: either
-widen the allowlist to `shepr-core` and export the name set from there, or add a
-test in `shepr-config` asserting every variable it reads is in the isolation
-list.
-
-The `shepr-platform` hunter calls this the highest-value mechanical fix in its
-report: if every environment variable name lives in one `shepr-core::env`
-module, `IsolatedEnv` can iterate that module's full list instead of restating a
-subset, and a `brokkr.toml` text rule forbidding env-name literals elsewhere
-keeps the list complete by construction. Related: HYGG-011 (the same shape
-inside `shepr-agent`'s own test helper).
-
-## HYGG-058 - The `SHEPR_` prefix scrub silently keeps a non-UTF-8 key
-
-**Decision:** piece 1 (the `shepr-core` environment registry): `IsolatedEnv`
-isolates from the registry's entries rather than by scanning for a `SHEPR_`
-prefix, so the fail-open string test goes.
-
-`shepr-test-support`:
-`key.to_str().is_some_and(|k| k.starts_with("SHEPR_"))`. Not reachable in
-practice, but it is the fail-open shape.
 
 ## HYGG-067 - Claim: "Wire types must not use `skip_serializing_if`, `flatten`, `untagged` or tagged enums"
 
@@ -356,49 +277,6 @@ excludes "no local file evaluation (`agent explain --file`)". That is enforced b
 `agent::Command::is_api_command` (`Self::Explain(args) => args.file.is_none()`)
 in a different file, and nothing ties the comment to it. True today, and the
 existing test covers the `--file` case, so the hunter marks this one held.
-
-## HYGG-077 - `REMOTE_MISE_SHIM_SUFFIX` is a fail-open name guard
-
-`shepr-remote/src/machine/executable.rs` rejects a discovered path ending in
-`/mise/shims/shepr`. mise's shim directory is relocatable (`MISE_DATA_DIR`), and
-the equivalent problem exists for asdf, rtx's legacy layout,
-`~/.local/share/pipx`, and any other shim dir. When the name stops matching the
-guard becomes a silent no-op and shepr caches a shim path that re-execs
-something else - precisely the failure the guard was written for, reported as
-nothing. Not enforceable as a name rule. The structural answer named: test the
-candidate rather than its spelling - the status probe already runs
-`status client --json` on the candidate and compares `build_id`, so a shim that
-resolves to the right binary is fine and one that does not already fails.
-Consider deleting the guard in favour of the probe and keeping only a diagnostic
-note when a rejected candidate looked like a shim.
-
-## HYGG-078 - `ssh_config_include` fails open on `is_file()`
-
-**Decision (partial):** the `Path::exists` seal (`clippy.toml`) is extended to
-`Path::is_file` and `Path::is_dir`. The `is_file()` filter therefore becomes an
-explicit metadata match: `NotFound` skips the include, and any other error is
-reported instead of silently dropping it. Open: the `debug` log of emitted and
-skipped includes.
-
-`shepr-remote/src/remote/ssh.rs`: `path.filter(|path| path.is_file())`. A
-symlink to a file passes (fine), an absent file is silently dropped (fine), and
-if OpenSSH on this host reads its system config from somewhere else entirely
-(`/etc/ssh/ssh_config.d/*`, a distro override) the managed config silently omits
-settings the user believes are active, with no line logged. The include ordering is now tested but still not
-observable at runtime. Fix named: log
-at `debug` which includes were emitted and which paths were skipped; the path
-list itself cannot be enforced against OpenSSH's actual search order.
-
-## HYGG-081 - Two `shepr-remote` comment claims nothing checks
-
-- `RemoteSsh` doc: "no noninteractive command runs past it [the attempt
-  deadline]" - `sh_output` and `framed_user_shell_output` honour it;
-  `SshStdioBridge::start` and the `establish` callback do not consult it (the
-  supervisor holds them to it separately). Checkable with a fake clock.
-- `bridge.rs`: "Each local API request has its own stream and therefore its own
-  SSH stdio process. The streams are served serially" - true by construction (a
-  single accept loop) but nothing asserts it; a future `thread::spawn` per stream
-  would break the claim silently.
 
 ## HYGG-086 - `AGENTS.md` describes `reference/` and `docs/` as binding in-repo folders that do not exist
 
@@ -487,42 +365,6 @@ The `shepr-vt`/`shepr-pty` hunter reports a violation of the same claim in
 feeds the buffered frame through the parser and mutates the grid), but files it
 as a live defect, so a fix pass should expect that entry in the bug document
 rather than here.
-
-## HYGG-127 - Workspace invariants can still be bypassed through public tab fields
-
-`shepr-mux/src/workspace.rs` and `workspace/tab.rs`: the non-empty tab list and
-focused tab are structural, and tab creation, restore and pane-tree mutations
-now check unique public tab and pane numbers, unique pane and terminal ids, and
-that each layout matches its pane records and holds its root and focused pane.
-Open: `Tab`'s public fields and `Workspace::tabs_mut()` let any crate change a
-tab without those checks (the reason for leaving them is at `tabs_mut()`).
-Closing it means private fields plus the accessors `shepr-server` actually
-needs, so the fixer must hold both crates.
-
-## HYGG-103 - The same shape one level down: `SHEPR_*` names spelled as literals in shipped assets with no membership test
-
-**Decision (partial):** piece 1 (the `shepr-core` environment registry, after
-broadarrow's `core::env`) owns every name in `shepr-core` rather than
-`shepr-config`, and includes the asset-walking test that every `SHEPR_*`
-literal is a registry member. Open: the two bare Rust writers of
-`SHEPR_BIN_PATH` (no text rule against `"SHEPR_` literals was decided).
-
-`shepr-mux/src/pane/launch.rs` exports `SHEPR_PANE_ID_ENV_VAR` publicly but
-writes `"SHEPR_BIN_PATH"` as a bare literal; `shepr-server/src/app/tab_bar_status.rs`
-writes `"SHEPR_BIN_PATH"` as a bare literal too, so there are two independent
-writers of one name with no shared definition. Roughly twenty shipped hook
-assets read both names as literals, and `shepr-agent` reports that every asset
-restates the whole contract - `SHEPR_ENV` must equal `"1"`,
-`SHEPR_SOCKET_PATH` and `SHEPR_PANE_ID` must be non-empty, `SHEPR_BIN_PATH`
-falls back to the bare name `shepr` - field by field, in four languages. The
-assets are a genuinely forced copy; nothing keeps them in step today.
-
-Enforcement named: one module (`shepr-config`) exporting every `SHEPR_*` name, a
-`brokkr.toml` text rule forbidding `"SHEPR_` string literals elsewhere, and one
-test that walks `crates/shepr-agent/src/integration/assets/**` extracting
-`SHEPR_[A-Z_]+` and asserts set membership. The `shepr-mux` hunter says that
-last test is the only thing that can ever keep the deployment-forced copies
-honest, and it does not exist.
 
 ## HYGG-111 - `manifest.rs`'s module doc enumerates region names, matcher keys, gate keys and limits in prose
 

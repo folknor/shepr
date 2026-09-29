@@ -911,7 +911,7 @@ mod tests {
                         workspace
                             .tabs()
                             .iter()
-                            .map(|tab| tab.custom_name.clone())
+                            .map(|tab| tab.custom_name().map(str::to_owned))
                             .collect()
                     })
                     .collect()

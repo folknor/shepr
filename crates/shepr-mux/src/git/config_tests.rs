@@ -178,6 +178,20 @@ fn git_command_scope_config_overrides_files_in_pair_order() {
 }
 
 #[test]
+fn git_dash_c_parameters_override_indexed_command_scope_pairs() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let bare = bare_layout("git-config-dash-c-precedence", "[core]\n\tbare = false\n");
+    env.set(shepr_core::env::EnvVar::GitConfigCount, "1");
+    env.set("GIT_CONFIG_KEY_0", "core.bare");
+    env.set("GIT_CONFIG_VALUE_0", "false");
+    env.set(
+        shepr_core::env::EnvVar::GitConfigParameters,
+        "'core.bare'='true'",
+    );
+    assert_eq!(git_repo_root(&bare), Some(bare));
+}
+
+#[test]
 fn git_command_scope_config_requires_every_indexed_pair() {
     let env = shepr_test_support::IsolatedEnv::new();
     env.set(shepr_core::env::EnvVar::GitConfigCount, "1");

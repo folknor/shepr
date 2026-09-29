@@ -250,22 +250,6 @@ judgement calls only review catches applies throughout.
 - `SshAgentRegistry::publish` swapping the published agent symlink to
   `.unavailable`: no log. The user sees agent forwarding stop working silently.
 
-`shepr-remote`:
-
-- `SshStdioBridge::start` logs nothing: no line says a bridge came up, for which
-  machine, at which socket, with which remote executable. `shepr-api`'s server
-  logs `info!("api server listening")` and `shepr-server` logs
-  `info!("client protocol socket listening")` for the equivalent event, so the
-  pattern exists and this crate skips it.
-- A successful reconnect after N failures logs nothing.
-- `SshMetadataCache::store` on success logs nothing, so there is no record of
-  which remote path we decided to remember - the exact fact you want when a
-  machine starts failing.
-- `EndpointCatalogWatch` reloading the catalog logs nothing (the failure warns).
-- `ssh_config_include` silently drops an include when the path is absent or when
-  OpenSSH reads its system config from somewhere else entirely; the hunter's
-  suggested fix is a `debug` line naming which includes were emitted and which
-  paths were skipped.
 
 `shepr-mux`: `PaneTerminal::seed_history_ansi` returns `()` and silently does
 nothing when the core lock is poisoned, so restored scrollback is lost with no

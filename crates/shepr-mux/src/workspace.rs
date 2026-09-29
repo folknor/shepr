@@ -136,10 +136,6 @@ impl FocusedTabs {
         &self.items
     }
 
-    fn as_mut_slice(&mut self) -> &mut [Tab] {
-        &mut self.items
-    }
-
     fn len(&self) -> usize {
         self.items.len()
     }
@@ -174,6 +170,7 @@ impl FocusedTabs {
         &self.items[self.focused]
     }
 
+    #[cfg(test)]
     fn focused_mut(&mut self) -> &mut Tab {
         &mut self.items[self.focused]
     }
@@ -368,12 +365,71 @@ impl Workspace {
         self.tabs.as_slice()
     }
 
-    pub fn tabs_mut(&mut self) -> &mut [Tab] {
-        // Callers still need direct mutable tab access for focus, zoom, and
-        // naming. The public Tab fields also permit arbitrary pane and number
-        // edits, so collection-wide uniqueness cannot be guaranteed by this
-        // accessor. Admission checks guard workspace-owned insertion paths.
-        self.tabs.as_mut_slice()
+    pub fn set_tab_custom_name(&mut self, tab_index: usize, name: Option<String>) -> bool {
+        let Some(tab) = self.tabs.get_mut(tab_index) else {
+            return false;
+        };
+        match name {
+            Some(name) => tab.set_custom_name(name),
+            None => tab.clear_custom_name(),
+        }
+        true
+    }
+
+    pub fn set_tab_zoomed(&mut self, tab_index: usize, zoomed: bool) -> bool {
+        let Some(tab) = self.tabs.get_mut(tab_index) else {
+            return false;
+        };
+        tab.set_zoomed(zoomed);
+        true
+    }
+
+    pub fn focus_pane_in_tab(&mut self, tab_index: usize, pane_id: PaneId) -> bool {
+        self.tabs
+            .get_mut(tab_index)
+            .is_some_and(|tab| tab.focus_pane(pane_id))
+    }
+
+    pub fn swap_panes_in_tab(&mut self, tab_index: usize, first: PaneId, second: PaneId) -> bool {
+        self.tabs
+            .get_mut(tab_index)
+            .is_some_and(|tab| tab.swap_panes(first, second))
+    }
+
+    pub fn resize_focused_pane_in_tab(
+        &mut self,
+        tab_index: usize,
+        direction: shepr_core::layout::NavDirection,
+        delta: f32,
+        area: ratatui::layout::Rect,
+    ) -> bool {
+        self.tabs
+            .get_mut(tab_index)
+            .is_some_and(|tab| tab.resize_focused_pane(direction, delta, area))
+    }
+
+    pub fn resize_pane_in_tab(
+        &mut self,
+        tab_index: usize,
+        pane_id: PaneId,
+        direction: shepr_core::layout::NavDirection,
+        delta: f32,
+        area: ratatui::layout::Rect,
+    ) -> bool {
+        self.tabs
+            .get_mut(tab_index)
+            .is_some_and(|tab| tab.resize_pane(pane_id, direction, delta, area))
+    }
+
+    pub fn set_tab_split_ratio_at(
+        &mut self,
+        tab_index: usize,
+        path: &[shepr_core::geometry::SplitBranch],
+        ratio: f32,
+    ) -> bool {
+        self.tabs
+            .get_mut(tab_index)
+            .is_some_and(|tab| tab.set_split_ratio_at(path, ratio))
     }
 
     pub fn from_existing_pane(
@@ -519,10 +575,6 @@ impl Workspace {
 
     pub fn active_tab_index(&self) -> usize {
         self.tabs.focused_index()
-    }
-
-    pub fn active_tab_mut(&mut self) -> &mut Tab {
-        self.tabs.focused_mut()
     }
 
     pub fn tab_display_name(&self, tab_idx: usize) -> Option<String> {
@@ -868,8 +920,8 @@ impl Workspace {
         let tab = self.tabs.get_mut(tab_index)?;
         tab.commit_prepared_split(pane_id, prepared_layout, terminal_id, number)
             .then_some(())?;
-        if focus {
-            tab.layout.focus_pane(pane_id);
+        if focus && !tab.focus_pane(pane_id) {
+            tracing::error!(workspace = %self.id, ?pane_id, "refused to focus a pane after admitting its split");
         }
         self.register_new_pane_with_number(pane_id, number);
         Some(())
@@ -1289,7 +1341,7 @@ impl Workspace {
     }
 
     pub fn test_split(&mut self, direction: Direction) -> PaneId {
-        let tab = self.active_tab_mut();
+        let tab = self.tabs.focused_mut();
         let new_id = tab.layout.split_focused(direction);
         tab.panes
             .insert(new_id, TabPane::new(PaneState::new(TerminalId::alloc())));

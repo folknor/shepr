@@ -423,9 +423,6 @@ impl ValidatedTerminalConfig {
 fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<String, String> {
     let path = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
         .map_err(|error| error.to_string())?;
-    let inherited = shepr_core::env::read_os(shepr_core::env::EnvVar::Shell)
-        .map_err(|error| error.to_string())?
-        .and_then(|shell| shepr_core::shell::trim_shell_value(&shell));
     let cwd = paths
         .current_dir()
         .map(Path::to_path_buf)
@@ -443,6 +440,9 @@ fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<String, S
         .and_then(|shell| shell_path_string(shell, "terminal.default_shell"));
     }
 
+    let inherited = shepr_core::env::read_os(shepr_core::env::EnvVar::Shell)
+        .map_err(|error| error.to_string())?
+        .and_then(|shell| shepr_core::shell::trim_shell_value(&shell));
     if let Some(inherited) = inherited {
         return resolve_recognized_shell(&inherited, "SHELL", path.as_deref(), &cwd)
             .and_then(|shell| shell_path_string(shell, "SHELL"))
@@ -1144,6 +1144,25 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
                 "expected {expected:?} in {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_configured_shell_wins_over_an_unusable_inherited_shell() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-shell-override");
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let inherited = scratch.join("missing/inherited-shell");
+        env.set("SHELL", &inherited);
+        let configured = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
+        let configured_shell = configured.to_string_lossy().into_owned();
+        let mut config = Config::default();
+        config.terminal.default_shell = configured_shell.clone();
+
+        let validated =
+            ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(&config), paths)
+                .expect("a configured shell takes precedence over inherited SHELL");
+
+        assert_eq!(validated.terminal().default_shell, configured_shell);
     }
 
     /// With `terminal.default_shell` empty, `SHELL` is the setting: a usable

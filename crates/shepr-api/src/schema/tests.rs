@@ -558,7 +558,7 @@ fn layout_export_apply_round_trip() {
             pane: LayoutPane {
                 label: Some("tests".into()),
                 command: Some(vec!["sh".into(), "-c".into(), "just test".into()]),
-                env: HashMap::from([("SHEPR_ROLE".into(), "tests".into())]),
+                env: HashMap::from([("ROLE".into(), "tests".into())]),
                 ..Default::default()
             },
         }),

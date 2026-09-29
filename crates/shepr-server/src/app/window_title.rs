@@ -75,7 +75,7 @@ impl App {
                 .get(tab_index)
         });
         let terminal = tab
-            .and_then(|tab| tab.terminal_id(tab.layout.focused()))
+            .and_then(|tab| tab.terminal_id(tab.layout().focused()))
             .and_then(|terminal_id| self.state.terminals.get(terminal_id));
 
         let mut title = String::new();
@@ -150,7 +150,7 @@ mod tests {
 
         assert_eq!(app.window_title().as_deref(), Some("herd/1"));
 
-        app.state.workspaces[0].tabs_mut()[0].custom_name = Some("build".into());
+        app.state.workspaces[0].set_tab_custom_name(0, Some("build".into()));
         assert_eq!(app.window_title().as_deref(), Some("herd/build"));
     }
 
@@ -159,8 +159,8 @@ mod tests {
         let mut app = test_app();
         app.configure_window_title("{pane}|{terminal_title}");
 
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app

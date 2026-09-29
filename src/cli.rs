@@ -1251,15 +1251,15 @@ mod tests {
     #[test]
     fn parse_env_assignment_accepts_empty_values() {
         assert_eq!(
-            super::parse_env_assignment("SHEPR_ROLE=").expect("test precondition"),
-            ("SHEPR_ROLE".to_string(), String::new())
+            super::parse_env_assignment("ROLE=").expect("test precondition"),
+            ("ROLE".to_string(), String::new())
         );
     }
 
     #[test]
     fn parse_env_assignment_requires_key_value_separator() {
         assert_eq!(
-            super::parse_env_assignment("SHEPR_ROLE").expect_err("test precondition"),
+            super::parse_env_assignment("ROLE").expect_err("test precondition"),
             "env must use KEY=VALUE"
         );
     }

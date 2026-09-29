@@ -275,6 +275,9 @@ fn platform_xdg_dir(
     home_suffix: &str,
     home_dir: Option<&Path>,
 ) -> io::Result<(PathBuf, ConfigSource)> {
+    // Empty follows the XDG Base Directory spec, which treats it as unset
+    // (the registry reads empty as unset). Relative is refused, which the
+    // spec also calls invalid.
     if let Some(directory) = shepr_core::env::read_path(variable)? {
         return Ok((
             directory.join(app_dir_name()),

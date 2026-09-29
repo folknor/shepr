@@ -366,7 +366,7 @@ mod tests {
         let ws = &app.state.workspaces[0];
         let root_cwd = ws.identity_cwd.clone();
         let focused_pane = ws.focused_pane_id();
-        assert_ne!(focused_pane, ws.tabs()[0].root_pane);
+        assert_ne!(focused_pane, ws.tabs()[0].root_pane());
         let terminal_id = ws
             .terminal_id(focused_pane)
             .cloned()
@@ -724,7 +724,7 @@ mod tests {
             .tabs()
             .iter()
             .map(|tab| {
-                app.public_pane_id(0, tab.root_pane)
+                app.public_pane_id(0, tab.root_pane())
                     .expect("test precondition")
             })
             .collect::<Vec<_>>();

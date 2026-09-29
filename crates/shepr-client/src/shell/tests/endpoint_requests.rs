@@ -65,6 +65,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
         &mut commands,
         &mut endpoints,
         &mut std::io::sink(),
+        false,
         None,
         &mut scheduled,
     );
@@ -92,6 +93,7 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
             &mut commands,
             &mut endpoints,
             &mut std::io::sink(),
+            false,
             Some(&mut state),
             &mut scheduled,
         );

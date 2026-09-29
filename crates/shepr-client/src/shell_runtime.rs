@@ -5,6 +5,7 @@ pub(super) fn dispatch_client_shell_actions(
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
     output_writer: &mut impl io::Write,
+    prefers_osc52_clipboard: bool,
     mut shell: Option<&mut shell::ClientShellState>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
 ) -> bool {
@@ -32,9 +33,11 @@ pub(super) fn dispatch_client_shell_actions(
             shell::ClientShellAction::ClipboardWrite(bytes) => {
                 // Once per user copy, so a warn cannot flood; only the length is
                 // logged because the bytes are the user's selection.
-                if let Err(error) =
-                    shepr_termio::host_term::title::write_clipboard_bytes(&bytes, output_writer)
-                {
+                if let Err(error) = shepr_termio::host_term::title::write_clipboard_bytes(
+                    &bytes,
+                    prefers_osc52_clipboard,
+                    output_writer,
+                ) {
                     warn!(
                         bytes = bytes.len(),
                         %error,
@@ -251,6 +254,7 @@ pub(super) fn begin_endpoint_activation(
                 endpoint_commands,
                 endpoints,
                 &mut state.output_writer,
+                state.settings.prefers_osc52_clipboard(),
                 Some(shell),
                 scheduled_activation,
             );
@@ -846,6 +850,7 @@ pub(super) fn finish_client_shell_input(
         endpoint_commands,
         endpoints,
         &mut state.output_writer,
+        state.settings.prefers_osc52_clipboard(),
         state.mode.shell_mut(),
         scheduled_activation,
     );

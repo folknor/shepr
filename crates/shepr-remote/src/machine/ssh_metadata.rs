@@ -47,9 +47,9 @@ impl SshMetadataCache {
         &self.path
     }
 
-    /// Remembers where the remote shepr lives. A failure leaves the cache as it
-    /// was, so every later connection pays full discovery; the caller decides how
-    /// loudly to say so.
+    /// Remembers where the remote shepr lives. Successful stores log the cache path
+    /// and executable path at debug. A failure leaves the cache as it was, so every
+    /// later connection pays full discovery; the caller decides how loudly to say so.
     pub fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
         let stored = StoredMetadata {
             target: self.target.clone(),

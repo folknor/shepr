@@ -34,7 +34,7 @@ impl AppState {
                 let workspace_id = ws.id.to_string();
                 ws.tabs().iter().flat_map(move |tab| {
                     let workspace_id = workspace_id.clone();
-                    tab.layout
+                    tab.layout()
                         .pane_ids()
                         .into_iter()
                         .filter_map(move |pane_id| {
@@ -90,7 +90,7 @@ impl AppState {
             .enumerate()
             .flat_map(|(ws_idx, workspace)| {
                 workspace.tabs().iter().flat_map(move |tab| {
-                    tab.layout
+                    tab.layout()
                         .pane_ids()
                         .into_iter()
                         .filter_map(move |pane_id| {
@@ -276,7 +276,7 @@ impl AppState {
             .get(ws_idx)
             .into_iter()
             .flat_map(shepr_mux::workspace::Workspace::tabs)
-            .flat_map(|tab| tab.panes.values())
+            .flat_map(|tab| tab.panes().values())
             .map(|pane| pane.attached_terminal_id.clone())
             .collect()
     }
@@ -286,7 +286,7 @@ impl AppState {
             .get(ws_idx)
             .into_iter()
             .flat_map(shepr_mux::workspace::Workspace::tabs)
-            .flat_map(|tab| tab.layout.pane_ids())
+            .flat_map(|tab| tab.layout().pane_ids())
             .collect()
     }
 
@@ -309,7 +309,7 @@ impl AppState {
         for terminal_id in terminal_ids {
             let still_attached = self.workspaces.iter().any(|ws| {
                 ws.tabs().iter().any(|tab| {
-                    tab.panes
+                    tab.panes()
                         .values()
                         .any(|pane| pane.attached_terminal_id == terminal_id)
                 })
@@ -409,7 +409,7 @@ impl AppState {
         tab_index: usize,
     ) -> Option<TabRemovalPlan> {
         let workspace = self.workspaces.get(workspace_index)?;
-        let tab_number = workspace.tabs().get(tab_index)?.number;
+        let tab_number = workspace.tabs().get(tab_index)?.number();
         Some(TabRemovalPlan {
             workspace_index,
             tab_index,
@@ -436,7 +436,7 @@ impl AppState {
             TabRemovalScope::Tab
         };
         if workspace.id != plan.workspace_id
-            || tab.number != plan.tab_number
+            || tab.number() != plan.tab_number
             || expected_scope != plan.scope
         {
             return TabRemovalCommit::Stale;

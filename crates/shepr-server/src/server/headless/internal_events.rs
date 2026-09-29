@@ -51,7 +51,7 @@ impl HeadlessServer {
                 let pane_id_val = *pane_id;
                 let terminal_id = self.app.state.workspaces.iter().find_map(|ws| {
                     ws.tabs().iter().find_map(|tab| {
-                        tab.panes
+                        tab.panes()
                             .get(pane_id)
                             .map(|pane| pane.attached_terminal_id.clone())
                     })

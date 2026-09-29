@@ -113,12 +113,9 @@ pub fn run_server(
 ) -> Result<(), RunServerError> {
     let resolved_config = encode_resolved_config(config)?;
 
-    // Consume the startup-cwd hint before anything below starts a thread: the
-    // API server thread, the tokio workers and session restore all run
-    // concurrently afterwards, and unsetting a variable while another thread
-    // may call getenv is undefined behaviour in glibc. `main` reaches this
-    // function without having spawned any thread; keep it that way.
-    let startup_cwd = take_startup_cwd();
+    // The startup-cwd hint stays in this process's environment; every child
+    // launch path scrubs it instead of the server unsetting it here.
+    let startup_cwd = read_startup_cwd();
 
     let session_data_dir = shepr_api::session::data_dir(paths);
     let lease = shepr_mux::persist::DataDirLease::acquire(&session_data_dir)?;
@@ -243,19 +240,12 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
     }
 }
 
-/// Read and unset the startup-cwd hint the spawning client left in the
-/// environment, so pane shells do not inherit it.
-///
-/// Must run while the process is still single-threaded; see `run_server`.
-fn take_startup_cwd() -> Option<PathBuf> {
+/// Read the startup-cwd hint the spawning client left in the environment.
+/// Pane launches and `shepr_platform::child_command` remove the handoff
+/// variable from their child environments.
+fn read_startup_cwd() -> Option<PathBuf> {
     let var = shepr_core::env::EnvVar::SheprStartupCwd;
-    let cwd = startup_cwd_from_env_value(shepr_core::env::read_path(var));
-    // SAFETY: `run_server` calls this before it starts the API server thread,
-    // the tokio runtime or anything else that spawns threads, and `main` spawns
-    // none before calling `run_server`, so no other thread can be reading the
-    // environment concurrently.
-    unsafe { shepr_core::env::remove(var) };
-    cwd
+    startup_cwd_from_env_value(shepr_core::env::read_path(var))
 }
 
 /// The startup cwd a handoff read produced. The variable is carried byte for

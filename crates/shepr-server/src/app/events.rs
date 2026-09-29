@@ -218,7 +218,7 @@ impl App {
     pub(crate) fn sync_full_lifecycle_authority_detection_pauses(&self) {
         for workspace in &self.state.workspaces {
             for tab in workspace.tabs() {
-                for pane in tab.panes.values() {
+                for pane in tab.panes().values() {
                     let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id)
                     else {
                         continue;
@@ -322,7 +322,7 @@ impl App {
             return Vec::new();
         };
         let mut events: Vec<_> = tab
-            .layout
+            .layout()
             .pane_ids()
             .into_iter()
             .filter_map(|pane_id| self.public_pane_id(ws_idx, pane_id))

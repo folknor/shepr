@@ -64,7 +64,10 @@ impl AppState {
         focus: bool,
     ) -> WorkspaceCreationOutcome {
         let workspace_id = workspace.id.to_string();
-        let root_pane = workspace.tabs().first().map(|tab| tab.root_pane);
+        let root_pane = workspace
+            .tabs()
+            .first()
+            .map(shepr_mux::workspace::Tab::root_pane);
         self.terminals.insert(terminal.id.clone(), terminal);
         self.workspaces.push(workspace);
         let workspace_index = self.workspaces.len() - 1;
@@ -205,12 +208,11 @@ impl AppState {
         }
 
         self.switch_workspace_tab(ws_idx, tab_idx);
-        if let Some(tab) = self
+        if self
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
+            .is_some_and(|ws| ws.focus_pane_in_tab(tab_idx, pane_id))
         {
-            tab.layout.focus_pane(pane_id);
             self.previous_pane_focus = previous;
             self.mark_session_dirty();
             return true;

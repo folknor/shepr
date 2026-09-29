@@ -16,15 +16,15 @@
 //!   explicit-session flag) that another test changes, holds an
 //!   [`IsolatedEnv`] for its whole body. These tests serialize with one another
 //!   when they run in the same test process, whichever module they live in.
-//!   The guard clears every name in shepr's environment registry, including
-//!   Git's indexed command-config family, then points `HOME` and
+//!   The guard clears every name in shepr's process environment registry and
+//!   each shepr-specific child environment name, including Git's indexed
+//!   command-config family, then points `HOME` and
 //!   `XDG_RUNTIME_DIR` at scratch and sets `GIT_CEILING_DIRECTORIES` to
 //!   [`scratch_base`], so a scratch
 //!   directory is never discovered as part of the enclosing checkout, and
 //!   sets `GIT_CONFIG_NOSYSTEM` so the host's system Git config is never
-//!   read. It also clears every other inherited `SHEPR_*` variable except
-//!   [`SCRATCH_DIR_ENV`], and the XDG base directories shepr does not read but
-//!   the tools tests spawn do. Nothing under test can reach the user's real
+//!   read. It also clears the XDG base directories shepr does not read but the
+//!   tools tests spawn do. Nothing under test can reach the user's real
 //!   config, state or agent directories, or the live shepr server a test run
 //!   was started from. It restores the whole environment when dropped,
 //!   including on panic.
@@ -93,7 +93,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use shepr_core::env::{EnvVar, is_registered_name};
+use shepr_core::env::{ChildEnv, EnvVar, is_registered_name};
 use shepr_core::socket_path::fits_unix_socket_path;
 
 pub mod fixture;
@@ -106,7 +106,7 @@ pub mod fixture;
 /// or a `target` relocated onto a filesystem that cannot hold what a test
 /// needs, is answered by pointing this at a shorter or better path rather than
 /// by moving the checkout. It must be absolute. No shepr process reads it, so
-/// it is not in `shepr_core::env`'s registry; [`IsolatedEnv`] leaves it in
+/// it is not in [`EnvVar`]'s process-input table; [`IsolatedEnv`] leaves it in
 /// place so a test binary a test re-executes resolves the same base.
 pub const SCRATCH_DIR_ENV: &str = "SHEPR_TEST_SCRATCH_DIR";
 
@@ -568,11 +568,12 @@ pub fn command_in_scratch(program: impl AsRef<OsStr>, label: &str) -> std::proce
 /// Exclusive, restorable access to the process environment for one test.
 ///
 /// Holding it serializes the test against other tests in its process that hold
-/// one. On creation it snapshots the environment, removes every registered
-/// variable, every other `SHEPR_*` variable but [`SCRATCH_DIR_ENV`] and the
-/// foreign XDG base directories, then sets `HOME` and `XDG_RUNTIME_DIR` to
-/// fresh scratch directories and `GIT_CEILING_DIRECTORIES` to the scratch
-/// base. On drop it puts the snapshot back exactly.
+/// one. On creation it snapshots the environment and removes every registered
+/// process variable, every shepr-specific child variable except
+/// [`SCRATCH_DIR_ENV`], and the foreign XDG base directories. It then sets
+/// `HOME` and `XDG_RUNTIME_DIR` to fresh scratch directories and
+/// `GIT_CEILING_DIRECTORIES` to the scratch base. On drop it puts the snapshot
+/// back exactly.
 ///
 /// Change variables through [`IsolatedEnv::set`] and [`IsolatedEnv::remove`]:
 /// borrowing the guard is what proves the lock is held.
@@ -625,21 +626,13 @@ impl IsolatedEnv {
         for key in FOREIGN_XDG_BASE_DIR_VARS {
             self.remove(key);
         }
-        // Unregistered `SHEPR_*` names are test harness probes and variables
-        // only shipped hook assets read; none may leak in from the shell that
-        // started the test run either. The scratch override stays, so a test
-        // binary re-executed under the guard sites its trees where this one
-        // does.
-        let inherited_shepr: Vec<OsString> = environment_snapshot()
-            .into_iter()
-            .map(|(key, _)| key)
-            .filter(|key| {
-                key.to_str()
-                    .is_some_and(|key| key.starts_with("SHEPR_") && key != SCRATCH_DIR_ENV)
-            })
-            .collect();
-        for key in inherited_shepr {
-            self.remove(key);
+        // Clear the registered SHEPR_* names shepr writes for hooks and
+        // status commands. The scratch override stays, so a re-executed test
+        // binary sites its trees where this one does.
+        for variable in ChildEnv::ALL {
+            if variable.name().starts_with("SHEPR_") && variable.name() != SCRATCH_DIR_ENV {
+                self.remove(variable);
+            }
         }
         self.set(EnvVar::Home, self.home());
         self.set(EnvVar::XdgRuntimeDir, self.runtime_dir());
@@ -961,7 +954,11 @@ mod tests {
         for key in FOREIGN_XDG_BASE_DIR_VARS {
             env.set(key, "/leaked");
         }
-        env.set("SHEPR_TEST_SUPPORT_UNREGISTERED", "leaked");
+        for variable in ChildEnv::ALL {
+            if variable.name().starts_with("SHEPR_") && variable.name() != SCRATCH_DIR_ENV {
+                env.set(variable, "leaked");
+            }
+        }
         env.set("GIT_CONFIG_COUNT", "2");
         env.set("GIT_CONFIG_KEY_0", "core.bare");
         env.set("GIT_CONFIG_VALUE_0", "true");
@@ -990,7 +987,16 @@ mod tests {
                 _ => assert_eq!(env.get(var), None, "{var} leaked into an isolated test"),
             }
         }
-        assert_eq!(env.get("SHEPR_TEST_SUPPORT_UNREGISTERED"), None);
+        for variable in ChildEnv::ALL {
+            if variable.name().starts_with("SHEPR_") && variable.name() != SCRATCH_DIR_ENV {
+                assert_eq!(
+                    env.get(variable),
+                    None,
+                    "{} leaked into an isolated test",
+                    variable.name()
+                );
+            }
+        }
         for key in [
             "GIT_CONFIG_COUNT",
             "GIT_CONFIG_KEY_0",

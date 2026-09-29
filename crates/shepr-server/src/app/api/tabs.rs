@@ -108,13 +108,8 @@ impl App {
                 let tab_idx = outcome.tab_index;
                 self.terminal_runtimes.insert(terminal_id, runtime);
                 if let Some(label) = label {
-                    if let Some(tab) = self
-                        .state
-                        .workspaces
-                        .get_mut(ws_idx)
-                        .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
-                    {
-                        tab.set_custom_name(label);
+                    if let Some(workspace) = self.state.workspaces.get_mut(ws_idx) {
+                        workspace.set_tab_custom_name(tab_idx, Some(label));
                     }
                     if let (Some(workspace_id), Some(tab_id)) = (
                         self.public_workspace_id(ws_idx),
@@ -159,15 +154,12 @@ impl App {
         let Some(workspace_id) = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
             return Err(tab_not_found(&params.tab_id));
         };
-        let Some(tab) = self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
-        else {
+        let Some(workspace) = self.state.workspaces.get_mut(ws_idx) else {
             return Err(tab_not_found(&params.tab_id));
         };
-        tab.set_custom_name(params.label.clone());
+        if !workspace.set_tab_custom_name(tab_idx, Some(params.label.clone())) {
+            return Err(tab_not_found(&params.tab_id));
+        }
         shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
@@ -290,7 +282,7 @@ mod tests {
         app.state.set_selected_index(Some(0));
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
         let workspace_id = app.public_workspace_id(0).expect("test precondition");
-        let root_pane = app.state.workspaces[0].tabs()[0].root_pane;
+        let root_pane = app.state.workspaces[0].tabs()[0].root_pane();
         let pane_id = app.public_pane_id(0, root_pane).expect("test precondition");
 
         let response = app.handle_tab_close(&TabTarget {
@@ -354,7 +346,7 @@ mod tests {
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
-        let root = app.state.workspaces[0].tabs()[0].root_pane;
+        let root = app.state.workspaces[0].tabs()[0].root_pane();
         app.state
             .public_pane_id_aliases
             .insert(shepr_protocol::PublicPaneId::new("wOLD", 1), root);
@@ -418,7 +410,7 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
-        let moved_root = app.state.workspaces[0].tabs()[0].root_pane;
+        let moved_root = app.state.workspaces[0].tabs()[0].root_pane();
         let moved_id = app.public_tab_id(0, 0).expect("test precondition");
 
         let response = app.handle_tab_move(&TabMoveParams {
@@ -430,7 +422,7 @@ mod tests {
         let ResponseResult::TabList { tabs } = success.result else {
             panic!("expected tab list");
         };
-        assert_eq!(app.state.workspaces[0].tabs()[2].root_pane, moved_root);
+        assert_eq!(app.state.workspaces[0].tabs()[2].root_pane(), moved_root);
         assert_eq!(
             tabs[2].tab_id,
             app.public_tab_id(0, 2).expect("test precondition")
@@ -464,7 +456,7 @@ mod tests {
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
         let workspace = Workspace::test_new("tabs");
-        let focused_pane = workspace.tabs()[0].root_pane;
+        let focused_pane = workspace.tabs()[0].root_pane();
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
@@ -493,7 +485,7 @@ mod tests {
         assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
         let created = &app.state.workspaces[0].tabs()[1];
         let created_terminal_id = created
-            .terminal_id(created.root_pane)
+            .terminal_id(created.root_pane())
             .expect("test precondition");
         let created_cwd = app
             .state

@@ -23,7 +23,7 @@ impl TabSurfaceTarget {
         let tab = workspace.tabs().get(tab_index)?;
         Some(Self {
             workspace_id: workspace.id.clone(),
-            tab_id: shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab.number),
+            tab_id: shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab.number()),
         })
     }
 
@@ -39,7 +39,7 @@ impl TabSurfaceTarget {
         let tab_index = workspace
             .tabs()
             .iter()
-            .position(|tab| tab.number == self.tab_id.number())?;
+            .position(|tab| tab.number() == self.tab_id.number())?;
         Some((workspace_index, tab_index))
     }
 }
@@ -80,10 +80,10 @@ pub(crate) fn compute_tab_surface_for(
         app.workspaces.get(workspace_index)?.tabs().get(tab_index)
     });
     let split_borders = tab.map_or_default(|tab| {
-        if tab.zoomed {
+        if tab.zoomed() {
             Vec::new()
         } else {
-            tab.layout.splits(area)
+            tab.layout().splits(area)
         }
     });
     let pane_infos = resolved.map_or_else(Vec::new, |(workspace_index, tab_index)| {
@@ -255,7 +255,7 @@ mod tests {
 
         let target = TabSurfaceTarget::from_indices(&app, 1, 1).expect("test precondition");
         app.workspaces.swap(0, 1);
-        app.workspaces[0].tabs_mut().swap(0, 1);
+        assert!(app.workspaces[0].move_tab(0, 2));
         assert_eq!(target.resolve(&app), Some((0, 0)));
 
         assert!(app.workspaces[0].close_tab(0).is_some());
@@ -266,7 +266,7 @@ mod tests {
     async fn explicit_surface_layout_drives_render_cursor_and_hyperlinks() {
         let uri = "https://example.com/surface";
         let mut workspace = Workspace::test_new("shell-workspace");
-        let left = workspace.tabs()[0].root_pane;
+        let left = workspace.tabs()[0].root_pane();
         let right = workspace.test_split(Direction::Horizontal);
         let mut runtimes = PaneRuntimeRegistry::new();
         let left_terminal = workspace.terminal_id(left).cloned().expect("left terminal");

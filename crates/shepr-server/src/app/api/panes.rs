@@ -508,7 +508,7 @@ impl App {
         direction: PaneDirection,
     ) -> Option<PaneId> {
         let tab = self.state.workspaces.get(ws_idx)?.tabs().get(tab_idx)?;
-        let panes = tab.layout.panes(self.state.view.terminal_area);
+        let panes = tab.layout().panes(self.state.view.terminal_area);
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, nav_direction(direction), &panes)
     }
@@ -521,7 +521,7 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs().get(tab_idx)?;
         let area = self.state.view.terminal_area;
-        let focused_pane_id = self.public_pane_id(ws_idx, tab.layout.focused())?;
+        let focused_pane_id = self.public_pane_id(ws_idx, tab.layout().focused())?;
         // The layout reports what is on screen: a zoomed tab shows only its
         // focused pane over the whole area and no split lines, so its hidden
         // panes and the split tree under them are left out (`zoomed` says the
@@ -532,7 +532,7 @@ impl App {
         let panes = self
             .state
             .pane_geometry_in(area)
-            .tab_panes(&tab.layout, tab.zoomed)
+            .tab_panes(tab.layout(), tab.zoomed())
             .into_iter()
             .filter_map(|pane| {
                 Some(PaneLayoutPane {
@@ -542,10 +542,10 @@ impl App {
                 })
             })
             .collect();
-        let visible_splits = if tab.zoomed {
+        let visible_splits = if tab.zoomed() {
             Vec::new()
         } else {
-            tab.layout.splits(area)
+            tab.layout().splits(area)
         };
         let splits = visible_splits
             .into_iter()
@@ -566,7 +566,7 @@ impl App {
         Some(PaneLayoutSnapshot {
             workspace_id: self.public_workspace_id(ws_idx)?,
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
-            zoomed: tab.zoomed,
+            zoomed: tab.zoomed(),
             area: pane_layout_rect(area),
             focused_pane_id,
             panes,

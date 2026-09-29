@@ -144,11 +144,13 @@ pub fn start_server_with_stop_control(
     server_stop: Arc<AtomicBool>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
+    let inherited_agent = shepr_platform::ssh_agent::inherited_agent_socket()?;
     start_server_inner(
         api_tx,
         event_hub,
         default_capabilities(),
         Some(server_stop),
+        inherited_agent,
         paths,
     )
 }
@@ -165,11 +167,9 @@ fn start_server_inner(
     event_hub: EventHub,
     mut capabilities: Option<ServerCapabilities>,
     server_stop: Option<Arc<AtomicBool>>,
+    inherited_agent: Option<PathBuf>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
-    // Read before anything is bound, so a refused value leaves no socket
-    // behind. Unset or empty means no inherited agent.
-    let inherited_agent = shepr_core::env::read_path(shepr_core::env::EnvVar::SshAuthSock)?;
     let path = socket_path(paths);
     let (listener, startup_lock, identity) = bind_private_socket(&path, |path| {
         format!(

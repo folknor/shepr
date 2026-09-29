@@ -32,7 +32,7 @@ impl App {
             .enumerate()
             .flat_map(|(ws_idx, ws)| {
                 ws.tabs().iter().flat_map(move |tab| {
-                    tab.layout
+                    tab.layout()
                         .pane_ids()
                         .into_iter()
                         .filter_map(move |pane_id| self.agent_info(ws_idx, pane_id))

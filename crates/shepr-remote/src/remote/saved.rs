@@ -179,10 +179,11 @@ impl SavedSshConnector {
     /// still send the attempt back through discovery. Exclusive access keeps all mutable
     /// connection state owned by the one supervisor attempt using this connector.
     ///
-    /// Nothing SSH runs past `deadline`: discovery commands are cut short by it and no
-    /// step starts once it has passed (the caller holds `establish` to it too). Without
-    /// it, discovery and a remembered-executable retry could add up to minutes against
-    /// a host that hangs, and the next attempt waits for this one.
+    /// Discovery commands use the smaller of their command timeout and the time left,
+    /// and refuse to start once `deadline` has passed. The stdio bridge does not receive
+    /// this deadline. Callers must bound `establish` separately; bridge teardown follows
+    /// its stream and stop signals. Without the discovery limit, multiple round trips could
+    /// add up to minutes against a host that hangs, and the next attempt waits for this one.
     pub fn connect<T>(
         &mut self,
         deadline: std::time::Instant,

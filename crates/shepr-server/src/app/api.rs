@@ -264,8 +264,8 @@ mod tests {
         );
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("manifest-reload")];
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let (runtime, _rx, reset_notify) =
@@ -306,8 +306,8 @@ mod tests {
         let cached_summaries = app.state.agent_manifest_summaries.clone();
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("manifest-status")];
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let (runtime, _rx, reset_notify) =
@@ -349,8 +349,8 @@ mod tests {
         );
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("agent-explain")];
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         app.state
@@ -397,8 +397,8 @@ mod tests {
             "agent-explain-omp",
         )];
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         app.state
@@ -440,8 +440,8 @@ mod tests {
         );
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("process-info")];
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let (runtime, _rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
@@ -549,7 +549,7 @@ mod tests {
         );
         let first = shepr_mux::workspace::Workspace::test_new("closing");
         let target = shepr_mux::workspace::Workspace::test_new("target");
-        let pane_id = target.tabs()[0].root_pane;
+        let pane_id = target.tabs()[0].root_pane();
         let workspace_id = target.id.to_string();
         app.state.workspaces = vec![first, target];
         app.state.ensure_test_terminals();
@@ -603,8 +603,8 @@ mod tests {
         workspace.test_add_tab(Some("second"));
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        let first_root = app.state.workspaces[0].tabs()[0].root_pane;
-        let second_root = app.state.workspaces[0].tabs()[1].root_pane;
+        let first_root = app.state.workspaces[0].tabs()[0].root_pane();
+        let second_root = app.state.workspaces[0].tabs()[1].root_pane();
         let first_tab = app.public_tab_id(0, 0).expect("test precondition");
         let second_tab = app.public_tab_id(0, 1).expect("test precondition");
         let workspace_id = app.public_workspace_id(0).expect("test precondition");
@@ -686,7 +686,7 @@ mod tests {
                 event_hub.clone(),
             );
             let workspace = shepr_mux::workspace::Workspace::test_new("idle-agent-exit");
-            let pane_id = workspace.tabs()[0].root_pane;
+            let pane_id = workspace.tabs()[0].root_pane();
             let terminal_id = workspace
                 .terminal_id(pane_id)
                 .cloned()
@@ -741,7 +741,7 @@ mod tests {
             event_hub.clone(),
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("stale-agent-exit");
-        let pane_id = workspace.tabs()[0].root_pane;
+        let pane_id = workspace.tabs()[0].root_pane();
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()

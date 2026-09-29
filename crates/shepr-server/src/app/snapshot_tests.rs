@@ -40,7 +40,7 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
         .map_or_default(|tab| {
             state
                 .pane_geometry_in(area)
-                .tab_panes(&tab.layout, tab.zoomed)
+                .tab_panes(tab.layout(), tab.zoomed())
         })
         .into_iter()
         .map(|mut pane| {
@@ -96,8 +96,8 @@ fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
 #[test]
 fn managed_agent_snapshot_omits_pending_and_persists_active_ownership() {
     let mut state = state_with_workspaces(&["managed-snapshot"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
-    let terminal_id = state.workspaces[0].tabs()[0].panes[&root]
+    let root = state.workspaces[0].tabs()[0].root_pane();
+    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let now = std::time::Instant::now();
@@ -304,7 +304,7 @@ fn capture_contract_tracks_workspace_and_tab_names_and_active_tab() {
     state.workspaces[0].set_custom_name("renamed-workspace".into());
     let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
     state.workspaces[0].switch_tab(second_tab);
-    state.workspaces[0].tabs_mut()[0].set_custom_name("main".into());
+    state.workspaces[0].set_tab_custom_name(0, Some("main".into()));
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
@@ -332,9 +332,9 @@ fn capture_contract_tracks_workspace_closure() {
 #[test]
 fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
-    state.workspaces[0].tabs_mut()[0].layout.focus_pane(second);
+    state.workspaces[0].focus_pane_in_tab(0, second);
     state
         .apply_pane_zoom(0, second, crate::app::actions::PaneZoomCommand::Toggle)
         .expect("test precondition");
@@ -351,7 +351,7 @@ fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
 #[test]
 fn capture_contract_tracks_focus_navigation() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
 
@@ -365,9 +365,9 @@ fn capture_contract_tracks_focus_navigation() {
 #[test]
 fn capture_contract_tracks_resize_ratio_changes() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane();
     state.workspaces[0].test_split(Direction::Horizontal);
-    state.workspaces[0].tabs_mut()[0].layout.focus_pane(root);
+    state.workspaces[0].focus_pane_in_tab(0, root);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
     let before = capture_from_state(&state);
 
@@ -431,9 +431,9 @@ fn capture_contract_tracks_public_id_counters() {
     assert_eq!(
         workspace.public_pane_numbers,
         HashMap::from([
-            (state.workspaces[0].tabs()[0].root_pane.raw(), 1),
+            (state.workspaces[0].tabs()[0].root_pane().raw(), 1),
             (third.raw(), 3),
-            (state.workspaces[0].tabs()[second_tab].root_pane.raw(), 4),
+            (state.workspaces[0].tabs()[second_tab].root_pane().raw(), 4),
         ])
     );
     assert_eq!(workspace.next_public_pane_number, 5);
@@ -451,7 +451,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     state.workspaces[0].identity_cwd = old.clone();
     state.set_active_index(Some(0));
     state.ensure_test_terminals();
-    let pane_id = state.workspaces[0].tabs()[0].root_pane;
+    let pane_id = state.workspaces[0].tabs()[0].root_pane();
     let terminal_id = state.workspaces[0]
         .terminal_id(pane_id)
         .expect("test precondition")
@@ -557,18 +557,18 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
 #[test]
 fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane();
     state.workspaces[0].identity_cwd = PathBuf::from("/tmp/pion");
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     state.ensure_test_terminals();
-    let root_terminal_id = state.workspaces[0].tabs()[0].panes[&root]
+    let root_terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
     state.terminals.insert(
         root_terminal_id.clone(),
         TerminalState::new(root_terminal_id.clone(), PathBuf::from("/tmp/pion")),
     );
-    let second_terminal_id = state.workspaces[0].tabs()[0].panes[&second]
+    let second_terminal_id = state.workspaces[0].tabs()[0].panes()[&second]
         .attached_terminal_id
         .clone();
     state.terminals.insert(
@@ -587,8 +587,8 @@ fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
 #[tokio::test]
 async fn capture_contract_tracks_pane_history_from_runtime() {
     let state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
-    let terminal_id = state.workspaces[0].tabs()[0].panes[&root]
+    let root = state.workspaces[0].tabs()[0].root_pane();
+    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
@@ -617,12 +617,12 @@ async fn capture_contract_tracks_pane_history_from_runtime() {
 #[tokio::test]
 async fn capture_contract_tracks_history_for_each_pane() {
     let mut state = state_with_workspaces(&["one"]);
-    let first = state.workspaces[0].tabs()[0].root_pane;
+    let first = state.workspaces[0].tabs()[0].root_pane();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
-    let first_terminal_id = state.workspaces[0].tabs()[0].panes[&first]
+    let first_terminal_id = state.workspaces[0].tabs()[0].panes()[&first]
         .attached_terminal_id
         .clone();
-    let second_terminal_id = state.workspaces[0].tabs()[0].panes[&second]
+    let second_terminal_id = state.workspaces[0].tabs()[0].panes()[&second]
         .attached_terminal_id
         .clone();
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
@@ -676,8 +676,8 @@ fn root_history(
 #[tokio::test]
 async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
     let state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
-    let terminal_id = state.workspaces[0].tabs()[0].panes[&root]
+    let root = state.workspaces[0].tabs()[0].root_pane();
+    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
@@ -717,7 +717,7 @@ async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
     let other = state_with_workspaces(&["other"]);
     let saved = capture_history_with_carry(&other, &PaneRuntimeRegistry::new(), &carry);
     assert_eq!(
-        root_history(&saved, other.workspaces[0].tabs()[0].root_pane),
+        root_history(&saved, other.workspaces[0].tabs()[0].root_pane()),
         None
     );
     for (_, runtime) in terminal_runtimes.drain() {
@@ -732,8 +732,8 @@ async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
 #[tokio::test]
 async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
     let state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
-    let terminal_id = state.workspaces[0].tabs()[0].panes[&root]
+    let root = state.workspaces[0].tabs()[0].root_pane();
+    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let carry = HistoryCarry::default();
@@ -785,9 +785,9 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
 fn capture_contract_tracks_hook_authority_agent_session() {
     let mut state = state_with_workspaces(&["one"]);
     let session_path = test_session_path("pi-session.jsonl");
-    let root = state.workspaces[0].tabs()[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane();
     state.ensure_test_terminals();
-    let terminal_id = state.workspaces[0].tabs()[0].panes[&root]
+    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let terminal = state
@@ -831,9 +831,9 @@ fn capture_contract_tracks_hook_authority_agent_session() {
 #[test]
 fn capture_contract_preserves_restored_agent_session() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane;
+    let root = state.workspaces[0].tabs()[0].root_pane();
     state.ensure_test_terminals();
-    let terminal_id = state.workspaces[0].tabs()[0].panes[&root]
+    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
     state

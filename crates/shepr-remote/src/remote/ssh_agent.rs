@@ -24,15 +24,14 @@ impl Registration {
     pub(super) fn start(paths: &shepr_config::AppPaths) -> Option<Self> {
         // Unset or empty means no agent to register. The bridge has no launch
         // to fail, so a refused value is logged and registers nothing.
-        let path = shepr_core::env::read_text(shepr_core::env::EnvVar::SshAuthSock)
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "SSH agent refresh unavailable");
-                None
-            })?;
+        let path = shepr_platform::ssh_agent::inherited_agent_socket().unwrap_or_else(|error| {
+            tracing::warn!(%error, "SSH agent refresh unavailable");
+            None
+        })?;
         Self::start_at(path, shepr_api::socket_path(paths))
     }
 
-    fn start_at(path: String, socket_path: PathBuf) -> Option<Self> {
+    fn start_at(path: PathBuf, socket_path: PathBuf) -> Option<Self> {
         let mut stream = match connect(&path, &socket_path) {
             Ok(None) => return None,
             Ok(stream) => stream,
@@ -46,6 +45,7 @@ impl Registration {
         let thread = std::thread::spawn(move || {
             let mut byte = [0];
             let mut retry_delay = INITIAL_RETRY_DELAY;
+            let mut failures: u32 = 0;
             while !worker_stop.load(Ordering::Acquire) {
                 if let Some(connection) = stream.as_mut() {
                     if matches!(
@@ -63,11 +63,21 @@ impl Registration {
                 match connect(&path, &socket_path) {
                     Ok(None) => break,
                     Ok(Some(connection)) => {
+                        if failures > 0 {
+                            tracing::info!(
+                                api_socket = %socket_path.display(),
+                                agent_socket = %path.display(),
+                                failures,
+                                "SSH agent registration restored after failed attempts"
+                            );
+                        }
+                        failures = 0;
                         stream = Some(connection);
                         retry_delay = INITIAL_RETRY_DELAY;
                         std::thread::park_timeout(STREAM_POLL_INTERVAL);
                     }
                     Err(error) => {
+                        failures = failures.saturating_add(1);
                         let wait = retry_delay;
                         retry_delay = next_retry_delay(retry_delay);
                         // A missing API server is often permanent for the bridge's
@@ -112,7 +122,7 @@ fn next_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RETRY_DELAY)
 }
 
-fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
+fn connect(path: &Path, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     let timeout = Duration::from_millis(500);
     let status = shepr_api::read_runtime_status_at(socket_path, timeout)?.ok_or_else(|| {
         io::Error::new(
@@ -126,11 +136,17 @@ fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     {
         return Ok(None);
     }
+    let path = path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SSH agent path is not valid UTF-8",
+        )
+    })?;
     let mut stream = shepr_platform::ipc::connect_local_stream(socket_path)?;
     let request = Request {
         id: "remote:ssh-agent".into(),
         method: Method::ServerSshAgentRegister(ServerSshAgentRegisterParams {
-            socket_path: path.into(),
+            socket_path: path.to_owned(),
         }),
     };
     serde_json::to_writer(&mut stream, &request)?;
@@ -322,8 +338,8 @@ mod tests {
                 .expect("test precondition");
         });
 
-        let error =
-            connect("/test/agent.sock", &socket_path).expect_err("oversized response must fail");
+        let error = connect(Path::new("/test/agent.sock"), &socket_path)
+            .expect_err("oversized response must fail");
         server.join().expect("test precondition");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("response exceeded 4096 bytes"));

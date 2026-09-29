@@ -18,6 +18,16 @@ use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 
 use super::random::unpredictable_token;
 
+/// Resolves the SSH agent socket inherited by this process under shepr's
+/// environment policy.
+///
+/// # Errors
+///
+/// Returns a policy error when `SSH_AUTH_SOCK` is malformed.
+pub fn inherited_agent_socket() -> io::Result<Option<PathBuf>> {
+    shepr_core::env::read_path(shepr_core::env::EnvVar::SshAuthSock).map_err(io::Error::from)
+}
+
 #[derive(Clone)]
 pub struct SshAgentRegistry(Arc<SharedState>);
 

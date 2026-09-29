@@ -18,6 +18,25 @@ pass should expect phantoms.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
+## BUG-103 - `IsolatedEnv` no longer clears shepr names that are not registry entries
+
+`crates/shepr-test-support/src/lib.rs`: isolation now clears the shepr-core
+registry and `ChildEnv` names instead of scanning every `SHEPR_` key, so names
+read only by hook assets or test probes (`SHEPR_ACTION`,
+`SHEPR_HOOK_INPUT_FILE`, `SHEPR_HOOK_SEQ`, `SHEPR_OMP_IDLE_DEBOUNCE_MS`,
+`SHEPR_OMP_RETRY_GRACE_MS`, `SHEPR_DEVIN_LIST_JSON`,
+`SHEPR_INTEGRATION_ID`/`VERSION`, `SHEPR_MESSAGES`) now reach tests from the
+developer's shell. Give those names an owned list (the asset literal test
+already enumerates the hook-local ones) that isolation also clears. The
+`!= SCRATCH_DIR_ENV` filter in that loop is dead.
+
+## BUG-104 - A valueless `git -c` key reads as `true` for every key
+
+`crates/shepr-core/src/env.rs`'s `GIT_CONFIG_PARAMETERS` parser turns an
+implicit `'key'` (no `=`) into the value `"true"`, which is right for boolean
+keys but git errors on it for string keys such as `branch.<name>.remote`.
+Model it as "no value" and let the consumer decide per key, as git does.
+
 ## BUG-073 - Tests that skip themselves when run as root and report success
 
 Resolved: the platform ownership test is renamed for its ACL coverage with a
@@ -30,18 +49,3 @@ trio no longer returns silently. Open:
   `config_file.rs`.
 - `crates/shepr-mux/src/pane/runtime.rs::process_cwd_does_not_require_traversing_the_directory_path`
   still prints a skip notice to stderr and passes green when run as root.
-
-## BUG-101 - `git -c` command-scope config is not modelled
-
-`crates/shepr-mux/src/git/config.rs` models `GIT_CONFIG_COUNT` and its indexed
-pairs, and refused `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` reads now surface as
-errors. Open: `GIT_CONFIG_PARAMETERS` (the `git -c` form inherited by shepr's
-git subprocesses), which git 2.53.0 passes as quoted key/value pairs (with
-`'\''` for an apostrophe) and which overrides a conflicting indexed pair. Its
-reader belongs in the `shepr-core` environment registry, not a raw read in mux.
-
-## BUG-098 - A malformed inherited `SHELL` fails a config that sets its own shell
-
-`crates/shepr-config/src/validated.rs::resolve_default_shell` reads and
-validates `SHELL` even when `terminal.default_shell` is set, so a broken
-inherited `SHELL` refuses a launch that would never use it.

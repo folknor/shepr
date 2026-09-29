@@ -462,14 +462,18 @@ fn remote_path_discovery_reads_multiple_absolute_paths() {
 }
 
 #[test]
-fn remote_path_discovery_ignores_mise_shims() {
+fn remote_path_discovery_keeps_mise_shims_for_build_probe() {
     let candidates = remote_executables_from_path_discovery(
         "/home/can/.local/share/mise/shims/shepr\n/home/can/.local/share/mise/installs/shepr/0.7.1/bin/shepr\n",
     );
 
-    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates.len(), 2);
     assert_eq!(
         candidates[0].as_str(),
+        "/home/can/.local/share/mise/shims/shepr"
+    );
+    assert_eq!(
+        candidates[1].as_str(),
         "/home/can/.local/share/mise/installs/shepr/0.7.1/bin/shepr"
     );
 }

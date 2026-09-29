@@ -287,9 +287,10 @@ pub(crate) struct RemoteSsh {
     session_name: String,
     managed_config: Option<ManagedSshConfig>,
     noninteractive: bool,
-    /// When set, no noninteractive command runs past it: each one gets the shorter of its
-    /// own timeout and the time left, and none starts once it has passed. A saved-machine
-    /// connection attempt sets it so discovery cannot outlast the attempt's budget.
+    /// Bounds noninteractive commands launched by `sh_output` and
+    /// `framed_user_shell_output`: each gets
+    /// the shorter of its own timeout and the time left, and none starts once it has passed.
+    /// A saved-machine connection attempt sets it so discovery cannot outlast its budget.
     attempt_deadline: Option<Instant>,
 }
 
@@ -641,9 +642,26 @@ pub(super) fn ssh_config_include(path: Option<&Path>) -> io::Result<Option<Strin
         return Ok(None);
     };
     match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(Some(ssh_config_quote(&path.to_string_lossy()))),
-        Ok(_) => Ok(None),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Ok(metadata) if metadata.is_file() => {
+            tracing::debug!(path = %path.display(), "emitting SSH config include");
+            Ok(Some(ssh_config_quote(&path.to_string_lossy())))
+        }
+        Ok(_) => {
+            tracing::debug!(
+                path = %path.display(),
+                reason = "not_a_file",
+                "skipping SSH config include"
+            );
+            Ok(None)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            tracing::debug!(
+                path = %path.display(),
+                reason = "not_found",
+                "skipping SSH config include"
+            );
+            Ok(None)
+        }
         Err(error) => Err(io::Error::new(
             error.kind(),
             format!("could not read SSH config {}: {error}", path.display()),

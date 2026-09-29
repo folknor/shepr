@@ -96,7 +96,7 @@ impl App {
     ) -> PathBuf {
         let follow_cwd = tab_idx
             .and_then(|tab_idx| self.state.workspaces.get(ws_idx)?.tabs().get(tab_idx))
-            .map(|tab| tab.layout.focused())
+            .map(|tab| tab.layout().focused())
             .and_then(|pane_id| self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id))
             .or_else(|| self.seed_cwd_from_workspace(ws_idx));
         self.resolve_new_terminal_cwd(follow_cwd)
@@ -155,7 +155,7 @@ impl App {
             Ok(ws
                 .tabs()
                 .iter()
-                .flat_map(|tab| tab.layout.pane_ids().into_iter())
+                .flat_map(|tab| tab.layout().pane_ids().into_iter())
                 .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
                 .collect())
         } else {
@@ -167,7 +167,7 @@ impl App {
                 .flat_map(|(ws_idx, ws)| {
                     ws.tabs()
                         .iter()
-                        .flat_map(|tab| tab.layout.pane_ids().into_iter())
+                        .flat_map(|tab| tab.layout().pane_ids().into_iter())
                         .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
                 })
                 .collect())
@@ -185,10 +185,10 @@ impl App {
         Some(shepr_api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             workspace_id: self.public_workspace_id(ws_idx)?,
-            number: tab.number,
+            number: tab.number(),
             label: ws.tab_display_name(tab_idx)?,
             focused: self.state.active_index() == Some(ws_idx) && ws.active_tab_index() == tab_idx,
-            pane_count: tab.panes.len(),
+            pane_count: tab.panes().len(),
             agent_status: pane_agent_status(agg_state),
         })
     }
@@ -265,7 +265,7 @@ impl App {
     ) -> Option<shepr_api::schema::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs().get(tab_idx)?;
-        self.pane_info(ws_idx, tab.root_pane)
+        self.pane_info(ws_idx, tab.root_pane())
     }
 
     pub(super) fn pane_info(

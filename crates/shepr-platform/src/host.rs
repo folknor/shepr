@@ -69,6 +69,11 @@ pub fn begin_cli_output() {
 /// process's working directory. A long-lived child that inherits it pins that
 /// directory (an unmount fails with EBUSY, a deleted one stays referenced) and
 /// resolves any relative path against wherever shepr happened to start.
+///
+/// The command never inherits `SHEPR_STARTUP_CWD`: it is a one-time handoff
+/// from a client to the server daemon it spawns, which the server reads at
+/// launch and leaves in its own environment. The daemon spawn sets it again
+/// explicitly on the returned command.
 pub fn child_command(program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
     #[expect(
         clippy::disallowed_methods,
@@ -76,6 +81,7 @@ pub fn child_command(program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Comman
     )]
     let mut command = Command::new(program);
     command.current_dir(cwd);
+    command.env_remove(shepr_core::env::EnvVar::SheprStartupCwd);
     command
 }
 

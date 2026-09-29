@@ -125,7 +125,7 @@ pub(super) fn compute_pane_infos_for_tab(
 
     let mut pane_infos = app
         .pane_geometry_in(area)
-        .tab_panes(&tab.layout, tab.zoomed);
+        .tab_panes(tab.layout(), tab.zoomed());
 
     for info in &mut pane_infos {
         let pane_inner = pane_inner_rect(info.rect, info.borders);
@@ -509,7 +509,7 @@ mod tests {
         app.workspaces = vec![Workspace::test_new("unavailable")];
         app.set_active_index(Some(0));
         app.ensure_test_terminals();
-        let pane_id = app.workspaces[0].tabs()[0].root_pane;
+        let pane_id = app.workspaces[0].tabs()[0].root_pane();
         let terminal_id = app.workspaces[0]
             .terminal_id(pane_id)
             .expect("test precondition")
@@ -582,7 +582,7 @@ mod tests {
         let mut app = AppState::test_new();
         app.view.terminal_area = Rect::new(0, 0, 12, 3);
         let ws = Workspace::test_new("test");
-        let pane_id = ws.tabs()[0].root_pane;
+        let pane_id = ws.tabs()[0].root_pane();
         app.view.pane_infos = vec![PaneInfo {
             id: pane_id,
             rect: Rect::new(0, 0, 12, 3),
@@ -592,7 +592,7 @@ mod tests {
             is_focused: false,
         }];
 
-        let terminal_id = ws.tabs()[0].panes[&pane_id].attached_terminal_id.clone();
+        let terminal_id = ws.tabs()[0].panes()[&pane_id].attached_terminal_id.clone();
         let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
         terminal_state.set_manual_label("1 模块组织（已定）".into());
         app.terminals.insert(terminal_id, terminal_state);
@@ -612,12 +612,12 @@ mod tests {
     #[test]
     fn default_horizontal_split_uses_one_shared_divider_column() {
         let mut workspace = Workspace::test_new("test");
-        let root = workspace.tabs()[0].root_pane;
+        let root = workspace.tabs()[0].root_pane();
         let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        workspace.tabs_mut()[0].layout.focus_pane(root);
+        workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             true,
@@ -639,12 +639,12 @@ mod tests {
     #[test]
     fn default_vertical_split_uses_one_shared_divider_row() {
         let mut workspace = Workspace::test_new("test");
-        let root = workspace.tabs()[0].root_pane;
+        let root = workspace.tabs()[0].root_pane();
         let bottom = workspace.test_split(ratatui::layout::Direction::Vertical);
-        workspace.tabs_mut()[0].layout.focus_pane(root);
+        workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             true,
@@ -666,12 +666,12 @@ mod tests {
     #[test]
     fn disabled_outer_borders_keep_only_shared_pane_dividers() {
         let mut workspace = Workspace::test_new("test");
-        let root = workspace.tabs()[0].root_pane;
+        let root = workspace.tabs()[0].root_pane();
         let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        workspace.tabs_mut()[0].layout.focus_pane(root);
+        workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             false,
@@ -692,12 +692,12 @@ mod tests {
     #[test]
     fn pane_gaps_keep_independent_bordered_panes() {
         let mut workspace = Workspace::test_new("test");
-        let root = workspace.tabs()[0].root_pane;
+        let root = workspace.tabs()[0].root_pane();
         let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        workspace.tabs_mut()[0].layout.focus_pane(root);
+        workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             true,
             true,
@@ -719,12 +719,12 @@ mod tests {
     #[test]
     fn borderless_pane_gaps_add_one_empty_cell_between_panes() {
         let mut workspace = Workspace::test_new("test");
-        let root = workspace.tabs()[0].root_pane;
+        let root = workspace.tabs()[0].root_pane();
         let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        workspace.tabs_mut()[0].layout.focus_pane(root);
+        workspace.focus_pane_in_tab(0, root);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Off,
             true,
             true,
@@ -750,7 +750,7 @@ mod tests {
         workspace.test_split(ratatui::layout::Direction::Horizontal);
 
         let infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs()[0].layout().panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Off,
             false,
             true,
@@ -768,7 +768,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
 
         let default_infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(area),
+            &workspace.tabs()[0].layout().panes(area),
             PaneBordersConfig::Auto,
             false,
             true,
@@ -776,7 +776,7 @@ mod tests {
         assert_eq!(default_infos[0].borders, Borders::NONE);
 
         let framed_infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(area),
+            &workspace.tabs()[0].layout().panes(area),
             PaneBordersConfig::Always,
             false,
             true,
@@ -784,7 +784,7 @@ mod tests {
         assert_eq!(framed_infos[0].borders, Borders::ALL);
 
         let no_outer_infos = apply_pane_chrome(
-            &workspace.tabs()[0].layout.panes(area),
+            &workspace.tabs()[0].layout().panes(area),
             PaneBordersConfig::Always,
             false,
             false,
@@ -905,7 +905,7 @@ mod tests {
     async fn pane_scrollbar_gutter_is_reserved_before_scrollback_exists() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.tabs()[0].root_pane;
+        let root_pane = workspace.tabs()[0].root_pane();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
@@ -927,7 +927,7 @@ mod tests {
     async fn alternate_screen_reclaims_scrollbar_gutter_without_resizing_panes() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.tabs()[0].root_pane;
+        let root_pane = workspace.tabs()[0].root_pane();
         let terminal_id = workspace
             .terminal_id(root_pane)
             .expect("test precondition")
@@ -970,8 +970,8 @@ mod tests {
     async fn zoomed_pane_scrollbar_gutter_is_reserved_before_scrollback_exists() {
         let mut app = AppState::test_new();
         let mut workspace = Workspace::test_new("test");
-        workspace.tabs_mut()[0].zoomed = true;
-        let root_pane = workspace.tabs()[0].root_pane;
+        workspace.set_tab_zoomed(0, true);
+        let root_pane = workspace.tabs()[0].root_pane();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
@@ -994,7 +994,7 @@ mod tests {
         let mut app = AppState::test_new();
         let mut workspace = Workspace::test_new("test");
         let focused_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        workspace.tabs_mut()[0].zoomed = true;
+        workspace.set_tab_zoomed(0, true);
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             focused_pane,
@@ -1017,7 +1017,7 @@ mod tests {
     async fn tiny_pane_does_not_reserve_scrollbar_gutter() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.tabs()[0].root_pane;
+        let root_pane = workspace.tabs()[0].root_pane();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
@@ -1051,9 +1051,9 @@ mod tests {
                 let area = Rect::new(2, 1, 101, 31);
                 app.view.terminal_area = area;
                 let mut workspace = Workspace::test_new("test");
-                let root = workspace.tabs()[0].root_pane;
+                let root = workspace.tabs()[0].root_pane();
                 let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
-                workspace.tabs_mut()[0].zoomed = zoomed;
+                workspace.set_tab_zoomed(0, zoomed);
                 let mut terminal_runtimes = PaneRuntimeRegistry::new();
                 for pane in [root, right] {
                     terminal_runtimes.insert(
@@ -1072,7 +1072,7 @@ mod tests {
                 assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
                 for info in &infos {
                     assert_eq!(
-                        geometry.pane_size(&app.workspaces[0].tabs()[0].layout, zoomed, info.id),
+                        geometry.pane_size(app.workspaces[0].tabs()[0].layout(), zoomed, info.id),
                         Some((info.inner_rect.height, info.inner_rect.width)),
                         "borders {pane_borders:?}, scrollbars {pane_scrollbars}, zoomed {zoomed}"
                     );
@@ -1088,7 +1088,7 @@ mod tests {
     async fn pane_scrollbar_setting_controls_reserved_column() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.tabs()[0].root_pane;
+        let root_pane = workspace.tabs()[0].root_pane();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,

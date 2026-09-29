@@ -538,7 +538,19 @@ impl EndpointCatalogWatch {
                 )));
             }
         }
-        Some(EndpointCatalog::load_from_path(&self.path).map(|catalog| catalog.ssh))
+        let reload = EndpointCatalog::load_from_path(&self.path).map(|catalog| catalog.ssh);
+        if let Ok(profiles) = &reload {
+            let profile_ids = profiles
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>();
+            tracing::debug!(
+                path = %self.path.display(),
+                profile_ids = ?profile_ids,
+                "reloaded saved SSH endpoint catalog"
+            );
+        }
+        Some(reload)
     }
 }
 

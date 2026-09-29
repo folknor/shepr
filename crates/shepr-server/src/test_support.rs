@@ -2,7 +2,6 @@
 //! seams) of the crates they stand in for. Fixtures several crates share live
 //! in `shepr-test-fixtures`; these are the ones only this crate's tests use.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,7 +9,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use ratatui::layout::Direction;
 use shepr_agent::detect::{Agent, AgentState};
-use shepr_core::layout::{PaneId, TileLayout};
+use shepr_core::layout::PaneId;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
 use shepr_mux::terminal::{EffectiveStateChange, TerminalState};
 use shepr_mux::workspace::{MovedPane, PaneRemoval, PaneRemovalScope, Tab, TabPane, Workspace};
@@ -199,7 +198,7 @@ impl WorkspaceFixture for Workspace {
 
     fn test_split(&mut self, direction: Direction) -> PaneId {
         let tab_index = self.active_tab_index();
-        let mut layout = self.active_tab().layout.clone();
+        let mut layout = self.active_tab().layout().clone();
         let new_id = layout.split_focused(direction);
         self.commit_new_pane(tab_index, new_id, layout, TerminalId::alloc(), false)
             .expect("test split commits");
@@ -207,17 +206,9 @@ impl WorkspaceFixture for Workspace {
     }
 
     fn test_add_tab(&mut self, name: Option<&str>) -> usize {
-        let (layout, root_id) = TileLayout::new();
         let mut pane = TabPane::new(PaneState::new(TerminalId::alloc()));
         pane.public_number = self.next_public_pane_number;
-        let tab = Tab {
-            custom_name: name.map(str::to_string),
-            number: self.next_public_tab_number,
-            root_pane: root_id,
-            layout,
-            panes: HashMap::from([(root_id, pane)]),
-            zoomed: false,
-        };
+        let tab = Tab::single_pane(name.map(str::to_string), self.next_public_tab_number, pane);
         self.commit_new_tab(tab)
             .expect("a test tab takes the workspace's next identities")
             .tab_index
@@ -237,8 +228,8 @@ impl WorkspaceFixture for Workspace {
         let removed_tab = ws.test_add_tab(Some("removed"));
         let survivor_tab = ws.test_add_tab(None);
         let final_tab = ws.test_add_tab(None);
-        let survivor_root = ws.tabs()[survivor_tab].root_pane;
-        let final_root = ws.tabs()[final_tab].root_pane;
+        let survivor_root = ws.tabs()[survivor_tab].root_pane();
+        let final_root = ws.tabs()[final_tab].root_pane();
         assert!(ws.close_tab(removed_tab).is_some());
         assert!(ws.move_tab(0, ws.tabs().len()));
         ws.switch_tab(
@@ -248,7 +239,7 @@ impl WorkspaceFixture for Workspace {
 
         assert_ne!(
             ws.active_tab_index() + 1,
-            ws.active_tab().number,
+            ws.active_tab().number(),
             "adversarial active tab must distinguish position from public tab number"
         );
         assert_ne!(
@@ -272,27 +263,27 @@ impl WorkspaceFixture for Workspace {
 
         for (tab_idx, tab) in tabs.iter().enumerate() {
             assert!(
-                tab.number > 0,
+                tab.number() > 0,
                 "workspace {} tab {} has invalid public tab number 0",
                 self.id,
                 tab_idx
             );
             assert!(
-                tab_numbers.insert(tab.number),
+                tab_numbers.insert(tab.number()),
                 "workspace {} has duplicate public tab number {}",
                 self.id,
-                tab.number
+                tab.number()
             );
-            max_tab_number = max_tab_number.max(tab.number);
+            max_tab_number = max_tab_number.max(tab.number());
             assert!(
-                tab.panes.contains_key(&tab.root_pane),
+                tab.panes().contains_key(&tab.root_pane()),
                 "workspace {} tab {} root pane {:?} is missing from tab panes",
                 self.id,
                 tab_idx,
-                tab.root_pane
+                tab.root_pane()
             );
 
-            let layout_panes = tab.layout.pane_ids();
+            let layout_panes = tab.layout().pane_ids();
             let layout_set: std::collections::HashSet<_> = layout_panes.iter().copied().collect();
             assert_eq!(
                 layout_panes.len(),
@@ -302,20 +293,20 @@ impl WorkspaceFixture for Workspace {
                 tab_idx
             );
             assert!(
-                layout_set.contains(&tab.layout.focused()),
+                layout_set.contains(&tab.layout().focused()),
                 "workspace {} tab {} focused pane {:?} is not in layout",
                 self.id,
                 tab_idx,
-                tab.layout.focused()
+                tab.layout().focused()
             );
-            let pane_set: std::collections::HashSet<_> = tab.panes.keys().copied().collect();
+            let pane_set: std::collections::HashSet<_> = tab.panes().keys().copied().collect();
             assert_eq!(
                 layout_set, pane_set,
                 "workspace {} tab {} layout panes must exactly match pane records",
                 self.id, tab_idx
             );
 
-            for (pane_id, pane) in &tab.panes {
+            for (pane_id, pane) in tab.panes() {
                 assert!(
                     live_panes.insert(*pane_id),
                     "workspace {} pane {:?} appears in more than one tab",

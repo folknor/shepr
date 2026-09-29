@@ -1115,7 +1115,7 @@ impl HeadlessServer {
                     .tabs()
                     .get(tab_index)
             })
-            .map(|tab| tab.layout.focused())
+            .map(|tab| tab.layout().focused())
             .is_some_and(|pane_id| sources.contains(&pane_id));
         let changes = self.app.sync_terminal_titles(sources);
         if changes.raw_changed || changes.stripped_changed {

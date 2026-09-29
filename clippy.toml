@@ -19,12 +19,12 @@ disallowed-methods = [
   { path = "std::env::var_os", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
   { path = "std::env::vars", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
   { path = "std::env::vars_os", reason = "read through shepr_core::env; expect only at a child-environment copy, the test guard or a test harness probe" },
-  # The only process-environment writes are `shepr_core::env::remove` (a
-  # handoff variable consumed while the server is still single-threaded) and
-  # the `IsolatedEnv` guard, which holds the test environment lock and restores
-  # the prior values on drop.
+  # Production code never writes the process environment; child launches
+  # set or scrub variables on the child command instead. The only writer is
+  # the `IsolatedEnv` guard, which holds the test environment lock and
+  # restores the prior values on drop.
   { path = "std::env::set_var", reason = "write only through the IsolatedEnv test guard" },
-  { path = "std::env::remove_var", reason = "remove only through shepr_core::env::remove or the IsolatedEnv test guard" },
+  { path = "std::env::remove_var", reason = "remove only through the IsolatedEnv test guard" },
   # Test data and scratch state live under the project's build tree
   # (`shepr_test_support::ScratchDir`), never the host's shared temp
   # directory, and no site escapes this. This catches a renamed import the

@@ -329,10 +329,10 @@ mod tests {
     #[test]
     #[expect(
         clippy::disallowed_methods,
-        reason = "SHEPR_TEST_3970_CONFIG_DIR is this test's own re-exec harness probe, not a shepr setting"
+        reason = "AGENT_TEST_CHILD_CONFIG_DIR is this test's re-exec probe, not a shepr setting"
     )]
     fn failed_cli_registration_preserves_existing_config() {
-        const CHILD_CONFIG: &str = "SHEPR_TEST_3970_CONFIG_DIR";
+        const CHILD_CONFIG: &str = "AGENT_TEST_CHILD_CONFIG_DIR";
         if let Some(dir) = std::env::var_os(CHILD_CONFIG) {
             let dir = PathBuf::from(dir);
             let result = add_cli_plugin(&dir, &dir.join("state"), "./shepr-opencode");

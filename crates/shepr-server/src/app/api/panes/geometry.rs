@@ -137,7 +137,7 @@ impl App {
         };
         let area = self.state.view.terminal_area;
         let Some(info) = tab
-            .layout
+            .layout()
             .panes(area)
             .into_iter()
             .find(|info| info.id == pane_id)
@@ -206,7 +206,7 @@ impl App {
             .workspaces
             .get(ws_idx)
             .and_then(|ws| ws.tabs().get(tab_idx))
-            .map(|tab| tab.layout.focused())
+            .map(|tab| tab.layout().focused())
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
@@ -258,8 +258,7 @@ impl App {
             .state
             .workspaces
             .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
-            .is_some_and(|tab| tab.layout.resize_pane(pane_id, direction, amount, area));
+            .is_some_and(|ws| ws.resize_pane_in_tab(tab_idx, pane_id, direction, amount, area));
         if changed {
             self.schedule_session_save();
         }
@@ -376,7 +375,7 @@ impl App {
                         .get(ws_idx)?
                         .tabs()
                         .get(tab_idx)
-                        .map(|tab| tab.layout.focused())
+                        .map(|tab| tab.layout().focused())
                 })
                 .unwrap_or(PaneId::from_raw(0));
             let target_pane_id = target.map(|(_, _, pane_id)| pane_id);
@@ -400,14 +399,9 @@ impl App {
             && let Some(target_pane_id) = target_pane_id
         {
             let previous_focus = self.state.current_pane_focus_target();
-            if let Some(tab) = self
-                .state
-                .workspaces
-                .get_mut(ws_idx)
-                .and_then(|ws| ws.tabs_mut().get_mut(tab_idx))
-            {
-                changed = tab.layout.swap_panes(source_pane_id, target_pane_id);
-                tab.layout.focus_pane(source_pane_id);
+            if let Some(workspace) = self.state.workspaces.get_mut(ws_idx) {
+                changed = workspace.swap_panes_in_tab(tab_idx, source_pane_id, target_pane_id);
+                workspace.focus_pane_in_tab(tab_idx, source_pane_id);
                 if changed {
                     self.state.switch_workspace_tab(ws_idx, tab_idx);
                     self.state
@@ -495,9 +489,9 @@ impl App {
         let Some(source_terminal_id) = source_tab.terminal_id(source_pane_id).cloned() else {
             return Err(pane_not_found(Some(&pane_id)));
         };
-        let source_tab_zoomed = source_tab.zoomed;
+        let source_tab_zoomed = source_tab.zoomed();
         let previous_workspace_label = source_ws.custom_name.clone();
-        let previous_tab_label = source_tab.custom_name.clone();
+        let previous_tab_label = source_tab.custom_name().map(str::to_owned);
         let identity_cwd = source_ws.identity_cwd.clone();
         let previous_pane_id = self
             .public_pane_id(source_ws_idx, source_pane_id)
@@ -552,7 +546,7 @@ impl App {
                     .workspaces
                     .get(target_ws_idx)
                     .and_then(|ws| ws.tabs().get(target_tab_idx))
-                    .map(|tab| (tab.zoomed, tab.layout.focused()))
+                    .map(|tab| (tab.zoomed(), tab.layout().focused()))
                 else {
                     return Err(tab_not_found(&tab_id));
                 };

@@ -36,7 +36,8 @@
 //! [`EnvKind::Handoff`] and [`EnvKind::Raw`] preserve OS strings byte for byte.
 //! A handoff is written by one shepr process for a child. Raw values are
 //! inherited `PATH` and `SHELL` inputs, where non-UTF-8 bytes and whitespace
-//! can be meaningful, and `GIT_CONFIG_COUNT`, whose grammar belongs to Git;
+//! can be meaningful, and Git's command-scope config variables, whose grammar
+//! belongs to Git;
 //! only empty reads as unset.
 //!
 //! What a value means beyond its kind (a session name's grammar, a log filter's
@@ -215,6 +216,9 @@ env_vocabulary! {
         /// `GIT_CONFIG_COUNT`: the number of indexed command-scope config
         /// pairs Git reads. Its decimal grammar follows Git's parser.
         GitConfigCount => "GIT_CONFIG_COUNT",
+        /// `GIT_CONFIG_PARAMETERS`: quoted `git -c` assignments inherited by
+        /// Git subprocesses, applied after the indexed command-scope pairs.
+        GitConfigParameters => "GIT_CONFIG_PARAMETERS",
     }
 }
 
@@ -365,7 +369,9 @@ impl EnvVar {
             | Self::WaylandDisplay
             | Self::Display => EnvKind::Presence,
             Self::SheprStartupCwd => EnvKind::Handoff,
-            Self::Shell | Self::Path | Self::GitConfigCount => EnvKind::Raw,
+            Self::Shell | Self::Path | Self::GitConfigCount | Self::GitConfigParameters => {
+                EnvKind::Raw
+            }
         }
     }
 }
@@ -546,22 +552,6 @@ fn raw_name(name: &OsStr) -> Option<OsString> {
 /// Every refusal [`resolve`] makes.
 pub fn read(var: EnvVar) -> Result<Option<EnvValue>, EnvError> {
     resolve(var, raw(var).as_deref())
-}
-
-/// Removes one variable from this process's environment.
-///
-/// # Safety
-///
-/// No other thread may read or write the process environment while this runs:
-/// removing a variable while another thread calls `getenv` is undefined
-/// behaviour in glibc. Call it only while the process is single-threaded.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the one production environment write, for a handoff variable consumed at startup"
-)]
-pub unsafe fn remove(var: EnvVar) {
-    // SAFETY: the caller guarantees no other thread touches the environment.
-    unsafe { std::env::remove_var(var.name()) };
 }
 
 fn is_flag(kind: EnvKind) -> bool {
@@ -746,21 +736,23 @@ pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
     resolve_os(var, raw(var).as_deref())
 }
 
-/// Reads Git's indexed command-scope config pairs in index order. Git treats
-/// an unset or empty count as zero, requires both variables for every index
-/// below the count, and rejects malformed counts or missing pairs.
+/// Reads Git's indexed command-scope config pairs in index order, followed by
+/// quoted `git -c` parameters, which override conflicting indexed pairs. Git
+/// treats an unset or empty count as zero, requires both variables for every
+/// index below the count, and rejects malformed counts or missing pairs.
 ///
 /// # Errors
 ///
 /// Returns an error when the count is not accepted by Git, an indexed key or
-/// value is missing, or a present pair is not valid UTF-8 for shepr's config
-/// reader.
+/// value is missing, a present pair is not valid UTF-8 for shepr's config
+/// reader, or the quoted parameters are malformed.
 pub fn read_git_config_parameters() -> io::Result<Vec<(String, String)>> {
     let count = read_os(EnvVar::GitConfigCount)?;
-    let Some(count) = count else {
-        return Ok(Vec::new());
-    };
-    let count = parse_git_config_count(&count)?;
+    let count = count
+        .as_deref()
+        .map(parse_git_config_count)
+        .transpose()?
+        .unwrap_or(0);
     let mut parameters = Vec::new();
     for index in 0..count {
         let key_name = format!("GIT_CONFIG_KEY_{index}");
@@ -791,7 +783,78 @@ pub fn read_git_config_parameters() -> io::Result<Vec<(String, String)>> {
         })?;
         parameters.push((key.to_owned(), value.to_owned()));
     }
+    if let Some(raw) = read_os(EnvVar::GitConfigParameters)? {
+        let text = raw.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "GIT_CONFIG_PARAMETERS is not valid UTF-8",
+            )
+        })?;
+        parameters.extend(parse_git_config_parameters(text)?);
+    }
     Ok(parameters)
+}
+
+/// Parse Git's single-quoted command-scope assignments. Each key and value
+/// is quoted separately in the current form; the older quoted `key=value`
+/// form is also accepted. A quote inside a word is encoded as `'\''` and an
+/// exclamation mark as `'\!'`. A valueless key (Git's implicit boolean) reads
+/// as `true`.
+fn parse_git_config_parameters(text: &str) -> io::Result<Vec<(String, String)>> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bogus format in GIT_CONFIG_PARAMETERS",
+        )
+    };
+    let mut rest = text.trim_ascii_start();
+    let mut pairs = Vec::new();
+    while !rest.is_empty() {
+        let (key, tail) = parse_git_single_quote(rest).ok_or_else(invalid)?;
+        let (name, value, tail) = if let Some(tail) = tail.strip_prefix('=') {
+            let (value, tail) = if tail.starts_with('\'') {
+                parse_git_single_quote(tail).ok_or_else(invalid)?
+            } else if tail.is_empty() || tail.as_bytes()[0].is_ascii_whitespace() {
+                ("true".to_owned(), tail)
+            } else {
+                return Err(invalid());
+            };
+            (key, value, tail)
+        } else if let Some((name, value)) = key.split_once('=') {
+            (name.to_owned(), value.to_owned(), tail)
+        } else {
+            (key, "true".to_owned(), tail)
+        };
+        if name.is_empty() || (!tail.is_empty() && !tail.as_bytes()[0].is_ascii_whitespace()) {
+            return Err(invalid());
+        }
+        pairs.push((name, value));
+        rest = tail.trim_ascii_start();
+    }
+    Ok(pairs)
+}
+
+fn parse_git_single_quote(input: &str) -> Option<(String, &str)> {
+    let mut rest = input.strip_prefix('\'')?;
+    let mut value = String::new();
+    loop {
+        let end = rest.find('\'')?;
+        value.push_str(&rest[..end]);
+        rest = &rest[end + 1..];
+        // Git's `sq_quote` escapes both `'` and `!` outside the quotes, and
+        // its `sq_dequote_step` accepts either escape only when the quoted
+        // part resumes right after it.
+        let escaped = ['\'', '!'].into_iter().find_map(|quoted| {
+            let tail = rest.strip_prefix('\\')?.strip_prefix(quoted)?;
+            Some((quoted, tail.strip_prefix('\'')?))
+        });
+        if let Some((quoted, tail)) = escaped {
+            value.push(quoted);
+            rest = tail;
+        } else {
+            return Some((value, rest));
+        }
+    }
 }
 
 fn parse_git_config_count(raw: &OsStr) -> io::Result<usize> {
@@ -928,6 +991,7 @@ mod tests {
             (EnvVar::GitConfigSystem, "GIT_CONFIG_SYSTEM", Path),
             (EnvVar::GitConfigNoSystem, "GIT_CONFIG_NOSYSTEM", Text),
             (EnvVar::GitConfigCount, "GIT_CONFIG_COUNT", Raw),
+            (EnvVar::GitConfigParameters, "GIT_CONFIG_PARAMETERS", Raw),
         ];
         assert_eq!(
             table.iter().map(|(var, _, _)| *var).collect::<Vec<_>>(),
@@ -946,6 +1010,7 @@ mod tests {
     fn registry_covers_only_canonical_indexed_git_config_names() {
         for name in [
             "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
             "GIT_CONFIG_KEY_0",
             "GIT_CONFIG_KEY_12",
             "GIT_CONFIG_VALUE_0",
@@ -962,6 +1027,47 @@ mod tests {
             "OTHER_GIT_CONFIG_KEY_0",
         ] {
             assert!(!is_registered_name(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn git_config_parameters_accept_git_quoted_assignments() {
+        let parsed = parse_git_config_parameters(
+            "'branch.main.remote'='team '\t'branch.main.merge'='refs/heads/it'\\''s' 'core.bare=false'",
+        )
+        .expect("valid Git quoted parameters");
+        assert_eq!(
+            parsed,
+            [
+                ("branch.main.remote".into(), "team ".into()),
+                ("branch.main.merge".into(), "refs/heads/it's".into()),
+                ("core.bare".into(), "false".into()),
+            ]
+        );
+        // Verbatim from `git -c 'alias.x=!printenv GIT_CONFIG_PARAMETERS'
+        // -c "a.b=it's" -c c.d -c e.f= -c 'g.h=x y' x`.
+        let parsed = parse_git_config_parameters(
+            "'alias.x'=''\\!'printenv GIT_CONFIG_PARAMETERS' 'a.b'='it'\\''s' 'c.d'= 'e.f'='' 'g.h'='x y'",
+        )
+        .expect("Git's own encoding parses");
+        assert_eq!(
+            parsed,
+            [
+                ("alias.x".into(), "!printenv GIT_CONFIG_PARAMETERS".into()),
+                ("a.b".into(), "it's".into()),
+                ("c.d".into(), "true".into()),
+                ("e.f".into(), String::new()),
+                ("g.h".into(), "x y".into()),
+            ]
+        );
+        for input in [
+            "'unterminated",
+            "'key'=value",
+            "'key'='value'x",
+            "''='value'",
+            "'key'='a'\\x'b'",
+        ] {
+            assert!(parse_git_config_parameters(input).is_err(), "{input:?}");
         }
     }
 

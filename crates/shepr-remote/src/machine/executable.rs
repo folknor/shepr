@@ -2,7 +2,6 @@ use std::fmt;
 use std::path::Path;
 
 const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
-const REMOTE_MISE_SHIM_SUFFIX: &str = "/mise/shims/shepr";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteExecutableError {
@@ -10,7 +9,6 @@ pub enum RemoteExecutableError {
     TooLong,
     ContainsControlCharacters,
     NeedsShellQuoting,
-    MiseShim,
 }
 
 impl fmt::Display for RemoteExecutableError {
@@ -28,9 +26,6 @@ impl fmt::Display for RemoteExecutableError {
             Self::NeedsShellQuoting => formatter.write_str(
                 "remote Shepr executable path must contain only unquoted shell-safe characters",
             ),
-            Self::MiseShim => {
-                formatter.write_str("remote Shepr executable path must not be a mise shim")
-            }
         }
     }
 }
@@ -59,9 +54,6 @@ impl RemoteExecutable {
         if !Self::is_shell_plain_word(&value) {
             return Err(RemoteExecutableError::NeedsShellQuoting);
         }
-        if value.ends_with(REMOTE_MISE_SHIM_SUFFIX) {
-            return Err(RemoteExecutableError::MiseShim);
-        }
         Ok(Self(value))
     }
 
@@ -86,12 +78,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_executable_accepts_only_cacheable_absolute_paths() {
+    fn remote_executable_accepts_shell_safe_absolute_paths() {
         for (path, valid) in [
             ("/usr/bin/shepr", true),
             ("/home/a b/shepr", false),
             ("$HOME/.local/bin/shepr", false),
-            ("/home/user/.local/share/mise/shims/shepr", false),
+            ("/home/user/.local/share/mise/shims/shepr", true),
             ("/bin/shepr\nmalformed", false),
         ] {
             assert_eq!(

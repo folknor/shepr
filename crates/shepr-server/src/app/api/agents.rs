@@ -453,8 +453,8 @@ mod tests {
         // Reproduces a registration loss: a live agent pane with an assigned name stops resolving by that name
         // while its process keeps running, and renaming is the only recovery.
         let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let observed_at = std::time::Instant::now();
@@ -511,8 +511,8 @@ mod tests {
     #[tokio::test]
     async fn agent_prompt_sends_text_then_delays_enter() {
         let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app
@@ -660,8 +660,8 @@ mod tests {
     #[tokio::test]
     async fn agent_prompt_rejects_blocked_agent_without_writing() {
         let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app
@@ -702,8 +702,8 @@ mod tests {
     #[tokio::test]
     async fn agent_prompt_focuses_copilot_before_submitting() {
         let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app
@@ -750,8 +750,8 @@ mod tests {
     #[tokio::test]
     async fn agent_send_keys_validates_every_key_before_writing() {
         let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app
@@ -791,8 +791,8 @@ mod tests {
     #[tokio::test]
     async fn agent_prompt_rejects_managed_agent_while_startup_is_pending() {
         let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app
@@ -832,8 +832,8 @@ mod tests {
     fn agent_focus_returns_idle_agent_status() {
         let mut app = app_with_agent();
 
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         app.state
@@ -841,9 +841,7 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        app.state.workspaces[0].tabs_mut()[0]
-            .layout
-            .focus_pane(pane_id);
+        app.state.workspaces[0].focus_pane_in_tab(0, pane_id);
 
         let response = app.handle_agent_focus(&AgentTarget {
             target: app.public_pane_id(0, pane_id).expect("test precondition"),
@@ -859,8 +857,8 @@ mod tests {
     #[test]
     fn agent_rename_does_not_replace_the_pane_label() {
         let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes[&pane_id]
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app

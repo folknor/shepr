@@ -1372,6 +1372,7 @@ mod registration_tests {
 
     #[test]
     fn every_target_has_exactly_one_status_spec() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let paths = super::super::env::AgentIntegrationPaths::resolve();
         let specs = integration_specs(&paths).collect::<Vec<_>>();
         for target in IntegrationTarget::all() {

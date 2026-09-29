@@ -24,8 +24,9 @@ use crossterm::terminal::{
 /// Returns the output writer and a guard that restores the terminal when dropped.
 pub(super) fn setup_terminal(
     mouse_capture: bool,
+    modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
-    setup_terminal_with_capabilities(true, mouse_capture)
+    setup_terminal_with_capabilities(true, mouse_capture, modify_other_keys_mode)
 }
 
 /// Sets up a direct attach terminal.
@@ -36,20 +37,17 @@ pub(super) fn setup_terminal(
 pub(super) fn setup_direct_attach_terminal(
     mouse_capture: bool,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
-    setup_terminal_with_capabilities(false, mouse_capture)
+    setup_terminal_with_capabilities(false, mouse_capture, None)
 }
 
 pub(super) fn setup_terminal_with_capabilities(
     enable_client_protocols: bool,
     mouse_capture: bool,
+    modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
-    // Read before the terminal leaves cooked mode, so a refused variable is
-    // reported on an ordinary terminal.
-    let modify_other_keys_mode = if enable_client_protocols {
-        shepr_termio::input::host_modify_other_keys_mode()?
-    } else {
-        None
-    };
+    let modify_other_keys_mode = enable_client_protocols
+        .then_some(modify_other_keys_mode)
+        .flatten();
     let output_writer = HostTerminalWriter::from_stdout()?;
     let host_modes = HostModes::new(false, false, mouse_capture);
     // Built before raw mode so a failure anywhere below still restores through Drop. Raw mode

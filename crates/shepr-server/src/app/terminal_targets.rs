@@ -154,7 +154,7 @@ impl App {
                     .iter()
                     .enumerate()
                     .flat_map(move |(tab_idx, tab)| {
-                        tab.layout
+                        tab.layout()
                             .pane_ids()
                             .into_iter()
                             .filter_map(move |pane_id| {

@@ -107,7 +107,7 @@ impl App {
             .get(ws_idx)?
             .tabs()
             .iter()
-            .position(|tab| tab.number == public_id.number())?;
+            .position(|tab| tab.number() == public_id.number())?;
         Some((ws_idx, tab_idx))
     }
 
@@ -183,8 +183,8 @@ mod tests {
     #[test]
     fn canonical_public_pane_id_wins_over_a_colliding_alias() {
         let mut app = test_app_with_workspaces(&["a", "b"]);
-        let current_pane = app.state.workspaces[0].tabs()[0].root_pane;
-        let moved_pane = app.state.workspaces[1].tabs()[0].root_pane;
+        let current_pane = app.state.workspaces[0].tabs()[0].root_pane();
+        let moved_pane = app.state.workspaces[1].tabs()[0].root_pane();
         let current_id = app
             .public_pane_id(0, current_pane)
             .expect("test precondition");
@@ -206,7 +206,7 @@ mod tests {
     fn positional_and_raw_ids_are_rejected() {
         let app = test_app_with_workspaces(&["a", "b"]);
         let ws_id = app.state.workspaces[0].id.clone();
-        let root = app.state.workspaces[0].tabs()[0].root_pane;
+        let root = app.state.workspaces[0].tabs()[0].root_pane();
 
         for id in ["1", "2", "w_1", "w_2"] {
             assert_eq!(app.parse_workspace_id(id), None, "workspace id {id:?}");

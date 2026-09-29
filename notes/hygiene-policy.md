@@ -625,10 +625,6 @@ an identity that is supposed to come from one place.
   tests use it, and an assertion that a history is empty cannot distinguish "no
   events were emitted" from "the lock is poisoned". Suggested: delete
   `events_after`.
-- `shepr-agent` `env.rs`: `GROK_CONFIG_DIR` exists only as a test seam and says
-  so in a comment ("a shepr-level override only (primarily a test seam); the grok
-  CLI does not honor it") - a production environment variable whose only purpose
-  is testing, which the injected-environment fix in HYGP-002 would remove.
 
 ## HYGP-036 - `migration_tests.rs` and `SHEPR_MIGRATION_OBSERVATIONS`: scaffolding for a finished migration
 
@@ -799,11 +795,10 @@ now carry the distinction to the refresh task as typed errors, so the
 
 ## HYGP-050 - Environment variables with no reader
 
-- `SHEPR_MIGRATION_OBSERVATIONS` (HYGP-036) and `GROK_CONFIG_DIR` (HYGP-033) are
-  named by hunters as existing for something that is over or for tests only.
-  `shepr-agent` also reports `SHEPR_TEST_3970_CONFIG_DIR`, a test-only name in a
-  production-visible namespace carrying an issue number nobody can look up in
-  this repository.
+- `SHEPR_MIGRATION_OBSERVATIONS` (HYGP-036) exists for a migration that is over.
+  `shepr-agent/src/integration/config_file/tests.rs` still names two re-exec
+  test probes in the `SHEPR_` namespace (`SHEPR_CONFIG_READ_ONLY_TEST`,
+  `SHEPR_CONFIG_PARTIAL_WRITE_TEST`); the opencode probe was renamed out of it.
 
 ## HYGP-054 - `agent_name_from_known_package_path` hardcodes six npm package layouts
 

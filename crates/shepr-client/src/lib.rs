@@ -151,7 +151,7 @@ fn run_client_with_launch_state(
     log_message: &'static str,
     initial_catalog: Option<endpoint::EndpointCatalog>,
 ) -> Result<ClientExit, ClientRunError> {
-    let settings = ClientSettings::resolve(config, &mode);
+    let settings = ClientSettings::resolve(config, &mode).map_err(io::Error::from)?;
     let (attach_request, attach_escape) = match mode {
         ClientLaunchMode::Shell => (None, None),
         ClientLaunchMode::Attach {
@@ -262,7 +262,7 @@ fn run_client_with_launch_state(
     let (mut terminal_guard, output_writer) = if direct_attach {
         setup_direct_attach_terminal(mouse_capture)
     } else {
-        setup_terminal(mouse_capture)
+        setup_terminal(mouse_capture, loop_config.settings.modify_other_keys_mode())
     }
     .map_err(|err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")))?;
     loop_config.host_escape_disambiguation_active =
@@ -1492,7 +1492,11 @@ impl ClientLoop<'_> {
                 // write_clipboard_bytes flushes its own OSC 52 fallback, so no flush is
                 // needed here. Once per user copy, so a warn cannot flood; only the
                 // base64 length is logged because the payload is the user's selection.
-                if let Err(error) = forward_clipboard(&data, &mut state.output_writer) {
+                if let Err(error) = forward_clipboard(
+                    &data,
+                    state.settings.prefers_osc52_clipboard(),
+                    &mut state.output_writer,
+                ) {
                     warn!(
                         endpoint = %endpoint_id.storage_key(),
                         generation,

@@ -143,14 +143,6 @@ fn enforce_agent_version_accepts_current_version() {
     assert!(result.is_none(), "matching version must not warn");
 }
 
-/// Clears the one agent directory override outside the environment registry,
-/// so paths resolve against `HOME` unless a test sets one. `IsolatedEnv`
-/// clears all registered variables, including every agent config-directory
-/// override and the XDG base directories.
-fn clear_integration_path_env(env: &IsolatedEnv) {
-    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
-}
-
 fn kimi_hook_command(hook_path: &Path, action: &str) -> String {
     hook_command(hook_path, Some(action))
 }
@@ -185,9 +177,8 @@ fn assert_kimi_hook(
 }
 
 /// The directory a test builds its fake homes and agent directories in,
-/// inside the test's scratch directory. Also clears the agent overrides.
+/// inside the test's scratch directory.
 fn unique_base(env: &IsolatedEnv) -> PathBuf {
-    clear_integration_path_env(env);
     env.path().join("base")
 }
 
@@ -249,8 +240,6 @@ fn install_pi_uses_pi_coding_agent_dir_env() {
     .clone();
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -270,8 +259,6 @@ fn install_pi_expands_tilde_in_pi_coding_agent_dir_env() {
     .clone();
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -310,8 +297,6 @@ fn install_omp_uses_omp_config_dir_env() {
         install_path(&installed, ArtifactRole::Extension),
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -338,8 +323,6 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     );
     assert!(pi_extension.stat_is_file());
     assert!(install_path(&installed, ArtifactRole::Extension).stat_is_file());
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -545,8 +528,6 @@ fn install_claude_uses_claude_config_dir_env() {
         install_path(&installed, ArtifactRole::Hook),
         claude_dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME)
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -724,8 +705,6 @@ fn install_codex_uses_codex_home_env() {
         install_path(&installed, ArtifactRole::Config),
         codex_dir.join("config.toml")
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -973,8 +952,6 @@ fn install_kimi_uses_kimi_code_home_env() {
         install_path(&installed, ArtifactRole::Config),
         kimi_dir.join("config.toml")
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -1138,8 +1115,6 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
             .len(),
         1
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -1257,8 +1232,6 @@ fn install_devin_writes_hook_and_updates_settings() {
             hook.event
         );
     }
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -1289,8 +1262,6 @@ fn install_devin_is_idempotent_for_hook_entries() {
             hook.event
         );
     }
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -1352,8 +1323,6 @@ fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -1369,8 +1338,6 @@ fn install_devin_errors_when_config_dir_missing() {
         .expect_err("test precondition")
         .to_string();
     assert!(err.contains("devin config directory not found"));
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -3170,8 +3137,6 @@ fn install_cursor_uses_cursor_config_dir_env() {
         install_path(&installed, ArtifactRole::UpdatedHooks),
         cursor_dir.join("hooks.json")
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -3193,8 +3158,6 @@ fn cursor_integration_status_is_current_after_install() {
         .expect("cursor integration status");
     assert_eq!(cursor.state, IntegrationStatusKind::Current);
     assert_eq!(cursor.installed_version, Some(CURSOR_INTEGRATION_VERSION));
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -3305,7 +3268,7 @@ fn install_grok_writes_hook_and_config() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    env.set(EnvVar::GrokHome, &grok_dir);
 
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -3341,8 +3304,6 @@ fn install_grok_writes_hook_and_config() {
     assert!(command.starts_with("sh "));
     assert!(command.contains("shepr-agent-state.sh"));
     assert!(command.ends_with(" session"));
-
-    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
 }
 
 #[test]
@@ -3379,7 +3340,7 @@ fn install_grok_is_idempotent() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    env.set(EnvVar::GrokHome, &grok_dir);
 
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let first = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME))
@@ -3388,8 +3349,6 @@ fn install_grok_is_idempotent() {
     let second = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME))
         .expect("test precondition");
     assert_eq!(first, second);
-
-    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
 }
 
 #[test]
@@ -3477,7 +3436,7 @@ fn install_grok_errors_when_config_dir_missing() {
     // installer must refuse instead of conjuring a config dir for an agent
     // that is not installed.
     let missing = base.join(".grok");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &missing);
+    env.set(EnvVar::GrokHome, &missing);
 
     let err = install_grok(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
@@ -3486,8 +3445,6 @@ fn install_grok_errors_when_config_dir_missing() {
         err.contains("grok config directory not found"),
         "unexpected error: {err}"
     );
-
-    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
 }
 
 #[test]
@@ -3496,7 +3453,7 @@ fn uninstall_grok_removes_files() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    env.set(EnvVar::GrokHome, &grok_dir);
 
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let result = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -3509,17 +3466,15 @@ fn uninstall_grok_removes_files() {
     let again = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(!uninstall_was_removed(&again, ArtifactRole::Hook));
     assert!(!uninstall_was_removed(&again, ArtifactRole::HookConfig));
-
-    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
 }
 
 #[test]
-fn install_grok_uses_grok_config_dir_env() {
+fn install_grok_uses_grok_home_env() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let grok_dir = base.join("custom-grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    env.set(EnvVar::GrokHome, &grok_dir);
 
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -3532,8 +3487,6 @@ fn install_grok_uses_grok_config_dir_env() {
         install_path(&installed, ArtifactRole::HookConfig),
         hooks_dir.join(GROK_HOOK_CONFIG_NAME)
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -3755,7 +3708,7 @@ fn grok_integration_status_is_current_after_install() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    env.set(EnvVar::GrokHome, &grok_dir);
     // A real install writes both the hook script and hooks/shepr.json.
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -3766,8 +3719,6 @@ fn grok_integration_status_is_current_after_install() {
         .expect("grok integration status");
     assert_eq!(grok.state, IntegrationStatusKind::Current);
     assert_eq!(grok.installed_version, Some(GROK_INTEGRATION_VERSION));
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -3776,7 +3727,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    env.set(EnvVar::GrokHome, &grok_dir);
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME);
 
@@ -3863,8 +3814,6 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     // Reinstall repairs both files.
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(grok_state(), IntegrationStatusKind::Current);
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -3906,12 +3855,11 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
 }
 
 #[test]
-fn grok_dir_honors_grok_home_after_config_dir_seam() {
+fn grok_dir_honors_grok_home() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home_dir = base.join("grok-home");
     fs::create_dir_all(&home_dir).expect("test precondition");
-    env.remove(GROK_CONFIG_DIR_TEST_SEAM);
     env.set(EnvVar::GrokHome, &home_dir);
 
     // The grok CLI reads its config (and hooks/) from $GROK_HOME, so the
@@ -3922,18 +3870,17 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
         home_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
     );
 
-    // The shepr-level test seam still wins over GROK_HOME when set.
-    let seam_dir = base.join("seam");
-    fs::create_dir_all(&seam_dir).expect("test precondition");
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &seam_dir);
+    // A changed GROK_HOME is captured by the next resolve call.
+    let changed_home = base.join("changed-grok-home");
+    fs::create_dir_all(&changed_home).expect("test precondition");
+    env.set(EnvVar::GrokHome, &changed_home);
     let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
-        seam_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
+        changed_home.join("hooks").join(GROK_HOOK_INSTALL_NAME)
     );
 
     env.remove(EnvVar::GrokHome);
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -3980,8 +3927,6 @@ fn install_kimi_leaves_a_damaged_config_and_no_hook() {
             .try_exists()
             .expect("stat")
     );
-
-    clear_integration_path_env(&env);
 }
 
 #[test]
@@ -4054,7 +3999,7 @@ fn install_and_uninstall_messages_name_every_artifact() {
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set("HOME", &home);
-    env.set(GROK_CONFIG_DIR_TEST_SEAM, &grok_dir);
+    env.set(EnvVar::GrokHome, &grok_dir);
     let paths = AgentIntegrationPaths::resolve();
     let claude = home.join(".claude");
     let pi = home
@@ -4244,8 +4189,6 @@ fn install_and_uninstall_messages_name_every_artifact() {
             "{target:?}"
         );
     }
-
-    clear_integration_path_env(&env);
 }
 
 /// The notices and the codex config line that only some targets print.
