@@ -43,22 +43,15 @@ pub(crate) const SESSION_SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
 /// persistence must not stall either indefinitely.
 pub(crate) const CHECKPOINT_MAX_FAILURES: u8 = 3;
 
-/// Agent start's default wait, long enough for ordinary shell initialization.
-pub(crate) const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
-/// Bound the maximum agent start wait accepted from the API so a failed launch
-/// eventually answers its caller.
-pub const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
-/// Give an agent time to settle after submitting its launch command.
-pub const AGENT_START_SETTLE_DELAY: Duration = Duration::from_secs(3);
 /// Retry a restored agent launch when it has not consumed its plan;
 /// this bounds both launch latency and repeated work.
 pub(crate) const PENDING_AGENT_RESUME_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-/// How long a restored managed agent's name waits, once its resume command is
+/// How long a restored agent name waits, once its resume command is
 /// typed, for the agent's process (or a hook report from it) to appear. Only
 /// the process has to show up, not reach a prompt, so this is generous. It is
 /// the same hold the mux uses for detecting that agent during startup.
-pub(crate) const MANAGED_AGENT_RESUME_TIMEOUT: Duration =
-    shepr_mux::pane::MANAGED_AGENT_RESUME_TIMEOUT;
+pub(crate) const AGENT_RESUME_NAME_HOLD_TIMEOUT: Duration =
+    shepr_mux::pane::AGENT_RESUME_DETECTION_HOLD;
 /// Pause after writing an agent prompt so the receiving TUI can process it.
 pub(crate) const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 

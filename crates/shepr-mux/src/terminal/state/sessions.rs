@@ -8,14 +8,6 @@ impl TerminalState {
         self.persisted_agent_session = Some(session);
     }
 
-    pub fn set_managed_agent_launch_session(
-        &mut self,
-        session: shepr_agent::agent::resume::PersistedAgentSession,
-    ) {
-        self.persisted_agent_session = Some(session.clone());
-        self.managed_agent_launch_session = Some(session);
-    }
-
     pub fn set_agent_session_ref(
         &mut self,
         source: String,
@@ -266,9 +258,6 @@ impl TerminalState {
             &agent_label,
             session_ref,
         )?;
-        if self.managed_agent_launch_session.as_ref() == Some(&persisted_session) {
-            self.managed_agent_launch_session = None;
-        }
         self.persisted_agent_session = Some(persisted_session);
         let current_session = self.current_session_identity_for_persistence();
         Some(TerminalStateMutation {

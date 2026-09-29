@@ -76,16 +76,6 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
-            AppEvent::AgentPromptObserved {
-                pane_id,
-                agent,
-                ready,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
-                    terminal.observe_agent_prompt_ready(agent, ready)
-                })
-                .into_iter()
-                .collect(),
             AppEvent::StateChanged {
                 pane_id,
                 agent,
@@ -255,22 +245,22 @@ impl AppState {
             .attached_terminal_id
             .clone();
         let now = self.clock_now;
-        let (mutation, managed_changed, agent_name_changed, unchanged_change) = {
+        let (mutation, resume_name_changed, agent_name_changed, unchanged_change) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
             let previous_agent_name = terminal.agent_name.clone();
             let mutation = update(terminal)?;
-            let managed_changed = terminal.reconcile_managed_agent_at(now, false);
+            let resume_name_changed = terminal.reconcile_agent_resume_name(now);
             let agent_name_changed = terminal.agent_name != previous_agent_name;
             let unchanged_change = (mutation.agent_released || agent_name_changed)
                 .then(|| terminal.unchanged_effective_state_change_at(now));
             (
                 mutation,
-                managed_changed,
+                resume_name_changed,
                 agent_name_changed,
                 unchanged_change,
             )
         };
-        if mutation.session_ref_changed || managed_changed || agent_name_changed {
+        if mutation.session_ref_changed || resume_name_changed || agent_name_changed {
             self.mark_session_dirty();
         }
         let agent_released = mutation.agent_released;
@@ -328,10 +318,10 @@ impl AppState {
         }
     }
 
-    pub(crate) fn next_managed_agent_deadline(&self) -> Option<Instant> {
+    pub(crate) fn next_agent_resume_name_deadline(&self) -> Option<Instant> {
         self.terminals
             .values()
-            .filter_map(shepr_mux::terminal::TerminalState::next_managed_agent_deadline)
+            .filter_map(shepr_mux::terminal::TerminalState::agent_resume_name_deadline)
             .min()
     }
 

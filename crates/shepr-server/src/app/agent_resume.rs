@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 
 use super::App;
 
-use crate::limits::{MANAGED_AGENT_RESUME_TIMEOUT, PENDING_AGENT_RESUME_RETRY_INTERVAL};
+use crate::limits::{AGENT_RESUME_NAME_HOLD_TIMEOUT, PENDING_AGENT_RESUME_RETRY_INTERVAL};
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
@@ -47,17 +47,16 @@ impl App {
             .is_some_and(|deadline| now >= deadline)
     }
 
-    /// Reconciles every managed agent whose deadline has passed: a launch
-    /// past its settle delay or timeout, a restored agent whose resume never
-    /// showed up. The loop wakes at `AppState::next_managed_agent_deadline`,
-    /// but nothing else reconciles a pane that produces no events, and a
-    /// deadline left in the past makes every loop wakeup immediate. Every
-    /// reconcile of a due agent moves it to a later deadline or none, so this
-    /// cannot keep firing.
-    pub(crate) fn expire_due_managed_agents(&mut self, now: Instant) -> bool {
+    /// Releases the held name of every restored agent whose typed resume
+    /// never produced the agent by its deadline. The loop wakes at
+    /// `AppState::next_agent_resume_name_deadline`, but nothing else
+    /// reconciles a pane that produces no events, and a deadline left in the
+    /// past makes every loop wakeup immediate. Reconciling a due hold always
+    /// ends it, so this cannot keep firing.
+    pub(crate) fn expire_due_agent_resume_names(&mut self, now: Instant) -> bool {
         if self
             .state
-            .next_managed_agent_deadline()
+            .next_agent_resume_name_deadline()
             .is_none_or(|deadline| now < deadline)
         {
             return false;
@@ -68,7 +67,7 @@ impl App {
             .iter()
             .filter(|(_, terminal)| {
                 terminal
-                    .next_managed_agent_deadline()
+                    .agent_resume_name_deadline()
                     .is_some_and(|deadline| now >= deadline)
             })
             .map(|(terminal_id, _)| terminal_id.clone())
@@ -79,7 +78,7 @@ impl App {
                 .state
                 .terminals
                 .get_mut(&terminal_id)
-                .is_some_and(|terminal| terminal.reconcile_managed_agent_at(now, false));
+                .is_some_and(|terminal| terminal.reconcile_agent_resume_name(now));
             if !reconciled {
                 continue;
             }
@@ -493,14 +492,14 @@ impl App {
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.pending_agent_resume_plan = None;
-            // A restored managed name now waits for the agent to appear and
+            // A restored name now waits for the agent to appear and
             // is released at the deadline if it never does. The paths above
             // that return early leave it awaiting the resume: a retried
             // launch starts the clock then, and a resume that can never run
             // (missing directory, unstartable shell) leaves a pane with no
             // runtime at all, where the name is kept like any unavailable
             // restored pane's so a later save writes it back.
-            terminal.begin_managed_agent_resume(now, MANAGED_AGENT_RESUME_TIMEOUT);
+            terminal.begin_agent_resume_name_hold(now, AGENT_RESUME_NAME_HOLD_TIMEOUT);
         }
         true
     }
@@ -521,7 +520,7 @@ fn derived_pending_agent_resume_pane_infos(
         pane_outer_borders,
         pane_scrollbars,
     };
-    // Hidden panes still need their restored agent started. Give them their
+    // Hidden panes still need their restored agent resumed. Give them their
     // tiled size, while the visible zoomed pane starts at its full screen size.
     let mut panes = geometry.tab_panes(tab.layout(), false);
     if tab.zoomed() {
@@ -799,10 +798,7 @@ mod tests {
                 long_running_test_argv(),
             ));
             // Restore seeds the resumed agent as detected and names it.
-            terminal.restore_managed_agent_for_resume(
-                "worker".into(),
-                shepr_agent::detect::Agent::Codex,
-            );
+            terminal.hold_agent_name_for_resume("worker".into(), shepr_agent::detect::Agent::Codex);
             let _ = terminal.set_detected_state_with_screen_signals_at(
                 Some(shepr_agent::detect::Agent::Codex),
                 shepr_agent::detect::AgentState::Idle,
@@ -948,7 +944,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_launched_resume_releases_its_managed_name_when_the_agent_never_appears() {
+    async fn a_launched_resume_releases_its_saved_name_when_the_agent_never_appears() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs()[0].root_pane();
@@ -971,34 +967,32 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist");
-        terminal
-            .restore_managed_agent_for_resume("worker".into(), shepr_agent::detect::Agent::Codex);
+        terminal.hold_agent_name_for_resume("worker".into(), shepr_agent::detect::Agent::Codex);
         // A resume command that runs, but never becomes the agent.
         terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0never-appears",
             long_running_test_argv(),
         ));
-        assert_eq!(app.state.next_managed_agent_deadline(), None);
+        assert_eq!(app.state.next_agent_resume_name_deadline(), None);
 
         let launched_at = Instant::now();
         assert!(app.start_pending_agent_resumes(launched_at, true));
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
         let deadline = app
             .state
-            .next_managed_agent_deadline()
+            .next_agent_resume_name_deadline()
             .expect("a launched resume waits for its agent until a deadline");
-        assert!(deadline >= launched_at + MANAGED_AGENT_RESUME_TIMEOUT);
+        assert!(deadline >= launched_at + AGENT_RESUME_NAME_HOLD_TIMEOUT);
         assert_eq!(
             app.state.terminals[&terminal_id].agent_name.as_deref(),
             Some("worker")
         );
 
-        assert!(!app.expire_due_managed_agents(deadline - std::time::Duration::from_millis(1)));
-        assert!(app.expire_due_managed_agents(deadline));
+        assert!(!app.expire_due_agent_resume_names(deadline - std::time::Duration::from_millis(1)));
+        assert!(app.expire_due_agent_resume_names(deadline));
         assert_eq!(app.state.terminals[&terminal_id].agent_name, None);
-        assert_eq!(app.state.terminals[&terminal_id].managed_agent_kind(), None);
-        assert_eq!(app.state.next_managed_agent_deadline(), None);
-        assert!(!app.expire_due_managed_agents(deadline));
+        assert_eq!(app.state.next_agent_resume_name_deadline(), None);
+        assert!(!app.expire_due_agent_resume_names(deadline));
 
         for (_, runtime) in app.terminal_runtimes.drain() {
             drop(runtime);

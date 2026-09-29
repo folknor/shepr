@@ -303,26 +303,6 @@ pub fn session_ref_from_report(
     }
 }
 
-pub fn persisted_session_from_launch_args(
-    agent: Agent,
-    args: &[String],
-) -> Option<PersistedAgentSession> {
-    let [command, session_id] = args else {
-        return None;
-    };
-    let ResumeArgs::Subcommand(subcommand) = agent.descriptor().resume_support?.resume_args else {
-        return None;
-    };
-    if command != subcommand || session_id.starts_with('-') {
-        return None;
-    }
-    PersistedAgentSession::new(
-        AgentSource::official(agent)?,
-        agent,
-        AgentSessionRef::id(session_id.clone())?,
-    )
-}
-
 pub fn session_ref_from_snapshot(
     source: &AgentSource,
     agent: Agent,
@@ -474,43 +454,6 @@ mod tests {
             "shepr:opencode",
             "opencode"
         ));
-    }
-
-    #[test]
-    fn codex_noncanonical_resume_launch_has_no_explicit_session() {
-        assert_eq!(
-            persisted_session_from_launch_args(
-                Agent::Codex,
-                &["resume".into(), "codex-session".into()]
-            )
-            .expect("test precondition")
-            .session_ref
-            .value_str(),
-            "codex-session"
-        );
-        assert!(
-            persisted_session_from_launch_args(Agent::Codex, &["resume".into(), "--last".into()])
-                .is_none()
-        );
-        assert!(
-            persisted_session_from_launch_args(
-                Agent::Codex,
-                &["resume".into(), "not-a-session".into(), "--last".into()]
-            )
-            .is_none()
-        );
-        assert!(
-            persisted_session_from_launch_args(
-                Agent::Codex,
-                &[
-                    "--remote".into(),
-                    "ws://example.test".into(),
-                    "resume".into(),
-                    "remote-session".into(),
-                ]
-            )
-            .is_none()
-        );
     }
 
     #[test]

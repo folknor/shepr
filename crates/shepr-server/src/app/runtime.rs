@@ -92,7 +92,7 @@ impl App {
         };
 
         [
-            self.state.next_managed_agent_deadline(),
+            self.state.next_agent_resume_name_deadline(),
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
                 .flatten(),

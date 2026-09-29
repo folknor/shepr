@@ -503,13 +503,6 @@ pub(super) struct ScreenPublishContext {
     pub(super) agent_changed: bool,
 }
 
-pub(super) struct PromptObservationInput<'a> {
-    pub(super) agent: Option<Agent>,
-    pub(super) content: &'a str,
-    pub(super) detection: Option<&'a shepr_agent::detect::AgentDetection>,
-    pub(super) process_exited: bool,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct ProcessProbeCompletion {
     now: std::time::Instant,
@@ -549,7 +542,6 @@ pub(super) struct DetectorState {
     last_screen_scan_detection_content_seq: Option<u64>,
     agent_startup_grace_until: Option<std::time::Instant>,
     pending_idle: PendingIdleConfirmation,
-    last_prompt_observation: Option<(Agent, bool)>,
     agent_absence_hold_until: Option<std::time::Instant>,
 }
 
@@ -573,7 +565,6 @@ impl DetectorState {
             last_screen_scan_detection_content_seq: None,
             agent_startup_grace_until: None,
             pending_idle: PendingIdleConfirmation::default(),
-            last_prompt_observation: None,
             agent_absence_hold_until,
         }
     }
@@ -709,7 +700,6 @@ impl DetectorState {
         let should_reset_detection = agent_changed && (agent != previous_agent || replacement);
         if should_reset_detection {
             self.pending_idle.clear();
-            self.last_prompt_observation = None;
             self.last_screen_scan_detection_content_seq = None;
             if agent.is_some() {
                 self.agent_absence_hold_until = None;
@@ -846,40 +836,6 @@ impl DetectorState {
             },
             &mut self.pending_idle,
         )
-    }
-
-    pub(super) async fn publish_prompt_observation(
-        &mut self,
-        state_events: &mpsc::Sender<AppEvent>,
-        pane_id: PaneId,
-        input: PromptObservationInput<'_>,
-    ) {
-        let prompt_agent = input.agent.filter(|agent| agent.prompt_observation());
-        let ready = prompt_agent.is_some_and(|agent| {
-            !input.process_exited
-                && input
-                    .detection
-                    .is_some_and(|detection| detection.state == AgentState::Unknown)
-                && agent.prompt_ready(input.content)
-        });
-        let next = prompt_agent
-            .or_else(|| self.last_prompt_observation.map(|(agent, _)| agent))
-            .map(|agent| (agent, ready));
-        if next == self.last_prompt_observation {
-            return;
-        }
-        self.last_prompt_observation = next;
-        if let Some((agent, ready)) = next
-            && let Err(err) = state_events
-                .send(AppEvent::AgentPromptObserved {
-                    pane_id,
-                    agent,
-                    ready,
-                })
-                .await
-        {
-            warn!(pane = pane_id.raw(), %err, "failed to deliver agent prompt observation");
-        }
     }
 
     pub(super) async fn apply_publish_update(

@@ -435,15 +435,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_startup_prompt_survives_terminal_wraps() {
-        let wrapped = "header\n› Ask Codex to do\nanything\nfooter";
-        assert!(shepr_agent::agent::Agent::Codex.prompt_ready(wrapped));
-        assert!(
-            !shepr_agent::agent::Agent::Codex.prompt_ready(&format!("model: load\ning\n{wrapped}"))
-        );
-    }
-
-    #[test]
     fn screen_read_skips_unchanged_idle_bottom_buffer() {
         assert_eq!(
             decide_detection_screen_read(screen_read_input(AgentState::Idle, 10)),

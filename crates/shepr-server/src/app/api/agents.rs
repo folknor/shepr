@@ -6,8 +6,8 @@ use bytes::Bytes;
 
 use crate::app::App;
 use shepr_api::schema::{
-    AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
-    PaneReadResult, ResponseResult,
+    AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentTarget, PaneReadResult,
+    ResponseResult,
 };
 use shepr_pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
 
@@ -23,7 +23,6 @@ impl App {
     }
 
     pub(super) fn handle_agent_get(&mut self, target: &AgentTarget) -> ApiResult {
-        self.reconcile_managed_agent_target(&target.target);
         let agent = self.agent_info_for_target(&target.target)?;
 
         success(ResponseResult::AgentInfo { agent })
@@ -39,12 +38,6 @@ impl App {
         let agent = self.rename_agent_target(&params.target, params.name)?;
 
         success(ResponseResult::AgentInfo { agent })
-    }
-
-    pub(super) fn handle_agent_start(&mut self, params: AgentStartParams) -> ApiResult {
-        let (agent, argv) = self.start_agent(params)?;
-
-        success(ResponseResult::AgentStarted { agent, argv })
     }
 
     pub(crate) fn handle_deferred_agent_api_request(
@@ -138,9 +131,6 @@ impl App {
         let Some(expected_agent) = terminal.effective_known_agent() else {
             return Err(agent_not_ready_error(&params.target));
         };
-        if terminal.managed_agent_launch_pending() {
-            return Err(agent_not_ready_error(&params.target));
-        }
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return Err(ApiError::agent_not_found(params.target.clone()));
         };
@@ -525,7 +515,7 @@ mod tests {
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
         let (mut runtime, mut rx) =
             shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 2);
-        runtime.set_process_probe_result_for_test(None, Some(Agent::OpenCode));
+        runtime.set_process_probe_result_for_test(Some(Agent::OpenCode));
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -716,7 +706,7 @@ mod tests {
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Idle);
         let (mut runtime, mut rx) =
             shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 3);
-        runtime.set_process_probe_result_for_test(None, Some(Agent::GithubCopilot));
+        runtime.set_process_probe_result_for_test(Some(Agent::GithubCopilot));
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -763,7 +753,7 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
         let (mut runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
-        runtime.set_process_probe_result_for_test(None, Some(Agent::Pi));
+        runtime.set_process_probe_result_for_test(Some(Agent::Pi));
         app.insert_test_runtime(pane_id, runtime);
 
         let rejected = app.handle_agent_send_keys(&AgentSendKeysParams {
@@ -786,46 +776,6 @@ mod tests {
             rx.try_recv().expect("test precondition"),
             Bytes::from_static(b"\x1b[A\r")
         );
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn agent_prompt_rejects_managed_agent_while_startup_is_pending() {
-        let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
-        let now = std::time::Instant::now();
-        terminal.begin_managed_agent(
-            "reviewer".into(),
-            Agent::OpenCode,
-            now,
-            std::time::Duration::from_secs(3),
-            std::time::Duration::from_secs(10),
-        );
-        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
-        let (runtime, mut rx) = shepr_mux::pane::PaneRuntime::test_with_channel(80, 24);
-        app.insert_test_runtime(pane_id, runtime);
-
-        let response = run_deferred_agent_prompt(
-            &mut app,
-            "req-pending",
-            AgentPromptParams {
-                target: "reviewer".into(),
-                text: "A != B".into(),
-                wait: None,
-            },
-        );
-        let error: shepr_api::schema::ErrorResponse =
-            serde_json::from_str(&crate::test_support::test_json(&response))
-                .expect("test precondition");
-        assert_eq!(error.error.code, "agent_not_ready");
         assert!(rx.try_recv().is_err());
     }
 

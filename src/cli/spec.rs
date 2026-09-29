@@ -25,8 +25,7 @@ mod machine;
 
 pub(super) fn command() -> Command {
     // Launch options are root arguments, not `global` ones: clap accepts them
-    // only before the subcommand, so text after the subcommand (a command for
-    // `pane run`, arguments after `--` for `agent start`) is never mistaken
+    // only before the subcommand, so text after `pane run` is never mistaken
     // for `--session` or `--remote`.
     let command = Command::new(PROGRAM_NAME)
         .bin_name(PROGRAM_NAME)
@@ -326,42 +325,6 @@ fn agent_command() -> Command {
                 .arg(flag("takeover")),
         )
         .subcommand(
-            Command::new("start")
-                .about("Start a supported interactive agent in an existing pane")
-                .override_usage(
-                    "shepr agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]",
-                )
-                .arg(required("name", "NAME"))
-                .arg(
-                    option("kind", "KIND")
-                        .required(true)
-                        .value_parser(agent_kind_values())
-                        .help("Supported agent kind and canonical executable"),
-                )
-                .arg(
-                    option("pane", "ID")
-                        .required(true)
-                        .help("Existing pane at an interactive shell prompt"),
-                )
-                .arg(
-                    u64_option("timeout", "MS")
-                        .help(format!(
-                            "Wait for interactive readiness (default: {}; max: {})",
-                            crate::limits::DEFAULT_AGENT_START_TIMEOUT_MS,
-                            shepr_server::app::MAX_AGENT_START_TIMEOUT.as_millis(),
-                        )),
-                )
-                .arg(
-                    Arg::new("agent_args")
-                        .value_name("AGENT_ARG")
-                        .num_args(0..)
-                        .last(true),
-                )
-                .after_help(
-                    "The pane must be at its interactive shell prompt. Success means the expected agent was detected in the same terminal and is ready for input.\n\nnext: shepr agent prompt <TARGET> <TEXT> --wait",
-                ),
-        )
-        .subcommand(
             Command::new("explain")
                 .about("Explain agent detection state")
                 .override_usage(
@@ -392,12 +355,6 @@ fn agent_command() -> Command {
                         .action(ArgAction::SetTrue),
                 ),
         )
-}
-
-pub(super) fn agent_kind_values() -> Vec<&'static str> {
-    shepr_agent::detect::Agent::all()
-        .map(shepr_agent::detect::agent_label)
-        .collect()
 }
 
 /// Key syntax for `pane send-keys` and `agent send-keys`; the server parses
@@ -1517,40 +1474,12 @@ mod tests {
     }
 
     #[test]
-    fn spec_models_agent_start_target_and_trailing_args() {
-        let cmd = super::command();
-        let agent_start = command_path(&cmd, &["agent", "start"]);
-        assert!(has_option(agent_start, "kind"));
-        assert_eq!(
-            option_values(agent_start, "kind"),
-            shepr_agent::detect::Agent::all()
-                .map(|agent| shepr_agent::detect::agent_label(agent).to_string())
-                .collect::<Vec<_>>()
-        );
-        assert!(has_option(agent_start, "pane"));
-        for legacy in ["cwd", "workspace", "tab", "split", "focus", "env", "argv"] {
-            assert!(!has_option(agent_start, legacy), "legacy option --{legacy}");
-        }
-        assert!(
-            agent_start
-                .get_arguments()
-                .any(|arg| arg.get_id() == "agent_args")
-        );
-    }
-
-    #[test]
     fn next_step_hints_render_without_replacing_existing_after_help() {
-        let agent_start = long_help(&["agent", "start"]);
-        assert!(
-            agent_start.contains("The pane must be at its interactive shell prompt."),
-            "agent start dropped its existing after_help: {agent_start}"
-        );
-        assert!(
-            agent_start.contains("next: shepr agent prompt <TARGET> <TEXT> --wait"),
-            "agent start is missing its next-step hint: {agent_start}"
-        );
-
         let pane_send_text = long_help(&["pane", "send-text"]);
+        assert!(
+            pane_send_text.contains("Words after PANE_ID are joined with single spaces."),
+            "pane send-text dropped its existing after_help: {pane_send_text}"
+        );
         assert!(
             pane_send_text.contains(
                 "next: shepr pane run <PANE_ID> <COMMAND> sends text and Enter in one call"

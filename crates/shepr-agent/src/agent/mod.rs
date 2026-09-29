@@ -10,8 +10,6 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize, de::Visitor};
 use shepr_core::env::ChildEnv;
 
-use crate::limits::{MAX_PROMPT_READY_NEEDLE_CHARS, PROMPT_READY_LOOKBACK_LINES};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Agent {
@@ -278,7 +276,6 @@ pub struct AgentDescriptor {
     pub screen_manifest: bool,
     pub env_to_scrub: &'static [ChildEnv],
     pub title_activity_glyphs: &'static str,
-    pub prompt_observation: bool,
     pub integration_hook_events: &'static [IntegrationHookEvent],
 }
 
@@ -302,7 +299,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -327,7 +323,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ChildEnv::ClaudeCodeMessagingToken,
         ],
         title_activity_glyphs: CLAUDE_ACTIVITY_GLYPHS,
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(CLAUDE_HOOK_EVENTS),
@@ -348,7 +343,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[ChildEnv::CodexThreadId],
         title_activity_glyphs: "",
-        prompt_observation: true,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(CODEX_HOOK_EVENTS),
@@ -366,7 +360,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -386,7 +379,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(CURSOR_HOOK_EVENTS),
@@ -407,7 +399,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(DEVIN_HOOK_EVENTS),
@@ -428,7 +419,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(ANTIGRAVITY_HOOK_EVENTS),
@@ -446,7 +436,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -466,7 +455,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: false,
         env_to_scrub: &[ChildEnv::Ompcode],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -486,7 +474,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: false,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(MASTRACODE_HOOK_EVENTS),
@@ -507,7 +494,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -527,7 +513,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(COPILOT_HOOK_EVENTS),
@@ -548,7 +533,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(KIMI_HOOK_EVENTS),
@@ -566,7 +550,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -586,7 +569,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(DROID_HOOK_EVENTS),
@@ -604,7 +586,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -624,7 +605,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(GROK_HOOK_EVENTS),
@@ -645,7 +625,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -665,7 +644,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(QODERCLI_HOOK_EVENTS),
@@ -686,7 +664,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(QWEN_HOOK_EVENTS),
@@ -707,7 +684,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(LETTA_HOOK_EVENTS),
@@ -725,7 +701,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -742,7 +717,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         screen_manifest: true,
         env_to_scrub: &[],
         title_activity_glyphs: "",
-        prompt_observation: false,
         integration_hook_events: &[],
     },
 ];
@@ -847,22 +821,6 @@ impl Agent {
         is_braille_activity_glyph(glyph) || self.activity_glyphs().contains(glyph)
     }
 
-    pub const fn prompt_observation(self) -> bool {
-        self.descriptor().prompt_observation
-    }
-
-    // Prompt readiness is an auxiliary boolean alongside Codex state detection.
-    // Manifest rules select an AgentState, so expressing this as an idle rule
-    // would alter state selection rather than report the same readiness signal.
-    pub fn prompt_ready(self, content: &str) -> bool {
-        if !self.descriptor().prompt_observation {
-            return false;
-        }
-        contains_recent_non_whitespace(content, "›AskCodextodoanything")
-            && !contains_recent_non_whitespace(content, "model:loading")
-            && !contains_recent_non_whitespace(content, "Resumingsession")
-    }
-
     pub fn parse_label(value: &str) -> Option<Self> {
         // `detect::parse_agent_label` normalizes case and executable suffixes
         // before reaching this lookup. Avoid another allocation on the /proc
@@ -895,53 +853,6 @@ const BRAILLE_ACTIVITY_GLYPH_RANGE: std::ops::RangeInclusive<char> = '\u{2800}'.
 
 fn is_braille_activity_glyph(glyph: char) -> bool {
     BRAILLE_ACTIVITY_GLYPH_RANGE.contains(&glyph)
-}
-
-fn contains_recent_non_whitespace(content: &str, needle: &str) -> bool {
-    let mut needle_chars = ['\0'; MAX_PROMPT_READY_NEEDLE_CHARS];
-    let mut needle_len = 0;
-    for character in needle.chars().rev() {
-        let Some(slot) = needle_chars.get_mut(needle_len) else {
-            return false;
-        };
-        *slot = character;
-        needle_len += 1;
-    }
-    if needle_len == 0 {
-        return true;
-    }
-
-    let needle = &needle_chars[..needle_len];
-    let mut prefix = [0; MAX_PROMPT_READY_NEEDLE_CHARS];
-    for index in 1..needle_len {
-        let mut matched = prefix[index - 1];
-        while matched > 0 && needle[index] != needle[matched] {
-            matched = prefix[matched - 1];
-        }
-        if needle[index] == needle[matched] {
-            matched += 1;
-        }
-        prefix[index] = matched;
-    }
-
-    // Reverse both streams so the bounded lookback can be searched without buffering.
-    let recent_lines = content.lines().rev().take(PROMPT_READY_LOOKBACK_LINES);
-    let mut matched = 0;
-    for character in recent_lines.flat_map(|line| line.chars().rev()) {
-        if character.is_whitespace() {
-            continue;
-        }
-        while matched > 0 && character != needle[matched] {
-            matched = prefix[matched - 1];
-        }
-        if character == needle[matched] {
-            matched += 1;
-            if matched == needle_len {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 pub fn launch_env_to_scrub() -> impl Iterator<Item = &'static str> {
@@ -1012,10 +923,6 @@ pub enum AgentSource {
 }
 
 impl AgentSource {
-    pub fn official(agent: Agent) -> Option<Self> {
-        agent.integration_source().map(|_| Self::Official(agent))
-    }
-
     pub fn parse(value: &str) -> Self {
         Agent::parse_source(value).map_or_else(|| Self::Custom(value.to_owned()), Self::Official)
     }
@@ -1199,10 +1106,6 @@ mod tests {
                 .contains(&ChildEnv::CodexThreadId)
         );
         assert!(Agent::Omp.env_to_scrub().contains(&ChildEnv::Ompcode));
-        assert!(Agent::Codex.prompt_ready("› Ask Codex to do anything"));
-        assert!(Agent::Codex.prompt_ready("› Ask Codex to do\nanything"));
-        assert!(!Agent::Codex.prompt_ready("› Ask Codex to do anything\nmodel:\nloading"));
-        assert!(!Agent::Claude.prompt_ready("› Ask Codex to do anything"));
         assert_eq!(
             Agent::screen_manifest_agents().count(),
             AGENTS

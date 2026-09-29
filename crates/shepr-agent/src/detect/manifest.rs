@@ -996,11 +996,8 @@ fn rule_detection(rule: &ManifestRule) -> AgentDetection {
 ///
 /// Without a manifest (Omp, Mastracode) the screen says nothing about the
 /// agent's state, so the honest value is `Unknown`; those agents rely on
-/// their full-lifecycle hook for state. Two consumers treat that `Unknown` as
-/// settled rather than pending: `TerminalState::reconcile_managed_agent_at`
-/// lets a managed launch of such an agent become ready on `Unknown` (there
-/// is no screen `Idle` to wait for), and `should_skip_idle_screen_scan` in
-/// `pane/agent_detection.rs` skips re-reading an unchanged screen for it.
+/// their full-lifecycle hook for state. `should_skip_idle_screen_scan` in
+/// `pane/agent_detection.rs` skips re-reading an unchanged screen for them.
 fn fallback_state(agent: Agent, has_manifest: bool) -> AgentState {
     if !has_manifest || agent == Agent::Codex {
         AgentState::Unknown

@@ -135,7 +135,6 @@ impl App {
             Method::AgentGet(target) => return self.handle_agent_get(&target),
             Method::AgentFocus(target) => return self.handle_agent_focus(&target),
             Method::AgentRename(params) => return self.handle_agent_rename(params),
-            Method::AgentStart(params) => return self.handle_agent_start(params),
             Method::AgentRead(params) => return self.handle_agent_read(&params),
             Method::AgentExplain(target) => return self.handle_agent_explain(&target),
             Method::AgentSendKeys(params) => {

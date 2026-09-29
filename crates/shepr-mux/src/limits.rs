@@ -85,10 +85,10 @@ pub(crate) const STABLE_VISIBLE_SIGNAL_REFRESH: Duration = Duration::from_millis
 /// Startup grace for the first agent signal while a launched shell settles.
 pub(crate) const AGENT_STARTUP_GRACE_WINDOW: Duration = Duration::from_secs(3);
 /// Time allowed for a restored agent to appear after its resume launch.
-pub const MANAGED_AGENT_RESUME_TIMEOUT: Duration = Duration::from_secs(30);
+pub const AGENT_RESUME_DETECTION_HOLD: Duration = Duration::from_secs(30);
 /// A restored pane holds absence for the same interval as agent resume, so
 /// detection cannot clear the agent before its process has time to appear.
-pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = MANAGED_AGENT_RESUME_TIMEOUT;
+pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = AGENT_RESUME_DETECTION_HOLD;
 /// Delay before the detector first polls a newly launched pane, giving the
 /// shell time to put initial output on the screen.
 pub(crate) const INITIAL_DETECTION_DELAY: Duration = Duration::from_millis(50);

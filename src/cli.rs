@@ -1072,23 +1072,6 @@ mod tests {
         let run = command_matches(&["pane", "run", "p1", "--", "--session", "work"]);
         assert_eq!(super::matches::words(&run, "command"), "--session work");
 
-        // Arguments after `--` for `agent start` belong to the agent.
-        let invocation = parse(&[
-            "agent",
-            "start",
-            "repro",
-            "--kind",
-            "claude",
-            "--pane",
-            "p1",
-            "--",
-            "/bin/echo",
-            "--session",
-            "child-session",
-            "--session=child-session",
-        ]);
-        assert_eq!(invocation.session(), None);
-
         // Elsewhere a trailing launch option is a usage error, not a silent
         // retarget of the command.
         for args in [

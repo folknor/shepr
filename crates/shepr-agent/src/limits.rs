@@ -105,14 +105,6 @@ pub(crate) const MAX_SESSION_PATH_LEN: usize = 4096;
 /// a cold hook interpreter to report state while bounding the agent's wait.
 pub(crate) const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Maximum prompt needle size searched with fixed stack tables. The bound
-/// covers known prompt labels and bounds stack use and scan work.
-pub(crate) const MAX_PROMPT_READY_NEEDLE_CHARS: usize = 32;
-
-/// Number of recent screen lines inspected for a prompt-ready marker. The
-/// lookback covers prompt redraws near the bottom while keeping the scan bounded.
-pub(crate) const PROMPT_READY_LOOKBACK_LINES: usize = 12;
-
 /// Maximum attempts to create a sibling temporary file before reporting a
 /// name collision. The randomized token and sequence make collisions rare;
 /// the finite retry cap prevents a hostile directory from causing an endless

@@ -75,10 +75,6 @@ pub enum ResponseResult {
     AgentInfo {
         agent: AgentInfo,
     },
-    AgentStarted {
-        agent: AgentInfo,
-        argv: Vec<String>,
-    },
     AgentPrompted {
         agent: AgentInfo,
     },

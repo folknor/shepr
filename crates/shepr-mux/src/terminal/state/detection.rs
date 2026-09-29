@@ -6,9 +6,6 @@ impl TerminalState {
         agent: Agent,
         now: Instant,
     ) -> TerminalStateMutation {
-        let starts_acquisition = !self
-            .should_ignore_detected_state_under_full_lifecycle_hook(Some(agent), false)
-            && !self.detected_state_observed_before_release_suppression(Some(agent), now);
         let mutation = self.set_detected_state_with_screen_signals_at(
             Some(agent),
             AgentState::Unknown,
@@ -16,10 +13,7 @@ impl TerminalState {
             false,
             now,
         );
-        if starts_acquisition {
-            self.prompt_ready_agent = None;
-        }
-        self.confirm_managed_agent_resume(agent);
+        self.confirm_agent_resume_process(agent);
         mutation
     }
 
@@ -64,7 +58,7 @@ impl TerminalState {
     /// seeded for the resumed agent: no runtime ever existed here, so that
     /// detection is only the seed, and with no detector to ever report the
     /// pane empty it would show an idle agent on a dead pane indefinitely.
-    /// The managed name and saved session stay, as for any unavailable
+    /// The saved name and session stay, as for any unavailable
     /// restored pane, so a later save writes them back.
     pub fn abandon_agent_resume(&mut self, error: super::RestoreFailure, now: Instant) {
         self.pending_agent_resume_plan = None;
@@ -201,14 +195,6 @@ impl TerminalState {
             };
         }
         self.detected_agent = agent;
-        if process_exited
-            || self
-                .prompt_ready_agent
-                .is_some_and(|prompt_agent| Some(prompt_agent) != agent)
-            || fallback_state == AgentState::Blocked
-        {
-            self.prompt_ready_agent = None;
-        }
         if let Some(agent) = agent {
             let agent_label = shepr_agent::detect::agent_label(agent);
             self.reconcile_agent_name_owner(agent_label, None);

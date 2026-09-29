@@ -9,7 +9,7 @@ mod state;
 mod teardown;
 mod terminal;
 
-pub use launch::{MANAGED_AGENT_RESUME_TIMEOUT, PaneLaunchEnv, PaneShellConfig};
+pub use launch::{AGENT_RESUME_DETECTION_HOLD, PaneLaunchEnv, PaneShellConfig};
 pub use runtime::WheelRouting;
 pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};
 pub use runtime_registry::PaneRuntimeRegistry;

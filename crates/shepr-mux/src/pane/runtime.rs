@@ -195,7 +195,7 @@ pub struct PaneRuntime {
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
-    process_probe_result_for_test: Option<(Option<String>, Option<Agent>)>,
+    process_probe_result_for_test: Option<Option<Agent>>,
     // Task handles for deterministic shutdown
     detect_handle: Option<tokio::task::AbortHandle>,
 }
@@ -1052,16 +1052,6 @@ impl PaneRuntime {
                     tokio::select! {
                         _ = tokio::time::sleep(tick) => {}
                         _ = detect_reset.notified() => {
-                            detector.publish_prompt_observation(
-                                &state_events,
-                                pane_id,
-                                PromptObservationInput {
-                                    agent: detector.current_agent(),
-                                    content: "",
-                                    detection: None,
-                                    process_exited: false,
-                                },
-                            ).await;
                             detector.reset();
                         }
                     }
@@ -1227,18 +1217,6 @@ impl PaneRuntime {
                         &osc_progress,
                         process_exited,
                     );
-                    detector
-                        .publish_prompt_observation(
-                            &state_events,
-                            pane_id,
-                            PromptObservationInput {
-                                agent,
-                                content: &content,
-                                detection: screen_detection.as_ref(),
-                                process_exited,
-                            },
-                        )
-                        .await;
                     let Some(screen_detection) = screen_detection else {
                         detector.clear_pending_idle();
                         continue;
@@ -1821,35 +1799,22 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
-    /// Return the pane shell name observed from the live child process.
-    /// Childless test runtimes can use `set_process_probe_result_for_test` to
-    /// supply the observation without starting a shell.
-    pub fn pane_shell_name(&self) -> Option<String> {
-        if let Some((shell_name, _)) = &self.process_probe_result_for_test {
-            return shell_name.clone();
-        }
-        shepr_agent::detect::available_pane_shell(self.child_pid()?)
-    }
-
     /// Return the agent identified in the pane's foreground process tree.
     /// Childless test runtimes can use `set_process_probe_result_for_test` to
     /// supply the observation without starting an agent process.
     pub fn foreground_agent(&self) -> Option<Agent> {
-        if let Some((_, agent)) = &self.process_probe_result_for_test {
-            return *agent;
+        if let Some(agent) = self.process_probe_result_for_test {
+            return agent;
         }
         let job = shepr_agent::detect::foreground_job(self.child_pid()?)?;
         shepr_agent::detect::identify_agent_in_job(&job).map(|(agent, _)| agent)
     }
 
-    /// Set the process observations used by childless runtimes in tests.
-    /// Spawned runtimes leave this seam unset and inspect their real child.
-    pub fn set_process_probe_result_for_test(
-        &mut self,
-        shell_name: Option<String>,
-        foreground_agent: Option<Agent>,
-    ) {
-        self.process_probe_result_for_test = Some((shell_name, foreground_agent));
+    /// Set the foreground agent observation used by childless runtimes in
+    /// tests. Spawned runtimes leave this seam unset and inspect their real
+    /// child.
+    pub fn set_process_probe_result_for_test(&mut self, foreground_agent: Option<Agent>) {
+        self.process_probe_result_for_test = Some(foreground_agent);
     }
 
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
@@ -3066,138 +3031,6 @@ mod tests {
                 process_exited: false,
                 observed_at: _,
             } if delivered_pane == pane_id
-        ));
-    }
-
-    #[tokio::test]
-    async fn agent_prompt_observation_revokes_on_working_or_skipped_screen() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let pane_id = PaneId::from_raw(42);
-        let detection = shepr_agent::detect::AgentDetection {
-            state: AgentState::Unknown,
-            skip_state_update: false,
-            visible_idle: false,
-            visible_blocker: false,
-            visible_working: false,
-        };
-        let mut detector = DetectorState::new(std::time::Instant::now(), LaunchPurpose::Fresh);
-        let prompt = "› Ask Codex to do anything";
-        detector
-            .publish_prompt_observation(
-                &tx,
-                pane_id,
-                PromptObservationInput {
-                    agent: Some(Agent::Codex),
-                    content: prompt,
-                    detection: Some(&detection),
-                    process_exited: false,
-                },
-            )
-            .await;
-        assert!(matches!(
-            rx.recv().await,
-            Some(AppEvent::AgentPromptObserved {
-                agent: Agent::Codex,
-                ready: true,
-                ..
-            })
-        ));
-        detector
-            .publish_prompt_observation(
-                &tx,
-                pane_id,
-                PromptObservationInput {
-                    agent: Some(Agent::Codex),
-                    content: prompt,
-                    detection: Some(&detection),
-                    process_exited: false,
-                },
-            )
-            .await;
-        assert!(rx.try_recv().is_err());
-        let working = shepr_agent::detect::AgentDetection {
-            state: AgentState::Working,
-            ..detection
-        };
-        detector
-            .publish_prompt_observation(
-                &tx,
-                pane_id,
-                PromptObservationInput {
-                    agent: Some(Agent::Codex),
-                    content: prompt,
-                    detection: Some(&working),
-                    process_exited: false,
-                },
-            )
-            .await;
-        assert!(matches!(
-            rx.recv().await,
-            Some(AppEvent::AgentPromptObserved {
-                agent: Agent::Codex,
-                ready: false,
-                ..
-            })
-        ));
-        detector
-            .publish_prompt_observation(
-                &tx,
-                pane_id,
-                PromptObservationInput {
-                    agent: Some(Agent::Codex),
-                    content: prompt,
-                    detection: Some(&detection),
-                    process_exited: false,
-                },
-            )
-            .await;
-        assert!(matches!(
-            rx.recv().await,
-            Some(AppEvent::AgentPromptObserved {
-                agent: Agent::Codex,
-                ready: true,
-                ..
-            })
-        ));
-        detector
-            .publish_prompt_observation(
-                &tx,
-                pane_id,
-                PromptObservationInput {
-                    agent: Some(Agent::Codex),
-                    content: prompt,
-                    detection: None,
-                    process_exited: false,
-                },
-            )
-            .await;
-        assert!(matches!(
-            rx.recv().await,
-            Some(AppEvent::AgentPromptObserved {
-                agent: Agent::Codex,
-                ready: false,
-                ..
-            })
-        ));
-        detector
-            .publish_prompt_observation(
-                &tx,
-                pane_id,
-                PromptObservationInput {
-                    agent: Some(Agent::Codex),
-                    content: prompt,
-                    detection: Some(&detection),
-                    process_exited: false,
-                },
-            )
-            .await;
-        assert!(matches!(
-            rx.recv().await,
-            Some(AppEvent::AgentPromptObserved {
-                agent: Agent::Codex,
-                ready: true,
-                ..
-            })
         ));
     }
 }

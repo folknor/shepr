@@ -61,24 +61,6 @@ struct ProcGroupMember {
     state: char,
 }
 
-/// Collect the foreground terminal job for a given child PID.
-pub fn available_pane_shell(child_pid: u32) -> Option<String> {
-    available_pane_shell_from_job(child_pid, foreground_job(child_pid)?)
-}
-
-pub(crate) fn available_pane_shell_from_job(child_pid: u32, job: ForegroundJob) -> Option<String> {
-    if job.process_group_id != child_pid
-        || job.processes.iter().any(|process| process.pid != child_pid)
-    {
-        return None;
-    }
-    job.processes
-        .into_iter()
-        .find(|process| process.pid == child_pid)
-        .map(|process| process.name)
-        .filter(|name| is_pane_shell_process_name(name))
-}
-
 pub fn foreground_job(child_pid: u32) -> Option<ForegroundJob> {
     let process_group_id = foreground_process_group_id(child_pid)?;
     let members = foreground_process_group_members(child_pid, process_group_id)?;

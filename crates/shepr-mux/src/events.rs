@@ -48,12 +48,6 @@ pub enum AppEvent {
         agent: Agent,
         observed_at: Instant,
     },
-    /// An agent-specific prompt signal changed during managed startup.
-    AgentPromptObserved {
-        pane_id: PaneId,
-        agent: Agent,
-        ready: bool,
-    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,

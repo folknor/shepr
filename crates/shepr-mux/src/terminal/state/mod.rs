@@ -102,37 +102,9 @@ struct StaleFullLifecycleHookSession {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ManagedAgentPhase {
-    Pending {
-        ready_after: Option<Instant>,
-        deadline: Instant,
-        observed_expected: bool,
-    },
-    Blocked,
-    Active,
-    /// Restored from a save with a resume planned, and the resume command not
-    /// typed yet: no process exists, so nothing observed about the pane can
-    /// confirm or refute the agent. Saved like `Active` (the name must
-    /// survive a restart before the resume runs) and left alone by
-    /// reconciliation.
-    AwaitingResume,
-    /// The resume command has been typed into the restored shell. Until the
-    /// agent's own process (or a hook report from it) shows up this is only a
-    /// hope: a failed command leaves a plain shell. Evidence of the agent
-    /// makes it `Active`; reaching `deadline` without any releases the name.
-    /// Saved like `Active`: until the deadline the name is still the agent's.
-    /// The seeded restore detection (`restored_terminal` marks the resumed
-    /// agent detected before any process exists) is deliberately not
-    /// evidence here.
-    Resuming {
-        deadline: Instant,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ManagedAgent {
+struct ResumeNameHold {
     kind: Agent,
-    phase: ManagedAgentPhase,
+    deadline: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,9 +179,7 @@ pub struct TerminalState {
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
-    managed_agent: Option<ManagedAgent>,
-    prompt_ready_agent: Option<Agent>,
-    managed_agent_launch_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
+    resume_name_hold: Option<ResumeNameHold>,
     hook_report_sequences: HashMap<String, u64>,
     /// When each source's entry in `hook_report_sequences` was last
     /// accepted; see [`HOOK_SEQUENCE_REANCHOR_AFTER`].
@@ -236,31 +206,9 @@ mod detection;
 mod hooks;
 mod init;
 mod lifecycle;
-mod managed;
+mod names;
 mod presentation;
 mod sessions;
-
-/// Whether a managed agent launch in `state` counts as ready for input.
-///
-/// `Idle` is ready. An agent configured for prompt observation needs that
-/// signal when its screen reports `Unknown`. An agent with no screen
-/// manifest (Omp, Mastracode) is never anything but `Unknown` on screen, so
-/// without its hook that `Unknown` is as settled as it gets and counts as
-/// ready once the launch's settle delay has passed; with the hook, the hook
-/// state replaces it and `Idle` applies as usual.
-pub(super) fn managed_agent_state_is_ready(
-    kind: Agent,
-    state: AgentState,
-    prompt_observed: bool,
-    has_screen_manifest: impl FnOnce(Agent) -> bool,
-) -> bool {
-    match state {
-        AgentState::Idle => true,
-        AgentState::Unknown if kind.prompt_observation() => prompt_observed,
-        AgentState::Unknown => !has_screen_manifest(kind),
-        AgentState::Working | AgentState::Blocked => false,
-    }
-}
 
 #[cfg(test)]
 mod tests;

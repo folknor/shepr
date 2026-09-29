@@ -46,194 +46,6 @@ fn revision_advances_and_saturates_instead_of_wrapping() {
 }
 
 #[test]
-fn managed_agent_readiness_tracks_detection_state() {
-    let mut terminal = test_terminal();
-    let now = Instant::now();
-    terminal.begin_managed_agent(
-        "reviewer".into(),
-        Agent::Pi,
-        now,
-        Duration::from_millis(100),
-        Duration::from_secs(1),
-    );
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Unknown);
-
-    assert!(terminal.managed_agent_launch_pending());
-    assert!(!terminal.managed_agent_interactive_ready());
-    assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(100), false));
-    assert!(terminal.managed_agent_launch_pending());
-
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
-    assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_millis(101), false));
-
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Blocked);
-    assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(102), false));
-    assert!(terminal.managed_agent_launch_pending());
-    assert!(!terminal.managed_agent_interactive_ready());
-    assert_eq!(terminal.next_managed_agent_deadline(), None);
-    assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-    assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), false));
-    assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), false));
-    assert!(!terminal.managed_agent_launch_pending());
-    assert!(terminal.managed_agent_interactive_ready());
-
-    terminal.set_detected_state(None, AgentState::Unknown);
-    assert!(terminal.managed_agent_interactive_ready());
-    assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), false));
-    assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-    assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), true));
-    assert_eq!(terminal.agent_name, None);
-}
-
-#[test]
-fn managed_readiness_accepts_unknown_only_for_agents_without_a_screen_manifest() {
-    let no_manifest = |_: Agent| false;
-    let manifest = |_: Agent| true;
-    assert!(managed_agent_state_is_ready(
-        Agent::Omp,
-        AgentState::Unknown,
-        false,
-        no_manifest
-    ));
-    assert!(!managed_agent_state_is_ready(
-        Agent::Pi,
-        AgentState::Unknown,
-        false,
-        manifest
-    ));
-    assert!(managed_agent_state_is_ready(
-        Agent::Pi,
-        AgentState::Idle,
-        false,
-        manifest
-    ));
-    assert!(!managed_agent_state_is_ready(
-        Agent::Codex,
-        AgentState::Unknown,
-        false,
-        no_manifest
-    ));
-    assert!(managed_agent_state_is_ready(
-        Agent::Codex,
-        AgentState::Unknown,
-        true,
-        manifest
-    ));
-    for state in [AgentState::Working, AgentState::Blocked] {
-        assert!(!managed_agent_state_is_ready(
-            Agent::Omp,
-            state,
-            true,
-            no_manifest
-        ));
-    }
-}
-
-#[test]
-fn managed_launch_of_an_agent_without_a_screen_manifest_becomes_ready_on_unknown() {
-    for kind in [Agent::Omp, Agent::Mastracode] {
-        let mut terminal = test_terminal();
-        let now = Instant::now();
-        terminal.begin_managed_agent(
-            "helper".into(),
-            kind,
-            now,
-            Duration::from_millis(100),
-            Duration::from_secs(1),
-        );
-        terminal.set_detected_state(Some(kind), AgentState::Unknown);
-        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(100), false));
-        assert!(terminal.managed_agent_interactive_ready());
-        assert_eq!(terminal.agent_name.as_deref(), Some("helper"));
-    }
-}
-
-#[test]
-fn codex_managed_readiness_requires_current_prompt_without_idle() {
-    let now = Instant::now();
-    let mut terminal = test_terminal();
-    terminal.begin_managed_agent(
-        "reviewer".into(),
-        Agent::Codex,
-        now,
-        Duration::from_millis(100),
-        Duration::from_secs(1),
-    );
-    terminal.set_detected_state(Some(Agent::Codex), AgentState::Unknown);
-    terminal.observe_agent_prompt_ready(Agent::Codex, true);
-    terminal.reconcile_managed_agent_at(now, false);
-    assert!(!terminal.managed_agent_interactive_ready());
-    terminal.observe_agent_prompt_ready(Agent::Codex, false);
-    assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(100), false));
-    assert!(!terminal.managed_agent_interactive_ready());
-
-    terminal.observe_agent_prompt_ready(Agent::Codex, true);
-    assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(101), false));
-    assert!(terminal.managed_agent_interactive_ready());
-    assert_eq!(terminal.state, AgentState::Unknown);
-    terminal.observe_agent_prompt_ready(Agent::Codex, false);
-    assert!(terminal.managed_agent_interactive_ready());
-
-    terminal.begin_managed_agent(
-        "next".into(),
-        Agent::Codex,
-        now,
-        Duration::ZERO,
-        Duration::from_secs(1),
-    );
-    terminal.reconcile_managed_agent_at(now, false);
-    assert!(!terminal.managed_agent_interactive_ready());
-
-    terminal.set_detected_state(Some(Agent::Codex), AgentState::Blocked);
-    assert!(terminal.reconcile_managed_agent_at(now, false));
-    terminal.observe_agent_prompt_ready(Agent::Codex, false);
-    terminal.set_detected_state(Some(Agent::Codex), AgentState::Unknown);
-    assert!(!terminal.reconcile_managed_agent_at(now, false));
-    terminal.observe_agent_prompt_ready(Agent::Codex, true);
-    assert!(terminal.reconcile_managed_agent_at(now, false));
-    assert!(terminal.managed_agent_interactive_ready());
-}
-
-#[test]
-fn managed_agent_mismatch_and_timeout_release_name() {
-    let now = Instant::now();
-    let mut mismatch = test_terminal();
-    mismatch.begin_managed_agent(
-        "reviewer".into(),
-        Agent::Pi,
-        now,
-        Duration::ZERO,
-        Duration::from_secs(1),
-    );
-    mismatch.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-    assert!(mismatch.reconcile_managed_agent_at(now, false));
-    assert_eq!(mismatch.agent_name, None);
-    assert_eq!(mismatch.managed_agent_kind(), None);
-
-    let mut timed_out = test_terminal();
-    timed_out.begin_managed_agent(
-        "reviewer".into(),
-        Agent::Pi,
-        now,
-        Duration::from_millis(10),
-        Duration::from_millis(20),
-    );
-    timed_out.set_managed_agent_launch_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:codex".into(),
-        agent: shepr_agent::agent::Agent::Codex,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
-            .expect("test precondition"),
-    });
-    assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
-    assert_eq!(timed_out.agent_name, None);
-    assert_eq!(timed_out.managed_agent_kind(), None);
-    assert!(timed_out.persisted_agent_session.is_none());
-}
-
-#[test]
 fn hook_sequence_drops_stragglers_but_survives_a_clock_stepping_back() {
     let mut terminal = test_terminal();
     let t0 = Instant::now();
@@ -269,11 +81,11 @@ fn hook_sequence_drops_stragglers_but_survives_a_clock_stepping_back() {
     assert!(terminal.accept_hook_report_at("shepr:pi", Some(5), t1));
 }
 
-/// A restored managed agent the way `restored_terminal` builds it for a
+/// A restored agent the way `restored_terminal` builds it for a
 /// pending resume: name held, the resumed agent seeded as detected Idle.
 fn restored_for_resume(kind: Agent) -> TerminalState {
     let mut terminal = test_terminal();
-    terminal.restore_managed_agent_for_resume("worker".into(), kind);
+    terminal.hold_agent_name_for_resume("worker".into(), kind);
     terminal.set_detected_state(Some(kind), AgentState::Idle);
     terminal
 }
@@ -283,13 +95,11 @@ fn a_restored_agent_awaiting_its_resume_is_saved_and_left_alone() {
     let now = Instant::now();
     let mut terminal = restored_for_resume(Agent::Pi);
 
-    // Saves persist it (they skip only launch-pending agents).
-    assert!(!terminal.managed_agent_launch_pending());
-    assert_eq!(terminal.managed_agent_kind(), Some(Agent::Pi));
-    assert_eq!(terminal.next_managed_agent_deadline(), None);
+    // Saves persist the name while the resume is pending.
+    assert_eq!(terminal.agent_resume_name_deadline(), None);
     // No process exists, so nothing observed can decide anything yet.
     terminal.set_detected_state(None, AgentState::Unknown);
-    assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(3600), false));
+    assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(3600)));
     assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
 }
 
@@ -297,34 +107,28 @@ fn a_restored_agent_awaiting_its_resume_is_saved_and_left_alone() {
 fn a_resume_that_never_shows_up_releases_the_name_at_its_deadline() {
     let now = Instant::now();
     let mut terminal = restored_for_resume(Agent::Pi);
-    assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
-    // Only a restored agent awaiting its resume can start one.
-    assert!(!terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+    terminal.begin_agent_resume_name_hold(now, Duration::from_secs(30));
 
-    assert!(!terminal.managed_agent_launch_pending());
-    assert!(!terminal.managed_agent_interactive_ready());
     let deadline = now + Duration::from_secs(30);
-    assert_eq!(terminal.next_managed_agent_deadline(), Some(deadline));
+    assert_eq!(terminal.agent_resume_name_deadline(), Some(deadline));
     // The seeded Idle detection is not evidence of the agent.
-    assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(29), false));
+    assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(29)));
     assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
 
-    assert!(terminal.reconcile_managed_agent_at(deadline, false));
+    assert!(terminal.reconcile_agent_resume_name(deadline));
     assert_eq!(terminal.agent_name, None);
-    assert_eq!(terminal.managed_agent_kind(), None);
-    assert_eq!(terminal.next_managed_agent_deadline(), None);
+    assert_eq!(terminal.agent_resume_name_deadline(), None);
 }
 
 #[test]
 fn a_resumed_agent_process_makes_the_name_its_own() {
     let now = Instant::now();
     let mut terminal = restored_for_resume(Agent::Pi);
-    assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+    terminal.begin_agent_resume_name_hold(now, Duration::from_secs(30));
 
     let _ = terminal.set_detected_agent_process_at(Agent::Pi, now);
-    assert!(terminal.managed_agent_interactive_ready());
-    assert_eq!(terminal.next_managed_agent_deadline(), None);
-    assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(60), false));
+    assert_eq!(terminal.agent_resume_name_deadline(), None);
+    assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(60)));
     assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
 }
 
@@ -332,7 +136,7 @@ fn a_resumed_agent_process_makes_the_name_its_own() {
 fn a_hook_report_from_the_resumed_agent_confirms_it() {
     let now = Instant::now();
     let mut terminal = restored_for_resume(Agent::Pi);
-    assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+    terminal.begin_agent_resume_name_hold(now, Duration::from_secs(30));
 
     anchor_full_lifecycle_session(
         &mut terminal,
@@ -350,9 +154,38 @@ fn a_hook_report_from_the_resumed_agent_confirms_it() {
         None,
     );
     assert_eq!(terminal.effective_known_agent(), Some(Agent::Pi));
-    assert!(terminal.reconcile_managed_agent_at(now, false));
-    assert!(terminal.managed_agent_interactive_ready());
-    assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(60), false));
+    assert!(terminal.reconcile_agent_resume_name(now));
+    assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(60)));
+    assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+}
+
+#[test]
+fn a_resumed_agent_reporting_a_fresh_session_keeps_its_name() {
+    let now = Instant::now();
+    let mut terminal = test_terminal();
+    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
+        source: "shepr:opencode".into(),
+        agent: shepr_agent::agent::Agent::OpenCode,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("opencode-saved")
+            .expect("test precondition"),
+    });
+    terminal.hold_agent_name_for_resume("worker".into(), Agent::OpenCode);
+    terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+    terminal.begin_agent_resume_name_hold(now, Duration::from_secs(30));
+    let _ = terminal.set_detected_agent_process_at(Agent::OpenCode, now);
+
+    terminal
+        .set_agent_session_ref_for_session_start(
+            "shepr:opencode".into(),
+            "opencode".into(),
+            shepr_agent::agent::resume::AgentSessionRef::id("opencode-resumed"),
+            None,
+            Some("select"),
+        )
+        .expect("resumed session should be accepted");
+
+    assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+    assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(60)));
     assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
 }
 
@@ -360,11 +193,14 @@ fn a_hook_report_from_the_resumed_agent_confirms_it() {
 fn a_different_agent_in_a_resuming_pane_releases_the_name() {
     let now = Instant::now();
     let mut terminal = restored_for_resume(Agent::Pi);
-    assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+    terminal.begin_agent_resume_name_hold(now, Duration::from_secs(30));
 
+    // Owner reconciliation releases the name and its hold as soon as the
+    // other agent is detected, so nothing is left for the deadline to do.
     let _ = terminal.set_detected_agent_process_at(Agent::Codex, now);
-    assert!(terminal.reconcile_managed_agent_at(now, false));
     assert_eq!(terminal.agent_name, None);
+    assert_eq!(terminal.agent_resume_name_deadline(), None);
+    assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(60)));
 }
 
 #[test]
@@ -3056,43 +2892,6 @@ fn pi_session_replacement_clears_the_previous_sessions_alias() {
 }
 
 #[test]
-fn managed_agent_name_survives_native_session_replacement() {
-    let mut terminal = test_terminal();
-    let now = Instant::now();
-    terminal.begin_managed_agent(
-        "reviewer".into(),
-        Agent::OpenCode,
-        now,
-        Duration::ZERO,
-        Duration::from_secs(1),
-    );
-    terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
-    assert!(terminal.reconcile_managed_agent_at(now, false));
-
-    for session in ["opencode-old", "opencode-new"] {
-        terminal
-            .set_agent_session_ref_for_session_start(
-                "shepr:opencode".into(),
-                "opencode".into(),
-                shepr_agent::agent::resume::AgentSessionRef::id(session),
-                None,
-                Some("select"),
-            )
-            .expect("managed session should be accepted");
-    }
-
-    assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-    assert!(terminal.managed_agent_interactive_ready());
-    assert_eq!(
-        terminal
-            .persisted_agent_session
-            .as_ref()
-            .map(|session| session.session_ref.value_str()),
-        Some("opencode-new")
-    );
-}
-
-#[test]
 fn opencode_session_ref_without_start_source_does_not_replace_existing() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
@@ -3626,7 +3425,7 @@ fn a_process_exit_observation_alone_does_not_free_the_name() {
 fn a_confirmed_agent_exit_still_frees_the_name_for_reuse() {
     // The other side of `a_process_exit_observation_alone_does_not_free_the_name`:
     // once the agent is actually gone from the pane the name must be
-    // released, so `agent start` can reuse it.
+    // released, so the name can be reused.
     let now = Instant::now();
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);

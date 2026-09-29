@@ -2194,7 +2194,7 @@ impl HeadlessServer {
         // pane printing at least every theme-wait interval postponed the first
         // restored agent indefinitely.
         self.app.sync_pending_agent_resume_deadline(now);
-        changed |= self.app.expire_due_managed_agents(now);
+        changed |= self.app.expire_due_agent_resume_names(now);
         changed |= self
             .app
             .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now));

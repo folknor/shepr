@@ -6,7 +6,6 @@
 pub(crate) mod actions;
 mod agent_resume;
 mod agents;
-pub use crate::limits::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 #[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
@@ -1441,126 +1440,6 @@ mod tests {
         for (_terminal_id, runtime) in runtimes {
             drop(runtime);
         }
-    }
-
-    #[tokio::test]
-    async fn unavailable_agent_start_does_not_mutate_topology() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("agent-start-target");
-        let root = workspace.tabs()[0].root_pane();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-        let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_agent_start_target".into(),
-            method: shepr_api::schema::Method::AgentStart(shepr_api::schema::AgentStartParams {
-                name: "worker".into(),
-                kind: "pi".into(),
-                pane_id,
-                args: Vec::new(),
-                timeout_ms: Some(1_000),
-            }),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
-
-        assert_eq!(response["error"]["code"], "agent_pane_unavailable");
-        assert_eq!(app.state.workspaces[0].tabs()[0].layout().pane_count(), 1);
-        assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
-    }
-
-    #[tokio::test]
-    async fn failed_agent_start_input_rolls_back_and_can_retry() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("agent-start-input-failure");
-        let root = workspace.tabs()[0].root_pane();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-        let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&root]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .set_manual_label("shell".into());
-        let (mut runtime, mut receiver) =
-            shepr_mux::pane::PaneRuntime::test_with_channel_capacity(80, 24, 1);
-        runtime.set_process_probe_result_for_test(Some("sh".into()), None);
-        runtime
-            .try_send_bytes(bytes::Bytes::from_static(b"occupied"))
-            .expect("test precondition");
-        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
-
-        let request = || shepr_api::schema::Request {
-            id: "req_agent_start_input".into(),
-            method: shepr_api::schema::Method::AgentStart(shepr_api::schema::AgentStartParams {
-                name: "worker".into(),
-                kind: "codex".into(),
-                pane_id: pane_id.clone(),
-                args: vec!["resume".into(), "codex-session".into()],
-                timeout_ms: Some(4_000),
-            }),
-        };
-        let response = app.handle_api_request(request());
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(response["error"]["code"], "agent_start_input_failed");
-        assert_eq!(app.state.terminals[&terminal_id].agent_name, None);
-        // A rejected write must not leave a managed launch behind: no phase
-        // that would block renames or prompts, no kind that marks it busy.
-        assert!(!app.state.terminals[&terminal_id].managed_agent_launch_pending());
-        assert_eq!(app.state.terminals[&terminal_id].managed_agent_kind(), None);
-        assert!(!app.state.terminals[&terminal_id].is_agent_terminal());
-        assert!(
-            app.state.terminals[&terminal_id]
-                .persisted_agent_session
-                .is_none()
-        );
-        assert_eq!(
-            app.state.terminals[&terminal_id].manual_label.as_deref(),
-            Some("shell")
-        );
-
-        assert_eq!(
-            receiver.try_recv().expect("test precondition"),
-            bytes::Bytes::from_static(b"occupied")
-        );
-        let retry = app.handle_api_request(request());
-        let retry: serde_json::Value = serde_json::from_str(&retry).expect("test precondition");
-        assert_eq!(retry["result"]["type"], "agent_started");
-        assert_eq!(
-            retry["result"]["agent"]["agent_session"],
-            serde_json::json!({
-                "source": "shepr:codex",
-                "agent": "codex",
-                "kind": "id",
-                "value": "codex-session",
-            })
-        );
-        assert_eq!(
-            app.state.terminals[&terminal_id].agent_name.as_deref(),
-            Some("worker")
-        );
-        let rename = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_agent_rename_pending".into(),
-            method: shepr_api::schema::Method::AgentRename(shepr_api::schema::AgentRenameParams {
-                target: pane_id,
-                name: Some("replacement".into()),
-            }),
-        });
-        let rename: serde_json::Value = serde_json::from_str(&rename).expect("test precondition");
-        assert_eq!(rename["error"]["code"], "agent_launch_pending");
-        assert_eq!(
-            app.state.terminals[&terminal_id].agent_name.as_deref(),
-            Some("worker")
-        );
     }
 
     #[test]

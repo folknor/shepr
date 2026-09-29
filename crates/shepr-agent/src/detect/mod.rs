@@ -8,11 +8,11 @@ pub mod manifest;
 pub use crate::agent::Agent;
 
 mod proc_tree;
+pub use proc_tree::is_pane_shell_process_name;
 pub use proc_tree::{
     ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
     foreground_process_group_id, process_cwd,
 };
-pub use proc_tree::{available_pane_shell, is_pane_shell_process_name};
 
 /// The detected state of a terminal pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -81,10 +81,6 @@ pub struct AgentDetection {
 
 pub fn agent_label(agent: Agent) -> &'static str {
     agent.label()
-}
-
-pub fn interactive_agent_executable(agent: Agent) -> &'static str {
-    agent.executable()
 }
 
 pub fn parse_agent_label(agent: &str) -> Option<Agent> {
@@ -794,7 +790,7 @@ mod tests {
         ];
         assert_eq!(expected.len(), Agent::all().len());
         for (agent, executable) in expected {
-            assert_eq!(interactive_agent_executable(agent), executable);
+            assert_eq!(agent.executable(), executable);
         }
     }
 

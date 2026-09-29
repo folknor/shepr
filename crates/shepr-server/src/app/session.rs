@@ -839,7 +839,6 @@ mod tests {
             cwd: scratch.join("missing-cwd"),
             label: None,
             agent_name: None,
-            managed_agent_kind: None,
             agent_session: None,
             launch_argv: None,
         };

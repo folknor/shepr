@@ -86,46 +86,6 @@ fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
 }
 
 #[test]
-fn managed_agent_snapshot_omits_pending_and_persists_active_ownership() {
-    let mut state = state_with_workspaces(&["managed-snapshot"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
-    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
-        .attached_terminal_id
-        .clone();
-    let now = std::time::Instant::now();
-    state
-        .terminals
-        .get_mut(&terminal_id)
-        .expect("test precondition")
-        .begin_managed_agent(
-            "reviewer".into(),
-            shepr_agent::detect::Agent::Pi,
-            now,
-            std::time::Duration::ZERO,
-            std::time::Duration::from_secs(1),
-        );
-
-    let pending = capture_from_state(&state);
-    let pending_pane = &pending.workspaces[0].tabs[0].panes[&root.raw()];
-    assert_eq!(pending_pane.agent_name, None);
-    assert_eq!(pending_pane.managed_agent_kind, None);
-
-    let terminal = state
-        .terminals
-        .get_mut(&terminal_id)
-        .expect("test precondition");
-    terminal.set_detected_state(
-        Some(shepr_agent::detect::Agent::Pi),
-        shepr_agent::detect::AgentState::Idle,
-    );
-    assert!(terminal.reconcile_managed_agent_at(now, false));
-    let active = capture_from_state(&state);
-    let active_pane = &active.workspaces[0].tabs[0].panes[&root.raw()];
-    assert_eq!(active_pane.agent_name.as_deref(), Some("reviewer"));
-    assert_eq!(active_pane.managed_agent_kind.as_deref(), Some("pi"));
-}
-
-#[test]
 fn round_trip_empty_session() {
     let snap = SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -202,7 +162,6 @@ fn round_trip_full_workspace_snapshot() {
             cwd: PathBuf::from("/home/can/Projects/shepr"),
             label: None,
             agent_name: None,
-            managed_agent_kind: None,
             agent_session: None,
             launch_argv: None,
         },
@@ -213,7 +172,6 @@ fn round_trip_full_workspace_snapshot() {
             cwd: PathBuf::from("/home/can/Projects/website"),
             label: Some("website".into()),
             agent_name: None,
-            managed_agent_kind: None,
             agent_session: None,
             launch_argv: None,
         },
@@ -809,7 +767,15 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         Some(20),
     );
 
+    terminal.set_agent_name("reviewer".into());
+
     let snapshot = capture_from_state(&state);
+    assert_eq!(
+        snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+            .agent_name
+            .as_deref(),
+        Some("reviewer")
+    );
     let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
         .agent_session
         .as_ref()
@@ -897,7 +863,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
             cwd: missing_cwd.clone(),
             label: None,
             agent_name: None,
-            managed_agent_kind: None,
             agent_session: None,
             launch_argv: None,
         },
@@ -908,7 +873,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
             cwd: existing_cwd.clone(),
             label: None,
             agent_name: None,
-            managed_agent_kind: None,
             agent_session: None,
             launch_argv: None,
         },

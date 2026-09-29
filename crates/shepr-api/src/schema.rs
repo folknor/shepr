@@ -281,11 +281,6 @@ define_methods! {
         changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    AgentStart(AgentStartParams) => "agent.start" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     AgentPrompt(AgentPromptParams) => "agent.prompt" {
         client_shell: false, mutates_ui: true, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,

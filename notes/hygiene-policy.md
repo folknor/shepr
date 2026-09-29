@@ -25,15 +25,14 @@ the entry says so.
 
 ---
 
-## HYGP-150 - `shepr agent start` reimplements the server's agent wait on the client
+## HYGP-151 - Renaming an agent while its resume is pending can cost it the name
 
-`src/cli/agent.rs` does its own readiness wait: `send_agent_start_with_retry`
-covers the busy shell and `wait_for_named_agent` has a five-way outcome. It
-polls `PaneGet`, `PaneProcessInfo` and `AgentGet` every
-`AGENT_START_POLL_INTERVAL` for up to the start timeout, sharing nothing with
-`shepr-api`'s `wait_for_agent`. Its timing is injectable (`AgentStartTiming`),
-so it is testable. Open: whether the readiness wait should move behind the
-server's `agent.start`, which is a structural change.
+`shepr-mux/src/terminal/state/names.rs` holds a restored agent's saved name
+through its pending resume and adopts whatever session the resumed agent first
+reports. But renaming the pane while the resume is still pending attaches the
+saved session to the name again, so a resumed agent that then reports a fresh
+session id loses the name. Narrow; make a rename during a pending resume keep
+the adopt-first-session behaviour.
 
 ## HYGP-066 - Clock seam residue
 
