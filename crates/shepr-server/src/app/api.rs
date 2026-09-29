@@ -8,9 +8,8 @@ mod session;
 mod tabs;
 mod workspaces;
 
-use super::App;
+use super::{App, Outcome, RenderDemand};
 use shepr_api::error::{ApiErrorCode, ApiResult};
-use shepr_api::{Outcome, RenderDemand};
 #[cfg(test)]
 use shepr_mux::events::AppEvent;
 

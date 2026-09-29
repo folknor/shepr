@@ -33,7 +33,16 @@ impl Read for ClientStreamReader<'_> {
 
 pub fn write_client_stream(
     stream: &interprocess::local_socket::Stream,
+    data: &[u8],
+) -> std::io::Result<()> {
+    // clock-io-ok: the public entry point supplies the real clock.
+    write_client_stream_with_clock(stream, data, &Instant::now)
+}
+
+fn write_client_stream_with_clock(
+    stream: &interprocess::local_socket::Stream,
     mut data: &[u8],
+    now: &dyn Fn() -> Instant,
 ) -> std::io::Result<()> {
     use std::io;
 
@@ -59,13 +68,13 @@ pub fn write_client_stream(
             "terminal observer stopped receiving output",
         )
     };
-    let mut progress = Instant::now();
+    let mut progress = now();
     while !data.is_empty() {
         match socket.write(data) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(written) => {
                 data = &data[written..];
-                progress = Instant::now();
+                progress = now();
                 continue;
             }
             Err(error)
@@ -75,7 +84,7 @@ pub fn write_client_stream(
                 ) => {}
             Err(error) => return Err(error),
         }
-        let wait_ms = poll_timeout_until(progress + timeout).ok_or_else(timed_out)?;
+        let wait_ms = poll_timeout_until(progress + timeout, now()).ok_or_else(timed_out)?;
         match poll_fd(socket.as_raw_fd(), libc::POLLOUT, wait_ms) {
             Ok(false) => return Err(timed_out()),
             Ok(true) => {}

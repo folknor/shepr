@@ -205,14 +205,33 @@ fn wait_for_server_socket(
     timeout: Duration,
     paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
-    let deadline = std::time::Instant::now() + timeout;
+    wait_for_server_socket_with(
+        socket_path,
+        timeout,
+        paths,
+        // clock-io-ok: the production adapter measures actual socket readiness time.
+        std::time::Instant::now,
+        is_server_listening_at,
+        std::thread::sleep,
+    )
+}
 
-    while std::time::Instant::now() < deadline {
-        if is_server_listening_at(socket_path)? {
+fn wait_for_server_socket_with(
+    socket_path: &Path,
+    timeout: Duration,
+    paths: &shepr_config::AppPaths,
+    mut now: impl FnMut() -> std::time::Instant,
+    mut probe: impl FnMut(&Path) -> io::Result<bool>,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<()> {
+    let deadline = now() + timeout;
+
+    while now() < deadline {
+        if probe(socket_path)? {
             info!(path = %socket_path.display(), "server socket ready");
             return Ok(());
         }
-        std::thread::sleep(SOCKET_POLL_INTERVAL);
+        sleep(SOCKET_POLL_INTERVAL);
     }
 
     Err(io::Error::new(
@@ -417,25 +436,25 @@ mod tests {
 
     #[test]
     fn wait_for_server_socket_succeeds_after_delay() {
+        use std::cell::Cell;
+
         let dir = ScratchDir::new("wait-delay");
         let path = dir.join("s.sock");
-
-        // Spawn a thread that will create the listener after a short delay.
-        let path_clone = path.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            let _listener = UnixListener::bind(&path_clone).expect("test precondition");
-            // Keep the listener alive for a bit.
-            std::thread::sleep(Duration::from_secs(1));
-        });
-
-        // Wait with a generous timeout - should succeed.
-        let result = wait_for_server_socket(
+        let clock = Cell::new(std::time::Instant::now());
+        let probes = Cell::new(0);
+        let result = wait_for_server_socket_with(
             &path,
             Duration::from_secs(2),
             &shepr_config::AppPaths::test_at(dir.path()),
+            || clock.get(),
+            |_| {
+                probes.set(probes.get() + 1);
+                Ok(probes.get() == 2)
+            },
+            |duration| clock.set(clock.get() + duration),
         );
         assert!(result.is_ok());
+        assert_eq!(probes.get(), 2);
     }
 
     #[test]

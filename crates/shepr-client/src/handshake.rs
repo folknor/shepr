@@ -8,6 +8,7 @@ use shepr_protocol::endpoint::EndpointClientHello;
 use shepr_protocol::{ClientMessage, ServerMessage};
 
 use super::{ClientError, shell};
+use crate::limits::Deadline;
 
 /// Time to wait for the server's complete Welcome reply during the handshake.
 /// This is an overall deadline for the frame, not a per-read idle timeout.
@@ -166,9 +167,11 @@ pub(super) fn do_handshake(
     };
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
-    let read_deadline = std::time::Instant::now() + read_timeout;
-    let read_deadline = deadline.map_or(read_deadline, |deadline| deadline.min(read_deadline));
-    let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, read_deadline);
+    let read_deadline = Deadline::after(std::time::Instant::now(), read_timeout);
+    let read_deadline = deadline.map_or(read_deadline, |deadline| {
+        read_deadline.min(Deadline::at(deadline))
+    });
+    let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, read_deadline.instant());
     shepr_protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
     let welcome = shepr_protocol::read_message::<_, ServerMessage>(&mut reader)?;
     set_handshake_recv_timeout(

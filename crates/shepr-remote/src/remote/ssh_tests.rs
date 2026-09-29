@@ -394,18 +394,19 @@ fn an_attempt_deadline_shortens_and_then_refuses_noninteractive_commands() {
         None,
         true,
     );
+    let now = Instant::now();
     assert_eq!(
-        ssh.noninteractive_timeout().expect("no deadline"),
+        ssh.noninteractive_timeout(now).expect("no deadline"),
         NONINTERACTIVE_SSH_COMMAND_TIMEOUT
     );
 
-    ssh.set_attempt_deadline(Some(Instant::now() + Duration::from_secs(2)));
-    let timeout = ssh.noninteractive_timeout().expect("time is left");
-    assert!(timeout <= Duration::from_secs(2), "{timeout:?}");
+    ssh.set_attempt_deadline(Some(now + Duration::from_secs(2)));
+    let timeout = ssh.noninteractive_timeout(now).expect("time is left");
+    assert_eq!(timeout, Duration::from_secs(2));
 
-    ssh.set_attempt_deadline(Some(Instant::now()));
+    ssh.set_attempt_deadline(Some(now));
     let error = ssh
-        .noninteractive_timeout()
+        .noninteractive_timeout(now)
         .expect_err("no command may start past the deadline");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     // Treated as a dropped link: no rediscovery, and a retry rather than attention.

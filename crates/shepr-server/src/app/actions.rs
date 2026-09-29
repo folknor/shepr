@@ -130,7 +130,7 @@ pub(crate) enum TabRemovalCommit {
 pub(crate) struct WorkspaceCreationOutcome {
     pub(crate) workspace_index: usize,
     pub(crate) workspace_id: String,
-    pub(crate) root_pane: Option<PaneId>,
+    pub(crate) root_pane: PaneId,
     pub(crate) focused: bool,
 }
 

@@ -61,6 +61,8 @@ fn read_clipboard_text_bounded_with(
         tracing::warn!(%error, "could not start the clipboard reader; paste skipped");
         return None;
     }
+    // The channel's timed wait is the deadline boundary here; this helper does not read or
+    // compare a clock, so a separate clock seam would duplicate timeout behavior.
     match receiver.recv_timeout(timeout) {
         Ok(text) => text,
         Err(_) => {

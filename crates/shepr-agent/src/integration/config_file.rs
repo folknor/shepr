@@ -3,12 +3,11 @@
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 
 #[cfg(test)]
 mod tests;
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Holds the persistent lock for one user-owned config file.
 pub(super) struct ConfigUpdateLock {
@@ -152,11 +151,15 @@ pub(super) fn write_config(path: &Path, contents: impl AsRef<[u8]>) -> io::Resul
 }
 
 struct Replacement {
-    target: PathBuf,
-    temporary: PathBuf,
+    inner: AtomicReplace,
 }
 
 impl Replacement {
+    #[cfg(test)]
+    fn temporary(&self) -> &Path {
+        self.inner.temporary_path()
+    }
+
     fn prepare(path: &Path, contents: &[u8]) -> io::Result<Self> {
         reject_hard_links(path)?;
         let target = resolve_target(path)?;
@@ -169,55 +172,16 @@ impl Replacement {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
-        let parent = target
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        for _ in 0..128 {
-            let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(
-                ".shepr-config-{}-{sequence}.tmp",
-                std::process::id()
-            ));
-            // Existing configs can contain secrets. Start their staging file private;
-            // the platform writer preserves the original permissions before publication.
-            // New configs retain ordinary create/umask/inherited-ACL defaults.
-            let created = if existing.is_some() {
-                shepr_platform::create_private_file(&temporary)
-            } else {
-                shepr_platform::create_config_temporary(&temporary)
-            };
-            match created {
-                Ok(file) => drop(file),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-            let replacement = Self {
-                target: target.clone(),
-                temporary,
-            };
-            shepr_platform::write_config_temporary(existing, &replacement.temporary, contents)?;
-            return Ok(replacement);
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique config temporary file",
-        ))
+        let inner = AtomicReplace::prepare_with_policy(
+            &target,
+            ".shepr-config",
+            PermissionPolicy::UserConfig { existing },
+            contents,
+        )?;
+        Ok(Self { inner })
     }
 
     fn commit(self) -> io::Result<()> {
-        reject_hard_links(&self.target)?;
-        fs::rename(&self.temporary, &self.target)
-    }
-}
-
-impl Drop for Replacement {
-    fn drop(&mut self) {
-        // After publication the temporary name is absent. Never remove the target.
-        if let Err(error) = fs::remove_file(&self.temporary)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %self.temporary.display(), %error, "failed to remove integration config temporary file");
-        }
+        self.inner.commit_after(reject_hard_links)
     }
 }

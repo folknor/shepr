@@ -216,26 +216,53 @@ fn git_dash_c_valueless_boolean_parameter_means_true() {
 }
 
 #[test]
-fn git_dash_c_valueless_string_parameter_reports_missing_value() {
+fn valueless_tracking_keys_are_reported_and_leave_no_upstream() {
+    // Git refuses to resolve an upstream while a tracking key has no value,
+    // from a config file or from `git -c`, so shepr shows none.
     let env = shepr_test_support::IsolatedEnv::new();
     let root = temp_test_dir("git-config-valueless-string");
     write_fake_tracked_repo(&root);
-    let info = git_worktree_info(&root).expect("test precondition");
-    env.set(
-        shepr_core::env::EnvVar::GitConfigParameters,
-        "'branch.main.remote'= ",
+    let config_path = root.join(".git/config");
+    let config = concat!(
+        "[remote \"origin\"]\n",
+        "\turl = https://example.com/repo.git\n",
+        "\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        "[branch \"main\"]\n",
+        "\tremote = origin\n",
+        "\tmerge = refs/heads/main\n",
     );
-
+    std::fs::write(&config_path, config).expect("test precondition");
+    let info = git_worktree_info(&root).expect("test precondition");
     let mut errors = Vec::new();
-    let _config = read_config_for_status(&info, "main", &mut errors);
+    let (_, tracked, _) = read_config_for_status(&info, "main", &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(tracked.is_some(), "the fixture tracks an upstream");
 
+    std::fs::write(&config_path, format!("{config}\tremote\n")).expect("test precondition");
+    let (_, file_config, _) = read_config_for_status(&info, "main", &mut errors);
+    assert_eq!(file_config, None);
     assert!(
         errors.iter().any(|error| matches!(
             error,
-            crate::git::GitReadError::ConfigEnvironment { message }
-                if message.contains("missing value for 'branch.main.remote'")
+            crate::git::GitReadError::FileRead { message, .. }
+                if message == "missing value for 'branch.main.remote'"
         )),
         "{errors:?}"
+    );
+
+    std::fs::write(&config_path, config).expect("test precondition");
+    env.set(
+        shepr_core::env::EnvVar::GitConfigParameters,
+        "'remote.origin.url'= 'branch.main.merge'='refs/heads/next'",
+    );
+    errors.clear();
+    let (_, command_config, _) = read_config_for_status(&info, "main", &mut errors);
+    assert_eq!(command_config, None);
+    assert_eq!(
+        errors,
+        vec![crate::git::GitReadError::ConfigEnvironment {
+            message: "missing value for 'remote.origin.url'".into()
+        }]
     );
 }
 
@@ -327,7 +354,7 @@ fn ref_storage_reads_only_the_repository_config_file() {
 }
 
 #[test]
-fn git_config_value_distinguishes_missing_key_from_read_failure() {
+fn git_config_value_distinguishes_missing_key_from_read_failure_and_valueless_string() {
     use std::os::unix::fs::symlink;
 
     let _env = shepr_test_support::IsolatedEnv::new();
@@ -347,6 +374,11 @@ fn git_config_value_distinguishes_missing_key_from_read_failure() {
     )
     .expect("an absent file is not a read failure");
     assert_eq!(absent_file, None);
+
+    std::fs::write(&config, "[extensions]\n\trefstorage\n").expect("test precondition");
+    let (valueless, _) = read_repository_format_value(&config, "extensions", "refstorage")
+        .expect("valueless string keys are accepted as empty");
+    assert_eq!(valueless.as_deref(), Some(""));
 
     std::fs::remove_file(&config).expect("test precondition");
     symlink("config", &config).expect("test precondition");

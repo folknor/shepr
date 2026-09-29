@@ -679,8 +679,21 @@ pub type DeadlineReader<'a> = LocalStreamDeadlineReader<'a>;
 
 impl<'a> LocalStreamDeadlineReader<'a> {
     pub fn new(stream: &'a mut LocalStream, deadline: Instant) -> Self {
+        // clock-io-ok: the public entry point supplies the real clock.
+        Self::new_with_clock(stream, deadline, std::sync::Arc::new(Instant::now))
+    }
+
+    fn new_with_clock(
+        stream: &'a mut LocalStream,
+        deadline: Instant,
+        now: std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
+    ) -> Self {
         Self {
-            inner: super::child_io::DeadlineReader::new(LocalStreamReader { stream }, deadline),
+            inner: super::child_io::DeadlineReader::new_with_clock(
+                LocalStreamReader { stream },
+                deadline,
+                now,
+            ),
         }
     }
 }
@@ -972,43 +985,38 @@ mod tests {
     }
 
     #[test]
-    fn deadline_reader_cuts_off_a_trickling_peer() {
+    fn deadline_reader_cuts_off_a_peer_at_the_overall_deadline() {
         use interprocess::local_socket::traits::Listener as _;
         use std::io::Write as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let path = test_socket_path("deadline");
         let listener = bind_local_listener(&path).expect("test precondition");
         let mut client = connect_local_stream(&path).expect("test precondition");
         let mut server = listener.accept().expect("test precondition");
         fs::remove_file(&path).expect("remove the bound socket");
-
-        // One byte every 50 ms: each read finishes well inside any per-read
-        // timeout, so only an overall deadline can end the loop.
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let trickle_stop = std::sync::Arc::clone(&stop);
-        let trickler = std::thread::spawn(move || {
-            while !trickle_stop.load(std::sync::atomic::Ordering::Acquire) {
-                if client.write_all(b"x").is_err() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        });
-
+        client.write_all(b"x").expect("test precondition");
         let started = Instant::now();
-        let mut buf = [0u8; 1024];
-        let result = DeadlineReader::new(&mut server, started + Duration::from_millis(300))
-            .read_exact(&mut buf);
-        let elapsed = started.elapsed();
-        stop.store(true, std::sync::atomic::Ordering::Release);
-        drop(server);
-        trickler.join().expect("test precondition");
+        let deadline = started + Duration::from_millis(300);
+        let clock_reads = std::sync::Arc::new(AtomicUsize::new(0));
+        let clock_reads_for_reader = std::sync::Arc::clone(&clock_reads);
+        let mut buf = [0u8; 2];
+        let result = LocalStreamDeadlineReader::new_with_clock(
+            &mut server,
+            deadline,
+            std::sync::Arc::new(move || {
+                if clock_reads_for_reader.fetch_add(1, Ordering::Relaxed) == 0 {
+                    started
+                } else {
+                    deadline
+                }
+            }),
+        )
+        .read_exact(&mut buf);
 
         let error = result.expect_err("a trickling peer must not complete the read");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "deadline overran: {elapsed:?}"
-        );
+        assert_eq!(buf[0], b'x');
+        assert_eq!(clock_reads.load(Ordering::Relaxed), 2);
     }
 }

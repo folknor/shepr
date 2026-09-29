@@ -72,6 +72,7 @@ pub use locks::{
 };
 pub use locks::{TerminalCoreTryLockError, try_lock_auxiliary, try_lock_terminal_core};
 
+use std::cell::Cell as ClockCell;
 use std::fmt;
 use std::mem;
 use std::sync::{Arc, Mutex};
@@ -83,7 +84,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
 use unicode_width::UnicodeWidthChar;
-use vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb};
+use vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb, Timeout};
 
 pub use coords::Point;
 pub use coords::{AbsRow, ScreenRow, ViewportRow};
@@ -141,9 +142,6 @@ const DEFAULT_FOREGROUND: RgbColor = RgbColor {
     b: 0xff,
 };
 const DEFAULT_BACKGROUND: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
-
-/// alacritty needs two columns to hold a wide character without panicking.
-const MIN_COLUMNS: usize = 2;
 
 /// Scrollback is configured in bytes; alacritty counts lines. Any non-zero
 /// byte budget keeps at least this many lines so tiny budgets still scroll,
@@ -320,7 +318,7 @@ pub enum ClearScreenOutcome {
 
 pub struct Terminal {
     term: Term<Listener>,
-    parser: Processor,
+    parser: Processor<SyncUpdateTimeout>,
     /// Mirror of alacritty's keyboard-mode stack depths; the parser must only
     /// ever drive `term` through a [`CoreHandler`] so it stays exact.
     keyboard_depth: KeyboardStackDepth,
@@ -358,10 +356,48 @@ pub struct Terminal {
     rows: RowOrigin,
 }
 
+/// VTE calls `set_timeout` while parsing BSU, but its default handler reads
+/// the process clock there. The caller sets `now` before each parser advance;
+/// the parser then owns the deadline and the runtime only decides when to tick.
+#[derive(Debug, Default)]
+struct SyncUpdateTimeout {
+    now: ClockCell<Option<Instant>>,
+    deadline: ClockCell<Option<Instant>>,
+    pending: ClockCell<bool>,
+}
+
+impl SyncUpdateTimeout {
+    fn set_now(&self, now: Instant) {
+        self.now.set(Some(now));
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline.get()
+    }
+}
+
+impl Timeout for SyncUpdateTimeout {
+    fn set_timeout(&mut self, duration: std::time::Duration) {
+        self.deadline
+            .set(self.now.get().and_then(|now| now.checked_add(duration)));
+        self.pending.set(true);
+    }
+
+    fn clear_timeout(&mut self) {
+        self.deadline.set(None);
+        self.pending.set(false);
+    }
+
+    fn pending_timeout(&self) -> bool {
+        self.pending.get()
+    }
+}
+
 impl Terminal {
     pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Self {
-        let columns = usize::from(cols).max(MIN_COLUMNS);
-        let screen_lines = usize::from(rows).max(1);
+        let grid = shepr_core::geometry::GridSize::clamped_pane(cols, rows);
+        let columns = usize::from(grid.cols.get());
+        let screen_lines = usize::from(grid.rows.get());
         let history_lines = scrollback_lines(max_scrollback, columns);
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut term = Term::new(
@@ -419,6 +455,13 @@ impl Terminal {
     /// reports are side-band observations of the child's live state; they do
     /// not change parser or emulator state and are collected as they arrive.
     pub fn write(&mut self, bytes: &[u8]) {
+        // clock-io-ok: callers without a read boundary of their own write now.
+        self.write_at(bytes, Instant::now());
+    }
+
+    /// Feed child output using the caller's clock for synchronized-update
+    /// deadlines. The ordinary `write` entry point supplies the current time.
+    pub fn write_at(&mut self, bytes: &[u8], now: Instant) {
         if bytes.is_empty() {
             return;
         }
@@ -427,17 +470,18 @@ impl Terminal {
         for scanned in events {
             let end = scanned.end.min(bytes.len());
             if end > written {
-                self.advance(&bytes[written..end]);
+                self.advance(&bytes[written..end], now);
                 written = end;
             }
-            self.apply_scan_event(scanned.event);
+            self.apply_scan_event(scanned.event, now);
         }
         if written < bytes.len() {
-            self.advance(&bytes[written..]);
+            self.advance(&bytes[written..], now);
         }
     }
 
-    fn advance(&mut self, bytes: &[u8]) {
+    fn advance(&mut self, bytes: &[u8], now: Instant) {
+        self.parser.sync_timeout().set_now(now);
         self.with_handler(|handler, parser| parser.advance(handler, bytes));
     }
 
@@ -446,7 +490,7 @@ impl Terminal {
     /// row tracker and queued events are settled together.
     fn with_handler<R>(
         &mut self,
-        operation: impl FnOnce(&mut CoreHandler<'_, Listener>, &mut Processor) -> R,
+        operation: impl FnOnce(&mut CoreHandler<'_, Listener>, &mut Processor<SyncUpdateTimeout>) -> R,
     ) -> R {
         let Self {
             term,
@@ -491,9 +535,9 @@ impl Terminal {
     /// path, before rendering or before parsing later child output. Returns
     /// whether anything was flushed.
     ///
-    /// vte owns the frame deadline; supplying `now` here keeps expiry checks
-    /// runtime-driven and lets tests exercise either side of that deadline
-    /// without sleeping or replacing vte's timeout handler.
+    /// VTE's shepr-owned timeout stores the frame deadline; supplying `now`
+    /// here keeps expiry checks runtime-driven and lets tests exercise either
+    /// side of that deadline without sleeping.
     ///
     /// The frame's effects (replies, clipboard writes, title and colour
     /// changes) stay queued like any other write's, for whoever collects
@@ -502,9 +546,10 @@ impl Terminal {
         let expired = self
             .parser
             .sync_timeout()
-            .sync_timeout()
+            .deadline()
             .is_some_and(|deadline| now >= deadline);
         if expired {
+            self.parser.sync_timeout().set_now(now);
             self.with_handler(|handler, parser| parser.stop_sync(handler));
         }
         expired
@@ -512,7 +557,7 @@ impl Terminal {
 
     /// When the pending synchronized update will be force-ended, if one is active.
     pub fn synchronized_output_deadline(&self) -> Option<Instant> {
-        self.parser.sync_timeout().sync_timeout()
+        self.parser.sync_timeout().deadline()
     }
 
     pub fn take_pty_responses(&mut self) -> Vec<PtyResponse> {
@@ -534,7 +579,7 @@ impl Terminal {
         self.responses.push(PtyResponse::Bytes(bytes));
     }
 
-    fn apply_scan_event(&mut self, event: ScanEvent) {
+    fn apply_scan_event(&mut self, event: ScanEvent, now: Instant) {
         match event {
             ScanEvent::ColorSchemeQuery => {
                 if let Some(scheme) = self.color_scheme {
@@ -559,7 +604,7 @@ impl Terminal {
             // The parser has just consumed (and ignored) `CSI ? 3 J`; feed the
             // ED3 spelling it does dispatch. Going through the parser keeps
             // the erase in byte order even inside a synchronized update.
-            ScanEvent::EraseScrollback => self.advance(b"\x1b[3J"),
+            ScanEvent::EraseScrollback => self.advance(b"\x1b[3J", now),
             // Feed a spelling vte dispatches rather than updating adapter
             // state here. During synchronized output the parser buffers these
             // bytes and replays them in order with the surrounding frame.
@@ -569,17 +614,19 @@ impl Terminal {
                     ModifyOtherKeysLevel::ExceptWellDefined => b"\x1b[>4;1m".as_slice(),
                     ModifyOtherKeysLevel::All => b"\x1b[>4;2m".as_slice(),
                 };
-                self.advance(sequence);
+                self.advance(sequence, now);
             }
         }
     }
 
     fn push_in_band_size_report(&mut self) {
-        if let Some(report) =
-            handler::in_band_size_report(self.term.screen_lines(), self.term.columns(), self.cell)
-        {
+        if let Some(report) = handler::in_band_size_report(self.current_geometry()) {
             self.push_bytes(report.into_bytes());
         }
+    }
+
+    fn current_geometry(&self) -> shepr_core::geometry::PaneGeometry {
+        handler::geometry_for_terminal(self.term.columns(), self.term.screen_lines(), self.cell)
     }
 
     fn drain_events(&mut self) {
@@ -648,11 +695,12 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, geometry: shepr_core::geometry::PaneGeometry) {
+        let geometry = geometry.clamped();
         let cols = geometry.cols();
         let rows = geometry.rows();
         let cell = geometry.cell;
-        let columns = usize::from(cols).max(MIN_COLUMNS);
-        let screen_lines = usize::from(rows).max(1);
+        let columns = usize::from(cols);
+        let screen_lines = usize::from(rows);
         let columns_changed = columns != self.term.columns();
         let lines_changed = screen_lines != self.term.screen_lines();
         let geometry_changed = columns_changed || lines_changed || cell != self.cell;
@@ -958,15 +1006,15 @@ impl Terminal {
     }
 
     pub fn width_px(&self) -> u32 {
-        u32::try_from(self.term.columns())
-            .unwrap_or(u32::MAX)
-            .saturating_mul(self.cell.map_or(0, |cell| cell.width.get()))
+        self.current_geometry()
+            .text_area_px()
+            .map_or(0, |(width, _)| u32::from(width))
     }
 
     pub fn height_px(&self) -> u32 {
-        u32::try_from(self.term.screen_lines())
-            .unwrap_or(u32::MAX)
-            .saturating_mul(self.cell.map_or(0, |cell| cell.height.get()))
+        self.current_geometry()
+            .text_area_px()
+            .map_or(0, |(_, height)| u32::from(height))
     }
 }
 

@@ -117,13 +117,16 @@ fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
 #[test]
 fn direct_notices_keep_only_the_most_recent_bounded_history() {
     let mut notices = std::collections::VecDeque::new();
-    for index in 0..70 {
+    for index in 0..(crate::limits::MAX_NOTICES + 6) {
         remember_direct_notice(&mut notices, index.to_string());
     }
 
-    assert_eq!(notices.len(), 64);
+    assert_eq!(notices.len(), crate::limits::MAX_NOTICES);
     assert_eq!(notices.front().map(String::as_str), Some("6"));
-    assert_eq!(notices.back().map(String::as_str), Some("69"));
+    assert_eq!(
+        notices.back().cloned(),
+        Some((crate::limits::MAX_NOTICES + 5).to_string())
+    );
 }
 
 #[test]

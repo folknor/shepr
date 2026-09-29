@@ -83,13 +83,13 @@ impl SubmissionState {
         Arc::new(Mutex::new(Self::Queued))
     }
 
-    pub(crate) fn start(&mut self, text_empty: bool, delay: Duration) -> bool {
+    pub(crate) fn start(&mut self, now: Instant, text_empty: bool, delay: Duration) -> bool {
         if *self != Self::Queued {
             return false;
         }
         *self = if text_empty {
             Self::WaitingForEnter {
-                deadline: Instant::now() + delay,
+                deadline: now + delay,
                 text_written: false,
                 cancelled: false,
             }
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn cancellation_before_first_text_byte_withdraws_the_whole_submission() {
         let mut state = SubmissionState::Queued;
-        assert!(state.start(false, Duration::ZERO));
+        assert!(state.start(Instant::now(), false, Duration::ZERO));
 
         assert_eq!(state.cancel(), SubmissionCancelOutcome::Withdrawn);
         assert!(!state.can_write_first_byte(SubmissionPart::Text));
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn cancellation_after_text_starts_finishes_text_without_enter() {
         let mut state = SubmissionState::Queued;
-        assert!(state.start(false, Duration::ZERO));
+        assert!(state.start(Instant::now(), false, Duration::ZERO));
         assert!(state.can_write_first_byte(SubmissionPart::Text));
         state.first_byte_written(SubmissionPart::Text);
 
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn cancellation_before_enter_starts_withdraws_it_but_started_enter_finishes() {
         let mut state = SubmissionState::Queued;
-        assert!(state.start(false, Duration::ZERO));
+        assert!(state.start(Instant::now(), false, Duration::ZERO));
         state.first_byte_written(SubmissionPart::Text);
         assert!(state.text_finished(Instant::now()));
         assert_eq!(
@@ -357,7 +357,7 @@ mod tests {
         assert!(state.should_withdraw());
 
         let mut state = SubmissionState::Queued;
-        assert!(state.start(false, Duration::ZERO));
+        assert!(state.start(Instant::now(), false, Duration::ZERO));
         state.first_byte_written(SubmissionPart::Text);
         assert!(state.text_finished(Instant::now()));
         assert_eq!(

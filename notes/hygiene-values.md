@@ -283,28 +283,6 @@ with no log line, so a copy from a pane that silently does nothing cannot be
 diagnosed. A rate-limited log with the byte count (never the content) is the
 fix.
 
-## HYGV-050 - Minimum grid size is clamped at three layers with three different minimums
-
-Reported by the vt/pty hunter.
-
-`shepr-vt` clamps to 2 columns and 1 row, `shepr-mux` to 4 columns and 2 rows,
-and `shepr-core`'s `GridSize::clamped` to 1 and 1. Three owners of "how small may
-a terminal be", none referencing the others.
-
-## HYGV-051 - Pixel geometry (`cols * cell_width`) is computed four times with three overflow policies
-
-Reported by the vt/pty hunter.
-
-| site | arithmetic |
-|---|---|
-| `crates/shepr-pty/src/fd.rs::resize_pty_fd` (TIOCSWINSZ) | clamped to `u16` |
-| `shepr-vt`'s `handler.rs::in_band_size_report` and `text_area_pixels_report` | `u64` |
-| `Terminal::width_px` / `height_px` | saturating `u32` |
-
-For a pane over 65535 px the child's TIOCGWINSZ and its `CSI 14 t` answer already
-disagree. Fix: a `PaneGeometry::text_area_px()` in `shepr-core` that every site
-calls.
-
 ## HYGV-072 - Three boolean-from-string parsers, no owner, and one is an incomplete implementation of an external grammar
 
 **Decision (partial):** the `env_bool()` half is piece 1 (the `shepr-core`

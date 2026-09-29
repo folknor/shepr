@@ -1,6 +1,7 @@
 use std::{
     io::{self, Read},
     os::fd::{AsRawFd, RawFd},
+    sync::Arc,
     time::Instant,
 };
 
@@ -89,17 +90,26 @@ pub fn poll_fd_readable(fd: RawFd, timeout_ms: i32) -> std::io::Result<bool> {
 pub(super) struct DeadlineReader<R> {
     inner: R,
     deadline: Instant,
+    now: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 
 impl<R> DeadlineReader<R> {
-    pub(super) fn new(inner: R, deadline: Instant) -> Self {
-        Self { inner, deadline }
+    pub(super) fn new_with_clock(
+        inner: R,
+        deadline: Instant,
+        now: Arc<dyn Fn() -> Instant + Send + Sync>,
+    ) -> Self {
+        Self {
+            inner,
+            deadline,
+            now,
+        }
     }
 }
 
 impl<R: Read + AsRawFd> Read for DeadlineReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let wait_ms = poll_timeout_until(self.deadline)
+        let wait_ms = poll_timeout_until(self.deadline, (self.now)())
             .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
         if !poll_fd_readable(self.inner.as_raw_fd(), wait_ms)? {
             return Err(io::Error::from(io::ErrorKind::TimedOut));
@@ -111,8 +121,8 @@ impl<R: Read + AsRawFd> Read for DeadlineReader<R> {
 /// Milliseconds left until `deadline` as a poll timeout, at least 1 so a
 /// wait that is nearly due still sleeps instead of spinning. `None` once the
 /// deadline has passed.
-pub(super) fn poll_timeout_until(deadline: Instant) -> Option<i32> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
+pub(super) fn poll_timeout_until(deadline: Instant, now: Instant) -> Option<i32> {
+    let remaining = deadline.saturating_duration_since(now);
     if remaining.is_zero() {
         return None;
     }
@@ -158,11 +168,25 @@ pub(crate) fn read_limited_reader(
 
 #[cfg(test)]
 mod tests {
-    use super::ChildExitReason;
+    use super::{ChildExitReason, poll_timeout_until};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn reader_failure_checkpoint_policy_distinguishes_a_broken_core() {
         assert!(ChildExitReason::ReaderIoFailed.requires_session_checkpoint());
         assert!(!ChildExitReason::ReaderPanicked.requires_session_checkpoint());
+    }
+
+    #[test]
+    fn poll_timeout_uses_the_supplied_clock_at_the_deadline() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(300);
+
+        assert_eq!(poll_timeout_until(deadline, start), Some(300));
+        assert_eq!(poll_timeout_until(deadline, deadline), None);
+        assert_eq!(
+            poll_timeout_until(deadline, deadline + Duration::from_secs(1)),
+            None
+        );
     }
 }

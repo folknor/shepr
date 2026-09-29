@@ -18,6 +18,8 @@ use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 
 use super::random::unpredictable_token;
 
+type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 /// Resolves the SSH agent socket inherited by this process under shepr's
 /// environment policy.
 ///
@@ -33,6 +35,7 @@ pub struct SshAgentRegistry(Arc<SharedState>);
 
 struct SharedState {
     state: Mutex<State>,
+    now: MonotonicClock,
     /// Serializes symlink updates without holding the attachment bookkeeping
     /// lock through socket probes and filesystem operations.
     publisher: Mutex<()>,
@@ -129,6 +132,15 @@ fn live_socket(path: &Path) -> bool {
 
 impl SshAgentRegistry {
     pub fn new(path: PathBuf, inherited: Option<PathBuf>) -> io::Result<Self> {
+        // clock-io-ok: the public entry point supplies the real clock.
+        Self::new_with_clock(path, inherited, Arc::new(Instant::now))
+    }
+
+    fn new_with_clock(
+        path: PathBuf,
+        inherited: Option<PathBuf>,
+        now: MonotonicClock,
+    ) -> io::Result<Self> {
         sweep_stale_temporary_links(&path);
         let inherited = inherited.filter(|path| !path.as_os_str().is_empty());
         let managed = inherited.is_some()
@@ -149,13 +161,14 @@ impl SshAgentRegistry {
         };
         if managed {
             // Initial publication runs before the state is shared with callers.
-            state.last_probe = Some(Instant::now());
+            state.last_probe = Some(now());
             let mut snapshot = state.publication_snapshot();
             snapshot.publish()?;
             state.identity = snapshot.identity;
         }
         Ok(Self(Arc::new(SharedState {
             state: Mutex::new(state),
+            now,
             publisher: Mutex::new(()),
         })))
     }
@@ -194,7 +207,7 @@ impl SshAgentRegistry {
             state.next_id += 1;
             state.agents.push((id, path));
             state.revision = state.revision.wrapping_add(1);
-            state.last_probe = Some(Instant::now());
+            state.last_probe = Some((self.0.now)());
             id
         };
         if let Err(error) = self.0.publish_latest() {
@@ -448,7 +461,7 @@ impl Drop for State {
 
 impl SshAgentLease {
     pub fn refresh(&self) -> io::Result<()> {
-        self.refresh_at(Instant::now())
+        self.refresh_at((self.registry.now)())
     }
 
     fn refresh_at(&self, now: Instant) -> io::Result<()> {
@@ -483,7 +496,7 @@ impl Drop for SshAgentLease {
             state.agents.retain(|(id, _)| *id != self.id);
             if state.agents.len() != previous_len {
                 state.revision = state.revision.wrapping_add(1);
-                state.last_probe = Some(Instant::now());
+                state.last_probe = Some((self.registry.now)());
                 true
             } else {
                 false
@@ -643,6 +656,9 @@ mod tests {
         let registering = registry.clone();
         let registration = std::thread::spawn(move || registering.register(forwarded));
 
+        // This checks that another OS thread releases the state mutex before
+        // blocking on publication. Yielding and the wall bound guard the
+        // scheduler and lock transition, not application deadline policy.
         let deadline = Instant::now() + Duration::from_secs(2);
         let registered = loop {
             match registry.0.state.try_lock() {

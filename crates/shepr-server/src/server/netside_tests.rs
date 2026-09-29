@@ -118,7 +118,7 @@ fn begin_activation(
         serial,
         std::time::Instant::now(),
     )
-    .and_then(|activation| activation.start(endpoints))
+    .and_then(|activation| activation.start_at(endpoints, std::time::Instant::now()))
     .expect("test precondition")
 }
 
@@ -203,6 +203,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         CapturingEndpointTransport(Arc::clone(&target_sent)),
         TARGET_GENERATION,
         false,
+        std::time::Instant::now(),
     );
     let mut activation = begin_activation(&shell, &mut endpoints, &target_id, 41);
 
@@ -267,13 +268,14 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         }
     };
     assert_eq!(
-        activation.receive_response_for_boot(
+        activation.receive_response_for_boot_at(
             &ClientEndpointId::Local,
             SOURCE_GENERATION,
             &source_release_boot_id,
             &source_release_request_id,
             &source_release_data,
             &mut endpoints,
+            Instant::now(),
         ),
         SurfaceActivationProgress::Pending
     );
@@ -301,13 +303,14 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         panic!("expected target activation acknowledgement");
     };
     assert_eq!(
-        activation.receive_response_for_boot(
+        activation.receive_response_for_boot_at(
             &target_id,
             TARGET_GENERATION,
             &boot_id,
             &request_id,
             &data,
-            &mut endpoints
+            &mut endpoints,
+            Instant::now(),
         ),
         SurfaceActivationProgress::Pending
     );
@@ -329,7 +332,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     );
 
     assert!(matches!(
-        activation.complete(&mut shell, &mut endpoints),
+        activation.complete_at(&mut shell, &mut endpoints, Instant::now()),
         Ok(shepr_client::endpoint::ActivationCompletion::AwaitingPresentationSync {
             endpoint,
             ..
@@ -382,13 +385,14 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         }
     };
     assert_eq!(
-        activation.receive_response_for_boot(
+        activation.receive_response_for_boot_at(
             &target_id,
             TARGET_GENERATION,
             &sync_boot_id,
             &sync_request_id,
             &sync_data,
             &mut endpoints,
+            Instant::now(),
         ),
         SurfaceActivationProgress::Pending
     );
@@ -421,7 +425,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         SurfaceActivationProgress::Ready
     );
     assert_eq!(
-        activation.complete(&mut shell, &mut endpoints),
+        activation.complete_at(&mut shell, &mut endpoints, Instant::now()),
         Ok(shepr_client::endpoint::ActivationCompletion::AwaitingPresentationEffects)
     );
     let effects_token = target_sent
@@ -470,7 +474,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     assert!(replayed_mouse);
     assert!(replayed_keyboard);
     assert_eq!(
-        activation.complete(&mut shell, &mut endpoints),
+        activation.complete_at(&mut shell, &mut endpoints, Instant::now()),
         Ok(shepr_client::endpoint::ActivationCompletion::Activated)
     );
     endpoints.unfreeze_input();
@@ -522,13 +526,14 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             // straight to activating Local, so Local never waits on this
             // remote acknowledgement: the activation reports it as stale.
             assert_eq!(
-                returning.receive_response_for_boot(
+                returning.receive_response_for_boot_at(
                     &target_id,
                     TARGET_GENERATION,
                     &boot_id,
                     &request_id,
                     &data,
                     &mut endpoints,
+                    Instant::now(),
                 ),
                 SurfaceActivationProgress::Stale
             );

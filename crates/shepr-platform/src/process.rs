@@ -138,7 +138,15 @@ fn pidfd_probe_error_means_unreaped(error: &std::io::Error) -> bool {
 /// Wait until every handle's process has exited, or `timeout` passes.
 /// Returns whether they all exited.
 pub fn wait_for_process_exits(handles: &[&ProcessHandle], timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    // clock-io-ok: the public entry point supplies the real clock.
+    wait_for_process_exits_with_clock(handles, Instant::now() + timeout, &Instant::now)
+}
+
+fn wait_for_process_exits_with_clock(
+    handles: &[&ProcessHandle],
+    deadline: Instant,
+    now: &dyn Fn() -> Instant,
+) -> bool {
     loop {
         let pending: Vec<&ProcessHandle> = handles
             .iter()
@@ -148,7 +156,7 @@ pub fn wait_for_process_exits(handles: &[&ProcessHandle], timeout: Duration) -> 
         if pending.is_empty() {
             return true;
         }
-        let Some(wait_ms) = poll_timeout_until(deadline) else {
+        let Some(wait_ms) = poll_timeout_until(deadline, now()) else {
             return false;
         };
         let mut descriptors: Vec<libc::pollfd> = pending

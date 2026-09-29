@@ -521,8 +521,9 @@ fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
 
 #[test]
 fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
-    let mut terminal = shepr_vt::Terminal::new(2, 3, 200);
-    let word = "界".repeat(66);
+    // Four columns, the pane minimum: two wide glyphs per row, 66 rows.
+    let mut terminal = shepr_vt::Terminal::new(4, 3, 200);
+    let word = "界".repeat(132);
     terminal.write(word.as_bytes());
     let pane = PaneTerminal::new(terminal);
     let text_match = pane
@@ -549,7 +550,7 @@ fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
         ),
         Some(TerminalTextPoint {
             row: text_match.end.row,
-            col: 0,
+            col: 2,
         })
     );
 }
@@ -830,10 +831,12 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
+    let start = Instant::now();
 
-    let begin = pane.process_pty_bytes(
+    let begin = pane.process_pty_bytes_at(
         pane_id,
         b"\x1b[?2026h\x1b]52;c;aGk=\x07\x1b]2;framed\x07\x1b[6n",
+        start,
     );
     assert!(begin.terminal_responses.is_empty());
     assert!(begin.clipboard_writes.is_empty());
@@ -842,6 +845,7 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
         .terminal
         .synchronized_output_deadline()
         .expect("test precondition");
+    assert_eq!(deadline, start + Duration::from_millis(150));
     assert!(pane.synchronized_output_active());
     assert_eq!(pane.synchronized_output_state(), Some((true, 1)));
     let backend = ratatui::backend::TestBackend::new(20, 5);
@@ -2272,11 +2276,11 @@ fn resize_returns_in_band_size_report_response() {
         .expect("test precondition");
     let pane = PaneTerminal::new(terminal);
 
-    let responses = pane.resize(shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18));
+    let responses = pane.resize(shepr_core::geometry::PaneGeometry::new(100, 40, 1_000, 20));
 
     assert_eq!(
         responses,
-        vec![Bytes::from_static(b"\x1B[48;40;100;720;900t")]
+        vec![Bytes::from_static(b"\x1B[48;40;100;800;65535t")]
     );
 }
 

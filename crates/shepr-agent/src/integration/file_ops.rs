@@ -1,9 +1,8 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs;
+use std::io;
+use std::path::Path;
 
-static NEXT_ASSET_TEMP: AtomicU64 = AtomicU64::new(0);
+use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 
 pub(crate) fn remove_file_if_exists(path: &Path) -> io::Result<bool> {
     match fs::remove_file(path) {
@@ -75,65 +74,19 @@ pub(crate) fn write_managed_asset(
     contents: &[u8],
     executable: bool,
 ) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::other(format!("{} has no file name", path.display())))?
         .to_string_lossy()
         .into_owned();
 
-    for _ in 0..128 {
-        let sequence = NEXT_ASSET_TEMP.fetch_add(1, Ordering::Relaxed);
-        let temporary: PathBuf = parent.join(format!(
-            ".{name}.shepr-{}-{sequence}.tmp",
-            std::process::id()
-        ));
-        let mut file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
-            Ok(file) => file,
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
-        };
-        let staged = file
-            .write_all(contents)
-            .and_then(|()| file.sync_all())
-            .and_then(|()| {
-                if executable {
-                    make_executable(&temporary)
-                } else {
-                    Ok(())
-                }
-            });
-        drop(file);
-        let published = staged.and_then(|()| fs::rename(&temporary, path));
-        if let Err(err) = published {
-            // The publication error is what the caller acts on; a temporary
-            // that cannot be removed is a stray file next to the asset, which
-            // an operator should hear about but which must not mask it.
-            if let Err(cleanup) = remove_file_if_exists(&temporary) {
-                tracing::warn!(
-                    path = %temporary.display(),
-                    error = %cleanup,
-                    "failed to remove managed asset temporary file"
-                );
-            }
-            return Err(err);
-        }
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        format!(
-            "could not allocate a unique temporary file next to {}",
-            path.display()
-        ),
-    ))
+    let replacement = AtomicReplace::prepare_with_policy(
+        path,
+        &format!(".{name}.shepr"),
+        PermissionPolicy::ManagedAsset { executable },
+        contents,
+    )?;
+    replacement.commit()
 }
 
 #[cfg(test)]

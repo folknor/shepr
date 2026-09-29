@@ -44,9 +44,6 @@ pub struct TerminalDirtyPatchSnapshot {
 // PaneRuntime - PTY, parser, channels, background tasks
 // ---------------------------------------------------------------------------
 
-const MIN_PANE_ROWS: u16 = 2;
-const MIN_PANE_COLS: u16 = 4;
-
 /// Owns the pane child while its watcher awaits the pidfd. If the watcher is
 /// dropped before it reaps (the runtime shutting down while the child still
 /// runs), the child is handed to a detached thread that waits for it, so it
@@ -132,13 +129,6 @@ async fn wait_for_child_exit_blocking(
     tokio::task::spawn_blocking(move || child.wait())
         .await
         .map_err(std::io::Error::other)?
-}
-
-/// The smallest geometry a pane's PTY and emulator ever get. Spawn and resize
-/// both go through this so the child never sees a 0-row or 0-column PTY and
-/// the PTY and the emulator always agree on the size.
-fn clamp_pane_size(rows: u16, cols: u16) -> shepr_core::geometry::GridSize {
-    shepr_core::geometry::GridSize::clamped(cols.max(MIN_PANE_COLS), rows.max(MIN_PANE_ROWS))
 }
 
 /// The render a pane needs once a synchronized update (mode 2026) that never
@@ -288,13 +278,13 @@ impl PaneOutputWriter {
 impl PaneOutputWrite<'_> {
     /// Process `bytes` as the child's output and land the write.
     pub fn write(self, bytes: &[u8]) {
-        let _ = self.process(bytes);
+        let _ = self.process(bytes, std::time::Instant::now());
     }
 
-    fn process(self, bytes: &[u8]) -> ProcessBytesResult {
+    fn process(self, bytes: &[u8], now: std::time::Instant) -> ProcessBytesResult {
         self.writer
             .terminal
-            .process_pty_bytes(self.writer.pane_id, bytes)
+            .process_pty_bytes_at(self.writer.pane_id, bytes, now)
     }
 }
 
@@ -811,7 +801,7 @@ impl PaneRuntime {
         launch_purpose: LaunchPurpose,
     ) -> std::io::Result<Self> {
         let teardown_tracker = Arc::clone(pane_teardowns);
-        let size = clamp_pane_size(rows, cols);
+        let size = shepr_core::geometry::GridSize::clamped_pane(cols, rows);
         let rows = size.rows.get();
         let cols = size.cols.get();
         shepr_platform::logging::pane_spawn_started(
@@ -887,7 +877,7 @@ impl PaneRuntime {
                 let shell_pid = read_effects.child_liveness.pid();
                 // Ticks an expired synchronized update first, then parses; the
                 // content write lock is released when this returns.
-                let mut result = write.process(bytes);
+                let mut result = write.process(bytes, std::time::Instant::now());
                 if result.core_poisoned {
                     // The actor ends the loop and reports the pane dead.
                     return PtyReadResult {
@@ -1430,10 +1420,7 @@ impl PaneRuntime {
 
     /// Resize if the dimensions actually changed.
     pub fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) {
-        let size = shepr_core::geometry::PaneGeometry {
-            grid: clamp_pane_size(geometry.rows(), geometry.cols()),
-            cell: geometry.cell,
-        };
+        let size = geometry.clamped();
         if self.current_size.get() == size {
             return;
         }
@@ -1780,11 +1767,10 @@ impl PaneRuntime {
     }
 
     pub fn pixel_size(&self) -> Option<(u32, u32)> {
-        let size = self.current_size.get();
-        let cell = size.cell?;
-        let width = u32::from(size.cols()).checked_mul(cell.width.get())?;
-        let height = u32::from(size.rows()).checked_mul(cell.height.get())?;
-        Some((width, height))
+        self.current_size
+            .get()
+            .text_area_px()
+            .map(|(width, height)| (u32::from(width), u32::from(height)))
     }
 
     pub fn encode_alternate_scroll(
@@ -2433,26 +2419,6 @@ mod tests {
         );
         runtime.test_process_pty_bytes(b"\x1b[?1049halt frame");
         assert_eq!(runtime.snapshot_history(), None);
-    }
-
-    #[test]
-    fn pane_size_clamp_never_yields_an_empty_pty() {
-        assert_eq!(
-            clamp_pane_size(0, 0),
-            shepr_core::geometry::GridSize::clamped(MIN_PANE_COLS, MIN_PANE_ROWS)
-        );
-        assert_eq!(
-            clamp_pane_size(1, 80),
-            shepr_core::geometry::GridSize::clamped(80, MIN_PANE_ROWS)
-        );
-        assert_eq!(
-            clamp_pane_size(24, 3),
-            shepr_core::geometry::GridSize::clamped(MIN_PANE_COLS, 24)
-        );
-        assert_eq!(
-            clamp_pane_size(24, 80),
-            shepr_core::geometry::GridSize::clamped(80, 24)
-        );
     }
 
     #[test]

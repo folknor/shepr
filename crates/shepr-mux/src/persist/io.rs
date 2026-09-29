@@ -29,9 +29,10 @@ pub(super) fn backup_directory(path: &Path) -> PathBuf {
     path.with_file_name(BACKUP_DIRECTORY_NAME)
 }
 
-// Bound restore input and files this build writes. Saves trim the oldest
-// scrollback to stay under it (`serialize_history`), so a file over it was not
-// written by this build and restore refuses it.
+// This is the session-history writer's file budget and restore uses the same
+// bound. `serialize_history` trims pane text to it; if the workspace/tab shape
+// alone is larger, it writes a compact history with no pane entries. The
+// fingerprint in that compact form is a fixed 64-character SHA-256 digest.
 const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;
 
 fn ensure_history_size(size: usize) -> std::io::Result<()> {
@@ -259,13 +260,15 @@ pub(super) struct SerializedHistory {
     pub(super) trimmed: Option<HistoryTrim>,
 }
 
-/// The oldest scrollback `serialize_history` left out of an oversized history.
+/// What `serialize_history` left out of an oversized history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HistoryTrim {
     /// Panes that lost lines, including any that kept none.
     pub(super) panes: usize,
     /// Serialized bytes of pane history left out.
     pub(super) dropped_bytes: usize,
+    /// Whether oversized workspace/tab structure had to be omitted.
+    pub(super) structure_dropped: bool,
 }
 
 /// Serializes the history, trimming the oldest scrollback lines when the
@@ -316,18 +319,16 @@ fn serialize_history_within(
     let room = json
         .len()
         .checked_sub(content)
-        .and_then(|structure| cap.checked_sub(structure))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "session history structure alone exceeds the file cap",
-            )
-        })?;
+        .and_then(|structure| cap.checked_sub(structure));
+    let Some(room) = room else {
+        return compact_history_without_workspace_shape(history, cap, content);
+    };
     let share = fair_share(sizes, room);
 
     let mut trim = HistoryTrim {
         panes: 0,
         dropped_bytes: 0,
+        structure_dropped: false,
     };
     let mut workspaces = Vec::with_capacity(history.workspaces.len());
     for workspace in &history.workspaces {
@@ -359,11 +360,42 @@ fn serialize_history_within(
         workspaces,
     })?;
     if json.len() > cap {
+        return compact_history_without_workspace_shape(history, cap, content);
+    }
+    Ok(SerializedHistory {
+        json,
+        trimmed: Some(trim),
+    })
+}
+
+fn compact_history_without_workspace_shape(
+    history: &SessionHistorySnapshot,
+    cap: usize,
+    dropped_bytes: usize,
+) -> std::io::Result<SerializedHistory> {
+    let compact = SessionHistorySnapshot {
+        version: history.version,
+        layout_fingerprint: history.layout_fingerprint.clone(),
+        workspaces: Vec::new(),
+    };
+    let json = serde_json::to_string_pretty(&compact)?;
+    if json.len() > cap {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("trimmed session history still exceeds {cap} bytes"),
+            format!("minimal session history exceeds {cap} bytes"),
         ));
     }
+    let trim = HistoryTrim {
+        panes: history
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| tab.panes.values())
+            .filter(|pane| !pane.ansi.is_empty())
+            .count(),
+        dropped_bytes,
+        structure_dropped: true,
+    };
     Ok(SerializedHistory {
         json,
         trimmed: Some(trim),
@@ -553,15 +585,45 @@ mod tests {
         assert!(load_history(&lease).is_none());
     }
 
-    /// The history limit is inclusive, and a refusal is an `InvalidData`
-    /// error. Saves trim to stay under it, so only restore meets a file over
-    /// it.
+    /// The reader admits the limit itself and refuses one byte more. The
+    /// writer serializes and trims to this same file-size budget.
     #[test]
     fn history_size_limit_admits_the_limit_and_refuses_one_byte_more() {
         ensure_history_size(MAX_SESSION_HISTORY_FILE_BYTES).expect("the limit itself is allowed");
         let error = ensure_history_size(MAX_SESSION_HISTORY_FILE_BYTES + 1)
             .expect_err("one byte over is refused");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn history_with_oversized_workspace_shape_is_saved_without_failing() {
+        let mut history = history_with_panes(&[(0, "kept only when the shape fits\r\n")]);
+        history
+            .workspaces
+            .extend((0..40).map(|_| WorkspaceHistorySnapshot { tabs: Vec::new() }));
+        let compact = SessionHistorySnapshot {
+            version: history.version,
+            layout_fingerprint: history.layout_fingerprint.clone(),
+            workspaces: Vec::new(),
+        };
+        let compact_json = serde_json::to_string_pretty(&compact).expect("serialize");
+        let full = serde_json::to_string_pretty(&history).expect("serialize");
+        assert!(full.len() > compact_json.len());
+
+        let serialized =
+            serialize_history_within(&history, compact_json.len()).expect("compact to fit");
+
+        assert_eq!(serialized.json, compact_json);
+        let trim = serialized.trimmed.expect("omitted history is reported");
+        assert!(trim.structure_dropped);
+        assert_eq!(trim.panes, 1);
+        assert!(trim.dropped_bytes > 0);
+        let restored = parse_history_snapshot(&serialized.json).expect("compact history parses");
+        assert!(restored.workspaces.is_empty());
+        assert_eq!(
+            restored.layout_fingerprint, history.layout_fingerprint,
+            "the history stays paired with the saved layout"
+        );
     }
 
     fn history_snapshot(secret: &str) -> SessionHistorySnapshot {

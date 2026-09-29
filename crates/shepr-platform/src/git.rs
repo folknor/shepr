@@ -49,6 +49,17 @@ pub fn run_git_with_program(
     args: &[&str],
     timeout: Duration,
 ) -> Result<Output, GitCommandError> {
+    // clock-io-ok: the public entry point supplies the real clock.
+    run_git_with_program_and_clock(program, cwd, args, timeout, &Instant::now)
+}
+
+fn run_git_with_program_and_clock(
+    program: &OsStr,
+    cwd: &Path,
+    args: &[&str],
+    timeout: Duration,
+    now: &dyn Fn() -> Instant,
+) -> Result<Output, GitCommandError> {
     // host-program-ok: production asks Git about the repository it inspects
     let mut command = crate::child_command(program, cwd);
     command
@@ -82,11 +93,11 @@ pub fn run_git_with_program(
     // pipe buffer cannot stall Git into a spurious timeout.
     let stdout = child.stdout.take().map(drain_pipe::<ChildStdout>);
     let stderr = child.stderr.take().map(drain_pipe::<ChildStderr>);
-    let deadline = Instant::now() + timeout;
+    let deadline = now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => {
+            Ok(None) if now() < deadline => {
                 std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
             }
             Ok(None) => {
@@ -185,13 +196,26 @@ mod tests {
             "slow-git",
             &[Step::Sleep(Duration::from_secs(30))],
         );
-        let result = run_git_with_program(
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(20);
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reads_for_clock = std::sync::Arc::clone(&reads);
+        let now = move || {
+            if reads_for_clock.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                started
+            } else {
+                deadline
+            }
+        };
+        let result = run_git_with_program_and_clock(
             slow_git.as_os_str(),
             root.path(),
             &[],
             Duration::from_millis(20),
+            &now,
         );
         assert!(matches!(result, Err(GitCommandError::TimedOut)));
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     /// Output larger than a pipe buffer is drained while Git runs rather

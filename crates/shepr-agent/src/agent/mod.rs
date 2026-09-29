@@ -805,6 +805,9 @@ impl Agent {
         self.descriptor().prompt_observation
     }
 
+    // Prompt readiness is an auxiliary boolean alongside Codex state detection.
+    // Manifest rules select an AgentState, so expressing this as an idle rule
+    // would alter state selection rather than report the same readiness signal.
     pub fn prompt_ready(self, content: &str) -> bool {
         if !self.descriptor().prompt_observation {
             return false;
@@ -978,11 +981,9 @@ impl AgentSource {
         (agent.integration_source() == Some(source)).then_some(Self::Official(agent))
     }
 
+    /// Returns an owned projection for state records that take ownership of the source.
     pub fn to_source_string(&self) -> String {
-        match self {
-            Self::Official(agent) => agent.integration_source().unwrap_or_default().to_owned(),
-            Self::Custom(source) => source.clone(),
-        }
+        self.as_str().to_owned()
     }
 
     pub fn as_str(&self) -> &str {
@@ -1012,6 +1013,8 @@ impl From<&str> for AgentSource {
     }
 }
 
+// Formatting and string comparisons let callers use the borrowed projection
+// without allocating the owned value needed by state records.
 impl PartialEq<&str> for AgentSource {
     fn eq(&self, other: &&str) -> bool {
         self.as_str() == *other
@@ -1032,10 +1035,7 @@ impl fmt::Display for Agent {
 
 impl fmt::Display for AgentSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Official(agent) => f.write_str(agent.integration_source().unwrap_or_default()),
-            Self::Custom(source) => f.write_str(source),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -1076,7 +1076,7 @@ impl Serialize for AgentSource {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_source_string())
+        serializer.serialize_str(self.as_str())
     }
 }
 

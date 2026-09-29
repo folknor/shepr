@@ -697,7 +697,8 @@ impl PtyIoActorRunner {
             // The wake pipe is drained right after poll returns, before this
             // pump reads the inbox, so work pushed after the pump has read it
             // always leaves a wake byte for the poll below.
-            if let Err(err) = self.pump() {
+            // clock-io-ok: the IO loop is the boundary that supplies the clock.
+            if let Err(err) = self.pump_with_clock(Instant::now) {
                 self.handle_write_failure(err);
                 break;
             }
@@ -714,7 +715,8 @@ impl PtyIoActorRunner {
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
                 self.has_writable_work(),
-                self.poll_timeout_ms(),
+                // clock-io-ok: the poll timeout is taken when the poll starts.
+                self.poll_timeout_ms(Instant::now()),
             ) {
                 Ok(readiness) => {
                     if readiness.wake_ready
@@ -738,8 +740,9 @@ impl PtyIoActorRunner {
                     if readiness.pty_read_ready && self.read_chunk() == ReadOutcome::Closed {
                         break;
                     }
+                    // clock-io-ok: the IO loop is the boundary that supplies the clock.
                     if readiness.pty_write_ready
-                        && let Err(err) = self.pump()
+                        && let Err(err) = self.pump_with_clock(Instant::now)
                     {
                         self.handle_write_failure(err);
                         break;
@@ -770,33 +773,39 @@ impl PtyIoActorRunner {
     /// Write what the PTY takes now, handling the non-write work (resizes,
     /// submission starts, Enter scheduling, withdrawals) around each write,
     /// so nothing that is ready waits for the next wake or the idle poll.
-    fn pump(&mut self) -> std::io::Result<()> {
+    fn pump_with_clock(&mut self, mut now: impl FnMut() -> Instant) -> std::io::Result<()> {
         for _ in 0..MAX_WRITE_STEPS_PER_PUMP {
             self.withdraw_cancelled_submission();
-            self.advance_inbox();
+            self.advance_inbox(&mut now);
             match self.write_next()? {
                 WriteStep::Idle | WriteStep::Blocked => return Ok(()),
-                WriteStep::Progress(Some(part)) => self.complete_submission_part(part),
+                WriteStep::Progress(Some(part)) => self.complete_submission_part(part, now()),
                 WriteStep::Progress(None) => {}
             }
         }
         // Out of steps with the PTY still writable: the next poll returns at
         // once. Settle the non-write work first so it is not left waiting.
         self.withdraw_cancelled_submission();
-        self.advance_inbox();
+        self.advance_inbox(&mut now);
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn pump(&mut self) -> std::io::Result<()> {
+        // clock-io-ok: the test-only pump stands in for the IO loop boundary.
+        self.pump_with_clock(Instant::now)
     }
 
     /// Handle every non-write inbox event that is ready. Each step either
     /// changes the actor's state or reports nothing to do, so this ends.
-    fn advance_inbox(&mut self) {
-        while self.process_next_inbox_event() || self.schedule_submission_enter() {}
+    fn advance_inbox(&mut self, now: &mut impl FnMut() -> Instant) {
+        while self.process_next_inbox_event(now()) || self.schedule_submission_enter(now()) {}
     }
 
     /// Apply a due resize, or start the submission at the front of the
     /// queue. Returns whether anything changed.
-    fn process_next_inbox_event(&mut self) -> bool {
-        if self.apply_due_resize() {
+    fn process_next_inbox_event(&mut self, now: Instant) -> bool {
+        if self.apply_due_resize(now) {
             return true;
         }
         // One submission at a time; the rest wait in queue order.
@@ -833,7 +842,7 @@ impl PtyIoActorRunner {
                 return false;
             }
         };
-        if !lock_state(&state).start(text.is_empty(), delay) {
+        if !lock_state(&state).start(now, text.is_empty(), delay) {
             lock_state(&state).finish();
             inbox.release_bytes(text.len().saturating_add(enter.len()));
             inbox.release_item();
@@ -874,16 +883,13 @@ impl PtyIoActorRunner {
     /// place in the sequence. The runtime has already resized the emulator,
     /// so a failed ioctl is retried with backoff until it succeeds or a newer
     /// request replaces it. Returns whether anything changed.
-    fn apply_due_resize(&mut self) -> bool {
+    fn apply_due_resize(&mut self, now: Instant) -> bool {
         let (order, resize) = {
             let inbox = crate::locks::lock_auxiliary(&self.inbox);
             let Some(pending) = inbox.latest_resize.as_ref() else {
                 return false;
             };
-            if pending
-                .retry_at
-                .is_some_and(|retry_at| retry_at > Instant::now())
-            {
+            if pending.retry_at.is_some_and(|retry_at| retry_at > now) {
                 return false;
             }
             (pending.order, pending.resize)
@@ -923,7 +929,7 @@ impl PtyIoActorRunner {
                 let delay = RESIZE_RETRY_BASE
                     .saturating_mul(1u32 << shift)
                     .min(RESIZE_RETRY_MAX);
-                pending.retry_at = Some(Instant::now() + delay);
+                pending.retry_at = Some(now + delay);
                 // Holding the replies keeps them ordered, but it also holds
                 // every write queued after them. Past a few attempts the
                 // replies go out without the ioctl (they describe the
@@ -1070,13 +1076,13 @@ impl PtyIoActorRunner {
 
     /// Called when a submission part finished writing, or was skipped because
     /// the submission was cancelled before it started.
-    fn complete_submission_part(&mut self, part: SubmissionPart) {
+    fn complete_submission_part(&mut self, part: SubmissionPart, now: Instant) {
         match part {
             SubmissionPart::Text => {
                 let Some(submission) = self.active_submission.as_ref() else {
                     return;
                 };
-                let completed = lock_state(&submission.state).text_finished(Instant::now());
+                let completed = lock_state(&submission.state).text_finished(now);
                 if !completed {
                     self.finish_active_submission(Err(std::io::Error::other(
                         "PTY actor completed text outside the submission state machine",
@@ -1158,13 +1164,13 @@ impl PtyIoActorRunner {
 
     /// Queue the Enter once the delay after the text has passed. Returns
     /// whether anything changed.
-    fn schedule_submission_enter(&mut self) -> bool {
+    fn schedule_submission_enter(&mut self, now: Instant) -> bool {
         let Some(submission) = self.active_submission.as_ref() else {
             return false;
         };
         let enter = submission.enter.clone();
         let state = Arc::clone(&submission.state);
-        let start = lock_state(&state).start_enter(Instant::now(), enter.is_empty());
+        let start = lock_state(&state).start_enter(now, enter.is_empty());
         match start {
             EnterStart::Cancelled => {
                 self.finish_active_submission(Err(submission_withdrawn_error()));
@@ -1197,8 +1203,7 @@ impl PtyIoActorRunner {
         }
     }
 
-    fn poll_timeout_ms(&self) -> i32 {
-        let now = Instant::now();
+    fn poll_timeout_ms(&self, now: Instant) -> i32 {
         let submission_deadline = self
             .active_submission
             .as_ref()
@@ -1362,13 +1367,7 @@ impl PtyIoActorRunner {
 }
 
 fn resize_pty(fd: RawFd, resize: PtyResize) -> std::io::Result<()> {
-    fd::resize_pty_fd(
-        fd,
-        resize.geometry.rows(),
-        resize.geometry.cols(),
-        resize.geometry.cell_width(),
-        resize.geometry.cell_height(),
-    )
+    fd::resize_pty_fd(fd, resize.geometry)
 }
 
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
@@ -1600,7 +1599,7 @@ mod tests {
     fn submission_part_does_not_wait_for_following_protocol_write() {
         let (mut runner, mut peer) = actor_runner_for_unit_test();
         let state = SubmissionState::shared();
-        assert!(lock_state(&state).start(false, Duration::ZERO));
+        assert!(lock_state(&state).start(Instant::now(), false, Duration::ZERO));
         let (reply, _completion) = std_mpsc::channel();
         runner.active_submission = Some(ActiveSubmission {
             enter: Bytes::new(),
@@ -2213,7 +2212,7 @@ mod tests {
         assert_eq!(output, b"pty-output");
 
         handle.resize(
-            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            shepr_core::geometry::PaneGeometry::new(100, 40, 1_000, 20),
             || vec![Bytes::from_static(b"resize-ok\n")],
         );
         wait_readable(slave.as_raw_fd()).expect("actor applies resize and writes its reply");
@@ -2232,7 +2231,7 @@ mod tests {
         assert_eq!(result, 0, "TIOCGWINSZ succeeds");
         assert_eq!(
             (size.ws_row, size.ws_col, size.ws_xpixel, size.ws_ypixel),
-            (40, 100, 900, 720)
+            (40, 100, u16::MAX, 800)
         );
 
         drop(slave);

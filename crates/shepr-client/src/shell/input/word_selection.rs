@@ -106,6 +106,7 @@ impl ClientShellState {
         &mut self,
         cursor: (shepr_vt::AbsRow, u16),
         outcome: &mut ClientShellInput,
+        now: std::time::Instant,
     ) {
         let Some(gesture) = self.word_selection_gesture.as_mut() else {
             return;
@@ -115,19 +116,23 @@ impl ClientShellState {
         }
         gesture.cursor = cursor;
         gesture.dragged = true;
-        self.update_word_selection(outcome);
+        self.update_word_selection(outcome, now);
     }
 
-    pub(super) fn finish_word_selection(&mut self, outcome: &mut ClientShellInput) {
+    pub(super) fn finish_word_selection(
+        &mut self,
+        outcome: &mut ClientShellInput,
+        now: std::time::Instant,
+    ) {
         self.stop_selection_autoscroll();
         if let Some(gesture) = self.word_selection_gesture.as_mut() {
             gesture.released = true;
         }
         // A pending row reply will finish the selection if its bounds are not ready yet.
-        self.update_word_selection(outcome);
+        self.update_word_selection(outcome, now);
     }
 
-    fn update_word_selection(&mut self, outcome: &mut ClientShellInput) {
+    fn update_word_selection(&mut self, outcome: &mut ClientShellInput, now: std::time::Instant) {
         let Some(gesture) = self.word_selection_gesture.as_ref() else {
             return;
         };
@@ -162,8 +167,10 @@ impl ClientShellState {
                 if dragged {
                     self.selection = None;
                 } else {
-                    self.selection_highlight_clear_deadline =
-                        Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+                    self.selection_highlight_clear_deadline = Some(
+                        crate::limits::Deadline::after(now, std::time::Duration::from_millis(500))
+                            .instant(),
+                    );
                 }
             }
         }
@@ -176,6 +183,7 @@ impl ClientShellState {
         absolute_row: shepr_vt::AbsRow,
         generation: u64,
         result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
+        now: std::time::Instant,
     ) -> (bool, Vec<ClientShellAction>) {
         if self.word_selection_generation != generation
             || self.word_selection_gesture.as_ref().is_none_or(|gesture| {
@@ -221,7 +229,7 @@ impl ClientShellState {
         }
         gesture.cached_row = Some((absolute_row, text));
         let mut outcome = ClientShellInput::default();
-        self.update_word_selection(&mut outcome);
+        self.update_word_selection(&mut outcome, now);
         (outcome.repaint, outcome.actions)
     }
 }

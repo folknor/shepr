@@ -126,6 +126,7 @@ pub(super) enum Getter {
 /// How a write reaches the terminal.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Setter {
+    // Production mode writes use this to route table entries through vte.
     Vte(NamedPrivateMode),
     Extra(ExtraMode),
 }

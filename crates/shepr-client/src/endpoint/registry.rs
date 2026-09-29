@@ -69,17 +69,18 @@ impl EndpointRegistry {
     }
 
     pub fn new(local: impl EndpointTransport + 'static, generation: u64) -> Self {
-        Self::with_local_link(local, generation, LocalEndpointLink::Socket)
+        Self::with_local_link(local, generation, LocalEndpointLink::Socket, Instant::now())
     }
 
     pub(crate) fn with_local_link(
         local: impl EndpointTransport + 'static,
         generation: u64,
         local_link: LocalEndpointLink,
+        now: Instant,
     ) -> Self {
         let mut registry = Self::empty(local_link);
         registry.input_enabled = true;
-        registry.insert(ClientEndpointId::Local, local, generation, true);
+        registry.insert(ClientEndpointId::Local, local, generation, true, now);
         registry
     }
 
@@ -122,10 +123,11 @@ impl EndpointRegistry {
         transport: impl EndpointTransport + 'static,
         generation: u64,
         surface_active: bool,
+        now: Instant,
     ) {
         let health = self
             .crosses_ssh(&endpoint_id)
-            .then(|| EndpointHealth::new(Instant::now()));
+            .then(|| EndpointHealth::new(now));
         if let Some(mut previous) = self.connections.insert(
             endpoint_id,
             EndpointConnection {
@@ -324,6 +326,10 @@ impl EndpointRegistry {
         {
             *existing = failure;
         } else {
+            // One entry per endpoint, and only for an endpoint that had a
+            // connection, so the endpoint set bounds this list. It must not be
+            // capped by dropping entries: the connection is already removed
+            // above, and the loop learns of the loss only from this entry.
             self.failures.push(failure);
         }
     }
@@ -331,7 +337,8 @@ impl EndpointRegistry {
 
 impl Drop for EndpointRegistry {
     fn drop(&mut self) {
-        let deadline = Instant::now() + std::time::Duration::from_millis(250);
+        let deadline =
+            crate::limits::Deadline::after(Instant::now(), std::time::Duration::from_millis(250));
         // Detach is a courtesy on the way out: every connection is disconnected just
         // below, and a server treats the closed connection as this client leaving, so a
         // Detach that fails to send or flush changes nothing.
@@ -339,7 +346,7 @@ impl Drop for EndpointRegistry {
             connection.transport.send(&ClientMessage::Detach).ok();
         }
         for connection in self.connections.values_mut() {
-            connection.transport.flush(deadline).ok();
+            connection.transport.flush(deadline.instant()).ok();
             connection.transport.disconnect();
         }
     }
@@ -403,6 +410,7 @@ mod tests {
             },
             2,
             true,
+            Instant::now(),
         );
         assert!(registry.set_active(&ssh_id));
 
@@ -423,6 +431,61 @@ mod tests {
     }
 
     #[test]
+    fn every_failed_endpoint_reports_its_newest_failure_once() {
+        fn endpoint_id(index: usize) -> ClientEndpointId {
+            ClientEndpointId::Ssh(
+                crate::endpoint::ProfileId::parse(format!("{index:032x}"))
+                    .expect("test profile id"),
+            )
+        }
+        fn insert(registry: &mut EndpointRegistry, index: usize, generation: u64) {
+            registry.insert(
+                endpoint_id(index),
+                FakeTransport {
+                    sent: Arc::new(Mutex::new(Vec::new())),
+                    error: None,
+                },
+                generation,
+                false,
+                Instant::now(),
+            );
+        }
+
+        // Each failure removes its connection, so a dropped entry would lose
+        // that endpoint for good: every one must come back out.
+        let endpoints = 100;
+        let mut registry = EndpointRegistry::empty(LocalEndpointLink::Socket);
+        for index in 0..endpoints {
+            insert(&mut registry, index, 1);
+            registry.fail(
+                &endpoint_id(index),
+                &io::Error::new(io::ErrorKind::BrokenPipe, "first failure"),
+            );
+        }
+        // A reconnected endpoint that fails again replaces its earlier entry.
+        insert(&mut registry, 0, 2);
+        registry.fail(
+            &endpoint_id(0),
+            &io::Error::new(io::ErrorKind::TimedOut, "second failure"),
+        );
+
+        let failures = registry.take_failures();
+        assert_eq!(failures.len(), endpoints);
+        for index in 0..endpoints {
+            assert_eq!(
+                failures
+                    .iter()
+                    .filter(|failure| failure.endpoint_id == endpoint_id(index))
+                    .count(),
+                1
+            );
+        }
+        let first = &failures[0];
+        assert_eq!(first.endpoint_id, endpoint_id(0));
+        assert_eq!((first.generation, first.kind), (2, io::ErrorKind::TimedOut));
+    }
+
+    #[test]
     fn reconnecting_active_identity_does_not_count_as_an_active_surface() {
         let mut registry = EndpointRegistry::new(
             FakeTransport {
@@ -440,6 +503,7 @@ mod tests {
             },
             2,
             true,
+            Instant::now(),
         );
         assert!(registry.set_active(&ssh_id));
         assert!(registry.active_surface_available());
@@ -452,6 +516,7 @@ mod tests {
             },
             3,
             false,
+            Instant::now(),
         );
         assert!(!registry.active_surface_available());
     }
@@ -468,6 +533,7 @@ mod tests {
             },
             2,
             false,
+            Instant::now(),
         );
         registry.tick_health(Instant::now() + std::time::Duration::from_secs(300));
         assert!(registry.connection(&ClientEndpointId::Local).is_some());
@@ -499,6 +565,7 @@ mod tests {
             },
             1,
             LocalEndpointLink::SshBridge,
+            Instant::now(),
         );
         // Taken after both inserts, so each connection's health clock started earlier.
         let now = Instant::now();
@@ -548,6 +615,7 @@ mod tests {
             },
             2,
             false,
+            Instant::now(),
         );
         let now = Instant::now();
         registry.tick_health(now + super::super::health::HEARTBEAT_INTERVAL);
@@ -582,6 +650,7 @@ mod tests {
             },
             2,
             false,
+            Instant::now(),
         );
         let now = Instant::now();
         registry.mark_ready(&ssh_id, 2);
@@ -609,6 +678,7 @@ mod tests {
             },
             2,
             false,
+            Instant::now(),
         );
 
         drop(registry);

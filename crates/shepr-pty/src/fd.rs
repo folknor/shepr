@@ -142,6 +142,8 @@ pub(crate) fn poll_pty_and_wake(
         },
     ];
 
+    // clock-io-ok: an EINTR retry resumes the kernel wait from the real time
+    // the poll began.
     let deadline = (timeout_ms >= 0)
         .then(|| Instant::now() + Duration::from_millis(u64::try_from(timeout_ms).unwrap_or(0)));
     let mut remaining_timeout_ms = timeout_ms;
@@ -164,6 +166,7 @@ pub(crate) fn poll_pty_and_wake(
                 let Some(deadline) = deadline else {
                     continue;
                 };
+                // clock-io-ok: the interrupted poll consumed real time.
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return Ok(PtyWakeReadiness::default());
@@ -195,26 +198,15 @@ pub(crate) fn poll_pty_and_wake(
 
 pub(crate) fn resize_pty_fd(
     fd: RawFd,
-    rows: u16,
-    cols: u16,
-    cell_width_px: u32,
-    cell_height_px: u32,
+    geometry: shepr_core::geometry::PaneGeometry,
 ) -> std::io::Result<()> {
+    let geometry = geometry.clamped();
+    let (pixel_width, pixel_height) = geometry.text_area_px().unwrap_or((0, 0));
     let size = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
-        ws_xpixel: u16::try_from(
-            u32::from(cols)
-                .saturating_mul(cell_width_px)
-                .min(u32::from(u16::MAX)),
-        )
-        .unwrap_or(u16::MAX),
-        ws_ypixel: u16::try_from(
-            u32::from(rows)
-                .saturating_mul(cell_height_px)
-                .min(u32::from(u16::MAX)),
-        )
-        .unwrap_or(u16::MAX),
+        ws_row: geometry.rows(),
+        ws_col: geometry.cols(),
+        ws_xpixel: pixel_width,
+        ws_ypixel: pixel_height,
     };
     // SAFETY: TIOCSWINSZ reads one winsize from `size`, a live local.
     if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) } < 0 {

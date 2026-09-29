@@ -456,7 +456,7 @@ impl HeadlessServer {
             self.app.pending_agent_resume_deadline = None;
             return;
         }
-        let now = Instant::now();
+        let now = self.app.clock.now;
         self.app.sync_pending_agent_resume_deadline(now);
         if self
             .app

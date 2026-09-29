@@ -4,6 +4,9 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use serde::{Deserialize, Serialize};
 
+const PANE_MIN_COLS: u16 = 4;
+const PANE_MIN_ROWS: u16 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SplitBranch {
     First,
@@ -24,10 +27,20 @@ impl GridSize {
         })
     }
 
+    /// Preserve host and protocol grids down to one cell. Pane PTYs use
+    /// `clamped_pane` for their larger minimum.
     pub fn clamped(cols: u16, rows: u16) -> Self {
         Self {
             cols: NonZeroU16::new(cols).unwrap_or(NonZeroU16::MIN),
             rows: NonZeroU16::new(rows).unwrap_or(NonZeroU16::MIN),
+        }
+    }
+
+    /// Clamp pane grids to the shared minimum used by the PTY and emulator.
+    pub fn clamped_pane(cols: u16, rows: u16) -> Self {
+        Self {
+            cols: NonZeroU16::new(cols.max(PANE_MIN_COLS)).unwrap_or(NonZeroU16::MIN),
+            rows: NonZeroU16::new(rows.max(PANE_MIN_ROWS)).unwrap_or(NonZeroU16::MIN),
         }
     }
 }
@@ -56,8 +69,17 @@ pub struct PaneGeometry {
 impl PaneGeometry {
     pub fn new(cols: u16, rows: u16, width: u32, height: u32) -> Self {
         Self {
-            grid: GridSize::clamped(cols, rows),
+            grid: GridSize::clamped_pane(cols, rows),
             cell: CellPx::new(width, height),
+        }
+    }
+
+    /// Reapply the pane-grid boundary to geometry received as a struct or wire
+    /// value.
+    pub fn clamped(self) -> Self {
+        Self {
+            grid: GridSize::clamped_pane(self.cols(), self.rows()),
+            cell: self.cell,
         }
     }
 
@@ -75,6 +97,18 @@ impl PaneGeometry {
 
     pub fn cell_height(self) -> u32 {
         self.cell.map_or(0, |cell| cell.height.get())
+    }
+
+    /// The pixel extent representable by `TIOCSWINSZ` and `TIOCGWINSZ`.
+    /// Terminal reports use this same extent so a child sees one pixel size.
+    pub fn text_area_px(self) -> Option<(u16, u16)> {
+        let cell = self.cell?;
+        let width = u64::from(self.cols()) * u64::from(cell.width.get());
+        let height = u64::from(self.rows()) * u64::from(cell.height.get());
+        Some((
+            u16::try_from(width.min(u64::from(u16::MAX))).unwrap_or(u16::MAX),
+            u16::try_from(height.min(u64::from(u16::MAX))).unwrap_or(u16::MAX),
+        ))
     }
 }
 
@@ -120,5 +154,24 @@ mod tests {
         assert!(CellPx::new(8, 0).is_none());
         assert_eq!(PaneGeometry::new(80, 24, 8, 0).cell, None);
         assert!(!HostGeometry::new(80, 24, 8, 0, true).exact);
+    }
+
+    #[test]
+    fn pane_geometry_uses_the_shared_minimum_grid() {
+        let pane = PaneGeometry::new(0, 1, 8, 16);
+        assert_eq!((pane.cols(), pane.rows()), (PANE_MIN_COLS, PANE_MIN_ROWS));
+        let generic = GridSize::clamped(0, 0);
+        assert_eq!((generic.cols.get(), generic.rows.get()), (1, 1));
+        assert_eq!(pane.clamped(), pane);
+    }
+
+    #[test]
+    fn pixel_extent_uses_winsize_limits() {
+        let small = PaneGeometry::new(80, 24, 9, 18);
+        assert_eq!(small.text_area_px(), Some((720, 432)));
+
+        let large = PaneGeometry::new(80, 24, 100_000, 100_000);
+        assert_eq!(large.text_area_px(), Some((u16::MAX, u16::MAX)));
+        assert_eq!(PaneGeometry::new(80, 24, 0, 18).text_area_px(), None);
     }
 }

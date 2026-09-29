@@ -437,6 +437,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         }
     }
 
+    /// Timestamp this chunk at the input boundary; timing behavior is driven by `push_at`.
     pub fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         self.push_at(data, std::time::Instant::now())
     }

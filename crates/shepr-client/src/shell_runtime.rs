@@ -227,12 +227,12 @@ pub(super) fn begin_endpoint_activation(
         if activation.can_retarget(&endpoint_id) {
             let retarget_error = activation.retarget(target, endpoints).err();
             if let Some(error) = retarget_error {
-                rollback_endpoint_activation(state, endpoints, pending, &error, false);
+                rollback_endpoint_activation(state, endpoints, pending, &error, false, now);
             }
         } else {
             // Once rollback starts, even a request for the original target is a new intent.
             // Retain it until restoration finishes; Local can instead abandon this handoff.
-            let outcome = activation.supersede(endpoint_id, target, endpoints);
+            let outcome = activation.supersede_at(endpoint_id, target, endpoints, now);
             if let endpoint::ActivationRollback::Unavailable(message) = outcome {
                 *pending = None;
                 present_handoff_unavailable(state, message);
@@ -295,7 +295,7 @@ pub(super) fn begin_endpoint_activation(
         if replace_pending && let Some(previous) = pending.take() {
             previous.abandon(endpoints);
         }
-        activation.start(endpoints)
+        activation.start_at(endpoints, now)
     }) {
         Ok(activation) => install_pending_activation(
             state,
@@ -335,6 +335,7 @@ pub(super) fn begin_endpoint_activation(
                     )
                 ),
                 false,
+                now,
             );
         }
     }
@@ -346,6 +347,7 @@ pub(super) fn complete_endpoint_activation(
     endpoints: &mut endpoint::EndpointRegistry,
     pending: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
+    now: std::time::Instant,
 ) -> Result<Option<ClientLoopEvent>, ClientError> {
     let sync_endpoint = pending
         .as_ref()
@@ -361,7 +363,7 @@ pub(super) fn complete_endpoint_activation(
         let Some(shell) = state.mode.shell_mut() else {
             return Ok(None);
         };
-        match activation.complete(shell, endpoints) {
+        match activation.complete_at(shell, endpoints, now) {
             Ok(completion) => completion,
             Err(error) => {
                 shell.receive_endpoint_unavailable(error);
@@ -514,11 +516,12 @@ pub(super) fn rollback_endpoint_activation(
     pending: &mut Option<endpoint::PendingEndpointActivation>,
     error: &str,
     source_release_rejected: bool,
+    now: std::time::Instant,
 ) {
     let Some(activation) = pending.as_mut() else {
         return;
     };
-    match activation.rollback(endpoints, error, source_release_rejected) {
+    match activation.rollback_at(endpoints, error, source_release_rejected, now) {
         endpoint::ActivationRollback::Pending => state.freeze_presentation(),
         endpoint::ActivationRollback::Unavailable(message) => {
             *pending = None;
@@ -549,10 +552,11 @@ pub(super) fn handle_endpoint_disconnect(
             .mode
             .shell()
             .map_or("Endpoint", |shell| shell.endpoint_label(endpoint_id));
-        let outcome = pending.endpoint_disconnected(
+        let outcome = pending.endpoint_disconnected_at(
             endpoints,
             endpoint_id,
             handoff_interrupted_notice(label, notice),
+            now,
         );
         match outcome {
             endpoint::ActivationRollback::Pending => {}
@@ -805,6 +809,7 @@ pub(super) fn finish_client_shell_input(
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    now: std::time::Instant,
 ) -> Result<bool, ClientError> {
     if outcome.detach {
         // A failed send is recorded against the endpoint, and the registry's Drop sends
@@ -824,8 +829,15 @@ pub(super) fn finish_client_shell_input(
             state.reported_geometry.exact,
         );
         if let Some(activation) = pending_activation.as_mut() {
-            if let Err(error) = activation.update_resize(&resize, endpoints) {
-                rollback_endpoint_activation(state, endpoints, pending_activation, &error, false);
+            if let Err(error) = activation.update_resize_at(&resize, endpoints, now) {
+                rollback_endpoint_activation(
+                    state,
+                    endpoints,
+                    pending_activation,
+                    &error,
+                    false,
+                    now,
+                );
             }
         } else {
             // A failed send is recorded against the active endpoint; the client timer
@@ -873,13 +885,15 @@ pub(super) fn finish_client_shell_input(
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
             if let Some(activation) = pending_activation.as_mut() {
-                if let Err(error) = activation.update_host_theme(update.clone(), endpoints) {
+                if let Err(error) = activation.update_host_theme_at(update.clone(), endpoints, now)
+                {
                     rollback_endpoint_activation(
                         state,
                         endpoints,
                         pending_activation,
                         &error,
                         false,
+                        now,
                     );
                 }
                 continue;
@@ -889,13 +903,14 @@ pub(super) fn finish_client_shell_input(
         // already had its surface revoked. Route it before the ordinary source-online gate.
         if let ClientMessage::ClientShellFocus { focused } = request {
             if let Some(activation) = pending_activation.as_mut() {
-                if let Err(error) = activation.update_host_focus(focused, endpoints) {
+                if let Err(error) = activation.update_host_focus_at(focused, endpoints, now) {
                     rollback_endpoint_activation(
                         state,
                         endpoints,
                         pending_activation,
                         &error,
                         false,
+                        now,
                     );
                 }
                 continue;
@@ -1124,7 +1139,13 @@ mod tests {
         let shell = state.mode.shell_mut().expect("test shell");
         shell.set_endpoint_catalog(&catalog.ssh);
         let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
-        endpoints.insert(build_id.clone(), NullTransport, 7, true);
+        endpoints.insert(
+            build_id.clone(),
+            NullTransport,
+            7,
+            true,
+            std::time::Instant::now(),
+        );
         assert!(endpoints.set_active(&build_id));
         let mut commands = endpoint::commands::EndpointCommands::default();
         let mut pending = None;

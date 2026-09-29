@@ -114,6 +114,7 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
         },
         7,
         false,
+        Instant::now(),
     );
     (shell, endpoints, local_sent, remote_sent)
 }
@@ -990,6 +991,7 @@ fn local_escape(source_state: &str) {
             },
             7,
             true,
+            Instant::now(),
         ),
         _ => {}
     }
@@ -1239,6 +1241,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
                 },
                 2,
                 false,
+                Instant::now(),
             );
         } else {
             endpoints.disconnect(&ClientEndpointId::Local);
@@ -1275,6 +1278,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
                 },
                 2,
                 false,
+                Instant::now(),
             );
         }
         assert!(take_ready_local_activation(&mut state, &endpoints).is_none());

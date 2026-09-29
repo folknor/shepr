@@ -20,25 +20,6 @@ use tokio::sync::mpsc;
 
 use crate::schema::Request;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RenderDemand {
-    #[default]
-    None,
-    Partial,
-    Full,
-}
-
-impl RenderDemand {
-    pub fn join(&mut self, other: Self) {
-        *self = (*self).max(other);
-    }
-}
-
-pub struct Outcome {
-    pub response: error::ApiResult,
-    pub render: RenderDemand,
-}
-
 pub fn serialize_response_or_error<T: serde::Serialize>(request_id: &str, response: &T) -> String {
     serialize_response_or_error_with_outcome(request_id, response).body
 }
@@ -95,17 +76,6 @@ pub fn socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
 mod tests {
     use super::*;
     use crate::schema::Method;
-
-    #[test]
-    fn render_demand_join_keeps_strongest_request() {
-        let mut demand = RenderDemand::None;
-        demand.join(RenderDemand::Partial);
-        assert_eq!(demand, RenderDemand::Partial);
-        demand.join(RenderDemand::None);
-        assert_eq!(demand, RenderDemand::Partial);
-        demand.join(RenderDemand::Full);
-        assert_eq!(demand, RenderDemand::Full);
-    }
 
     struct FailingResponse;
 

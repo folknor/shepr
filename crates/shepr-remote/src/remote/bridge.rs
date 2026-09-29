@@ -25,6 +25,10 @@ pub(crate) struct SshStdioBridge {
     socket_identity: shepr_platform::ipc::SocketFileIdentity,
     _socket_startup_lock: shepr_platform::ipc::SocketStartupLock,
     should_stop: Arc<AtomicBool>,
+    // The accept thread clears a previous report before each accepted stream.
+    // A generation slot would also need the caller to pass the stream's
+    // generation into reported_failure; the current SavedSshStream and API
+    // bridge handles carry no such identity.
     failure_rx: Arc<std::sync::Mutex<mpsc::Receiver<io::Error>>>,
     thread: Option<JoinHandle<()>>,
     // Dropped after `Drop::drop` has removed the socket; see `TeardownRegistry`.
@@ -75,12 +79,8 @@ impl SshStdioBridge {
             path: local_socket.clone(),
             identity: socket_identity.clone(),
         });
-        if let Err(err) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
-            remove_bridge_socket(&local_socket, &socket_identity);
-            drop(listener);
-            drop(socket_startup_lock);
-            return Err(err);
-        }
+        let mut socket_cleanup = BridgeSocketStartupCleanup::new(&local_socket, &socket_identity);
+        listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
@@ -185,7 +185,7 @@ impl SshStdioBridge {
             }
         });
 
-        Ok(Self {
+        let bridge = Self {
             local_socket,
             socket_identity,
             _socket_startup_lock: socket_startup_lock,
@@ -193,13 +193,16 @@ impl SshStdioBridge {
             failure_rx,
             thread: Some(thread),
             _teardown: teardown,
-        })
+        };
+        socket_cleanup.disarm();
+        Ok(bridge)
     }
 
     pub(crate) fn reported_failure(&self) -> Option<io::Error> {
         // A local client can observe EOF before this worker has reaped ssh and
         // sent its exit diagnostic. Polling keeps the receiver mutex available
         // to the accept thread while it discards an unclaimed earlier failure.
+        // clock-io-ok: allow the SSH worker time to report after stream EOF.
         let deadline = Instant::now() + BRIDGE_FAILURE_REPORT_TIMEOUT;
         loop {
             let received = self
@@ -213,6 +216,7 @@ impl SshStdioBridge {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
 
+            // clock-io-ok: the worker runs concurrently while the caller polls.
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return None;
@@ -258,6 +262,35 @@ impl Drop for SshStdioBridge {
 fn remove_bridge_socket(path: &Path, identity: &shepr_platform::ipc::SocketFileIdentity) {
     if let Err(error) = shepr_platform::ipc::remove_socket_file_if_owned(path, identity) {
         tracing::warn!(%error, socket = %path.display(), "could not remove remote bridge socket");
+    }
+}
+
+/// Owns the newly bound socket until the bridge itself is ready to own cleanup.
+struct BridgeSocketStartupCleanup {
+    path: PathBuf,
+    identity: shepr_platform::ipc::SocketFileIdentity,
+    armed: bool,
+}
+
+impl BridgeSocketStartupCleanup {
+    fn new(path: &Path, identity: &shepr_platform::ipc::SocketFileIdentity) -> Self {
+        Self {
+            path: path.to_owned(),
+            identity: identity.clone(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for BridgeSocketStartupCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            remove_bridge_socket(&self.path, &self.identity);
+        }
     }
 }
 
@@ -399,21 +432,23 @@ pub(super) fn bridge_connection(
             Stdio::inherit()
         });
 
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|err| io::Error::new(err.kind(), format!("failed to start ssh bridge: {err}")))?;
-    let child_stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => return terminate_bridge_child(child, "ssh bridge stdin missing"),
-    };
-    let child_stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => return terminate_bridge_child(child, "ssh bridge stdout missing"),
-    };
+    let mut child = BridgeChildStartupGuard::new(child);
+    let child_stdin = child
+        .child()
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stdin missing"))?;
+    let child_stdout =
+        child.child().stdout.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stdout missing")
+        })?;
     let stderr_reader = if noninteractive {
-        let Some(child_stderr) = child.stderr.take() else {
-            return terminate_bridge_child(child, "ssh bridge stderr missing");
-        };
+        let child_stderr = child.child().stderr.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stderr missing")
+        })?;
         Some(PipeCapture::spawn(
             child_stderr,
             NONINTERACTIVE_SSH_STDERR_LIMIT,
@@ -422,28 +457,14 @@ pub(super) fn bridge_connection(
     } else {
         None
     };
-    let stream_to_child = match stream.try_clone() {
-        Ok(stream) => stream,
-        Err(err) => {
-            kill_and_reap(&mut child, "ssh bridge");
-            return Err(err);
-        }
-    };
-    if let Err(err) = shepr_platform::ipc::set_local_stream_polling(&mut stream, true) {
-        kill_and_reap(&mut child, "ssh bridge");
-        return Err(err);
-    }
+    let stream_to_child = stream.try_clone()?;
+    shepr_platform::ipc::set_local_stream_polling(&mut stream, true)?;
     let mut child_to_stream = stream;
 
     let connection_stop = Arc::new(AtomicBool::new(false));
     let download_done = Arc::new(AtomicBool::new(false));
-    let upload = match BridgeUpload::spawn(stream_to_child, child_stdin, Arc::clone(bridge_stop)) {
-        Ok(upload) => upload,
-        Err(err) => {
-            kill_and_reap(&mut child, "ssh bridge");
-            return Err(err);
-        }
-    };
+    let upload = BridgeUpload::spawn(stream_to_child, child_stdin, Arc::clone(bridge_stop))?;
+    let mut child = child.into_child();
     let upload_stop = upload.stop_handle();
     let download_stop = Arc::clone(&connection_stop);
     let download_bridge_stop = Arc::clone(bridge_stop);
@@ -487,6 +508,7 @@ pub(super) fn bridge_connection(
         }
         if upload.client_closed() || upload.failed() || download_done.load(Ordering::Acquire) {
             upload_stop.cancel();
+            // clock-io-ok: grace begins when client or pipe IO first stops.
             let stopped_at = stopped_at.get_or_insert_with(Instant::now);
             if stopped_at.elapsed() >= Duration::from_millis(250) {
                 connection_stop.store(true, Ordering::Release);
@@ -637,12 +659,29 @@ pub(super) fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> i
     }
 }
 
-pub(super) fn terminate_bridge_child(
-    mut child: std::process::Child,
-    message: &'static str,
-) -> io::Result<()> {
-    kill_and_reap(&mut child, "ssh bridge");
-    Err(io::Error::new(io::ErrorKind::BrokenPipe, message))
+struct BridgeChildStartupGuard(Option<std::process::Child>);
+
+impl BridgeChildStartupGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn child(&mut self) -> &mut std::process::Child {
+        // The guard is armed until `into_child` transfers ownership to the bridge loop.
+        self.0.as_mut().expect("bridge startup owns its child")
+    }
+
+    fn into_child(mut self) -> std::process::Child {
+        self.0.take().expect("bridge startup owns its child")
+    }
+}
+
+impl Drop for BridgeChildStartupGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            kill_and_reap(child, "ssh bridge");
+        }
+    }
 }
 
 pub(super) fn copy_reader_to_local_stream<R: io::Read>(

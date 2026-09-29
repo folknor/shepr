@@ -1,17 +1,17 @@
-use super::{App, api_helpers::pane_agent_status};
+use super::{App, RenderDemand, api_helpers::pane_agent_status};
 use shepr_mux::events::AppEvent;
 
 impl App {
     pub(crate) fn handle_internal_event_with_render_demand(
         &mut self,
         ev: AppEvent,
-    ) -> shepr_api::RenderDemand {
+    ) -> RenderDemand {
         self.handle_internal_event_with_updates_and_render(ev).1
     }
 
     #[cfg(test)]
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
-        self.handle_internal_event_with_render_demand(ev) != shepr_api::RenderDemand::None
+        self.handle_internal_event_with_render_demand(ev) != RenderDemand::None
     }
 
     fn handle_git_status_refreshed(
@@ -45,12 +45,9 @@ impl App {
     fn handle_internal_event_with_updates_and_render(
         &mut self,
         ev: AppEvent,
-    ) -> (
-        Vec<crate::app::actions::PaneStateUpdate>,
-        shepr_api::RenderDemand,
-    ) {
+    ) -> (Vec<crate::app::actions::PaneStateUpdate>, RenderDemand) {
         if matches!(&ev, AppEvent::ClipboardWrite { .. }) {
-            return (Vec::new(), shepr_api::RenderDemand::None);
+            return (Vec::new(), RenderDemand::None);
         }
 
         if let AppEvent::GitStatusRefreshed {
@@ -202,14 +199,14 @@ impl App {
 
         self.shutdown_detached_terminal_runtimes(&detached_terminal_ids);
         self.state.mark_shell_projection_dirty();
-        (pane_updates, shepr_api::RenderDemand::Full)
+        (pane_updates, RenderDemand::Full)
     }
 
-    fn render_demand_if(changed: bool) -> shepr_api::RenderDemand {
+    fn render_demand_if(changed: bool) -> RenderDemand {
         if changed {
-            shepr_api::RenderDemand::Full
+            RenderDemand::Full
         } else {
-            shepr_api::RenderDemand::None
+            RenderDemand::None
         }
     }
 

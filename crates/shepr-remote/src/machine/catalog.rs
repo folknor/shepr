@@ -687,9 +687,9 @@ pub(super) fn store_private_json(
     let mut temp = shepr_platform::create_private_file(&temp_path).map_err(|error| {
         CatalogError::caused_by_io(format!("failed to create {description}"), &error)
     })?;
+    let mut cleanup = AbandonedTempFile::new(temp_path.clone(), description);
     if let Err(error) = temp.write_all(content).and_then(|()| temp.sync_all()) {
         drop(temp);
-        remove_abandoned_temp_file(&temp_path, description);
         return Err(CatalogError::caused_by_io(
             format!("failed to write {description}"),
             &error,
@@ -697,12 +697,12 @@ pub(super) fn store_private_json(
     }
     drop(temp);
     if let Err(error) = std::fs::rename(&temp_path, path) {
-        remove_abandoned_temp_file(&temp_path, description);
         return Err(CatalogError::caused_by_io(
             format!("failed to activate {description}"),
             &error,
         ));
     }
+    cleanup.disarm();
     shepr_platform::sync_directory(parent).map_err(|error| {
         CatalogError::caused_by_io(format!("failed to persist {description} directory"), &error)
     })
@@ -735,13 +735,36 @@ fn private_json_temp_path(
 /// failed removal leaves a private temporary file behind in the state directory;
 /// that is logged with its path so it can be found, and does not replace the
 /// store error.
-fn remove_abandoned_temp_file(temp_path: &Path, description: &str) {
-    if let Err(error) = std::fs::remove_file(temp_path) {
-        tracing::warn!(
-            %error,
-            path = %temp_path.display(),
-            "could not remove temporary {description} file after a failed store"
-        );
+struct AbandonedTempFile<'a> {
+    path: Option<PathBuf>,
+    description: &'a str,
+}
+
+impl<'a> AbandonedTempFile<'a> {
+    fn new(path: PathBuf, description: &'a str) -> Self {
+        Self {
+            path: Some(path),
+            description,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for AbandonedTempFile<'_> {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path
+            && let Err(error) = std::fs::remove_file(path)
+        {
+            tracing::warn!(
+                %error,
+                path = %path.display(),
+                description = self.description,
+                "could not remove temporary private JSON file after a failed store"
+            );
+        }
     }
 }
 

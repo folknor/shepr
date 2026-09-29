@@ -32,6 +32,70 @@ allow_marker = "clock-io-ok"
 allow_marker_above = 3
 message = "pass the operation time from the server into app state"
 
+[[textlint]]
+name = "remote-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-remote/src/**/*.rs"]
+exclude = ["**/*_tests.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "pass time into remote decisions; mark reads measuring elapsed IO"
+
+# The headless loop samples the clock once per pass (`sample_app_clock`) and
+# everything it dispatches reads `app.clock`.
+[[textlint]]
+name = "headless-loop-reads-the-app-clock"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = [
+    "crates/shepr-server/src/server/headless.rs",
+    "crates/shepr-server/src/server/headless/**/*.rs",
+]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "headless-clock-sample-ok"
+allow_marker_above = 3
+message = "read the loop's sample through app.clock; only the sampler reads the clock"
+
+# Platform plumbing takes the clock as a parameter; only the public entry
+# points that hand the real clock in read it.
+[[textlint]]
+name = "platform-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-platform/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "take the clock as a parameter; mark the entry point that supplies the real one"
+
+[[textlint]]
+name = "agent-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-agent/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "take the clock as a parameter; mark the adapter that supplies the real one"
+
+# The emulator and PTY actor take time from the read or IO boundary that
+# drives them.
+[[textlint]]
+name = "terminal-core-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-vt/src/**/*.rs", "crates/shepr-pty/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "pass the time in from the read or IO boundary; mark that boundary"
+
 # The clippy seals (`clippy.toml`): the environment reader, exits, bool path
 # probes, panic containment, child working directories and debug assertions.
 # Every escape is a scoped `#[expect(clippy::disallowed_methods, reason = ..)]`

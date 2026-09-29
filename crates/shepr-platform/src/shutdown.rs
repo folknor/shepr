@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::watch;
@@ -135,21 +134,21 @@ impl Shared {
 }
 
 async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
-    let mut retry = Duration::from_secs(1);
+    let mut retry = super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY;
     let mut refresh_pending_warning = false;
     // The sender lives in the handle, whose drop also aborts this task; a
     // closed channel only means the abort has not landed yet.
     while checkpoints.has_changed().is_ok() {
         match watch_shutdown(&shared, &mut checkpoints, refresh_pending_warning).await {
             Ok(()) => {
-                retry = Duration::from_secs(1);
+                retry = super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY;
                 refresh_pending_warning = shared.requested.load(Ordering::Acquire);
             }
             Err(err) => {
                 let shutdown_pending = shared.requested.load(Ordering::Acquire);
                 refresh_pending_warning |= shutdown_pending;
                 let retry_delay = if shutdown_pending {
-                    Duration::from_secs(1)
+                    super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY
                 } else {
                     retry
                 };
@@ -183,10 +182,12 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
                 // A lost signal stream leaves cancellation unobservable until
                 // reconnecting, so retry promptly while a warning is pending.
                 tokio::time::sleep(retry_delay).await;
+                // A pending shutdown resets the delay; ordinary absence
+                // backs off.
                 retry = if shutdown_pending {
-                    Duration::from_secs(1)
+                    super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY
                 } else {
-                    (retry * 2).min(Duration::from_secs(60))
+                    (retry * 2).min(super::limits::SHUTDOWN_RECONNECT_MAX_DELAY)
                 };
             }
         }
@@ -286,6 +287,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::process::{Child, Stdio};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn stale_checkpoint_cannot_release_a_new_warning() {
@@ -423,6 +425,9 @@ mod tests {
             .expect("test precondition");
     }
 
+    // These waits observe a private D-Bus daemon and its real Unix-fd peers.
+    // Their Tokio sleeps yield while external I/O changes; the timeouts guard
+    // the integration harness rather than the retry-delay policy.
     async fn inhibitor_count(peers: &Mutex<Vec<UnixStream>>, count: usize) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while peers.lock().expect("test precondition").len() < count {

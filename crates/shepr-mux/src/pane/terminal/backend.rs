@@ -146,13 +146,15 @@ impl PaneTerminal {
         core.agent_osc_state.clear_retained();
     }
 
+    #[cfg(test)]
     pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesResult {
         self.process_pty_bytes_at(pane_id, bytes, Instant::now())
     }
 
-    /// [`Self::process_pty_bytes`] at a stated instant, which decides whether
-    /// a synchronized update has expired.
-    pub(super) fn process_pty_bytes_at(
+    /// Processes one chunk of child output. `now` is the read's timestamp: it
+    /// decides whether a pending synchronized update has expired, and it is
+    /// the parser's clock for any synchronized update this chunk begins.
+    pub(crate) fn process_pty_bytes_at(
         &self,
         pane_id: PaneId,
         bytes: &[u8],
@@ -190,7 +192,7 @@ impl PaneTerminal {
         let synchronized_output_before = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
-        core.terminal.write(bytes);
+        core.terminal.write_at(bytes, now);
         let effects = collect_core_effects(&mut core);
         let default_color_generation = core.default_color_generation;
 
@@ -264,7 +266,7 @@ impl PaneTerminal {
     /// Flushes a synchronized update whose timeout has passed and returns
     /// everything the core queued for delivery. The runtime's timeout task
     /// calls this for a child that went quiet inside an update;
-    /// [`Self::process_pty_bytes`] does the same before parsing new output.
+    /// [`Self::process_pty_bytes_at`] does the same before parsing new output.
     /// Readers and render paths only inspect the terminal. `request_render`
     /// is set when a frame was flushed.
     pub(crate) fn tick(&self, now: Instant) -> ProcessBytesResult {

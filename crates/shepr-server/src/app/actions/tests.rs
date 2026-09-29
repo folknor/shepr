@@ -162,7 +162,7 @@ fn workspace_creation_state_command_commits_spawned_values() {
     let outcome = state.commit_workspace_creation(workspace, terminal, true);
 
     assert_eq!(outcome.workspace_index, 0);
-    assert_eq!(outcome.root_pane, Some(root_pane));
+    assert_eq!(outcome.root_pane, root_pane);
     assert_eq!(state.active_index(), Some(0));
     assert!(state.terminals.contains_key(&terminal_id));
     state.assert_invariants_for_test();

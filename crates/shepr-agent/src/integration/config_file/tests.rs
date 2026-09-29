@@ -33,7 +33,7 @@ fn config_publication_keeps_old_content_until_commit() {
             assert!(!path.try_exists().expect("stat config"));
         }
         assert_eq!(
-            fs::read(&staged.temporary).expect("test precondition"),
+            fs::read(staged.temporary()).expect("test precondition"),
             b"complete new preferences"
         );
         staged.commit().expect("test precondition");
@@ -58,7 +58,7 @@ fn abandoned_and_failed_publication_leave_config_unchanged() {
         }
         drop(Replacement::prepare(&path, b"new").expect("test precondition"));
         let staged = Replacement::prepare(&path, b"new").expect("test precondition");
-        fs::remove_file(&staged.temporary).expect("test precondition");
+        fs::remove_file(staged.temporary()).expect("test precondition");
         assert_eq!(
             staged.commit().expect_err("test precondition").kind(),
             io::ErrorKind::NotFound
@@ -385,7 +385,7 @@ fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
     if let Some(path) = std::env::var_os(CHILD) {
         let dir = PathBuf::from(path);
         // This process runs only this test. A collision must neither be used nor removed.
-        NEXT_TEMP.store(0, Ordering::Relaxed);
+        crate::integration::atomic_replace::reset_temp_sequence(0);
         let collision = dir.join(format!(".shepr-config-{}-0.tmp", std::process::id()));
         fs::write(&collision, b"unrelated file").expect("test precondition");
         for name in ["existing", "new"] {

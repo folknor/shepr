@@ -257,11 +257,13 @@ pub(super) fn wait_for_remote_server_shutdown(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<()> {
+    // clock-io-ok: shutdown confirmation spans remote status round trips.
     let deadline = Instant::now() + REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT;
     loop {
         if remote_server_status(ssh, remote_shepr)? == RemoteServerStatus::NotRunning {
             return Ok(());
         }
+        // clock-io-ok: the remote status request above can consume wall time.
         if Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,

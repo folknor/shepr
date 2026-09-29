@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 
 use base64::Engine;
 
-use crate::app;
+use crate::app::{self, RenderDemand};
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
 use crate::server::client_accept::accept_pending_client_connections;
 use crate::server::client_shell::{
@@ -47,7 +47,6 @@ use crate::server::pane_input::{
     terminal_attach_mouse_position,
 };
 use crate::server::socket_paths::client_socket_path;
-use shepr_api::{self, RenderDemand};
 use shepr_mux::events::AppEvent;
 use shepr_platform::ipc::{
     LocalListener, SocketFileIdentity, SocketStartupLock, bind_private_socket,
@@ -83,6 +82,7 @@ use shepr_protocol::RenderEncoding;
 /// here and hands it in with `App::set_clock` before app work runs.
 pub(super) fn sample_app_clock() -> app::AppClock {
     app::AppClock {
+        // headless-clock-sample-ok: this is the server-owned sampling seam.
         now: Instant::now(),
         wall_now: std::time::SystemTime::now(),
     }
@@ -1579,7 +1579,7 @@ impl HeadlessServer {
                     self.clients.set_foreground_client_id(Some(client_id));
                 }
                 if first_app_client {
-                    self.app.mark_git_status_refresh_due(Instant::now());
+                    self.app.mark_git_status_refresh_due(self.app.clock.now);
                 }
                 self.sync_foreground_client_state();
                 self.claim_unowned_shell_tab_geometry(client_id, true);
@@ -2046,7 +2046,7 @@ impl HeadlessServer {
             }
         };
 
-        let metadata_expired = self.app.expire_due_metadata(Instant::now());
+        let metadata_expired = self.app.expire_due_metadata(self.app.clock.now);
 
         match &msg.request.method {
             shepr_api::schema::Method::ClientWindowTitleSet(params) => {
@@ -2102,7 +2102,7 @@ impl HeadlessServer {
             );
         }
         let outcome = self.app.handle_api_request_with_render(msg.request);
-        changed |= outcome.render != shepr_api::RenderDemand::None;
+        changed |= outcome.render != RenderDemand::None;
         let mut response = outcome.response;
         if let Some(snapshot) = frozen_alt_screen_read
             && let Ok(shepr_api::schema::ResponseResult::PaneRead { read }) = &mut response
@@ -2123,7 +2123,7 @@ impl HeadlessServer {
                 spec.unwrap,
                 spec.initial,
                 spec.content_seq,
-                Instant::now(),
+                self.app.clock.now,
             );
             self.push_pending_alt_screen_read(pending);
             return changed;

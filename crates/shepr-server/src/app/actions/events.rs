@@ -211,9 +211,9 @@ impl AppState {
                     .collect()
                 }
             }
-            // Handled before this match, which keeps them for AppEvent
-            // exhaustiveness: a clipboard write is a host-local effect the
-            // HeadlessServer forwards to the foreground client, and git and
+            // Handled before this state-only handler, which keeps them for
+            // AppEvent exhaustiveness: a clipboard write is a host-local effect
+            // the HeadlessServer forwards to the foreground client, and git and
             // tab-bar results are applied by the App's internal-event handler.
             AppEvent::ClipboardWrite { .. }
             | AppEvent::GitStatusRefreshed { .. }

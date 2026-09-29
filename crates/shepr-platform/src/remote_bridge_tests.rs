@@ -194,6 +194,9 @@ fn bridge_preserves_one_way_progress_and_drains_after_stdin_eof() {
                     .write_all(b"output")
                     .expect("test precondition");
             }
+            // Keep this end-to-end check on the real boot-time clock: each
+            // transfer must renew the watchdog while less than the timeout
+            // passes.
             std::thread::sleep(Duration::from_millis(60));
             assert!(
                 bridge

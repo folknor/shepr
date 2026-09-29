@@ -166,7 +166,11 @@ impl EndpointTransport for NativeEndpointTransport {
             .try_send(WriterCommand::Flush(done))
             .map_err(|_| queue_full())?;
         completion
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .recv_timeout(
+                crate::limits::Deadline::at(deadline)
+                    .remaining(Instant::now())
+                    .unwrap_or_default(),
+            )
             .map_err(|error| match error {
                 mpsc::RecvTimeoutError::Timeout => {
                     io::Error::new(io::ErrorKind::TimedOut, "endpoint flush timed out")
@@ -225,7 +229,8 @@ fn write_frame(
     mut frame: &[u8],
     stopped: &AtomicBool,
 ) -> io::Result<()> {
-    let deadline = Instant::now() + crate::limits::ENDPOINT_WRITE_TIMEOUT;
+    let deadline =
+        crate::limits::Deadline::after(Instant::now(), crate::limits::ENDPOINT_WRITE_TIMEOUT);
     while !frame.is_empty() && !stopped.load(Ordering::Acquire) {
         let chunk = frame;
         match writer.write(chunk) {
@@ -238,7 +243,7 @@ fn write_frame(
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error),
         }
-        if Instant::now() >= deadline {
+        if deadline.is_expired(Instant::now()) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "endpoint write timed out",

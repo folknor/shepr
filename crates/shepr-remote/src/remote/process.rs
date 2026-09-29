@@ -148,33 +148,41 @@ fn read_into(
 }
 
 pub(super) fn wait_with_output_timeout(
-    mut child: std::process::Child,
+    child: std::process::Child,
     timeout: Duration,
 ) -> io::Result<Output> {
-    let stdout = child
+    let mut running = RunningCommand::new(child);
+    let stdout = running
+        .child
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("SSH command stdout was not captured"))?;
-    let stderr = child
+    let stderr = running
+        .child
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("SSH command stderr was not captured"))?;
     // Discovery and status responses are small. Drain both pipes to avoid a
     // child blocking, but retain only bounded output from the remote host.
-    let stdout = PipeCapture::spawn_tail(stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
-    let stderr = PipeCapture::spawn(stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::None);
+    running.stdout = Some(PipeCapture::spawn_tail(
+        stdout,
+        SSH_STDOUT_CAPTURE_LIMIT,
+        PipeEcho::None,
+    ));
+    running.stderr = Some(PipeCapture::spawn(
+        stderr,
+        SSH_STDERR_CAPTURE_LIMIT,
+        PipeEcho::None,
+    ));
+    // clock-io-ok: this deadline measures the running child's wall time.
     let started = Instant::now();
     let status = loop {
-        match child.try_wait() {
+        match running.child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(error) => {
-                abandon_command(&mut child, stdout, stderr);
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         }
         if started.elapsed() >= timeout {
-            abandon_command(&mut child, stdout, stderr);
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "noninteractive SSH command timed out",
@@ -182,6 +190,15 @@ pub(super) fn wait_with_output_timeout(
         }
         thread::sleep(POLL_INTERVAL);
     };
+    running.armed = false;
+    let stdout = running
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("SSH stdout capture missing"))?;
+    let stderr = running
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("SSH stderr capture missing"))?;
     let stdout = stdout.finish(PIPE_DRAIN_GRACE)?;
     let stderr = stderr.finish(PIPE_DRAIN_GRACE)?;
     Ok(Output {
@@ -191,13 +208,37 @@ pub(super) fn wait_with_output_timeout(
     })
 }
 
-/// Ends an SSH command that has already failed; that failure is what the caller
-/// returns. The pipes are drained only so their reader threads end, and what
-/// they captured (or why they failed) belongs to a command nobody will read.
-fn abandon_command(child: &mut std::process::Child, stdout: PipeCapture, stderr: PipeCapture) {
-    kill_and_reap(child, "SSH command");
-    drop(stdout.finish(PIPE_DRAIN_GRACE));
-    drop(stderr.finish(PIPE_DRAIN_GRACE));
+/// Reaps the command and drains capture threads on every incomplete return.
+struct RunningCommand {
+    child: std::process::Child,
+    stdout: Option<PipeCapture>,
+    stderr: Option<PipeCapture>,
+    armed: bool,
+}
+
+impl RunningCommand {
+    fn new(child: std::process::Child) -> Self {
+        Self {
+            child,
+            stdout: None,
+            stderr: None,
+            armed: true,
+        }
+    }
+}
+
+impl Drop for RunningCommand {
+    fn drop(&mut self) {
+        if self.armed {
+            kill_and_reap(&mut self.child, "SSH command");
+            if let Some(stdout) = self.stdout.take() {
+                drop(stdout.finish(PIPE_DRAIN_GRACE));
+            }
+            if let Some(stderr) = self.stderr.take() {
+                drop(stderr.finish(PIPE_DRAIN_GRACE));
+            }
+        }
+    }
 }
 
 /// Sends SIGKILL to an ssh child being abandoned. `kill` succeeds on a child

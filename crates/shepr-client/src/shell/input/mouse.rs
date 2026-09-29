@@ -235,6 +235,7 @@ impl ClientShellState {
         row: u16,
         metrics: Option<shepr_termio::ScrollMetrics>,
         outcome: &mut ClientShellInput,
+        now: Instant,
     ) {
         // Selections hold absolute rows. Without the pane's scroll origin a
         // viewport row cannot be mapped to one, so the selection is not moved.
@@ -244,7 +245,7 @@ impl ClientShellState {
         let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
         let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
         if self.word_selection_gesture.is_some() {
-            self.drag_word_selection((absolute_row, col), outcome);
+            self.drag_word_selection((absolute_row, col), outcome, now);
         } else if let Some(selection) = self.selection.as_mut() {
             selection.drag(shepr_vt::Point::new(absolute_row, col));
         }
@@ -283,7 +284,7 @@ impl ClientShellState {
             );
             anchor_row != row || anchor_col != column
         });
-        self.update_selection_cursor_with_metrics(hit, column, row, metrics, outcome);
+        self.update_selection_cursor_with_metrics(hit, column, row, metrics, outcome, now);
         let is_dragging = self
             .word_selection_gesture
             .as_ref()
@@ -340,7 +341,14 @@ impl ClientShellState {
                 offset_from_bottom,
                 ..metrics
             };
-            self.update_selection_cursor_with_metrics(hit, column, row, Some(projected), outcome);
+            self.update_selection_cursor_with_metrics(
+                hit,
+                column,
+                row,
+                Some(projected),
+                outcome,
+                now,
+            );
             self.push_pane_scroll_offset(hit.pane_id.clone(), offset_from_bottom, outcome);
         }
         self.selection_autoscroll = Some(ClientSelectionAutoscroll {
@@ -360,6 +368,7 @@ impl ClientShellState {
         &mut self,
         mouse: MouseEvent,
         outcome: &mut ClientShellInput,
+        now: Instant,
     ) -> bool {
         if !matches!(
             mouse.kind,
@@ -394,6 +403,7 @@ impl ClientShellState {
                 mouse.row,
                 Some(projected),
                 outcome,
+                now,
             );
             self.push_pane_scroll_offset(hit.pane_id, offset_from_bottom, outcome);
             outcome.repaint = true;
@@ -487,6 +497,7 @@ impl ClientShellState {
             autoscroll.last_mouse_row,
             Some(metrics),
             &mut outcome,
+            now,
         );
         self.push_pane_scroll_offset(autoscroll.pane_id.clone(), next_offset, &mut outcome);
         self.selection_autoscroll = Some(autoscroll);
@@ -1339,7 +1350,7 @@ impl ClientShellState {
         if mouse.kind == MouseEventKind::Up(MouseButton::Left)
             && self.word_selection_gesture.is_some()
         {
-            self.finish_word_selection(outcome);
+            self.finish_word_selection(outcome, now);
             outcome.repaint = true;
             return;
         }
@@ -1365,7 +1376,7 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        if self.scroll_in_progress_selection(mouse, outcome) {
+        if self.scroll_in_progress_selection(mouse, outcome, now) {
             return;
         }
 

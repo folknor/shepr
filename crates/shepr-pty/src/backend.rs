@@ -79,7 +79,10 @@ pub fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
     // SAFETY: the ioctl succeeded, so `slave` is a fresh fd nothing else owns.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
 
-    fd::resize_pty_fd(master.as_raw_fd(), rows, cols, 0, 0)?;
+    fd::resize_pty_fd(
+        master.as_raw_fd(),
+        shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0),
+    )?;
     enable_utf8_input(&master);
     Ok(OpenedPty { master, slave })
 }

@@ -280,17 +280,7 @@ losing the category on that route.
 
 ## HYGC-026 - Failures discarded with `let _ =` at cleanup, permission and signal sites
 
-`shepr-platform`, the list the core/platform hunter gave:
-`ipc.rs` `remove_file`/`remove_dir` of the staging directory (a leaked 0700
-directory per failure in the XDG runtime directory, never logged); `ipc.rs`
-`remove_file` after a failed restrict; `ssh_agent.rs` `remove_file` of the
-temporary symlink and of the published path on drop; `logging.rs`
-`set_permissions` tightening a world-readable log - the one place where failing
-quietly means the log stays readable by others; `clipboard.rs::kill_and_reap`
-(both calls, by design); `terminal_setup`/`title.rs` `let _ =
-stdout.write_all(...)`.
-
-Elsewhere:
+The `shepr-platform` sites are all logged or returned now. Elsewhere:
 
 - `shepr-pty`'s `prepare_pty_child` ignores the return codes of `sigemptyset`
   and `sigprocmask`.

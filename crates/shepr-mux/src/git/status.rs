@@ -123,6 +123,8 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     cached: Option<&GitStatusCacheEntry>,
     demand: GitStatusRefreshDemand,
 ) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+    // One sample anchors both retry comparisons and deadlines recorded below;
+    // a subprocess must not move the cache decision partway through a snapshot.
     let now = Instant::now();
     let mut read_errors = Vec::new();
     if let Some(cached) = cached.filter(|entry| {

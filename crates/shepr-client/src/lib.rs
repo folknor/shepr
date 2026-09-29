@@ -94,8 +94,7 @@ use shepr_protocol::{ClientMessage, ServerMessage};
 use shepr_termio::blit as render_ansi;
 
 fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
-    const MAX_NOTICES: usize = 64;
-    if notices.len() == MAX_NOTICES {
+    if notices.len() == limits::MAX_NOTICES {
         let _ = notices.pop_front();
     }
     notices.push_back(message);
@@ -509,7 +508,12 @@ async fn run_client_loop(
             1,
             surface_decoder,
         )?;
-        let mut registry = endpoint::EndpointRegistry::with_local_link(transport, 1, local_link);
+        let mut registry = endpoint::EndpointRegistry::with_local_link(
+            transport,
+            1,
+            local_link,
+            std::time::Instant::now(),
+        );
         if state.mode.is_shell() {
             registry.send(&ClientMessage::ClientShellFocus { focused: true });
         }
@@ -728,6 +732,7 @@ impl ClientLoop<'_> {
                 geometry.cell_width(),
                 geometry.cell_height(),
                 geometry.exact,
+                now,
             ),
             ClientLoopEvent::EndpointSupervisor(event) => {
                 self.handle_endpoint_supervisor(event, now)
@@ -832,6 +837,7 @@ impl ClientLoop<'_> {
                 pending_activation,
                 endpoint_commands,
                 scheduled_activation,
+                now,
             )? {
                 return Ok(ClientLoopAction::Exit);
             }
@@ -989,6 +995,7 @@ impl ClientLoop<'_> {
         cell_width_px: u32,
         cell_height_px: u32,
         pixel_geometry_exact: bool,
+        now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
         let Self {
             state,
@@ -1045,13 +1052,14 @@ impl ClientLoop<'_> {
             }
         };
         if let Some(activation) = pending_activation.as_mut() {
-            if let Err(error) = activation.update_resize(&msg, write_stream) {
+            if let Err(error) = activation.update_resize_at(&msg, write_stream, now) {
                 rollback_endpoint_activation(
                     state,
                     write_stream,
                     pending_activation,
                     &error,
                     false,
+                    now,
                 );
             }
         } else {
@@ -1145,7 +1153,7 @@ impl ClientLoop<'_> {
                     )
                 });
                 let reader_quit = writer.stop_handle();
-                write_stream.insert(endpoint_id.clone(), writer, generation, false);
+                write_stream.insert(endpoint_id.clone(), writer, generation, false, now);
                 if let Some(frame) = frame {
                     // Connecting changes no pane projection (the connection has no
                     // surface yet), only the machine list.
@@ -1264,6 +1272,7 @@ impl ClientLoop<'_> {
                             write_stream,
                             pending_activation,
                             endpoint_commands,
+                            now,
                         )?
                     {
                         *scheduled_activation = Some(event);
@@ -1382,17 +1391,19 @@ impl ClientLoop<'_> {
                             pending_activation,
                             "endpoint returned a chunked activation acknowledgement",
                             false,
+                            now,
                         );
                         return Ok(ClientLoopAction::NextEvent);
                     }
                     let progress = pending_activation.as_mut().map(|pending| {
-                        pending.receive_response_for_boot(
+                        pending.receive_response_for_boot_at(
                             endpoint_id,
                             generation,
                             &boot_id,
                             &request_id,
                             &data,
                             write_stream,
+                            now,
                         )
                     });
                     match progress {
@@ -1402,6 +1413,7 @@ impl ClientLoop<'_> {
                                 write_stream,
                                 pending_activation,
                                 endpoint_commands,
+                                now,
                             )? {
                                 *scheduled_activation = Some(event);
                             }
@@ -1416,6 +1428,7 @@ impl ClientLoop<'_> {
                                 pending_activation,
                                 &message,
                                 source_release_rejected,
+                                now,
                             );
                         }
                         _ => {}
@@ -1447,10 +1460,11 @@ impl ClientLoop<'_> {
                         let outcome = if completed.generation == generation
                             && shell.endpoint_is_active(&completed.endpoint_id)
                         {
-                            shell.handle_endpoint_result(
+                            shell.handle_endpoint_result_at(
                                 &completed.boot_id,
                                 &completed.request_id,
                                 completed.result,
+                                now,
                             )
                         } else {
                             shell::ClientShellInput {
@@ -1479,6 +1493,7 @@ impl ClientLoop<'_> {
                     pending_activation,
                     endpoint_commands,
                     scheduled_activation,
+                    now,
                 )? {
                     return Ok(ClientLoopAction::Exit);
                 }
@@ -1578,6 +1593,7 @@ impl ClientLoop<'_> {
                         write_stream,
                         pending_activation,
                         endpoint_commands,
+                        now,
                     )?
                 {
                     *scheduled_activation = Some(event);
@@ -1611,6 +1627,7 @@ impl ClientLoop<'_> {
                     write_stream,
                     pending_activation,
                     endpoint_commands,
+                    now,
                 )? {
                     *scheduled_activation = Some(event);
                 }
@@ -1771,6 +1788,7 @@ impl ClientLoop<'_> {
                 pending_activation,
                 &format!("{label} did not produce a coherent surface in time"),
                 false,
+                now,
             );
         }
         match catalog_watch.as_mut().and_then(|watch| watch.poll(now)) {
@@ -1829,10 +1847,11 @@ impl ClientLoop<'_> {
                     if !shell.endpoint_is_active(&expired.endpoint_id) {
                         continue;
                     }
-                    let expired_outcome = shell.handle_endpoint_result(
+                    let expired_outcome = shell.handle_endpoint_result_at(
                         &expired.boot_id,
                         &expired.request_id,
                         expired.result,
+                        now,
                     );
                     outcome.merge(expired_outcome);
                 }
@@ -1859,6 +1878,7 @@ impl ClientLoop<'_> {
                 pending_activation,
                 endpoint_commands,
                 scheduled_activation,
+                now,
             )? {
                 return Ok(ClientLoopAction::Exit);
             }

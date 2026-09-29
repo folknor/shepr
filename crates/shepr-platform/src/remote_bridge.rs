@@ -19,6 +19,8 @@ use std::time::Duration;
 // either kind stays connected while a dead client's bridge exits.
 pub(crate) const IDLE_TIMEOUT: Duration = shepr_core::limits::BRIDGE_IDLE_TIMEOUT;
 
+type BootClock = Arc<dyn Fn() -> io::Result<u64> + Send + Sync>;
+
 fn now() -> io::Result<u64> {
     let mut time = libc::timespec {
         tv_sec: 0,
@@ -37,6 +39,7 @@ fn now() -> io::Result<u64> {
 #[derive(Clone)]
 pub(super) struct Activity {
     last: Arc<AtomicU64>,
+    clock: BootClock,
     _stop: mpsc::Sender<()>,
 }
 
@@ -50,8 +53,17 @@ impl Activity {
         timeout: Duration,
         expired: impl FnOnce(Option<Duration>) + Send + 'static,
     ) -> io::Result<Self> {
-        let last = Arc::new(AtomicU64::new(now()?));
+        Self::start_with_clock(timeout, Arc::new(now), expired)
+    }
+
+    fn start_with_clock(
+        timeout: Duration,
+        clock: BootClock,
+        expired: impl FnOnce(Option<Duration>) + Send + 'static,
+    ) -> io::Result<Self> {
+        let last = Arc::new(AtomicU64::new(clock()?));
         let watched = Arc::clone(&last);
+        let watched_clock = Arc::clone(&clock);
         let (stop, stopped) = mpsc::channel();
         std::thread::Builder::new()
             .name("ssh-bridge-liveness".into())
@@ -61,7 +73,7 @@ impl Activity {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    let idle_for = match now() {
+                    let idle_for = match watched_clock() {
                         Ok(now) => {
                             let Some(idle_for) = expired_idle(&watched, now, timeout) else {
                                 continue;
@@ -74,13 +86,17 @@ impl Activity {
                     return;
                 }
             })?;
-        Ok(Self { last, _stop: stop })
+        Ok(Self {
+            last,
+            clock,
+            _stop: stop,
+        })
     }
 
     fn record(&self) {
         // Activity is advisory: a failed clock read leaves the timestamp stale
         // for the watchdog instead of turning transferred bytes into an I/O error.
-        if let Ok(now) = now() {
+        if let Ok(now) = (self.clock)() {
             self.last.fetch_max(now, Ordering::Relaxed);
         }
     }
@@ -141,6 +157,7 @@ mod tests {
         let last = Arc::new(AtomicU64::new(0));
         let activity = Activity {
             last: Arc::clone(&last),
+            clock: Arc::new(|| Ok(42)),
             _stop: stop,
         };
         assert_eq!(
@@ -154,7 +171,7 @@ mod tests {
         let mut reader = TrackedIo::new(&b"output"[..], Some(activity.clone()));
         reader.read_exact(&mut [0; 6]).expect("test precondition");
         let after_read = last.load(Ordering::Relaxed);
-        assert!(after_read > 0);
+        assert_eq!(after_read, 42);
         assert_eq!(expired_idle(&last, after_read, IDLE_TIMEOUT), None);
         assert_eq!(reader.read(&mut [0; 1]).expect("test precondition"), 0);
         assert_eq!(last.load(Ordering::Relaxed), after_read);

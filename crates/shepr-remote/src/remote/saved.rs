@@ -319,6 +319,7 @@ impl SavedSshConnector {
         deadline: std::time::Instant,
         establish: &mut impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
+        // clock-io-ok: discovery and bridge setup may have consumed the attempt budget.
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }

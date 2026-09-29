@@ -71,6 +71,7 @@ use super::DecMode;
 use super::ExtraModes;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
+use shepr_core::geometry::{GridSize, PaneGeometry};
 
 /// The vte private mode a write of `mode` goes through, from the mode table
 /// (`PrivateMode::new` is private to vte). Adapter-stored and unlisted modes
@@ -84,29 +85,34 @@ pub(super) fn private_mode(mode: DecMode) -> PrivateMode {
 
 /// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
 /// `None` while no pixel geometry is known.
-pub(super) fn in_band_size_report(
-    rows: usize,
-    cols: usize,
-    cell: Option<shepr_core::geometry::CellPx>,
-) -> Option<String> {
-    let cell = cell?;
-    let height = rows as u64 * u64::from(cell.height.get());
-    let width = cols as u64 * u64::from(cell.width.get());
-    Some(format!("\x1b[48;{rows};{cols};{height};{width}t"))
+pub(super) fn in_band_size_report(geometry: PaneGeometry) -> Option<String> {
+    let (width, height) = geometry.text_area_px()?;
+    Some(format!(
+        "\x1b[48;{};{};{height};{width}t",
+        geometry.rows(),
+        geometry.cols()
+    ))
 }
 
 /// The `CSI 14 t` reply (`CSI 4 ; height ; width t`), `None` while no pixel
-/// geometry is known. Computed in u64: alacritty's own reply multiplies u16
-/// values, which wraps (or panics in debug builds) for large cell sizes.
-pub(super) fn text_area_pixels_report(
-    rows: usize,
-    cols: usize,
-    cell: Option<shepr_core::geometry::CellPx>,
-) -> Option<String> {
-    let cell = cell?;
-    let height = rows as u64 * u64::from(cell.height.get());
-    let width = cols as u64 * u64::from(cell.width.get());
+/// geometry is known. Its pixels use the same u16 limit as PTY winsize.
+pub(super) fn text_area_pixels_report(geometry: PaneGeometry) -> Option<String> {
+    let (width, height) = geometry.text_area_px()?;
     Some(format!("\x1b[4;{height};{width}t"))
+}
+
+pub(super) fn geometry_for_terminal(
+    cols: usize,
+    rows: usize,
+    cell: Option<shepr_core::geometry::CellPx>,
+) -> PaneGeometry {
+    PaneGeometry {
+        grid: GridSize::clamped_pane(
+            u16::try_from(cols).unwrap_or(u16::MAX),
+            u16::try_from(rows).unwrap_or(u16::MAX),
+        ),
+        cell,
+    }
 }
 
 /// alacritty's keyboard-mode stack cap (`KEYBOARD_MODE_STACK_MAX_DEPTH`,
@@ -457,11 +463,11 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                     }
                 }
                 ExtraMode::InBandResize => {
-                    if let Some(report) = in_band_size_report(
-                        self.term.screen_lines(),
+                    if let Some(report) = in_band_size_report(geometry_for_terminal(
                         self.term.columns(),
+                        self.term.screen_lines(),
                         self.cell,
-                    ) {
+                    )) {
                         self.reply(report);
                     }
                 }
@@ -598,9 +604,11 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     /// Not forwarded: alacritty's reply closure multiplies u16 cell sizes.
     fn text_area_size_pixels(&mut self) {
-        if let Some(report) =
-            text_area_pixels_report(self.term.screen_lines(), self.term.columns(), self.cell)
-        {
+        if let Some(report) = text_area_pixels_report(geometry_for_terminal(
+            self.term.columns(),
+            self.term.screen_lines(),
+            self.cell,
+        )) {
             self.reply(report);
         }
     }

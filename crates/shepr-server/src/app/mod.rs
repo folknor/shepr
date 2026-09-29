@@ -37,6 +37,26 @@ pub(crate) struct AppClock {
     pub(crate) wall_now: SystemTime,
 }
 
+/// How much of the server view an app operation requires the loop to render.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RenderDemand {
+    #[default]
+    None,
+    Partial,
+    Full,
+}
+
+impl RenderDemand {
+    pub(crate) fn join(&mut self, other: Self) {
+        *self = (*self).max(other);
+    }
+}
+
+pub(crate) struct Outcome {
+    pub(crate) response: shepr_api::error::ApiResult,
+    pub(crate) render: RenderDemand,
+}
+
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -448,6 +468,17 @@ mod tests {
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
+
+    #[test]
+    fn render_demand_join_keeps_strongest_request() {
+        let mut demand = RenderDemand::None;
+        demand.join(RenderDemand::Partial);
+        assert_eq!(demand, RenderDemand::Partial);
+        demand.join(RenderDemand::None);
+        assert_eq!(demand, RenderDemand::Partial);
+        demand.join(RenderDemand::Full);
+        assert_eq!(demand, RenderDemand::Full);
+    }
 
     pub(super) fn test_clock() -> AppClock {
         AppClock {
@@ -1721,6 +1752,7 @@ mod tests {
             Ok(())
         }));
         let releaser = std::thread::spawn(move || {
+            // Keep the writer blocked while the final-save call reaches its join.
             std::thread::sleep(Duration::from_millis(30));
             release_tx.send(()).expect("test precondition");
         });

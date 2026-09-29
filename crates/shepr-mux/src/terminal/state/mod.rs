@@ -214,11 +214,11 @@ pub struct TerminalState {
     /// When each source's entry in `hook_report_sequences` was last
     /// accepted; see [`HOOK_SEQUENCE_REANCHOR_AFTER`].
     hook_report_accepted_at: HashMap<String, Instant>,
-    /// Only canonical official source/label pairs with full-lifecycle
-    /// authority can enter this map.
+    /// Only canonical built-in source/label pairs with full-lifecycle
+    /// authority can enter this map; custom report sources cannot grow it.
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
-    /// The source keys have the same restriction; each session history is
-    /// capped below.
+    /// The source keys have the same restriction, and each source retains at
+    /// most `MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE` sessions.
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
     metadata_report_sequences: HashMap<String, MetadataReportSeq>,
     metadata_report_agents: HashMap<String, Agent>,

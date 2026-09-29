@@ -322,7 +322,10 @@ impl ClientShellState {
             return false;
         };
         let boot_id = pending.boot_id.clone();
-        let outcome = self.handle_endpoint_result(
+        // A cancellation is always an error result, and no error path schedules
+        // a deadline, so the instant is never compared; it only satisfies the
+        // shared result path.
+        let outcome = self.handle_endpoint_result_at(
             &boot_id,
             request_id,
             Err(ClientShellEndpointError {
@@ -330,6 +333,7 @@ impl ClientShellState {
                 message: "This server action was interrupted. Check its state before retrying."
                     .into(),
             }),
+            std::time::Instant::now(),
         );
         // A cancelled copy-mode request does not continue its key queue
         // (`continue_queue` is false on every error), so nothing but a repaint
@@ -353,15 +357,26 @@ impl ClientShellState {
     /// host queries, not just repaints and actions. The caller must route the
     /// whole outcome (`finish_client_shell_input`), or the replayed keystrokes
     /// are lost.
+    #[cfg(test)]
     pub(crate) fn handle_endpoint_result(
         &mut self,
         boot_id: &str,
         request_id: &str,
         result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> ClientShellInput {
+        self.handle_endpoint_result_at(boot_id, request_id, result, std::time::Instant::now())
+    }
+
+    pub(crate) fn handle_endpoint_result_at(
+        &mut self,
+        boot_id: &str,
+        request_id: &str,
+        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
+        now: std::time::Instant,
+    ) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
         let (repaint, actions) =
-            self.apply_endpoint_result(boot_id, request_id, result, &mut outcome);
+            self.apply_endpoint_result(boot_id, request_id, result, &mut outcome, now);
         outcome.repaint |= repaint;
         outcome.actions.extend(actions);
         outcome
@@ -373,6 +388,7 @@ impl ClientShellState {
         request_id: &str,
         result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
+        now: std::time::Instant,
     ) -> (bool, Vec<ClientShellAction>) {
         let Some(pending) = self.pending_requests.remove(request_id) else {
             return (false, Vec::new());
@@ -471,6 +487,7 @@ impl ClientShellState {
                     absolute_row,
                     generation,
                     result,
+                    now,
                 );
             }
             PendingEndpointKind::CopyMotion {

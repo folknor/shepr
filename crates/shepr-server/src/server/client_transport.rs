@@ -1378,16 +1378,16 @@ mod tests {
     }
 
     fn recv_server_event(receiver: &mut mpsc::Receiver<ServerEvent>, context: &str) -> ServerEvent {
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        loop {
-            match receiver.try_recv() {
-                Ok(event) => return event,
-                Err(mpsc::error::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(err) => panic!("{context}: {err}"),
-            }
-        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        runtime
+            // The timer must be created inside the runtime, so build it in the
+            // async block rather than as the argument.
+            .block_on(async { tokio::time::timeout(Duration::from_secs(1), receiver.recv()).await })
+            .unwrap_or_else(|_| panic!("{context}: timed out"))
+            .unwrap_or_else(|| panic!("{context}: channel closed"))
     }
 
     fn bracketed_paste_with_total_len(total_len: usize) -> Vec<u8> {
@@ -1606,6 +1606,7 @@ mod tests {
             let count = client.read(&mut buffer).expect("test precondition");
             assert_ne!(count, 0, "observer disconnected while making progress");
             received += count;
+            // Pace reads so the sender must make progress across timeout windows.
             std::thread::sleep(Duration::from_millis(5));
         }
         worker.join().expect("test precondition");

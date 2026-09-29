@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 mod actions;
+mod atomic_replace;
 mod claude_settings;
 mod command;
 mod config_edit;

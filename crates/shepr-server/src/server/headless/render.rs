@@ -38,7 +38,7 @@ impl HeadlessServer {
     fn rebuild_shell_session_cache(&mut self) {
         self.shell_session_cache = Some(ShellSessionCache {
             revision: self.app.state.shell_projection_revision,
-            built_at: Instant::now(),
+            built_at: self.app.clock.now,
             session: self.app.shell_session_snapshot(),
         });
     }
@@ -284,11 +284,8 @@ impl HeadlessServer {
         }
     }
 
-    pub(super) fn has_pending_presentation_work(
-        &self,
-        render_demand: shepr_api::RenderDemand,
-    ) -> bool {
-        render_demand == shepr_api::RenderDemand::Full || self.app.render_dirty.has_immediate_work()
+    pub(super) fn has_pending_presentation_work(&self, render_demand: RenderDemand) -> bool {
+        render_demand == RenderDemand::Full || self.app.render_dirty.has_immediate_work()
     }
 
     pub(super) fn sync_immediate_pty_sources(&self) {

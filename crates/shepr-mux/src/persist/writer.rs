@@ -56,15 +56,6 @@ enum SnapshotHistoryPlan {
     RetryAfterWrite,
 }
 
-/// What a failure to prune older recovery copies means for the copy just made.
-#[derive(Clone, Copy)]
-enum PrunePolicy {
-    /// Remove the new copy and fail, so the directory cannot grow unbounded.
-    Fatal,
-    /// Keep the new copy and log the failure.
-    Warn,
-}
-
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
 pub struct SessionWriter {
     path: PathBuf,
@@ -75,9 +66,8 @@ pub struct SessionWriter {
     /// rewritten and fsynced on every save otherwise, even when no pane printed
     /// anything.
     written_history: Option<WrittenHistory>,
-    /// Whether the last history save had to trim scrollback to fit the file
-    /// cap, so the log records when trimming starts and stops rather than
-    /// repeating on every save while it lasts.
+    /// Whether the last history save had to trim scrollback or workspace
+    /// shape to fit the file cap, so the log records transitions only.
     trimming_history: bool,
 }
 
@@ -217,7 +207,6 @@ impl SessionWriter {
                     &self.path,
                     &super::io::snapshot_directory(&self.path),
                     SNAPSHOT_LIMIT,
-                    PrunePolicy::Fatal,
                     now,
                 ) {
                     Ok(_) => SnapshotHistoryPlan::Skip,
@@ -289,7 +278,8 @@ impl SessionWriter {
                 event = "persist.save", subsystem = "persist", outcome = "history_trimmed",
                 path = %history_path.display(), panes = trim.panes,
                 dropped_bytes = trim.dropped_bytes,
-                "session history exceeds its file cap; saving only the most recent scrollback"
+                structure_dropped = trim.structure_dropped,
+                "session history exceeds its file cap; saving what fits"
             ),
             (None, true) => tracing::info!(
                 event = "persist.save", subsystem = "persist", outcome = "history_fits",
@@ -412,7 +402,6 @@ fn preserve_snapshot_after_write(path: &Path, now: SystemTime) -> io::Result<()>
             path,
             &super::io::snapshot_directory(path),
             SNAPSHOT_LIMIT,
-            PrunePolicy::Fatal,
             now,
         )?;
     }
@@ -420,20 +409,13 @@ fn preserve_snapshot_after_write(path: &Path, now: SystemTime) -> io::Result<()>
 }
 
 fn preserve_existing(path: &Path, now: SystemTime) -> io::Result<bool> {
-    preserve_existing_in(
-        path,
-        &super::io::backup_directory(path),
-        3,
-        PrunePolicy::Warn,
-        now,
-    )
+    preserve_existing_in(path, &super::io::backup_directory(path), 3, now)
 }
 
 fn preserve_existing_in(
     path: &Path,
     directory: &Path,
     keep: usize,
-    prune_policy: PrunePolicy,
     now: SystemTime,
 ) -> io::Result<bool> {
     let mut source = match File::open(path) {
@@ -473,14 +455,10 @@ fn preserve_existing_in(
             "preserved session recovery copy"
         );
         if let Err(err) = prune_backups(&older, keep) {
-            if matches!(prune_policy, PrunePolicy::Fatal) {
-                std::fs::remove_file(&backup)?;
-                return Err(err);
-            }
-            tracing::warn!(
-                event = "persist.backup", subsystem = "persist", outcome = "prune_error",
-                path = %directory.display(), err = %err, "failed to prune session recovery copies"
-            );
+            // A failed prune must not leave one more recovery copy behind on
+            // every retry; the source file is still intact for its caller.
+            std::fs::remove_file(&backup)?;
+            return Err(err);
         }
         return Ok(true);
     }

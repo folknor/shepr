@@ -828,6 +828,7 @@ mod tests {
             if marker_exists(&descendant_started) {
                 break;
             }
+            // The child reports through a file marker with no async notifier.
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(

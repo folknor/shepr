@@ -229,18 +229,20 @@ fn pixel_size_reports_need_pixel_geometry_but_character_size_does_not() {
     );
 }
 
-/// alacritty's own `CSI 14 t` reply multiplies u16 cell sizes, which wraps
-/// (or panics in debug builds) for large client-reported sizes.
+/// Pixel replies are bounded by the same u16 geometry reported by TIOCGWINSZ.
 #[test]
-fn text_area_pixel_report_does_not_overflow_for_large_cells() {
+fn text_area_pixel_report_matches_winsize_limits_for_large_cells() {
     let mut terminal = Terminal::new(80, 24, 0);
     terminal.resize(shepr_core::geometry::PaneGeometry::new(
         80, 24, 100_000, 100_000,
     ));
-    terminal.write(b"\x1b[14t");
+    terminal.write(b"\x1b[14t\x1b[?2048h");
     assert_eq!(
         core_replies(&mut terminal),
-        vec![b"\x1b[4;2400000;8000000t".to_vec()]
+        vec![
+            b"\x1b[4;65535;65535t".to_vec(),
+            b"\x1b[48;24;80;65535;65535t".to_vec(),
+        ]
     );
 }
 
@@ -309,13 +311,13 @@ fn in_band_resize_reports_on_enable_and_resize() {
 
 #[test]
 fn synchronized_output_buffers_until_end_or_timeout() {
+    let start = Instant::now();
     let mut terminal = Terminal::new(20, 3, 0);
-    terminal.write(b"\x1b[?2026hhidden");
+    terminal.write_at(b"\x1b[?2026hhidden", start);
     assert!(terminal.mode_get(DecMode::SynchronizedOutput));
-    let initial_deadline = terminal
-        .synchronized_output_deadline()
-        .expect("test precondition");
-    assert!(!terminal.tick(initial_deadline - std::time::Duration::from_millis(1)));
+    let deadline = start + std::time::Duration::from_millis(150);
+    assert_eq!(terminal.synchronized_output_deadline(), Some(deadline));
+    assert!(!terminal.tick(deadline - std::time::Duration::from_millis(1)));
     assert_eq!(
         terminal
             .read_text_viewport(vp(0, 0), vp(19, 0), false)
@@ -323,7 +325,10 @@ fn synchronized_output_buffers_until_end_or_timeout() {
         ""
     );
 
-    terminal.write(b"\x1b[?2026l");
+    terminal.write_at(
+        b"\x1b[?2026l",
+        deadline - std::time::Duration::from_millis(1),
+    );
     assert!(!terminal.mode_get(DecMode::SynchronizedOutput));
     assert_eq!(
         terminal
@@ -332,11 +337,14 @@ fn synchronized_output_buffers_until_end_or_timeout() {
         "hidden"
     );
 
-    terminal.write(b"\x1b[?2026h forgotten");
-    let deadline = terminal
-        .synchronized_output_deadline()
-        .expect("test precondition");
-    assert!(terminal.tick(deadline + std::time::Duration::from_millis(1)));
+    let second_start = deadline + std::time::Duration::from_millis(1);
+    terminal.write_at(b"\x1b[?2026h forgotten", second_start);
+    let second_deadline = second_start + std::time::Duration::from_millis(150);
+    assert_eq!(
+        terminal.synchronized_output_deadline(),
+        Some(second_deadline)
+    );
+    assert!(terminal.tick(second_deadline));
     assert!(!terminal.mode_get(DecMode::SynchronizedOutput));
     assert!(
         terminal
@@ -817,8 +825,8 @@ fn halfwidth_voiced_marks_take_their_own_cell() {
         );
     }
 
-    let mut terminal = Terminal::new(2, 2, 0);
-    terminal.write("ab\u{ff9f}".as_bytes());
+    let mut terminal = Terminal::new(4, 2, 0);
+    terminal.write("abcd\u{ff9f}".as_bytes());
     let rows = terminal.screen_text_rows();
     assert!(rows[0].wrap.soft_wrapped);
     assert_eq!(rows[1].cells[0].graphemes, vec![0xff9f]);

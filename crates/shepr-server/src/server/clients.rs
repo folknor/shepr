@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::ops::Index;
 
+use crate::app::RenderDemand;
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
-use shepr_api::RenderDemand;
 use shepr_protocol::PublicTabId;
 use shepr_protocol::TerminalId;
 use shepr_protocol::{

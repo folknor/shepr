@@ -405,6 +405,8 @@ impl HeadlessServer {
     /// one shared deadline: a writer stuck in a socket write to a client that
     /// stopped reading must not hold server shutdown forever.
     async fn await_shutdown_flushes(&mut self) {
+        // headless-clock-sample-ok: the bound measures real socket flushes
+        // from when this wait begins, not from the loop's earlier sample.
         let deadline = tokio::time::Instant::now() + SHUTDOWN_FLUSH_TIMEOUT;
         for flush in std::mem::take(&mut self.shutdown_flushes) {
             match tokio::time::timeout_at(deadline, flush).await {

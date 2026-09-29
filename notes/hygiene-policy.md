@@ -25,82 +25,42 @@ the entry says so.
 
 ---
 
-## HYGP-001 - The clock is reached ambiently from logic, workspace-wide
+## HYGP-066 - Clock seam residue
 
-**Decision (partial):** the clock seam is adopted from broadarrow, incrementally
-as part of the hygiene work rather than wholesale: time is passed in instead of
-`Instant::now()` / `SystemTime::now()` being read inside logic, and each
-subsystem that gets its seam is held by a scoped textlint in the shape of
-broadarrow's `control-loop-reads-the-clock-seam` (drafted for
-`shepr-server/src/app/` as B7 in `notes/broadarrow-ports.md`). That settles the
-enforcement named below as text rules, not a workspace `disallowed_methods`
-entry. Open: every site, subsystem by subsystem.
+The clock seam (time passed in, each converted subsystem held by a scoped
+textlint) now covers `shepr-server/src/app/`, the headless loop, mux
+`persist/`, `shepr-remote` (with marked I/O timing exceptions), the platform
+deadline helpers, the client endpoint and activation paths, the agent version
+probe and the vt synchronized-update timeout. Open:
 
-Reported from every scope. `Instant::now()` / `SystemTime::now()` /
-`clock_gettime` are called inside the logic that uses them rather than being
-handed in, so behaviour that depends on time is untestable without sleeping.
+- Textlints now hold the headless loop, `shepr-platform`, `shepr-agent` and the
+  vt/pty timing paths. `shepr-client` has none: it still reads the clock
+  directly at about forty production sites (the supervisor, `lib.rs`, the
+  registry, commands, writer, health, attach, transport and composition), so
+  it needs the seam finished before a rule can hold it.
+- Other remaining reads: `shepr-config`'s `TerminalId::alloc` (HYGV-087),
+  `shepr-server/src/server/client_transport.rs` and the `shepr-api` transport
+  deadlines.
+- Tests still sleeping on real time, each with a reason recorded at the site:
+  platform process, clipboard helper, bridge and D-Bus tests; mux runtime (50 ms
+  and 20 ms); client `handshake.rs` and `terminal_geometry.rs`; server
+  `app/mod.rs`, `tab_bar_status.rs` and `client_transport.rs`.
 
-- `shepr-platform`: `ipc.rs` (2 sites), `clipboard.rs` (4), `client_stream.rs`,
-  `process.rs`, `ssh_agent.rs` (2, one already injectable via
-  `SshAgentLease::refresh_at(now)`), `remote_bridge.rs` (`clock_gettime`
-  directly). `Activity`, `DeadlineReader`, `wait_child_until` and
-  `wait_for_process_exits` already take deadlines and could take a clock.
-- `shepr-vt` / `shepr-mux` terminal layer: `flush_expired_synchronized_output`,
-  `apply_due_resize`, `poll_timeout_ms`, `SubmissionState`. vte's
-  `Processor<T: Timeout>` is generic but shepr uses the default
-  `StdSyncHandler`, so the 150 ms sync-update timeout can only be waited out
-  (`synchronized_output_buffers_until_end_or_timeout` sleeps through it and
-  asserts `!flush_expired...` right after a write, which will flake under load).
-  Suggested fix: a shepr-owned `Timeout` impl driven by an injected clock.
-- `shepr-agent`: `Instant::now()` inside `run_version_probe`;
-  `enforce_agent_version` hardcodes `VERSION_PROBE_TIMEOUT` (5 s) at the call
-  while `run_version_probe` takes a timeout parameter, so only the inner
-  function is reachable from a test; `version_probe_deadline_includes_inherited_stdout`
-  sleeps 300 ms + 50 ms of real time as a result.
-- `shepr-config`: `TerminalId::alloc()` reads `SystemTime::now()` (see
-  HYGV-087). `tab_bar.rs` `Command` interval/timeout effects are equally
-  untestable without waiting.
-- `shepr-remote`: `RemoteSsh::noninteractive_timeout`,
-  `SavedSshConnector::attempt`, `SshStdioBridge::reported_failure`,
-  `TeardownRegistry::release_all`, `wait_for_remote_server_shutdown`,
-  `wait_for_server_socket`, `wait_with_output_timeout`, `ssh_agent::connect`.
-  `EndpointCatalogWatch::poll(now)` is the one place that takes the clock as a
-  parameter, and the only one with a fast deterministic test. `bridge_connection`
-  hardcodes a 250 ms post-EOF grace; `ssh_agent::Registration` hardcodes a 100 ms
-  probe interval, a 500 ms connect timeout and a 10 ms read poll, so
-  `registration_retries_when_the_api_is_initially_missing` polls against a
-  5 second wall-clock deadline.
-- `shepr-mux`: `persist/` takes `now` everywhere and the
-  `persist-clock-is-injected` textlint holds it. `Instant::now()` twice in
-  `git/status.rs::git_status_snapshot_for_cwd_with_demand`, and the two reads
-  measure the retry deadline from after the subprocess ran and the cache check
-  from before. `src/terminal/state/**` and `src/pane/process_probe.rs` thread
-  `now: Instant` through every entry point and are cleanly testable, so the crate
-  already knows the pattern.
-- `shepr-server`: `app/` reads time through its clock seam, held by the
-  `app-state-reads-the-clock-seam` textlint (two marked sites measure elapsed
-  time during I/O). Open: `server/` (`headless.rs`, `render.rs`,
-  `internal_events.rs`, `client_views.rs`) still reads the clock inside the
-  loop iteration, and the remaining test sleeps outside `app/` go with it.
-- `shepr-client` / `shepr-termio`: `endpoint/health.rs` is the model (every
-  method takes `now: Instant`, no sleeps in its tests), but
-  `EndpointRegistry::insert` does `EndpointHealth::new(Instant::now())` one level
-  below that injection point, so `connected_at` and the initial-snapshot expiry
-  boundary cannot be driven; `ActivationState` writes
-  `self.deadline = Instant::now() + ACTIVATION_TIMEOUT` at five sites, so no test
-  drives an activation to its 5 s timeout; `shell/input/mouse.rs` reads the clock
-  at six sites inside event handling and `word_selection.rs` at one more, which
-  is why `shell/tests/mouse_selection.rs` (1312 lines) never exercises a throttle
-  or a double-click window; the clipboard bounded-read helper takes a `Duration`
-  and a closure but not the clock it measures against, so its test sleeps 400 ms
-  and asserts `elapsed < 300 ms`.
+## HYGP-067 - A failed backup prune now blocks every save of an unloaded session
 
-Enforcement named by hunters: a `Clock` trait (or simply passing `now` /
-`deadline`, as several sites already do) in `shepr-core`, plus a
-`clippy.toml disallowed_methods` entry or a `brokkr.toml` text rule for
-`Instant::now` / `SystemTime::now` outside designated modules (the client loop
-head, a `Clock` type, tests). Several hunters call this the root cause of most of
-their wall-clock test findings.
+`crates/shepr-mux/src/persist/writer.rs`: when an old recovery copy cannot be
+pruned, the new backup is removed and the save fails, where it used to warn and
+continue. That keeps the directory bounded, but a single undeletable old copy
+now stops every save of that session. Decide which failure is worse; if the
+save must go through, keep the new copy, warn, and cap retries some other way.
+
+## HYGP-068 - Small leftovers from the clock and guard work
+
+- `crates/shepr-remote/src/remote/bridge.rs`: `BridgeChildStartupGuard` uses
+  `.expect()` in production code, backed by an invariant; make the invariant a
+  type or return an error.
+- `crates/shepr-vt/src/lib.rs`: `SyncUpdateTimeout` wraps `deadline` and
+  `pending` in `Cell`s it does not need; only `now` does.
 
 ## HYGP-002 - The process environment is read at the moment of use, from logic
 
@@ -116,38 +76,12 @@ Reported from six scopes. The pattern that works is a pure inner function taking
 the values plus one resolution at the edge; several sites have the inner function
 and skip the caching or the launch-time resolution.
 
-- `shepr-agent`: `env.rs::AgentIntegrationPaths::resolve()` captures the
-  environment and documents the boundary ("install and status code receives this
-  value and never consults the process environment"), but the `*_dir()`
-  resolvers read `std::env::var_os` themselves and are `pub(crate)`, so
-  tests must manipulate real variables through `IsolatedEnv` to steer paths.
 - `shepr-mux`: `OscDebugTracker::default()` is `Self::from_env()`, reached from
   `GhosttyPaneCore` construction, so `SHEPR_DEBUG_OSC_EVIDENCE` is resolved once
   per pane rather than once at launch; a typo is a silent no-op rather than a
   launch failure, and the variable is documented nowhere.
   `git/config.rs::git_user_config_paths()` reads `XDG_CONFIG_HOME` and `HOME`
   directly (a fourth implementation of the XDG rule).
-- `shepr-api` / root binary: `server.rs` reads `SSH_AUTH_SOCK` inline inside
-  `start_server_inner`, so the SSH-agent registry cannot be constructed in a test
-  without mutating the process environment - and `SshAgentRegistry::new` already
-  takes it as an argument, only the caller hardcodes the lookup.
-  `src/main.rs::should_block_nested` reads `SHEPR_ENV` inline (mitigated by the
-  extracted `should_block_nested_for_env`). `CliContext::local` reads
-  `SHEPR_PANE_ID` and `SHEPR_SOCKET_PATH` in the constructor, which the hunter
-  records as the good pattern (captured once at the edge, `caller_pane_from` pure
-  and tested).
-- `shepr-remote`: `std::env::var("SSH_AUTH_SOCK")`, `std::env::args().next()` in
-  `run_remote`. `paths.current_dir()` is threaded properly and the contrast is
-  what makes the rest stand out.
-- `shepr-client` / `shepr-termio`: `host_modify_other_keys_mode()` reads `TMUX`,
-  `TERM_PROGRAM` and `WEZTERM_PANE` when `setup_terminal_with_capabilities`
-  happens to run, not at launch; the values never reach `ClientSettings`, so
-  nothing can report which host protocol was chosen and no terminal-setup test
-  sees the decision. The three reads also use three resolution rules in one
-  function (`var_os(..).is_some()`, `var(..).is_ok()`, case-insensitive compare),
-  none stated. `ClientProcessRole::from_env` is the counter-example the hunter
-  names as the model: it enumerates accepted values, treats absent as `Local` and
-  refuses startup on anything else including non-UTF-8.
 
 Enforcement named: resolve every variable once at launch into the validated
 config or a settings value carried down, then a
@@ -190,12 +124,6 @@ a name after the dot). Open: every site.
 
 ## HYGP-006 - Retry and backoff are invented per call site, across four crates, with no shared vocabulary
 
-- `shepr-platform` alone has five shapes: `shutdown.rs` (1 s initial, double,
-  cap 60 s, reset while a shutdown is pending), `ssh_paths.rs` (16 immediate
-  retries, no delay), `ipc.rs` (`STAGING_ATTEMPTS = 4`, immediate),
-  `clipboard.rs::wait_child_until` (fixed 5 ms poll to a deadline),
-  `process.rs::wait_for_process_exits` (poll with a 10 ms sleep on poll
-  failure).
 - Across crates: `shepr-client/src/endpoint/supervisor.rs` owns
   `INITIAL_RETRY_DELAY`, `MAX_RETRY_DELAY`, `ATTENTION_RETRY_DELAY`,
   `ATTEMPT_BUDGET` and an exponential `retry_delay(attempt)` - the one properly
@@ -236,61 +164,6 @@ Enforcement named: one `retry` helper in `shepr-core` taking a policy value, so 
 test can assert the policy and the call sites become data. One hunter notes no
 rule can hold this - a shared type is the only lever.
 
-## HYGP-007 - "A deadline and the remaining time until it" is implemented five ways in the client, and is a type nowhere
-
-**Decision (partial):** the `Instant::now()` reads are covered by the clock seam
-adopted incrementally with the hygiene work (HYGP-001), and the inline
-`Duration::from_secs(5)` in `attach.rs` by the per-crate `limits` modules
-adopted the same way (HYGV-036); the attach flush budget now shares the endpoint
-writer timeout, and `shepr-platform`'s two `DeadlineReader`s are one shared
-reader in `child_io.rs`. Open: the client `Deadline` type.
-
-From `shepr-client` / `shepr-termio`:
-
-- `handshake.rs`: `Instant::now() + read_timeout` then `min` with an optional
-  caller deadline. The hunter calls this one right, and the only one that
-  composes.
-- `endpoint/writer.rs`: `Instant::now() + WRITE_TIMEOUT` plus a poll loop with
-  `thread::sleep(IO_POLL_INTERVAL)` checking `Instant::now() >= deadline`.
-- `terminal_setup.rs`: `Instant::now() + HOST_KEYBOARD_QUERY_TIMEOUT` with its
-  own `checked_duration_since` remaining-time computation and its own
-  `i32::try_from(..).max(1)` millisecond conversion.
-- `activation.rs`: five copies of `Instant::now() + ACTIVATION_TIMEOUT`
-  (HYGP-001).
-
-Enforcement named: one small `Deadline` type with `remaining()`,
-`remaining_millis_i32()` and a `min` combinator, plus a text rule against
-`Instant::now() + Duration::` outside it.
-
-## HYGP-008 - Cleanup on the error path is hand-rolled, with RAII guards available and used for only some resources
-
-- `shepr-remote`, six sites and three shapes: `bridge.rs::start_command` has
-  three separate `if let Err(e) = .. { remove_socket_file_if_owned(..); return
-  Err(e) }` blocks; `bridge.rs::bridge_connection` does `child.kill();
-  child.wait();` at five places, sometimes with `stdout.finish()` /
-  `stderr.finish()` and sometimes not, alongside `terminate_bridge_child` which
-  is the same thing as a helper for three of them;
-  `ssh.rs::write_managed_ssh_config` uses an inline closure plus `remove_dir_all`
-  on error; `process.rs::wait_with_output_timeout` duplicates kill/wait/finish/
-  finish in the error arm and the timeout arm;
-  `catalog.rs::store_private_json` has two `remove_file(&temp_path)` error arms.
-  `ManagedSshConfigDirectory` and `TeardownRegistration` show the crate already
-  knows the guard pattern and applies it to two resources; the socket, the child
-  process and the temp file are left manual.
-- `shepr-agent`: `file_ops.rs::write_managed_asset` and
-  `config_file.rs::Replacement` both implement "unique sibling temp name from pid
-  plus an `AtomicU64`, up to 128 attempts, write, publish by rename, remove the
-  temp on failure", with two counters (`NEXT_ASSET_TEMP`, `NEXT_TEMP`), two
-  temp-name formats (`.{name}.shepr-{pid}-{seq}.tmp`,
-  `.shepr-config-{pid}-{seq}.tmp`) and two failure cleanups (explicit in one,
-  `Drop` in the other). The difference that matters (managed assets get fresh
-  permissions, user configs preserve the original's) is real; the allocation loop
-  is not. Suggested: one `AtomicReplace` helper parameterised by the permission
-  policy.
-
-Enforcement named: guard types make the leak unrepresentable; no lint catches the
-manual form.
-
 ## HYGP-009 - Resources that can grow without bound when something upstream misbehaves
 
 **Decision (partial):** the `shepr-test-support` kept-scratch leak goes with
@@ -302,10 +175,6 @@ Reported from seven scopes. Several crates are careful, which is what makes the
 gaps visible; the hunters recorded the good cases too so the absence is on the
 record.
 
-- `shepr-vt` / `shepr-pty`: terminal replies that overflow the inbox are dropped
-  with no counter and no log (documented as deliberate); resize replies refused
-  by `reserve` in `replace_resize`; replies from the timer before the actor
-  handle is set.
 - `shepr-agent`: the `/proc` walk is carefully bounded (five named budgets,
   documented, round-robin frontiers) and `MAX_VERSION_PROBE_OUTPUT` bounds the
   probe; `explain_loaded_manifest` and `install_target` are bounded by the
@@ -316,70 +185,8 @@ record.
   without retaining them. The one collection with no declared cap is
   `ConfigProvenance::values`, bounded by the config schema but shipped on the
   wire inside `resolved_config` on every first snapshot per connection.
-- `shepr-remote`: `ssh_agent::Registration`'s worker loops at 10 Hz for the
-  entire life of the remote bridge process whenever the API socket never appears
-  - bounded in memory, unbounded in wakeups, and nothing logs after the first
-  `debug!`. `TeardownRegistry.pending` grows with every bridge and every managed
-  config, with entries removed on `Drop`, so a leaked owner leaks a registry
-  entry; no cap, no metric. `PipeCapture` is properly bounded (1 MiB stdout /
-  16 KiB stderr). `ssh_agent::connect` caps the response at 4096 bytes and then
-  falls out of the loop reporting `TimedOut` rather than "response too large" - a
-  bound that misreports.
-- `shepr-mux`: `io::load_history` reads `session-history.json` with
-  `read_to_string` and no size cap and then parses the whole thing - that file
-  holds every pane's full scrollback, so restore reads it entirely into memory
-  twice; `git/discovery.rs` caps ref files at 64 KiB, so the crate knows the
-  pattern. `session-snapshots` is pruned to `SNAPSHOT_LIMIT` only when pruning
-  succeeds; `session-backups` is pruned to 3 with warn-on-failure, forever.
-  `OscDebugTracker::pending` grows until `drain_pending`, which its only caller
-  does immediately, so it is bounded in practice with nothing structural saying
-  so. Of the seven per-source maps on `TerminalState` keyed by strings from hook
-  reports, three are capped (`MAX_METADATA_SOURCES`, `MAX_SEQUENCE_SOURCES`,
-  `MAX_STATE_LABELS_PER_SOURCE`) and the hunter found no cap on
-  `hook_report_sequences`, `hook_report_accepted_at`,
-  `suppressed_full_lifecycle_hook_reports` or
-  `stale_full_lifecycle_hook_sessions`: a misbehaving hook reporting a fresh
-  `source` string per invocation grows those four without bound, per pane, for
-  the life of the server. Suggested: one `BoundedSourceMap<V>` for all seven with
-  the cap as a construction parameter.
-- `shepr-client`: unusually good - `MAX_NOTICES` (64),
-  `MAX_PENDING_PASTE_BYTES` (16 MiB), `MAX_QUEUED_BATCHES` / `MAX_QUEUED_BYTES`,
-  `MAX_RETIRED_REQUESTS_PER_ENDPOINT`, `MAX_ENDPOINT_RESPONSE_BYTES`,
-  `MAX_BUFFERED_HOST_INPUT`, `MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES`,
-  `MAX_DISCARDED_CONTROL_TAIL_BYTES`. Two gaps:
-  `EndpointRegistry::failures: Vec<EndpointTransportFailure>` has no cap and is
-  bounded only by the loop cadence that drains it, so a transport producing
-  failures faster than the loop drains grows it; and `MAX_NOTICES` is declared
-  inside a function body, invisible to anyone auditing the crate's limits.
 - `shepr-api`: `EventHub::MAX_EVENTS` (512) bounds retained history. Recorded as
   handled.
-
-## HYGP-010 - Locks held across blocking work, and a lock order documented only in scattered comments
-
-- `shepr-pty` / `shepr-mux`: `read_chunk` in `actor.rs` holds `response_order`
-  across the whole `on_read` callback, which runs `apply_process_result` and so
-  `resolve_default_color_owner` (a `/proc` scan) and `publish_reported_cwd` (a
-  readlink). `PaneRuntime::resize` and `apply_host_terminal_appearance` take the
-  same lock from the app side, so they block behind another thread's `/proc`
-  walk. The comment in `backend.rs` says the caller releases the terminal and
-  content locks before the scan; the reply-order lock is still held. The lock
-  order itself (response_order > content_write_lock > terminal core, with the
-  inbox lock never held across a syscall) has no single documented home - it is
-  spread across comments in `actor.rs`, `runtime.rs` and `backend.rs`. Fix:
-  return the effects from `on_read`, run them after the lock is released, and put
-  the lock order in one place.
-- `shepr-remote`: `SavedSshConnector::state` is a `Mutex<ConnectorState>` held
-  across the whole 25-second attempt, including the SSH child spawn, discovery
-  round trips and the caller's `establish` handshake. The comment says it
-  contends with nothing because the supervisor serialises attempts - a claim
-  about another crate. As the hunter puts it: if it is truly serialised the mutex
-  is unnecessary; if it is not, this is a 25-second stall; either way one of the
-  two is wrong. Fix: move the mutable state behind `&mut self` so the
-  supervisor's exclusive ownership is the enforcement and concurrent attempts are
-  a compile error.
-- `shepr-protocol` / `shepr-config`: checked, no lock held across a suspension
-  anywhere in either crate. `shepr-server`: no terminal-core lock held across an
-  await in that scope.
 
 ## HYGP-011 - Process-global mutable state whose consistency rests on the order calls happen to be made in
 
@@ -395,28 +202,6 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   path; harmless because both ignore errors, which is exactly the "invariant
   maintained by two writers who have never been introduced" shape. Suggested:
   bundle them into one `OnceLock<ScratchState>` so the ordering is structural.
-- `shepr-mux`: `static PANE_TEARDOWNS_IN_FLIGHT: Mutex<usize>` and
-  `static PANE_TEARDOWNS_DONE: Condvar`. `wait_for_pane_session_teardowns` waits
-  on a count global to the process, not scoped to a server, so two servers in one
-  process (which the test suite does) share it: one server's shutdown wait blocks
-  on the other's pane teardowns, and a leaked count from a panicking teardown
-  thread makes every later wait time out. The `Drop` impl's `saturating_sub`
-  absorbs an unbalanced decrement silently. Suggested: hang the counter off the
-  thing that owns the panes (an `Arc<TeardownTracker>` handed to
-  `shutdown_pane_processes`), holdable by a text rule against `static.*Mutex` in
-  the crate.
-- `shepr-remote`: `SSH_TEARDOWN` is a process-global `static TeardownRegistry`
-  whose `release_all(grace)` drains everything, so any caller invoking it disarms
-  every other owner's cleanup - safe only because exactly one call site exists,
-  in the client's exit path. The registry and the individual `Drop` impls are two
-  writers coordinated by a `Condvar` and a comment about field declaration order
-  (`ManagedSshConfigDirectory`'s `_teardown` "declared after `path`").
-  `bridge.rs`'s `failure_rx: Arc<Mutex<Receiver<io::Error>>>` is locked by both
-  the accept thread (`discard_unclaimed_bridge_failure`) and `reported_failure`,
-  and correctness rests on the accept thread discarding before accepting; the
-  polling loop in `reported_failure` exists specifically to avoid starving the
-  other side. Suggested: a single-slot `Mutex<Option<io::Error>>` with explicit
-  generation numbering.
 - Root binary / `shepr-api`: `CliContext::build_checked` is a `Cell<bool>` whose
   invariant is "one build check per target per process". The flag is set on the
   first successful status probe and never invalidated, and
@@ -570,35 +355,11 @@ are test-only again (`PublicTabId`/`PublicPaneId`'s `From<&str>` are
 `WorkspaceId::from(&str)` remain `pub` and ungated, so any caller can still mint
 an identity that is supposed to come from one place.
 
-## HYGP-033 - Test-only helpers that cannot report what their production siblings report
-
-- `shepr-api` `event_hub.rs`: the test-support `events_after` returns
-  `Vec::new()` on a poisoned lock and has no `Lost` signal, while
-  `events_after_checked` distinguishes both. Eleven call sites in `shepr-server`
-  tests use it, and an assertion that a history is empty cannot distinguish "no
-  events were emitted" from "the lock is poisoned". Suggested: delete
-  `events_after`.
-
-## HYGP-037 - `shepr-platform`'s `test-support` feature gates one nine-line function with one caller
-
-**Decision:** piece 4 of the test-isolation work adopted from broadarrow (test-only
-code leaves production crates' features for dev-only crates, held by
-`never-ships` dependency rules and a shipped-feature-set gate check) removes the
-feature; `signal_processes` moves to the test side.
-
-Delete the feature, the function (`process.rs::signal_processes`) and the
-`features = ["test-support"]` entry in `shepr-server/Cargo.toml`. Full context in
-HYGP-031; recorded separately because the deletion is self-contained.
-
 ## HYGP-041 - One-line pass-through wrappers, aliases and identity functions
 
 Each of these is a second name or a second hop for one thing; the evidence given
 for each is the hunter's.
 
-- `shepr-platform` `logging.rs::help_log_paths_summary(dir) -> String` is
-  `log_paths_summary(dir)`. One external caller (`src/cli.rs`); the private
-  `log_paths_summary` exists only so the test can call it under a different name.
-  Two names, one body, one caller. Make one of them public.
 - `shepr-api` `session.rs`: `data_dir_for`, `client_socket_path_for` and
   `api_socket_path_for` are `pub` one-line forwarders to `SessionId` methods
   (one, one and two callers). None is dead; all are redundant indirection that
@@ -606,42 +367,9 @@ for each is the hunter's.
   `shepr-config::SessionId` is.
 - `shepr-api` `restart_after_update_guidance` is `pub` with exactly one caller,
   `restart_after_update_guidance_for` in the same file.
-- `shepr-agent`: `AgentSource::to_source_string`, `as_str` and `Display` are
-  three ways to spell one projection (`to_source_string` is
-  `as_str().to_owned()`), plus `PartialEq<&str>` for both `AgentSource` and
-  `Agent`. Fine to keep, cheap to collapse. `integration/command.rs` is fifteen
-  lines holding two functions, one of which (`shell_single_quote`) is imported
-  separately by `targets.rs` to build the Grok command that bypasses the other;
-  merging it into the module that owns hook command construction removes a file.
-
-## HYGP-042 - Flags, parameters and constants that have had one value since they were added
-
-- `shepr-protocol`: `read_message`'s `max_frame_size` parameter is passed
-  `shepr_protocol::MAX_FRAME_SIZE` at roughly fifteen production call sites
-  across `shepr-client` and `shepr-server`; only
-  `wire_tests::oversized_input_rejected_custom_max` passes anything else. A
-  parameter nobody varies is dead weight and a hazard - a call site can weaken
-  the cap and nothing notices. Suggested: drop it from the public function and
-  keep a `cfg(any(test, feature = "test-support"))` variant for the one test.
-- `shepr-agent`: `AgentDescriptor::prompt_observation` is `true` for Codex alone,
-  and `Agent::prompt_ready` hardcodes Codex's own prompt text
-  (`"AskCodextodoanything"`, `"model:loading"`, `"Resumingsession"`) plus a
-  Codex-specific KMP matcher inside a generic method on `Agent` - a switch with
-  one value and Codex logic wearing a generic signature. The hunter's preferred
-  route is the Codex manifest (the manifest engine already has `bottom_lines(N)`
-  regions and gate semantics that express exactly this), which also deletes
-  `contains_recent_non_whitespace`, the 32-char needle array and the 12-line
-  constant. `title_activity_glyphs` is non-empty for Claude alone
-  (`CLAUDE_ACTIVITY_GLYPHS`) and every other agent has `""` - fine as data, but
-  the field reads as a general mechanism and is one agent's detail.
 
 ## HYGP-045 - Branches and checks that cannot run
 
-- `shepr-server` `app/actions/focus.rs::commit_workspace_creation` reads the
-  root pane through `workspace.tabs().first()`, an `Option` over a tab list
-  that can no longer be empty; a non-optional `first_tab()` removes it. A
-  `restore.rs` test and the adversarial-identity helper in `workspace.rs` index
-  `tabs[active_tab_index()]` where `active_tab()` would do.
 
 
 - `shepr-client/src/input_wire.rs` and `shepr-server/src/server/input_wire.rs`
@@ -655,47 +383,6 @@ for each is the hunter's.
   `shepr-pty` off `shepr-platform`; worth a comment naming the twin, or moving
   the helper below both.
 
-- `shepr-server` `app/actions/events.rs`: the `AppEvent::GitStatusRefreshed` arm
-  of `AppState::handle_app_event` discards both payload fields and returns
-  `Vec::new()`. `App::handle_internal_event_with_updates_and_render` intercepts
-  the variant before `state.handle_app_event` is ever called, routing it to
-  `apply_workspace_git_statuses`, so in production the arm cannot run; in a test
-  that calls `state.handle_app_event(GitStatusRefreshed { .. })` directly it
-  silently does nothing, which reads as "git statuses were applied". Evidence:
-  the only producer path matches the variant first, and the body explicitly
-  discards both fields. Suggested: split the event enum so state-level and
-  app-level events are different types, making the arm unwritable.
-
-## HYGP-046 - Dead trait impls and duplicate flag constants the compiler will not flag
-
-**Decision (partial):** `#[allow]` gives way to `#[expect(.., reason)]`
-workspace-wide (B9 in `notes/broadarrow-ports.md`); the third bullet's two
-`#[allow(dead_code)]`s become `#[cfg_attr(not(test), expect(dead_code, reason =
-..))]`, since tests read the items. The "`#[allow]` needs a comment" textlint
-is dropped in favour of that migration; `AGENTS.md`'s wording changes later.
-Whether "documents the table" is reason enough to keep them is open, as are
-the first two bullets.
-
-- `shepr-vt`: `Setter::Vte(NamedPrivateMode)` and `ModeSpec::name` carry
-  `#[allow(dead_code)]` with the justification "documents the table" and are read
-  only by tests.
-
-## HYGP-049 - Enum variants that are constructed but never discriminated
-
-**Decision (partial):** for the `RefFileRead` bullet: the `Path::exists` seal is
-adopted from broadarrow (`clippy.toml`; use `try_exists` or match `NotFound`, B4
-in `notes/broadarrow-ports.md`), so the stat-error-preserving distinction
-`RefFileRead` draws is now the house rule, not dead reasoning, and Git reads
-now carry the distinction to the refresh task as typed errors, so the
-`RefFileRead` bullet is resolved. Open: the other three bullets.
-
-- `shepr-mux` `git/discovery.rs`: `RefFileRead` goes to real trouble to
-  distinguish `Absent` from `Unavailable` (with a careful comment about
-  `Path::exists()` lying on metadata errors) and its one consumer,
-  `read_git_ref_file`, immediately collapses both to `None`. Either the
-  distinction should reach the caller - the hunter argues it should, since it is
-  the difference between "no branch" and "Git is broken" - or forty lines of
-  careful `symlink_metadata` reasoning are dead.
 
 ## HYGP-050 - Environment variables with no reader
 
@@ -703,28 +390,6 @@ now carry the distinction to the refresh task as typed errors, so the
   test probes in the `SHEPR_` namespace (`SHEPR_CONFIG_READ_ONLY_TEST`,
   `SHEPR_CONFIG_PARTIAL_WRITE_TEST`); move them out of it as the opencode probe
   was.
-
-## HYGP-065 - A valueless git string key is handled two ways
-
-`crates/shepr-mux/src/git/config.rs`: the config file reader skips a
-valueless `remote`/`merge`/`fetch`/`url` line with a silent `continue`, while
-the `git -c` path now reports a missing value for the same key, and
-`apply_git_config_parameters` stops at the first such key so later `-c`
-parameters are not applied. One rule for both sources, matching git (which
-errors), applied without abandoning the remaining parameters.
-
-## HYGP-057 - Modules and items sitting in a crate that does not use them
-
-- `shepr-api` `RenderDemand::join` has a dedicated test and one user,
-  `shepr-server`. Not dead - flagged because `RenderDemand` lives in
-  `shepr-api` while every consumer is in `shepr-server`, so it is in the wrong
-  crate for its one client; moving it would tighten `shepr-server`'s use of the
-  API crate to actual wire concerns.
-- `shepr-api/src/schema/integrations.rs` is 47 bytes, a single re-export. Not a
-  problem; noted because the module boundary buys nothing there.
-- Related, filed in the sibling documents but pointed at from here because the
-  fix is a move: `shepr-platform/src/logging.rs` holds 25 domain event functions
-  named after concepts that crate knows nothing about.
 
 ## HYGP-058 - Dependencies that production code does not use
 

@@ -1452,7 +1452,7 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
                 },
             ),
         });
-    assert_eq!(outcome.render, shepr_api::RenderDemand::Full);
+    assert_eq!(outcome.render, RenderDemand::Full);
     server.render_and_stream();
     let renamed = client_shell_snapshot(&control);
     assert_eq!(renamed.workspaces[0].label, "renamed");

@@ -36,15 +36,29 @@ fn clipboard_helper_dir() -> &'static std::path::Path {
 /// originated OSC 52 stores, which travel in the opposite direction.
 pub(super) const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
 
+/// The real clock, in the shared form the child-output deadline reader holds.
+fn system_clock() -> std::sync::Arc<dyn Fn() -> Instant + Send + Sync> {
+    // clock-io-ok: the public clipboard entry points supply the real clock.
+    std::sync::Arc::new(Instant::now)
+}
+
 pub fn write_clipboard(bytes: &[u8]) -> bool {
     write_clipboard_with(&clipboard_commands(ClipboardSession::from_env()), bytes)
 }
 
 pub(super) fn write_clipboard_with(commands: &[ClipboardCommand], bytes: &[u8]) -> bool {
-    let deadline = Instant::now() + CLIPBOARD_HELPER_TIMEOUT;
+    write_clipboard_with_clock(commands, bytes, &system_clock())
+}
+
+fn write_clipboard_with_clock(
+    commands: &[ClipboardCommand],
+    bytes: &[u8],
+    now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
+) -> bool {
+    let deadline = now() + CLIPBOARD_HELPER_TIMEOUT;
     commands
         .iter()
-        .any(|command| run_clipboard_command(command, bytes, deadline))
+        .any(|command| run_clipboard_command_with_clock(command, bytes, deadline, now))
 }
 
 pub fn read_clipboard_text() -> Option<String> {
@@ -53,10 +67,16 @@ pub fn read_clipboard_text() -> Option<String> {
     // together, so warning on `None` would report expected empty/no-display
     // cases as errors. Distinguishing them needs an outcome the client caller
     // can handle.
-    let deadline = Instant::now() + CLIPBOARD_HELPER_TIMEOUT;
+    read_clipboard_text_with_clock(&system_clock())
+}
+
+fn read_clipboard_text_with_clock(
+    now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
+) -> Option<String> {
+    let deadline = now() + CLIPBOARD_HELPER_TIMEOUT;
     read_clipboard_text_commands(ClipboardSession::from_env())
         .iter()
-        .find_map(|command| read_clipboard_text_with_command(command, deadline))
+        .find_map(|command| read_clipboard_text_with_command_with_clock(command, deadline, now))
 }
 
 /// Which display servers the clipboard commands may talk to. Read from the
@@ -166,11 +186,12 @@ fn kill_and_reap(child: &mut std::process::Child) {
 fn wait_child_until(
     child: &mut std::process::Child,
     deadline: Instant,
+    now: &dyn Fn() -> Instant,
 ) -> Option<std::process::ExitStatus> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => {
+            Ok(None) if now() < deadline => {
                 std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
             }
             Ok(None) | Err(_) => {
@@ -187,6 +208,7 @@ fn write_all_until(
     pipe: &mut std::process::ChildStdin,
     mut bytes: &[u8],
     deadline: Instant,
+    now: &dyn Fn() -> Instant,
 ) -> std::io::Result<()> {
     use std::io::ErrorKind;
     while !bytes.is_empty() {
@@ -195,7 +217,7 @@ fn write_all_until(
             Ok(written) => bytes = &bytes[written..],
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                let wait_ms = poll_timeout_until(deadline)
+                let wait_ms = poll_timeout_until(deadline, now())
                     .ok_or_else(|| std::io::Error::from(ErrorKind::TimedOut))?;
                 match poll_fd(pipe.as_raw_fd(), libc::POLLOUT, wait_ms) {
                     Ok(false) => return Err(ErrorKind::TimedOut.into()),
@@ -210,9 +232,18 @@ fn write_all_until(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn read_clipboard_text_with_command(
     command: &ClipboardCommand,
     deadline: Instant,
+) -> Option<String> {
+    read_clipboard_text_with_command_with_clock(command, deadline, &system_clock())
+}
+
+pub(super) fn read_clipboard_text_with_command_with_clock(
+    command: &ClipboardCommand,
+    deadline: Instant,
+    now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
 ) -> Option<String> {
     let mut child = child_command(command.program, clipboard_helper_dir())
         .args(command.args)
@@ -226,7 +257,11 @@ pub(super) fn read_clipboard_text_with_command(
         kill_and_reap(&mut child);
         return None;
     };
-    let stdout = super::child_io::DeadlineReader::new(stdout, deadline);
+    let stdout = super::child_io::DeadlineReader::new_with_clock(
+        stdout,
+        deadline,
+        std::sync::Arc::clone(now),
+    );
     let bytes = match read_limited_reader(stdout, MAX_CLIPBOARD_TEXT_BYTES) {
         Ok(LimitedRead::Complete(bytes)) => Some(bytes),
         Ok(LimitedRead::Empty) => None,
@@ -238,17 +273,27 @@ pub(super) fn read_clipboard_text_with_command(
         }
     };
 
-    let status = wait_child_until(&mut child, deadline)?;
+    let status = wait_child_until(&mut child, deadline, now.as_ref())?;
     if !status.success() {
         return None;
     }
     String::from_utf8(bytes?).ok()
 }
 
+#[cfg(test)]
 pub(super) fn run_clipboard_command(
     command: &ClipboardCommand,
     bytes: &[u8],
     deadline: Instant,
+) -> bool {
+    run_clipboard_command_with_clock(command, bytes, deadline, &system_clock())
+}
+
+pub(super) fn run_clipboard_command_with_clock(
+    command: &ClipboardCommand,
+    bytes: &[u8],
+    deadline: Instant,
+    now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
 ) -> bool {
     let mut child = match child_command(command.program, clipboard_helper_dir())
         .args(command.args)
@@ -269,7 +314,7 @@ pub(super) fn run_clipboard_command(
     // Nonblocking, so a helper that stops reading cannot hold this write
     // past the deadline.
     let written = set_nonblocking(stdin.as_raw_fd())
-        .and_then(|()| write_all_until(&mut stdin, bytes, deadline));
+        .and_then(|()| write_all_until(&mut stdin, bytes, deadline, now.as_ref()));
     if written.is_err() {
         kill_and_reap(&mut child);
         return false;
@@ -277,18 +322,21 @@ pub(super) fn run_clipboard_command(
     drop(stdin);
 
     if command.owns_selection_after_exit {
-        return wait_for_selection_owner_startup(child);
+        return wait_for_selection_owner_startup(child, now.as_ref());
     }
 
-    wait_child_until(&mut child, deadline).is_some_and(|status| status.success())
+    wait_child_until(&mut child, deadline, now.as_ref()).is_some_and(|status| status.success())
 }
 
-fn wait_for_selection_owner_startup(mut child: std::process::Child) -> bool {
-    let deadline = Instant::now() + super::limits::CLIPBOARD_OWNER_STARTUP_WAIT;
+fn wait_for_selection_owner_startup(
+    mut child: std::process::Child,
+    now: &dyn Fn() -> Instant,
+) -> bool {
+    let deadline = now() + super::limits::CLIPBOARD_OWNER_STARTUP_WAIT;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),
-            Ok(None) if Instant::now() < deadline => {
+            Ok(None) if now() < deadline => {
                 std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
             }
             Ok(None) => return detach_clipboard_owner(child),

@@ -152,10 +152,12 @@ fn connect(path: &Path, socket_path: &Path) -> io::Result<Option<LocalStream>> {
     serde_json::to_writer(&mut stream, &request)?;
     stream.write_all(b"\n")?;
     shepr_platform::ipc::set_local_stream_polling(&mut stream, true)?;
+    // clock-io-ok: the response deadline begins after socket setup and request IO.
     let deadline = Instant::now() + timeout;
     let mut response = Vec::new();
     let mut byte = [0];
     loop {
+        // clock-io-ok: each poll and response read consumes real wall time.
         if Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,

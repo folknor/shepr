@@ -168,6 +168,10 @@ pub(super) struct TeardownRegistry {
     next_id: std::sync::atomic::AtomicU64,
 }
 
+// The client has one process exit sweep, but bridge/config owners can still be
+// unwinding on other threads when it runs. A per-endpoint registry would require
+// the client supervisor to own and pass a tracker through every bridge and
+// managed config, then sweep those trackers before process exit.
 pub(super) static SSH_TEARDOWN: TeardownRegistry = TeardownRegistry::new();
 
 impl TeardownRegistry {
@@ -194,9 +198,11 @@ impl TeardownRegistry {
     /// Gives owners that are already dropping up to `grace` to finish, then
     /// removes whatever is still registered.
     pub(super) fn release_all(&self, grace: Duration) {
+        // clock-io-ok: the grace covers owners dropping on other threads.
         let deadline = Instant::now() + grace;
         let mut pending = self.lock();
         while !pending.is_empty() {
+            // clock-io-ok: condvar waits consume the grace period.
             let now = Instant::now();
             if now >= deadline {
                 break;
@@ -382,11 +388,11 @@ impl RemoteSsh {
 
     /// The timeout for the next noninteractive command, or `TimedOut` when the attempt
     /// deadline has already passed and no further command may start.
-    pub(super) fn noninteractive_timeout(&self) -> io::Result<Duration> {
+    pub(super) fn noninteractive_timeout(&self, now: Instant) -> io::Result<Duration> {
         let Some(deadline) = self.attempt_deadline else {
             return Ok(NONINTERACTIVE_SSH_COMMAND_TIMEOUT);
         };
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(now);
         if remaining.is_zero() {
             return Err(attempt_deadline_passed());
         }
@@ -422,7 +428,8 @@ impl RemoteSsh {
 
     pub(super) fn sh_output(&self, script: &str) -> io::Result<Output> {
         let script = posix_remote_output_command(script);
-        let timeout = self.noninteractive_timeout()?;
+        // clock-io-ok: earlier SSH round trips may have used the attempt budget.
+        let timeout = self.noninteractive_timeout(Instant::now())?;
         let mut child = self
             .command()
             .arg("/bin/sh -s")
@@ -459,7 +466,8 @@ impl RemoteSsh {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let output = if self.noninteractive {
-            let timeout = self.noninteractive_timeout()?;
+            // clock-io-ok: earlier SSH round trips may have used the attempt budget.
+            let timeout = self.noninteractive_timeout(Instant::now())?;
             wait_with_output_timeout(command.spawn()?, timeout)
         } else {
             output_with_forwarded_stderr(command.spawn()?, None)
@@ -723,8 +731,9 @@ pub(super) fn write_managed_ssh_config(
         target,
     )?);
 
-    let dir = shepr_platform::create_remote_ssh_config_dir(runtime_dir)?;
-    let path = dir.join("config");
+    let dir =
+        ManagedSshConfigDirectory::new(shepr_platform::create_remote_ssh_config_dir(runtime_dir)?);
+    let path = dir.path.join("config");
     let mut contents = String::new();
     for include in [
         ssh_config_include(paths.user_config.as_deref())?,
@@ -738,19 +747,14 @@ pub(super) fn write_managed_ssh_config(
     contents.push_str("Host *\n");
     ssh_options::KEEPALIVE.append_config(&mut contents);
 
-    let write_result = (|| {
-        let mut file = shepr_platform::create_private_file(&path)?;
-        file.write_all(contents.as_bytes())
-    })();
-    if let Err(err) = write_result {
-        remove_managed_config_directory(&dir);
-        return Err(err);
-    }
+    let mut file = shepr_platform::create_private_file(&path)?;
+    file.write_all(contents.as_bytes())?;
+    drop(file);
     Ok(ManagedSshConfig {
         options: ManagedSshOptions {
             config_path: path,
             control_path,
-            _directory: Arc::new(ManagedSshConfigDirectory::new(dir)),
+            _directory: Arc::new(dir),
         },
     })
 }

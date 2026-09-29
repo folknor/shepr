@@ -47,6 +47,9 @@ struct ConfigReader {
     files: HashMap<PathBuf, Option<String>>,
     deps: Vec<FileDep>,
     failure: Option<(PathBuf, ErrorKind, String)>,
+    /// The first upstream-tracking key written without a value, with the
+    /// file it is in. See [`valueless_tracking_key`].
+    missing_value: Option<(PathBuf, String)>,
 }
 
 impl ConfigReader {
@@ -59,6 +62,7 @@ impl ConfigReader {
             files,
             deps,
             failure,
+            ..
         } = self;
         let contents = files
             .entry(path.clone())
@@ -194,18 +198,34 @@ fn read_config_with_user_paths_and_errors(
             &mut reader,
         );
     }
-    if let Some(message) = apply_git_config_parameters(&mut config, branch, &command_parameters) {
-        errors.push(GitReadError::ConfigEnvironment { message });
-    }
+    let parameter_missing_value =
+        apply_git_config_parameters(&mut config, branch, &command_parameters);
     if let Some((path, kind, message)) = &reader.failure {
         errors.push(GitReadError::FileRead {
             path: path.clone(),
             message: format!("{kind:?}: {message}"),
         });
     }
+    // Git refuses to resolve an upstream at all while one of these keys has
+    // no value, so there is no tracking branch to show.
+    let mut tracking_valid = true;
+    if let Some((path, key)) = &reader.missing_value {
+        tracking_valid = false;
+        errors.push(GitReadError::FileRead {
+            path: path.clone(),
+            message: format!("missing value for '{key}'"),
+        });
+    }
+    if let Some(name) = parameter_missing_value {
+        tracking_valid = false;
+        errors.push(GitReadError::ConfigEnvironment {
+            message: format!("missing value for '{name}'"),
+        });
+    }
     (
         branch.to_string(),
-        (!config.remote.is_empty() && !config.merge_ref.is_empty()).then_some(config),
+        (tracking_valid && !config.remote.is_empty() && !config.merge_ref.is_empty())
+            .then_some(config),
         reader.deps,
     )
 }
@@ -332,12 +352,9 @@ pub(super) fn read_config_value(
             {
                 "true".to_owned()
             }
-            None => {
-                return Err(io::Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("missing value for '{target_section}.{target_key}'"),
-                ));
-            }
+            // Git accepts a valueless string key as an empty value. Its
+            // implicit `true` applies only when the queried key is boolean.
+            None => String::new(),
         });
     }
     if let Some(error) = reader.read_error() {
@@ -387,37 +404,41 @@ fn git_config_parameter_subsection<'a>(name: &'a str, section: &str, key: &str) 
         .then_some(subsection)
 }
 
+/// Applies the command-line tracking keys in order. Returns the first of
+/// them written without `=`: `git config` reads such a key raw as an empty
+/// string, but upstream resolution refuses it (`git -c branch.main.remote
+/// rev-parse @{upstream}` fails with "missing value for 'branch.main.remote'"),
+/// so the caller shows no upstream rather than an empty remote.
 fn apply_git_config_parameters(
     config: &mut BranchConfig,
     branch: &str,
     parameters: &[(String, Option<String>)],
 ) -> Option<String> {
+    let mut missing_value = None;
     for (name, value) in parameters {
+        let is_tracking_key = git_config_parameter_matches(name, "branch", Some(branch), "remote")
+            || git_config_parameter_matches(name, "branch", Some(branch), "merge")
+            || git_config_parameter_subsection(name, "remote", "fetch").is_some()
+            || git_config_parameter_subsection(name, "remote", "url").is_some();
+        let Some(value) = value else {
+            if is_tracking_key && missing_value.is_none() {
+                missing_value = Some(name.clone());
+            }
+            continue;
+        };
         if git_config_parameter_matches(name, "branch", Some(branch), "remote") {
-            let Some(value) = value else {
-                return Some(format!("missing value for '{name}'"));
-            };
             config.remote.clone_from(value);
         } else if git_config_parameter_matches(name, "branch", Some(branch), "merge") {
-            let Some(value) = value else {
-                return Some(format!("missing value for '{name}'"));
-            };
             config.merge_ref.clone_from(value);
         } else if let Some(remote) = git_config_parameter_subsection(name, "remote", "fetch") {
-            let Some(value) = value else {
-                return Some(format!("missing value for '{name}'"));
-            };
             config
                 .fetch_refspecs
                 .push((remote.to_owned(), value.clone()));
         } else if let Some(remote) = git_config_parameter_subsection(name, "remote", "url") {
-            let Some(value) = value else {
-                return Some(format!("missing value for '{name}'"));
-            };
             config.remote_urls.push((remote.to_owned(), value.clone()));
         }
     }
-    None
+    missing_value
 }
 
 /// The last value of `[section] key` in the one config file at `path`, with
@@ -427,9 +448,10 @@ fn apply_git_config_parameters(
 /// any include is resolved, so `extensions.refstorage = reftable` reached
 /// only through `include.path` or `~/.gitconfig` leaves a files ref store,
 /// as `git rev-parse --show-ref-format` confirms. A key written without `=`
-/// reads as `true`, Git's implicit boolean. A missing file or key is `None`;
-/// an unreadable file is an error, so the caller can fail closed rather than
-/// guess the format.
+/// reads as the empty string, which names no ref format; Git itself refuses
+/// such a repository ("missing value for 'extensions.refstorage'"). A
+/// missing file or key is `None`; an unreadable file is an error, so the
+/// caller can fail closed rather than guess the format.
 pub(super) fn read_repository_format_value(
     path: &Path,
     target_section: &str,
@@ -455,7 +477,7 @@ pub(super) fn read_repository_format_value(
             Some((key, raw_value)) if key.trim().eq_ignore_ascii_case(target_key) => {
                 value = Some(normalize_config_value(raw_value));
             }
-            None if line.eq_ignore_ascii_case(target_key) => value = Some("true".to_string()),
+            None if line.eq_ignore_ascii_case(target_key) => value = Some(String::new()),
             _ => {}
         }
     }
@@ -635,6 +657,8 @@ fn collect_remote_urls(
             section = parse_config_section(section_name, branch, info, &path, &dummy_config);
             continue;
         }
+        // A valueless `url` is reported by `merge_git_config`, which reads the
+        // same files; it names no URL to match here.
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
@@ -698,6 +722,13 @@ fn merge_git_config(
         }
         let (key, raw_value) = match line.split_once('=') {
             Some((key, value)) => (key, value),
+            None if valueless_tracking_key(&section, branch, line).is_some() => {
+                if reader.missing_value.is_none() {
+                    reader.missing_value = valueless_tracking_key(&section, branch, line)
+                        .map(|key| (path.clone(), key));
+                }
+                continue;
+            }
             None if query.is_some_and(|query| {
                 current_section_name.eq_ignore_ascii_case(query.section)
                     && line.eq_ignore_ascii_case(query.key)
@@ -775,6 +806,34 @@ fn merge_git_config(
         }
     }
     include_stack.pop();
+}
+
+/// The full name of an upstream-tracking key written without `=`, if `key`
+/// is one. `git config --get` reads such a key raw as an empty string, but
+/// Git refuses to resolve an upstream while one is present ("missing value
+/// for 'branch.main.remote'", exit 128, from `rev-parse @{upstream}` and
+/// `status` alike), so shepr reports it and shows no upstream instead of
+/// tracking an empty remote or ref. Git also refuses one on another branch;
+/// only the current branch's keys are read here.
+fn valueless_tracking_key(section: &ConfigSection, branch: &str, key: &str) -> Option<String> {
+    match section {
+        ConfigSection::Branch
+            if key.eq_ignore_ascii_case("remote") || key.eq_ignore_ascii_case("merge") =>
+        {
+            Some(format!("branch.{branch}.{key}"))
+        }
+        ConfigSection::Remote(remote)
+            if key.eq_ignore_ascii_case("fetch") || key.eq_ignore_ascii_case("url") =>
+        {
+            Some(format!("remote.{remote}.{key}"))
+        }
+        ConfigSection::Branch
+        | ConfigSection::Remote(_)
+        | ConfigSection::Extensions
+        | ConfigSection::Include
+        | ConfigSection::IncludeIf(_)
+        | ConfigSection::Other => None,
+    }
 }
 
 enum ConfigSection {

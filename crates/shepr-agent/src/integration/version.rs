@@ -58,8 +58,16 @@ pub(crate) fn enforce_agent_version(
     requirement: &AgentVersionRequirement,
     timeout: Duration,
 ) -> io::Result<Option<InstallWarning>> {
+    enforce_agent_version_with_clock(requirement, timeout, &mut SystemProbeClock)
+}
+
+fn enforce_agent_version_with_clock(
+    requirement: &AgentVersionRequirement,
+    timeout: Duration,
+    clock: &mut impl ProbeClock,
+) -> io::Result<Option<InstallWarning>> {
     let probe = format!("{} {}", requirement.binary, requirement.args.join(" "));
-    let output = match run_version_probe(requirement, timeout) {
+    let output = match run_version_probe(requirement, timeout, clock) {
         Ok(Some(output)) if output.status.success() => output,
         Ok(None) => {
             return Ok(Some(InstallWarning::new(format!(
@@ -115,6 +123,7 @@ pub(crate) fn enforce_agent_version(
 fn run_version_probe(
     requirement: &AgentVersionRequirement,
     timeout: Duration,
+    clock: &mut impl ProbeClock,
 ) -> io::Result<Option<Output>> {
     let mut child = shepr_platform::child_command(requirement.binary, Path::new("/"))
         .args(requirement.args)
@@ -139,7 +148,7 @@ fn run_version_probe(
         return Err(error);
     }
 
-    let deadline = Instant::now() + timeout;
+    let deadline = clock.now() + timeout;
     let mut output = Vec::new();
     let mut read_buffer = [0; 4096];
     let mut stdout_closed = false;
@@ -187,7 +196,7 @@ fn run_version_probe(
             }));
         }
 
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             if status.is_none() {
                 stop_version_probe(&mut child)?;
             }
@@ -196,7 +205,25 @@ fn run_version_probe(
             // that unrelated process to close it.
             return Ok(None);
         }
-        thread::sleep(VERSION_PROBE_POLL_INTERVAL);
+        clock.sleep(VERSION_PROBE_POLL_INTERVAL);
+    }
+}
+
+trait ProbeClock {
+    fn now(&mut self) -> Instant;
+    fn sleep(&mut self, duration: Duration);
+}
+
+struct SystemProbeClock;
+
+impl ProbeClock for SystemProbeClock {
+    fn now(&mut self) -> Instant {
+        // clock-io-ok: the production probe clock is the real one.
+        Instant::now()
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        thread::sleep(duration);
     }
 }
 
@@ -245,6 +272,21 @@ mod tests {
     fn version_probe_deadline_includes_inherited_stdout() {
         use shepr_test_support::fixture::{self, Held, Step};
 
+        struct AdvancingClock {
+            now: Instant,
+        }
+
+        impl ProbeClock for AdvancingClock {
+            fn now(&mut self) -> Instant {
+                self.now
+            }
+
+            fn sleep(&mut self, duration: Duration) {
+                thread::sleep(duration);
+                self.now += duration;
+            }
+        }
+
         // The probed program exits at once, leaving a child that holds its
         // stdout for 300 ms.
         let args: Vec<&'static str> = fixture::args(&[
@@ -271,9 +313,13 @@ mod tests {
             args: Box::leak(args.into_boxed_slice()),
             min_version: "0.0.0",
         };
-        let warning = enforce_agent_version(&requirement, Duration::from_millis(50))
-            .expect("test probe should run")
-            .expect("timed-out probe should warn");
+        let mut clock = AdvancingClock {
+            now: Instant::now(),
+        };
+        let warning =
+            enforce_agent_version_with_clock(&requirement, Duration::from_millis(50), &mut clock)
+                .expect("test probe should run")
+                .expect("timed-out probe should warn");
         // The outer timeout must reach the process probe, whose direct child
         // exits while a grandchild still owns stdout. Wait for that fixture
         // child to finish before the test exits; this sleep is cleanup only.

@@ -602,6 +602,9 @@ fn spawn_session_with_background_job() -> std::process::Child {
     command.spawn().expect("spawn session")
 }
 
+// These tests observe when the kernel publishes real child membership in
+// /proc. Their short sleeps yield to process startup; a fake clock cannot make
+// that external state appear.
 #[test]
 fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
     let mut child = spawn_session_with_background_job();
@@ -803,8 +806,8 @@ fn selection_owning_helper_does_not_block_clipboard_write() {
             .expect("the test holds the receiver until the writer joins");
     });
 
-    // The marker is created before the pid is written into it, so wait for a
-    // whole pid rather than for the file.
+    // This marker is written by a real helper process. Polling waits for the
+    // helper's filesystem write; the deadline only guards a broken harness.
     let marker_deadline = Instant::now() + Duration::from_secs(2);
     let owner_pid: i32 = loop {
         match std::fs::read_to_string(&marker)
@@ -905,8 +908,11 @@ fn a_clipboard_writer_that_hangs_is_killed_at_the_deadline() {
     let payload = vec![b'x'; 1024 * 1024];
     for (command, bytes) in [(&never_reads, &payload[..]), (&never_exits, &b"text"[..])] {
         let started = Instant::now();
-        let deadline = started + Duration::from_millis(200);
-        assert!(!run_clipboard_command(command, bytes, deadline));
+        let (now, deadline) = stepping_clipboard_clock(started);
+        assert!(!run_clipboard_command_with_clock(
+            command, bytes, deadline, &now
+        ));
+        // Only a broken deadline check can wait for the 30-second helper.
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "{command:?} held the write for {:?}",
@@ -972,12 +978,32 @@ fn a_clipboard_reader_that_hangs_is_killed_at_the_deadline() {
         fixture_clipboard_command(&[Step::Print("text".into()), Step::CloseStdout, sleep_30()]);
     for command in [&silent, &partial, &lingering] {
         let started = Instant::now();
-        let deadline = started + Duration::from_millis(200);
-        assert_eq!(read_clipboard_text_with_command(command, deadline), None);
+        let (now, deadline) = stepping_clipboard_clock(started);
+        assert_eq!(
+            read_clipboard_text_with_command_with_clock(command, deadline, &now),
+            None
+        );
+        // The injected clock reaches the deadline after a few reads, so only a
+        // broken deadline check can wait for the 30-second helper.
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "{command:?} held the read for {:?}",
             started.elapsed()
         );
     }
+}
+
+/// A clock that moves a quarter of the way to its deadline on every read, so
+/// a helper wait passes the deadline after a fixed number of clock reads
+/// whatever the machine's speed, while each real poll stays short.
+fn stepping_clipboard_clock(
+    start: Instant,
+) -> (std::sync::Arc<dyn Fn() -> Instant + Send + Sync>, Instant) {
+    let step = Duration::from_millis(50);
+    let deadline = start + step * 4;
+    let reads = std::sync::atomic::AtomicU32::new(0);
+    let now: std::sync::Arc<dyn Fn() -> Instant + Send + Sync> = std::sync::Arc::new(move || {
+        start + step * reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    });
+    (now, deadline)
 }

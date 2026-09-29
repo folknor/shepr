@@ -127,10 +127,6 @@ pub fn init_client_file_logging(dir: &Path, config: FileLoggingConfig) -> io::Re
 
 /// The log files `--help` names: the only two any process writes.
 pub fn help_log_paths_summary(dir: &Path) -> String {
-    log_paths_summary(dir)
-}
-
-fn log_paths_summary(dir: &Path) -> String {
     format!(
         "{} (and {CLIENT_LOG_FILE} beside it)",
         dir.join(SERVER_LOG_FILE).display()
@@ -746,7 +742,7 @@ mod tests {
 
     #[test]
     fn help_names_only_the_logs_that_are_written() {
-        let summary = log_paths_summary(Path::new("/data"));
+        let summary = help_log_paths_summary(Path::new("/data"));
         assert_eq!(
             summary,
             "/data/shepr-server.log (and shepr-client.log beside it)"

@@ -15,7 +15,7 @@ impl HeadlessServer {
         // A host shutdown warning that arrived since the loop last looked is
         // answered with its checkpoint before this event can change the
         // layout; after that, saving is frozen and events apply normally.
-        self.sync_host_shutdown_freeze(Instant::now());
+        self.sync_host_shutdown_freeze(self.app.clock.now);
         self.immediate_pty_sources_dirty = true;
         // After a termination signal, the panes are most likely dying from the
         // same teardown. Removing them would save a session with panes missing.

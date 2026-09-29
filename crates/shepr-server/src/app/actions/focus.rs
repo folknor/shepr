@@ -64,10 +64,9 @@ impl AppState {
         focus: bool,
     ) -> WorkspaceCreationOutcome {
         let workspace_id = workspace.id.to_string();
-        let root_pane = workspace
-            .tabs()
-            .first()
-            .map(shepr_mux::workspace::Tab::root_pane);
+        // A workspace being created holds exactly its first tab, which is
+        // also its focused tab; `active_tab` has no empty case to index past.
+        let root_pane = workspace.active_tab().root_pane();
         self.terminals.insert(terminal.id.clone(), terminal);
         self.workspaces.push(workspace);
         let workspace_index = self.workspaces.len() - 1;
