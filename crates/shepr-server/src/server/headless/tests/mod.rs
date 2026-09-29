@@ -10,19 +10,14 @@ use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
 use shepr_protocol::{MAX_FRAME_SIZE, RenderEncoding};
 
 impl HeadlessServer {
-    /// Resolves a direct-attach terminal id string to the live `TerminalId`.
-    ///
-    /// Still a scan over the session's terminals (tens, not thousands): the
-    /// terminal map is keyed by `TerminalId`, which does not implement
-    /// `Borrow<str>`, so a hashed lookup by `&str` is not available here. The
-    /// scan compares borrowed strings and avoids allocating a `to_string()`
-    /// per terminal on attach input and render paths.
+    /// Resolves a terminal id string to the live `TerminalId`.
     fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&shepr_protocol::TerminalId> {
+        let terminal_id = terminal_id.parse().ok()?;
         self.app
             .state
             .terminals
-            .keys()
-            .find(|id| id.as_str() == terminal_id)
+            .get_key_value(&terminal_id)
+            .map(|(id, _)| id)
     }
 
     fn runtime_for_terminal_id_string(

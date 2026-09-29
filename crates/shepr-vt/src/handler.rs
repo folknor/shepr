@@ -174,6 +174,12 @@ impl<T: EventListener> CoreHandler<'_, T> {
         self.rows.begin(self.term);
     }
 
+    /// Reports an upper bound on the lines the call just run pushed into the
+    /// primary screen's history (see `RowOrigin::note_pushed`).
+    fn pushed_rows(&mut self, lines: usize) {
+        self.rows.note_pushed(self.term, lines, self.history_limit);
+    }
+
     fn primary_screen_active(&self) -> bool {
         !self.term.mode().contains(TermMode::ALT_SCREEN)
     }
@@ -245,6 +251,8 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         } else {
             Handler::input(self.term, c);
         }
+        // A pending wrap, then a wide character that does not fit.
+        self.pushed_rows(2);
     }
 
     fn goto(&mut self, line: i32, col: usize) {
@@ -297,6 +305,8 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     fn put_tab(&mut self, count: u16) {
         Handler::put_tab(self.term, count);
+        // A tab past the last column wraps.
+        self.pushed_rows(1);
     }
 
     fn backspace(&mut self) {
@@ -309,6 +319,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     fn linefeed(&mut self) {
         Handler::linefeed(self.term);
+        self.pushed_rows(1);
     }
 
     fn bell(&mut self) {
@@ -321,6 +332,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     fn newline(&mut self) {
         Handler::newline(self.term);
+        self.pushed_rows(1);
     }
 
     fn set_horizontal_tabstop(&mut self) {
@@ -329,6 +341,9 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     fn scroll_up(&mut self, rows: usize) {
         Handler::scroll_up(self.term, rows);
+        // alacritty clamps the scroll to the scroll region.
+        let screen_lines = self.term.screen_lines();
+        self.pushed_rows(rows.min(screen_lines));
     }
 
     fn scroll_down(&mut self, rows: usize) {
@@ -341,6 +356,10 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     fn delete_lines(&mut self, count: usize) {
         Handler::delete_lines(self.term, count);
+        // At the top of the scroll region this scrolls into history, clamped
+        // to the screen.
+        let screen_lines = self.term.screen_lines();
+        self.pushed_rows(count.min(screen_lines));
     }
 
     fn erase_chars(&mut self, count: usize) {
@@ -382,7 +401,13 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
             self.rows.evict(purged);
             self.resume_rows();
         } else {
+            let clears_all = matches!(mode, ClearMode::All);
             Handler::clear_screen(self.term, mode);
+            if clears_all {
+                // `ED 2` pushes the visible lines into history.
+                let screen_lines = self.term.screen_lines();
+                self.pushed_rows(screen_lines);
+            }
         }
     }
 

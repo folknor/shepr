@@ -1335,6 +1335,34 @@ fn absolute_rows_keep_naming_their_lines_while_full_history_evicts() {
     assert_eq!(absolute_row_text(&terminal, AbsRow(2_499)), None);
 }
 
+/// A blank followed row and a flood of blank lines is the case an address
+/// match cannot tell apart: every recycled row looks the same. One write
+/// longer than the whole ring must still count every eviction.
+#[test]
+fn one_write_of_blank_lines_longer_than_the_ring_counts_every_eviction() {
+    let mut terminal = Terminal::new(10, 3, 1);
+    let limit = MIN_SCROLLBACK_LINES;
+    let retained = u64::try_from(limit + 3).expect("test precondition");
+    write_line_range(&mut terminal, 0..limit + 10, 1);
+    // The newest history row, which the next batch follows, is blank.
+    terminal.write(b"\r\n\r\n\r\n\r\n");
+    let flood = 3 * (limit + 3) + 7;
+    terminal.write("\r\n".repeat(flood).as_bytes());
+
+    // Every "\r\n" moved the cursor one absolute row down.
+    let written = u64::try_from(limit + 10 + 4 + flood).expect("test precondition");
+    assert_eq!(
+        terminal.history_origin(),
+        AbsRow(written + 1 - retained),
+        "the origin must count each evicted line exactly"
+    );
+    assert_eq!(
+        terminal.absolute_row_for_screen(ScreenRow(terminal.total_rows() - 1)),
+        AbsRow(written),
+        "the cursor row keeps the id it was written on"
+    );
+}
+
 #[test]
 fn purges_retire_the_ids_of_purged_lines() {
     let mut terminal = Terminal::new(10, 3, 100_000);

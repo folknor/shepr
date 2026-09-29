@@ -192,7 +192,7 @@ impl EndpointRegistry {
             match action {
                 HealthAction::None => {}
                 HealthAction::Ping => {
-                    let ping = ClientMessage::HealthPing(String::new());
+                    let ping = ClientMessage::HealthPing;
                     if self.send_to(&endpoint_id, &ping) == EndpointSendOutcome::Sent
                         && let Some(health) = self
                             .connections
@@ -598,7 +598,7 @@ mod tests {
         bridge.tick_health(ping_at);
         assert!(matches!(
             bridge_sent.lock().expect("test precondition").as_slice(),
-            [ClientMessage::HealthPing(_)]
+            [ClientMessage::HealthPing]
         ));
         bridge.tick_health(expire_at);
         assert!(bridge.connection(&ClientEndpointId::Local).is_none());
@@ -632,7 +632,7 @@ mod tests {
         registry.tick_health(now + crate::limits::HEARTBEAT_INTERVAL);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
-            [ClientMessage::HealthPing(_)]
+            [ClientMessage::HealthPing]
         ));
 
         registry.tick_health(

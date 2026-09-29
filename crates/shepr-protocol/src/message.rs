@@ -171,7 +171,7 @@ pub enum ServerMessage {
     /// Host presentation effects have crossed the activation fence.
     PresentationReady(String),
     /// Response to a connection health probe.
-    HealthPong(String),
+    HealthPong,
 
     /// Something a direct terminal-attach client must tell its user because
     /// the server could not do what the user asked: input dropped because the

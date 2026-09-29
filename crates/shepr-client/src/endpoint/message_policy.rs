@@ -37,7 +37,7 @@ impl PresentationGate {
             ServerMessage::EndpointWelcome(_)
                 | ServerMessage::EndpointSnapshot(_)
                 | ServerMessage::PresentationReady(_)
-                | ServerMessage::HealthPong(_)
+                | ServerMessage::HealthPong
                 | ServerMessage::ServerShutdown { .. }
                 | ServerMessage::Welcome { .. }
         ) {
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn inactive_endpoint_control_applies_but_presentation_effects_drop() {
         assert_eq!(
-            gate(false, false, false, false).decide(&ServerMessage::HealthPong(String::new())),
+            gate(false, false, false, false).decide(&ServerMessage::HealthPong),
             PresentationDecision::Apply
         );
         assert_eq!(

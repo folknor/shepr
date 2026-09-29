@@ -717,6 +717,8 @@ impl Terminal {
             self.rows.invalidate_primary(&self.term);
         } else {
             self.rows.begin(&self.term);
+            // A shorter screen pushes its top lines into history.
+            self.rows.count_pushed(self.term.screen_lines());
         }
 
         // The byte budget buys fewer lines at a wider width. Grow the line

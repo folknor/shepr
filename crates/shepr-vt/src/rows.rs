@@ -19,6 +19,17 @@
 //! drops them off the top - so where a history row ends up after the batch
 //! says exactly how many lines were evicted.
 //!
+//! The address is only an identity while the row is retained: once a batch
+//! pushes as many lines as the history holds, the followed row is evicted and
+//! its buffer is recycled for a new line, which can sit where the walk looks
+//! (a large synchronized-update frame is replayed as one batch). The handler
+//! prevents that instead of detecting it. It adds an upper bound on the lines
+//! each call can push ([`RowOrigin::note_pushed`]), and closes and reopens the
+//! batch before that bound can reach the history limit, so an address match
+//! is always the followed row itself. A batch whose bound did reach the limit
+//! anyway (a history shorter than one call's worth of lines) counts every
+//! line it began with as gone rather than trust the walk.
+//!
 //! Purges are not observable that way (freed rows can be reallocated at the
 //! same address), so the handler settles the count around them and adds the
 //! dropped lines itself: `ED 3` ([`RowOrigin::evict`]), RIS and column
@@ -52,14 +63,12 @@ pub(super) struct RowOrigin {
 struct Anchor {
     /// Address of the row's cell buffer.
     identity: usize,
-    /// Content fingerprint of the row, checked alongside `identity` to catch
-    /// a physical slot that got recycled for a different line (see
-    /// [`row_signature`]).
-    signature: u64,
     /// The row's screen row when the batch began.
     screen_row: usize,
     /// Rows the primary grid held when the batch began.
     total: usize,
+    /// An upper bound on the lines the batch has pushed into history so far.
+    pushed: usize,
 }
 
 fn primary_active<T>(term: &Term<T>) -> bool {
@@ -70,22 +79,11 @@ fn row_identity<T>(term: &Term<T>, line: Line) -> usize {
     term.grid()[line][..].as_ptr().addr()
 }
 
-/// A cheap content fingerprint for a row, used to reject an identity match
-/// that is really a recycled physical slot: once a batch has scrolled more
-/// lines through the ring buffer than it holds, every address is bound to
-/// reappear somewhere in the scan below even though the line it originally
-/// named is long gone, since alacritty's history storage never frees a row's
-/// backing allocation, it only reassigns which logical line it represents.
-/// Content differing at the same address means the row was overwritten, so
-/// the anchor did not survive.
-fn row_signature<T>(term: &Term<T>, line: Line) -> u64 {
-    let row = &term.grid()[line];
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for cell in row {
-        hash ^= u64::from(cell.c);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+/// The most lines one handler call can push into history: a screenful (`ED 2`,
+/// or a scroll clamped to the scroll region), and at least the two a wide
+/// character can wrap.
+fn per_call_limit<T>(term: &Term<T>) -> usize {
+    term.screen_lines().max(2)
 }
 
 impl RowOrigin {
@@ -114,10 +112,40 @@ impl RowOrigin {
         };
         self.anchor = Some(Anchor {
             identity: row_identity(term, line),
-            signature: row_signature(term, line),
             screen_row,
             total,
+            pushed: 0,
         });
+    }
+
+    /// Adds `lines`, an upper bound on what the call just run pushed into
+    /// history, to the batch in progress. When the next call could bring the
+    /// bound to the history limit, the batch is closed and a new one opened,
+    /// so no batch pushes enough lines to evict its followed row (see the
+    /// module docs). Constant time until it settles.
+    pub(super) fn note_pushed<T: EventListener>(
+        &mut self,
+        term: &Term<T>,
+        lines: usize,
+        history_limit: usize,
+    ) {
+        let Some(anchor) = self.anchor.as_mut() else {
+            return;
+        };
+        anchor.pushed = anchor.pushed.saturating_add(lines);
+        if history_limit != 0 && anchor.pushed.saturating_add(per_call_limit(term)) >= history_limit
+        {
+            self.finish(term, history_limit);
+            self.begin(term);
+        }
+    }
+
+    /// [`RowOrigin::note_pushed`] without settling, for a caller that closes
+    /// the batch itself right after (a resize).
+    pub(super) fn count_pushed(&mut self, lines: usize) {
+        if let Some(anchor) = self.anchor.as_mut() {
+            anchor.pushed = anchor.pushed.saturating_add(lines);
+        }
     }
 
     /// Counts the lines the batch since [`RowOrigin::begin`] evicted from the
@@ -147,32 +175,35 @@ impl RowOrigin {
         if history_limit == 0 || history < history_limit {
             return;
         }
-        let (Ok(history_rows), Ok(anchor_row)) =
-            (i32::try_from(history), i32::try_from(anchor.screen_row))
-        else {
+        // Every line retained when the batch began is counted as gone when
+        // the followed row cannot be trusted or found: that leaves no earlier
+        // id naming a retained line even if a few of the old rows survived.
+        if anchor.pushed >= history_limit {
+            // The batch may have evicted the followed row and recycled its
+            // buffer, so an address match would prove nothing.
+            self.evict(anchor.total);
+            return;
+        }
+        let (Ok(history_rows), Ok(anchor_row), Ok(pushed)) = (
+            i32::try_from(history),
+            i32::try_from(anchor.screen_row),
+            i32::try_from(anchor.pushed),
+        ) else {
             self.evict(anchor.total);
             return;
         };
         // Unmoved, the anchor would sit on the same screen row; every evicted
-        // line moves it one row further up. Walk up from there.
+        // line moves it one row further up, and no further than the lines
+        // the batch pushed. Walk up from there.
         let start = (anchor_row - history_rows).min(-1);
-        for line in (-history_rows..=start).rev() {
+        let end = (start - pushed).max(-history_rows);
+        for line in (end..=start).rev() {
             if row_identity(term, Line(line)) == anchor.identity {
-                if row_signature(term, Line(line)) != anchor.signature {
-                    // Same physical slot, different content: the batch
-                    // wrapped the ring past this row already, so the address
-                    // match is a coincidence and the anchor is long gone.
-                    break;
-                }
                 let now = history_rows + line;
                 self.evict(usize::try_from(anchor_row - now).unwrap_or(0));
                 return;
             }
         }
-        // The anchor itself was evicted: the batch pushed at least a whole
-        // history's worth of lines. Every line retained when it began is
-        // counted as gone, which leaves no earlier id naming a retained line
-        // even if a few of the old screen rows did survive.
         self.evict(anchor.total);
     }
 

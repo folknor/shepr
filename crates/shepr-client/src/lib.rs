@@ -1599,7 +1599,7 @@ impl ClientLoop<'_> {
                 }
                 return Ok(ClientLoopAction::NextEvent);
             }
-            ServerMessage::HealthPong(_) | ServerMessage::EndpointWelcome(_) => {
+            ServerMessage::HealthPong | ServerMessage::EndpointWelcome(_) => {
                 return Ok(ClientLoopAction::NextEvent);
             }
             ServerMessage::EndpointSnapshot(snapshot) => {

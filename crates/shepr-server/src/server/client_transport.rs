@@ -1126,8 +1126,8 @@ fn client_read_loop_with_endpoint_controls(
                 client_id,
                 token: data,
             },
-            ClientMessage::HealthPing(data) => {
-                let response = ServerMessage::HealthPong(data);
+            ClientMessage::HealthPing => {
+                let response = ServerMessage::HealthPong;
                 let Some(writer) = endpoint_control_writer else {
                     continue;
                 };
@@ -2114,11 +2114,8 @@ mod tests {
             )
         });
 
-        shepr_protocol::write_message(
-            &mut client_stream,
-            &ClientMessage::HealthPing(String::new()),
-        )
-        .expect("test precondition");
+        shepr_protocol::write_message(&mut client_stream, &ClientMessage::HealthPing)
+            .expect("test precondition");
         shepr_protocol::write_message(&mut client_stream, &ClientMessage::Detach)
             .expect("test precondition");
 

@@ -446,7 +446,7 @@ pub enum ClientMessage {
     /// Fence host presentation effects during endpoint activation.
     PresentationSync(String),
     /// Check that a connected endpoint is responsive.
-    HealthPing(String),
+    HealthPing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
