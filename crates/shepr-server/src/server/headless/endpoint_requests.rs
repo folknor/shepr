@@ -1,28 +1,19 @@
 use super::*;
 use crate::server::ClientId;
+use shepr_protocol::command::EndpointCommand;
 
 impl HeadlessServer {
     pub(super) fn handle_client_shell_endpoint_request(
         &mut self,
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
-        mut request: shepr_api::schema::Request,
+        request_id: shepr_protocol::RequestId,
+        command: EndpointCommand,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
         };
         let shell = client.shell_state();
-        let request_id: shepr_protocol::RequestId = request.id.clone().into();
-        if !crate::server::client_commands::supports_client_shell_method(&request.method) {
-            let message = crate::server::client_commands::error_message(
-                boot_id,
-                request_id,
-                shepr_api::error::ApiErrorCode::UnsupportedEndpointCommand,
-                "this method is not available through the client shell command lane",
-            );
-            self.send_to_client(client_id, &message);
-            return false;
-        }
         if boot_id != self.client_shell_boot_id {
             let message = crate::server::client_commands::error_message(
                 boot_id,
@@ -34,7 +25,7 @@ impl HeadlessServer {
             return false;
         }
         let surface_active = shell.surface_active;
-        if let shepr_api::schema::Method::ClientShellSurfaceSet(params) = &request.method {
+        if let EndpointCommand::ClientShellSurfaceSet(params) = &command {
             let Some((changed, projection_revision)) =
                 self.set_client_shell_surface_active(client_id, params.active)
             else {
@@ -42,13 +33,13 @@ impl HeadlessServer {
             };
             self.send_to_client(
                 client_id,
-                &crate::server::client_commands::success_message_with_result(
+                &crate::server::client_commands::response_message(
                     boot_id,
                     request_id,
-                    shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
+                    Ok(shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
                         active: params.active,
                         projection_revision,
-                    },
+                    }),
                 ),
             );
             return changed;
@@ -74,11 +65,13 @@ impl HeadlessServer {
             return false;
         }
 
-        let api_request_id = format!(
-            "endpoint:{}:{client_id}:{request_id}",
-            self.client_shell_boot_id
-        );
-        request.id = api_request_id.clone();
+        let request = shepr_api::schema::Request {
+            id: format!(
+                "endpoint:{}:{client_id}:{request_id}",
+                self.client_shell_boot_id
+            ),
+            method: command.into(),
+        };
         let (respond_to, response_rx) = std::sync::mpsc::channel();
         if let Err(err) = crate::server::client_commands::spawn_response_waiter(
             client_id,

@@ -135,19 +135,65 @@ mod tests {
 
     #[test]
     fn client_shell_endpoint_messages_roundtrip() -> TestResult {
-        let request = ClientMessage::ClientShellEndpointRequest {
-            boot_id: "1-1".into(),
-            request: r#"{"id":"request-a","method":"session.snapshot","params":{}}"#.into(),
+        use crate::command::{
+            EndpointCommand, EndpointError, EndpointReply, LayoutSetSplitRatioParams,
+            PaneSplitParams, PaneTextPoint, PaneTextRange, SplitDirection,
         };
-        assert_eq!(roundtrip(&request)?, request);
 
-        let response = ServerMessage::ClientShellEndpointResponseChunk {
-            boot_id: "1-1".into(),
-            request_id: "request-a".into(),
-            final_chunk: true,
-            data: br#"{"id":"request-a","result":{"type":"ok"}}"#.to_vec(),
+        for command in [
+            EndpointCommand::PaneSplit(PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some("w1:p1".into()),
+                direction: SplitDirection::Down,
+                ratio: Some(0.25),
+                cwd: None,
+                focus: true,
+                right_click: Default::default(),
+                env: [("A".to_owned(), "1".to_owned())].into(),
+            }),
+            EndpointCommand::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
+                tab_id: Some("w1:t1".into()),
+                pane_id: None,
+                path: vec![false, true],
+                ratio: 0.6,
+            }),
+        ] {
+            let request = ClientMessage::ClientShellEndpointRequest {
+                boot_id: "1-1".into(),
+                request_id: "request-a".into(),
+                command,
+            };
+            assert_eq!(roundtrip(&request)?, request);
+        }
+
+        let point = |row: u64, col: u16| PaneTextPoint {
+            row: shepr_vt::AbsRow(row),
+            col,
         };
-        assert_eq!(roundtrip(&response)?, response);
+        for result in [
+            Ok(EndpointReply::Done),
+            Ok(EndpointReply::PaneCopySearch {
+                pane_id: "w1:p1".into(),
+                matches: vec![PaneTextRange {
+                    start: point(3, 1),
+                    end: point(3, 4),
+                }],
+                total: 1,
+                current: Some(0),
+                current_global: None,
+            }),
+            Err(EndpointError {
+                code: "pane_not_found".into(),
+                message: "pane w1:p9 not found".into(),
+            }),
+        ] {
+            let response = ServerMessage::ClientShellEndpointResponse {
+                boot_id: "1-1".into(),
+                request_id: "request-a".into(),
+                result,
+            };
+            assert_eq!(roundtrip(&response)?, response);
+        }
         Ok(())
     }
 
@@ -412,13 +458,17 @@ mod tests {
     fn byte_fields_encode_as_length_then_raw_bytes() -> TestResult {
         // The byte-buffer fields must keep the plain `Vec<u8>` wire layout
         // (varint length, raw bytes) while decoding in one copy.
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Carrier {
+            tag: u8,
+            #[serde(
+                serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
+                deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
+            )]
+            data: Vec<u8>,
+        }
         let data = vec![0u8, 1, 0x7f, 0x80, 0xff];
-        let chunk = |data: Vec<u8>| ServerMessage::ClientShellEndpointResponseChunk {
-            boot_id: "1-1".into(),
-            request_id: "request-a".into(),
-            final_chunk: true,
-            data,
-        };
+        let chunk = |data: Vec<u8>| Carrier { tag: 7, data };
         let encoded = codec::to_vec(&chunk(data.clone()))?;
         // The data field is last: varint length, then the raw bytes.
         assert_eq!(

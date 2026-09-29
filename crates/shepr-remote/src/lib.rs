@@ -13,12 +13,12 @@ mod launch;
 #[path = "remote/local_server.rs"]
 pub mod local_server;
 pub mod machine;
+#[path = "remote/machine_ssh.rs"]
+mod machine_ssh;
 #[path = "remote/preflight.rs"]
 mod preflight;
 #[path = "remote/process.rs"]
 mod process;
-#[path = "remote/saved.rs"]
-mod saved;
 #[path = "remote/server_lifecycle.rs"]
 mod server_lifecycle;
 #[path = "remote/ssh.rs"]
@@ -38,12 +38,12 @@ pub use args::*;
 pub use bridge::{BridgeUpload, BridgeUploadEnd};
 pub use host::run_remote_client_bridge;
 pub use launch::{RemoteStop, interactive_shell_command, shell_quote, stop_remote_server};
+pub use machine_ssh::*;
 pub use preflight::{
-    MachineCheck, PreflightOutcome, PreflightSsh, RestartDecision, RestartResult,
-    SavedSshPreflight, classify_check, preflight, restart_different_builds,
+    MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh, RestartDecision,
+    RestartResult, classify_check, preflight, restart_different_builds,
 };
-pub use saved::*;
-pub use server_lifecycle::{DifferentBuildServer, SavedSshCheck};
+pub use server_lifecycle::{DifferentBuildServer, MachineSshCheck};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,7 +234,7 @@ fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
 /// Operator hint lines for a failed configured-machine SSH operation, one per
 /// line and without a trailing newline. Empty when there is no hint. The
 /// binary renders them; this crate does not print.
-pub fn saved_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<String> {
+pub fn machine_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<String> {
     if err.is_host_key() {
         vec![
             "hint: configured machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
@@ -278,10 +278,10 @@ mod tests {
                 Some(SSH_OWN_FAILURE_EXIT_CODE),
                 message.into(),
             );
-            assert!(!saved_ssh_error_hint(&failure, "host").is_empty());
+            assert!(!machine_ssh_error_hint(&failure, "host").is_empty());
         }
         assert!(
-            saved_ssh_error_hint(
+            machine_ssh_error_hint(
                 &SshFailureDiagnostic::from_message("server closed connection"),
                 "host"
             )

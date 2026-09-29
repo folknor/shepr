@@ -3,6 +3,8 @@ use shepr_protocol::{PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
 
 use super::common::AgentStatus;
 
+pub use shepr_protocol::command::AgentSessionInfo;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub terminal_id: TerminalId,
@@ -27,12 +29,4 @@ pub struct AgentInfo {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSessionInfo {
-    pub source: String,
-    pub agent: String,
-    pub kind: shepr_agent::agent::resume::AgentSessionRefKind,
-    pub value: String,
 }

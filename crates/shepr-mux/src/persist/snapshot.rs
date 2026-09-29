@@ -467,50 +467,46 @@ enum CarriedOrigin {
     Live,
 }
 
-type CarriedHistory = HashMap<TerminalId, CarriedEntry>;
-
-/// Primary-screen history kept across saves, for two cases the live screen
-/// cannot cover:
+/// Pane history kept from one save to the next. Restore creates it and hands
+/// it to the session persister, which owns it from then on: every history
+/// capture is resolved against it, on the persister's thread, in save order,
+/// so nothing else touches it and it needs no lock.
 ///
-/// - A restored pane without a runtime (deferred agent resume, failed
-///   restore) keeps its `Restored` history from the loaded file until it
-///   runs. Capture reads live runtimes only, so without this a save made
-///   before the pane runs would lose its saved screen for good. The first
-///   capture that sees a runtime for the pane drops that entry: from then on
-///   the pane's own screen supersedes it, even if its first read happens on
-///   the alternate screen.
-/// - A running pane on the alternate screen (vim, an agent TUI) cannot have
-///   its primary screen read (`primary_history_ansi` returns `None`), so
-///   saves fall back to its `Live` entry, the last primary history read
-///   successfully. Every successful read replaces it and an empty read
-///   removes it, so it never holds anything older than the pane's own last
-///   primary screen.
+/// It keeps two things per pane, keyed by terminal ID:
 ///
-/// Entries are keyed by terminal ID, one per pane at most, and each capture
-/// drops those of panes no longer in the layout. That pruning is why the map
-/// belongs to one app (restore creates it, the app hands it to every
-/// capture) instead of being process-wide: a capture only knows its own
-/// layout, and would drop every other owner's entries.
+/// - What a pane's live screen cannot supply (`carried`):
+///   - A restored pane without a runtime (deferred agent resume, failed
+///     restore) keeps its `Restored` history from the loaded file until it
+///     runs. Capture reads live runtimes only, so without this a save made
+///     before the pane runs would lose its saved screen for good. The first
+///     save that sees a runtime for the pane drops that entry: from then on
+///     the pane's own screen supersedes it, even if its first read happens
+///     on the alternate screen.
+///   - A running pane on the alternate screen (vim, an agent TUI) cannot
+///     have its primary screen read, so saves fall back to its `Live` entry,
+///     the last primary history read successfully. Every successful read
+///     replaces it and an empty read removes it, so it never holds anything
+///     older than the pane's own last primary screen.
+/// - The history a live pane's reader formatted before (`readers`), so a
+///   save formats only the lines that are new since the last one
+///   (`PaneHistoryCache`).
 ///
-/// Capture (event loop) and resolve (save thread) both use it, hence the
-/// shared lock. This lives here rather than on `TerminalState` so restore and
-/// capture can share it without widening the terminal interface.
-#[derive(Clone, Default)]
-pub struct HistoryCarry(std::sync::Arc<std::sync::Mutex<CarriedHistory>>);
+/// Each save drops the entries of panes no longer in its layout. That pruning
+/// is why this belongs to one app's persister instead of being process-wide:
+/// a save only knows its own layout, and would drop every other owner's
+/// entries.
+#[derive(Default)]
+pub struct HistoryCarry {
+    carried: HashMap<TerminalId, CarriedEntry>,
+    readers: HashMap<TerminalId, crate::pane::PaneHistoryCache>,
+}
 
 impl HistoryCarry {
-    fn lock(&self) -> std::sync::MutexGuard<'_, CarriedHistory> {
-        // The map holds plain strings with no invariant a panic could break.
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// Keeps a restored pane's saved history for later saves until the pane
     /// has a runtime of its own.
-    pub fn carry_restored(&self, terminal: &TerminalId, history: Option<&PaneHistorySnapshot>) {
+    pub fn carry_restored(&mut self, terminal: &TerminalId, history: Option<&PaneHistorySnapshot>) {
         if let Some(history) = history {
-            self.lock().insert(
+            self.carried.insert(
                 terminal.clone(),
                 CarriedEntry {
                     ansi: history.ansi.clone(),
@@ -520,18 +516,51 @@ impl HistoryCarry {
         }
     }
 
-    /// The save-thread half of a live pane's history: records a successful
-    /// primary-screen read as the pane's fallback, or falls back to the last
-    /// one while the alternate screen hides the primary screen.
-    fn resolve_live(&self, terminal: &TerminalId, read: Option<String>) -> Option<String> {
-        let mut carried = self.lock();
+    /// Forgets every pane: a cleared session has none.
+    pub(super) fn clear(&mut self) {
+        self.carried.clear();
+        self.readers.clear();
+    }
+
+    /// Drops what belongs to panes outside `panes` (the ones a save saw) and
+    /// the readers of panes that no longer have a runtime.
+    fn retain(&mut self, panes: &HashMap<TerminalId, bool>) {
+        self.carried.retain(|id, _| panes.contains_key(id));
+        self.readers
+            .retain(|id, _| panes.get(id).copied().unwrap_or(false));
+    }
+
+    /// History carried for a pane without a runtime.
+    fn carried(&self, terminal: &TerminalId) -> Option<String> {
+        self.carried.get(terminal).map(|entry| entry.ansi.clone())
+    }
+
+    /// A live pane's history: reads it through its cache, records a
+    /// successful primary-screen read as the pane's fallback, or falls back to
+    /// the last one while the alternate screen hides the primary screen.
+    fn resolve_live(
+        &mut self,
+        terminal: &TerminalId,
+        source: &crate::pane::PaneHistorySource,
+    ) -> Option<String> {
+        // The pane has a runtime of its own now: its own screen supersedes
+        // the history restored for it, permanently, even while that screen is
+        // on the alternate buffer and cannot be read.
+        if self
+            .carried
+            .get(terminal)
+            .is_some_and(|entry| entry.origin == CarriedOrigin::Restored)
+        {
+            self.carried.remove(terminal);
+        }
+        let read = source.read(self.readers.entry(terminal.clone()).or_default());
         match read {
             Some(ansi) if ansi.trim().is_empty() => {
-                carried.remove(terminal);
+                self.carried.remove(terminal);
                 None
             }
             Some(ansi) => {
-                carried.insert(
+                self.carried.insert(
                     terminal.clone(),
                     CarriedEntry {
                         ansi: ansi.clone(),
@@ -540,7 +569,8 @@ impl HistoryCarry {
                 );
                 Some(ansi)
             }
-            None => carried
+            None => self
+                .carried
                 .get(terminal)
                 .filter(|entry| entry.origin == CarriedOrigin::Live)
                 .map(|entry| entry.ansi.clone()),
@@ -548,30 +578,42 @@ impl HistoryCarry {
     }
 }
 
-/// Produces one live pane's saved-screen history. Runs on the session save
-/// thread, not on the event loop.
-type PaneHistoryRead = Box<dyn FnOnce() -> Option<String> + Send>;
-
 enum PendingPaneHistory {
-    /// Saved history carried for a pane without a runtime.
-    Carried(String),
-    Live(TerminalId, PaneHistoryRead),
+    /// A pane without a runtime: whatever history is carried for it.
+    Runtimeless(TerminalId),
+    /// A running pane, read where the history is resolved.
+    Live(TerminalId, crate::pane::PaneHistorySource),
 }
 
-/// Pane history captured on the event loop in the cheapest form available,
-/// to be turned into a `SessionHistorySnapshot` off it (`resolve`). The shape
-/// mirrors the workspaces and tabs it was captured from.
+/// Pane history captured on the event loop: which pane each history belongs
+/// to and a handle to read it through, nothing formatted. `resolve` turns it
+/// into a `SessionHistorySnapshot` off the loop. The shape mirrors the
+/// workspaces and tabs it was captured from.
 pub struct PendingHistory {
     workspaces: Vec<Vec<Vec<(u32, PendingPaneHistory)>>>,
-    carry: HistoryCarry,
 }
 
 impl PendingHistory {
     /// Formats every live pane's history and pairs the result with the layout
-    /// it was captured alongside. Meant for the save thread: it can take as
-    /// long as formatting every pane's scrollback does.
-    pub fn resolve(self, snapshot: &SessionSnapshot) -> SessionHistorySnapshot {
-        let carry = self.carry;
+    /// it was captured alongside. Meant for the persister's thread: it can
+    /// take as long as formatting what is new in every pane's scrollback
+    /// does, in bounded chunks per hold of each pane's terminal lock.
+    pub fn resolve(
+        self,
+        snapshot: &SessionSnapshot,
+        carry: &mut HistoryCarry,
+    ) -> SessionHistorySnapshot {
+        let panes: HashMap<TerminalId, bool> = self
+            .workspaces
+            .iter()
+            .flatten()
+            .flatten()
+            .map(|(_, pending)| match pending {
+                PendingPaneHistory::Runtimeless(terminal) => (terminal.clone(), false),
+                PendingPaneHistory::Live(terminal, _) => (terminal.clone(), true),
+            })
+            .collect();
+        carry.retain(&panes);
         SessionHistorySnapshot {
             version: SNAPSHOT_VERSION,
             // Pair history to this saved layout here: live pane IDs are stable
@@ -589,9 +631,11 @@ impl PendingHistory {
                                 .into_iter()
                                 .filter_map(|(id, pending)| {
                                     let ansi = match pending {
-                                        PendingPaneHistory::Carried(ansi) => Some(ansi),
-                                        PendingPaneHistory::Live(terminal, read) => {
-                                            carry.resolve_live(&terminal, read())
+                                        PendingPaneHistory::Runtimeless(terminal) => {
+                                            carry.carried(&terminal)
+                                        }
+                                        PendingPaneHistory::Live(terminal, source) => {
+                                            carry.resolve_live(&terminal, &source)
                                         }
                                     }?;
                                     Some((id, PaneHistorySnapshot { ansi }))
@@ -605,88 +649,38 @@ impl PendingHistory {
     }
 }
 
-/// The event-loop half of a history capture; see `PendingHistory`.
+/// The event-loop half of a history capture; see `PendingHistory`. Takes no
+/// terminal lock: a live pane contributes a handle to its terminal.
 pub fn capture_pending_history(
     workspaces: &[Workspace],
     terminal_runtimes: &PaneRuntimeRegistry,
-    carry: &HistoryCarry,
 ) -> PendingHistory {
-    let mut carried = carry.lock();
-    let workspaces_history = workspaces
-        .iter()
-        .map(|workspace| {
-            workspace
-                .tabs()
-                .iter()
-                .map(|tab| capture_tab_history(tab, terminal_runtimes, &mut carried))
-                .collect()
-        })
-        .collect();
-    let live_ids: std::collections::HashSet<_> = workspaces
-        .iter()
-        .flat_map(|workspace| workspace.tabs().iter())
-        .flat_map(|tab| tab.panes.values())
-        .map(|pane| &pane.attached_terminal_id)
-        .collect();
-    carried.retain(|id, _| live_ids.contains(id));
-    drop(carried);
     PendingHistory {
-        workspaces: workspaces_history,
-        carry: carry.clone(),
+        workspaces: workspaces
+            .iter()
+            .map(|workspace| {
+                workspace
+                    .tabs()
+                    .iter()
+                    .map(|tab| {
+                        tab.panes
+                            .iter()
+                            .map(|(id, pane)| {
+                                let terminal = pane.attached_terminal_id.clone();
+                                let pending = match terminal_runtimes.get(&terminal) {
+                                    Some(runtime) => {
+                                        PendingPaneHistory::Live(terminal, runtime.history_source())
+                                    }
+                                    None => PendingPaneHistory::Runtimeless(terminal),
+                                };
+                                (id.raw(), pending)
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect(),
     }
-}
-
-fn capture_tab_history(
-    tab: &crate::workspace::Tab,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    carried: &mut CarriedHistory,
-) -> Vec<(u32, PendingPaneHistory)> {
-    tab.panes
-        .iter()
-        .filter_map(|(id, pane)| {
-            capture_pane_history(pane, terminal_runtimes, carried)
-                .map(|history| (id.raw(), history))
-        })
-        .collect()
-}
-
-fn capture_pane_history(
-    pane: &crate::pane::PaneState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    carried: &mut CarriedHistory,
-) -> Option<PendingPaneHistory> {
-    let terminal = &pane.attached_terminal_id;
-    let Some(runtime) = terminal_runtimes.get(terminal) else {
-        return carried
-            .get(terminal)
-            .map(|entry| PendingPaneHistory::Carried(entry.ansi.clone()));
-    };
-    // The pane has a runtime of its own now: its own screen supersedes the
-    // history restored for it, permanently, even while that screen is on the
-    // alternate buffer and cannot be read. Its own last primary read stays
-    // as the alternate-screen fallback.
-    if carried
-        .get(terminal)
-        .is_some_and(|entry| entry.origin == CarriedOrigin::Restored)
-    {
-        carried.remove(terminal);
-    }
-    Some(PendingPaneHistory::Live(
-        terminal.clone(),
-        live_history_read(runtime),
-    ))
-}
-
-/// How a live pane's history gets read. The save path is built to run this
-/// read on the save thread, but a `PaneRuntime` cannot leave the event
-/// loop and the pane layer offers no `Send` handle to its terminal core yet,
-/// so for now the whole scrollback is still formatted here, on the loop,
-/// under one hold of the pane's terminal lock. Once the pane layer exposes
-/// such a handle (ideally one that formats in bounded chunks under short lock
-/// holds), returning a closure over it is the only change needed here.
-fn live_history_read(runtime: &crate::pane::PaneRuntime) -> PaneHistoryRead {
-    let ansi = runtime.snapshot_history();
-    Box::new(move || ansi)
 }
 
 pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
@@ -721,15 +715,15 @@ pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnap
 }
 
 /// Both halves of a history capture in one call. Saves split them across the
-/// event loop and the save thread instead.
+/// event loop and the persister's thread instead.
 #[cfg(test)]
 pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
     terminal_runtimes: &PaneRuntimeRegistry,
-    carry: &HistoryCarry,
+    carry: &mut HistoryCarry,
 ) -> SessionHistorySnapshot {
-    capture_pending_history(workspaces, terminal_runtimes, carry).resolve(snapshot)
+    capture_pending_history(workspaces, terminal_runtimes).resolve(snapshot, carry)
 }
 
 #[cfg(test)]

@@ -1,4 +1,14 @@
-use std::time::{Duration, Instant, SystemTime};
+//! When the session is saved, and what a save's outcome means for the loop.
+//!
+//! Saving itself belongs to the session persister
+//! (`shepr_mux::persist::SessionPersister`), which owns the data directory
+//! lease, the writer and the pane history carried between saves on a thread
+//! of its own. This side decides when to save (debounced autosaves, pane-exit
+//! and host-shutdown checkpoints, retries), captures what to save on the
+//! event loop, where only the cheap part happens (the structural snapshot and
+//! a handle to each pane's terminal), and hands the result to the persister.
+
+use std::time::{Duration, Instant};
 
 use super::App;
 use crate::limits::{
@@ -14,14 +24,21 @@ enum SessionSavePurpose {
     },
 }
 
+/// A save the persister is running, and why it was taken.
+struct InFlightSave {
+    pending: shepr_mux::persist::PendingSave,
+    purpose: SessionSavePurpose,
+}
+
 pub(crate) struct SessionSaver {
     pub(crate) session_save_deadline: Option<Instant>,
     session_save_check_deadline: Option<Instant>,
     /// Consecutive failed saves, for the retry backoff.
     failed_saves: u32,
-    pub(crate) session_save_thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-    session_save_purpose: Option<SessionSavePurpose>,
-    session_writer: SessionWriterHandle,
+    /// At most one save is in flight: a due save waits for it, so every
+    /// capture reaches the persister after the one before it finished.
+    in_flight: Option<InFlightSave>,
+    persister: shepr_mux::persist::SessionPersister,
     pub(crate) pane_exit_checkpoint_pending: bool,
     pane_exit_checkpoint_requested: bool,
     pane_exit_checkpoint_generation: u64,
@@ -36,34 +53,14 @@ pub(crate) struct SessionSaver {
     host_shutdown_checkpoint_result: Option<(u64, bool)>,
 }
 
-/// Serializes operations on the session writer and owns their poison policy. A
-/// save retry checks the history digest and file stamp before trusting its
-/// cache. Retirement uses the same recovered guard to release the data
-/// directory lease.
-#[derive(Clone)]
-struct SessionWriterHandle(std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>);
-
-impl SessionWriterHandle {
-    fn new(writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>) -> Self {
-        Self(writer)
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, shepr_mux::persist::SessionWriter> {
-        shepr_vt::lock_auxiliary(&self.0)
-    }
-}
-
 impl SessionSaver {
-    pub(crate) fn new(
-        writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>,
-    ) -> Self {
+    pub(crate) fn new(persister: shepr_mux::persist::SessionPersister) -> Self {
         Self {
             session_save_deadline: None,
             session_save_check_deadline: None,
             failed_saves: 0,
-            session_save_thread: None,
-            session_save_purpose: None,
-            session_writer: SessionWriterHandle::new(writer),
+            in_flight: None,
+            persister,
             pane_exit_checkpoint_pending: false,
             pane_exit_checkpoint_requested: false,
             pane_exit_checkpoint_generation: 0,
@@ -153,14 +150,6 @@ impl SessionSaver {
     }
 }
 
-enum SessionSaveJob {
-    Clear,
-    Save {
-        snapshot: shepr_mux::persist::SessionSnapshot,
-        history: Option<shepr_mux::persist::PendingHistory>,
-    },
-}
-
 impl App {
     pub(super) fn schedule_session_save(&mut self) {
         if self.policy.persists_session() {
@@ -176,24 +165,17 @@ impl App {
     }
 
     fn reap_finished_session_save(&mut self, now: Instant) {
-        if self
+        let Some(result) = self
             .session_saver
-            .session_save_thread
+            .in_flight
             .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
-            && let Some(thread) = self.session_saver.session_save_thread.take()
-        {
-            self.session_saver.session_save_check_deadline = None;
-            let purpose = self
-                .session_saver
-                .session_save_purpose
-                .take()
-                .unwrap_or(SessionSavePurpose::Autosave);
-            let result = match thread.join() {
-                Ok(result) => result,
-                Err(_) => Err(std::io::Error::other("session save thread panicked")),
-            };
-            self.finish_session_save(purpose, result, now);
+            .and_then(|save| save.pending.try_finish())
+        else {
+            return;
+        };
+        self.session_saver.session_save_check_deadline = None;
+        if let Some(save) = self.session_saver.in_flight.take() {
+            self.finish_session_save(save.purpose, result, now);
         }
     }
 
@@ -367,11 +349,12 @@ impl App {
     }
 
     /// Runs on the event loop, so it takes only what must be read here: the
-    /// structural snapshot and each pane's history source. Turning history
-    /// into its saved form is left to `run_session_save_job`.
-    fn capture_session_save_job(&self) -> SessionSaveJob {
+    /// structural snapshot and a handle to each pane's terminal. No terminal
+    /// lock is taken; turning history into its saved form is the persister's
+    /// work.
+    fn capture_session_save_job(&self) -> shepr_mux::persist::PersistJob {
         if self.state.workspaces.is_empty() {
-            SessionSaveJob::Clear
+            shepr_mux::persist::PersistJob::Clear
         } else {
             let snapshot = shepr_mux::persist::capture(
                 &self.state.workspaces,
@@ -388,10 +371,12 @@ impl App {
                 shepr_mux::persist::capture_pending_history(
                     &self.state.workspaces,
                     &self.terminal_runtimes,
-                    &self.pane_history_carry,
                 )
             });
-            SessionSaveJob::Save { snapshot, history }
+            shepr_mux::persist::PersistJob::Save(shepr_mux::persist::SessionBundle {
+                snapshot,
+                history,
+            })
         }
     }
 
@@ -413,7 +398,7 @@ impl App {
         {
             return;
         }
-        if self.session_saver.session_save_thread.is_some() {
+        if self.session_saver.in_flight.is_some() {
             if self.session_saver.save_is_due(now) {
                 self.session_saver.retry(now);
             }
@@ -461,31 +446,16 @@ impl App {
 
     fn spawn_session_save(
         &mut self,
-        job: SessionSaveJob,
+        job: shepr_mux::persist::PersistJob,
         purpose: SessionSavePurpose,
         now: Instant,
     ) {
-        let writer = self.session_saver.session_writer.clone();
-        let saved_at = self.clock.wall_now;
-        match std::thread::Builder::new()
-            .name("shepr-session-save".into())
-            .spawn(move || run_session_save_job(job, &writer, saved_at))
-        {
-            Ok(thread) => {
-                self.session_saver.session_save_thread = Some(thread);
-                self.session_saver.session_save_purpose = Some(purpose);
-                self.session_saver.session_save_check_deadline =
-                    Some(now + SESSION_SAVE_CHECK_INTERVAL);
-            }
-            Err(err) => self.finish_session_save(
-                purpose,
-                Err(std::io::Error::new(
-                    err.kind(),
-                    format!("failed to spawn session save thread: {err}"),
-                )),
-                now,
-            ),
-        }
+        let pending = self
+            .session_saver
+            .persister
+            .submit(job, self.clock.wall_now);
+        self.session_saver.in_flight = Some(InFlightSave { pending, purpose });
+        self.session_saver.session_save_check_deadline = Some(now + SESSION_SAVE_CHECK_INTERVAL);
     }
 
     /// Whether an exited pane may be removed now: nothing is persisted, the
@@ -575,21 +545,10 @@ impl App {
         let preserve_checkpoint =
             self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty;
 
-        if let Some(thread) = self.session_saver.session_save_thread.take() {
+        if let Some(save) = self.session_saver.in_flight.take() {
             self.session_saver.session_save_check_deadline = None;
-            let purpose = self
-                .session_saver
-                .session_save_purpose
-                .take()
-                .unwrap_or(SessionSavePurpose::Autosave);
-            let result = match tokio::task::spawn_blocking(move || thread.join()).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err(std::io::Error::other("session save thread panicked")),
-                Err(err) => Err(std::io::Error::other(format!(
-                    "failed to join session save thread: {err}"
-                ))),
-            };
-            self.finish_session_save(purpose, result, self.clock.now);
+            let result = wait_off_the_runtime(save.pending).await;
+            self.finish_session_save(save.purpose, result, self.clock.now);
         }
 
         if preserve_checkpoint {
@@ -602,18 +561,14 @@ impl App {
             return;
         }
 
+        // Captured while every pane runtime still exists, so the final save
+        // holds each live pane's history.
         let job = self.capture_session_save_job();
-        let writer = self.session_saver.session_writer.clone();
-        let saved_at = self.clock.wall_now;
-        let result =
-            match tokio::task::spawn_blocking(move || run_session_save_job(job, &writer, saved_at))
-                .await
-            {
-                Ok(result) => result,
-                Err(err) => Err(std::io::Error::other(format!(
-                    "session save worker failed: {err}"
-                ))),
-            };
+        let pending = self
+            .session_saver
+            .persister
+            .submit(job, self.clock.wall_now);
+        let result = wait_off_the_runtime(pending).await;
         self.session_saver.pane_exit_checkpoint_pending = false;
         let saved = self.record_session_save_result(result, self.clock.now);
         if saved {
@@ -621,39 +576,28 @@ impl App {
         }
     }
 
+    /// Ends persistence for this server: the save still in flight finishes
+    /// (its failure is logged like any other save's; the retry it schedules
+    /// is moot, the deadline is cleared below), then the persister releases
+    /// the data directory lease. A `server stop` waits for that release.
     pub(crate) fn retire_session_writer(&mut self) {
-        if let Some(thread) = self.session_saver.session_save_thread.take() {
-            // The last save still in flight at shutdown: its failure is
-            // logged like any other save's. The retry it schedules is moot,
-            // the deadline is cleared below and the writer retired.
-            let result = thread
-                .join()
-                .unwrap_or_else(|_| Err(std::io::Error::other("session save thread panicked")));
+        if let Some(save) = self.session_saver.in_flight.take() {
+            let result = save.pending.wait();
             self.record_session_save_result(result, self.clock.now);
         }
         self.session_saver.clear_deadline();
-        self.session_saver.session_writer.lock().retire();
+        self.session_saver.persister.retire();
     }
 }
 
-fn run_session_save_job(
-    job: SessionSaveJob,
-    writer: &SessionWriterHandle,
-    now: SystemTime,
-) -> std::io::Result<()> {
-    // Formatting pane history is the expensive part of a save; it happens
-    // here, before the writer is locked.
-    let job = match job {
-        SessionSaveJob::Clear => None,
-        SessionSaveJob::Save { snapshot, history } => {
-            let history = history.map(|history| history.resolve(&snapshot));
-            Some((snapshot, history))
-        }
-    };
-    let mut writer = writer.lock();
-    match job {
-        None => writer.clear(now),
-        Some((snapshot, history)) => writer.save(&snapshot, history.as_ref(), now),
+/// Waits for a persister result on a blocking thread, so the async runtime
+/// keeps serving while the save finishes.
+async fn wait_off_the_runtime(pending: shepr_mux::persist::PendingSave) -> std::io::Result<()> {
+    match tokio::task::spawn_blocking(move || pending.wait()).await {
+        Ok(result) => result,
+        Err(error) => Err(std::io::Error::other(format!(
+            "failed to wait for the session save: {error}"
+        ))),
     }
 }
 
@@ -661,32 +605,56 @@ fn run_session_save_job(
 use shepr_mux::events::AppEvent;
 
 #[cfg(test)]
+impl SessionSaver {
+    /// Whether a save is in flight.
+    pub(crate) fn save_in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// Stands in for an autosave the persister is still running; it
+    /// finishes when the test completes the returned handle.
+    pub(crate) fn hold_test_save_in_flight(&mut self) -> shepr_mux::persist::SaveCompletion {
+        let (completion, pending) = shepr_mux::persist::PendingSave::channel();
+        self.in_flight = Some(InFlightSave {
+            pending,
+            purpose: SessionSavePurpose::Autosave,
+        });
+        completion
+    }
+
+    /// Waits for the save in flight and hands back its result without
+    /// recording it.
+    pub(crate) fn take_in_flight_result(&mut self) -> Option<std::io::Result<()>> {
+        self.in_flight.take().map(|save| save.pending.wait())
+    }
+}
+
+#[cfg(test)]
 impl App {
-    pub(crate) fn save_session_now(&mut self) -> bool {
-        if let Some(thread) = self.session_saver.session_save_thread.take() {
+    /// Blocks until the save in flight, if any, has finished, and records
+    /// its outcome.
+    fn wait_for_session_save(&mut self) {
+        if let Some(save) = self.session_saver.in_flight.take() {
             self.session_saver.session_save_check_deadline = None;
-            let purpose = self
-                .session_saver
-                .session_save_purpose
-                .take()
-                .unwrap_or(SessionSavePurpose::Autosave);
-            let result = match thread.join() {
-                Ok(result) => result,
-                Err(_) => Err(std::io::Error::other("session save thread panicked")),
-            };
-            self.finish_session_save(purpose, result, self.clock.now);
+            let result = save.pending.wait();
+            self.finish_session_save(save.purpose, result, self.clock.now);
         }
+    }
+
+    pub(crate) fn save_session_now(&mut self) -> bool {
+        self.wait_for_session_save();
 
         if !self.policy.persists_session() {
             self.session_saver.clear_deadline();
             return true;
         }
 
-        let result = run_session_save_job(
-            self.capture_session_save_job(),
-            &self.session_saver.session_writer,
-            self.clock.wall_now,
-        );
+        let job = self.capture_session_save_job();
+        let result = self
+            .session_saver
+            .persister
+            .submit(job, self.clock.wall_now)
+            .wait();
         self.session_saver.pane_exit_checkpoint_pending = false;
         let saved = self.record_session_save_result(result, self.clock.now);
         if saved {
@@ -707,17 +675,7 @@ impl App {
             && !self.checkpoint_session_before_pane_exit()
         {
             for _ in 0..4 {
-                if let Some(thread) = self.session_saver.session_save_thread.take() {
-                    let purpose = self
-                        .session_saver
-                        .session_save_purpose
-                        .take()
-                        .unwrap_or(SessionSavePurpose::Autosave);
-                    let result = thread
-                        .join()
-                        .unwrap_or_else(|_| Err(std::io::Error::other("save thread panicked")));
-                    self.finish_session_save(purpose, result, self.clock.now);
-                }
+                self.wait_for_session_save();
                 if self.take_pane_exit_checkpoint_ready() {
                     break;
                 }

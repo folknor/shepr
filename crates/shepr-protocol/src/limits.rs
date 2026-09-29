@@ -19,19 +19,14 @@ pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 /// fields while keeping the unauthenticated handshake allocation small.
 pub(crate) const HANDSHAKE_FRAME_SIZE: usize = 64 * 1024;
 
-/// Largest client-shell endpoint response chunk emitted by the server.
-///
-/// The chunk leaves room for the message envelope and keeps endpoint
-/// output comfortably below the general frame limit.
-pub const MAX_ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
-
 /// Whether an encoded payload fits in one protocol frame.
 pub const fn frame_payload_fits(size: usize) -> bool {
     size <= MAX_FRAME_SIZE
 }
 
 /// The one size cap on a single client request, whichever door it comes in
-/// by: pane input, a JSON API request line, or a client-shell endpoint command.
+/// by: pane input or a JSON API request line. A client-shell endpoint command
+/// is bounded by the frame it arrives in.
 ///
 /// Keeping the request cap below the frame cap leaves room for the positional
 /// wire envelope while limiting client-controlled request buffers.
@@ -50,11 +45,6 @@ pub const MAX_INPUT_PAYLOAD: usize = MAX_CLIENT_REQUEST_BYTES;
 /// Reuses the shared client-request budget so the API line reader and pane
 /// input enforce one limit.
 pub const MAX_INITIAL_REQUEST_BYTES: usize = MAX_CLIENT_REQUEST_BYTES;
-/// Maximum client-shell endpoint command before forwarding to the API.
-///
-/// Reuses the shared client-request budget so endpoint commands cannot exceed
-/// the API request size.
-pub const MAX_ENDPOINT_COMMAND_BYTES: usize = MAX_CLIENT_REQUEST_BYTES;
 
 impl crate::ClientPaneInputEvent {
     /// Text bytes this event delivers to the pane, as charged against

@@ -674,6 +674,39 @@ pub struct ClientShellState {
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
 }
 
+/// Drops search matches whose rows scrolled out of history. They name rows
+/// that no longer exist, so they could never render or be copied; the oldest
+/// rows go first, so each dropped match was ahead of the current one in the
+/// server's global count.
+fn prune_evicted_search_matches(copy_mode: &mut ClientCopyModeState) {
+    let origin = copy_mode.history_origin;
+    let before = copy_mode.search_matches.len();
+    let current = copy_mode
+        .search_current
+        .and_then(|index| copy_mode.search_matches.get(index).copied());
+    copy_mode
+        .search_matches
+        .retain(|found| found.start.row >= origin);
+    let removed = before - copy_mode.search_matches.len();
+    if removed == 0 {
+        return;
+    }
+    let removed = u64::try_from(removed).unwrap_or(u64::MAX);
+    copy_mode.search_total = copy_mode.search_total.saturating_sub(removed);
+    copy_mode.search_current = current.and_then(|current| {
+        copy_mode
+            .search_matches
+            .iter()
+            .position(|found| *found == current)
+    });
+    copy_mode.search_current_global = match copy_mode.search_current {
+        Some(_) => copy_mode
+            .search_current_global
+            .map(|global| global.saturating_sub(removed)),
+        None => None,
+    };
+}
+
 impl ClientShellState {
     pub fn new_at(mut config: ClientShellConfig, now: std::time::Instant) -> Self {
         let preferences = config.preferences.clone();
@@ -1249,6 +1282,7 @@ impl ClientShellState {
             }
             if let Some(scroll) = pane.scroll {
                 copy_mode.history_origin = scroll.history_origin;
+                prune_evicted_search_matches(copy_mode);
                 let actual_offset =
                     usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX);
                 if !self.pane_scroll_targets.contains_key(&pane.pane_id) {

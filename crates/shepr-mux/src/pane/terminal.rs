@@ -2,7 +2,6 @@ use crate::limits::{
     COPY_MODE_WORD_SEPARATORS, DEFAULT_DETECTION_ROWS, SCAN_CHUNK_ROWS,
     SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
 };
-use crate::terminal::TerminalReadSnapshot;
 pub use shepr_termio::ScrollMetrics;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
@@ -169,6 +168,11 @@ pub(crate) struct PaneTerminalCore {
     pub dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
     pub terminal: shepr_vt::Terminal,
     synchronized_output_epoch: u64,
+    /// Bumped by every resize that changes the grid. A taller grid pulls
+    /// history rows back onto the screen, where the child can rewrite them,
+    /// so history formatted before a resize may no longer match its rows
+    /// (`history.rs`).
+    history_epoch: u64,
     pub render_state: shepr_vt::RenderState,
     pub initial_default_foreground: Option<shepr_vt::RgbColor>,
     pub initial_default_background: Option<shepr_vt::RgbColor>,
@@ -178,8 +182,8 @@ pub(crate) struct PaneTerminalCore {
     /// in the foreground. `None` while no override is in effect.
     pub transient_default_color_owner_pgid: Option<u32>,
     default_color_generation: u64,
-    pub osc_debug_tracker: OscDebugTracker,
-    pub agent_osc_state: AgentOscStateTracker,
+    pub(super) osc_debug_tracker: OscDebugTracker,
+    pub(super) agent_osc_state: AgentOscStateTracker,
 }
 
 impl PaneTerminal {
@@ -274,7 +278,10 @@ impl PaneTerminal {
 
 mod backend;
 mod helpers;
+mod history;
 mod text;
+
+pub use history::{PaneHistoryCache, PaneHistorySource};
 
 use helpers::*;
 use text::*;
@@ -333,6 +340,11 @@ impl InputState {
             && (!self.application_cursor || self.bracketed_paste)
     }
 }
+
+// The recent-read snapshots are test-only readers; their type is imported last
+// so no production item sits below a test cfg.
+#[cfg(test)]
+use crate::terminal::TerminalReadSnapshot;
 
 #[cfg(test)]
 mod tests;

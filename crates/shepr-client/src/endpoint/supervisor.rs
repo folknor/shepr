@@ -73,7 +73,7 @@ impl EndpointSupervisorEvent {
 
 /// A configured machine's connector, boxed so the events and targets that carry
 /// it between the loop and an attempt stay small.
-type OwnedConnector = Box<shepr_remote::SavedSshConnector>;
+type OwnedConnector = Box<shepr_remote::MachineSshConnector>;
 
 enum ConnectTarget {
     /// The Local server's client socket, and the guidance a build mismatch on
@@ -141,7 +141,7 @@ impl ReconnectState {
 pub(crate) struct EndpointSupervisors {
     endpoints: HashMap<ClientEndpointId, ReconnectState>,
     /// Launch-time ssh settings (config is read once), applied to every configured machine.
-    ssh_settings: shepr_remote::SavedSshSettings,
+    ssh_settings: shepr_remote::MachineSshSettings,
     paths: shepr_config::AppPaths,
     next_generation: shepr_protocol::ConnectionGeneration,
     shutdown: Arc<AtomicBool>,
@@ -151,7 +151,7 @@ impl EndpointSupervisors {
     pub(crate) fn with_ssh_settings(
         paths: &shepr_config::AppPaths,
         machines: &[shepr_config::MachineConfig],
-        settings: shepr_remote::SavedSshSettings,
+        settings: shepr_remote::MachineSshSettings,
         now: Instant,
     ) -> io::Result<Self> {
         let mut supervisors = Self {
@@ -162,7 +162,7 @@ impl EndpointSupervisors {
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         for machine in machines {
-            let connector = Box::new(shepr_remote::SavedSshConnector::new(
+            let connector = Box::new(shepr_remote::MachineSshConnector::new(
                 paths,
                 &machine.label,
                 &machine.ssh,
@@ -332,7 +332,7 @@ impl EndpointSupervisors {
                 endpoint = %endpoint_id.storage_key(),
                 "a connection attempt lost its SSH connector; rebuilding it"
             );
-            Box::new(shepr_remote::SavedSshConnector::new(
+            Box::new(shepr_remote::MachineSshConnector::new(
                 &self.paths,
                 &machine.label,
                 &machine.ssh,
@@ -466,7 +466,7 @@ fn connect_once(
 /// What carries one endpoint connection, for the handshake's diagnostics.
 enum EndpointLink<'a> {
     Local { mismatch_guidance: &'a str },
-    Ssh(shepr_remote::SavedSshBridge),
+    Ssh(shepr_remote::MachineSshBridge),
 }
 
 /// Handshakes over a fresh endpoint stream and hands the connection to the loop.
@@ -497,7 +497,7 @@ fn establish(
         if error.kind() == std::io::ErrorKind::UnexpectedEof
             && let Some(failure) = ssh_bridge
                 .as_ref()
-                .and_then(shepr_remote::SavedSshBridge::reported_failure)
+                .and_then(shepr_remote::MachineSshBridge::reported_failure)
                 .map(|failure| {
                     let kind = failure.kind();
                     let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&failure)
@@ -639,7 +639,7 @@ mod tests {
         EndpointSupervisors::with_ssh_settings(
             &shepr_config::AppPaths::test_default(),
             machines,
-            shepr_remote::SavedSshSettings {
+            shepr_remote::MachineSshSettings {
                 manage_ssh_config: false,
             },
             now,
@@ -893,7 +893,7 @@ mod tests {
         let mut supervisors = EndpointSupervisors::with_ssh_settings(
             &paths,
             &[],
-            shepr_remote::SavedSshSettings {
+            shepr_remote::MachineSshSettings {
                 manage_ssh_config: false,
             },
             now,

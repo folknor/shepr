@@ -460,6 +460,11 @@ impl Drop for State {
 }
 
 impl SshAgentLease {
+    /// How often a holder should call [`Self::refresh`]. Agent sockets vanish
+    /// without notice, so liveness is probed on a timer; the registry runs
+    /// at most one probe per interval however many leases refresh.
+    pub const REFRESH_INTERVAL: Duration = super::limits::SSH_AGENT_PROBE_INTERVAL;
+
     pub fn refresh(&self) -> io::Result<()> {
         self.refresh_at((self.registry.now)())
     }

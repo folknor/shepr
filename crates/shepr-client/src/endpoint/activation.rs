@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use shepr_protocol::command::{EndpointError, EndpointReply};
+
 use super::{ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointSendOutcome};
 use crate::limits::ACTIVATION_TIMEOUT;
 
@@ -30,12 +32,10 @@ fn release_surface_best_effort(
     let Some(boot_id) = lease.boot_id.as_ref() else {
         return;
     };
-    match surface_interest_request(boot_id, request_id, false) {
-        Ok(request) => {
-            let _ = endpoints.send_to(&lease.endpoint_id, &request);
-        }
-        Err(error) => tracing::warn!(%error, "could not request abandoned surface cleanup"),
-    }
+    let _ = endpoints.send_to(
+        &lease.endpoint_id,
+        &surface_interest_request(boot_id, request_id, false),
+    );
 }
 
 impl PendingEndpointActivation {
@@ -69,35 +69,17 @@ impl PendingEndpointActivation {
         let target_lease =
             endpoint_lease(shell, endpoints, target).map_err(ActivationBeginError::Preflight)?;
         let source_is_target = source.endpoint_id == target_lease.endpoint_id;
-        // Validate every typed lifecycle and optional focus envelope before the first transport
-        // write. Any error above this line is guaranteed not to have changed either endpoint.
+        // Check that every lease the lifecycle requests will name has a boot before the first
+        // transport write. Any error above this line is guaranteed not to have changed either
+        // endpoint.
         if source_available && !source_is_target {
-            surface_interest_request(
-                source
-                    .request_boot_id()
-                    .map_err(ActivationBeginError::Preflight)?,
-                &format!("client-shell-surface:{serial}:off").into(),
-                false,
-            )
-            .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
+            source
+                .request_boot_id()
+                .map_err(ActivationBeginError::Preflight)?;
         }
-        let target_boot_id = target_lease
+        target_lease
             .request_boot_id()
             .map_err(ActivationBeginError::Preflight)?;
-        surface_interest_request(
-            target_boot_id,
-            &format!("client-shell-surface:{serial}:on").into(),
-            true,
-        )
-        .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
-        if let Some(target) = focus.as_ref() {
-            focus_request(
-                target_boot_id,
-                &format!("client-shell-focus:{serial}:1").into(),
-                target,
-            )
-            .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
-        }
 
         Ok(Self {
             source,
@@ -163,8 +145,7 @@ impl PendingEndpointActivation {
             self.source.request_boot_id()?,
             &format!("client-shell-surface:{}:off", self.epoch).into(),
             false,
-        )
-        .map_err(|error| error.to_string())?;
+        );
         if endpoints.send_to(&self.source.endpoint_id, &request) != EndpointSendOutcome::Sent {
             return Err("source endpoint release could not be sent".into());
         }
@@ -322,21 +303,21 @@ impl PendingEndpointActivation {
         generation: u64,
         boot_id: &str,
         request_id: &str,
-        data: &[u8],
+        result: Result<EndpointReply, EndpointError>,
         endpoints: &mut EndpointRegistry,
         now: Instant,
     ) -> SurfaceActivationProgress {
         if !self.accepts_response(endpoint_id, generation, boot_id, request_id) {
             return SurfaceActivationProgress::Stale;
         }
-        let result = match decode_endpoint_response(request_id, data) {
+        let result = match result {
             Ok(result) => result,
             Err(error) => {
                 return SurfaceActivationProgress::Rejected {
                     source_release_rejected: matches!(
                         self.phase,
                         ActivationPhase::ReleasingSource { .. }
-                    ) && error.code.is_some(),
+                    ),
                     message: error.message,
                 };
             }
@@ -1010,8 +991,7 @@ impl PendingEndpointActivation {
             "client-shell-surface:{}:presentation-sync",
             self.epoch
         ));
-        let request = surface_interest_request(lease.request_boot_id()?, &request_id, true)
-            .map_err(|error| error.to_string())?;
+        let request = surface_interest_request(lease.request_boot_id()?, &request_id, true);
         self.phase = ActivationPhase::SynchronizingPresentation {
             lease: lease.clone(),
             request_id,
@@ -1062,8 +1042,7 @@ impl PendingEndpointActivation {
             "client-shell-surface:{}:rollback-target-off",
             self.epoch
         ));
-        let request = surface_interest_request(self.target.request_boot_id()?, &request_id, false)
-            .map_err(|error| error.to_string())?;
+        let request = surface_interest_request(self.target.request_boot_id()?, &request_id, false);
         // Set the rollback phase before the potentially observed target-off write.
         self.phase = ActivationPhase::ReleasingTargetForRollback { request_id };
         self.deadline = crate::limits::Deadline::after(now, ACTIVATION_TIMEOUT).instant();
@@ -1137,8 +1116,7 @@ impl PendingEndpointActivation {
             *focus_request_id = Some(request_id.clone());
             *focus_request_target = Some(desired.clone());
         }
-        let request = focus_request(self.target.request_boot_id()?, &request_id, &desired)
-            .map_err(|error| error.to_string())?;
+        let request = focus_request(self.target.request_boot_id()?, &request_id, &desired);
         if endpoints.send_to(&self.target.endpoint_id, &request) != EndpointSendOutcome::Sent {
             return Err("endpoint focus could not be sent".into());
         }

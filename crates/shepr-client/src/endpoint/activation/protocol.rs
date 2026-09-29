@@ -1,18 +1,22 @@
+use shepr_protocol::command::{
+    ClientShellSurfaceSetParams, EndpointCommand, EndpointReply, PaneTarget, WorkspaceTarget,
+};
+
 use super::super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
 use super::model::{ActivationEvidence, EndpointLease};
 
 pub(super) fn focus_result_matches(
     focus: Option<&crate::shell::ClientEndpointFocusTarget>,
-    result: &shepr_api::schema::ResponseResult,
+    result: &EndpointReply,
 ) -> bool {
     match (focus, result) {
         (
             Some(crate::shell::ClientEndpointFocusTarget::Pane(expected)),
-            shepr_api::schema::ResponseResult::PaneInfo { pane },
+            EndpointReply::PaneInfo { pane },
         ) => pane.focused && &pane.pane_id == expected,
         (
             Some(crate::shell::ClientEndpointFocusTarget::Workspace(expected)),
-            shepr_api::schema::ResponseResult::WorkspaceInfo { workspace },
+            EndpointReply::WorkspaceInfo { workspace },
         ) => workspace.focused && &workspace.workspace_id == expected,
         _ => false,
     }
@@ -118,8 +122,7 @@ pub(super) fn send_surface_activation(
     resize: &shepr_protocol::ClientMessage,
     focused: bool,
 ) -> Result<(), String> {
-    let request = surface_interest_request(target.request_boot_id()?, request_id, true)
-        .map_err(|error| error.to_string())?;
+    let request = surface_interest_request(target.request_boot_id()?, request_id, true);
     if endpoints.send_to(&target.endpoint_id, resize) != EndpointSendOutcome::Sent {
         return Err("endpoint resize could not be sent".into());
     }
@@ -138,19 +141,12 @@ pub(super) fn send_surface_activation(
     Ok(())
 }
 
-pub(super) fn decode_endpoint_response(
-    request_id: &str,
-    data: &[u8],
-) -> Result<shepr_api::schema::ResponseResult, crate::shell::ClientShellEndpointError> {
-    crate::endpoint::commands::parse_response(request_id, data)
-}
-
 pub(super) fn surface_set_revision(
-    result: &shepr_api::schema::ResponseResult,
+    result: &EndpointReply,
     expected_active: bool,
 ) -> Result<u64, String> {
     match result {
-        shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
+        EndpointReply::ClientShellSurfaceSet {
             active,
             projection_revision,
         } if *active == expected_active => Ok(*projection_revision),
@@ -162,51 +158,42 @@ pub(super) fn focus_request(
     boot_id: &shepr_protocol::BootId,
     request_id: &shepr_protocol::RequestId,
     focus: &crate::shell::ClientEndpointFocusTarget,
-) -> std::io::Result<shepr_protocol::ClientMessage> {
-    let method = match focus {
+) -> shepr_protocol::ClientMessage {
+    let command = match focus {
         crate::shell::ClientEndpointFocusTarget::Workspace(workspace_id) => {
-            shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
+            EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                 workspace_id: workspace_id.to_string(),
             })
         }
         crate::shell::ClientEndpointFocusTarget::Pane(pane_id) => {
-            shepr_api::schema::Method::PaneFocus(shepr_api::schema::PaneTarget {
+            EndpointCommand::PaneFocus(PaneTarget {
                 pane_id: pane_id.to_string(),
             })
         }
     };
-    endpoint_request(
-        boot_id,
-        &shepr_api::schema::Request {
-            id: request_id.to_string(),
-            method,
-        },
-    )
+    endpoint_request(boot_id, request_id, command)
 }
 
 pub(super) fn surface_interest_request(
     boot_id: &shepr_protocol::BootId,
     request_id: &shepr_protocol::RequestId,
     active: bool,
-) -> std::io::Result<shepr_protocol::ClientMessage> {
+) -> shepr_protocol::ClientMessage {
     endpoint_request(
         boot_id,
-        &shepr_api::schema::Request {
-            id: request_id.to_string(),
-            method: shepr_api::schema::Method::ClientShellSurfaceSet(
-                shepr_api::schema::ClientShellSurfaceSetParams { active },
-            ),
-        },
+        request_id,
+        EndpointCommand::ClientShellSurfaceSet(ClientShellSurfaceSetParams { active }),
     )
 }
 
 fn endpoint_request(
     boot_id: &shepr_protocol::BootId,
-    request: &shepr_api::schema::Request,
-) -> std::io::Result<shepr_protocol::ClientMessage> {
-    Ok(shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+    request_id: &shepr_protocol::RequestId,
+    command: EndpointCommand,
+) -> shepr_protocol::ClientMessage {
+    shepr_protocol::ClientMessage::ClientShellEndpointRequest {
         boot_id: boot_id.clone(),
-        request: serde_json::to_string(request)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    })
+        request_id: request_id.clone(),
+        command,
+    }
 }

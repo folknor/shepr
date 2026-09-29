@@ -1372,7 +1372,7 @@ impl ClientShellState {
                 .as_mut()
                 .is_some_and(shepr_vt::selection::Selection::finish);
             if copied && self.config.copy_on_select {
-                self.request_selection_copy(outcome, true);
+                self.request_selection_copy(outcome);
                 self.selection = None;
             } else if self
                 .selection

@@ -6,7 +6,7 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
 /// Stops the remote server instance that reported `server.boot_id`, and no
 /// other, by running the discovered remote `shepr server stop --expect-boot` over
-/// a noninteractive connection. The remote command waits for the server's
+/// a BatchMode connection. The remote command waits for the server's
 /// sockets to close and exits with
 /// `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE` when another boot answered
 /// (nothing was stopped), or `shepr_api::server_stop::NO_SERVER_EXIT_CODE` when
@@ -14,11 +14,10 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 pub fn stop_remote_server(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    settings: super::SavedSshSettings,
+    settings: super::MachineSshSettings,
     server: &DifferentBuildServer,
 ) -> io::Result<RemoteStop> {
-    let ssh =
-        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
+    let ssh = RemoteSsh::new(target.clone(), settings.manage_ssh_config, paths)?;
     let args = RemoteCliCommand::ServerStop {
         expected_boot: &server.boot_id,
     }

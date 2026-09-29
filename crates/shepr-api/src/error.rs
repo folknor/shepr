@@ -53,7 +53,6 @@ api_error_codes! {
     ServerUnavailable => "server_unavailable",
     SplitNotFound => "split_not_found",
     SshAgentUnavailable => "ssh_agent_unavailable",
-    StaleContent => "stale_content",
     TabCloseFailed => "tab_close_failed",
     TabCreateFailed => "tab_create_failed",
     TabMoveFailed => "tab_move_failed",
@@ -64,7 +63,7 @@ api_error_codes! {
     WorkspaceNotFound => "workspace_not_found",
     ConnectionLocalOnly => "connection_local_only",
     EndpointBusy => "endpoint_busy",
-    UnsupportedEndpointCommand => "unsupported_endpoint_command",
+    EndpointResponseTooLarge => "endpoint_response_too_large",
     StaleBoot => "stale_boot",
     SurfaceInactive => "surface_inactive",
     BuildMismatch => "build_mismatch",
@@ -215,11 +214,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_wire_codes_are_classified_before_internal_use() {
+    fn wire_codes_are_classified_before_internal_use() {
         let error = ApiError::from_body(ErrorBody {
-            code: "stale_content".into(),
-            message: "the content changed".into(),
+            code: "selection_unavailable".into(),
+            message: "no selection".into(),
         });
-        assert_eq!(error.code, ApiErrorCode::StaleContent);
+        assert_eq!(error.code, ApiErrorCode::SelectionUnavailable);
     }
 }

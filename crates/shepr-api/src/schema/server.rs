@@ -50,7 +50,7 @@ pub struct SiblingServerJson {
     pub error: Option<String>,
 }
 
-/// JSON emitted by `shepr status server --json`, also read by saved-machine checks.
+/// JSON emitted by `shepr status server --json`, also read by configured-machine checks.
 /// The running flag is the machine-readable status; human-readable status text is
 /// rendered separately by the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

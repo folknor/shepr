@@ -107,16 +107,21 @@ function requestOnce(method, params) {
       client.write(`${JSON.stringify(request)}\n`);
     });
 
-    const finish = () => {
+    let timer;
+    const settle = () => {
+      clearTimeout(timer);
       client.destroy();
       resolve();
     };
 
-    client.setTimeout(500, finish);
-    client.on("data", finish);
-    client.on("error", finish);
-    client.on("end", finish);
-    client.on("close", resolve);
+    // A plain timer, not socket.setTimeout (an idle timeout), so a connection
+    // that never finishes connecting still settles within 500 ms.
+    timer = setTimeout(() => settle(false), 500);
+    timer.unref?.();
+    client.on("data", settle);
+    client.on("error", settle);
+    client.on("end", settle);
+    client.on("close", settle);
   });
 }
 

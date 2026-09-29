@@ -1,4 +1,11 @@
 use super::*;
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
+
+fn surface_set(active: bool) -> Box<EndpointCommand> {
+    Box::new(EndpointCommand::ClientShellSurfaceSet(
+        shepr_api::schema::ClientShellSurfaceSetParams { active },
+    ))
+}
 
 fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_id: &str) {
     let boot_id = server.client_shell_boot_id.clone();
@@ -6,12 +13,8 @@ fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_i
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id: client_id.into(),
             boot_id,
-            request: Box::new(shepr_api::schema::Request {
-                id: request_id.into(),
-                method: shepr_api::schema::Method::ClientShellSurfaceSet(
-                    shepr_api::schema::ClientShellSurfaceSetParams { active: true },
-                ),
-            }),
+            request_id: request_id.into(),
+            command: surface_set(true),
         })
     );
 }
@@ -76,24 +79,21 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         !server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request: Box::new(shepr_api::schema::Request {
-                id: "inactive-mutation".into(),
-                method: shepr_api::schema::Method::WorkspaceFocus(
-                    shepr_api::schema::WorkspaceTarget {
-                        workspace_id: workspace_id.to_string(),
-                    },
-                ),
-            }),
+            request_id: "inactive-mutation".into(),
+            command: Box::new(EndpointCommand::WorkspaceFocus(
+                shepr_api::schema::WorkspaceTarget {
+                    workspace_id: workspace_id.to_string(),
+                },
+            )),
         })
     );
-    let ServerMessage::ClientShellEndpointResponseChunk { data, .. } =
-        read_server_message(control_rx.recv().expect("inactive mutation response"))
+    let ServerMessage::ClientShellEndpointResponse {
+        result: Err(error), ..
+    } = read_server_message(control_rx.recv().expect("inactive mutation response"))
     else {
-        panic!("expected endpoint response");
+        panic!("expected endpoint error response");
     };
-    let error = serde_json::from_slice::<shepr_api::schema::ErrorResponse>(&data)
-        .expect("test precondition");
-    assert_eq!(error.error.code, "surface_inactive");
+    assert_eq!(error.code, "surface_inactive");
 
     assert!(server.send_to_client(
         client_id,
@@ -113,27 +113,20 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request: Box::new(shepr_api::schema::Request {
-                id: "activate-surface".into(),
-                method: shepr_api::schema::Method::ClientShellSurfaceSet(
-                    shepr_api::schema::ClientShellSurfaceSetParams { active: true },
-                ),
-            }),
+            request_id: "activate-surface".into(),
+            command: surface_set(true),
         })
     );
-    let ServerMessage::ClientShellEndpointResponseChunk { data, .. } =
-        read_server_message(control_rx.recv().expect("surface activation response"))
+    let ServerMessage::ClientShellEndpointResponse {
+        result:
+            Ok(EndpointReply::ClientShellSurfaceSet {
+                active: true,
+                projection_revision: activation_floor,
+            }),
+        ..
+    } = read_server_message(control_rx.recv().expect("surface activation response"))
     else {
         panic!("expected typed surface activation response");
-    };
-    let activation_ack = serde_json::from_slice::<shepr_api::schema::SuccessResponse>(&data)
-        .expect("test precondition");
-    let shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
-        active: true,
-        projection_revision: activation_floor,
-    } = activation_ack.result
-    else {
-        panic!("expected typed surface activation result");
     };
     assert_eq!(server.clients.foreground_client_id(), Some(client_id));
     assert_eq!(
@@ -161,12 +154,8 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request: Box::new(shepr_api::schema::Request {
-                id: "deactivate-surface".into(),
-                method: shepr_api::schema::Method::ClientShellSurfaceSet(
-                    shepr_api::schema::ClientShellSurfaceSetParams { active: false },
-                ),
-            }),
+            request_id: "deactivate-surface".into(),
+            command: surface_set(false),
         })
     );
     let _ = control_rx.recv().expect("surface deactivation response");
@@ -192,32 +181,26 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id,
-            request: Box::new(shepr_api::schema::Request {
-                id: "reactivate-surface".into(),
-                method: shepr_api::schema::Method::ClientShellSurfaceSet(
-                    shepr_api::schema::ClientShellSurfaceSetParams { active: true },
-                ),
-            }),
+            request_id: "reactivate-surface".into(),
+            command: surface_set(true),
         })
     );
-    let data = loop {
+    let result = loop {
         let message =
             read_server_message(control_rx.recv().expect("surface reactivation response"));
         match message {
-            ServerMessage::ClientShellEndpointResponseChunk {
-                request_id, data, ..
-            } if request_id == "reactivate-surface" => break data,
+            ServerMessage::ClientShellEndpointResponse {
+                request_id, result, ..
+            } if request_id == "reactivate-surface" => break result,
             ServerMessage::EndpointSnapshot(_)
-            | ServerMessage::ClientShellEndpointResponseChunk { .. } => continue,
+            | ServerMessage::ClientShellEndpointResponse { .. } => continue,
             other => panic!("unexpected surface reactivation message: {other:?}"),
         }
     };
-    let reactivation_ack = serde_json::from_slice::<shepr_api::schema::SuccessResponse>(&data)
-        .expect("test precondition");
-    let shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
+    let Ok(EndpointReply::ClientShellSurfaceSet {
         active: true,
         projection_revision: reactivation_floor,
-    } = reactivation_ack.result
+    }) = result
     else {
         panic!("expected typed surface reactivation result");
     };
@@ -404,12 +387,8 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id,
-            request: Box::new(shepr_api::schema::Request {
-                id: "post-commit-reassert".into(),
-                method: shepr_api::schema::Method::ClientShellSurfaceSet(
-                    shepr_api::schema::ClientShellSurfaceSetParams { active: true },
-                ),
-            }),
+            request_id: "post-commit-reassert".into(),
+            command: surface_set(true),
         })
     );
     let _ = control_rx

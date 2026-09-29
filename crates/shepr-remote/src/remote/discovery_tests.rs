@@ -1,4 +1,4 @@
-//! Full discovery of a saved machine's remote executable, resumed across attempts.
+//! Full discovery of a configured machine's remote executable, resumed across attempts.
 
 use super::*;
 

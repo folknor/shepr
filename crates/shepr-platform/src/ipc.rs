@@ -656,39 +656,107 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Reports whether the peer has closed or shut down its write side.
+/// The write end of a broadcast shutdown pipe. Dropping it is the signal.
 ///
-/// Pure readiness check: it neither reads (unread bytes stay in the socket, so
+/// Nothing is ever written to the pipe. Once the last copy of the write end
+/// closes, the read end reports a hang-up to every [`ShutdownWatch`] at once
+/// and keeps reporting it, so a waiter that starts late still sees it. Both
+/// ends are close-on-exec, so no pane child can hold the write end open.
+pub struct ShutdownTrigger {
+    _write: std::os::fd::OwnedFd,
+}
+
+/// The read end of a broadcast shutdown pipe; see [`ShutdownTrigger`].
+#[derive(Clone)]
+pub struct ShutdownWatch {
+    read: std::sync::Arc<std::os::fd::OwnedFd>,
+}
+
+/// Creates a broadcast shutdown pipe: drop the trigger to wake every thread
+/// blocked in [`wait_local_stream_hangup`] on one of the watch's clones.
+pub fn shutdown_pipe() -> io::Result<(ShutdownTrigger, ShutdownWatch)> {
+    use std::os::fd::{FromRawFd as _, OwnedFd};
+
+    let mut fds = [0; 2];
+    // SAFETY: pipe2(2) writes exactly two fds into the two-element array and
+    // returns 0 on success; on failure it writes nothing.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: on success both fds were just opened by pipe2 and nothing else
+    // owns them.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    Ok((
+        ShutdownTrigger { _write: write },
+        ShutdownWatch {
+            read: std::sync::Arc::new(read),
+        },
+    ))
+}
+
+/// Why [`wait_local_stream_hangup`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HangupWait {
+    /// The peer closed or shut down its write side.
+    PeerClosed,
+    /// The [`ShutdownTrigger`] paired with the watch was dropped.
+    Shutdown,
+    /// Neither happened within the timeout, or a signal interrupted the wait.
+    Elapsed,
+}
+
+/// Blocks until the peer hangs up, `shutdown` fires, or `timeout` passes.
+///
+/// Pure readiness wait: it neither reads (unread bytes stay in the socket, so
 /// a framed stream keeps its alignment and a trailing newline after a request
 /// is not mistaken for a hang-up) nor touches the blocking mode. `POLLRDHUP`
 /// fires even when unread data is still queued ahead of the EOF, so a client
-/// that wrote something and then disconnected is still seen as closed.
-pub fn local_stream_peer_closed(stream: &LocalStream) -> io::Result<bool> {
-    use std::os::fd::{AsFd as _, AsRawFd as _};
+/// that wrote something and then disconnected is still seen as closed. A
+/// peer hang-up wins over a shutdown seen in the same wake-up. A zero timeout
+/// makes it a non-blocking probe. An interrupted wait returns
+/// [`HangupWait::Elapsed`] early; callers wait in a loop anyway.
+pub fn wait_local_stream_hangup(
+    stream: &LocalStream,
+    shutdown: &ShutdownWatch,
+    timeout: Duration,
+) -> io::Result<HangupWait> {
+    use std::os::fd::AsFd as _;
 
     let fd = match stream {
         LocalStream::UdSocket(inner) => inner.as_fd().as_raw_fd(),
     };
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: libc::POLLRDHUP,
-        revents: 0,
-    };
-    loop {
-        // SAFETY: `pollfd` is a valid, exclusively borrowed array of length 1
-        // for the duration of the call, and `fd` stays open because `stream`
-        // is borrowed. A zero timeout makes the call non-blocking.
-        let ready = unsafe { libc::poll(&raw mut pollfd, 1, 0) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
+    let timeout_ms = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+    let mut pollfds = [
+        libc::pollfd {
+            fd,
+            events: libc::POLLRDHUP,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: shutdown.read.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    // SAFETY: `pollfds` is a valid, exclusively borrowed two-element array for
+    // the duration of the call, and both fds stay open: `stream` and
+    // `shutdown` are borrowed.
+    let ready = unsafe { libc::poll(pollfds.as_mut_ptr(), 2, timeout_ms) };
+    if ready < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            return Ok(HangupWait::Elapsed);
         }
-        let hangup = libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
-        return Ok(ready > 0 && pollfd.revents & hangup != 0);
+        return Err(error);
     }
+    let hangup = libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
+    if pollfds[0].revents & hangup != 0 {
+        return Ok(HangupWait::PeerClosed);
+    }
+    if pollfds[1].revents != 0 {
+        return Ok(HangupWait::Shutdown);
+    }
+    Ok(HangupWait::Elapsed)
 }
 
 pub fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::Result<()> {
@@ -1542,17 +1610,22 @@ mod tests {
         (client, server)
     }
 
+    fn hangup_now(stream: &LocalStream, shutdown: &ShutdownWatch) -> HangupWait {
+        wait_local_stream_hangup(stream, shutdown, Duration::ZERO).expect("probe")
+    }
+
     #[test]
     fn peer_closed_probe_leaves_pending_data_unread() {
         use std::io::Write as _;
 
+        let (_trigger, shutdown) = shutdown_pipe().expect("test precondition");
         let (mut client, mut server) = connected_pair("probe-data");
-        assert!(!local_stream_peer_closed(&server).expect("probe"));
+        assert_eq!(hangup_now(&server, &shutdown), HangupWait::Elapsed);
 
         client.write_all(b"\n{}").expect("test precondition");
         // Pending input is not a hang-up, and the probe must not eat it.
-        assert!(!local_stream_peer_closed(&server).expect("probe"));
-        assert!(!local_stream_peer_closed(&server).expect("probe"));
+        assert_eq!(hangup_now(&server, &shutdown), HangupWait::Elapsed);
+        assert_eq!(hangup_now(&server, &shutdown), HangupWait::Elapsed);
 
         // Every byte the probe looked past is still there to read. The
         // timeout only keeps a regression from hanging the test run.
@@ -1568,10 +1641,30 @@ mod tests {
     fn peer_closed_probe_sees_hangup_behind_unread_data() {
         use std::io::Write as _;
 
+        let (_trigger, shutdown) = shutdown_pipe().expect("test precondition");
         let (mut client, server) = connected_pair("probe-close");
         client.write_all(b"trailing\n").expect("test precondition");
         drop(client);
-        assert!(local_stream_peer_closed(&server).expect("probe"));
+        assert_eq!(hangup_now(&server, &shutdown), HangupWait::PeerClosed);
+    }
+
+    /// A waiter blocked with a long timeout wakes when the trigger drops, and
+    /// the watch keeps reporting the shutdown to later waits.
+    #[test]
+    fn dropping_the_trigger_wakes_a_blocked_wait() {
+        let (trigger, shutdown) = shutdown_pipe().expect("test precondition");
+        let (_client, server) = connected_pair("shutdown-wake");
+        let waiter_shutdown = shutdown.clone();
+        let waiter = std::thread::spawn(move || {
+            wait_local_stream_hangup(&server, &waiter_shutdown, Duration::from_secs(30))
+                .expect("wait")
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        drop(trigger);
+        assert_eq!(waiter.join().expect("waiter"), HangupWait::Shutdown);
+
+        let (_client, server) = connected_pair("shutdown-late");
+        assert_eq!(hangup_now(&server, &shutdown), HangupWait::Shutdown);
     }
 
     #[test]

@@ -126,10 +126,6 @@ pub(super) const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 ///
 /// The window tolerates a burst of cancelled requests without unbounded per-endpoint growth.
 pub(super) const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
-/// Maximum response body retained for one endpoint request.
-///
-/// The cap accommodates large pane reads while bounding response memory.
-pub(super) const MAX_ENDPOINT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Maximum time an endpoint surface activation may remain pending.
 ///
@@ -172,7 +168,7 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// retry bound. `do_handshake` takes this deadline and stops at whichever
 /// of it and the handshake timeout comes first.
 ///
-/// A healthy attempt needs far less: every noninteractive discovery command already had
+/// A healthy attempt needs far less: every discovery command already had
 /// to fit a cold SSH connect into `SSH_ROUND_TRIP_TIMEOUT`. It stays below
 /// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
 ///

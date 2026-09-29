@@ -310,34 +310,6 @@ pub(super) fn terminal_detection_text(
     terminal_text_rows(terminal, start.max(screen_start), end, screen_rows)
 }
 
-pub(super) fn terminal_recent_ansi_snapshot(
-    core: &mut PaneTerminalCore,
-    lines: usize,
-    unwrap: bool,
-) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
-    let terminal = &core.terminal;
-    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
-        return Ok(TerminalReadSnapshot::default());
-    };
-    let text = terminal.read_ansi_screen(
-        Point::new(ScreenRow(start), 0),
-        Point::new(ScreenRow(end), cols.saturating_sub(1)),
-        false,
-        unwrap,
-    )?;
-    Ok(finish_recent_snapshot(text, start))
-}
-
-/// Recent read limits are measured in rendered rows, including blank or styled
-/// rows. The read is truncated only when rows above its first row were left
-/// out; trailing blank rows below the content are not "omitted" history.
-pub(super) fn finish_recent_snapshot(text: String, start: usize) -> TerminalReadSnapshot {
-    TerminalReadSnapshot {
-        text,
-        truncated: start > 0,
-    }
-}
-
 pub(super) fn terminal_text_rows(
     terminal: &shepr_vt::Terminal,
     start: usize,
@@ -359,7 +331,7 @@ pub(super) fn terminal_text_rows(
 /// alternate screen is active that is the full-screen program's frame, never
 /// the primary history (alacritty offers no access to the inactive grid).
 /// History persistence must not take that for history; it reads through
-/// [`PaneTerminal::primary_history_ansi`], which says so instead.
+/// [`PaneTerminal::read_primary_history`], which says so instead.
 pub(super) fn terminal_recent_read_range(
     terminal: &shepr_vt::Terminal,
     lines: usize,
@@ -777,6 +749,36 @@ pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, s
         Point::new(ViewportRow(rows.saturating_sub(1)), cols.saturating_sub(1)),
         false,
     )
+}
+
+#[cfg(test)]
+pub(super) fn terminal_recent_ansi_snapshot(
+    core: &mut PaneTerminalCore,
+    lines: usize,
+    unwrap: bool,
+) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
+    let terminal = &core.terminal;
+    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
+        return Ok(TerminalReadSnapshot::default());
+    };
+    let text = terminal.read_ansi_screen(
+        Point::new(ScreenRow(start), 0),
+        Point::new(ScreenRow(end), cols.saturating_sub(1)),
+        false,
+        unwrap,
+    )?;
+    Ok(finish_recent_snapshot(text, start))
+}
+
+/// Recent read limits are measured in rendered rows, including blank or styled
+/// rows. The read is truncated only when rows above its first row were left
+/// out; trailing blank rows below the content are not "omitted" history.
+#[cfg(test)]
+pub(super) fn finish_recent_snapshot(text: String, start: usize) -> TerminalReadSnapshot {
+    TerminalReadSnapshot {
+        text,
+        truncated: start > 0,
+    }
 }
 
 #[cfg(test)]

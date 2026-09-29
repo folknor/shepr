@@ -66,16 +66,19 @@ fn capture_history_from_state_with_runtimes(
     state: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
 ) -> SessionHistorySnapshot {
-    capture_history_with_carry(state, terminal_runtimes, &HistoryCarry::default())
+    capture_history_with_carry(state, terminal_runtimes, &mut HistoryCarry::default())
 }
 
+/// Both halves of a history capture in one call: the event loop's capture,
+/// then the persister's resolve against `carry`.
 fn capture_history_with_carry(
     state: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
-    carry: &HistoryCarry,
+    carry: &mut HistoryCarry,
 ) -> SessionHistorySnapshot {
     let snapshot = capture_from_state_with_runtimes(state, terminal_runtimes);
-    capture_history(&snapshot, &state.workspaces, terminal_runtimes, carry)
+    shepr_mux::persist::capture_pending_history(&state.workspaces, terminal_runtimes)
+        .resolve(&snapshot, carry)
 }
 
 fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
@@ -640,31 +643,31 @@ async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
             .expect("test precondition")
             .test_process_pty_bytes(bytes);
     };
-    let carry = HistoryCarry::default();
+    let mut carry = HistoryCarry::default();
 
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
     assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_ONE")));
 
     runtime(&terminal_runtimes, b"\x1b[?1049hALT_FRAME");
     for _ in 0..2 {
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
         let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
         assert!(ansi.contains("PRIMARY_ONE"));
         assert!(!ansi.contains("ALT_FRAME"));
     }
 
     runtime(&terminal_runtimes, b"\x1b[?1049lPRIMARY_TWO\r\n");
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
     assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_TWO")));
     runtime(&terminal_runtimes, b"\x1b[?1049hALT_AGAIN");
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
     let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
     assert!(ansi.contains("PRIMARY_TWO"));
     assert!(!ansi.contains("ALT_AGAIN"));
 
     // Closing the pane drops its fallback.
     let other = state_with_workspaces(&["other"]);
-    let saved = capture_history_with_carry(&other, &PaneRuntimeRegistry::new(), &carry);
+    let saved = capture_history_with_carry(&other, &PaneRuntimeRegistry::new(), &mut carry);
     assert_eq!(
         root_history(&saved, other.workspaces[0].tabs()[0].root_pane()),
         None
@@ -685,7 +688,7 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
     let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
         .attached_terminal_id
         .clone();
-    let carry = HistoryCarry::default();
+    let mut carry = HistoryCarry::default();
     carry.carry_restored(
         &terminal_id,
         Some(&PaneHistorySnapshot {
@@ -694,7 +697,7 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
     );
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
     for _ in 0..2 {
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
         assert_eq!(root_history(&saved, root), Some("RESTORED_HISTORY\r\n"));
     }
 
@@ -709,14 +712,14 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
             b"\x1b[?1049hAGENT_TUI",
         ),
     );
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
     assert_eq!(root_history(&saved, root), None);
 
     terminal_runtimes
         .get(&terminal_id)
         .expect("test precondition")
         .test_process_pty_bytes(b"\x1b[?1049lLIVE_SCREEN\r\n");
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
     let ansi = root_history(&saved, root).expect("live history is saved");
     assert!(ansi.contains("LIVE_SCREEN"));
     assert!(!ansi.contains("RESTORED_HISTORY"));
@@ -724,7 +727,7 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
     if let Some(runtime) = terminal_runtimes.remove(&terminal_id) {
         drop(runtime);
     }
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
     let ansi = root_history(&saved, root).expect("last live history is kept");
     assert!(ansi.contains("LIVE_SCREEN"));
     assert!(!ansi.contains("RESTORED_HISTORY"));

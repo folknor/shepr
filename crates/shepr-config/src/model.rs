@@ -434,7 +434,7 @@ pub struct UiConfig {
     /// While unset, the client shell remembers the last toggle of the agent
     /// panel's sort control; once set, it wins at every launch.
     pub agent_panel_sort: AgentPanelSortConfig,
-    /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
+    /// Agent status indicator style. Values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
@@ -504,7 +504,7 @@ pub struct AdvancedConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RemoteConfig {
-    /// Add keepalive fallbacks and private connection reuse for saved machines.
+    /// Add keepalive fallbacks and private connection reuse for configured machines.
     /// Set false to run plain ssh unchanged. Default: true.
     pub manage_ssh_config: bool,
 }

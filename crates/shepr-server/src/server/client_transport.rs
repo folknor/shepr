@@ -50,21 +50,6 @@ fn client_shell_geometry_error(
     None
 }
 
-#[derive(serde::Deserialize)]
-struct EndpointRequestHead {
-    id: shepr_protocol::RequestId,
-    method: String,
-}
-
-enum DecodedEndpointRequest {
-    Dispatch(Box<shepr_api::schema::Request>),
-    Error {
-        request_id: shepr_protocol::RequestId,
-        code: &'static str,
-        message: String,
-    },
-}
-
 fn write_endpoint_rejection(
     stream: &mut LocalStream,
     client_id: ClientId,
@@ -102,28 +87,6 @@ fn send_client_disconnected(server_event_tx: &mpsc::Sender<ServerEvent>, client_
     );
 }
 
-fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointRequest> {
-    let head = serde_json::from_str::<EndpointRequestHead>(request)?;
-    let client_shell_method = shepr_api::schema::Method::traits_for_name(&head.method)
-        .is_some_and(|traits| traits.client_shell);
-    if !client_shell_method {
-        return Ok(DecodedEndpointRequest::Error {
-            request_id: head.id,
-            code: "unsupported_method",
-            message: format!("method {:?} is not available on this machine", head.method),
-        });
-    }
-    Ok(
-        match serde_json::from_str::<shepr_api::schema::Request>(request) {
-            Ok(request) => DecodedEndpointRequest::Dispatch(Box::new(request)),
-            Err(error) => DecodedEndpointRequest::Error {
-                request_id: head.id,
-                code: "invalid_request",
-                message: format!("invalid endpoint request: {error}"),
-            },
-        },
-    )
-}
 /// Channels owned by the server side of a client writer thread.
 #[derive(Clone, Debug)]
 pub(crate) struct ClientWriter {
@@ -376,23 +339,15 @@ pub(crate) enum ServerEvent {
     ClientShellEndpointRequest {
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
-        request: Box<shepr_api::schema::Request>,
+        request_id: shepr_protocol::RequestId,
+        command: Box<shepr_protocol::command::EndpointCommand>,
     },
-    /// A well-framed endpoint request could not be dispatched by this server.
-    ClientShellEndpointRequestError {
+    /// The API answered a deferred endpoint operation.
+    ClientShellEndpointResponseReady {
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
-        code: &'static str,
-        message: String,
-    },
-    /// One chunk of a deferred endpoint operation's final response is ready.
-    ClientShellEndpointResponseChunkReady {
-        client_id: ClientId,
-        boot_id: shepr_protocol::BootId,
-        request_id: shepr_protocol::RequestId,
-        final_chunk: bool,
-        data: Vec<u8>,
+        result: Box<shepr_api::error::ApiResult>,
     },
     /// A client detached gracefully.
     ClientDetach { client_id: ClientId },
@@ -835,59 +790,32 @@ fn client_read_loop_with_endpoint_controls(
                     }
                 }
             }
-            ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
+            ClientMessage::ClientShellEndpointRequest {
+                boot_id,
+                request_id,
+                command,
+            } => {
+                // Both ids are echoed back and the request id is kept while
+                // the command is in flight, so they are bounded here; the
+                // command itself is bounded by its frame.
                 if boot_id.len() > crate::server::client_commands::MAX_ENDPOINT_BOOT_ID_BYTES
-                    || request.len() > crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES
+                    || request_id.len()
+                        > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
                 {
                     warn!(
                         ?client_id,
                         boot_id_size = boot_id.len(),
-                        request_size = request.len(),
-                        "oversized client shell endpoint command, closing"
+                        request_id_size = request_id.len(),
+                        "oversized client shell endpoint command ids, closing"
                     );
                     send_client_disconnected(server_event_tx, client_id);
                     break;
                 }
-                let decoded = match decode_endpoint_request(&request) {
-                    Ok(decoded) => decoded,
-                    Err(error) => {
-                        warn!(?client_id, %error, "invalid endpoint request envelope, closing");
-                        send_client_disconnected(server_event_tx, client_id);
-                        break;
-                    }
-                };
-                let request_id = match &decoded {
-                    DecodedEndpointRequest::Dispatch(request) => request.id.as_str(),
-                    DecodedEndpointRequest::Error { request_id, .. } => request_id,
-                };
-                if request_id.len() > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
-                {
-                    warn!(
-                        ?client_id,
-                        "oversized client shell endpoint request id, closing"
-                    );
-                    send_client_disconnected(server_event_tx, client_id);
-                    break;
-                }
-                match decoded {
-                    DecodedEndpointRequest::Dispatch(request) => {
-                        ServerEvent::ClientShellEndpointRequest {
-                            client_id,
-                            boot_id,
-                            request,
-                        }
-                    }
-                    DecodedEndpointRequest::Error {
-                        request_id,
-                        code,
-                        message,
-                    } => ServerEvent::ClientShellEndpointRequestError {
-                        client_id,
-                        boot_id,
-                        request_id,
-                        code,
-                        message,
-                    },
+                ServerEvent::ClientShellEndpointRequest {
+                    client_id,
+                    boot_id,
+                    request_id,
+                    command: Box::new(command),
                 }
             }
             ClientMessage::PresentationSync(data) => ServerEvent::ClientShellPresentationSync {
@@ -1457,37 +1385,6 @@ mod tests {
             )
             .is_some()
         );
-    }
-
-    #[test]
-    fn unknown_endpoint_method_returns_correlated_error() {
-        let decoded = decode_endpoint_request(
-            r#"{"id":"req-1","method":"plugin.future","params":{"value":1}}"#,
-        )
-        .expect("test precondition");
-        assert!(matches!(
-            decoded,
-            DecodedEndpointRequest::Error {
-                request_id,
-                code: "unsupported_method",
-                ..
-            } if request_id == "req-1"
-        ));
-    }
-
-    #[test]
-    fn malformed_known_endpoint_method_returns_correlated_error() {
-        let decoded =
-            decode_endpoint_request(r#"{"id":"req-2","method":"workspace.focus","params":{}}"#)
-                .expect("test precondition");
-        assert!(matches!(
-            decoded,
-            DecodedEndpointRequest::Error {
-                request_id,
-                code: "invalid_request",
-                ..
-            } if request_id == "req-2"
-        ));
     }
 
     #[test]

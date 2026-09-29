@@ -1,35 +1,9 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 use shepr_protocol::{PublicTabId, WorkspaceId};
 
 use super::common::AgentStatus;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabCreateParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub focus: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabRenameParams {
-    pub tab_id: String,
-    pub label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabMoveParams {
-    pub tab_id: String,
-    pub insert_index: usize,
-}
+pub use shepr_protocol::command::{TabCreateParams, TabMoveParams, TabRenameParams};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabInfo {

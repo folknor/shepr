@@ -354,7 +354,8 @@ pub enum ClientPaneInputEvent {
 }
 
 /// Messages sent from the client to the server over the client protocol socket.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Not `Eq`: an endpoint command can carry a split ratio.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
     /// Graceful disconnect request.
     Detach,
@@ -368,8 +369,14 @@ pub enum ClientMessage {
         events: Vec<ClientPaneInputEvent>,
     },
 
-    /// Invoke one endpoint operation through this client shell's selected connection.
-    ClientShellEndpointRequest { boot_id: BootId, request: String },
+    /// Invoke one endpoint operation through this client shell's selected
+    /// connection. The server answers with one `ClientShellEndpointResponse`
+    /// naming the same boot and request id.
+    ClientShellEndpointRequest {
+        boot_id: BootId,
+        request_id: RequestId,
+        command: crate::command::EndpointCommand,
+    },
 
     /// Publish one host terminal color or appearance update observed by a client-owned shell.
     ClientShellHostTheme { update: ClientHostThemeUpdate },

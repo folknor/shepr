@@ -546,7 +546,7 @@ impl ClientShellState {
                 .as_ref()
                 .is_some_and(shepr_vt::selection::Selection::is_visible)
         {
-            self.request_selection_copy(outcome, true);
+            self.request_selection_copy(outcome);
             self.selection = None;
             self.stop_selection_autoscroll();
             self.selection_highlight_clear_deadline = None;

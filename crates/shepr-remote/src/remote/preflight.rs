@@ -27,7 +27,7 @@ use std::time::Instant;
 
 use crate::SshFailureDiagnostic;
 use crate::machine::{MachineConfig, MachineLabel};
-use crate::{DifferentBuildServer, RemoteStop, SavedSshCheck};
+use crate::{DifferentBuildServer, MachineSshCheck, RemoteStop};
 
 use crate::limits::MAX_RESTART_OFFERS;
 
@@ -40,7 +40,7 @@ pub trait PreflightSsh: Sync {
 
     /// Checks one machine without prompting. Called for all machines of a round
     /// at once, from separate threads.
-    fn check(&self, machine: &MachineConfig) -> io::Result<SavedSshCheck>;
+    fn check(&self, machine: &MachineConfig) -> io::Result<MachineSshCheck>;
 
     /// Runs interactive authentication for one machine in this terminal. Called
     /// for one machine at a time, from the calling thread.
@@ -85,10 +85,10 @@ impl MachineCheck {
 }
 
 /// Sorts a check result into the classes the preflight acts on.
-pub fn classify_check(result: io::Result<SavedSshCheck>) -> MachineCheck {
+pub fn classify_check(result: io::Result<MachineSshCheck>) -> MachineCheck {
     let error = match result {
-        Ok(SavedSshCheck::Ready) => return MachineCheck::Ready,
-        Ok(SavedSshCheck::DifferentBuild(server)) => return MachineCheck::DifferentBuild(server),
+        Ok(MachineSshCheck::Ready) => return MachineCheck::Ready,
+        Ok(MachineSshCheck::DifferentBuild(server)) => return MachineCheck::DifferentBuild(server),
         Err(error) => error,
     };
     let diagnostic = SshFailureDiagnostic::from_error(&error);
@@ -287,18 +287,18 @@ pub fn restart_different_builds(
     }
 }
 
-/// The real ssh behind [`PreflightSsh`]: [`check_saved_ssh`](crate::check_saved_ssh)
+/// The real ssh behind [`PreflightSsh`]: [`check_machine_ssh`](crate::check_machine_ssh)
 /// under one shared deadline per round, `ssh_authentication_command` on shepr's
 /// control socket, and [`stop_remote_server`](crate::stop_remote_server).
-pub struct SavedSshPreflight<'a> {
+pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_config::AppPaths,
-    settings: crate::SavedSshSettings,
+    settings: crate::MachineSshSettings,
     deadline: Mutex<Instant>,
 }
 
-impl<'a> SavedSshPreflight<'a> {
+impl<'a> MachineSshPreflight<'a> {
     /// The deadline for the first round of checks starts now.
-    pub fn new(paths: &'a shepr_config::AppPaths, settings: crate::SavedSshSettings) -> Self {
+    pub fn new(paths: &'a shepr_config::AppPaths, settings: crate::MachineSshSettings) -> Self {
         Self {
             paths,
             settings,
@@ -312,7 +312,7 @@ fn round_deadline() -> Instant {
     Instant::now() + crate::limits::PREFLIGHT_CHECK_BUDGET
 }
 
-impl PreflightSsh for SavedSshPreflight<'_> {
+impl PreflightSsh for MachineSshPreflight<'_> {
     fn start_round(&self) {
         let mut deadline = self
             .deadline
@@ -321,12 +321,12 @@ impl PreflightSsh for SavedSshPreflight<'_> {
         *deadline = round_deadline();
     }
 
-    fn check(&self, machine: &MachineConfig) -> io::Result<SavedSshCheck> {
+    fn check(&self, machine: &MachineConfig) -> io::Result<MachineSshCheck> {
         let deadline = *self
             .deadline
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::check_saved_ssh(self.paths, &machine.ssh, self.settings, deadline)
+        crate::check_machine_ssh(self.paths, &machine.ssh, self.settings, deadline)
     }
 
     fn authenticate(&self, machine: &MachineConfig) -> io::Result<()> {
@@ -471,7 +471,7 @@ mod tests {
             self.rounds.fetch_add(1, Ordering::SeqCst);
         }
 
-        fn check(&self, machine: &MachineConfig) -> io::Result<SavedSshCheck> {
+        fn check(&self, machine: &MachineConfig) -> io::Result<MachineSshCheck> {
             enter(&self.checks_active, &self.max_checks_active);
             // Long enough for every concurrent check to be in flight together.
             std::thread::sleep(Duration::from_millis(100));
@@ -498,12 +498,12 @@ mod tests {
                 )),
                 "stale" | "authstale" => {
                     if *locked(&self.ready_now) {
-                        return Ok(SavedSshCheck::Ready);
+                        return Ok(MachineSshCheck::Ready);
                     }
                     let boot = locked(&self.current_boot);
-                    Ok(SavedSshCheck::DifferentBuild(server(&boot)))
+                    Ok(MachineSshCheck::DifferentBuild(server(&boot)))
                 }
-                _ => Ok(SavedSshCheck::Ready),
+                _ => Ok(MachineSshCheck::Ready),
             }
         }
 
@@ -688,7 +688,7 @@ mod tests {
     #[test]
     fn checks_are_classified_by_what_went_wrong() {
         assert!(matches!(
-            classify_check(Ok(SavedSshCheck::Ready)),
+            classify_check(Ok(MachineSshCheck::Ready)),
             MachineCheck::Ready
         ));
         for (error, expected) in [
@@ -724,7 +724,7 @@ mod tests {
             assert_eq!(class, expected);
         }
         assert!(matches!(
-            classify_check(Ok(SavedSshCheck::DifferentBuild(server("boot-1")))),
+            classify_check(Ok(MachineSshCheck::DifferentBuild(server("boot-1")))),
             MachineCheck::DifferentBuild(_)
         ));
     }

@@ -9,9 +9,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::limits::{
     ACCEPT_BACKOFF_MAX, ACCEPT_BACKOFF_MIN, BUSY_REFUSAL_QUEUE, BUSY_REQUEST_ID_TIMEOUT,
-    CONNECTION_POLL_INTERVAL, INITIAL_REQUEST_READ_CHUNK_BYTES, INITIAL_REQUEST_TIMEOUT,
-    MAX_ACTIVE_CONNECTIONS, MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT,
-    STREAM_WRITE_TIMEOUT,
+    INITIAL_REQUEST_READ_CHUNK_BYTES, INITIAL_REQUEST_TIMEOUT, MAX_ACTIVE_CONNECTIONS,
+    MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT, STREAM_WRITE_TIMEOUT,
 };
 use crate::schema::{
     ErrorResponse, Method, MethodTraits, Request, ResponseResult, ServerCapabilities,
@@ -19,10 +18,12 @@ use crate::schema::{
 };
 use crate::{ApiRequestMessage, ApiRequestSender, socket_path};
 use shepr_platform::ipc::{
-    LocalStream, SocketFileIdentity, SocketStartupLock, bind_private_socket,
-    is_connection_closed_error, local_stream_peer_closed, peer_is_same_user,
-    remove_socket_file_if_owned, set_local_stream_polling, socket_file_identity,
+    HangupWait, LocalStream, ShutdownTrigger, ShutdownWatch, SocketFileIdentity, SocketStartupLock,
+    bind_private_socket, is_connection_closed_error, peer_is_same_user,
+    remove_socket_file_if_owned, set_local_stream_polling, shutdown_pipe, socket_file_identity,
+    wait_local_stream_hangup,
 };
+use shepr_platform::ssh_agent::SshAgentLease;
 
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
     "timed out waiting for app response; the request may still run, so its outcome is unknown";
@@ -55,6 +56,9 @@ pub struct ServerHandle {
     path: PathBuf,
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
+    /// Dropped first in `drop`: wakes every connection thread holding a
+    /// long-lived connection (the SSH agent leases) so it ends at once.
+    shutdown: Option<ShutdownTrigger>,
     // Declared last so it is released only after `drop` has removed the
     // socket file and joined the listener: a racing server cannot claim the
     // path while this one still owns it.
@@ -64,6 +68,7 @@ pub struct ServerHandle {
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
+        drop(self.shutdown.take());
 
         // The listener thread only looks at `running` after an accept returns,
         // so without a wake-up it would sit in `accept` holding the listening
@@ -144,6 +149,8 @@ fn start_server_inner(
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
     let path = socket_path(paths);
+    // Made before the bind, so its failure leaves no socket file behind.
+    let (shutdown, shutdown_watch) = shutdown_pipe()?;
     let (listener, startup_lock, identity) = bind_private_socket(&path)?;
     info!(path = %path.display(), "api server listening");
 
@@ -174,7 +181,6 @@ fn start_server_inner(
     // agent hook fails until someone kills it by hand. Transient errors such
     // as EMFILE/ENFILE (one fd and thread per connection, plus PTYs) or
     // ECONNABORTED are therefore logged and retried with a bounded backoff.
-    let connection_running = Arc::clone(&running);
     let busy_refuser = spawn_busy_refuser();
     let thread = spawn_listener_thread(listener, listener_running, move |stream| {
         // Dropping the stream closes the refused connection; that is not an
@@ -197,7 +203,7 @@ fn start_server_inner(
         let api_tx = api_tx.clone();
         let capabilities = capabilities.clone();
         let server_stop = server_stop.clone();
-        let connection_running = Arc::clone(&connection_running);
+        let shutdown_watch = shutdown_watch.clone();
         let ssh_agents = ssh_agents.clone();
         // `std::thread::spawn` panics when the OS refuses a new thread, which
         // would take the listener down with it. On failure the closure (and
@@ -210,7 +216,7 @@ fn start_server_inner(
                 if let Err(err) = handle_connection_with_stop(
                     stream,
                     &api_tx,
-                    &connection_running,
+                    &shutdown_watch,
                     capabilities,
                     server_stop.as_ref(),
                     ssh_agents.as_ref(),
@@ -226,6 +232,7 @@ fn start_server_inner(
         path,
         identity,
         running,
+        shutdown: Some(shutdown),
         _startup_lock: startup_lock,
     })
 }
@@ -384,7 +391,7 @@ impl AcceptBackoff {
 fn handle_connection_with_stop(
     mut stream: LocalStream,
     api_tx: &ApiRequestSender,
-    running: &Arc<AtomicBool>,
+    shutdown: &ShutdownWatch,
     capabilities: Option<ServerCapabilities>,
     server_stop: Option<&Arc<crate::ServerStopSignal>>,
     ssh_agents: Option<&shepr_platform::ssh_agent::SshAgentRegistry>,
@@ -474,13 +481,18 @@ fn handle_connection_with_stop(
                     result: ResponseResult::Ok {},
                 },
             )?;
-            while running.load(Ordering::Relaxed) && !server_is_stopping(server_stop) {
-                if local_stream_peer_closed(&stream)? {
-                    break;
+            // The lease lasts as long as the connection: it ends when the
+            // client hangs up or the API server shuts down (its handle drops
+            // after the final session save, so panes keep a working agent
+            // through a stop's drain). Between those the wait wakes only to
+            // re-probe agent liveness, because SSH can unlink an inherited
+            // socket after its bridge's lease closes and nothing announces it.
+            loop {
+                match wait_local_stream_hangup(&stream, shutdown, SshAgentLease::REFRESH_INTERVAL)?
+                {
+                    HangupWait::PeerClosed | HangupWait::Shutdown => break,
+                    HangupWait::Elapsed => lease.refresh()?,
                 }
-                // SSH can unlink an inherited socket after its bridge's lease closes.
-                lease.refresh()?;
-                std::thread::sleep(CONNECTION_POLL_INTERVAL);
             }
             Ok(())
         }
@@ -760,14 +772,15 @@ fn error_response_json(
     )
 }
 
+/// Serves one short-lived request; the shutdown watch is never waited on.
 #[cfg(test)]
 fn handle_connection(
     stream: LocalStream,
     api_tx: &ApiRequestSender,
-    running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
 ) -> std::io::Result<()> {
-    handle_connection_with_stop(stream, api_tx, running, capabilities, None, None)
+    let (_shutdown, watch) = shutdown_pipe()?;
+    handle_connection_with_stop(stream, api_tx, &watch, capabilities, None, None)
 }
 
 #[cfg(test)]
@@ -896,10 +909,11 @@ mod tests {
             line,
             "{\"id\":\"late\",\"method\":\"ping\",\"params\":{}}\n"
         );
-        // Polling slept a full interval after the first empty read, and again
-        // between the two writes; blocking reads wake on arrival.
+        // The writer sleeps 40 ms in all. A 100 ms poll would have slept a
+        // full interval after the first empty read, and again between the two
+        // writes; blocking reads wake on arrival.
         assert!(
-            elapsed < CONNECTION_POLL_INTERVAL,
+            elapsed < Duration::from_millis(100),
             "request line took {elapsed:?}"
         );
     }
@@ -953,6 +967,7 @@ mod tests {
             path: path.clone(),
             identity,
             running,
+            shutdown: None,
             _startup_lock: startup_lock,
         };
         let refusal = shepr_platform::ipc::acquire_socket_startup_lock(&path)
@@ -977,27 +992,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ssh_agent_registration_lasts_only_for_the_api_connection() {
-        let directory = ScratchDir::new("agent-lease");
+    struct LeaseFixture {
+        _directory: ScratchDir,
+        _agent_listener: UnixListener,
+        stable: PathBuf,
+        registry: shepr_platform::ssh_agent::SshAgentRegistry,
+        client: LocalStream,
+        worker: std::thread::JoinHandle<()>,
+    }
+
+    /// Registers an agent lease over a fresh connection served on a worker
+    /// thread, and checks the success line and the published address.
+    fn register_lease(name: &str, shutdown: ShutdownWatch) -> LeaseFixture {
+        let directory = ScratchDir::new(name);
         let agent = directory.join("upstream");
-        let _agent = UnixListener::bind(&agent).expect("test precondition");
+        let agent_listener = UnixListener::bind(&agent).expect("test precondition");
         let stable = directory.join("stable");
         let registry = shepr_platform::ssh_agent::SshAgentRegistry::new(stable.clone(), None)
             .expect("test precondition");
-        let (mut client, server) = local_stream_pair("agent-api");
+        let (mut client, server) = local_stream_pair(name);
         let (tx, _rx) = mpsc::unbounded_channel();
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
-            handle_connection_with_stop(
-                server,
-                &tx,
-                &Arc::new(AtomicBool::new(true)),
-                None,
-                None,
-                Some(&worker_registry),
-            )
-            .expect("test precondition");
+            handle_connection_with_stop(server, &tx, &shutdown, None, None, Some(&worker_registry))
+                .expect("test precondition");
         });
         let request = Request {
             id: "agent-lease".into(),
@@ -1011,10 +1029,37 @@ mod tests {
             serde_json::from_str(&read_line(&mut client)).expect("test precondition");
         assert!(matches!(response.result, ResponseResult::Ok {}));
         assert_eq!(fs::read_link(&stable).expect("test precondition"), agent);
-        drop(client);
-        worker.join().expect("test precondition");
-        assert!(!stable.try_exists().expect("stat stable agent link"));
-        drop(registry);
+        LeaseFixture {
+            _directory: directory,
+            _agent_listener: agent_listener,
+            stable,
+            registry,
+            client,
+            worker,
+        }
+    }
+
+    #[test]
+    fn ssh_agent_registration_lasts_only_for_the_api_connection() {
+        let (_shutdown, watch) = shutdown_pipe().expect("test precondition");
+        let lease = register_lease("agent-lease", watch);
+        drop(lease.client);
+        lease.worker.join().expect("test precondition");
+        assert!(!lease.stable.try_exists().expect("stat stable agent link"));
+        drop(lease.registry);
+    }
+
+    /// Dropping the server handle's shutdown trigger ends a lease whose client
+    /// is still connected, and the lease's address goes with it.
+    #[test]
+    fn ssh_agent_lease_ends_when_the_api_server_shuts_down() {
+        let (shutdown, watch) = shutdown_pipe().expect("test precondition");
+        let lease = register_lease("agent-lease-shutdown", watch);
+        drop(shutdown);
+        lease.worker.join().expect("test precondition");
+        assert!(!lease.stable.try_exists().expect("stat stable agent link"));
+        drop(lease.client);
+        drop(lease.registry);
     }
 
     #[test]
@@ -1086,8 +1131,7 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(server, &api_tx, &Arc::new(AtomicBool::new(true)), None)
-            .expect("test precondition");
+        handle_connection(server, &api_tx, None).expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -1106,8 +1150,7 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(server, &api_tx, &Arc::new(AtomicBool::new(true)), None)
-            .expect("test precondition");
+        handle_connection(server, &api_tx, None).expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -1259,8 +1302,7 @@ mod tests {
             let (api_tx, mut api_rx) = mpsc::unbounded_channel();
             let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
-            let running = Arc::new(AtomicBool::new(true));
-            handle_connection(server, &api_tx, &running, None).expect("test precondition");
+            handle_connection(server, &api_tx, None).expect("test precondition");
 
             let mut response = String::new();
             BufReader::new(client)

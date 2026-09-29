@@ -13,7 +13,8 @@
 //!    in the runtime directory, so simultaneous first clients start one
 //!    server, and probe again under it.
 //! 3. Start `shepr-server --client-spawned` detached in its own session, its
-//!    stderr going to a boot log in the runtime directory, and hold it in a
+//!    stderr going to a boot log in the runtime directory until its own
+//!    logging is up, and hold it in a
 //!    guard that kills its process group on every unsuccessful exit.
 //! 4. Poll until the child answers a status request with this build's
 //!    identity, noticing a child that dies on the way. Only then is the guard
@@ -46,7 +47,8 @@ use shepr_api::daemon_exit::{CLIENT_SPAWNED_FLAG, SERVER_BINARY_NAME};
 /// every contender locks the same inode.
 const LAUNCH_LOCK_FILE_NAME: &str = "launch.lock";
 
-/// Where a launched server's stderr goes, inside the runtime directory.
+/// Where a launched server's stderr goes while it boots, inside the runtime
+/// directory.
 const BOOT_LOG_FILE_NAME: &str = "server-boot.log";
 
 /// A direct client checks the build before attaching. An SSH bridge leaves the

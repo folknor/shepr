@@ -19,7 +19,9 @@ pub fn create_private_directory_all(path: &Path) -> io::Result<()> {
         .create(path)
 }
 
-/// Opens the file a launched daemon's stderr goes to, emptied.
+/// Opens the file a launched daemon's stderr goes to, emptied. The daemon
+/// keeps it as its stderr only until its own log is running, then points
+/// stderr at `/dev/null`, so it holds only pre-logging output.
 ///
 /// A regular file rather than a pipe, so a detached daemon can never block on
 /// a reader that went away. It is opened owner-only without following a

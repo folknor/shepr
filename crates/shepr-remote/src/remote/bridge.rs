@@ -28,7 +28,7 @@ pub(crate) struct SshStdioBridge {
     should_stop: Arc<AtomicBool>,
     // The accept thread clears a previous report before each accepted stream.
     // A generation slot would also need the caller to pass the stream's
-    // generation into reported_failure; the current SavedSshStream handle
+    // generation into reported_failure; the current MachineSshStream handle
     // carries no such identity.
     failure_rx: Arc<std::sync::Mutex<mpsc::Receiver<io::Error>>>,
     thread: Option<JoinHandle<()>>,
@@ -428,7 +428,7 @@ pub(super) fn bridge_connection(
 ) -> io::Result<()> {
     let mut command = ssh_command();
     apply_managed_ssh_options(&mut command, ssh_options);
-    apply_noninteractive_ssh_options(&mut command);
+    apply_batch_ssh_options(&mut command);
     command
         .arg("-T")
         .arg(target.as_str())

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, RemoteSsh, SavedSshCheck, SshStdioBridge, is_ssh_link_failure,
+    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, is_ssh_link_failure,
     judge_remote_server, locate_remote_shepr, remote_server_status,
     resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
@@ -12,8 +12,8 @@ use super::{
 /// Checks, without prompting, that the configured machine can be served: SSH
 /// works, a matching shepr and sibling `shepr-server` pair is found, and whether a
 /// server already running there is this build. A stopped server is
-/// [`SavedSshCheck::Ready`], since the bridge starts one on attach. A running
-/// server of another build comes back as [`SavedSshCheck::DifferentBuild`] when it
+/// [`MachineSshCheck::Ready`], since the bridge starts one on attach. A running
+/// server of another build comes back as [`MachineSshCheck::DifferentBuild`] when it
 /// can be restarted. No SSH command starts once `deadline` has passed, and each is
 /// cut short at it.
 ///
@@ -21,14 +21,13 @@ use super::{
 /// verifies (one round trip instead of full discovery). One that no longer verifies
 /// is dropped, and full discovery runs; what discovery finds is recorded, so the
 /// connector that follows does not repeat the round trips.
-pub fn check_saved_ssh(
+pub fn check_machine_ssh(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    settings: SavedSshSettings,
+    settings: MachineSshSettings,
     deadline: std::time::Instant,
-) -> io::Result<SavedSshCheck> {
-    let mut ssh =
-        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
+) -> io::Result<MachineSshCheck> {
+    let mut ssh = RemoteSsh::new(target.clone(), settings.manage_ssh_config, paths)?;
     ssh.set_attempt_deadline(Some(deadline));
     let cache = SshMetadataCache::new(paths, target);
     let remote = resolve_remote_shepr(
@@ -76,11 +75,11 @@ fn resolve_remote_shepr(
     Ok(discovered)
 }
 
-pub struct SavedSshBridge {
+pub struct MachineSshBridge {
     bridge: SshStdioBridge,
 }
 
-impl SavedSshBridge {
+impl MachineSshBridge {
     /// The SSH failure behind a connection that closed early, if the bridge reported one
     /// (waits briefly for the bridge thread). SSH stderr otherwise only reaches the log,
     /// and the caller would see a bare end of stream.
@@ -89,15 +88,15 @@ impl SavedSshBridge {
     }
 }
 
-pub struct SavedSshStream {
+pub struct MachineSshStream {
     pub stream: shepr_platform::ipc::LocalStream,
-    pub bridge: SavedSshBridge,
+    pub bridge: MachineSshBridge,
 }
 
 /// Settings a configured-machine connector takes from the config. A client reads its
 /// config once at launch and hands these in, so reconnects never re-read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SavedSshSettings {
+pub struct MachineSshSettings {
     pub manage_ssh_config: bool,
 }
 
@@ -122,11 +121,11 @@ pub struct SavedSshSettings {
 /// completed is kept (`DiscoveryProgress`) and the next attempt
 /// resumes it, so every attempt still ends within its budget and discovery still
 /// finishes.
-pub struct SavedSshConnector {
+pub struct MachineSshConnector {
     paths: shepr_config::AppPaths,
     label: MachineLabel,
     target: SshTarget,
-    settings: SavedSshSettings,
+    settings: MachineSshSettings,
     state: ConnectorState,
 }
 
@@ -160,12 +159,12 @@ impl StoredSetupError {
     }
 }
 
-impl SavedSshConnector {
+impl MachineSshConnector {
     pub fn new(
         paths: &shepr_config::AppPaths,
         label: &MachineLabel,
         target: &SshTarget,
-        settings: SavedSshSettings,
+        settings: MachineSshSettings,
     ) -> Self {
         let mut connector = Self {
             paths: paths.clone(),
@@ -178,7 +177,7 @@ impl SavedSshConnector {
         connector
     }
 
-    /// Reports a deterministic local setup failure found while constructing this saved
+    /// Reports a deterministic local setup failure found while constructing this
     /// connector. The client checks it before entering its retry loop; transient filesystem
     /// failures remain in the connector and are tried again by `connect`.
     pub fn launch_fatal_setup_error(&self) -> Option<io::Error> {
@@ -197,12 +196,12 @@ impl SavedSshConnector {
                     %error,
                     machine = %self.label,
                     target = %self.target.as_str(),
-                    "saved SSH path setup failed transiently; it will be retried"
+                    "machine SSH path setup failed transiently; it will be retried"
                 );
             }
             return;
         }
-        match RemoteSsh::new_noninteractive_with(
+        match RemoteSsh::new(
             self.target.clone(),
             self.settings.manage_ssh_config,
             &self.paths,
@@ -216,7 +215,7 @@ impl SavedSshConnector {
                     %error,
                     machine = %self.label,
                     target = %self.target.as_str(),
-                    "saved SSH setup failed transiently; it will be retried"
+                    "machine SSH setup failed transiently; it will be retried"
                 );
             }
         }
@@ -226,7 +225,7 @@ impl SavedSshConnector {
         // This path is needed even when managed SSH config is disabled. Validate it at
         // launch so an XDG_RUNTIME_DIR that can never hold the local bridge socket fails
         // before the endpoint's first scheduled connection attempt.
-        saved_bridge_path(self.paths.xdg_runtime_dir(), &self.label)?;
+        machine_bridge_path(self.paths.xdg_runtime_dir(), &self.label)?;
         if self.settings.manage_ssh_config {
             shepr_platform::shared_ssh_control_path(
                 self.paths.xdg_runtime_dir(),
@@ -250,7 +249,7 @@ impl SavedSshConnector {
     pub fn connect<T>(
         &mut self,
         deadline: std::time::Instant,
-        mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
+        mut establish: impl FnMut(MachineSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
         let target = &self.target;
         let metadata_cache = SshMetadataCache::new(&self.paths, target);
@@ -266,7 +265,7 @@ impl SavedSshConnector {
             // A transient local runtime-directory or managed-config failure must not
             // disable this endpoint for the connector's lifetime. Failed setup leaves
             // `ssh` empty, so the next scheduled connection attempt tries it again.
-            state.ssh = Some(RemoteSsh::new_noninteractive_with(
+            state.ssh = Some(RemoteSsh::new(
                 self.target.clone(),
                 self.settings.manage_ssh_config,
                 &self.paths,
@@ -281,7 +280,7 @@ impl SavedSshConnector {
         // Setup above either stored the transport or returned its setup error. Keep
         // this checked arm instead of panicking if the connector state changes later.
         let Some(ssh) = ssh.as_mut() else {
-            return Err(io::Error::other("saved SSH transport is unavailable"));
+            return Err(io::Error::other("machine SSH transport is unavailable"));
         };
         ssh.set_attempt_deadline(Some(deadline));
         let ssh = &*ssh;
@@ -369,19 +368,19 @@ impl SavedSshConnector {
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
         deadline: std::time::Instant,
-        establish: &mut impl FnMut(SavedSshStream) -> io::Result<T>,
+        establish: &mut impl FnMut(MachineSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
         // clock-io-ok: discovery and bridge setup may have consumed the attempt budget.
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }
-        let path = saved_bridge_path(paths.xdg_runtime_dir(), label)?;
+        let path = machine_bridge_path(paths.xdg_runtime_dir(), label)?;
         let bridge =
             SshStdioBridge::start(target.clone(), remote_shepr, path.clone(), ssh.options())?;
         let stream = shepr_platform::ipc::connect_trusted_local_stream(&path)?;
-        establish(SavedSshStream {
+        establish(MachineSshStream {
             stream,
-            bridge: SavedSshBridge { bridge },
+            bridge: MachineSshBridge { bridge },
         })
     }
 }
@@ -419,7 +418,7 @@ fn bridge_name_fragment(label: &MachineLabel) -> String {
 /// A fresh socket path for one configured-machine attach bridge. The prefix is
 /// distinct from the `shepr-ssh-` SSH config directories, whose sweep matches
 /// on that prefix.
-fn saved_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io::Result<PathBuf> {
+fn machine_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io::Result<PathBuf> {
     let readable = format!("shepr-bridge-{}.sock", bridge_name_fragment(label));
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, "shepr-b.sock")
 }
@@ -471,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_verified_cached_executable_skips_discovery() {
-        let scratch = shepr_test_support::ScratchDir::new("saved-check-cached");
+        let scratch = shepr_test_support::ScratchDir::new("machine-check-cached");
         let cache = cache_in(&scratch);
         cache
             .store(&executable("/cached/shepr"))
@@ -487,7 +486,7 @@ mod tests {
 
     #[test]
     fn a_stale_cached_executable_is_dropped_and_discovery_is_recorded() {
-        let scratch = shepr_test_support::ScratchDir::new("saved-check-stale");
+        let scratch = shepr_test_support::ScratchDir::new("machine-check-stale");
         let cache = cache_in(&scratch);
         cache
             .store(&executable("/old/shepr"))
@@ -509,7 +508,7 @@ mod tests {
 
     #[test]
     fn a_link_failure_while_verifying_keeps_the_cache_and_skips_discovery() {
-        let scratch = shepr_test_support::ScratchDir::new("saved-check-link");
+        let scratch = shepr_test_support::ScratchDir::new("machine-check-link");
         let cache = cache_in(&scratch);
         cache
             .store(&executable("/cached/shepr"))
@@ -526,7 +525,7 @@ mod tests {
 
     #[test]
     fn discovery_without_a_cache_entry_is_recorded() {
-        let scratch = shepr_test_support::ScratchDir::new("saved-check-empty");
+        let scratch = shepr_test_support::ScratchDir::new("machine-check-empty");
         let cache = cache_in(&scratch);
         let found = resolve_remote_shepr(
             &cache,
@@ -540,12 +539,12 @@ mod tests {
 
     #[test]
     fn bridge_paths_use_the_label_not_the_target() {
-        let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-paths");
+        let runtime_dir = shepr_test_support::ScratchDir::new("machine-bridge-paths");
         let label = |value: &str| MachineLabel::parse(value).expect("test precondition");
         let first =
-            saved_bridge_path(runtime_dir.path(), &label("build")).expect("test precondition");
+            machine_bridge_path(runtime_dir.path(), &label("build")).expect("test precondition");
         let second =
-            saved_bridge_path(runtime_dir.path(), &label("laptop")).expect("test precondition");
+            machine_bridge_path(runtime_dir.path(), &label("laptop")).expect("test precondition");
         assert_ne!(first, second);
         assert!(first.to_string_lossy().contains("shepr-bridge-build"));
         assert!(!first.to_string_lossy().contains("example.com"));
@@ -559,8 +558,8 @@ mod tests {
         assert_eq!(bridge_name_fragment(&label), "___etc_pass_wd__");
         let long = MachineLabel::parse("x".repeat(500)).expect("test precondition");
         assert_eq!(bridge_name_fragment(&long).len(), BRIDGE_NAME_LABEL_CHARS);
-        let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-sanitized");
-        let path = saved_bridge_path(runtime_dir.path(), &label).expect("test precondition");
+        let runtime_dir = shepr_test_support::ScratchDir::new("machine-bridge-sanitized");
+        let path = machine_bridge_path(runtime_dir.path(), &label).expect("test precondition");
         assert_eq!(path.parent(), Some(runtime_dir.path()));
     }
 
@@ -569,11 +568,11 @@ mod tests {
     /// directory empty.
     #[test]
     fn concurrent_bridges_for_one_machine_each_bind_their_own_socket() {
-        let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-concurrent");
+        let runtime_dir = shepr_test_support::ScratchDir::new("machine-bridge-concurrent");
         let label = MachineLabel::parse("build").expect("test precondition");
         let paths = [
-            saved_bridge_path(runtime_dir.path(), &label),
-            saved_bridge_path(runtime_dir.path(), &label),
+            machine_bridge_path(runtime_dir.path(), &label),
+            machine_bridge_path(runtime_dir.path(), &label),
         ]
         .map(|path| path.expect("test precondition"));
         let bridges: Vec<_> = paths

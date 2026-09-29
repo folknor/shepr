@@ -136,10 +136,8 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
         .state
         .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
         .expect("test precondition");
-    let revision = runtime.content_seq();
     runtime.test_process_pty_bytes(b"\r\nagent is still working");
-    assert_ne!(runtime.content_seq(), revision);
-    let mut params = PaneSelectionReadParams {
+    let params = PaneSelectionReadParams {
         pane_id: public_pane_id.clone(),
         anchor: PaneTextPoint {
             row: shepr_vt::AbsRow(0),
@@ -149,15 +147,7 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
             row: shepr_vt::AbsRow(0),
             col: 4,
         },
-        content_revision: Some(revision),
     };
-    assert_eq!(
-        app.pane_selection_text(&params)
-            .expect_err("test precondition")
-            .code,
-        shepr_api::error::ApiErrorCode::StaleContent
-    );
-    params.content_revision = None;
     let response = app.handle_pane_selection_read(params);
 
     let success: SuccessResponse = crate::test_support::test_success(&response);

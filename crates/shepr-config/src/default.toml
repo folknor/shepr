@@ -265,7 +265,7 @@
 # startup_per_agent_delay_ms = 100
 
 [remote]
-# Whether shepr manages the ssh config used for saved machines.
+# Whether shepr manages the ssh config used for configured machines.
 # When true (default), shepr runs remote ssh through a generated config that
 # includes your ~/.ssh/config first and adds ServerAliveInterval/
 # ServerAliveCountMax as fallbacks (so any keepalive values you set yourself

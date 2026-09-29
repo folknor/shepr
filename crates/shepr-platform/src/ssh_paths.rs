@@ -18,7 +18,7 @@ pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths 
 }
 
 /// Create an ephemeral SSH config directory under the validated XDG runtime
-/// directory. Each directory gets a random name so concurrent saved-machine
+/// directory. Each directory gets a random name so concurrent configured-machine
 /// bridges do not share a small per-process allocation limit. Callers remove
 /// it when done; the managed SSH owner also registers normal process-exit
 /// cleanup. Each creation first sweeps leftovers of hard-killed owners: only

@@ -53,16 +53,6 @@ impl App {
         else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
-        let before = runtime.content_seq();
-        if params
-            .content_revision
-            .is_some_and(|revision| revision != before || !before.is_multiple_of(2))
-        {
-            return Err(shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::StaleContent,
-                "pane content changed",
-            ));
-        }
         let selection = shepr_vt::selection::Selection::range(
             pane_id,
             shepr_vt::Point::new(params.anchor.row, params.anchor.col),
@@ -74,12 +64,6 @@ impl App {
                 "selection text is unavailable",
             ));
         };
-        if params.content_revision.is_some() && runtime.content_seq() != before {
-            return Err(shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::StaleContent,
-                "pane content changed",
-            ));
-        }
         Ok(text)
     }
 

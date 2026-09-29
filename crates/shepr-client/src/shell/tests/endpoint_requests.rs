@@ -187,7 +187,7 @@ fn failed_selection_copy_does_not_send_terminal_input() {
         }),
     ] {
         let mut outcome = ClientShellInput::default();
-        state.request_selection_copy(&mut outcome, false);
+        state.request_selection_copy(&mut outcome);
         let actions = state
             .handle_endpoint_result(
                 &crate::tests::test_boot_id("boot-1"),

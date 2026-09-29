@@ -129,6 +129,9 @@ pub fn run_server(
         data_dir,
         shepr_platform::logging::SERVER_LOG_FILE,
     )?;
+    if file_logging.unavailable.is_none() {
+        log_panics();
+    }
     // Compile the bundled detection manifests off the tokio loop, before App
     // restores PTYs whose detection workers consult them, and after logging
     // starts, so a bundled manifest that fails to compile reaches the log.
@@ -185,12 +188,29 @@ pub fn run_server(
         );
         on_ready(&ready);
 
-        server.run().await.map_err(RunServerError::from)
+        server.run().await.map_err(|error| {
+            // A client-spawned server's stderr is /dev/null by now.
+            tracing::error!(%error, "the server event loop failed");
+            RunServerError::from(error)
+        })
     });
 
     rt.shutdown_timeout(crate::limits::TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
     crate::logging::shutdown("server");
     result
+}
+
+/// Makes every panic reach the server log through `tracing`, then runs the
+/// previous hook (the default one prints to stderr). A client-spawned server
+/// points its stderr at `/dev/null` once it is ready, so the log is the only
+/// place a later panic is recorded.
+fn log_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        tracing::error!(thread = thread.name().unwrap_or("<unnamed>"), "{info}");
+        previous(info);
+    }));
 }
 
 /// Installs or updates the agent hooks on this host in a detached thread, so

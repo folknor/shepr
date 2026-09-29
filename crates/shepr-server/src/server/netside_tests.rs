@@ -7,6 +7,7 @@ use shepr_client::endpoint::{
     PendingEndpointActivation, SurfaceActivationProgress,
 };
 use shepr_protocol::ServerMessage;
+use shepr_protocol::command::EndpointCommand;
 
 use crate::server::ClientId;
 use crate::server::client_transport::{RenderLaneReceiver, ServerEvent};
@@ -222,23 +223,26 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
                     }
                 ));
             }
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
-                let request = serde_json::from_str::<api::schema::Request>(&request)
-                    .expect("test precondition");
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+                boot_id,
+                request_id,
+                command,
+            } => {
                 if matches!(
-                    request.method,
-                    api::schema::Method::ClientShellSurfaceSet(
+                    command,
+                    EndpointCommand::ClientShellSurfaceSet(
                         api::schema::ClientShellSurfaceSetParams { active: false }
                     )
                 ) {
-                    source_release_request_id = Some(request.id.clone());
+                    source_release_request_id = Some(request_id.clone());
                 }
                 assert!(headless_tests::handle_server_event(
                     &mut source_server,
                     ServerEvent::ClientShellEndpointRequest {
                         client_id: source_client_id,
                         boot_id,
-                        request: Box::new(request),
+                        request_id,
+                        command: Box::new(command),
                     }
                 ));
             }
@@ -247,24 +251,23 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     }
     let source_release_request_id = source_release_request_id.expect("client source-off request");
     let source_release_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-    let (source_release_boot_id, source_release_data) = loop {
+    let (source_release_boot_id, source_release_result) = loop {
         let message = recv_server_message_until(
             &source_control,
             source_release_deadline,
             "source typed release acknowledgement",
         );
         match message {
-            ServerMessage::ClientShellEndpointResponseChunk {
+            ServerMessage::ClientShellEndpointResponse {
                 boot_id,
                 request_id,
-                data,
-                ..
-            } if request_id == source_release_request_id => break (boot_id, data),
+                result,
+            } if request_id == source_release_request_id => break (boot_id, result),
             ServerMessage::EndpointSnapshot(_)
             | ServerMessage::MouseCapture { .. }
             | ServerMessage::ClientShellKeyboardReportAll { .. }
             | ServerMessage::WindowTitle { .. }
-            | ServerMessage::ClientShellEndpointResponseChunk { .. } => continue,
+            | ServerMessage::ClientShellEndpointResponse { .. } => continue,
             other => panic!("unexpected source release message: {other:?}"),
         }
     };
@@ -274,7 +277,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             SOURCE_GENERATION,
             &source_release_boot_id,
             &source_release_request_id,
-            &source_release_data,
+            source_release_result,
             &mut endpoints,
             Instant::now(),
         ),
@@ -294,11 +297,10 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         headless_tests::outer_terminal_focus(&source_server, source_client_id),
         Some(false)
     );
-    let ServerMessage::ClientShellEndpointResponseChunk {
+    let ServerMessage::ClientShellEndpointResponse {
         boot_id,
         request_id,
-        data,
-        ..
+        result,
     } = recv_server_message(&target_control, "target typed activation acknowledgement")
     else {
         panic!("expected target activation acknowledgement");
@@ -309,7 +311,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             TARGET_GENERATION,
             &boot_id,
             &request_id,
-            &data,
+            result,
             &mut endpoints,
             Instant::now(),
         ),
@@ -349,13 +351,17 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         .expect("test precondition")
         .iter()
         .find_map(|message| match message {
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
-                let request = serde_json::from_str::<api::schema::Request>(request).ok()?;
-                request
-                    .id
-                    .ends_with(":presentation-sync")
-                    .then(|| (boot_id.clone(), Box::new(request)))
-            }
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+                boot_id,
+                request_id,
+                command,
+            } => request_id.ends_with(":presentation-sync").then(|| {
+                (
+                    boot_id.clone(),
+                    request_id.clone(),
+                    Box::new(command.clone()),
+                )
+            }),
             _ => None,
         })
         .expect("client presentation synchronization request");
@@ -364,25 +370,25 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         ServerEvent::ClientShellEndpointRequest {
             client_id: target_client_id,
             boot_id: sync_request.0,
-            request: sync_request.1,
+            request_id: sync_request.1,
+            command: sync_request.2,
         }
     ));
     let sync_response_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-    let (sync_boot_id, sync_request_id, sync_data) = loop {
+    let (sync_boot_id, sync_request_id, sync_result) = loop {
         let message = recv_server_message_until(
             &target_control,
             sync_response_deadline,
             "presentation synchronization acknowledgement",
         );
-        if let ServerMessage::ClientShellEndpointResponseChunk {
+        if let ServerMessage::ClientShellEndpointResponse {
             boot_id,
             request_id,
-            data,
-            ..
+            result,
         } = message
             && request_id.ends_with(":presentation-sync")
         {
-            break (boot_id, request_id, data);
+            break (boot_id, request_id, result);
         }
     };
     assert_eq!(
@@ -391,7 +397,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             TARGET_GENERATION,
             &sync_boot_id,
             &sync_request_id,
-            &sync_data,
+            sync_result,
             &mut endpoints,
             Instant::now(),
         ),
@@ -489,17 +495,17 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let returning_release_request_id = returning_messages
         .iter()
         .find_map(|message| match message {
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } => {
-                let request = serde_json::from_str::<api::schema::Request>(request)
-                    .expect("test precondition");
-                matches!(
-                    request.method,
-                    api::schema::Method::ClientShellSurfaceSet(
-                        api::schema::ClientShellSurfaceSetParams { active: false }
-                    )
-                )
-                .then_some(request.id)
-            }
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+                request_id,
+                command,
+                ..
+            } => matches!(
+                command,
+                EndpointCommand::ClientShellSurfaceSet(api::schema::ClientShellSurfaceSetParams {
+                    active: false
+                })
+            )
+            .then(|| request_id.clone()),
             _ => None,
         })
         .expect("client remote-off request");
@@ -512,11 +518,10 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     loop {
         // Earlier responses from the first handoff may still be queued; only
         // the answer to this activation's release request counts.
-        if let ServerMessage::ClientShellEndpointResponseChunk {
+        if let ServerMessage::ClientShellEndpointResponse {
             boot_id,
             request_id,
-            data,
-            ..
+            result,
         } = recv_server_message_until(
             &target_control,
             returning_activation_deadline,
@@ -532,7 +537,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
                     TARGET_GENERATION,
                     &boot_id,
                     &request_id,
-                    &data,
+                    result,
                     &mut endpoints,
                     Instant::now(),
                 ),

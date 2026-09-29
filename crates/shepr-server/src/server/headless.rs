@@ -1273,33 +1273,19 @@ impl HeadlessServer {
                 }
                 foreground_changed | geometry_changed || scrolled
             }
-            ServerEvent::ClientShellEndpointRequestError {
-                client_id,
-                boot_id,
-                request_id,
-                code,
-                message,
-            } => {
-                if self.clients.get(&client_id).is_none() {
-                    return false;
-                }
-                let message = crate::server::client_commands::error_message(
-                    boot_id, request_id, code, message,
-                );
-                self.send_to_client(client_id, &message);
-                false
-            }
             ServerEvent::ClientShellEndpointRequest {
                 client_id,
                 boot_id,
-                request,
-            } => self.handle_client_shell_endpoint_request(client_id, boot_id, *request),
-            ServerEvent::ClientShellEndpointResponseChunkReady {
+                request_id,
+                command,
+            } => {
+                self.handle_client_shell_endpoint_request(client_id, boot_id, request_id, *command)
+            }
+            ServerEvent::ClientShellEndpointResponseReady {
                 client_id,
                 boot_id,
                 request_id,
-                final_chunk,
-                data,
+                result,
             } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
@@ -1309,18 +1295,10 @@ impl HeadlessServer {
                 {
                     return false;
                 }
-                if final_chunk {
-                    client.shell_state_mut().endpoint_command_in_flight = false;
-                }
-                self.send_to_client(
-                    client_id,
-                    &ServerMessage::ClientShellEndpointResponseChunk {
-                        boot_id,
-                        request_id,
-                        final_chunk,
-                        data,
-                    },
-                );
+                client.shell_state_mut().endpoint_command_in_flight = false;
+                let message =
+                    crate::server::client_commands::response_message(boot_id, request_id, *result);
+                self.send_to_client(client_id, &message);
                 false
             }
             ServerEvent::ClientDetach { client_id } => {

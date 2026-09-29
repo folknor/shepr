@@ -421,18 +421,6 @@ pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
         .unwrap_or_else(|_| panic!("{id:?} is not a canonical workspace id"))
 }
 
-/// Both halves of a history capture in one call; saves split them across the
-/// event loop and the save thread.
-pub(crate) fn capture_history(
-    snapshot: &shepr_mux::persist::SessionSnapshot,
-    workspaces: &[Workspace],
-    terminal_runtimes: &PaneRuntimeRegistry,
-    carry: &shepr_mux::persist::HistoryCarry,
-) -> shepr_mux::persist::SessionHistorySnapshot {
-    shepr_mux::persist::capture_pending_history(workspaces, terminal_runtimes, carry)
-        .resolve(snapshot)
-}
-
 /// A Codex resume plan for the session named by the last NUL-separated field
 /// of `identity`, launching `argv` instead of the real resume command.
 pub(crate) fn test_codex_plan(

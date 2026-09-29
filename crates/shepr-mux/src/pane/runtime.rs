@@ -1416,8 +1416,15 @@ impl PaneRuntime {
         self.terminal.agent_osc_progress()
     }
 
+    /// The pane's primary-screen history, read now with nothing cached.
     pub fn snapshot_history(&self) -> Option<String> {
         self.terminal.primary_history_ansi()
+    }
+
+    /// A handle that reads this pane's history from any thread, so a save
+    /// can take it on the event loop and format the history off it.
+    pub fn history_source(&self) -> super::PaneHistorySource {
+        super::PaneHistorySource(Arc::clone(&self.terminal))
     }
 
     pub fn extract_selection<P>(

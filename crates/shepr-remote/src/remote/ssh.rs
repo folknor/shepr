@@ -8,7 +8,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
-use crate::limits::NONINTERACTIVE_SSH_COMMAND_TIMEOUT;
+use crate::limits::SSH_COMMAND_TIMEOUT;
 
 pub(super) mod ssh_options {
     use std::process::Command;
@@ -233,7 +233,7 @@ pub struct SshAuthenticationCommand {
 pub fn ssh_authentication_command(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
-    settings: super::SavedSshSettings,
+    settings: super::MachineSshSettings,
 ) -> io::Result<SshAuthenticationCommand> {
     if !settings.manage_ssh_config {
         return Err(io::Error::new(
@@ -269,8 +269,8 @@ pub(super) fn authentication_command_with_config(
     }
 }
 
-/// A configured machine's ssh, always noninteractive (BatchMode): every
-/// command it builds fails rather than prompting. Interactive authentication
+/// A configured machine's ssh, always in BatchMode: every command it builds
+/// fails rather than prompting. Interactive authentication
 /// goes through [`ssh_authentication_command`], not this type.
 pub(crate) struct RemoteSsh {
     target: SshTarget,
@@ -284,7 +284,7 @@ pub(crate) struct RemoteSsh {
 
 impl RemoteSsh {
     /// For long-lived callers that already hold the launch-time config.
-    pub(crate) fn new_noninteractive_with(
+    pub(crate) fn new(
         target: SshTarget,
         manage_ssh_config: bool,
         paths: &shepr_config::AppPaths,
@@ -309,17 +309,17 @@ impl RemoteSsh {
         self.attempt_deadline = deadline;
     }
 
-    /// The timeout for the next noninteractive command, or `TimedOut` when the attempt
+    /// The timeout for the next command, or `TimedOut` when the attempt
     /// deadline has already passed and no further command may start.
-    pub(super) fn noninteractive_timeout(&self, now: Instant) -> io::Result<Duration> {
+    pub(super) fn command_timeout(&self, now: Instant) -> io::Result<Duration> {
         let Some(deadline) = self.attempt_deadline else {
-            return Ok(NONINTERACTIVE_SSH_COMMAND_TIMEOUT);
+            return Ok(SSH_COMMAND_TIMEOUT);
         };
         let remaining = deadline.saturating_duration_since(now);
         if remaining.is_zero() {
             return Err(attempt_deadline_passed());
         }
-        Ok(remaining.min(NONINTERACTIVE_SSH_COMMAND_TIMEOUT))
+        Ok(remaining.min(SSH_COMMAND_TIMEOUT))
     }
 
     pub(super) fn target(&self) -> &str {
@@ -333,18 +333,18 @@ impl RemoteSsh {
     pub(super) fn command(&self) -> Command {
         let mut command = ssh_command();
         apply_managed_ssh_options(&mut command, self.options());
-        apply_noninteractive_ssh_options(&mut command);
+        apply_batch_ssh_options(&mut command);
         command.arg("-T").arg(self.target.as_str());
         command
     }
 
     pub(super) fn sh_output(&self, script: &str) -> io::Result<Output> {
         // clock-io-ok: earlier SSH round trips may have used the attempt budget.
-        let timeout = self.noninteractive_timeout(Instant::now())?;
+        let timeout = self.command_timeout(Instant::now())?;
         self.sh_output_within(script, timeout)
     }
 
-    /// Runs `script` under `/bin/sh` on the remote host, giving a noninteractive
+    /// Runs `script` under `/bin/sh` on the remote host, giving the
     /// connection `timeout` instead of the round-trip budget. For a command that
     /// legitimately runs longer than one round trip, such as a server stop.
     pub(super) fn sh_output_within(&self, script: &str, timeout: Duration) -> io::Result<Output> {
@@ -380,7 +380,7 @@ impl RemoteSsh {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         // clock-io-ok: earlier SSH round trips may have used the attempt budget.
-        let timeout = self.noninteractive_timeout(Instant::now())?;
+        let timeout = self.command_timeout(Instant::now())?;
         normalize_remote_output(wait_with_output_timeout(command.spawn()?, timeout)?)
     }
 }
@@ -406,12 +406,12 @@ pub(super) fn normalize_remote_stdout(
     Ok(())
 }
 
-pub(super) fn apply_noninteractive_ssh_options(command: &mut Command) {
+pub(super) fn apply_batch_ssh_options(command: &mut Command) {
     ssh_options::append(
         command,
         &[
             ssh_options::BATCH_MODE_YES,
-            crate::limits::SSH_NONINTERACTIVE_PASSWORD_PROMPTS_OPTION,
+            crate::limits::SSH_NO_PASSWORD_PROMPTS_OPTION,
             ssh_options::STRICT_HOST_KEY_CHECKING,
             crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
             crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,

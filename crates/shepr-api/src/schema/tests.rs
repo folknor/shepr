@@ -3,52 +3,11 @@ use std::collections::HashSet;
 use super::*;
 
 #[test]
-fn method_names_and_traits_share_unique_schema_entries() {
+fn method_names_are_unique() {
     let mut names = HashSet::new();
-    let mut client_shell_methods = HashSet::new();
-
     for name in Method::ALL_NAMES {
         assert!(names.insert(*name), "duplicate method name: {name}");
-        let traits = Method::traits_for_name(name).expect("declared method name");
-        assert_eq!(traits.name, *name);
-        if traits.client_shell {
-            client_shell_methods.insert(*name);
-        }
     }
-
-    assert_eq!(
-        client_shell_methods,
-        HashSet::from([
-            "client_shell.surface.set",
-            "workspace.create",
-            "workspace.focus",
-            "workspace.rename",
-            "workspace.checkout_root",
-            "workspace.move",
-            "workspace.close",
-            "tab.create",
-            "tab.focus",
-            "tab.rename",
-            "tab.move",
-            "tab.close",
-            "pane.split",
-            "pane.swap",
-            "pane.zoom",
-            "layout.set_split_ratio",
-            "pane.focus_direction",
-            "pane.resize",
-            "pane.scroll",
-            "pane.clear",
-            "pane.selection.read",
-            "pane.copy_motion",
-            "pane.copy_search",
-            "pane.focus",
-            "pane.input.set",
-            "pane.rename",
-            "pane.close",
-        ])
-    );
-    assert!(Method::traits_for_name("plugin.future").is_none());
 }
 
 #[test]

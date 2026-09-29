@@ -1,9 +1,5 @@
 use std::time::Duration;
 
-/// Poll interval for noticing client disconnects and shutdown on a long-lived
-/// connection. It keeps cancellation responsive without busy polling.
-pub(crate) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
 /// Bound on how long a request waits for the app main loop to answer. Without
 /// one, a stalled main loop hangs every CLI call and every agent hook that
 /// shells out to the CLI.

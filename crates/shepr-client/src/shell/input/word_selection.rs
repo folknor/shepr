@@ -17,7 +17,6 @@ pub(super) struct ClientWordSelection {
     anchor_bounds: Option<(u16, u16)>,
     cursor: (shepr_vt::AbsRow, u16),
     end_col: u16,
-    content_revision: Option<u64>,
     cached_row: Option<(shepr_vt::AbsRow, String)>,
     pending_row: Option<shepr_vt::AbsRow>,
     pub(super) dragged: bool,
@@ -46,13 +45,6 @@ impl ClientShellState {
             anchor_bounds: None,
             cursor: (row, col),
             end_col: hit.inner_rect.width.saturating_sub(1),
-            content_revision: self.pane_surface.as_ref().and_then(|surface| {
-                surface
-                    .panes
-                    .iter()
-                    .find(|pane| pane.pane_id == hit.pane_id)
-                    .map(|pane| pane.content_revision)
-            }),
             cached_row: None,
             pending_row: None,
             dragged: false,
@@ -87,7 +79,6 @@ impl ClientShellState {
                 row,
                 col: gesture.end_col,
             },
-            content_revision: gesture.content_revision,
         };
         if !self.push_endpoint_method_with_kind(
             shepr_api::schema::Method::PaneSelectionRead(params),
@@ -163,7 +154,7 @@ impl ClientShellState {
             }
             self.word_selection_gesture = None;
             if self.config.copy_on_select {
-                self.request_selection_copy(outcome, false);
+                self.request_selection_copy(outcome);
                 if dragged {
                     self.selection = None;
                 } else {

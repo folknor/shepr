@@ -206,7 +206,7 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
 #[test]
 fn unmanaged_ssh_setup_preserves_plain_transport() {
     let paths = test_app_paths();
-    let ssh = RemoteSsh::new_noninteractive_with(
+    let ssh = RemoteSsh::new(
         super::super::SshTarget::parse("example").expect("test precondition"),
         false,
         &paths,
@@ -310,9 +310,9 @@ fn exit_sweep_waits_for_owners_that_are_already_dropping() {
 }
 
 #[test]
-fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
+fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
     let paths = test_app_paths();
-    let ssh = RemoteSsh::new_noninteractive_with(
+    let ssh = RemoteSsh::new(
         super::super::SshTarget::parse("example").expect("test precondition"),
         false,
         &paths,
@@ -327,7 +327,7 @@ fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
     for required in [
         "-C",
         ssh_options::BATCH_MODE_YES,
-        crate::limits::SSH_NONINTERACTIVE_PASSWORD_PROMPTS_OPTION,
+        crate::limits::SSH_NO_PASSWORD_PROMPTS_OPTION,
         ssh_options::STRICT_HOST_KEY_CHECKING,
         crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
         crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
@@ -357,24 +357,24 @@ fn remote_ssh_commands_compress_without_managed_config() {
 }
 
 #[test]
-fn an_attempt_deadline_shortens_and_then_refuses_noninteractive_commands() {
+fn an_attempt_deadline_shortens_and_then_refuses_commands() {
     let mut ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
         None,
     );
     let now = Instant::now();
     assert_eq!(
-        ssh.noninteractive_timeout(now).expect("no deadline"),
-        NONINTERACTIVE_SSH_COMMAND_TIMEOUT
+        ssh.command_timeout(now).expect("no deadline"),
+        SSH_COMMAND_TIMEOUT
     );
 
     ssh.set_attempt_deadline(Some(now + Duration::from_secs(2)));
-    let timeout = ssh.noninteractive_timeout(now).expect("time is left");
+    let timeout = ssh.command_timeout(now).expect("time is left");
     assert_eq!(timeout, Duration::from_secs(2));
 
     ssh.set_attempt_deadline(Some(now));
     let error = ssh
-        .noninteractive_timeout(now)
+        .command_timeout(now)
         .expect_err("no command may start past the deadline");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     // Treated as a dropped link: no rediscovery, and a retry rather than attention.

@@ -23,6 +23,7 @@ mod remote_bridge_io;
 mod shutdown;
 pub mod ssh_agent;
 mod ssh_paths;
+mod stderr_null;
 mod terminal_environment;
 
 pub use child_io::{ChildExitReason, classify_child_exit, poll_fd_readable, read_fd};
@@ -48,6 +49,7 @@ pub use ssh_paths::{
     remote_ssh_config_paths, shared_ssh_control_path, ssh_control_path_under,
     validate_ssh_runtime_dir,
 };
+pub use stderr_null::redirect_stderr_to_null;
 pub use terminal_environment::prefers_osc52_clipboard;
 
 /// Whether a presence variable (`shepr_core::env::EnvKind::Presence`) is set,

@@ -144,7 +144,7 @@ pub(super) fn wait_with_output_timeout(
         if started.elapsed() >= timeout {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "noninteractive SSH command timed out",
+                "SSH command timed out",
             ));
         }
         thread::sleep(SSH_CHILD_PROCESS_POLL_INTERVAL);

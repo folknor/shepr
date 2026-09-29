@@ -152,10 +152,9 @@ pub(crate) const BRIDGE_WRITE_CHUNK_BYTES: usize = 4 * 1024;
 /// command shape; `Vec` still grows if a command needs more.
 pub(crate) const REMOTE_COMMAND_ARGS_INITIAL_CAPACITY: usize = 6;
 
-/// Noninteractive SSH command budget, shared with the core SSH request budget
-/// so retries and discovery use the same time limit.
-pub(crate) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration =
-    shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT;
+/// SSH command budget, shared with the core SSH request budget so retries and
+/// discovery use the same time limit.
+pub(crate) const SSH_COMMAND_TIMEOUT: Duration = shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT;
 
 /// How long the startup check of every configured machine may take in all: one
 /// cold SSH round trip plus slack for the remaining discovery commands. The
@@ -163,7 +162,7 @@ pub(crate) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration =
 /// machine. It mirrors the client's per-attempt connection budget, which sits
 /// in a higher crate.
 pub(crate) const PREFLIGHT_CHECK_BUDGET: Duration =
-    NONINTERACTIVE_SSH_COMMAND_TIMEOUT.saturating_add(Duration::from_secs(10));
+    SSH_COMMAND_TIMEOUT.saturating_add(Duration::from_secs(10));
 
 /// OpenSSH option limiting connection establishment. This
 /// leaves room for ordinary network setup while bounding unreachable hosts.
@@ -179,7 +178,7 @@ pub(crate) const SSH_CONTROL_PERSIST_OPTION: &str = "ControlPersist=600";
 
 /// OpenSSH option disabling password prompts in background SSH commands.
 /// They cannot be answered and would otherwise stall the bounded attempt.
-pub(crate) const SSH_NONINTERACTIVE_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPasswordPrompts=0";
+pub(crate) const SSH_NO_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPasswordPrompts=0";
 
 /// OpenSSH option permitting authentication prompts for the foreground
 /// command, enough for ordinary interactive authentication flows.

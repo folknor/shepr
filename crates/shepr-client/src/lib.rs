@@ -360,7 +360,7 @@ async fn run_client_loop(
     let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
         &config.paths,
         &machines,
-        shepr_remote::SavedSshSettings {
+        shepr_remote::MachineSshSettings {
             manage_ssh_config: config.settings.manage_ssh_config(),
         },
         launch_now,
@@ -862,7 +862,7 @@ impl ClientLoop {
             .as_ref()
             .is_some_and(|pending| pending.accepts_endpoint(endpoint_id, generation));
         let command_response = match message.as_ref() {
-            ServerMessage::ClientShellEndpointResponseChunk {
+            ServerMessage::ClientShellEndpointResponse {
                 boot_id,
                 request_id,
                 ..
@@ -971,33 +971,21 @@ impl ClientLoop {
                     state.present_chrome(frame, pending_activation.is_some());
                 }
             }
-            ServerMessage::ClientShellEndpointResponseChunk {
+            ServerMessage::ClientShellEndpointResponse {
                 boot_id,
                 request_id,
-                final_chunk,
-                data,
+                result,
             } => {
                 if pending_activation.as_ref().is_some_and(|pending| {
                     pending.accepts_response(endpoint_id, generation, &boot_id, &request_id)
                 }) {
-                    if !final_chunk {
-                        rollback_endpoint_activation(
-                            state,
-                            write_stream,
-                            pending_activation,
-                            "endpoint returned a chunked activation acknowledgement",
-                            false,
-                            now,
-                        );
-                        return Ok(ClientLoopAction::NextEvent);
-                    }
                     let progress = pending_activation.as_mut().map(|pending| {
                         pending.receive_response_for_boot_at(
                             endpoint_id,
                             generation,
                             &boot_id,
                             &request_id,
-                            &data,
+                            result,
                             write_stream,
                             now,
                         )
@@ -1036,13 +1024,12 @@ impl ClientLoop {
                 {
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                let completed = endpoint_commands.receive_chunk(
+                let completed = endpoint_commands.receive_response(
                     endpoint_id,
                     generation,
                     &boot_id,
                     &request_id,
-                    final_chunk,
-                    data,
+                    result,
                 );
                 let Some(completed) = completed else {
                     return Ok(ClientLoopAction::NextEvent);

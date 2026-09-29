@@ -4,113 +4,83 @@ use std::sync::mpsc;
 
 use tokio::sync::mpsc as tokio_mpsc;
 
-use shepr_api::schema::Method;
-use shepr_protocol::MAX_ENDPOINT_RESPONSE_CHUNK_BYTES;
+use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
+use shepr_protocol::command::{EndpointError, EndpointReply};
+use shepr_protocol::{BootId, RequestId, ServerMessage};
 
 use super::client_transport::ServerEvent;
 
-pub(crate) use crate::limits::{
-    MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_COMMAND_BYTES, MAX_ENDPOINT_REQUEST_ID_BYTES,
-};
+pub(crate) use crate::limits::{MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_REQUEST_ID_BYTES};
 
-pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
-    method.traits().client_shell
-}
-
-pub(crate) fn error_response(
-    id: &str,
-    code: impl Into<shepr_api::error::ApiErrorCode>,
-    message: impl Into<String>,
-) -> String {
-    shepr_api::error::encode_result(
-        id.to_owned(),
-        Err(shepr_api::error::ApiError::new(code.into(), message)),
-    )
-}
-
-pub(crate) fn success_message_with_result(
-    boot_id: shepr_protocol::BootId,
-    request_id: shepr_protocol::RequestId,
-    result: shepr_api::schema::ResponseResult,
-) -> shepr_protocol::ServerMessage {
-    let success = shepr_api::schema::SuccessResponse {
-        id: request_id.to_string(),
-        result,
+/// The one response to an endpoint command. The response crosses in a single
+/// frame, so a result too large for one (a selection of a huge scrollback) is
+/// answered with `endpoint_response_too_large`, naming its size, rather than
+/// failing to send and leaving the client to wait out its command timeout.
+pub(crate) fn response_message(
+    boot_id: BootId,
+    request_id: RequestId,
+    result: ApiResult,
+) -> ServerMessage {
+    let message = ServerMessage::ClientShellEndpointResponse {
+        boot_id: boot_id.clone(),
+        request_id: request_id.clone(),
+        result: result.map(EndpointReply::from).map_err(EndpointError::from),
     };
-    let response = shepr_api::serialize_response_or_error(&request_id, &success);
-    shepr_protocol::ServerMessage::ClientShellEndpointResponseChunk {
+    let size = match shepr_protocol::codec::encoded_len(&message) {
+        Ok(size) if shepr_protocol::frame_payload_fits(size) => return message,
+        Ok(size) => format!("{size} bytes"),
+        Err(error) => format!("unencodable: {error}"),
+    };
+    ServerMessage::ClientShellEndpointResponse {
         boot_id,
         request_id,
-        final_chunk: true,
-        data: response.into_bytes(),
+        result: Err(EndpointError::from(ApiError::new(
+            ApiErrorCode::EndpointResponseTooLarge,
+            format!(
+                "the response is too large to send ({size}; the limit is {} bytes)",
+                shepr_protocol::MAX_FRAME_SIZE
+            ),
+        ))),
     }
 }
 
 pub(crate) fn error_message(
-    boot_id: shepr_protocol::BootId,
-    request_id: shepr_protocol::RequestId,
-    code: impl Into<shepr_api::error::ApiErrorCode>,
+    boot_id: BootId,
+    request_id: RequestId,
+    code: ApiErrorCode,
     message: impl Into<String>,
-) -> shepr_protocol::ServerMessage {
-    let response = error_response(&request_id, code, message);
-    shepr_protocol::ServerMessage::ClientShellEndpointResponseChunk {
-        boot_id,
-        request_id,
-        final_chunk: true,
-        data: response.into_bytes(),
-    }
+) -> ServerMessage {
+    response_message(boot_id, request_id, Err(ApiError::new(code, message)))
 }
 
+/// Waits on its own thread for the API's answer to one endpoint command and
+/// hands it to the server loop, which sends it if the command is still the
+/// client's in-flight one.
 pub(crate) fn spawn_response_waiter(
     client_id: ClientId,
-    boot_id: shepr_protocol::BootId,
-    request_id: shepr_protocol::RequestId,
-    response_rx: mpsc::Receiver<shepr_api::error::ApiResult>,
+    boot_id: BootId,
+    request_id: RequestId,
+    response_rx: mpsc::Receiver<ApiResult>,
     server_event_tx: tokio_mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name("shepr-client-endpoint-response".into())
         .spawn(move || {
-            let response = response_rx.recv().unwrap_or_else(|_| {
-                Err(shepr_api::error::ApiError::new(
-                    shepr_api::error::ApiErrorCode::ServerUnavailable,
+            let result = response_rx.recv().unwrap_or_else(|_| {
+                Err(ApiError::new(
+                    ApiErrorCode::ServerUnavailable,
                     "endpoint command ended without a response",
                 ))
             });
-            let response =
-                shepr_api::error::encode_result(request_id.to_string(), response).into_bytes();
-            if response.is_empty() {
-                // As in the chunk loop below: a failed send means the server
-                // loop is gone, and the client with it.
-                server_event_tx
-                    .blocking_send(ServerEvent::ClientShellEndpointResponseChunkReady {
-                        client_id,
-                        boot_id,
-                        request_id,
-                        final_chunk: true,
-                        data: Vec::new(),
-                    })
-                    .ok();
-                return;
-            }
-            let chunk_count = response.len().div_ceil(MAX_ENDPOINT_RESPONSE_CHUNK_BYTES);
-            for (index, chunk) in response
-                .chunks(MAX_ENDPOINT_RESPONSE_CHUNK_BYTES)
-                .enumerate()
-            {
-                if server_event_tx
-                    .blocking_send(ServerEvent::ClientShellEndpointResponseChunkReady {
-                        client_id,
-                        boot_id: boot_id.clone(),
-                        request_id: request_id.clone(),
-                        final_chunk: index + 1 == chunk_count,
-                        data: chunk.to_vec(),
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
+            // A failed send means the server loop is gone, and the client with it.
+            server_event_tx
+                .blocking_send(ServerEvent::ClientShellEndpointResponseReady {
+                    client_id,
+                    boot_id,
+                    request_id,
+                    result: Box::new(result),
+                })
+                .ok();
         })
         .map(|_| ())
 }
@@ -120,38 +90,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_shell_lane_excludes_api_front_door_and_lifecycle_methods() {
-        assert!(supports_client_shell_method(
-            &Method::ClientShellSurfaceSet(shepr_api::schema::ClientShellSurfaceSetParams {
-                active: false,
-            })
-        ));
-        assert!(supports_client_shell_method(&Method::PaneClear(
-            shepr_api::schema::PaneTarget {
-                pane_id: "pane-1".into(),
-            },
-        )));
-        assert!(!supports_client_shell_method(&Method::Ping(
-            shepr_api::schema::PingParams::default(),
-        )));
-        assert!(!supports_client_shell_method(&Method::ServerStop(
-            shepr_api::schema::ServerStopParams::default(),
-        )));
-    }
-
-    #[test]
     fn endpoint_response_uses_the_client_request_id() {
-        let correlated = shepr_api::error::encode_result(
+        let message = response_message(
+            shepr_test_fixtures::fixed_boot_id(1),
             "client-shell:1".into(),
             Ok(shepr_api::schema::ResponseResult::Ok {}),
         );
-        let decoded: serde_json::Value = serde_json::from_str(&correlated).expect("response json");
-
-        assert_eq!(decoded["id"], "client-shell:1");
+        assert!(matches!(
+            message,
+            ServerMessage::ClientShellEndpointResponse {
+                request_id,
+                result: Ok(EndpointReply::Done),
+                ..
+            } if request_id == "client-shell:1"
+        ));
     }
 
     #[test]
-    fn endpoint_responses_are_chunked_without_truncation() {
+    fn a_response_too_large_for_one_frame_becomes_an_error() {
+        let message = response_message(
+            shepr_test_fixtures::fixed_boot_id(1),
+            "request-a".into(),
+            Ok(shepr_api::schema::ResponseResult::PaneSelection {
+                pane_id: "w1:p1".into(),
+                text: "x".repeat(shepr_protocol::MAX_FRAME_SIZE),
+            }),
+        );
+        let ServerMessage::ClientShellEndpointResponse {
+            request_id,
+            result: Err(error),
+            ..
+        } = &message
+        else {
+            panic!("expected an error response, got {message:?}");
+        };
+        assert_eq!(request_id, "request-a");
+        assert_eq!(error.code, "endpoint_response_too_large");
+        assert!(shepr_protocol::encode_frame(&message).is_ok());
+    }
+
+    #[test]
+    fn the_waiter_forwards_the_api_result_once() {
         let (response_tx, response_rx) = mpsc::channel();
         let (event_tx, mut event_rx) = tokio_mpsc::channel(8);
         spawn_response_waiter(
@@ -162,37 +141,23 @@ mod tests {
             event_tx,
         )
         .expect("test precondition");
-        let response = "x".repeat(MAX_ENDPOINT_RESPONSE_CHUNK_BYTES + 17);
         response_tx
-            .send(Err(shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::InternalError,
-                response.clone(),
-            )))
+            .send(Err(ApiError::new(ApiErrorCode::InternalError, "boom")))
             .expect("test precondition");
 
-        let mut received = Vec::new();
-        loop {
-            let ServerEvent::ClientShellEndpointResponseChunkReady {
-                client_id,
-                boot_id,
-                request_id,
-                final_chunk,
-                data,
-            } = event_rx.blocking_recv().expect("response chunk")
-            else {
-                panic!("expected response chunk");
-            };
-            assert_eq!(client_id, 7);
-            assert_eq!(boot_id, shepr_test_fixtures::fixed_boot_id(1));
-            assert_eq!(request_id, "request-a");
-            received.extend(data);
-            if final_chunk {
-                break;
-            }
-        }
-
-        let decoded: shepr_api::schema::ErrorResponse =
-            serde_json::from_slice(&received).expect("response json");
-        assert_eq!(decoded.error.message, response);
+        let ServerEvent::ClientShellEndpointResponseReady {
+            client_id,
+            boot_id,
+            request_id,
+            result,
+        } = event_rx.blocking_recv().expect("response event")
+        else {
+            panic!("expected an endpoint response event");
+        };
+        assert_eq!(client_id, 7);
+        assert_eq!(boot_id, shepr_test_fixtures::fixed_boot_id(1));
+        assert_eq!(request_id, "request-a");
+        assert!(matches!(*result, Err(error) if error.code == ApiErrorCode::InternalError));
+        assert!(event_rx.blocking_recv().is_none());
     }
 }

@@ -100,10 +100,6 @@ pub struct App {
     /// Parsed `ui.window_title`.
     window_title_template: Option<shepr_config::WindowTitleTemplate>,
     pub(crate) persist_pane_history: bool,
-    /// Pane history kept across saves (restored panes not yet running, the
-    /// last primary screen of panes on the alternate screen); every history
-    /// capture takes it.
-    pub(crate) pane_history_carry: shepr_mux::persist::HistoryCarry,
     /// Last render-loop attempt, including a throttled hidden-only PTY skip.
     pub(crate) last_render_at: Option<Instant>,
     /// Last attempt that could update a connected presentation surface.
@@ -157,19 +153,16 @@ impl App {
                 .pane_history
                 .then(|| shepr_mux::persist::load_history(&lease))
                 .flatten();
-            // No view exists yet, so restored panes start at the headless size
-            // (what the server lays out against until a client attaches); the
-            // first view computation resizes each to its split. The saved
-            // host theme supplies colours until a live client reports its own.
-            let (restore_rows, restore_cols) = settings
-                .pane_geometry_in(settings.headless_rect())
-                .sole_pane_size();
+            // No view exists yet, so each tab is laid out in the headless
+            // area (what the server lays out against until a client
+            // attaches), and each restored pane starts at its own size in
+            // it. The saved host theme supplies colours until a live client
+            // reports its own.
             let api_socket_path = shepr_api::socket_path(&paths);
             let restored = shepr_mux::persist::restore(
                 &snap,
                 history.as_ref(),
-                restore_rows,
-                restore_cols,
+                settings.pane_geometry_in(settings.headless_rect()),
                 settings.pane_scrollback_limit_bytes,
                 shepr_mux::pane::PaneShellConfig::new(
                     &settings.default_shell,
@@ -215,9 +208,13 @@ impl App {
         } else {
             (Vec::new(), None, 0)
         };
-        let session_writer = Arc::new(std::sync::Mutex::new(
-            shepr_mux::persist::SessionWriter::new(lease, protect_unloaded),
-        ));
+        // From here on the persister is the one owner of the data directory:
+        // it holds the lease, the writer and the carried pane history.
+        let persister = shepr_mux::persist::SessionPersister::spawn(
+            lease,
+            protect_unloaded,
+            pane_history_carry,
+        );
 
         info!(
             pane_scrollback_limit_bytes = settings.pane_scrollback_limit_bytes,
@@ -289,12 +286,11 @@ impl App {
                 config.session().startup_per_agent_delay_ms.into(),
             ),
             next_agent_resume_at: None,
-            session_saver: session::SessionSaver::new(session_writer),
+            session_saver: session::SessionSaver::new(persister),
             tab_bar_status: tab_bar_status::TabBarStatus::default(),
             hostname,
             window_title_template: None,
             persist_pane_history: config.experimental().pane_history,
-            pane_history_carry,
             last_render_at: None,
             last_presentation_at: None,
             api_rx,
@@ -977,7 +973,7 @@ mod tests {
             serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
-        assert!(response["result"]["pane"].get("label").is_none());
+        assert!(response["result"]["pane"]["label"].is_null());
         assert!(
             app.state
                 .terminals
@@ -1256,7 +1252,7 @@ mod tests {
 
         app.start_background_session_save();
 
-        assert!(app.session_saver.session_save_thread.is_some());
+        assert!(app.session_saver.save_in_flight());
         assert!(app.session_saver.session_save_deadline.is_none());
         app.save_session_now();
         assert!(
@@ -1301,19 +1297,15 @@ mod tests {
     fn background_session_save_reschedules_when_writer_is_busy() {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
-            release_rx.recv().expect("test releases the save thread");
-            Ok(())
-        }));
+        let release = app.session_saver.hold_test_save_in_flight();
         app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
 
         app.start_background_session_save();
 
-        assert!(app.session_saver.session_save_thread.is_some());
+        assert!(app.session_saver.save_in_flight());
         assert!(app.session_saver.session_save_deadline.is_some());
 
-        release_tx.send(()).expect("test precondition");
+        release.complete(Ok(()));
         app.policy = AppPolicy::Test;
         app.save_session_now();
     }
@@ -1322,24 +1314,22 @@ mod tests {
     fn final_session_save_joins_background_writer_before_returning() {
         let mut app = test_app();
         app.policy = AppPolicy::Test;
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release = app.session_saver.hold_test_save_in_flight();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
-            release_rx.recv().expect("test releases the save thread");
-            done_tx.send(()).expect("test precondition");
-            Ok(())
-        }));
         let releaser = std::thread::spawn(move || {
-            // Keep the writer blocked while the final-save call reaches its join.
+            // Keep the save in flight while the final-save call reaches its wait.
             std::thread::sleep(Duration::from_millis(30));
-            release_tx.send(()).expect("test precondition");
+            done_tx.send(()).expect("test precondition");
+            release.complete(Ok(()));
         });
 
         app.save_session_now();
 
+        done_rx
+            .try_recv()
+            .expect("the final save returned only after the save in flight finished");
         releaser.join().expect("test precondition");
-        done_rx.try_recv().expect("test precondition");
-        assert!(app.session_saver.session_save_thread.is_none());
+        assert!(!app.session_saver.save_in_flight());
     }
 
     #[tokio::test]
@@ -1406,13 +1396,11 @@ mod tests {
         // The loop starts the autosave once its debounce has elapsed.
         app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
         app.start_background_session_save();
-        assert!(app.session_saver.session_save_thread.is_some());
-        if let Some(thread) = app.session_saver.session_save_thread.take() {
-            thread
-                .join()
-                .expect("test precondition")
-                .expect("session save succeeds");
-        }
+        assert!(app.session_saver.save_in_flight());
+        app.session_saver
+            .take_in_flight_result()
+            .expect("a save is in flight")
+            .expect("session save succeeds");
         app.save_session_before_teardown();
         app.retire_session_writer();
 

@@ -29,25 +29,16 @@ none blocks anything.
   `XDG_*`) from the server process, which a client- or SSH-spawned server may
   not share with the user's interactive shells; an agent with a non-default
   config directory then reads as absent.
-- **Hook asset leftovers.** `shepr-agent-state.test.ts` still tests a Windows
-  named-pipe path no asset handles; kilo and opencode agent-state use
-  `socket.setTimeout(500)`, an idle timeout that does not bound a connect that
-  never completes.
 - **Flatten workspaces and tabs.** The owner considers the two grouping levels
   one too many. Touches the data model, persistence, sidebar and tab bar.
-- **Saved-machine names.** The `Saved*` types (`SavedSshCheck`,
-  `SavedSshSettings`, `SavedSshConnector`, `SavedSshPreflight`,
-  `saved_ssh_error_hint`, the `saved.rs` module) and "saved machine" wording in
-  shepr-config (`model.rs`, the user-visible `default.toml` comment),
-  shepr-remote (`discovery*.rs`, `ssh.rs`, the host-key hint in `lib.rs`),
-  `shepr-platform/src/ssh_paths.rs` and `shepr-api/src/schema/server.rs` should
-  say configured machine. `RemoteSsh` is always non-interactive now, so
-  `new_noninteractive_with` can become `new` and the "noninteractive" naming in
-  `limits.rs` and `noninteractive_timeout` can go.
-- **Boot stderr after boot.** The launcher bounds `server-boot.log` only while
-  it waits for readiness; the daemon keeps the file as its stderr for life, so a
-  later panic or stray write grows it without limit. Point the daemon's stderr
-  at `/dev/null` once tracing is up.
+- **Startup authentication needs the managed SSH config.**
+  `ssh_authentication_command` refuses unless `remote.manage_ssh_config` is
+  true, so with it off a machine that needs a password or passphrase can never
+  be authenticated at startup. Either make authentication work on the user's
+  own ssh config or drop the setting.
+- **Hand-kept preflight budget.** shepr-remote's `PREFLIGHT_CHECK_BUDGET`
+  mirrors the client's per-attempt connection budget by hand; give it one
+  owner at a layer both reach.
 - **Metadata cache and remote discovery versus build profiles.** The cache sits
   in the shared client state directory, so dev and release clients overwrite
   each other's hint for a target; remote discovery only finds an installed
@@ -58,11 +49,6 @@ none blocks anything.
   another way (a signal) can still drop its sockets before its lease, and a
   launch right then meets the new daemon's already-running refusal instead of
   waiting.
-- **Copy-on-exit staleness.** When copy mode copies a search match on exit it
-  sends the pane's latest surface `content_revision` to `pane.selection.read`,
-  which checks against the last surface seen, not the one the match was found
-  on, so under streaming output the copy can fail with no notice. With
-  absolute rows the check may be unnecessary there.
 - **Re-prompting for SSH authentication.** A machine that still needs
   authentication after a failed or skipped startup prompt is not prompted again
   until the next launch, and there is no TUI action to suspend the screen and
@@ -94,23 +80,25 @@ Presentation ownership is spread across `ClientLoop` in `crates/shepr-client/src
 
 Surfaces, the snapshot and the shell handshake are typed `ServerMessage`/`ClientMessage` variants now (`SurfaceUpdate`, `EndpointSnapshot`, `EndpointHello`/`EndpointWelcome`). What remains:
 
-- Endpoint operations are still JSON inside the positional codec: `ClientMessage::ClientShellEndpointRequest` carries a serialized JSON-RPC request as a `String`, and `ServerMessage::ClientShellEndpointResponseChunk` carries JSON response bytes (`crates/shepr-protocol/src/input.rs`, `message.rs`). Typed request and response variants would drop the JSON pass on both ends.
 - Composition round-trips the frame through a ratatui buffer for every overlay it draws (`crates/shepr-client/src/shell/presentation/composition.rs`): `FrameData::to_ratatui_buffer` and `replace_from_ratatui_buffer_preserving_effects` (`crates/shepr-protocol/src/ratatui_conversion.rs`) rebuild every cell's `String` plus two hyperlink `HashMap`s each time.
 
 ## Split large surfaces across frames
 
 - Surface geometry is bounded to what one frame can carry (`MAX_SURFACE_CELLS = MAX_FRAME_SIZE / SURFACE_BYTES_PER_CELL`, `MAX_SURFACE_DIMENSION`, `MAX_CELL_SIZE_PX` in `crates/shepr-protocol/src/limits.rs`). Cells with long graphemes or many hyperlinks can still exceed the 16-byte budget (reported once to clients). Splitting a full surface across frames, and chunking OSC 52 clipboard data, would remove the limit.
+- An endpoint response crosses in one frame too (`ServerMessage::ClientShellEndpointResponse`): a result larger than `MAX_FRAME_SIZE` is answered with `endpoint_response_too_large` (`crates/shepr-server/src/server/client_commands.rs`). In practice only a selection copy gets that big, so copying more than about 2 MiB of scrollback fails with that error. Streaming the selection text in parts would lift it.
 
 ## Per-client presentation state on the server
 
 - The event loop mixes per-client presentation state (the client registry's `foreground_client_id`, `effective_size`, global `app.state.active`, `app.state.outer_terminal_focus`, `app.pixel_mouse_available`) with session state. Make each client's view the only source of presentation truth and drop the global "foreground client" projection into `AppState`.
 
-## Event-driven API connection loop
+## Event-driven SSH agent registration on the bridge side
 
-- The API server is thread-per-connection with 100 ms polling (`CONNECTION_POLL_INTERVAL`). Streams carry the hub sequence (`SubscriptionStream`, `crates/shepr-api/src/subscriptions.rs`), but sampled subscriptions (scroll, agent-status fallback) still poll the app 10 times a second. One event-driven loop and a complete, sequenced model diff from the event hub would remove the polling.
+- The API server's end of `server.ssh_agent.register` blocks in `shepr_platform::ipc::wait_local_stream_hangup` and wakes on hang-up, API shutdown or the lease refresh interval. The bridge's end (`Registration` in `crates/shepr-remote/src/remote/ssh_agent.rs`) still polls its registration stream with `park_timeout(SSH_AGENT_STREAM_POLL_INTERVAL)` and reads the registration response in a 10 ms sleep loop. It could hold a `ShutdownTrigger` in place of its stop flag and wait on the stream with the same primitive.
 
-## One owner for persistence, with history formatted off the loop
+## Persistence leftovers
 
-- Capture, writing, the history pairing and the resume schedule sit in separate places with no single owner. The data directory is locked (`crates/shepr-mux/src/persist/lock.rs`). One persistence actor could own the lock, take cheap snapshots on the loop, format history off it, and write layout plus history as one bundle. It would also own the carried history (`HistoryCarry`, `crates/shepr-mux/src/persist/snapshot.rs`, `App.pane_history_carry`).
-- `live_history_read` (`crates/shepr-mux/src/persist/snapshot.rs`) still formats each pane's whole scrollback eagerly on the loop, because a `PaneRuntime` can't leave the loop and there is no `Send` handle to the terminal core. With absolute rows (`Terminal::history_origin()`), a `Send` reader could remember the last absolute row it saved and resume from the later of that and the current origin (full re-read if the origin passed it), re-reading the screen rows each time, in bounded chunks under short lock holds.
-- `persist::restore` takes one size for every pane in the session; restored panes start at that size, not their own layout size, until the first resize.
+- The agent resume schedule (`crates/shepr-server/src/app/agent_resume.rs`) still lives on `App`, apart from the session persister (`crates/shepr-mux/src/persist/actor.rs`). It spawns runtimes and needs the view's geometry, so it stays on the loop; what could move is the decision of which restored panes wait for a resume.
+- The loop still polls the persister for a finished save every `SESSION_SAVE_CHECK_INTERVAL`. The persister could wake the loop instead (a channel the headless `select!` waits on).
+- A pane's history is held up to three times: the reader's formatted chunks, the carried `Live` copy (the alternate-screen fallback) and the snapshot being written. The carried copy could be rebuilt from the chunks plus the last screen read instead.
+- A single logical line longer than a chunk (a huge soft-wrapped line) is still formatted under one lock hold: chunks only end on logical line ends.
+- Pending agent resumes of visible panes take the view's `inner_rect`, which the view computes without the scrollbar gutter for a pane that has no runtime yet, so such a resume starts one column wider than its first resize.

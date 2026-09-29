@@ -418,23 +418,13 @@ fn derived_pending_agent_resume_pane_infos(
         .into_iter()
         .map(|mut info| {
             let pane_inner = shepr_mux::workspace::pane_inner_rect(info.rect, info.borders);
-            info.inner_rect = stable_terminal_inner_rect(pane_inner);
+            // The resume starts in a fresh shell, on the primary screen, so
+            // the content rect is the one the view gives a primary screen.
+            info.inner_rect =
+                shepr_mux::workspace::terminal_content_rect(pane_inner, pane_scrollbars, false);
             info
         })
         .collect()
-}
-
-fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
-    if pane_inner.width <= 4 {
-        return pane_inner;
-    }
-
-    Rect::new(
-        pane_inner.x,
-        pane_inner.y,
-        pane_inner.width.saturating_sub(1),
-        pane_inner.height,
-    )
 }
 
 #[cfg(test)]

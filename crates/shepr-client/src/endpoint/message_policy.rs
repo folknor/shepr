@@ -48,13 +48,12 @@ impl PresentationGate {
         }
 
         match message {
-            ServerMessage::PaneSurface(_)
-            | ServerMessage::ClientShellEndpointResponseChunk { .. }
+            ServerMessage::PaneSurface(_) | ServerMessage::ClientShellEndpointResponse { .. }
                 if self.activation_pending =>
             {
                 PresentationDecision::Buffer
             }
-            ServerMessage::ClientShellEndpointResponseChunk { .. } if self.command_response => {
+            ServerMessage::ClientShellEndpointResponse { .. } if self.command_response => {
                 PresentationDecision::Apply
             }
             ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_) if self.frozen => {
@@ -118,6 +117,14 @@ mod tests {
         }
     }
 
+    fn response(request_id: &str) -> ServerMessage {
+        ServerMessage::ClientShellEndpointResponse {
+            boot_id: crate::tests::test_boot_id("boot"),
+            request_id: request_id.into(),
+            result: Ok(shepr_protocol::command::EndpointReply::Done),
+        }
+    }
+
     fn patch() -> PaneSurfacePatch {
         PaneSurfacePatch {
             boot_id: crate::tests::test_boot_id("boot"),
@@ -157,14 +164,7 @@ mod tests {
             PresentationDecision::Buffer
         );
         assert_eq!(
-            gate(false, true, false, false).decide(
-                &ServerMessage::ClientShellEndpointResponseChunk {
-                    boot_id: crate::tests::test_boot_id("boot"),
-                    request_id: "surface".into(),
-                    final_chunk: true,
-                    data: Vec::new(),
-                }
-            ),
+            gate(false, true, false, false).decide(&response("surface")),
             PresentationDecision::Buffer
         );
     }
@@ -172,14 +172,7 @@ mod tests {
     #[test]
     fn tracked_command_responses_apply_outside_the_active_presentation() {
         assert_eq!(
-            gate(false, false, true, false).decide(
-                &ServerMessage::ClientShellEndpointResponseChunk {
-                    boot_id: crate::tests::test_boot_id("boot"),
-                    request_id: "command".into(),
-                    final_chunk: true,
-                    data: Vec::new(),
-                }
-            ),
+            gate(false, false, true, false).decide(&response("command")),
             PresentationDecision::Apply
         );
     }

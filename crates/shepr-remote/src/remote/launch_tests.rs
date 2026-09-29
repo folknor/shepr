@@ -61,7 +61,7 @@ fn bridge_command_is_one_quoted_word_for_bin_sh_that_frames_its_output() {
 
     // The script, run by a real /bin/sh, still frames its output with the marker.
     // host-program-ok: the generated remote script is the subject, run as sshd runs it
-    let output = shepr_test_support::command_in_scratch("/bin/sh", "saved-bridge-command-sh")
+    let output = shepr_test_support::command_in_scratch("/bin/sh", "machine-bridge-command-sh")
         .arg("-c")
         .arg(posix_remote_output_command("printf payload"))
         .output()

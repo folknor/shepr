@@ -108,16 +108,13 @@ pub enum ServerMessage {
     /// Whether the focused pane needs the shell host to report every key.
     ClientShellKeyboardReportAll { enabled: bool },
 
-    /// One ordered chunk of the final response to an endpoint operation.
-    ClientShellEndpointResponseChunk {
+    /// The one response to a `ClientShellEndpointRequest`. It crosses in a
+    /// single frame: a result too large for one is answered with an
+    /// `endpoint_response_too_large` error instead.
+    ClientShellEndpointResponse {
         boot_id: BootId,
         request_id: RequestId,
-        final_chunk: bool,
-        #[serde(
-            serialize_with = "codec::serialize_bounded_bytes::<MAX_ENDPOINT_RESPONSE_CHUNK_BYTES, _>",
-            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_ENDPOINT_RESPONSE_CHUNK_BYTES, _>"
-        )]
-        data: Vec<u8>,
+        result: Result<crate::command::EndpointReply, crate::command::EndpointError>,
     },
 
     /// Incremental cells and optional projection metadata against one full surface.

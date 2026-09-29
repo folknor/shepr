@@ -8,12 +8,7 @@ use crate::limits::{MAX_SESSION_ID_LEN, MAX_SESSION_PATH_LEN};
 
 use super::{Agent, AgentSource, ResumeArgs, SessionRefPolicy};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentSessionRefKind {
-    Id,
-    Path,
-}
+pub use shepr_core::agent_session::AgentSessionRefKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentSessionStartSource {

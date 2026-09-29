@@ -35,6 +35,9 @@ struct PaneRestoreStartup<'a> {
 }
 
 struct RestoreRuntimeContext<'a> {
+    /// The area each tab is laid out in, with the pane chrome that decides
+    /// every pane's size.
+    geometry: crate::workspace::PaneGeometry,
     scrollback_limit_bytes: usize,
     now: std::time::Instant,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
@@ -45,7 +48,6 @@ struct RestoreRuntimeContext<'a> {
     render_notify: Arc<Notify>,
     render_dirty: Arc<RenderSignal>,
     pane_teardowns: Arc<crate::pane::PaneTeardownTracker>,
-    history_carry: &'a HistoryCarry,
 }
 
 /// Everything a restore produces. Restore can drop saved workspaces (no tab
@@ -64,8 +66,9 @@ pub struct RestoredSession {
     /// The saved selected workspace as an index into `workspaces`, remapped
     /// the same way; 0 when nothing survived.
     pub selected: usize,
-    /// Saved history of the panes that came back without a runtime. Every
-    /// later history capture of this session must be given it.
+    /// Saved history of the panes that came back without a runtime. The
+    /// session's persister takes it; every later history capture of this
+    /// session is resolved against it.
     pub history_carry: HistoryCarry,
     /// Saved tabs restore dropped (invalid layout, or no pane survived). The
     /// first save of this session overwrites the file those tabs are still
@@ -100,7 +103,8 @@ type RestoredTab = (
     HashMap<TerminalId, PaneRuntime>,
     HashMap<PaneId, u32>,
 );
-/// Restore workspaces from a snapshot. Each pane gets a fresh shell in its saved cwd.
+/// Restore workspaces from a snapshot. Each pane gets a fresh shell in its
+/// saved cwd, started at its own size in its tab laid out by `geometry`.
 #[expect(
     clippy::too_many_arguments,
     reason = "restore threads geometry, launch policy and every handle a spawned pane reports through"
@@ -108,8 +112,7 @@ type RestoredTab = (
 pub fn restore(
     snapshot: &SessionSnapshot,
     history: Option<&SessionHistorySnapshot>,
-    rows: u16,
-    cols: u16,
+    geometry: crate::workspace::PaneGeometry,
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'_>,
     api_socket_path: &std::path::Path,
@@ -132,7 +135,7 @@ pub fn restore(
     let mut terminals = HashMap::new();
     let mut terminal_runtimes = HashMap::new();
     let mut resumed_agent_sessions = HashSet::new();
-    let history_carry = HistoryCarry::default();
+    let mut history_carry = HistoryCarry::default();
     let host_theme = snapshot.host_theme.to_theme();
     // Where each saved workspace ended up, `None` for a dropped one.
     let mut restored_index = Vec::with_capacity(snapshot.workspaces.len());
@@ -153,6 +156,7 @@ pub fn restore(
     for ((idx, ws_snap), saved_id) in snapshot.workspaces.iter().enumerate().zip(saved_ids) {
         let workspace_id = restored_workspace_id(saved_id, &mut used_ids);
         let runtime_context = RestoreRuntimeContext {
+            geometry,
             scrollback_limit_bytes,
             now,
             host_theme,
@@ -163,15 +167,13 @@ pub fn restore(
             render_notify: Arc::clone(render_notify),
             render_dirty: Arc::clone(render_dirty),
             pane_teardowns: Arc::clone(pane_teardowns),
-            history_carry: &history_carry,
         };
         let restored = restore_workspace(
             ws_snap,
             workspace_id,
             history.and_then(|history| history.workspaces.get(idx)),
-            rows,
-            cols,
             &runtime_context,
+            &mut history_carry,
             &mut resumed_agent_sessions,
             &mut dropped_tabs,
         );
@@ -289,9 +291,8 @@ fn restore_workspace(
     snap: &WorkspaceSnapshot,
     workspace_id: WorkspaceId,
     history: Option<&WorkspaceHistorySnapshot>,
-    rows: u16,
-    cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
+    history_carry: &mut HistoryCarry,
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
     dropped_tabs: &mut usize,
 ) -> Option<RestoredWorkspace> {
@@ -330,9 +331,8 @@ fn restore_workspace(
             tab_snap,
             history.and_then(|history| history.tabs.get(idx)),
             tab_number,
-            rows,
-            cols,
             runtime_context,
+            history_carry,
             resumed_agent_sessions,
             &public_pane_ids_by_old_raw,
         );
@@ -442,13 +442,30 @@ fn restored_terminal(
     terminal
 }
 
+/// The `(rows, cols)` a restored pane's shell starts at: its own rect in the
+/// tab's layout, which is what the first view computation gives it. A child
+/// reads its window size at startup, so any other size would reach it first
+/// and be corrected only by the first resize. A pane hidden behind a zoomed
+/// one gets its tiled size, which it has again once the tab is unzoomed.
+fn restored_pane_size(
+    geometry: &crate::workspace::PaneGeometry,
+    layout: &TileLayout,
+    zoomed: bool,
+    pane: PaneId,
+) -> (u16, u16) {
+    zoomed
+        .then(|| geometry.pane_size(layout, true, pane))
+        .flatten()
+        .or_else(|| geometry.pane_size(layout, false, pane))
+        .unwrap_or_else(|| geometry.sole_pane_size())
+}
+
 fn restore_tab(
     snap: &TabSnapshot,
     history: Option<&TabHistorySnapshot>,
     number: usize,
-    rows: u16,
-    cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
+    history_carry: &mut HistoryCarry,
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
     public_pane_ids_by_old_raw: &HashMap<u32, String>,
 ) -> Option<RestoredTab> {
@@ -473,24 +490,70 @@ fn restore_tab(
         .iter()
         .map(|(&old_id, &new_id)| (new_id, old_id))
         .collect();
+
+    // A layout leaf with no saved pane (a repeated ID, or an entry missing
+    // from `panes`) has nothing to restore. Inventing one would open a shell
+    // in the server's own working directory and then save that directory as
+    // if it had been the user's; the leaf is dropped and pruning collapses
+    // its split. That happens before any pane starts, so every shell starts
+    // at its size in the layout the tab ends up with.
+    let mut surviving = HashSet::new();
+    for id in collect_pane_ids(&node) {
+        let old_id = reverse_id_map.get(&id);
+        if old_id.is_some_and(|old_id| snap.panes.contains_key(old_id)) {
+            surviving.insert(id);
+        } else {
+            warn!(
+                tab = ?snap.custom_name,
+                pane_id = ?old_id,
+                "saved layout names a pane with no saved state; dropping it"
+            );
+        }
+    }
+    let Some(node) = prune_restored_node(node, &surviving) else {
+        warn!(
+            tab = ?snap.custom_name,
+            "no panes could be restored for tab, dropping it"
+        );
+        return None;
+    };
     let pane_ids = collect_pane_ids(&node);
+    let saved_focus_survived = snap
+        .focused
+        .and_then(|old_id| id_map.get(&old_id))
+        .is_some_and(|pane_id| surviving.contains(pane_id));
+    // A stale saved focus falls back to the first surviving leaf before the
+    // checked layout constructor is called.
+    let focus = resolve_restored_pane(snap.focused, &id_map, &surviving, &pane_ids)?;
+    let root_pane = resolve_restored_pane(snap.root_pane, &id_map, &surviving, &pane_ids)?;
+    // Every leaf got a fresh `PaneId::alloc` in `restore_node_remapped` and
+    // focus was just resolved to a surviving leaf, so the saved-file defects
+    // `from_saved` checks for cannot reach it; a rejection here means an
+    // internal invariant broke. The tab is dropped like the other unusable
+    // tabs above, loudly, rather than guessed back into shape.
+    let layout = match TileLayout::from_saved(node, focus) {
+        Ok(layout) => layout,
+        Err(error) => {
+            error!(
+                tab = ?snap.custom_name,
+                ?error,
+                "restored tab failed layout validation after remapping; dropping it"
+            );
+            return None;
+        }
+    };
+    // Pruning can leave a single pane, which is never zoomed, or drop the
+    // zoomed (focused) pane, and zooming whichever pane focus fell back to
+    // would show one the user never zoomed.
+    let zoomed = snap.zoomed && pane_ids.len() > 1 && saved_focus_survived;
 
     let mut panes = HashMap::new();
     let mut terminals = Vec::new();
     let mut terminal_runtimes = HashMap::new();
     for id in &pane_ids {
         let old_id = reverse_id_map.get(id);
-        // A layout leaf with no saved pane (a repeated ID, or an entry missing
-        // from `panes`) has nothing to restore. Inventing one would open a
-        // shell in the server's own working directory and then save that
-        // directory as if it had been the user's; drop the leaf and let the
-        // pruning below collapse its split.
         let Some(saved_pane) = old_id.and_then(|old_id| snap.panes.get(old_id)) else {
-            warn!(
-                tab = ?snap.custom_name,
-                pane_id = ?old_id,
-                "saved layout names a pane with no saved state; dropping it"
-            );
+            // Pruned above: every remaining leaf has a saved pane.
             continue;
         };
         let saved_history =
@@ -525,9 +588,7 @@ fn restore_tab(
                 RestoredPaneStart::Unavailable(reason),
                 runtime_context.now,
             );
-            runtime_context
-                .history_carry
-                .carry_restored(&terminal.id, saved_history);
+            history_carry.carry_restored(&terminal.id, saved_history);
             panes.insert(
                 *id,
                 crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
@@ -575,9 +636,7 @@ fn restore_tab(
             // and is spaced out per agent (`startup_per_agent_delay_ms`), so
             // later panes can wait a while, or it can fail outright (missing
             // cwd or shell), and neither may cost the pane its saved history.
-            runtime_context
-                .history_carry
-                .carry_restored(&terminal.id, saved_history);
+            history_carry.carry_restored(&terminal.id, saved_history);
             panes.insert(
                 *id,
                 crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
@@ -586,6 +645,7 @@ fn restore_tab(
             continue;
         }
 
+        let (rows, cols) = restored_pane_size(&runtime_context.geometry, &layout, zoomed, *id);
         let runtime_result = PaneRuntime::spawn_with_initial_history(
             *id,
             rows,
@@ -637,9 +697,7 @@ fn restore_tab(
                     RestoredPaneStart::Unavailable(RestoreFailure::shell_start_failed(&e)),
                     runtime_context.now,
                 );
-                runtime_context
-                    .history_carry
-                    .carry_restored(&terminal.id, saved_history);
+                history_carry.carry_restored(&terminal.id, saved_history);
                 panes.insert(
                     *id,
                     crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
@@ -649,53 +707,6 @@ fn restore_tab(
         }
     }
 
-    // A missing saved pane record is skipped before history is carried or a
-    // runtime is spawned. Every branch that performs either effect inserts
-    // its pane here, so this rejection never discards those side effects.
-    if panes.is_empty() {
-        warn!(
-            tab = ?snap.custom_name,
-            "no panes could be restored for tab, dropping it"
-        );
-        return None;
-    }
-
-    // Every inserted pane came from a leaf of `node`; if this set is nonempty,
-    // pruning can only collapse missing leaves and cannot reject the tab.
-    let surviving: HashSet<PaneId> = panes.keys().copied().collect();
-    let Some(node) = prune_restored_node(node, &surviving) else {
-        warn!(
-            tab = ?snap.custom_name,
-            "restored tab lost all panes after pruning missing layout nodes"
-        );
-        return None;
-    };
-    let pane_ids = collect_pane_ids(&node);
-    let saved_focus_survived = snap
-        .focused
-        .and_then(|old_id| id_map.get(&old_id))
-        .is_some_and(|pane_id| surviving.contains(pane_id));
-    // A stale saved focus falls back to the first surviving leaf before the
-    // checked layout constructor is called.
-    let focus = resolve_restored_pane(snap.focused, &id_map, &surviving, &pane_ids)?;
-    let root_pane = resolve_restored_pane(snap.root_pane, &id_map, &surviving, &pane_ids)?;
-    // Every leaf got a fresh `PaneId::alloc` in `restore_node_remapped` and
-    // focus was just resolved to a surviving leaf, so the saved-file defects
-    // `from_saved` checks for cannot reach it; a rejection here means an
-    // internal invariant broke. The tab is dropped like the other unusable
-    // tabs above, loudly, rather than guessed back into shape.
-    let layout = match TileLayout::from_saved(node, focus) {
-        Ok(layout) => layout,
-        Err(error) => {
-            error!(
-                tab = ?snap.custom_name,
-                ?error,
-                "restored tab failed layout validation after remapping; dropping it"
-            );
-            return None;
-        }
-    };
-
     Some((
         crate::workspace::Tab {
             custom_name: snap.custom_name.clone(),
@@ -703,10 +714,7 @@ fn restore_tab(
             root_pane,
             layout,
             panes,
-            // Pruning can leave a single pane, which is never zoomed, or drop
-            // the zoomed (focused) pane, and zooming whichever pane focus
-            // fell back to would show one the user never zoomed.
-            zoomed: snap.zoomed && pane_ids.len() > 1 && saved_focus_survived,
+            zoomed,
         },
         terminals,
         terminal_runtimes,
@@ -976,6 +984,18 @@ mod tests {
         shepr_test_support::fixture::idle_shell()
     }
 
+    /// Tabs laid out in `rows` by `cols` cells with no pane chrome, so a
+    /// tab's only pane is exactly that size.
+    fn test_geometry(rows: u16, cols: u16) -> crate::workspace::PaneGeometry {
+        crate::workspace::PaneGeometry {
+            area: ratatui::layout::Rect::new(0, 0, cols, rows),
+            pane_borders: shepr_config::PaneBordersConfig::Off,
+            pane_gaps: false,
+            pane_outer_borders: false,
+            pane_scrollbars: false,
+        }
+    }
+
     #[test]
     fn capture_and_restore_node_round_trip() {
         let node = Node::Split {
@@ -1072,8 +1092,7 @@ mod tests {
         } = restore(
             &snapshot,
             None,
-            5,
-            40,
+            test_geometry(5, 40),
             4096,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -1142,13 +1161,12 @@ mod tests {
                 workspaces,
                 terminals,
                 terminal_runtimes: runtimes,
-                history_carry,
+                mut history_carry,
                 ..
             } = restore(
                 &snapshot,
                 Some(&history),
-                5,
-                40,
+                test_geometry(5, 40),
                 4096,
                 crate::pane::PaneShellConfig::new(
                     if missing_shell {
@@ -1200,7 +1218,7 @@ mod tests {
                     &captured,
                     &workspaces,
                     &runtimes,
-                    &history_carry,
+                    &mut history_carry,
                 );
                 let pane_history = saved.workspaces[0].tabs[0]
                     .panes
@@ -1226,7 +1244,7 @@ mod tests {
                     &captured,
                     &workspaces,
                     &runtimes,
-                    &history_carry,
+                    &mut history_carry,
                 );
                 let live = &saved.workspaces[0].tabs[0].panes[&tab.root_pane.raw()];
                 assert!(live.ansi.contains("LIVE_SCREEN"));
@@ -1238,7 +1256,7 @@ mod tests {
                     &captured,
                     &workspaces,
                     &runtimes,
-                    &history_carry,
+                    &mut history_carry,
                 );
                 let kept = &saved.workspaces[0].tabs[0].panes[&tab.root_pane.raw()];
                 assert!(kept.ansi.contains("LIVE_SCREEN"));
@@ -1315,8 +1333,7 @@ mod tests {
         let restored = restore(
             snapshot,
             None,
-            5,
-            40,
+            test_geometry(5, 40),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -1831,8 +1848,7 @@ mod tests {
             } = restore(
                 &snapshot,
                 None,
-                24,
-                80,
+                test_geometry(24, 80),
                 0,
                 crate::pane::PaneShellConfig::new(
                     if missing_shell {
@@ -1952,8 +1968,7 @@ mod tests {
         } = restore(
             &snapshot,
             None,
-            24,
-            80,
+            test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -2039,8 +2054,7 @@ mod tests {
         } = restore(
             &snapshot,
             None,
-            24,
-            80,
+            test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -2247,8 +2261,7 @@ mod tests {
         } = restore(
             &snapshot,
             None,
-            24,
-            80,
+            test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -2320,8 +2333,7 @@ mod tests {
         } = restore(
             &snapshot,
             None,
-            24,
-            80,
+            test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -2351,6 +2363,89 @@ mod tests {
         );
     }
 
+    /// Each restored shell starts at its own size in its tab's layout, not
+    /// at one size shared by every pane; a pane hidden behind a zoomed one
+    /// starts at its tiled size.
+    #[tokio::test]
+    async fn restored_panes_start_at_their_own_layout_size() {
+        for zoomed in [false, true] {
+            let scratch = crate::test_support::ScratchDir::new("restore-pane-size");
+            let pane = || super::super::snapshot::PaneSnapshot {
+                cwd: scratch.to_path_buf(),
+                label: None,
+                agent_session: None,
+            };
+            let snapshot = SessionSnapshot {
+                version: super::super::snapshot::SNAPSHOT_VERSION,
+                host_theme: Default::default(),
+                workspaces: vec![workspace_snapshot(
+                    Some("w1"),
+                    "split",
+                    vec![TabSnapshot {
+                        custom_name: None,
+                        layout: LayoutSnapshot::Split {
+                            direction: DirectionSnapshot::Horizontal,
+                            ratio: 0.25,
+                            first: Box::new(LayoutSnapshot::Pane(0)),
+                            second: Box::new(LayoutSnapshot::Pane(1)),
+                        },
+                        panes: HashMap::from([(0, pane()), (1, pane())]),
+                        zoomed,
+                        focused: Some(1),
+                        root_pane: Some(0),
+                    }],
+                    0,
+                )],
+                active: Some(0),
+                selected: 0,
+            };
+            let (events, _rx) = mpsc::channel(8);
+            let RestoredSession {
+                workspaces,
+                terminal_runtimes: runtimes,
+                ..
+            } = restore(
+                &snapshot,
+                None,
+                test_geometry(24, 80),
+                0,
+                crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+                std::path::Path::new(TEST_API_SOCKET),
+                false,
+                &events,
+                &Arc::new(Notify::new()),
+                &Arc::new(RenderSignal::new()),
+                &Arc::default(),
+                test_restore_now(),
+            );
+            let tab = &workspaces[0].tabs()[0];
+            assert_eq!(tab.zoomed, zoomed);
+            let size = |pane_id| {
+                let terminal = tab.terminal_id(pane_id).expect("test precondition");
+                runtimes
+                    .get(terminal)
+                    .expect("restored runtime")
+                    .current_size()
+            };
+            let focused = tab.layout.focused();
+            let other = tab.root_pane;
+            assert_ne!(focused, other);
+            let (other_rows, other_cols) = size(other);
+            let (focused_rows, focused_cols) = size(focused);
+            assert_eq!((other_rows, focused_rows), (24, 24), "zoomed={zoomed}");
+            // The first pane has a quarter of the width in the tiled layout.
+            assert!(other_cols < 40, "zoomed={zoomed} cols={other_cols}");
+            if zoomed {
+                assert_eq!(focused_cols, 80);
+            } else {
+                assert_eq!(other_cols + focused_cols, 80);
+            }
+            for (_, runtime) in runtimes {
+                drop(runtime);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn restore_seeds_saved_pane_history_into_runtime() {
         let scratch = crate::test_support::ScratchDir::new("restore-seed-pane-history");
@@ -2367,8 +2462,7 @@ mod tests {
         } = restore(
             &snapshot,
             Some(&history),
-            5,
-            40,
+            test_geometry(5, 40),
             4096,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -2408,8 +2502,7 @@ mod tests {
         } = restore(
             &snapshot,
             None,
-            5,
-            40,
+            test_geometry(5, 40),
             4096,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
             std::path::Path::new(TEST_API_SOCKET),
@@ -2458,8 +2551,7 @@ mod tests {
             } = restore(
                 &snapshot,
                 Some(&history),
-                5,
-                80,
+                test_geometry(5, 80),
                 4096,
                 crate::pane::PaneShellConfig::new(test_restore_shell(), false),
                 std::path::Path::new(TEST_API_SOCKET),

@@ -144,11 +144,10 @@ impl PartialEq<BootId> for String {
 /// Correlates one client shell operation with its endpoint response.
 ///
 /// Unlike the other identities this one is minted from any text, on purpose.
-/// Its value is the `id` of a JSON API request, which the API client picks:
-/// the shell client writes `client-shell...` forms, but the server answers
-/// whatever id a request carried, so any string, empty included, is a
-/// legitimate request id and there is no canonical form to check. It is only
-/// ever compared for equality.
+/// The client shell picks it (it writes `client-shell...` forms), and the
+/// server answers whatever id a command carried, so any string, empty
+/// included, is a legitimate request id and there is no canonical form to
+/// check. It is only ever compared for equality.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct RequestId(String);

@@ -35,7 +35,7 @@ impl PendingEndpointActivation {
         endpoint_id: &ClientEndpointId,
         generation: u64,
         request_id: &str,
-        data: &[u8],
+        result: &Reply,
         endpoints: &mut EndpointRegistry,
     ) -> SurfaceActivationProgress {
         let lease = if self.source.endpoint_id == *endpoint_id {
@@ -52,7 +52,7 @@ impl PendingEndpointActivation {
             generation,
             &boot_id,
             request_id,
-            data,
+            result,
             endpoints,
         )
     }
@@ -63,7 +63,7 @@ impl PendingEndpointActivation {
         generation: u64,
         boot_id: &str,
         request_id: &str,
-        data: &[u8],
+        result: &Reply,
         endpoints: &mut EndpointRegistry,
     ) -> SurfaceActivationProgress {
         self.receive_response_for_boot_at(
@@ -71,7 +71,7 @@ impl PendingEndpointActivation {
             generation,
             boot_id,
             request_id,
-            data,
+            result.clone(),
             endpoints,
             // clock-io-ok: this test-only wrapper stands in for the client loop.
             Instant::now(),
@@ -239,57 +239,60 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
     (shell, endpoints, local_sent, remote_sent)
 }
 
-fn surface_success(id: &str, active: bool, projection_revision: u64) -> Vec<u8> {
-    serde_json::to_vec(&shepr_api::schema::SuccessResponse {
-        id: id.into(),
-        result: shepr_api::schema::ResponseResult::ClientShellSurfaceSet {
+type Reply = Result<shepr_protocol::command::EndpointReply, shepr_protocol::command::EndpointError>;
+
+// The reply helpers name the request they answer only for the reader: the id
+// travels in the response message, not in the reply.
+
+fn surface_success(_answers: &str, active: bool, projection_revision: u64) -> Reply {
+    Ok(
+        shepr_protocol::command::EndpointReply::ClientShellSurfaceSet {
             active,
             projection_revision,
         },
-    })
-    .expect("test precondition")
+    )
 }
 
-fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
-    serde_json::to_vec(&shepr_api::schema::SuccessResponse {
-        id: id.into(),
-        result: shepr_api::schema::ResponseResult::WorkspaceInfo {
-            workspace: shepr_api::schema::WorkspaceInfo {
-                workspace_id: shepr_test_fixtures::id(workspace_id),
-                number: 1,
-                label: workspace_id.into(),
-                focused: true,
-                pane_count: 1,
-                tab_count: 1,
-                active_tab_id: shepr_protocol::PublicTabId::new(
-                    &shepr_test_fixtures::id(workspace_id),
-                    1,
-                ),
-                agent_status: shepr_api::schema::AgentStatus::Idle,
-            },
+fn workspace_focus_success(_answers: &str, workspace_id: &str) -> Reply {
+    Ok(shepr_protocol::command::EndpointReply::WorkspaceInfo {
+        workspace: shepr_api::schema::WorkspaceInfo {
+            workspace_id: shepr_test_fixtures::id(workspace_id),
+            number: 1,
+            label: workspace_id.into(),
+            focused: true,
+            pane_count: 1,
+            tab_count: 1,
+            active_tab_id: shepr_protocol::PublicTabId::new(
+                &shepr_test_fixtures::id(workspace_id),
+                1,
+            ),
+            agent_status: shepr_api::schema::AgentStatus::Idle,
         },
     })
-    .expect("test precondition")
 }
 
-fn failure(id: &str, message: &str) -> Vec<u8> {
-    serde_json::to_vec(&shepr_api::schema::ErrorResponse {
-        id: id.into(),
-        error: shepr_api::schema::ErrorBody {
-            code: "surface_rejected".into(),
-            message: message.into(),
-        },
+fn failure(_answers: &str, message: &str) -> Reply {
+    Err(shepr_protocol::command::EndpointError {
+        code: "surface_rejected".into(),
+        message: message.into(),
     })
-    .expect("test precondition")
+}
+
+fn request_id_of(message: &shepr_protocol::ClientMessage) -> Option<String> {
+    match message {
+        shepr_protocol::ClientMessage::ClientShellEndpointRequest { request_id, .. } => {
+            Some(request_id.to_string())
+        }
+        _ => None,
+    }
 }
 
 fn surface_set_active(message: &shepr_protocol::ClientMessage) -> Option<bool> {
-    let shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } = message else {
-        return None;
-    };
-    let request: shepr_api::schema::Request = serde_json::from_str(request).ok()?;
-    match request.method {
-        shepr_api::schema::Method::ClientShellSurfaceSet(params) => Some(params.active),
+    match message {
+        shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+            command: shepr_protocol::command::EndpointCommand::ClientShellSurfaceSet(params),
+            ..
+        } => Some(params.active),
         _ => None,
     }
 }
@@ -661,18 +664,8 @@ fn same_target_retarget_is_latest_wins() {
         .lock()
         .expect("test precondition")
         .iter()
-        .find_map(|message| match message {
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
-                if surface_set_active(message).is_none() =>
-            {
-                Some(
-                    serde_json::from_str::<shepr_api::schema::Request>(request)
-                        .expect("test precondition")
-                        .id,
-                )
-            }
-            _ => None,
-        })
+        .filter(|message| surface_set_active(message).is_none())
+        .find_map(request_id_of)
         .expect("test precondition");
     let sent_before_retarget = remote_sent.lock().expect("test precondition").len();
     activation
@@ -707,14 +700,7 @@ fn same_target_retarget_is_latest_wins() {
         .lock()
         .expect("test precondition")
         .last()
-        .and_then(|message| match message {
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. } => Some(
-                serde_json::from_str::<shepr_api::schema::Request>(request)
-                    .expect("test precondition")
-                    .id,
-            ),
-            _ => None,
-        })
+        .and_then(request_id_of)
         .expect("test precondition");
     assert_ne!(latest_focus, old_focus);
     assert!(activation.accepts_response(
@@ -1089,12 +1075,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
             .expect("test precondition")
             .iter()
             .any(|message| {
-                matches!(
-                    message,
-                    shepr_protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
-                        if serde_json::from_str::<shepr_api::schema::Request>(request)
-                            .is_ok_and(|request| request.id == "client-shell-surface:21:on")
-                )
+                request_id_of(message).as_deref() == Some("client-shell-surface:21:on")
             })
     );
 }

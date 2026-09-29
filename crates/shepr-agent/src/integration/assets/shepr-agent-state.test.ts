@@ -1,12 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
-import net, { createServer, type Server } from "node:net";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const originalPlatform = process.platform;
 const originalArgv = process.argv;
-const originalCreateConnection = net.createConnection;
 const originalEnvironment = {
   SHEPR_ENV: process.env.SHEPR_ENV,
   SHEPR_OMP_IDLE_DEBOUNCE_MS: process.env.SHEPR_OMP_IDLE_DEBOUNCE_MS,
@@ -34,8 +32,6 @@ afterEach(async () => {
     socketPath = undefined;
   }
 
-  Object.defineProperty(process, "platform", { value: originalPlatform });
-  net.createConnection = originalCreateConnection;
   process.argv = originalArgv;
   for (const [name, value] of Object.entries(originalEnvironment)) {
     if (value === undefined) {
@@ -49,15 +45,6 @@ afterEach(async () => {
 const integrations = [
   { name: "Pi", modulePath: "./pi/shepr-agent-state.ts" },
   { name: "Oh My Pi", modulePath: "./omp/shepr-agent-state.ts" },
-] as const;
-
-const socketPlugins = [
-  {
-    name: "OpenCode",
-    modulePath: "./opencode/shepr-agent-state.js",
-    sessionID: "opencode-session",
-  },
-  { name: "Kilo", modulePath: "./kilo/shepr-agent-state.js", sessionID: "kilo-session" },
 ] as const;
 
 function importFresh(modulePath: string) {
@@ -95,15 +82,6 @@ function configureIntegrationEnvironment(recordingSocketPath: string) {
   process.env.SHEPR_PANE_ID = "test:p1";
 }
 
-function captureConnectionEndpoint() {
-  let connectedEndpoint: unknown;
-  net.createConnection = ((...args: unknown[]) => {
-    connectedEndpoint = args[0];
-    return Reflect.apply(originalCreateConnection, net, args);
-  }) as typeof net.createConnection;
-  return () => connectedEndpoint;
-}
-
 async function startRecordingServer(name: string): Promise<unknown[]> {
   const recordingSocketPath = join(tmpdir(), `shepr-${name}-${process.pid}.sock`);
   socketPath = recordingSocketPath;
@@ -126,31 +104,10 @@ async function startRecordingServer(name: string): Promise<unknown[]> {
   server = recordingServer;
   await new Promise<void>((resolve, reject) => {
     recordingServer.once("error", reject);
-    recordingServer.listen(originalPlatform === "win32" ? `\\\\.\\pipe\\${recordingSocketPath}` : recordingSocketPath, resolve);
+    recordingServer.listen(recordingSocketPath, resolve);
   });
   configureIntegrationEnvironment(recordingSocketPath);
   return requests;
-}
-
-for (const socketPlugin of socketPlugins) {
-  test(`${socketPlugin.name} maps the Windows socket marker path to a named pipe endpoint`, async () => {
-    const markerPath = `shepr-${socketPlugin.name.toLowerCase()}-${process.pid}.sock`;
-    configureIntegrationEnvironment(markerPath);
-    Object.defineProperty(process, "platform", { value: "win32" });
-    const connectedEndpoint = captureConnectionEndpoint();
-
-    process.argv = ["bun", "/$bunfs/root/src/index.js", "run"];
-    const { SheprAgentStatePlugin } = await importFresh(socketPlugin.modulePath);
-    const plugin = await SheprAgentStatePlugin();
-    await plugin.event({
-      event: {
-        type: "session.updated",
-        properties: { sessionID: socketPlugin.sessionID },
-      },
-    });
-
-    expect(connectedEndpoint()).toBe(`\\\\.\\pipe\\${markerPath}`);
-  });
 }
 
 test("OpenCode stays disabled without the Shepr socket environment", async () => {
@@ -164,31 +121,6 @@ test("OpenCode stays disabled without the Shepr socket environment", async () =>
 });
 
 for (const integration of integrations) {
-  test(`${integration.name} maps the Windows socket marker path to a named pipe endpoint`, async () => {
-    const markerPath = `shepr-${integration.name.toLowerCase().replaceAll(" ", "-")}-${process.pid}.sock`;
-    configureIntegrationEnvironment(markerPath);
-    Object.defineProperty(process, "platform", { value: "win32" });
-    const connectedEndpoint = captureConnectionEndpoint();
-    const { handlers, pi } = createExtensionHarness();
-
-    const { default: install } = await importFresh(integration.modulePath);
-    install(pi);
-    await handlers.get("session_start")?.(
-      { reason: "startup" },
-      {
-        hasUI: true,
-        mode: "tui",
-        isIdle: () => true,
-        sessionManager: {
-          getSessionFile: () => undefined,
-          getSessionId: () => "test-session",
-        },
-      },
-    );
-
-    expect(connectedEndpoint()).toBe(`\\\\.\\pipe\\${markerPath}`);
-  });
-
   test(`${integration.name} reload preserves working state when the agent is active`, async () => {
     const requests = await startRecordingServer(
       integration.name.toLowerCase().replaceAll(" ", "-"),
@@ -260,39 +192,6 @@ test("OMP ignores nested sessions launched inside another OMP shell", async () =
   await Bun.sleep(25);
 
   expect(requests).toEqual([]);
-});
-
-test("OMP accepts POSIX and Windows session paths", async () => {
-  const { isAbsoluteSessionPath } = await importFresh("./omp/shepr-agent-state.ts");
-
-  expect(isAbsoluteSessionPath("/tmp/omp-session.jsonl")).toBe(true);
-  expect(isAbsoluteSessionPath("C:\\Users\\User\\.omp\\agent\\sessions\\omp-session.jsonl")).toBe(
-    true,
-  );
-  expect(isAbsoluteSessionPath("C:/Users/User/.omp/agent/sessions/omp-session.jsonl")).toBe(true);
-  expect(isAbsoluteSessionPath("relative/omp-session.jsonl")).toBe(false);
-});
-
-test("Pi reports a Windows session path", async () => {
-  const requests = await startRecordingServer("pi-windows-session-path");
-  const { handlers, pi } = createExtensionHarness();
-  const { default: install } = await importFresh("./pi/shepr-agent-state.ts");
-  install(pi);
-
-  const sessionPath = "C:\\Users\\User\\.pi\\agent\\sessions\\pi-session.jsonl";
-  await handlers.get("session_start")?.(
-    { reason: "startup" },
-    {
-      ...piContext(() => true),
-      sessionManager: {
-        getSessionFile: () => sessionPath,
-        getSessionId: () => "pi-session",
-      },
-    },
-  );
-  await waitFor(() => requests.length === 2);
-
-  expect(requests.map(requestSessionPath)).toEqual([sessionPath, sessionPath]);
 });
 
 test("Pi reports idle only after the agent settles", async () => {
@@ -433,7 +332,7 @@ test("Pi waits for a replacement session report before publishing state", async 
   server = recordingServer;
   await new Promise<void>((resolve, reject) => {
     recordingServer.once("error", reject);
-    recordingServer.listen(originalPlatform === "win32" ? `\\\\.\\pipe\\${recordingSocketPath}` : recordingSocketPath, resolve);
+    recordingServer.listen(recordingSocketPath, resolve);
   });
 
   configureIntegrationEnvironment(recordingSocketPath);
@@ -512,7 +411,7 @@ async function startDroppedFirstResponseServer(name: string) {
   server = recordingServer;
   await new Promise<void>((resolve, reject) => {
     recordingServer.once("error", reject);
-    recordingServer.listen(originalPlatform === "win32" ? `\\\\.\\pipe\\${recordingSocketPath}` : recordingSocketPath, resolve);
+    recordingServer.listen(recordingSocketPath, resolve);
   });
 
   configureIntegrationEnvironment(recordingSocketPath);
@@ -670,13 +569,6 @@ function requestState(request: unknown): unknown {
     return undefined;
   }
   return request.params.state;
-}
-
-function requestSessionPath(request: unknown): unknown {
-  if (!isRecord(request) || !isRecord(request.params)) {
-    return undefined;
-  }
-  return request.params.agent_session_path;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

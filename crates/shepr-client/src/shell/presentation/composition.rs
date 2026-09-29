@@ -10,6 +10,14 @@ fn mode_bar_range(frame: &FrameData, bar: Rect) -> Option<std::ops::Range<usize>
     (end <= frame.cells.len()).then_some(start..end)
 }
 
+/// The composed buffer, converted from `frame` on first use.
+fn ensure_buffer<'a>(frame: &FrameData, slot: &'a mut Option<Buffer>) -> Option<&'a mut Buffer> {
+    if slot.is_none() {
+        *slot = Some(frame.to_ratatui_buffer()?);
+    }
+    slot.as_mut()
+}
+
 fn restore_mode_bar(
     frame: &mut FrameData,
     bar: Option<Rect>,
@@ -379,15 +387,17 @@ impl ClientShellState {
             .copy_mode
             .as_ref()
             .is_some_and(|copy_mode| !copy_mode.search_matches.is_empty());
+        // Every later stage draws into this one buffer, converted from the frame once and
+        // written back once, so the frame crosses ratatui at most one round trip.
+        let mut composed: Option<Buffer> = None;
         if has_selection || has_search {
-            let cursor = frame.cursor.clone();
-            let mut composed = frame.to_ratatui_buffer()?;
+            let composed = ensure_buffer(&frame, &mut composed)?;
             for hit in &self.hits.panes {
                 let copy_surface_coherent =
                     client_copy_surface_coherent(self.copy_mode.as_ref(), hit);
                 if copy_surface_coherent {
                     render_client_copy_search_highlights(
-                        &mut composed,
+                        composed,
                         self.copy_mode.as_ref(),
                         hit,
                         &self.config.palette,
@@ -405,7 +415,7 @@ impl ClientShellState {
                 if !selection_is_stale_copy_projection {
                     shepr_termio::selection_render::render_selection_highlight(
                         self.selection.as_ref(),
-                        &mut composed,
+                        composed,
                         &hit.pane_id,
                         hit.inner_rect,
                         hit.scroll,
@@ -418,7 +428,7 @@ impl ClientShellState {
                 }
                 if copy_surface_coherent {
                     render_client_copy_search_highlights(
-                        &mut composed,
+                        composed,
                         self.copy_mode.as_ref(),
                         hit,
                         &self.config.palette,
@@ -426,7 +436,6 @@ impl ClientShellState {
                     );
                 }
             }
-            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
         if self.mode == ClientShellMode::Copy {
             frame.cursor = None;
@@ -437,7 +446,7 @@ impl ClientShellState {
                 && x < frame.width
                 && y < frame.height
             {
-                let mut composed = frame.to_ratatui_buffer()?;
+                let composed = ensure_buffer(&frame, &mut composed)?;
                 if let Some(cell) = composed.cell_mut((x, y)) {
                     cell.set_style(
                         Style::default()
@@ -449,10 +458,8 @@ impl ClientShellState {
                             .add_modifier(Modifier::BOLD),
                     );
                 }
-                frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
             }
         }
-        restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         self.hits.notification_toast = Rect::default();
         let active_lifecycle = self
             .endpoints
@@ -461,11 +468,10 @@ impl ClientShellState {
             .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
             .map(|endpoint| (endpoint.label.clone(), endpoint.status));
         if active_lifecycle.is_some() || self.visible_endpoint_notice.is_some() {
-            let cursor = frame.cursor.clone();
-            let mut composed = frame.to_ratatui_buffer()?;
+            let composed = ensure_buffer(&frame, &mut composed)?;
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
                 endpoint_notices::render_lifecycle_banner(
-                    &mut composed,
+                    composed,
                     Rect::new(0, 0, cols, rows),
                     label,
                     *status,
@@ -475,31 +481,32 @@ impl ClientShellState {
             });
             if let Some(notice) = self.visible_endpoint_notice.as_ref() {
                 self.hits.notification_toast = endpoint_notices::render_notice(
-                    &mut composed,
+                    composed,
                     Rect::new(0, 0, cols, rows),
                     notice,
                     lifecycle_offset,
                     &self.config.palette,
                 );
             }
-            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
-        restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         if let Some(overlay) = self.overlay.as_ref() {
-            let mut composed = frame.to_ratatui_buffer()?;
+            let base = ensure_buffer(&frame, &mut composed)?;
+            // The overlay draws into a copy so a renderer that gives up part-way leaves
+            // `base` untouched for the fallback hint below.
+            let mut overlaid = base.clone();
             let rendered = match overlay {
                 ClientShellOverlay::ContextMenu(menu) => {
-                    render::render_context_menu(&mut composed, menu, &self.config.palette)
+                    render::render_context_menu(&mut overlaid, menu, &self.config.palette)
                 }
                 ClientShellOverlay::GlobalMenu(menu) => render::render_global_menu(
-                    &mut composed,
+                    &mut overlaid,
                     self.hits.global_launcher,
                     menu,
                     snapshot,
                     &self.config.palette,
                 ),
                 _ => render::render_client_overlay(
-                    &mut composed,
+                    &mut overlaid,
                     overlay,
                     snapshot,
                     &self.endpoints,
@@ -530,16 +537,17 @@ impl ClientShellState {
                 self.hits.help_scrollbar = rendered.help_scrollbar;
                 self.hits.help_scroll_metrics = rendered.help_scroll_metrics;
                 self.hits.help_max_scroll = rendered.help_max_scroll;
-                frame.replace_from_ratatui_buffer_preserving_effects(&composed, rendered.cursor);
+                *base = overlaid;
+                frame.cursor = rendered.cursor;
             } else {
                 // The overlay does not fit this terminal. Its renderer may have drawn part of
-                // itself into `composed` before giving up, so that buffer is dropped and the
+                // itself into `overlaid` before giving up, so that buffer is dropped and the
                 // frame without the overlay is presented: pane output keeps flowing and a
                 // one-line hint says why the overlay is missing. The overlay stays open (its
                 // keys still work, esc closes it) and reappears once the terminal is large
                 // enough. Overlay hit rects stay empty, so mouse input cannot hit an
                 // invisible popup.
-                let mut hint = frame.to_ratatui_buffer()?;
+                let hint = base;
                 let hint_row = rows.saturating_sub(1);
                 let hint_style = Style::default()
                     .fg(panel_contrast_fg(&self.config.palette))
@@ -547,16 +555,21 @@ impl ClientShellState {
                     .add_modifier(Modifier::BOLD);
                 hint.set_style(Rect::new(0, hint_row, cols, 1.min(rows)), hint_style);
                 render::put_text(
-                    &mut hint,
+                    hint,
                     0,
                     hint_row,
                     cols,
                     " window too small for this popup · esc closes",
                     hint_style,
                 );
-                frame.replace_from_ratatui_buffer_preserving_effects(&hint, None);
+                frame.cursor = None;
             }
         }
+        if let Some(composed) = composed {
+            let cursor = frame.cursor.take();
+            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+        }
+        restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
         }

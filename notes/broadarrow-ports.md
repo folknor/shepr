@@ -27,8 +27,8 @@ At a glance:
 | B4 `Path::exists`, `Path::is_file`, `Path::is_dir` seal | Adopted now | Done |
 | B5 `catch_unwind` seal | Adopted now | Done (owner expects, no shared helper) |
 | B6 child working-directory seal (clippy form) | Adopted now | Done |
-| B7 clock seam | Adopted incrementally | |
-| B8 per-crate `limits` modules | Adopted incrementally | |
+| B7 clock seam | Adopted incrementally | Done (per-crate `*-clock-is-injected` textlints) |
+| B8 per-crate `limits` modules | Adopted incrementally | Done (workspace-wide textlints) |
 | B9 `#[expect(.., reason)]` instead of `#[allow]` | Adopted now | Done |
 | B10 extra compiler lints and the rustdoc phase | Adopted, later round | Done |
 | B11 release-profile sweep in `brokkr check` | Rejected; release gets `overflow-checks = true` instead | |
@@ -952,6 +952,10 @@ broadarrow's `control-loop-reads-the-clock-seam` (the draft below is the
 `shepr-server/src/app/` instance). The remaining scopes are this item's work
 list; no findings document tracks them any more.
 
+**Done**: each crate that reads the clock carries its own clock-seam textlint
+in `brokkr.toml` (persist, app state, remote, the headless loop, platform,
+client, agent, terminal core, server transport, api).
+
 **Catches** wall-clock reads in state code. `AGENTS.md` says `AppState` is pure
 data, testable without PTYs or async; it reads `Instant::now()` directly in many
 places, so time-dependent behaviour (resume windows, git refresh cadence,
@@ -982,6 +986,10 @@ shape of `numeric-consts-live-in-limits` and
 `duration-and-capacity-literals-live-in-limits`, scoped to that crate, hold it.
 The remaining crates are this item's work list; no findings document tracks
 them any more.
+
+**Done**: every crate has a `limits` module, and the two textlints below run
+over `crates/*/src/**` and `src/**`, excluding the `limits.rs` files, with a
+`limits-exempt: <reason>` marker for format and protocol constants.
 
 Broadarrow's `numeric-consts-live-in-limits` and
 `duration-and-capacity-literals-live-in-limits` force every numeric or `Duration`

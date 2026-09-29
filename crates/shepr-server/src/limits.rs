@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// Delay between checks while a session save worker is still running.
+/// Delay between checks while the session persister is still running a save.
 pub(crate) const SESSION_SAVE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Maximum retry delay for host-shutdown session checkpoints.
@@ -68,8 +68,6 @@ pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration:
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Bound expanded input events per batch to limit dispatch work.
 pub(crate) const MAX_INPUT_EVENT_BATCH: usize = 4096;
-/// Endpoint request bound is the protocol's shared payload bound.
-pub(crate) const MAX_ENDPOINT_COMMAND_BYTES: usize = shepr_protocol::MAX_ENDPOINT_COMMAND_BYTES;
 /// Bound endpoint boot identifiers above the size of generated IDs.
 pub(crate) const MAX_ENDPOINT_BOOT_ID_BYTES: usize = 128;
 /// Bound endpoint request identifiers above the size of generated IDs.

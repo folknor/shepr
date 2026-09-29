@@ -872,9 +872,7 @@ impl ClientShellState {
                 .as_ref()
                 .is_some_and(shepr_vt::selection::Selection::is_visible)
         {
-            // A visible explicit selection is live. If the fallback above supplied
-            // a search match, retain the revision that established its boundaries.
-            self.request_selection_copy(outcome, live_selection);
+            self.request_selection_copy(outcome);
         }
         self.selection = None;
         self.selection_highlight_clear_deadline = None;

@@ -21,7 +21,7 @@ pub const BRIDGE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A connected client probes an endpoint after this much silence.
 /// The interval leaves room for routine SSH and server scheduling delays.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-/// One cold SSH round trip, including a noninteractive command or status probe.
+/// One cold SSH round trip, including a remote command or status probe.
 /// This bounds a slow startup without letting a hung host block the caller.
 pub const SSH_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(15);
 

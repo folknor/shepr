@@ -27,6 +27,7 @@ impl PaneTerminal {
                 dirty_collection_hook: None,
                 terminal,
                 synchronized_output_epoch: 0,
+                history_epoch: 0,
                 render_state,
                 initial_default_foreground,
                 initial_default_background,
@@ -371,7 +372,11 @@ impl PaneTerminal {
         // Alacritty resizes and reflows the grid directly. Replaying history
         // through the parser here could split a sequence the child is still
         // writing and move its cursor behind its back.
+        let grid_before = (core.terminal.cols(), core.terminal.rows());
         core.terminal.resize(geometry);
+        if (core.terminal.cols(), core.terminal.rows()) != grid_before {
+            core.history_epoch = core.history_epoch.wrapping_add(1);
+        }
         let synchronized_output_after = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
@@ -793,17 +798,13 @@ impl PaneTerminal {
             .and_then(|mut core| terminal_extract_selection(&mut core, selection))
     }
 
-    /// Read primary-screen history for persistence. The inactive primary grid
-    /// is inaccessible while the alternate screen is active, so return None
-    /// rather than replacing saved history with a full-screen program frame.
+    /// Read primary-screen history with nothing cached, in bounded chunks.
+    /// The inactive primary grid is inaccessible while the alternate screen
+    /// is active, so return None rather than replacing saved history with a
+    /// full-screen program frame. Saves read through a
+    /// [`super::PaneHistorySource`] with a cache kept between them instead.
     pub(crate) fn primary_history_ansi(&self) -> Option<String> {
-        let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        if core.terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
-            return None;
-        }
-        terminal_recent_ansi_snapshot(&mut core, usize::MAX, true)
-            .ok()
-            .map(|snapshot| snapshot.text)
+        self.read_primary_history(&mut super::PaneHistoryCache::default())
     }
 
     pub(crate) fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {

@@ -153,19 +153,14 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn request_selection_copy(&mut self, outcome: &mut ClientShellInput, live: bool) {
+    /// Copies the current selection. The read is by absolute row against the
+    /// live terminal, with no content revision: output between the displayed
+    /// frame and this request must not reject the copy.
+    pub(super) fn request_selection_copy(&mut self, outcome: &mut ClientShellInput) {
         let Some(selection) = self.selection.as_ref() else {
             return;
         };
         let pane_id = selection.pane_id.clone();
-        let content_revision = self
-            .pane_surface
-            .as_ref()
-            .and_then(|surface| surface.panes.iter().find(|pane| pane.pane_id == pane_id))
-            .map(|pane| pane.content_revision)
-            // Read an explicit selection atomically from the live terminal. Output
-            // between the displayed frame and this request must not reject the copy.
-            .filter(|_| !live);
         let (anchor, cursor) = selection.ordered_cells();
         self.push_endpoint_method_with_kind(
             shepr_api::schema::Method::PaneSelectionRead(
@@ -179,7 +174,6 @@ impl ClientShellState {
                         row: cursor.0,
                         col: cursor.1,
                     },
-                    content_revision,
                 },
             ),
             PendingEndpointKind::SelectionCopy,
@@ -406,7 +400,7 @@ impl ClientShellState {
                 .code
                 .as_ref()
                 .map_or("invalid_response", |code| code.as_str());
-            if !matches!(code, "stale_content" | "stale_target") {
+            if code != "stale_target" {
                 let (kind, notice_code, title, body) = match code {
                     "endpoint_timeout" => (
                         ClientEndpointNoticeKind::Timeout,
@@ -459,7 +453,13 @@ impl ClientShellState {
                         )
                     }
                     Ok(shepr_api::schema::ResponseResult::PaneSelection { .. }) => {
-                        (false, Vec::new())
+                        let shown = self.push_endpoint_notice(
+                            ClientEndpointNoticeKind::Rejected,
+                            "selection_empty",
+                            "Nothing copied",
+                            "The selection contained no text.",
+                        );
+                        (shown, Vec::new())
                     }
                     Ok(_) => {
                         self.set_endpoint_error(

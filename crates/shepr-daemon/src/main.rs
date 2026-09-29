@@ -29,7 +29,8 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        [] | [CLIENT_SPAWNED_FLAG] => serve(),
+        [] => serve(false),
+        [CLIENT_SPAWNED_FLAG] => serve(true),
         [VERSION_FLAG] => {
             shepr_platform::begin_cli_output();
             println!("shepr-server {}", shepr_protocol::build_version());
@@ -48,7 +49,14 @@ fn usage_error(message: &str) -> ExitCode {
 /// Validates the config for the serving host and runs the server until it
 /// stops. The working directory a client handed over travels in
 /// `SHEPR_STARTUP_CWD`, which `resolve_for_server` reads.
-fn serve() -> ExitCode {
+///
+/// A client-spawned server has the client's boot log as its stderr. Once the
+/// server log is running (the ready callback), stderr goes to `/dev/null` so
+/// the boot log holds only pre-logging failures and cannot grow for the
+/// server's life; a panic from then on reaches the server log through the
+/// panic hook `run_server` installs. A foreground server keeps its stderr, and
+/// so does a client-spawned one whose log file could not be opened.
+fn serve(client_spawned: bool) -> ExitCode {
     let paths = match shepr_config::AppPaths::resolve_for_server() {
         Ok(paths) => paths,
         Err(errors) => return config_error(&errors),
@@ -60,7 +68,18 @@ fn serve() -> ExitCode {
             return config_error(&errors);
         }
     };
-    match run_server(&config, config.paths(), |ready| eprintln!("{ready}")) {
+    let on_ready = |ready: &shepr_server::server::headless::ServerReady| {
+        if !client_spawned {
+            eprintln!("{ready}");
+        } else if ready.log_file_unavailable.is_some() {
+            // Nowhere durable to report to: the boot log stays the stderr.
+            eprintln!("{ready}");
+        } else if let Err(error) = shepr_platform::redirect_stderr_to_null() {
+            // Stderr is still the boot log; one line there is bounded.
+            eprintln!("shepr-server: could not detach stderr from the boot log: {error}");
+        }
+    };
+    match run_server(&config, config.paths(), on_ready) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report_server_error(error),
     }

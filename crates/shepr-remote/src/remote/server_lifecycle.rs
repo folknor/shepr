@@ -14,7 +14,7 @@ pub(super) enum RemoteServerStatus {
 
 /// What the startup check learned about a machine that can be served.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SavedSshCheck {
+pub enum MachineSshCheck {
     /// A matching shepr pair is installed, and any server running there is this
     /// build. A stopped server counts: the bridge starts one on attach.
     Ready,
@@ -43,7 +43,7 @@ pub struct DifferentBuildServer {
 /// one from the discovered executable, whose build discovery already matched.
 ///
 /// A running server of another build that reported both a printable build and a
-/// boot identity is a [`SavedSshCheck::DifferentBuild`], which can be restarted.
+/// boot identity is a [`MachineSshCheck::DifferentBuild`], which can be restarted.
 /// One that did not (an unknown build, or one that predates the boot identity)
 /// cannot be stopped as a specific instance, so it is an error the operator has
 /// to act on.
@@ -51,25 +51,25 @@ pub(super) fn judge_remote_server(
     target: &str,
     executable: &RemoteExecutable,
     status: &RemoteServerStatus,
-) -> io::Result<SavedSshCheck> {
+) -> io::Result<MachineSshCheck> {
     let RemoteServerStatus::Running {
         version,
         build_id,
         boot_id,
     } = status
     else {
-        return Ok(SavedSshCheck::Ready);
+        return Ok(MachineSshCheck::Ready);
     };
     if build_id
         .as_deref()
         .is_some_and(shepr_protocol::is_this_build)
     {
-        return Ok(SavedSshCheck::Ready);
+        return Ok(MachineSshCheck::Ready);
     }
     let build = printable_remote_token(build_id.as_deref());
     let boot = printable_remote_token(boot_id.as_deref());
     if let (Some(build_id), Some(boot_id)) = (build, boot) {
-        return Ok(SavedSshCheck::DifferentBuild(DifferentBuildServer {
+        return Ok(MachineSshCheck::DifferentBuild(DifferentBuildServer {
             executable: executable.clone(),
             version: printable_remote_value(version.as_deref()),
             build_id,
@@ -191,7 +191,7 @@ mod tests {
         RemoteExecutable::parse("/home/u/.cargo/bin/shepr").expect("test precondition")
     }
 
-    fn judge(status: &RemoteServerStatus) -> io::Result<SavedSshCheck> {
+    fn judge(status: &RemoteServerStatus) -> io::Result<MachineSshCheck> {
         judge_remote_server("host", &executable(), status)
     }
 
@@ -213,11 +213,11 @@ mod tests {
         );
         assert_eq!(
             judge(&this_build).expect("same build"),
-            SavedSshCheck::Ready
+            MachineSshCheck::Ready
         );
         assert_eq!(
             judge(&RemoteServerStatus::NotRunning).expect("stopped"),
-            SavedSshCheck::Ready
+            MachineSshCheck::Ready
         );
     }
 
@@ -226,7 +226,7 @@ mod tests {
         let stale = running(Some("0.0.0-old".into()), Some(other_build()), Some("17-23"));
         assert_eq!(
             judge(&stale).expect("restartable"),
-            SavedSshCheck::DifferentBuild(DifferentBuildServer {
+            MachineSshCheck::DifferentBuild(DifferentBuildServer {
                 executable: executable(),
                 version: "0.0.0-old".into(),
                 build_id: other_build().into(),

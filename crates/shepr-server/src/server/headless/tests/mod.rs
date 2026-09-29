@@ -53,13 +53,16 @@ pub(crate) fn dispatch_lifecycle_messages(
                     focused,
                 }
             }
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
-                crate::server::client_transport::ServerEvent::ClientShellEndpointRequest {
-                    client_id,
-                    boot_id,
-                    request: Box::new(serde_json::from_str(&request).expect("test precondition")),
-                }
-            }
+            shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+                boot_id,
+                request_id,
+                command,
+            } => crate::server::client_transport::ServerEvent::ClientShellEndpointRequest {
+                client_id,
+                boot_id,
+                request_id,
+                command: Box::new(command),
+            },
             other => panic!("unhandled lifecycle message: {other:?}"),
         };
         server.handle_server_event(event);
@@ -911,10 +914,12 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let _initial_snapshot = client_shell_snapshot(&control_rx);
     let boot_id = server.client_shell_boot_id.clone();
     let rename = || {
-        shepr_api::schema::Method::WorkspaceRename(shepr_api::schema::WorkspaceRenameParams {
-            workspace_id: server.app.state.workspaces[0].id.to_string(),
-            label: "renamed".into(),
-        })
+        Box::new(shepr_protocol::command::EndpointCommand::WorkspaceRename(
+            shepr_api::schema::WorkspaceRenameParams {
+                workspace_id: server.app.state.workspaces[0].id.to_string(),
+                label: "renamed".into(),
+            },
+        ))
     };
     let first_rename = rename();
     let busy_rename = rename();
@@ -924,10 +929,8 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request: Box::new(shepr_api::schema::Request {
-                id: "client-shell:1".into(),
-                method: first_rename,
-            }),
+            request_id: "client-shell:1".into(),
+            command: first_rename,
         })
     );
     assert!(
@@ -940,21 +943,18 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
         !server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request: Box::new(shepr_api::schema::Request {
-                id: "client-shell:busy".into(),
-                method: busy_rename,
-            }),
+            request_id: "client-shell:busy".into(),
+            command: busy_rename,
         })
     );
     assert!(server.clients.contains_key(&client_id));
-    let ServerMessage::ClientShellEndpointResponseChunk { data, .. } =
-        read_server_message(control_rx.recv().expect("busy endpoint response"))
+    let ServerMessage::ClientShellEndpointResponse {
+        result: Err(error), ..
+    } = read_server_message(control_rx.recv().expect("busy endpoint response"))
     else {
         panic!("expected busy endpoint response");
     };
-    let response = serde_json::from_slice::<shepr_api::schema::ErrorResponse>(&data)
-        .expect("typed busy response");
-    assert_eq!(response.error.code, "endpoint_busy");
+    assert_eq!(error.code, "endpoint_busy");
 
     let response_ready = server
         .server_event_rx
@@ -969,21 +969,16 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     );
 
     match read_server_message(control_rx.recv().expect("endpoint response")) {
-        ServerMessage::ClientShellEndpointResponseChunk {
+        ServerMessage::ClientShellEndpointResponse {
             boot_id: response_boot_id,
             request_id,
-            final_chunk,
-            data,
+            result,
         } => {
             assert_eq!(response_boot_id, boot_id);
             assert_eq!(request_id, "client-shell:1");
-            assert!(final_chunk);
-            let response = serde_json::from_slice::<shepr_api::schema::SuccessResponse>(&data)
-                .expect("success response");
-            assert_eq!(response.id, "client-shell:1");
             assert!(matches!(
-                response.result,
-                shepr_api::schema::ResponseResult::WorkspaceInfo { .. }
+                result,
+                Ok(shepr_protocol::command::EndpointReply::WorkspaceInfo { .. })
             ));
         }
         other => panic!("expected client shell endpoint response, got {other:?}"),
@@ -2220,12 +2215,12 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id: ClientId::test_new(8),
             boot_id: server.client_shell_boot_id.clone(),
-            request: Box::new(shepr_api::schema::Request {
-                id: "focus-second".into(),
-                method: shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
+            request_id: "focus-second".into(),
+            command: Box::new(shepr_protocol::command::EndpointCommand::TabFocus(
+                shepr_api::schema::TabTarget {
                     tab_id: second_tab_id.clone().to_string(),
-                }),
-            }),
+                },
+            )),
         })
     );
     let response_ready = server
@@ -2331,7 +2326,6 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
                         row: shepr_vt::AbsRow(0),
                         col: 0,
                     },
-                    content_revision: None,
                 }),
             },
             respond_to,
