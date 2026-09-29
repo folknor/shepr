@@ -325,8 +325,6 @@ fn subscription_event_envelope_round_trips() {
             workspace_id: shepr_test_fixtures::id("w1"),
             agent_status: AgentStatus::Blocked,
             agent: Some("pi".into()),
-            title: Some("approval".into()),
-            display_agent: None,
         }),
     };
 
@@ -628,12 +626,9 @@ fn create_response_round_trips_with_root_pane() {
                 restore_error: None,
                 label: None,
                 agent: None,
-                title: None,
                 terminal_title: None,
                 terminal_title_stripped: None,
-                display_agent: None,
                 agent_status: AgentStatus::Idle,
-                tokens: HashMap::new(),
                 agent_session: None,
                 scroll: None,
                 revision: 0,

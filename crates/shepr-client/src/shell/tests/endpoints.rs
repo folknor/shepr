@@ -24,14 +24,11 @@ fn agent(
         workspace_id: test_workspace_id("w1"),
         tab_id: test_tab_id("w1:t1"),
         name: Some(name.into()),
-        display_agent: None,
         agent: Some("pi".into()),
-        title: None,
         terminal_title: None,
         terminal_title_stripped: None,
         agent_status: status,
         state_change_seq,
-        tokens: Vec::new(),
         focused: true,
     }
 }

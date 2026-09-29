@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use crate::machine::{ProfileId, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, PROGRAM_NAME, RemoteCliCommand, RemoteSsh, SshStdioBridge,
-    resume_installed_remote_shepr_discovery,
+    DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
 };
 
 pub struct SavedSshBridge {
@@ -330,7 +329,6 @@ impl SavedSshConnector {
             path.clone(),
             session,
             ssh.options(),
-            true,
         )?;
         let stream = shepr_platform::ipc::connect_local_stream(&path)?;
         establish(SavedSshStream {
@@ -378,13 +376,8 @@ impl SavedSshApiBridge {
         // The managed SSH config remains necessary on a cache hit: its include and
         // ControlMaster options are still applied by the bridge's SSH subprocess.
         let path = saved_api_bridge_path(paths.xdg_runtime_dir(), profile_id)?;
-        let bridge = SshStdioBridge::start_command(
-            target.clone(),
-            command,
-            path.clone(),
-            ssh.options(),
-            true,
-        )?;
+        let bridge =
+            SshStdioBridge::start_command(target.clone(), command, path.clone(), ssh.options())?;
         Ok(Self {
             path,
             bridge,
@@ -423,18 +416,6 @@ impl SavedSshApiBridge {
     pub fn stale_metadata_failure(error: &io::Error) -> bool {
         super::SshFailureDiagnostic::from_error(error).is_stale_metadata()
     }
-}
-
-pub fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
-    // Always names the session, the default one included: the operator may run
-    // this from a pane of another session, whose `SHEPR_SESSION` would win.
-    let args = RemoteCliCommand::Attach {
-        target,
-        session: Some(session),
-        keybindings: None,
-    }
-    .args();
-    super::shell_command_line(super::shell_quote(PROGRAM_NAME), args)
 }
 
 // The profile only makes these names readable; it is not what keeps bridges
@@ -548,7 +529,6 @@ mod tests {
                     "true".into(),
                     path.clone(),
                     None,
-                    true,
                 )
                 .expect("every concurrent bridge binds its own socket")
             })
@@ -596,21 +576,6 @@ mod tests {
             )
             .expect_err("test precondition");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn bootstrap_command_preserves_the_explicit_remote_session() {
-        assert_eq!(
-            saved_ssh_bootstrap_command("build host", "agent work"),
-            "shepr --remote 'build host' --session 'agent work'"
-        );
-        assert_eq!(
-            saved_ssh_bootstrap_command("host", shepr_config::DEFAULT_SESSION_NAME),
-            format!(
-                "shepr --remote host --session {}",
-                shepr_config::DEFAULT_SESSION_NAME
-            )
-        );
     }
 
     #[test]

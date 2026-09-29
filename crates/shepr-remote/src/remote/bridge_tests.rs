@@ -1,7 +1,5 @@
 use super::*;
 use interprocess::local_socket::traits::Stream as _;
-use shepr_core::socket_path::fits_unix_socket_path;
-use std::fs;
 use std::time::Duration;
 
 fn upload_test_streams(
@@ -188,7 +186,6 @@ fn bridge_socket_is_user_only() {
         socket.clone(),
         "default",
         None,
-        false,
     )
     .expect("start bridge listener");
 
@@ -223,7 +220,6 @@ fn bridge_on_a_held_socket_names_the_path() {
             socket.clone(),
             "default",
             None,
-            false,
         )
     };
     let first = start().expect("start first bridge listener");
@@ -284,14 +280,8 @@ fn accepted_bridge_stream_is_reset_to_blocking() {
 
 #[test]
 fn bridge_drop_while_waiting_for_client_is_bounded() {
-    let runtime_dir = shepr_test_support::ScratchDir::new("bb");
-    let socket = local_forward_socket_path(runtime_dir.path(), "drop-test", "default")
-        .expect("test precondition");
-    assert!(
-        socket.starts_with(runtime_dir.path()),
-        "{}",
-        socket.display()
-    );
+    let scratch = shepr_test_support::ScratchDir::new("bridge-drop");
+    let socket = scratch.join("bridge.sock");
     let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
     let bridge = SshStdioBridge::start(
         SshTarget::parse("example").expect("test precondition"),
@@ -299,7 +289,6 @@ fn bridge_drop_while_waiting_for_client_is_bounded() {
         socket.clone(),
         "default",
         None,
-        false,
     )
     .expect("start bridge listener");
     let started = Instant::now();
@@ -371,11 +360,6 @@ fn bridge_remote_stderr_is_filtered_before_error_output() {
 }
 
 #[test]
-fn sanitize_path_component_removes_shell_sensitive_chars() {
-    assert_eq!(sanitize_path_component("user@host:22"), "user-host-22");
-}
-
-#[test]
 fn remote_output_framing_discards_any_banner_and_preserves_binary() {
     let payload = [0, 1, 2, 0xff, b'\n'];
     let mut input = vec![b'x'; 4 * 1024 * 1024];
@@ -396,67 +380,4 @@ fn remote_output_framing_discards_any_banner_and_preserves_binary() {
     let mut framed = b"profile output\nshepr-remote-output-ready\nhello\n".to_vec();
     normalize_remote_stdout(&mut framed, true).expect("test precondition");
     assert_eq!(framed, b"hello\n");
-}
-
-fn socket_path_byte_len(path: &Path) -> usize {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().len()
-}
-
-#[test]
-fn local_forward_socket_path_uses_readable_name_when_it_fits() {
-    let runtime_dir = shepr_test_support::ScratchDir::new("local-forward-readable");
-    // Short target + session leave plenty of room - keep the human-
-    // readable form so the socket path stays grep-friendly.
-    // remote_bridge_endpoint_path validates this directory as current-user owned
-    // mode 0700, so this readable basename is not exposed to other local users.
-    let path =
-        local_forward_socket_path(runtime_dir.path(), "dev", "default").expect("test precondition");
-    let filename = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    assert!(
-        filename.starts_with("shepr-remote-"),
-        "expected readable name, got {filename}"
-    );
-    assert!(filename.contains("-dev-default."), "got {filename}");
-    assert!(
-        fits_unix_socket_path(&path),
-        "socket path too long: {} ({} bytes)",
-        path.display(),
-        socket_path_byte_len(&path)
-    );
-}
-
-#[test]
-fn local_forward_socket_path_fits_in_sun_path() {
-    let runtime_dir = shepr_test_support::ScratchDir::new("lf");
-    // The longer readable name falls back to the hashed name when the
-    // target and session leave less room beneath the runtime directory.
-    let target = "longish-host.example.com";
-    let session = "a-fairly-long-session-name-here";
-    let path =
-        local_forward_socket_path(runtime_dir.path(), target, session).expect("test precondition");
-    assert!(
-        fits_unix_socket_path(&path),
-        "socket path too long for sun_path: {} ({} bytes)",
-        path.display(),
-        socket_path_byte_len(&path)
-    );
-}
-
-#[test]
-fn local_forward_socket_path_reports_an_overlong_runtime_directory() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let scratch = shepr_test_support::ScratchDir::new("local-forward-long-runtime");
-    let long_dir = scratch.path().join("a".repeat(80));
-    fs::create_dir(&long_dir).expect("test precondition");
-    fs::set_permissions(&long_dir, fs::Permissions::from_mode(0o700)).expect("test precondition");
-
-    let error = local_forward_socket_path(&long_dir, "longish-host.example.com", "default")
-        .expect_err("socket path cannot fit beneath the runtime directory");
-    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 }

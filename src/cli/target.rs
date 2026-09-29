@@ -533,7 +533,6 @@ mod tests {
             &["--machine", "mac", "--machine", "other", "agent", "list"],
             &["--machine", "mac", "--session", "other", "agent", "list"],
             &["--session", "other", "--machine", "mac", "agent", "list"],
-            &["--remote", "other", "--machine", "mac", "agent", "list"],
             &["--machine", "mac", "--version"],
         ] {
             assert!(parse(input).is_err(), "{input:?}");
@@ -623,7 +622,6 @@ mod tests {
             &["terminal", "attach", "w4:p1"],
             &["integration", "install", "pi"],
             &["integration", "status"],
-            &["config", "check"],
             &["status", "client"],
         ] {
             assert!(!machine_command_allowed(command), "{command:?}");

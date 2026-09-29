@@ -10,19 +10,17 @@ use shepr_api::schema::{
     PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneListParams, PaneMoveDestination,
     PaneMoveParams, PaneMoveReason, PaneMoveResult, PaneNeighborParams, PaneNeighborResult,
     PaneProcessInfo, PaneProcessInfoParams, PaneProcessInfoProcess, PaneReadParams, PaneReadResult,
-    PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
-    PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
-    PaneScrollParams, PaneSelectionReadParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
-    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
-    PaneZoomReason, PaneZoomResult, ResponseResult,
+    PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams, PaneResizeParams,
+    PaneResizeReason, PaneResizeResult, PaneScrollParams, PaneSelectionReadParams, PaneSplitParams,
+    PaneSwapParams, PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange,
+    PaneZoomMode, PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 
 use super::super::api_helpers::{
-    MAX_METADATA_TOKEN_KEYS_PER_RESOURCE, detect_state_from_api, normalize_metadata_source,
-    normalize_metadata_tokens, normalize_metadata_ttl, normalize_reported_agent_label,
-    pane_in_workspace_not_found, pane_not_found, tab_for_pane_not_found, tab_not_found,
-    target_pane_not_found, workspace_not_found,
+    detect_state_from_api, normalize_reported_agent_label, pane_in_workspace_not_found,
+    pane_not_found, tab_for_pane_not_found, tab_not_found, target_pane_not_found,
+    workspace_not_found,
 };
 use super::responses::{failure, success};
 
@@ -399,16 +397,6 @@ impl App {
 
         Ok(())
     }
-}
-
-fn normalize_presentation_text(value: Option<String>) -> Option<String> {
-    let trimmed = value?.trim().to_string();
-    let normalized: String = trimmed
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .take(crate::limits::MAX_PRESENTATION_TEXT_CHARS)
-        .collect();
-    (!normalized.trim().is_empty()).then(|| normalized.trim().to_string())
 }
 
 fn terminal_word_motion(motion: PaneCopyMotion) -> Option<shepr_mux::pane::TerminalWordMotion> {

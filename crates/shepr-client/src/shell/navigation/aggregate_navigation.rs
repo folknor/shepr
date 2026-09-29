@@ -178,19 +178,13 @@ pub(super) fn navigator_rows(
                         let status = agent.map_or(shepr_api::schema::AgentStatus::Idle, |agent| {
                             agent.agent_status
                         });
-                        let agent_kind = agent.and_then(|agent| {
-                            agent.agent.as_deref().or(agent.display_agent.as_deref())
-                        });
+                        let agent_kind = agent.and_then(|agent| agent.agent.as_deref());
                         let name = pane
                             .label
                             .as_deref()
                             .or_else(|| agent.and_then(|agent| agent.name.as_deref()));
-                        let title = agent.and_then(|agent| {
-                            agent
-                                .title
-                                .as_deref()
-                                .or(agent.terminal_title_stripped.as_deref())
-                        });
+                        let title =
+                            agent.and_then(|agent| agent.terminal_title_stripped.as_deref());
                         let tab_name = (tab.custom_label || tab.label.parse::<usize>().is_err())
                             .then_some(tab.label.as_str());
                         let label = if tab_panes.len() == 1 {
@@ -222,9 +216,6 @@ pub(super) fn navigator_rows(
                                 || pane.cwd.as_deref().is_some_and(text)
                                 || agent_kind.is_some_and(text)
                                 || title.is_some_and(text)
-                                || agent
-                                    .and_then(|agent| agent.display_agent.as_deref())
-                                    .is_some_and(text)
                                 || text(&pane.pane_id))
                         {
                             children.push(ClientNavigatorRow {

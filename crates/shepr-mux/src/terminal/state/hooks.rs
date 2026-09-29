@@ -76,7 +76,6 @@ impl TerminalState {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
-        let previous_presentation = self.effective_presentation_at(now);
         let previous_session = self.current_session_identity_for_persistence();
         self.reconcile_agent_name_owner(&agent_label, session_ref.as_ref());
         if foreground_takeover_allowed {
@@ -109,8 +108,6 @@ impl TerminalState {
             previous_agent_label,
             previous_known_agent,
             previous_state,
-            previous_presentation,
-            now,
         );
         Some(TerminalStateMutation {
             effective_state_change,
@@ -202,28 +199,6 @@ impl TerminalState {
             self.suppress_full_lifecycle_hook_report_with_session_ref(
                 source,
                 agent_label,
-                session_ref,
-                reason,
-                now,
-            );
-        }
-    }
-
-    pub(super) fn suppress_full_lifecycle_hook_report(
-        &mut self,
-        source: &str,
-        agent_label: &str,
-        reason: FullLifecycleHookSuppressionReason,
-        now: Instant,
-    ) {
-        if shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label) {
-            let session_ref = self
-                .hook_authority
-                .as_ref()
-                .and_then(|authority| authority.session_ref.clone());
-            self.suppress_full_lifecycle_hook_report_with_session_ref(
-                source.to_string(),
-                agent_label.to_string(),
                 session_ref,
                 reason,
                 now,

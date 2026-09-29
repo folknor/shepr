@@ -4,63 +4,11 @@ use std::io;
 
 pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
-pub fn run_remote(
-    remote: RemoteLaunch,
-    settings: super::SavedSshSettings,
-    paths: &shepr_config::AppPaths,
-    operator: &mut dyn Operator,
-) -> Result<(), super::SshFailureDiagnostic> {
-    run_remote_inner(remote, settings, paths, operator)
-        .map_err(|error| super::SshFailureDiagnostic::from_error(&error))
-}
-
-fn run_remote_inner(
-    remote: RemoteLaunch,
-    settings: super::SavedSshSettings,
-    paths: &shepr_config::AppPaths,
-    operator: &mut dyn Operator,
-) -> io::Result<()> {
-    let session_name = paths.session_id().display_name().to_owned();
-    let runtime_dir = paths.xdg_runtime_dir();
-    let local_socket = local_forward_socket_path(runtime_dir, &remote.target, &session_name)?;
-    let program = local_invocation_name();
-    let reattach_command =
-        reattach_command(&program, &remote.target, &session_name, remote.keybindings);
-    let remote_ssh = RemoteSsh::new(
-        remote.target.clone(),
-        settings.manage_ssh_config,
-        session_name.clone(),
-        paths,
-    )?;
-    let remote_shepr = locate_remote_shepr(&remote_ssh)?;
-    ensure_remote_server_ready(operator, &remote_ssh, &remote_shepr)?;
-
-    let bridge = SshStdioBridge::start(
-        remote.target,
-        &remote_shepr,
-        local_socket.clone(),
-        &session_name,
-        remote_ssh.options(),
-        false,
-    )?;
-
-    // The bridge reports its own failure (typed, so the binary's hints can
-    // classify it) instead of printing it under the client's TUI. When the
-    // client exits unsuccessfully, that failure is the more useful cause.
-    let launch_dir = paths
-        .current_dir()
-        .unwrap_or_else(|| std::path::Path::new("/"));
-    run_client_process(
-        &local_socket,
-        &reattach_command,
-        remote.keybindings,
-        launch_dir,
-    )
-    .map_err(|client_error| bridge.reported_failure().unwrap_or(client_error))
-}
-
+/// Checks that the saved machine's remote server is running as a detached
+/// daemon. `machine` names it in the error's remedy.
 pub fn check_saved_ssh(
     paths: &shepr_config::AppPaths,
+    machine: &str,
     target: &SshTarget,
     session: &str,
     settings: super::SavedSshSettings,
@@ -79,8 +27,8 @@ pub fn check_saved_ssh(
             ..
         } => Ok(()),
         _ => Err(io::Error::other(format!(
-            "remote Shepr server is stopped or was not started as a detached daemon; run `{}`",
-            super::saved_ssh_bootstrap_command(target.as_str(), session),
+            "remote Shepr server is stopped or was not started as a detached daemon; run `shepr machine reconnect {}`",
+            shell_quote(machine),
         ))),
     }
 }
@@ -248,44 +196,6 @@ pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: 
         posix_remote_output_command(&bridge_command),
     );
     posix_shell_command(&script)
-}
-
-pub(super) fn reattach_command(
-    program: &str,
-    target: &str,
-    session_name: &str,
-    keybindings: RemoteKeybindings,
-) -> String {
-    let program = shell_quote(if program.is_empty() {
-        PROGRAM_NAME
-    } else {
-        program
-    });
-    let args = RemoteCliCommand::Attach {
-        target,
-        session: Some(session_name),
-        keybindings: (keybindings != RemoteKeybindings::Local).then_some(keybindings),
-    }
-    .args();
-    shell_command_line(program, args)
-}
-
-/// `program` followed by each argument shell-quoted, space-separated.
-pub(super) fn shell_command_line(program: String, args: Vec<&str>) -> String {
-    args.into_iter()
-        .map(shell_quote)
-        .fold(program, |mut command, arg| {
-            command.push(' ');
-            command.push_str(&arg);
-            command
-        })
-}
-
-fn local_invocation_name() -> String {
-    std::env::args()
-        .next()
-        .filter(|program| !program.is_empty())
-        .unwrap_or_else(|| PROGRAM_NAME.to_owned())
 }
 
 pub fn shell_quote(value: &str) -> String {

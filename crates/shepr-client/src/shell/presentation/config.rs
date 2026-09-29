@@ -59,7 +59,6 @@ impl ClientShellConfig {
             palette,
             // One validation pass; the launch already rejected invalid bindings.
             keybinds,
-            keybinding_source: ClientShellKeybindingSource::RemoteLocal,
             prompt_new_tab_name: config.prompt_new_tab_name,
             prompt_new_workspace_name: config.prompt_new_workspace_name,
             confirm_close: config.confirm_close,
@@ -71,15 +70,6 @@ impl ClientShellConfig {
             preferences: preferences::ClientChromePreferences::default()
                 .without_configured(configured),
         }
-    }
-
-    pub(crate) fn with_keybinding_source(mut self, source: ClientShellKeybindingSource) -> Self {
-        self.keybinding_source = source;
-        self
-    }
-
-    pub(crate) fn uses_endpoint_keybindings(&self) -> bool {
-        self.keybinding_source == ClientShellKeybindingSource::Endpoint
     }
 
     pub(crate) fn with_local_endpoint(
@@ -105,11 +95,7 @@ impl ClientShellConfig {
         &mut self,
         config: &shepr_config::ValidatedConfig,
     ) -> Result<(), String> {
-        let keybinds = match self.keybinding_source {
-            ClientShellKeybindingSource::Endpoint => config.live_keybinds(),
-            ClientShellKeybindingSource::RemoteLocal => return Ok(()),
-        };
-        self.keybinds = keybinds;
+        self.keybinds = config.live_keybinds();
         Ok(())
     }
 
@@ -205,8 +191,7 @@ mod tests {
     #[test]
     fn snapshot_config_applies_endpoint_keybindings_from_the_validated_value() {
         let local = shepr_config::ValidatedConfig::test_default();
-        let mut endpoint = ClientShellConfig::from_validated_config(&local)
-            .with_keybinding_source(ClientShellKeybindingSource::Endpoint);
+        let mut endpoint = ClientShellConfig::from_validated_config(&local);
         let remote_source = "[keys]\nprefix = \"ctrl+a\"\n";
         let mut remote_raw = shepr_config::Config::default();
         remote_raw.keys.prefix = "ctrl+a".to_owned();

@@ -43,7 +43,6 @@ pub struct ClientShellWorkspace {
     pub custom_label: bool,
     pub branch: Option<String>,
     pub git_ahead_behind: Option<(usize, usize)>,
-    pub tokens: Vec<(String, String)>,
     pub focused: bool,
     pub agent_status: AgentStatus,
 }
@@ -78,13 +77,10 @@ pub struct ClientShellAgent {
     pub workspace_id: WorkspaceId,
     pub tab_id: PublicTabId,
     pub name: Option<String>,
-    pub display_agent: Option<String>,
     pub agent: Option<String>,
-    pub title: Option<String>,
     pub terminal_title: Option<String>,
     pub terminal_title_stripped: Option<String>,
     pub agent_status: AgentStatus,
     pub state_change_seq: u64,
-    pub tokens: Vec<(String, String)>,
     pub focused: bool,
 }

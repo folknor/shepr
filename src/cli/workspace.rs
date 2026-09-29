@@ -1,11 +1,8 @@
 use std::collections::HashMap;
 
-use shepr_api::schema::{
-    Method, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams,
-};
+use shepr_api::schema::{WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams};
 
-use super::matches::{flag, required, string, value, values, words};
+use super::matches::{flag, required, string, values, words};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Command {
@@ -14,7 +11,6 @@ pub(crate) enum Command {
     Get { workspace_id: String },
     Focus { workspace_id: String },
     Rename { workspace_id: String, label: String },
-    ReportMetadata(ReportMetadataArgs),
     Close { workspace_id: String },
 }
 
@@ -26,15 +22,6 @@ pub(crate) struct CreateArgs {
     env: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ReportMetadataArgs {
-    workspace_id: String,
-    source: String,
-    tokens: HashMap<String, Option<String>>,
-    seq: Option<u64>,
-    ttl_ms: Option<u64>,
-}
-
 impl Command {
     pub(super) fn name(&self) -> &'static str {
         match self {
@@ -43,7 +30,6 @@ impl Command {
             Self::Get { .. } => "get",
             Self::Focus { .. } => "focus",
             Self::Rename { .. } => "rename",
-            Self::ReportMetadata(_) => "report-metadata",
             Self::Close { .. } => "close",
         }
     }
@@ -55,7 +41,6 @@ impl Command {
             | Self::Get { .. }
             | Self::Focus { .. }
             | Self::Rename { .. }
-            | Self::ReportMetadata(_)
             | Self::Close { .. } => true,
         }
     }
@@ -82,13 +67,6 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
             workspace_id: required(command, "workspace_id")?,
             label: words(command, "label"),
         }),
-        Some(("report-metadata", command)) => Some(Command::ReportMetadata(ReportMetadataArgs {
-            workspace_id: required(command, "workspace_id")?,
-            source: required(command, "source")?,
-            tokens: super::matches::metadata_tokens(command),
-            seq: value(command, "seq"),
-            ttl_ms: value(command, "ttl-ms"),
-        })),
         Some(("close", command)) => Some(Command::Close {
             workspace_id: required(command, "workspace_id")?,
         }),
@@ -118,15 +96,6 @@ pub(super) fn run_workspace_command(
                 label,
             },
         ),
-        Command::ReportMetadata(args) => match report_metadata_params(args) {
-            Ok(params) => super::send_method_response(
-                paths,
-                "cli:request",
-                Method::WorkspaceReportMetadata(params),
-                super::MethodResponseMode::ErrorsOnly,
-            ),
-            Err(message) => Ok(super::usage_error(&message)),
-        },
         Command::Close { workspace_id } => {
             super::runtime::workspace_close(paths, WorkspaceCloseParams { workspace_id })
         }
@@ -162,22 +131,6 @@ fn resolve_cwd(
     .map(Some)
 }
 
-fn report_metadata_params(
-    args: ReportMetadataArgs,
-) -> Result<WorkspaceReportMetadataParams, String> {
-    let source = args.source;
-    if source.trim().is_empty() {
-        return Err("missing required --source".into());
-    }
-    Ok(WorkspaceReportMetadataParams {
-        workspace_id: args.workspace_id,
-        source,
-        tokens: args.tokens,
-        seq: args.seq,
-        ttl_ms: args.ttl_ms,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::tests::group_matches;
@@ -189,13 +142,6 @@ mod tests {
     fn create_args(args: &[&str]) -> super::CreateArgs {
         let super::Command::Create(args) = command(args) else {
             panic!("expected workspace create");
-        };
-        args
-    }
-
-    fn report_args(args: &[&str]) -> super::ReportMetadataArgs {
-        let super::Command::ReportMetadata(args) = command(args) else {
-            panic!("expected workspace report-metadata");
         };
         args
     }
@@ -246,39 +192,6 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(params.cwd.as_deref(), Some("/home/me/proj"));
-    }
-
-    #[test]
-    fn report_metadata_requires_a_token_and_a_nonblank_source() {
-        let params = super::report_metadata_params(report_args(&[
-            "workspace",
-            "report-metadata",
-            "w1",
-            "--source=git",
-            "--token",
-            "branch=main",
-            "--seq",
-            "4",
-            "--ttl-ms=100",
-        ]))
-        .expect("test precondition");
-        assert_eq!(params.workspace_id, "w1");
-        assert_eq!(params.seq, Some(4));
-        assert_eq!(params.ttl_ms, Some(100));
-        assert_eq!(params.tokens.get("branch"), Some(&Some("main".to_string())));
-
-        assert!(
-            super::report_metadata_params(report_args(&[
-                "workspace",
-                "report-metadata",
-                "w1",
-                "--source",
-                " ",
-                "--clear-token",
-                "branch",
-            ]))
-            .is_err()
-        );
     }
 
     #[test]

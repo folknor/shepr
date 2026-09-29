@@ -80,8 +80,7 @@ pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// while keeping the shared history bounded.
 pub(crate) const MAX_EVENT_HISTORY: usize = 512;
 
-/// Largest `timeout_ms` an `events.wait` accepts: one day, the same ceiling
-/// as a metadata TTL. A caller that means "until it happens" omits the
+/// Largest `timeout_ms` an `events.wait` accepts: one day. A caller that means "until it happens" omits the
 /// timeout; a larger value is refused rather than clamped, so nobody mistakes
 /// a shortened wait for the one they asked for. The cap also keeps the
 /// deadline far inside `Instant`'s range, so computing it cannot overflow.

@@ -1,5 +1,4 @@
 use super::*;
-use shepr_core::env::EnvVar;
 use shepr_test_fixtures::*;
 use shepr_test_support::IsolatedEnv;
 
@@ -154,59 +153,6 @@ fn direct_notices_keep_only_the_most_recent_bounded_history() {
         notices.back().cloned(),
         Some((crate::limits::MAX_NOTICES + 5).to_string())
     );
-}
-
-#[test]
-fn remote_client_uses_extended_handshake_timeout() {
-    let env = IsolatedEnv::new();
-    env.set(EnvVar::SheprRemoteKeybindings, "local");
-
-    assert_eq!(
-        ClientProcessRole::from_env()
-            .expect("role")
-            .handshake_read_timeout(),
-        REMOTE_HANDSHAKE_READ_TIMEOUT
-    );
-}
-
-#[test]
-fn client_process_role_keeps_launch_mode_after_environment_changes() {
-    let env = IsolatedEnv::new();
-    env.set(EnvVar::SheprRemoteKeybindings, "server");
-    let role = ClientProcessRole::from_env().expect("valid launch role");
-    env.remove(EnvVar::SheprRemoteKeybindings);
-    assert_eq!(role.handshake_read_timeout(), REMOTE_HANDSHAKE_READ_TIMEOUT);
-    assert_eq!(
-        role.keybinding_source(),
-        shell::ClientShellKeybindingSource::Endpoint
-    );
-}
-
-#[test]
-fn keybinding_source_refuses_unknown_values() {
-    let env = IsolatedEnv::new();
-    env.remove(EnvVar::SheprRemoteKeybindings);
-    assert_eq!(
-        ClientProcessRole::from_env().map(ClientProcessRole::keybinding_source),
-        Ok(shell::ClientShellKeybindingSource::RemoteLocal)
-    );
-    env.set(EnvVar::SheprRemoteKeybindings, "local");
-    assert_eq!(
-        ClientProcessRole::from_env().map(ClientProcessRole::keybinding_source),
-        Ok(shell::ClientShellKeybindingSource::RemoteLocal)
-    );
-    env.set(EnvVar::SheprRemoteKeybindings, "server");
-    assert_eq!(
-        ClientProcessRole::from_env().map(ClientProcessRole::keybinding_source),
-        Ok(shell::ClientShellKeybindingSource::Endpoint)
-    );
-    for refused in ["Server", "remote", " server", "local "] {
-        env.set(EnvVar::SheprRemoteKeybindings, refused);
-        assert!(ClientProcessRole::from_env().is_err(), "{refused:?}");
-    }
-    // Empty is unset: a local client.
-    env.set(EnvVar::SheprRemoteKeybindings, "");
-    assert_eq!(ClientProcessRole::from_env(), Ok(ClientProcessRole::Local));
 }
 
 #[test]
@@ -408,16 +354,12 @@ fn client_error_display_server_shutdown_no_reason() {
 
 #[test]
 fn client_error_display_detached_default_session_reattach_hint() {
-    let env = IsolatedEnv::new();
-    env.remove(EnvVar::SheprReattachCommand);
     let err = ClientError::ServerShutdown {
         reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
     let paths = shepr_config::AppPaths::test_default();
-    let context = ClientErrorContext::new(
-        paths.server_address().attach_command(paths.session_id()),
-        reattach_command_from_env().expect("test precondition"),
-    );
+    let context =
+        ClientErrorContext::new(paths.server_address().attach_command(paths.session_id()));
     let msg = err.display_with_context(&context);
     assert!(
         msg.contains("Run `shepr` to reattach"),
@@ -427,17 +369,12 @@ fn client_error_display_detached_default_session_reattach_hint() {
 
 #[test]
 fn client_error_display_detached_named_session_reattach_hint() {
-    let env = IsolatedEnv::new();
-    env.remove(EnvVar::SheprReattachCommand);
     let err = ClientError::ServerShutdown {
         reason: Some(shepr_protocol::ShutdownReason::Detached),
     };
     let session = shepr_config::SessionId::parse("work").expect("test precondition");
     let paths = shepr_config::AppPaths::test_default();
-    let context = ClientErrorContext::new(
-        paths.server_address().attach_command(&session),
-        reattach_command_from_env().expect("test precondition"),
-    );
+    let context = ClientErrorContext::new(paths.server_address().attach_command(&session));
     let msg = err.display_with_context(&context);
     assert!(
         msg.contains("Run `shepr session attach work` to reattach"),
@@ -446,82 +383,13 @@ fn client_error_display_detached_named_session_reattach_hint() {
 }
 
 #[test]
-fn client_error_display_detached_remote_reattach_hint_takes_precedence() {
-    let env = IsolatedEnv::new();
-    env.set(
-        EnvVar::SheprReattachCommand,
-        "shepr --remote host --session work",
-    );
-    env.set(EnvVar::SheprSession, "work");
-    let err = ClientError::ServerShutdown {
-        reason: Some(shepr_protocol::ShutdownReason::Detached),
-    };
-    let paths = shepr_config::AppPaths::test_default();
-    let context = ClientErrorContext::new(
-        paths.server_address().attach_command(paths.session_id()),
-        reattach_command_from_env().expect("test precondition"),
-    );
-    let msg = err.display_with_context(&context);
-    assert!(
-        msg.contains("Run `shepr --remote host --session work` to reattach"),
-        "should prefer remote reattach command: {msg}"
-    );
-}
-
-#[test]
 fn client_error_display_connection_lost() {
-    let env = IsolatedEnv::new();
-    env.remove(EnvVar::SheprReattachCommand);
     let err = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
     let msg = err.to_string();
     assert!(
         msg.contains("lost connection to server"),
         "should mention lost connection: {msg}"
     );
-}
-
-#[test]
-fn client_error_display_remote_connection_lost_has_reattach_hint() {
-    let env = IsolatedEnv::new();
-    env.set(
-        EnvVar::SheprReattachCommand,
-        "shepr --remote host --session work",
-    );
-    let err = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
-    let paths = shepr_config::AppPaths::test_default();
-    let context = ClientErrorContext::new(
-        paths.server_address().attach_command(paths.session_id()),
-        reattach_command_from_env().expect("test precondition"),
-    );
-    let msg = err.display_with_context(&context);
-    assert!(
-        msg.contains("lost connection to remote Shepr"),
-        "should mention remote connection loss: {msg}"
-    );
-    assert!(
-        msg.contains("panes may still be running"),
-        "should explain possible persistence: {msg}"
-    );
-    assert!(
-        msg.contains("Run `shepr --remote host --session work` to reattach"),
-        "should show remote reattach command: {msg}"
-    );
-}
-
-#[test]
-fn client_error_context_keeps_launch_reattach_command() {
-    let env = IsolatedEnv::new();
-    env.set(EnvVar::SheprReattachCommand, "shepr --remote first");
-    let paths = shepr_config::AppPaths::test_default();
-    let context = ClientErrorContext::new(
-        paths.server_address().attach_command(paths.session_id()),
-        reattach_command_from_env().expect("test precondition"),
-    );
-    env.set(EnvVar::SheprReattachCommand, "shepr --remote second");
-    let error = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
-    let message = error.display_with_context(&context);
-    assert!(message.contains("shepr --remote first"));
-    assert!(!message.contains("shepr --remote second"));
 }
 
 #[test]

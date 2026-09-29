@@ -31,8 +31,6 @@ fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
         | EnvVar::SheprClientSocketPath
         | EnvVar::SheprPaneId
         | EnvVar::SheprEnv
-        | EnvVar::SheprReattachCommand
-        | EnvVar::SheprRemoteKeybindings
         | EnvVar::SheprLog
         | EnvVar::Home
         | EnvVar::XdgConfigHome

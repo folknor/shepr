@@ -33,9 +33,9 @@ Kept:
 - Git status in the sidebar (branch, ahead/behind)
 - Mouse selection, copy mode, keybinding help, window title templating
 - The JSON API over the server socket; every CLI subcommand that acts on a
-  running server goes through it. Commands that manage local state (`config
-  check`, `session list/delete`, `integration`, `machine`, `detect explain
-  --file`) run in the CLI process and cannot be sent with `--machine`
+  running server goes through it. Commands that manage local state (`session
+  list/delete`, `integration`, `machine`, `detect explain --file`) run in the
+  CLI process and cannot be sent with `--machine`
 
 shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr (agent start, managed agents,

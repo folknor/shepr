@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize, de::MapAccess, de::Visitor};
 
 use super::ConfigAgent;
 use crate::limits::{
-    DEFAULT_SIDEBAR_ROW_GAP, MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES, MAX_SIDEBAR_ROWS,
-    MAX_SIDEBAR_RULES, MAX_SIDEBAR_TOKENS_PER_ROW,
+    DEFAULT_SIDEBAR_ROW_GAP, MAX_SIDEBAR_ROWS, MAX_SIDEBAR_RULES, MAX_SIDEBAR_TOKENS_PER_ROW,
 };
 
 fn deserialize_sidebar_rows<'de, D, T>(deserializer: D) -> Result<Vec<Vec<T>>, D::Error>
@@ -127,7 +126,6 @@ macro_rules! define_sidebar_token {
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum $token {
             $($variant,)+
-            Custom(String),
             Styled {
                 token: Box<$token>,
                 style: SidebarTokenStyle,
@@ -138,7 +136,6 @@ macro_rules! define_sidebar_token {
         fn $token_name(token: &$token) -> String {
             match token {
                 $($token::$variant => $name.into(),)+
-                $token::Custom(name) => format!("${name}"),
                 $token::Styled { token, .. } => $token_name(token),
             }
         }
@@ -193,8 +190,7 @@ impl AgentSidebarToken {
             | Self::Pane
             | Self::Agent
             | Self::TerminalTitle
-            | Self::TerminalTitleStripped
-            | Self::Custom(_) => true,
+            | Self::TerminalTitleStripped => true,
             Self::Styled { token, .. } => token.allows_rules(),
         }
     }
@@ -218,7 +214,7 @@ impl SpaceSidebarToken {
     fn allows_rules(&self) -> bool {
         match self {
             Self::StateIcon | Self::GitStatus => false,
-            Self::StateText | Self::Workspace | Self::Branch | Self::Custom(_) => true,
+            Self::StateText | Self::Workspace | Self::Branch => true,
             Self::Styled { token, .. } => token.allows_rules(),
         }
     }
@@ -324,31 +320,8 @@ impl RawSidebarToken {
     }
 }
 
-fn parse_sidebar_token<T>(value: &str, parse_builtin: fn(&str) -> Option<T>) -> Result<T, String>
-where
-    T: From<String>,
-{
-    if let Some(token) = parse_builtin(value) {
-        return Ok(token);
-    }
-    let Some(name) = value.strip_prefix('$') else {
-        return Err(format!(
-            "unknown sidebar token `{value}`; custom tokens must start with `$`"
-        ));
-    };
-    if name.len() > MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES {
-        return Err(format!(
-            "invalid custom sidebar token `{value}`; custom token names may contain at most {MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES} bytes"
-        ));
-    }
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
-        return Err(format!("invalid custom sidebar token `{value}`"));
-    }
-    Ok(T::from(name.to_string()))
+fn parse_sidebar_token<T>(value: &str, parse_builtin: fn(&str) -> Option<T>) -> Result<T, String> {
+    parse_builtin(value).ok_or_else(|| format!("unknown sidebar token `{value}`"))
 }
 
 fn serialize_styled_token<S>(
@@ -383,12 +356,6 @@ impl Serialize for AgentSidebarToken {
             } => serialize_styled_token(&agent_token_name(token), *style, rules, serializer),
             token => serializer.serialize_str(&agent_token_name(token)),
         }
-    }
-}
-
-impl From<String> for AgentSidebarToken {
-    fn from(value: String) -> Self {
-        Self::Custom(value)
     }
 }
 
@@ -431,12 +398,6 @@ impl Serialize for SpaceSidebarToken {
             } => serialize_styled_token(&space_token_name(token), *style, rules, serializer),
             token => serializer.serialize_str(&space_token_name(token)),
         }
-    }
-}
-
-impl From<String> for SpaceSidebarToken {
-    fn from(value: String) -> Self {
-        Self::Custom(value)
     }
 }
 
@@ -583,18 +544,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_builtin_and_arbitrary_custom_tokens() {
+    fn parses_builtin_tokens() {
         let config: crate::Config = toml::from_str(
             r#"
 [ui.sidebar.agents]
-rows = [["state_icon", "workspace"], ["state_text", "agent", "$summary"], ["terminal_title", "terminal_title_stripped", "$terminal_title"]]
+rows = [["state_icon", "workspace"], ["state_text", "agent", "tab"], ["terminal_title", "terminal_title_stripped", "pane"]]
 row_gap = 1
 
 [ui.sidebar.agents.rows_by_agent]
-claude = [["terminal_title_stripped"], ["agent", "$model"]]
+claude = [["terminal_title_stripped"], ["agent", "machine"]]
 
 [ui.sidebar.spaces]
-rows = [["workspace"], ["$jj_status"]]
+rows = [["workspace"], ["git_status"]]
 row_gap = 3
 "#,
         )
@@ -605,7 +566,7 @@ row_gap = 3
             vec![
                 AgentSidebarToken::StateText,
                 AgentSidebarToken::Agent,
-                AgentSidebarToken::Custom("summary".into()),
+                AgentSidebarToken::Tab,
             ]
         );
         assert_eq!(
@@ -613,23 +574,20 @@ row_gap = 3
             vec![
                 AgentSidebarToken::TerminalTitle,
                 AgentSidebarToken::TerminalTitleStripped,
-                AgentSidebarToken::Custom("terminal_title".into()),
+                AgentSidebarToken::Pane,
             ]
         );
         assert_eq!(
             config.ui.sidebar.agents.rows_by_agent["claude"],
             vec![
                 vec![AgentSidebarToken::TerminalTitleStripped],
-                vec![
-                    AgentSidebarToken::Agent,
-                    AgentSidebarToken::Custom("model".into()),
-                ],
+                vec![AgentSidebarToken::Agent, AgentSidebarToken::Machine,],
             ]
         );
         assert_eq!(config.ui.sidebar.agents.row_gap, 1);
         assert_eq!(
             config.ui.sidebar.spaces.rows[1],
-            vec![SpaceSidebarToken::Custom("jj_status".into())]
+            vec![SpaceSidebarToken::GitStatus]
         );
         assert_eq!(config.ui.sidebar.spaces.row_gap, 3);
     }
@@ -639,13 +597,13 @@ row_gap = 3
         let config: crate::Config = toml::from_str(
             r##"
 [ui.sidebar.agents]
-rows = [[{ token = "workspace", fg = "#abc", bold = false }, "workspace"], [{ token = "$summary", dim = false }]]
+rows = [[{ token = "workspace", fg = "#abc", bold = false }, "workspace"], [{ token = "tab", dim = false }]]
 
 [ui.sidebar.agents.rows_by_agent]
 claude = [[{ token = "agent", fg = "#112233", bold = true, dim = false }]]
 
 [ui.sidebar.spaces]
-rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "$jj", bold = true }]]
+rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "branch", bold = true }]]
 "##,
         )
         .expect("test precondition");
@@ -674,7 +632,7 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "$jj", bold = tru
             ratatui::style::Color::Rgb(0xff, 0x00, 0xaa)
         );
         let (token, style) = config.ui.sidebar.spaces.rows[1][0].parts();
-        assert_eq!(token, &SpaceSidebarToken::Custom("jj".into()));
+        assert_eq!(token, &SpaceSidebarToken::Branch);
         assert_eq!(style.bold, Some(true));
     }
 
@@ -684,9 +642,9 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "$jj", bold = tru
 [agents]
 rows = [[{ token = "machine", fg = "#fff", rules = [{ equals = "Local", fg = "#f00" }, { starts_with = "fed", ignore_case = true, bold = true }] }]]
 [agents.rows_by_agent]
-pi = [[{ token = "$load", rules = [{ gt = 80, dim = false }, { lt = 20.5, dim = true }] }]]
+pi = [[{ token = "pane", rules = [{ gt = 80, dim = false }, { lt = 20.5, dim = true }] }]]
 [spaces]
-rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
+rows = [[{ token = "branch", rules = [{ contains = "error", bold = true }] }]]
 "##;
         let config: SidebarConfig = toml::from_str(input).expect("conditional sidebar config");
         let encoded = toml::to_string(&config).expect("test precondition");
@@ -773,17 +731,17 @@ rows = [[{ token = "workspace", fg = "red" }]]
     }
 
     #[test]
-    fn rejects_unknown_bare_and_malformed_custom_tokens() {
+    fn rejects_unknown_bare_and_custom_tokens() {
         let input = |token: &str| format!("[ui.sidebar.agents]\nrows = [[\"{token}\"]]\n");
         // Controls: the same TOML with valid tokens parses, so the rejections
         // below are down to the token and not to malformed TOML.
-        for token in ["workspace", "$summary"] {
+        for token in ["workspace", "terminal_title"] {
             assert!(
                 toml::from_str::<crate::Config>(&input(token)).is_ok(),
                 "rejected {token}"
             );
         }
-        for token in ["summary", "$", "$bad.name"] {
+        for token in ["summary", "$", "$bad.name", "$summary"] {
             assert!(
                 toml::from_str::<crate::Config>(&input(token)).is_err(),
                 "accepted {token}"

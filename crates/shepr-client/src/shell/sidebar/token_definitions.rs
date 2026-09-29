@@ -21,7 +21,6 @@ pub(crate) enum ResolvedTokenKind {
     TerminalTitle(String),
     Branch(String),
     GitStatus { ahead: usize, behind: usize },
-    Custom(String),
 }
 
 impl ResolvedTokenKind {
@@ -34,8 +33,7 @@ impl ResolvedTokenKind {
             | Self::Pane(value)
             | Self::Agent(value)
             | Self::TerminalTitle(value)
-            | Self::Branch(value)
-            | Self::Custom(value) => Some(value),
+            | Self::Branch(value) => Some(value),
             Self::StateIcon | Self::GitStatus { .. } => None,
         }
     }
@@ -56,26 +54,6 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) terminal_title: Option<&'a str>,
     pub(crate) terminal_title_stripped: Option<&'a str>,
     pub(crate) canonical_agent: Option<shepr_agent::detect::Agent>,
-    pub(crate) tokens: &'a dyn TokenValues,
-}
-
-pub(crate) trait TokenValues {
-    fn value(&self, key: &str) -> Option<&str>;
-}
-
-impl TokenValues for Vec<(String, String)> {
-    fn value(&self, key: &str) -> Option<&str> {
-        self.iter()
-            .rev()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_str())
-    }
-}
-
-impl TokenValues for std::collections::HashMap<String, String> {
-    fn value(&self, key: &str) -> Option<&str> {
-        self.get(key).map(String::as_str)
-    }
 }
 
 pub(crate) fn agent_rows(
@@ -121,11 +99,6 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::TerminalTitleStripped => context
                             .terminal_title_stripped
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
-                        AgentSidebarToken::Custom(name) => context
-                            .tokens
-                            .value(name)
-                            .map(str::to_owned)
-                            .map(ResolvedTokenKind::Custom),
                         AgentSidebarToken::Styled { .. } => None,
                     }?;
                     let style = kind
@@ -144,7 +117,6 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) branch: Option<&'a str>,
     pub(crate) state_text: &'a str,
     pub(crate) ahead_behind: Option<(usize, usize)>,
-    pub(crate) tokens: &'a dyn TokenValues,
 }
 
 pub(crate) fn space_rows(
@@ -174,11 +146,6 @@ pub(crate) fn space_rows(
                             .ahead_behind
                             .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
                             .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
-                        SpaceSidebarToken::Custom(name) => context
-                            .tokens
-                            .value(name)
-                            .map(str::to_owned)
-                            .map(ResolvedTokenKind::Custom),
                         SpaceSidebarToken::Styled { .. } => None,
                     }?;
                     let style = kind
@@ -212,7 +179,7 @@ impl ResolvedToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_config::{AgentSidebarToken, SpaceSidebarToken};
+    use shepr_config::AgentSidebarToken;
 
     struct Entry {
         workspace: String,
@@ -222,7 +189,6 @@ mod tests {
         terminal_title: Option<String>,
         terminal_title_stripped: Option<String>,
         canonical_agent: Option<shepr_agent::detect::Agent>,
-        tokens: std::collections::HashMap<String, String>,
     }
 
     fn entry() -> Entry {
@@ -234,7 +200,6 @@ mod tests {
             terminal_title: None,
             terminal_title_stripped: None,
             canonical_agent: Some(shepr_agent::detect::Agent::Pi),
-            tokens: std::collections::HashMap::new(),
         }
     }
 
@@ -248,14 +213,13 @@ mod tests {
             terminal_title: entry.terminal_title.as_deref(),
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
             canonical_agent: entry.canonical_agent,
-            tokens: &entry.tokens,
         }
     }
 
     #[test]
     fn conditional_styles_merge_first_match_and_keep_missing_values_absent() {
         let config: AgentsSidebarConfig = toml::from_str(r##"
-rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true, rules = [{ equals = "Local", fg = "#f00", bold = false }, { contains = "Loc", fg = "#0f0", dim = false }] }], [{ token = "$missing", rules = [{ equals = "", bold = true }] }]]
+rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true, rules = [{ equals = "Local", fg = "#f00", bold = false }, { contains = "Loc", fg = "#0f0", dim = false }] }], [{ token = "tab", rules = [{ equals = "", bold = true }] }]]
 "##).expect("test precondition");
         let entry = entry();
         for (machine, color, bold, dim) in [
@@ -308,7 +272,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                     state_text: theme,
                     primary: theme,
                     secondary: theme,
-                    custom: theme,
+                    terminal_title: theme,
                 },
                 &super::super::Palette::catppuccin(),
                 width,
@@ -332,15 +296,15 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
     }
 
     #[test]
-    fn custom_numeric_rules_resolve_in_agent_overrides_and_space_rows() {
+    fn numeric_rules_resolve_in_agent_overrides_and_space_rows() {
         let config: shepr_config::SidebarConfig = toml::from_str(
             r#"
 [agents]
-rows = [["workspace"]]
+rows = [["agent"]]
 [agents.rows_by_agent]
-pi = [[{ token = "$load", rules = [{ gt = 80, bold = true }, { gt = 50, dim = true }] }]]
+pi = [[{ token = "workspace", rules = [{ gt = 80, bold = true }, { gt = 50, dim = true }] }]]
 [spaces]
-rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
+rows = [[{ token = "workspace", rules = [{ lt = 50, dim = true }] }]]
 "#,
         )
         .expect("test precondition");
@@ -351,19 +315,18 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
             ("20", None, None),
             ("90%", None, None),
         ] {
-            entry.tokens.insert("load".into(), value.into());
+            entry.workspace = value.into();
             let rows = agent_rows(&config.agents, &context(&entry), "working");
-            assert_eq!(rows[0][0].kind, ResolvedTokenKind::Custom(value.into()));
+            assert_eq!(rows[0][0].kind, ResolvedTokenKind::Workspace(value.into()));
             assert_eq!(rows[0][0].style.bold, bold);
             assert_eq!(rows[0][0].style.dim, dim);
             let spaces = space_rows(
                 &config.spaces,
                 &SpaceTokenContext {
-                    workspace: "repo",
+                    workspace: value,
                     branch: None,
                     state_text: "working",
                     ahead_behind: None,
-                    tokens: &entry.tokens,
                 },
             );
             assert_eq!(spaces[0][0].style.dim, (value == "20").then_some(true));
@@ -377,9 +340,9 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
 [agents]
 rows = [[{ token = "machine", fg = "#61afef", rules = [{ equals = "Local", hide = true }] }, "agent"]]
 [agents.rows_by_agent]
-pi = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["agent"]]
+pi = [[{ token = "workspace", rules = [{ lt = 50, hide = true }] }], ["agent"]]
 [spaces]
-rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]]
+rows = [[{ token = "workspace", rules = [{ lt = 50, hide = true }] }], ["state_text"]]
 "##,
         ).expect("test precondition");
         let encoded = toml::to_string(&config).expect("test precondition");
@@ -400,7 +363,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         }
         entry.canonical_agent = Some(shepr_agent::detect::Agent::Pi);
         for (value, count) in [("20", 1), ("90", 2)] {
-            entry.tokens.insert("load".into(), value.into());
+            entry.workspace = value.into();
             assert_eq!(
                 agent_rows(&config.agents, &context(&entry), "working").len(),
                 count
@@ -408,11 +371,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             let rows = space_rows(
                 &config.spaces,
                 &SpaceTokenContext {
-                    workspace: "repo",
+                    workspace: value,
                     branch: None,
                     state_text: "working",
                     ahead_behind: None,
-                    tokens: &entry.tokens,
                 },
             );
             assert_eq!(rows.len(), count);
@@ -432,15 +394,12 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
-    fn missing_custom_tokens_elide_rows_and_separators() {
+    fn missing_tokens_elide_rows_and_separators() {
         let entry = entry();
         let config = AgentsSidebarConfig {
             rows: vec![
-                vec![
-                    AgentSidebarToken::StateIcon,
-                    AgentSidebarToken::Custom("missing".into()),
-                ],
-                vec![AgentSidebarToken::Custom("missing".into())],
+                vec![AgentSidebarToken::StateIcon, AgentSidebarToken::Machine],
+                vec![AgentSidebarToken::Machine],
                 vec![AgentSidebarToken::Agent],
             ],
             ..Default::default()
@@ -491,41 +450,14 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
-    fn state_text_and_arbitrary_values_are_independent_tokens() {
-        let mut entry = entry();
-        entry
-            .tokens
-            .insert("summary".into(), "reviewing auth".into());
-        let config = AgentsSidebarConfig {
-            rows: vec![vec![
-                AgentSidebarToken::StateText,
-                AgentSidebarToken::Custom("summary".into()),
-            ]],
-            ..Default::default()
-        };
-
-        assert_eq!(
-            agent_rows(&config, &context(&entry), "working"),
-            vec![vec![
-                ResolvedToken::unstyled(ResolvedTokenKind::StateText("working".into())),
-                ResolvedToken::unstyled(ResolvedTokenKind::Custom("reviewing auth".into())),
-            ]]
-        );
-    }
-
-    #[test]
-    fn terminal_title_builtins_are_distinct_from_custom_tokens() {
+    fn terminal_title_builtins_resolve_raw_and_stripped_titles() {
         let mut entry = entry();
         entry.terminal_title = Some("⠋ raw title".into());
         entry.terminal_title_stripped = Some("raw title".into());
-        entry
-            .tokens
-            .insert("terminal_title".into(), "custom title".into());
         let config = AgentsSidebarConfig {
             rows: vec![vec![
                 AgentSidebarToken::TerminalTitle,
                 AgentSidebarToken::TerminalTitleStripped,
-                AgentSidebarToken::Custom("terminal_title".into()),
             ]],
             ..Default::default()
         };
@@ -535,7 +467,6 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("⠋ raw title".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("raw title".into())),
-                ResolvedToken::unstyled(ResolvedTokenKind::Custom("custom title".into())),
             ]]
         );
     }
@@ -564,31 +495,6 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             agent_rows(&config, &context(&pi), "working"),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
                 "repo".into()
-            ))]]
-        );
-    }
-
-    #[test]
-    fn workspace_custom_token_can_replace_git_specific_details() {
-        let tokens = std::collections::HashMap::from([("jj_status".into(), "2 changes".into())]);
-        let config = SpacesSidebarConfig {
-            rows: vec![vec![SpaceSidebarToken::Custom("jj_status".into())]],
-            ..Default::default()
-        };
-
-        assert_eq!(
-            space_rows(
-                &config,
-                &SpaceTokenContext {
-                    workspace: "repo",
-                    branch: None,
-                    state_text: "idle",
-                    ahead_behind: None,
-                    tokens: &tokens,
-                },
-            ),
-            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Custom(
-                "2 changes".into()
             ))]]
         );
     }

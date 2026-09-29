@@ -2,16 +2,12 @@ use std::io;
 
 /// All environment and target details needed to present a client failure.
 pub(crate) struct ClientErrorContext {
-    remote_reattach: Option<String>,
     local_reattach: String,
 }
 
 impl ClientErrorContext {
-    pub(crate) fn new(local_reattach: String, remote_reattach: Option<String>) -> Self {
-        Self {
-            remote_reattach,
-            local_reattach,
-        }
+    pub(crate) fn new(local_reattach: String) -> Self {
+        Self { local_reattach }
     }
 }
 
@@ -118,18 +114,9 @@ impl ClientError {
             Self::ServerShutdown {
                 reason: Some(shepr_protocol::ShutdownReason::Detached),
             } => {
-                if let Some(command) = &context.remote_reattach {
-                    format!("detached from remote server\nRun `{command}` to reattach")
-                } else {
-                    format!(
-                        "detached from server\nRun `{}` to reattach",
-                        context.local_reattach
-                    )
-                }
-            }
-            Self::ConnectionLost(error) if let Some(command) = &context.remote_reattach => {
                 format!(
-                    "lost connection to remote Shepr: {error}\nIf the remote server survived the SSH or network drop, its panes may still be running.\nRun `{command}` to reattach"
+                    "detached from server\nRun `{}` to reattach",
+                    context.local_reattach
                 )
             }
             _ => self.to_string(),

@@ -2,15 +2,10 @@ use super::*;
 
 impl TerminalState {
     pub fn border_label(&self, show_agent_labels: bool) -> Option<String> {
-        self.effective_title().or_else(|| {
-            self.manual_label.clone().or_else(|| {
-                show_agent_labels
-                    .then(|| {
-                        self.effective_display_agent()
-                            .or_else(|| self.effective_agent_label().map(str::to_string))
-                    })
-                    .flatten()
-            })
+        self.manual_label.clone().or_else(|| {
+            show_agent_labels
+                .then(|| self.effective_agent_label().map(str::to_string))
+                .flatten()
         })
     }
 
@@ -19,8 +14,6 @@ impl TerminalState {
         previous_agent_label: Option<String>,
         previous_known_agent: Option<Agent>,
         previous_state: AgentState,
-        previous_presentation: EffectivePresentation,
-        now: Instant,
     ) -> Option<EffectiveStateChange> {
         let state = if self.visible_blocker_overrides_hook() {
             AgentState::Blocked
@@ -33,13 +26,7 @@ impl TerminalState {
         let agent_label = self.effective_agent_label().map(str::to_string);
         let known_agent = self.effective_known_agent();
 
-        let presentation = self.effective_presentation_at(now);
-        self.clear_expiry_pending_for_hidden_metadata();
-
-        if previous_agent_label == agent_label
-            && previous_state == state
-            && previous_presentation == presentation
-        {
+        if previous_agent_label == agent_label && previous_state == state {
             return None;
         }
 
@@ -48,11 +35,9 @@ impl TerminalState {
             previous_agent_label,
             previous_known_agent,
             previous_state,
-            previous_presentation,
             agent_label,
             known_agent,
             state,
-            presentation,
         })
     }
 }

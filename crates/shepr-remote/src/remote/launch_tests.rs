@@ -57,43 +57,6 @@ fn remote_executable_rejects_paths_that_need_shell_quoting() {
 }
 
 #[test]
-fn reattach_command_includes_remote_and_session() {
-    assert_eq!(
-        reattach_command(
-            "target/release/shepr",
-            "user@host",
-            "work",
-            RemoteKeybindings::Local,
-        ),
-        "target/release/shepr --remote user@host --session work"
-    );
-    assert_eq!(
-        reattach_command(
-            "shepr",
-            "host name",
-            shepr_config::DEFAULT_SESSION_NAME,
-            RemoteKeybindings::Local,
-        ),
-        format!(
-            "shepr --remote 'host name' --session {}",
-            shepr_config::DEFAULT_SESSION_NAME
-        )
-    );
-    assert_eq!(
-        reattach_command(
-            "shepr",
-            "host",
-            shepr_config::DEFAULT_SESSION_NAME,
-            RemoteKeybindings::Server,
-        ),
-        format!(
-            "shepr --remote host --remote-keybindings server --session {}",
-            shepr_config::DEFAULT_SESSION_NAME
-        )
-    );
-}
-
-#[test]
 fn remote_bridge_command_passes_a_named_session() {
     let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
     assert!(

@@ -38,32 +38,18 @@ pub(crate) enum EndpointSendOutcome {
     NotSent,
 }
 
-/// What the Local slot's socket leads to, which decides whether it needs heartbeats.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LocalEndpointLink {
-    /// A server socket on this host. A dead server shows up as a transport error, so
-    /// no heartbeat is needed.
-    Socket,
-    /// The `shepr --remote` bridge socket: every byte crosses SSH, like a saved machine.
-    /// The link can go silent without an error, and the remote end of the bridge exits
-    /// after an idle stretch unless heartbeat traffic keeps it busy.
-    SshBridge,
-}
-
 pub struct EndpointRegistry {
     active: ClientEndpointId,
     input_enabled: bool,
-    local_link: LocalEndpointLink,
     connections: HashMap<ClientEndpointId, EndpointConnection>,
     failures: Vec<EndpointTransportFailure>,
 }
 
 impl EndpointRegistry {
-    pub(crate) fn empty(local_link: LocalEndpointLink) -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             active: ClientEndpointId::Local,
             input_enabled: false,
-            local_link,
             connections: HashMap::new(),
             failures: Vec::new(),
         }
@@ -71,28 +57,17 @@ impl EndpointRegistry {
 
     /// A registry whose Local slot is a server socket on this host, connected at `now`.
     pub fn new_at(local: impl EndpointTransport + 'static, generation: u64, now: Instant) -> Self {
-        Self::with_local_link(local, generation, LocalEndpointLink::Socket, now)
-    }
-
-    pub(crate) fn with_local_link(
-        local: impl EndpointTransport + 'static,
-        generation: u64,
-        local_link: LocalEndpointLink,
-        now: Instant,
-    ) -> Self {
-        let mut registry = Self::empty(local_link);
+        let mut registry = Self::empty();
         registry.input_enabled = true;
         registry.insert(ClientEndpointId::Local, local, generation, true, now);
         registry
     }
 
-    /// Every connection that crosses SSH gets heartbeats and a silence deadline: saved
-    /// machines always, and the Local slot when it is the `--remote` bridge.
-    fn crosses_ssh(&self, endpoint_id: &ClientEndpointId) -> bool {
-        match endpoint_id {
-            ClientEndpointId::Local => self.local_link == LocalEndpointLink::SshBridge,
-            ClientEndpointId::Ssh(_) => true,
-        }
+    /// Every connection that crosses SSH (the saved machines) gets heartbeats and a
+    /// silence deadline. The Local slot is a socket on this host: a dead server shows up
+    /// as a transport error, so it needs none.
+    fn crosses_ssh(endpoint_id: &ClientEndpointId) -> bool {
+        matches!(endpoint_id, ClientEndpointId::Ssh(_))
     }
 
     pub fn active_id(&self) -> &ClientEndpointId {
@@ -127,9 +102,7 @@ impl EndpointRegistry {
         surface_active: bool,
         now: Instant,
     ) {
-        let health = self
-            .crosses_ssh(&endpoint_id)
-            .then(|| EndpointHealth::new(now));
+        let health = Self::crosses_ssh(&endpoint_id).then(|| EndpointHealth::new(now));
         if let Some(mut previous) = self.connections.insert(
             endpoint_id,
             EndpointConnection {
@@ -465,7 +438,7 @@ mod tests {
         // Each failure removes its connection, so a dropped entry would lose
         // that endpoint for good: every one must come back out.
         let endpoints = 100;
-        let mut registry = EndpointRegistry::empty(LocalEndpointLink::Socket);
+        let mut registry = EndpointRegistry::empty();
         for index in 0..endpoints {
             insert(&mut registry, index, 1);
             registry.fail(
@@ -534,7 +507,7 @@ mod tests {
 
     #[test]
     fn recovered_local_uses_transport_failure_not_remote_health_probes() {
-        let mut registry = EndpointRegistry::empty(LocalEndpointLink::Socket);
+        let mut registry = EndpointRegistry::empty();
         let sent = Arc::new(Mutex::new(Vec::new()));
         registry.insert(
             ClientEndpointId::Local,
@@ -553,11 +526,11 @@ mod tests {
     }
 
     #[test]
-    fn only_a_local_slot_behind_the_ssh_bridge_is_health_tracked() {
-        let socket_sent = Arc::new(Mutex::new(Vec::new()));
+    fn a_local_slot_is_not_health_tracked() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
         let mut socket = EndpointRegistry::new(
             FakeTransport {
-                sent: Arc::clone(&socket_sent),
+                sent: Arc::clone(&sent),
                 error: None,
             },
             1,
@@ -568,43 +541,16 @@ mod tests {
                 .is_some_and(|connection| connection.health.is_none())
         );
 
-        let bridge_sent = Arc::new(Mutex::new(Vec::new()));
-        let mut bridge = EndpointRegistry::with_local_link(
-            FakeTransport {
-                sent: Arc::clone(&bridge_sent),
-                error: None,
-            },
-            1,
-            LocalEndpointLink::SshBridge,
-            Instant::now(),
-        );
-        // Taken after both inserts, so each connection's health clock started earlier.
+        // Taken after the insert, so the connection's health clock started earlier.
         let now = Instant::now();
         let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
         let expire_at = ping_at + crate::limits::HEARTBEAT_TIMEOUT;
 
         socket.tick_health(ping_at);
         socket.tick_health(expire_at);
-        assert!(socket_sent.lock().expect("test precondition").is_empty());
+        assert!(sent.lock().expect("test precondition").is_empty());
         assert!(socket.connection(&ClientEndpointId::Local).is_some());
         assert!(socket.take_failures().is_empty());
-
-        assert!(
-            bridge
-                .connection(&ClientEndpointId::Local)
-                .is_some_and(|connection| connection.health.is_some())
-        );
-        bridge.mark_ready(&ClientEndpointId::Local, 1);
-        bridge.tick_health(ping_at);
-        assert!(matches!(
-            bridge_sent.lock().expect("test precondition").as_slice(),
-            [ClientMessage::HealthPing]
-        ));
-        bridge.tick_health(expire_at);
-        assert!(bridge.connection(&ClientEndpointId::Local).is_none());
-        let failures = bridge.take_failures();
-        assert_eq!(failures[0].endpoint_id, ClientEndpointId::Local);
-        assert_eq!(failures[0].kind, io::ErrorKind::TimedOut);
     }
 
     #[test]

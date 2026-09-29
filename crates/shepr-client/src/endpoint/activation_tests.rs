@@ -272,7 +272,6 @@ fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
                     1,
                 ),
                 agent_status: shepr_api::schema::AgentStatus::Idle,
-                tokens: Default::default(),
             },
         },
     })

@@ -364,10 +364,7 @@ impl HeadlessServer {
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 continue;
             }
-            let drained_at = self.refresh_app_clock();
-            if self.app.expire_due_metadata(drained_at) {
-                render_demand.join(RenderDemand::Full);
-            }
+            self.refresh_app_clock();
 
             // 3. Drain API requests.
             if self.drain_api_requests_with_shutdown_check() {
@@ -1992,8 +1989,6 @@ impl HeadlessServer {
             }
         };
 
-        let metadata_expired = self.app.expire_due_metadata(self.app.clock.now);
-
         match &msg.request.method {
             shepr_api::schema::Method::ClientWindowTitleSet(params) => {
                 let response = self.handle_client_window_title_api(Some(params.title.clone()));
@@ -2008,8 +2003,7 @@ impl HeadlessServer {
             _ => {}
         }
 
-        let mut changed = metadata_expired;
-        changed |= self.drain_all_internal_events_with_forwarding();
+        let mut changed = self.drain_all_internal_events_with_forwarding();
 
         // The full sync (including the view recompute) stays on this path:
         // API handlers read `app.state.view` for directional focus, splits and
@@ -2102,15 +2096,6 @@ impl HeadlessServer {
                     changed |= self.handle_internal_event_with_forwarding(ev);
                 }
             }
-        }
-
-        if let Some(deadline) = self
-            .app
-            .agent_metadata_deadline
-            .filter(|deadline| now >= *deadline)
-        {
-            self.app.expire_metadata_at(deadline, now);
-            changed = true;
         }
 
         changed |= self.app.handle_tab_bar_status_tasks(now);

@@ -1571,10 +1571,6 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
             .expect("projected pane")
     };
     let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
-    let workspace_id = server
-        .app
-        .public_workspace_id(0)
-        .expect("test precondition");
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let mut previous = client_shell_snapshot(&control).revision;
     server.render_and_stream();
@@ -1609,33 +1605,6 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         }),
     ));
     assert!(pane(&next_projection(&mut server, &control, &mut previous)).right_click_passthrough);
-
-    assert!(api_through_server(
-        &mut server,
-        Method::WorkspaceReportMetadata(shepr_api::schema::WorkspaceReportMetadataParams {
-            workspace_id: workspace_id.clone().to_string(),
-            source: "test".into(),
-            tokens: std::collections::HashMap::from([("ticket".into(), Some("T-1".into()))]),
-            seq: None,
-            ttl_ms: Some(60_000),
-        }),
-    ));
-    assert!(
-        !next_projection(&mut server, &control, &mut previous).workspaces[0]
-            .tokens
-            .is_empty()
-    );
-    assert!(
-        server
-            .app
-            .expire_due_metadata(Instant::now() + Duration::from_secs(120))
-    );
-    assert!(
-        next_projection(&mut server, &control, &mut previous).workspaces[0]
-            .tokens
-            .is_empty(),
-        "expired tokens leave the projection"
-    );
 
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::StateChanged {
@@ -5521,95 +5490,6 @@ fn terminal_attach_page_key_forwards_in_alternate_screen_without_mouse_reporting
             Bytes::from_static(b"\x1b[5~")
         );
     });
-}
-
-#[test]
-fn headless_scheduled_tasks_expire_agent_metadata() {
-    let mut server = test_headless_server();
-    let workspace = shepr_mux::workspace::Workspace::test_new("metadata");
-    let pane_id = workspace.tabs()[0].root_pane();
-    server.app.state.workspaces = vec![workspace];
-    server.app.state.ensure_test_terminals();
-
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::HookStateReported {
-            pane_id,
-            source: "custom:pi".into(),
-            agent_label: "pi".into(),
-            state: shepr_agent::detect::AgentState::Working,
-            message: None,
-            seq: None,
-            session_ref: None,
-        })
-    );
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::HookMetadataReported {
-            pane_id,
-            source: "user:pi-display".into(),
-            agent_label: Some("pi".into()),
-            applies_to_source: Some("custom:pi".into()),
-            title: Some("short lived".into()),
-            display_agent: None,
-            clear_title: false,
-            clear_display_agent: false,
-            seq: None,
-            // Expiry is advanced with the captured deadline below; keep the
-            // pre-expiry assertion independent of wall-clock scheduling.
-            ttl: Some(Duration::from_secs(60)),
-        })
-    );
-
-    let deadline = server
-        .app
-        .agent_metadata_deadline
-        .expect("metadata deadline");
-    let terminal_id = server.app.state.workspaces[0]
-        .pane_state(pane_id)
-        .expect("pane")
-        .attached_terminal_id
-        .clone();
-    assert_eq!(
-        server
-            .app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("terminal")
-            .effective_title()
-            .as_deref(),
-        Some("short lived")
-    );
-
-    assert!(server.handle_scheduled_tasks_headless(deadline + Duration::from_millis(1)));
-
-    assert_eq!(server.app.agent_metadata_deadline, None);
-    assert_eq!(
-        server
-            .app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("terminal")
-            .effective_title(),
-        None
-    );
-    assert!(
-        server
-            .app
-            .event_hub
-            .events_after(0)
-            .iter()
-            .any(|(_, event)| {
-                event.data.kind() == shepr_api::schema::EventKind::PaneAgentStatusChanged
-                    && matches!(
-                        &event.data,
-                        shepr_api::schema::EventData::PaneAgentStatusChanged {
-                            title,
-                            ..
-                        } if title.is_none()
-                    )
-            })
-    );
 }
 
 #[tokio::test]

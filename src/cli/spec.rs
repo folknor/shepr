@@ -16,15 +16,15 @@ use shepr_api::schema::{
 };
 use shepr_remote::{
     COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
-    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_JSON, FLAG_REMOTE, FLAG_REMOTE_KEYBINDINGS,
-    FLAG_SESSION, KEYBINDINGS_LOCAL, KEYBINDINGS_SERVER, PROGRAM_NAME, option_name_from_flag,
+    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_JSON, FLAG_SESSION, PROGRAM_NAME,
+    option_name_from_flag,
 };
 
 mod machine;
 
 pub(super) fn command() -> Command {
     // Launch options are root arguments, not `global` ones: clap accepts them
-    // only before the subcommand, so a trailing `--session` or `--remote` is a
+    // only before the subcommand, so a trailing `--session` or `--machine` is a
     // usage error instead of a silent retarget.
     let command = Command::new(PROGRAM_NAME)
         .bin_name(PROGRAM_NAME)
@@ -39,27 +39,9 @@ pub(super) fn command() -> Command {
         .arg(
             option("machine", "LABEL-OR-ID")
                 .value_parser(NonEmptyStringValueParser::new())
-                .conflicts_with_all([
-                    option_name_from_flag(FLAG_SESSION),
-                    option_name_from_flag(FLAG_REMOTE),
-                    option_name_from_flag(FLAG_REMOTE_KEYBINDINGS),
-                    "default-config",
-                    "version",
-                    "help",
-                ])
+                .conflicts_with_all([option_name_from_flag(FLAG_SESSION), "version", "help"])
                 .help("Run an API command on a saved SSH machine (uses that machine's session)"),
         )
-        .arg(
-            option(option_name_from_flag(FLAG_REMOTE), "TARGET")
-                .help("Attach through SSH to a remote Shepr server"),
-        )
-        .arg(
-            option(option_name_from_flag(FLAG_REMOTE_KEYBINDINGS), "MODE")
-                .value_parser([KEYBINDINGS_LOCAL, KEYBINDINGS_SERVER])
-                .requires(option_name_from_flag(FLAG_REMOTE))
-                .help("Choose local or server keybindings for remote attach"),
-        )
-        .arg(flag("default-config").help("Print default configuration and exit"))
         .arg(
             Arg::new("version")
                 .short('V')
@@ -68,7 +50,6 @@ pub(super) fn command() -> Command {
                 .help("Print version and exit"),
         )
         .subcommand(status_command())
-        .subcommand(config_command())
         .subcommand(machine::command())
         .subcommand(server_command())
         .subcommand(workspace_command())
@@ -149,12 +130,6 @@ fn status_command() -> Command {
         )
 }
 
-fn config_command() -> Command {
-    group("config")
-        .about("Manage local configuration")
-        .subcommand(Command::new("check").about("Validate config.toml and print diagnostics"))
-}
-
 fn server_command() -> Command {
     // Bare `shepr server` runs the headless server, so no subcommand is required.
     Command::new(COMMAND_SERVER)
@@ -185,22 +160,6 @@ fn workspace_command() -> Command {
                 .about("Rename a workspace")
                 .arg(required("workspace_id", "WORKSPACE_ID"))
                 .arg(text_words("label", "LABEL")),
-        )
-        .subcommand(
-            Command::new("report-metadata")
-                .about("Report display-only workspace metadata")
-                .arg(required("workspace_id", "WORKSPACE_ID"))
-                .arg(option("source", "ID").required(true))
-                .arg(token_option())
-                .arg(repeatable_option("clear-token", "NAME"))
-                .group(
-                    ArgGroup::new("tokens")
-                        .args(["token", "clear-token"])
-                        .multiple(true)
-                        .required(true),
-                )
-                .arg(u64_option("seq", "N"))
-                .arg(u64_option("ttl-ms", "N")),
         )
         .subcommand(id_command("close", "workspace_id", "Close a workspace"))
 }
@@ -514,8 +473,6 @@ fn pane_command() -> Command {
         .subcommand(id_command("close", "pane_id", "Close a pane"))
         .subcommand(report_agent_command())
         .subcommand(report_agent_session_command())
-        .subcommand(release_agent_command())
-        .subcommand(report_metadata_command())
 }
 
 fn report_agent_command() -> Command {
@@ -545,45 +502,6 @@ fn report_agent_session_command() -> Command {
         .arg(option("agent-session-id", "ID"))
         .arg(path_option("agent-session-path", "PATH"))
         .arg(option("session-start-source", "SOURCE"))
-}
-
-fn release_agent_command() -> Command {
-    Command::new("release-agent")
-        .about("Release pane agent lifecycle authority")
-        .arg(required("pane_id", "PANE_ID"))
-        .arg(option("source", "ID").required(true))
-        .arg(option("agent", "LABEL").required(true))
-        .arg(u64_option("seq", "N"))
-}
-
-fn report_metadata_command() -> Command {
-    Command::new("report-metadata")
-        .about("Report display-only pane metadata")
-        .arg(required("pane_id", "PANE_ID"))
-        .arg(option("source", "ID").required(true))
-        .arg(option("agent", "LABEL"))
-        .arg(option("applies-to-source", "ID"))
-        .arg(free_text_option("title", "TEXT").conflicts_with("clear-title"))
-        .arg(flag("clear-title"))
-        .arg(free_text_option("display-agent", "TEXT").conflicts_with("clear-display-agent"))
-        .arg(flag("clear-display-agent"))
-        .arg(token_option())
-        .arg(repeatable_option("clear-token", "NAME"))
-        .arg(u64_option("seq", "N"))
-        .arg(u64_option("ttl-ms", "N"))
-        .group(
-            ArgGroup::new("fields")
-                .args([
-                    "title",
-                    "clear-title",
-                    "display-agent",
-                    "clear-display-agent",
-                    "token",
-                    "clear-token",
-                ])
-                .multiple(true)
-                .required(true),
-        )
 }
 
 fn terminal_command() -> Command {
@@ -751,10 +669,6 @@ fn env_option() -> Arg {
         .help("Set an environment variable for the launched process")
 }
 
-fn token_option() -> Arg {
-    repeatable_option("token", "NAME=VALUE").value_parser(token_assignment)
-}
-
 fn flag(name: &'static str) -> Arg {
     Arg::new(name).long(name).action(ArgAction::SetTrue)
 }
@@ -811,10 +725,6 @@ fn finite_f32(value: &str) -> Result<f32, String> {
 
 fn env_assignment(value: &str) -> Result<(String, String), String> {
     super::parse_env_assignment(value)
-}
-
-fn token_assignment(value: &str) -> Result<(String, Option<String>), String> {
-    super::parse_token_assignment(value)
 }
 
 const PANE_DIRECTIONS: &[(&str, PaneDirection)] = &[
@@ -963,8 +873,6 @@ mod tests {
             .next()
             .map_or_else(
                 || match arg.get_id().as_str() {
-                    "token" => "KEY=VALUE".to_string(),
-                    "clear-token" => "KEY".to_string(),
                     "pane" => "w1:p1".to_string(),
                     "ssh-target" => "user@example.test".to_string(),
                     _ => "value".to_string(),
@@ -1098,7 +1006,7 @@ mod tests {
 
     #[test]
     fn generated_remote_cli_arguments_parse_with_the_cli_spec() {
-        use shepr_remote::{RemoteCliCommand, RemoteKeybindings};
+        use shepr_remote::RemoteCliCommand;
 
         use crate::cli::{CliCommand, Invocation, Launch, parse_invocation, server, status};
 
@@ -1156,32 +1064,6 @@ mod tests {
                         )
                 ));
                 assert_eq!(invocation.session, parsed_session(session));
-            }
-        }
-
-        for session in [None, Some(default), Some("agents")] {
-            for keybindings in [
-                None,
-                Some(RemoteKeybindings::Local),
-                Some(RemoteKeybindings::Server),
-            ] {
-                let invocation = parse(RemoteCliCommand::Attach {
-                    target: "dev@host",
-                    session,
-                    keybindings,
-                });
-                assert!(matches!(
-                    invocation.launch,
-                    Launch::Tui {
-                        attached_session: None
-                    }
-                ));
-                assert_eq!(invocation.remote.as_deref(), Some("dev@host"));
-                assert_eq!(invocation.session.as_deref(), session);
-                assert_eq!(
-                    invocation.remote_keybindings.as_deref(),
-                    keybindings.map(RemoteKeybindings::to_env_value)
-                );
             }
         }
     }
@@ -1264,7 +1146,6 @@ mod tests {
     #[test]
     fn spec_marks_runtime_required_options_as_required() {
         for (path, options) in [
-            (&["workspace", "report-metadata"][..], &["source"][..]),
             (&["pane", "neighbor"][..], &["direction"][..]),
             (&["pane", "focus"][..], &["direction"][..]),
             (&["pane", "resize"][..], &["direction"][..]),
@@ -1277,8 +1158,6 @@ mod tests {
                 &["pane", "report-agent-session"][..],
                 &["source", "agent"][..],
             ),
-            (&["pane", "release-agent"][..], &["source", "agent"][..]),
-            (&["pane", "report-metadata"][..], &["source"][..]),
         ] {
             let cmd = command_path(&super::command(), path).clone();
             for option in options {
@@ -1376,13 +1255,15 @@ mod tests {
         for args in [
             &[
                 "shepr",
-                "workspace",
-                "report-metadata",
-                "w1",
+                "pane",
+                "report-agent",
+                "p1",
                 "--source",
                 "s",
-                "--token",
-                "a=b",
+                "--agent",
+                "a",
+                "--state",
+                "idle",
                 "--seq",
                 "x",
             ][..],
@@ -1401,7 +1282,7 @@ mod tests {
             &[
                 "shepr",
                 "pane",
-                "release-agent",
+                "report-agent-session",
                 "p1",
                 "--source",
                 "s",

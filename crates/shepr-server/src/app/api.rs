@@ -80,9 +80,6 @@ impl App {
             Method::WorkspaceRename(params) => self.handle_workspace_rename(params),
             Method::WorkspaceMove(params) => self.handle_workspace_move(&params),
             Method::WorkspaceMoveBlock(params) => self.handle_workspace_move_block(params),
-            Method::WorkspaceReportMetadata(params) => {
-                self.handle_workspace_report_metadata(params)
-            }
             Method::WorkspaceClose(target) => self.handle_workspace_close(&target),
             Method::TabList(params) => self.handle_tab_list(params),
             Method::TabGet(target) => self.handle_tab_get(&target),
@@ -124,11 +121,9 @@ impl App {
             Method::PaneRead(params) => self.handle_pane_read(&params),
             Method::PaneReportAgent(params) => self.handle_pane_report_agent(params),
             Method::PaneReportAgentSession(params) => self.handle_pane_report_agent_session(params),
-            Method::PaneReportMetadata(params) => self.handle_pane_report_metadata(params),
             Method::PaneClearAgentAuthority(params) => {
                 self.handle_pane_clear_agent_authority(params)
             }
-            Method::PaneReleaseAgent(params) => self.handle_pane_release_agent(params),
             Method::PaneClose(target) => self.handle_pane_close(&target),
         }
     }
@@ -455,10 +450,6 @@ mod tests {
         let workspace_id = target.id.clone();
         app.state.workspaces = vec![first, target];
         app.state.ensure_test_terminals();
-        let presentation = shepr_mux::terminal::EffectivePresentation {
-            title: None,
-            display_agent: None,
-        };
         let update = crate::app::actions::PaneStateUpdate {
             pane_id,
             workspace_id: workspace_id.clone(),
@@ -466,13 +457,11 @@ mod tests {
                 agent_label: None,
                 known_agent: None,
                 state: AgentState::Unknown,
-                presentation: presentation.clone(),
             },
             current: crate::app::actions::PaneStateSnapshot {
                 agent_label: Some("codex".into()),
                 known_agent: Some(Agent::Codex),
                 state: AgentState::Working,
-                presentation,
             },
             cause: crate::app::actions::PaneStateCause::StateChanged,
         };

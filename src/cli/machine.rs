@@ -141,6 +141,7 @@ fn status(
         .map(|profile| {
             let (status, error) = match shepr_remote::check_saved_ssh(
                 paths,
+                profile.id.as_str(),
                 &profile.target,
                 &profile.session,
                 settings,
@@ -215,7 +216,13 @@ fn reconnect(
             "SSH authentication failed; the saved machine was not changed.",
         ));
     }
-    shepr_remote::check_saved_ssh(paths, &profile.target, &profile.session, settings)?;
+    shepr_remote::check_saved_ssh(
+        paths,
+        profile.id.as_str(),
+        &profile.target,
+        &profile.session,
+        settings,
+    )?;
     println!(
         "Machine {} is reachable. Open Shepr clients retry within {} seconds.",
         profile.id,

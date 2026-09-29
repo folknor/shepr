@@ -78,14 +78,14 @@ status_indicators = "__STATUS_INDICATORS__"
 accent = "#f5c2e7"
 
 [ui.sidebar.agents]
-rows = [["state_icon", "state_text", "machine", "workspace", "tab", "pane", "agent", "terminal_title", "terminal_title_stripped", "$summary"], [{ token = "workspace", fg = "#112233", bold = false, dim = true, rules = [{ equals = "main", fg = "#abcdef", bold = true }, { contains = "dev", ignore_case = true, hide = false }, { starts_with = "prod", fg = "#123456" }, { gt = 2.5, dim = true }, { lt = 10.0, hide = true }] }]]
+rows = [["state_icon", "state_text", "machine", "workspace", "tab", "pane", "agent", "terminal_title", "terminal_title_stripped"], [{ token = "workspace", fg = "#112233", bold = false, dim = true, rules = [{ equals = "main", fg = "#abcdef", bold = true }, { contains = "dev", ignore_case = true, hide = false }, { starts_with = "prod", fg = "#123456" }, { gt = 2.5, dim = true }, { lt = 10.0, hide = true }] }]]
 row_gap = 2
 
 [ui.sidebar.agents.rows_by_agent]
-claude = [[{ token = "$model", fg = "#abcdef", dim = false }]]
+claude = [[{ token = "agent", fg = "#abcdef", dim = false }]]
 
 [ui.sidebar.spaces]
-rows = [["state_icon", "state_text", "workspace", "branch", "git_status", "$jj_status"], [{ token = "branch", fg = "#abcdef", bold = true }]]
+rows = [["state_icon", "state_text", "workspace", "branch", "git_status"], [{ token = "branch", fg = "#abcdef", bold = true }]]
 row_gap = 3
 
 [advanced]

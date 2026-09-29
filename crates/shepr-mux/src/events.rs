@@ -76,31 +76,10 @@ pub enum AppEvent {
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
     },
-    /// Display-only agent metadata was reported for a pane.
-    HookMetadataReported {
-        pane_id: PaneId,
-        source: String,
-        agent_label: Option<String>,
-        applies_to_source: Option<String>,
-        title: Option<String>,
-        display_agent: Option<String>,
-        clear_title: bool,
-        clear_display_agent: bool,
-        seq: Option<u64>,
-        ttl: Option<std::time::Duration>,
-    },
     /// Hook authority was explicitly cleared for a pane.
     HookAuthorityCleared {
         pane_id: PaneId,
         source: Option<String>,
-        seq: Option<u64>,
-    },
-    /// The current detected agent gracefully released this pane back to the shell.
-    HookAgentReleased {
-        pane_id: PaneId,
-        source: String,
-        agent_label: String,
-        known_agent: Option<Agent>,
         seq: Option<u64>,
     },
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop

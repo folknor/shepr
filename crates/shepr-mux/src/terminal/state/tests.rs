@@ -2032,11 +2032,6 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
 
     assert!(
         terminal
-            .release_agent_with_mutation("custom:pi", "pi", Some(200))
-            .is_none()
-    );
-    assert!(
-        terminal
             .clear_hook_authority_with_mutation(Some("custom:pi"), Some(201))
             .is_none()
     );
@@ -3465,7 +3460,7 @@ fn a_confirmed_agent_exit_still_frees_the_name_for_reuse() {
 }
 
 #[test]
-fn agent_alias_survives_detection_uncertainty_and_reported_release_but_not_replacement() {
+fn agent_alias_survives_detection_uncertainty_but_not_replacement() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
     terminal.set_agent_name("reviewer".into());
@@ -3475,39 +3470,6 @@ fn agent_alias_survives_detection_uncertainty_and_reported_release_but_not_repla
 
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
     assert!(terminal.agent_name.is_none());
-
-    terminal.set_agent_name("replacement".into());
-    let mutation = terminal
-        .release_agent_with_mutation("shepr:codex", "codex", None)
-        .expect("detected agent release should be accepted");
-    assert!(!mutation.agent_released);
-    assert_eq!(terminal.agent_name.as_deref(), Some("replacement"));
-    assert_eq!(terminal.detected_agent, Some(Agent::Codex));
-}
-
-#[test]
-fn custom_release_preserves_process_owned_agent_state() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal
-        .set_hook_authority(
-            "custom:pi".into(),
-            "pi".into(),
-            AgentState::Working,
-            None,
-            Some(10),
-        )
-        .expect("custom state should be accepted");
-
-    let mutation = terminal
-        .release_agent_with_mutation("custom:pi", "pi", Some(11))
-        .expect("custom release should be accepted");
-
-    assert!(!mutation.agent_released);
-    assert!(terminal.hook_authority.is_none());
-    assert_eq!(terminal.detected_agent, Some(Agent::Pi));
-    assert_eq!(terminal.effective_agent_label(), Some("pi"));
-    assert_eq!(terminal.state, AgentState::Idle);
 }
 
 #[test]
@@ -3610,51 +3572,6 @@ fn launch_command_alone_does_not_make_a_terminal_an_agent() {
     let terminal = test_terminal().with_launch_argv(vec!["just".into(), "dev".into()]);
 
     assert!(!terminal.is_agent_terminal());
-}
-
-#[test]
-fn release_agent_clears_matching_restored_session_ref_before_detection() {
-    let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:letta".into(),
-        agent: shepr_agent::agent::Agent::Letta,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("letta-session")
-            .expect("test precondition"),
-    });
-
-    let mutation = terminal
-        .release_agent_with_mutation("shepr:letta", "letta", Some(21))
-        .expect("accepted release");
-
-    assert!(mutation.session_ref_changed);
-    assert!(mutation.effective_state_change.is_none());
-    assert!(terminal.persisted_agent_session.is_none());
-}
-
-#[test]
-fn release_agent_preserves_foreign_persisted_session_ref() {
-    let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:claude".into(),
-        agent: shepr_agent::agent::Agent::Claude,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("claude-session")
-            .expect("test precondition"),
-    });
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-
-    let mutation = terminal
-        .release_agent_with_mutation("shepr:pi", "pi", Some(21))
-        .expect("visible agent release should be accepted");
-
-    assert!(!mutation.session_ref_changed);
-    assert_eq!(
-        terminal.persisted_agent_session.as_ref().map(|session| (
-            session.source.as_str(),
-            session.agent.label(),
-            session.session_ref.value_str()
-        )),
-        Some(("shepr:claude", "claude", "claude-session"))
-    );
 }
 
 #[test]

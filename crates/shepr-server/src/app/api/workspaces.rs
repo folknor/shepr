@@ -3,13 +3,10 @@ use shepr_api::error::{ApiErrorCode, ApiResult};
 use crate::app::{App, actions::PaneContextFallback};
 use shepr_api::schema::{
     EventData, EventEnvelope, ResponseResult, WorkspaceCloseParams, WorkspaceCreateParams,
-    WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams, WorkspaceTarget,
+    WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceTarget,
 };
 
-use super::super::api_helpers::{
-    normalize_metadata_source, normalize_metadata_ttl, workspace_not_found,
-};
+use super::super::api_helpers::workspace_not_found;
 use super::responses::{failure, success};
 
 impl App {
@@ -230,74 +227,6 @@ impl App {
         success(ResponseResult::WorkspaceList { workspaces })
     }
 
-    pub(super) fn handle_workspace_report_metadata(
-        &mut self,
-        params: WorkspaceReportMetadataParams,
-    ) -> ApiResult {
-        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
-            return Err(workspace_not_found(&params.workspace_id));
-        };
-        let source = match normalize_metadata_source(&params.source) {
-            Ok(source) => source,
-            Err(message) => return failure(ApiErrorCode::InvalidMetadataSource, message),
-        };
-        let ttl = match normalize_metadata_ttl(params.ttl_ms) {
-            Ok(ttl) => ttl,
-            Err(message) => return failure(ApiErrorCode::InvalidMetadataTtl, message),
-        };
-        let tokens = match super::super::api_helpers::normalize_metadata_tokens(params.tokens) {
-            Ok(tokens) => tokens,
-            Err(message) => return failure(ApiErrorCode::InvalidMetadataToken, message),
-        };
-        let Some(workspace) = self.state.workspaces.get_mut(index) else {
-            return Err(workspace_not_found(&params.workspace_id));
-        };
-        let now = self.clock.now;
-        if !shepr_mux::terminal::metadata_tokens::sequence_is_fresh(
-            &workspace.metadata_token_sequences,
-            &source,
-            params.seq,
-            now,
-        ) {
-            return success(ResponseResult::Ok {});
-        }
-        if workspace.metadata_tokens.key_count_after_patch(&tokens)
-            > super::super::api_helpers::MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
-        {
-            return failure(
-                ApiErrorCode::MetadataTokenLimit,
-                format!(
-                    "workspace metadata may contain at most {} tokens",
-                    super::super::api_helpers::MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
-                ),
-            );
-        }
-        match shepr_mux::terminal::metadata_tokens::accept_sequence(
-            &mut workspace.metadata_token_sequences,
-            &source,
-            params.seq,
-            now,
-        ) {
-            Ok(true) => {}
-            Ok(false) => return success(ResponseResult::Ok {}),
-            Err(()) => {
-                return failure(
-                    ApiErrorCode::MetadataSequenceSourceLimit,
-                    format!(
-                        "workspace metadata may track at most {} sequenced sources",
-                        shepr_mux::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
-                    ),
-                );
-            }
-        }
-        let changed = workspace.metadata_tokens.patch(tokens, ttl, now);
-        if changed {
-            self.sync_agent_metadata_deadline();
-            self.emit_workspace_token_updated(index);
-        }
-        success(ResponseResult::Ok {})
-    }
-
     pub(super) fn handle_workspace_close(&mut self, params: &WorkspaceCloseParams) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return Err(workspace_not_found(&params.workspace_id));
@@ -492,103 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_metadata_tokens_patch_clear_and_emit_snapshot() {
-        let event_hub = shepr_api::EventHub::default();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub.clone(),
-        );
-        app.state.workspaces = vec![Workspace::test_new("one")];
-        let workspace_id = app.public_workspace_id(0).expect("test precondition");
-
-        for (tokens, expected) in [
-            (
-                std::collections::HashMap::from([
-                    ("summary".into(), Some("reviewing auth".into())),
-                    ("jj_status".into(), Some("2 changes".into())),
-                ]),
-                std::collections::HashMap::from([
-                    ("summary".into(), "reviewing auth".into()),
-                    ("jj_status".into(), "2 changes".into()),
-                ]),
-            ),
-            (
-                std::collections::HashMap::from([
-                    ("summary".into(), Some("done".into())),
-                    ("jj_status".into(), None),
-                ]),
-                std::collections::HashMap::from([("summary".into(), "done".into())]),
-            ),
-        ] {
-            let response = app.handle_api_request(shepr_api::schema::Request {
-                id: "req".into(),
-                method: shepr_api::schema::Method::WorkspaceReportMetadata(
-                    WorkspaceReportMetadataParams {
-                        workspace_id: workspace_id.clone().to_string(),
-                        source: "user:test".into(),
-                        tokens,
-                        seq: None,
-                        ttl_ms: None,
-                    },
-                ),
-            });
-            let success: SuccessResponse = crate::test_support::test_success(&response);
-            assert_eq!(success.result, ResponseResult::Ok {});
-            assert_eq!(
-                app.workspace_info(0).expect("test precondition").tokens,
-                expected
-            );
-        }
-
-        assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
-            &event.data,
-            EventData::WorkspaceMetadataUpdated { workspace }
-                if workspace.tokens.get("summary").map(String::as_str) == Some("done")
-                    && !workspace.tokens.contains_key("jj_status")
-        )));
-    }
-
-    #[test]
-    fn workspace_token_ttl_expires_through_runtime_and_emits_update() {
-        let event_hub = shepr_api::EventHub::default();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub.clone(),
-        );
-        app.state.workspaces = vec![Workspace::test_new("one")];
-        let workspace_id = app.public_workspace_id(0).expect("test precondition");
-        let response = app.handle_workspace_report_metadata(WorkspaceReportMetadataParams {
-            workspace_id: workspace_id.to_string(),
-            source: "user:test".into(),
-            tokens: std::collections::HashMap::from([("summary".into(), Some("temporary".into()))]),
-            seq: None,
-            ttl_ms: Some(1),
-        });
-        let _: SuccessResponse = crate::test_support::test_success(&response);
-        let deadline = app.agent_metadata_deadline.expect("token deadline");
-
-        app.expire_metadata_at(deadline, deadline);
-
-        assert!(
-            app.workspace_info(0)
-                .expect("test precondition")
-                .tokens
-                .is_empty()
-        );
-        assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
-            &event.data,
-            EventData::WorkspaceMetadataUpdated { workspace } if workspace.tokens.is_empty()
-        )));
-    }
-
-    #[test]
-    fn workspace_info_for_a_stale_index_is_none_and_emits_nothing() {
+    fn workspace_info_for_a_stale_index_is_none() {
         let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -601,7 +434,6 @@ mod tests {
 
         assert!(app.workspace_info(0).is_some());
         assert!(app.workspace_info(1).is_none());
-        app.emit_workspace_token_updated(1);
         assert!(event_hub.events_after(0).is_empty());
     }
 

@@ -18,10 +18,8 @@ pub enum Subscription {
     WorkspaceCreated {},
     // There is no `workspace.updated` subscription: nothing in the app ever
     // emitted a generic workspace update, so a subscription to it was accepted
-    // and then never fired. The specific kinds below (`metadata_updated`,
-    // `renamed`, `moved`, ...) are the ones the app actually emits.
-    #[serde(rename = "workspace.metadata_updated")]
-    WorkspaceMetadataUpdated {},
+    // and then never fired. The specific kinds below (`renamed`, `moved`, ...)
+    // are the ones the app actually emits.
     #[serde(rename = "workspace.renamed")]
     WorkspaceRenamed {},
     #[serde(rename = "workspace.moved")]
@@ -101,7 +99,6 @@ pub enum EventMatch {
 // path and the specific workspace events already cover what changes.
 pub enum EventKind {
     WorkspaceCreated,
-    WorkspaceMetadataUpdated,
     WorkspaceClosed,
     WorkspaceRenamed,
     WorkspaceMoved,
@@ -156,10 +153,6 @@ pub struct PaneAgentStatusChangedEvent {
     pub agent_status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,9 +166,6 @@ pub struct PaneScrollChangedEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
     WorkspaceCreated {
-        workspace: WorkspaceInfo,
-    },
-    WorkspaceMetadataUpdated {
         workspace: WorkspaceInfo,
     },
     WorkspaceClosed {
@@ -271,10 +261,6 @@ pub enum EventData {
         agent_status: AgentStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display_agent: Option<String>,
     },
     LayoutUpdated {
         layout: super::panes::PaneLayoutSnapshot,
@@ -285,7 +271,6 @@ impl EventData {
     pub fn kind(&self) -> EventKind {
         match self {
             Self::WorkspaceCreated { .. } => EventKind::WorkspaceCreated,
-            Self::WorkspaceMetadataUpdated { .. } => EventKind::WorkspaceMetadataUpdated,
             Self::WorkspaceClosed { .. } => EventKind::WorkspaceClosed,
             Self::WorkspaceRenamed { .. } => EventKind::WorkspaceRenamed,
             Self::WorkspaceMoved { .. } => EventKind::WorkspaceMoved,

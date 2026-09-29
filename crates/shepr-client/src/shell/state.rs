@@ -5,12 +5,6 @@
 
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClientShellKeybindingSource {
-    RemoteLocal,
-    Endpoint,
-}
-
 pub struct ClientShellConfig {
     pub(super) sidebar_width: u16,
     pub(super) sidebar_bounds: shepr_config::SidebarBounds,
@@ -25,7 +19,6 @@ pub struct ClientShellConfig {
     pub(super) copy_on_select: bool,
     pub(super) palette: Palette,
     pub(super) keybinds: LiveKeybindConfig,
-    pub(super) keybinding_source: ClientShellKeybindingSource,
     pub(super) prompt_new_tab_name: bool,
     pub(super) prompt_new_workspace_name: bool,
     pub(super) confirm_close: bool,
@@ -936,10 +929,8 @@ impl ClientShellState {
         }
         self.active_snapshot_generation = generation;
         self.graphics_scope = graphics_scope;
-        // Endpoint-sourced keymaps follow its resolved config. Local and
-        // RemoteLocal keep the keymap built from this client's config.
-        let snapshot_keybindings_changed =
-            self.config.uses_endpoint_keybindings() && endpoint_keybindings_changed;
+        // The keymap follows the endpoint's resolved config.
+        let snapshot_keybindings_changed = endpoint_keybindings_changed;
         let boot_changed = endpoint_boot_changed
             || self
                 .snapshot

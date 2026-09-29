@@ -35,9 +35,7 @@ pub use crate::machine::SshTarget;
 pub use args::*;
 pub use bridge::{BridgeUpload, BridgeUploadEnd};
 pub use host::run_remote_client_bridge;
-pub use launch::{
-    check_saved_ssh, interactive_shell_command, prepare_saved_ssh, run_remote, shell_quote,
-};
+pub use launch::{check_saved_ssh, interactive_shell_command, prepare_saved_ssh, shell_quote};
 pub use saved::*;
 pub use server_lifecycle::{Confirmation, Operator};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
@@ -272,12 +270,6 @@ pub fn saved_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<Str
     } else {
         remote_error_hint_for_failure(err, target)
     }
-}
-
-/// Operator hint lines for a failed remote launch, one per line and without a
-/// trailing newline. Empty when there is no hint.
-pub fn remote_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<String> {
-    remote_error_hint_for_failure(err, target)
 }
 
 fn remote_error_hint_for_failure(failure: &SshFailureDiagnostic, target: &str) -> Vec<String> {

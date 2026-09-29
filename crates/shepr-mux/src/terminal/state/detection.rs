@@ -97,7 +97,6 @@ impl TerminalState {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
-        let previous_presentation = self.effective_presentation_at(now);
         let previous_detected_agent = self.detected_agent;
         let previous_session = self.current_session_identity_for_persistence();
         let newer_custom_authority = process_exited
@@ -124,8 +123,6 @@ impl TerminalState {
                     previous_agent_label,
                     previous_known_agent,
                     previous_state,
-                    previous_presentation,
-                    now,
                 ),
                 session_ref_changed: previous_session
                     != self.current_session_identity_for_persistence(),
@@ -143,8 +140,6 @@ impl TerminalState {
                     previous_agent_label,
                     previous_known_agent,
                     previous_state,
-                    previous_presentation,
-                    now,
                 ),
                 session_ref_changed: previous_session
                     != self.current_session_identity_for_persistence(),
@@ -280,48 +275,6 @@ impl TerminalState {
             {
                 self.persisted_agent_session = None;
             }
-            if let Some(agent) = agent {
-                let agent_label = shepr_agent::detect::agent_label(agent);
-                let mut cleared_metadata_sources = Vec::new();
-                self.agent_metadata.retain(|source, metadata| {
-                    let official_metadata = shepr_agent::agent::resume::is_official_agent_source(
-                        &metadata.source,
-                        agent_label,
-                    ) || metadata.applies_to_source.as_deref().is_some_and(
-                        |applies_to| {
-                            shepr_agent::agent::resume::is_official_agent_source(
-                                applies_to,
-                                agent_label,
-                            )
-                        },
-                    );
-                    let matches_agent =
-                        metadata.agent_label.as_deref() == Some(agent_label) || official_metadata;
-                    let clear = matches_agent && (official_metadata || metadata.reported_at <= now);
-                    if clear {
-                        cleared_metadata_sources.push(source.clone());
-                    }
-                    !clear
-                });
-                for source in cleared_metadata_sources {
-                    self.metadata_report_sequences.remove(&source);
-                    self.metadata_report_agents.remove(&source);
-                    self.metadata_token_sequence_sources.remove(&source);
-                }
-                let mut exited_generation_sources = Vec::new();
-                self.metadata_report_agents.retain(|source, owner| {
-                    if *owner == agent {
-                        exited_generation_sources.push(source.clone());
-                        false
-                    } else {
-                        true
-                    }
-                });
-                for source in exited_generation_sources {
-                    self.metadata_report_sequences.remove(&source);
-                    self.metadata_token_sequence_sources.remove(&source);
-                }
-            }
         }
         if self.hook_authority_not_newer_than(now)
             && (self.hook_authority_conflicts_with_detected_agent(agent)
@@ -360,8 +313,6 @@ impl TerminalState {
             previous_agent_label,
             previous_known_agent,
             previous_state,
-            previous_presentation,
-            now,
         );
         TerminalStateMutation {
             effective_state_change,

@@ -146,7 +146,7 @@ pub(super) struct TokenStyles {
     pub(super) state_text: Style,
     pub(super) primary: Style,
     pub(super) secondary: Style,
-    pub(super) custom: Style,
+    pub(super) terminal_title: Style,
 }
 
 pub(super) fn resolved_token_spans(
@@ -178,8 +178,7 @@ pub(super) fn resolved_token_spans(
             | ResolvedTokenKind::Pane(text)
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::TerminalTitle(text)
-            | ResolvedTokenKind::Branch(text)
-            | ResolvedTokenKind::Custom(text) => display_width(text),
+            | ResolvedTokenKind::Branch(text) => display_width(text),
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -306,10 +305,10 @@ pub(super) fn resolved_token_spans(
                     ));
                 }
             }
-            ResolvedTokenKind::TerminalTitle(text) | ResolvedTokenKind::Custom(text) => {
+            ResolvedTokenKind::TerminalTitle(text) => {
                 spans.push(Span::styled(
                     truncate_end(text, budgets[index]),
-                    apply_token_style(styles.custom, token.style),
+                    apply_token_style(styles.terminal_title, token.style),
                 ));
             }
         }

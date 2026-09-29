@@ -32,7 +32,7 @@ pub use self::session_id::{
 pub use self::theme_config::CustomThemeColors;
 pub use self::{
     diagnostic::ConfigDiagnostic,
-    io::{AppPaths, load_for_check, load_validated},
+    io::{AppPaths, load_validated},
     keybinds::{
         ActionKeybinds, BindingConfig, BindingKey, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_combo, normalize_key_combo, terminal_key_matches_combo,

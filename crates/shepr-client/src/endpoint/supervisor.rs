@@ -561,7 +561,6 @@ fn establish(
     };
     super::super::do_handshake(
         &mut stream,
-        crate::handshake::ClientProcessRole::Local,
         options.geometry,
         Some(options.surface_size),
         options.mouse_capture,

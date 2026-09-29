@@ -127,17 +127,6 @@ impl App {
             Vec::new()
         };
 
-        let released_agent = if let AppEvent::HookAgentReleased {
-            pane_id,
-            known_agent,
-            ..
-        } = &ev
-        {
-            known_agent.map(|agent| (*pane_id, agent))
-        } else {
-            None
-        };
-
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         let mut detached_terminal_ids = Vec::new();
         let pane_updates = if let AppEvent::PaneDied { pane_id, .. } = &ev {
@@ -168,15 +157,6 @@ impl App {
         if checkpointed_pane_exit {
             self.finish_checkpointed_pane_exit();
         }
-        if let Some((pane_id, agent)) = released_agent
-            && pane_updates.iter().any(|update| update.pane_id == pane_id)
-            && let Some((ws_idx, _)) = self.find_pane(pane_id)
-            && let Some(runtime) =
-                self.state
-                    .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-        {
-            runtime.begin_graceful_release(agent);
-        }
         self.sync_full_lifecycle_authority_detection_pauses();
         if terminal_cwd_reported {
             self.request_git_identity_refresh(self.clock.now);
@@ -186,7 +166,6 @@ impl App {
         for update in &pane_updates {
             self.emit_pane_state_update(update);
         }
-        self.sync_agent_metadata_deadline();
         if let Some((ws_idx, tab_idx)) = pane_exit_layout_target {
             self.emit_layout_updated_event(ws_idx, tab_idx);
         }
@@ -258,18 +237,13 @@ impl App {
         let previous_agent_status = pane_agent_status(update.previous.state);
         let agent_status = pane_agent_status(update.current.state);
 
-        if previous_agent_status != agent_status
-            || update.previous.presentation != update.current.presentation
-        {
-            let presentation = update.current.presentation.clone();
+        if previous_agent_status != agent_status {
             self.emit_event(shepr_api::schema::EventEnvelope {
                 data: shepr_api::schema::EventData::PaneAgentStatusChanged {
                     pane_id,
                     workspace_id,
                     agent_status,
                     agent: update.current.agent_label.clone(),
-                    title: presentation.title,
-                    display_agent: presentation.display_agent,
                 },
             });
         }
@@ -365,15 +339,6 @@ impl App {
                 data: shepr_api::schema::EventData::PaneUpdated { pane },
             });
         }
-    }
-
-    pub(crate) fn emit_workspace_token_updated(&mut self, ws_idx: usize) {
-        let Some(workspace) = self.workspace_info(ws_idx) else {
-            return;
-        };
-        self.event_hub.push(shepr_api::schema::EventEnvelope {
-            data: shepr_api::schema::EventData::WorkspaceMetadataUpdated { workspace },
-        });
     }
 
     pub(crate) fn sync_focus_events(&mut self) {

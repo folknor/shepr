@@ -274,28 +274,11 @@ pub struct Config {
 }
 
 #[derive(Debug)]
-pub struct LoadedConfig {
+pub(crate) struct LoadedConfig {
     pub(crate) config: Config,
     pub(crate) provenance: super::ConfigProvenance,
     pub(crate) resolution: super::validated::ConfigResolution,
-    pub diagnostics: Vec<super::ConfigDiagnostic>,
-    pub(crate) document_state: ConfigDocumentState,
-    // Typed independently from the full document so `config check` can still
-    // report its home-path problem when another config field fails to parse.
-    pub(crate) unavailable_new_cwd: Option<NewTerminalCwdConfig>,
-}
-
-impl LoadedConfig {
-    pub fn provenance(&self) -> &super::ConfigProvenance {
-        &self.provenance
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConfigDocumentState {
-    Missing,
-    Loaded,
-    Unavailable,
+    pub(crate) diagnostics: Vec<super::ConfigDiagnostic>,
 }
 
 impl LoadedConfig {
@@ -519,7 +502,7 @@ pub struct AdvancedConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RemoteConfig {
-    /// Add keepalive fallbacks and private connection reuse for `shepr --remote`.
+    /// Add keepalive fallbacks and private connection reuse for saved machines.
     /// Set false to run plain ssh unchanged. Default: true.
     pub manage_ssh_config: bool,
 }

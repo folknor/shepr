@@ -7,48 +7,8 @@ use shepr_platform::ipc::LocalStream;
 use shepr_protocol::endpoint::EndpointClientHello;
 use shepr_protocol::{ClientMessage, ServerMessage};
 
-use super::{ClientError, shell};
-use crate::limits::Deadline;
-pub(super) use crate::limits::{LOCAL_HANDSHAKE_READ_TIMEOUT, REMOTE_HANDSHAKE_READ_TIMEOUT};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ClientProcessRole {
-    Local,
-    Remote {
-        keybindings: shell::ClientShellKeybindingSource,
-    },
-}
-
-/// Where this client's keybindings come from. "server" imports the endpoint's; "local"
-/// keeps this client's own; unset (or empty) is a local client. Any other value refuses
-/// startup rather than guessing.
-impl ClientProcessRole {
-    pub(super) fn from_env() -> Result<Self, String> {
-        match shepr_remote::RemoteKeybindings::from_env()? {
-            Some(shepr_remote::RemoteKeybindings::Server) => Ok(Self::Remote {
-                keybindings: shell::ClientShellKeybindingSource::Endpoint,
-            }),
-            Some(shepr_remote::RemoteKeybindings::Local) => Ok(Self::Remote {
-                keybindings: shell::ClientShellKeybindingSource::RemoteLocal,
-            }),
-            None => Ok(Self::Local),
-        }
-    }
-
-    pub(super) fn keybinding_source(self) -> shell::ClientShellKeybindingSource {
-        match self {
-            Self::Local => shell::ClientShellKeybindingSource::RemoteLocal,
-            Self::Remote { keybindings } => keybindings,
-        }
-    }
-
-    pub(super) fn handshake_read_timeout(self) -> Duration {
-        match self {
-            Self::Local => LOCAL_HANDSHAKE_READ_TIMEOUT,
-            Self::Remote { .. } => REMOTE_HANDSHAKE_READ_TIMEOUT,
-        }
-    }
-}
+use super::ClientError;
+use crate::limits::{Deadline, LOCAL_HANDSHAKE_READ_TIMEOUT, REMOTE_HANDSHAKE_READ_TIMEOUT};
 
 fn set_handshake_recv_timeout(
     stream: &LocalStream,
@@ -91,10 +51,8 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
 /// `deadline`, when given, caps the wait for the reply below the usual read timeout: the
 /// saved-machine endpoint supervisor bounds each whole connection attempt by its
 /// attempt budget.
-/// The usual 60 s remote read budget applies to `shepr --remote`.
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
-    role: ClientProcessRole,
     geometry: shepr_core::geometry::HostGeometry,
     shell_surface_size: Option<shepr_protocol::ClientSurfaceSize>,
     mouse_capture: bool,
@@ -153,7 +111,7 @@ pub(super) fn do_handshake(
     let read_timeout = if endpoint_shell && !surface_active {
         REMOTE_HANDSHAKE_READ_TIMEOUT
     } else {
-        role.handshake_read_timeout()
+        LOCAL_HANDSHAKE_READ_TIMEOUT
     };
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
@@ -252,7 +210,6 @@ mod tests {
             endpoint_shell.then_some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 });
         let error = do_handshake(
             &mut client,
-            ClientProcessRole::Local,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             surface,
             false,
@@ -303,7 +260,6 @@ mod tests {
         });
         let error = do_handshake(
             &mut client,
-            ClientProcessRole::Local,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
@@ -326,7 +282,6 @@ mod tests {
         let deadline = started + Duration::from_millis(200);
         let error = do_handshake(
             &mut client,
-            ClientProcessRole::Local,
             shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,

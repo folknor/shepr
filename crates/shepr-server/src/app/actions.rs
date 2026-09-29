@@ -27,7 +27,6 @@ pub struct PaneStateSnapshot {
     pub agent_label: Option<String>,
     pub known_agent: Option<Agent>,
     pub state: AgentState,
-    pub presentation: shepr_mux::terminal::EffectivePresentation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

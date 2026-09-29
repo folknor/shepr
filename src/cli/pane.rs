@@ -5,11 +5,10 @@ use clap::ArgMatches;
 use shepr_api::schema::{
     Method, PaneAgentState, PaneCurrentParams, PaneDirection, PaneEdgesParams,
     PaneFocusDirectionParams, PaneLayoutParams, PaneListParams, PaneMoveDestination,
-    PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams, PaneReadParams,
-    PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
-    PaneReportMetadataParams, PaneResizeParams, PaneRightClickTarget, PaneSplitParams,
-    PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource, Request,
-    SplitDirection,
+    PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams, PaneReadParams, PaneRenameParams,
+    PaneReportAgentParams, PaneReportAgentSessionParams, PaneResizeParams, PaneRightClickTarget,
+    PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, ReadFormat,
+    ReadSource, Request, SplitDirection,
 };
 
 use super::matches::{flag, report_source, required, string, value, values, words};
@@ -63,8 +62,6 @@ pub(crate) enum Command {
     },
     ReportAgent(Result<PaneReportAgentParams, String>),
     ReportAgentSession(Result<PaneReportAgentSessionParams, String>),
-    ReleaseAgent(Result<PaneReleaseAgentParams, String>),
-    ReportMetadata(Result<PaneReportMetadataParams, String>),
 }
 
 #[derive(Clone)]
@@ -114,8 +111,6 @@ impl Command {
             Self::Close { .. } => "close",
             Self::ReportAgent(_) => "report-agent",
             Self::ReportAgentSession(_) => "report-agent-session",
-            Self::ReleaseAgent(_) => "release-agent",
-            Self::ReportMetadata(_) => "report-metadata",
         }
     }
 
@@ -138,9 +133,7 @@ impl Command {
             | Self::Move(_)
             | Self::Close { .. }
             | Self::ReportAgent(_)
-            | Self::ReportAgentSession(_)
-            | Self::ReleaseAgent(_)
-            | Self::ReportMetadata(_) => true,
+            | Self::ReportAgentSession(_) => true,
         }
     }
 }
@@ -197,12 +190,6 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
         Some(("report-agent-session", command)) => Some(Command::ReportAgentSession(
             report_agent_session_params(command),
         )),
-        Some(("release-agent", command)) => {
-            Some(Command::ReleaseAgent(release_agent_params(command)))
-        }
-        Some(("report-metadata", command)) => {
-            Some(Command::ReportMetadata(report_metadata_params(command)))
-        }
         _ => None,
     }
 }
@@ -341,24 +328,6 @@ pub(super) fn run_pane_command(
                 paths,
                 "cli:request",
                 Method::PaneReportAgentSession(params),
-                super::MethodResponseMode::ErrorsOnly,
-            ),
-            Err(message) => Ok(super::usage_error(&message)),
-        },
-        Command::ReleaseAgent(result) => match result {
-            Ok(params) => super::send_method_response(
-                paths,
-                "cli:request",
-                Method::PaneReleaseAgent(params),
-                super::MethodResponseMode::ErrorsOnly,
-            ),
-            Err(message) => Ok(super::usage_error(&message)),
-        },
-        Command::ReportMetadata(result) => match result {
-            Ok(params) => super::send_method_response(
-                paths,
-                "cli:request",
-                Method::PaneReportMetadata(params),
                 super::MethodResponseMode::ErrorsOnly,
             ),
             Err(message) => Ok(super::usage_error(&message)),
@@ -597,41 +566,6 @@ fn report_agent_session_params(
         agent_session_id: string(matches, "agent-session-id"),
         agent_session_path: string(matches, "agent-session-path"),
         session_start_source: string(matches, "session-start-source"),
-    })
-}
-
-fn release_agent_params(matches: &ArgMatches) -> Result<PaneReleaseAgentParams, String> {
-    Ok(PaneReleaseAgentParams {
-        pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
-        source: report_source(matches).ok_or("missing required --source")?,
-        agent: required(matches, "agent").ok_or("missing required agent")?,
-        seq: value::<u64>(matches, "seq"),
-    })
-}
-
-fn report_metadata_params(matches: &ArgMatches) -> Result<PaneReportMetadataParams, String> {
-    // Setting and clearing the same field conflict in the spec, and at least
-    // one field is required there.
-    let source = report_source(matches).ok_or("missing required --source")?;
-    let applies_to_source = string(matches, "applies-to-source");
-    if applies_to_source
-        .as_deref()
-        .is_some_and(|source| source.trim().is_empty())
-    {
-        return Err("missing value for --applies-to-source".into());
-    }
-    Ok(PaneReportMetadataParams {
-        pane_id: required(matches, "pane_id").ok_or("missing required pane_id")?,
-        source,
-        agent: string(matches, "agent"),
-        applies_to_source,
-        title: string(matches, "title"),
-        display_agent: string(matches, "display-agent"),
-        tokens: super::matches::metadata_tokens(matches),
-        clear_title: flag(matches, "clear-title"),
-        clear_display_agent: flag(matches, "clear-display-agent"),
-        seq: value::<u64>(matches, "seq"),
-        ttl_ms: value::<u64>(matches, "ttl-ms"),
     })
 }
 
@@ -1175,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn report_agent_session_and_release_read_their_options() {
+    fn report_agent_session_reads_its_options() {
         let params = report_agent_session_params(&pane(&[
             "report-agent-session",
             "p1",
@@ -1187,75 +1121,6 @@ mod tests {
         ]))
         .expect("test precondition");
         assert_eq!(params.session_start_source.as_deref(), Some("resume"));
-
-        let params = release_agent_params(&pane(&[
-            "release-agent",
-            "p1",
-            "--source",
-            "hook",
-            "--agent",
-            "codex",
-            "--seq",
-            "3",
-        ]))
-        .expect("test precondition");
-        assert_eq!(params.seq, Some(3));
-        assert!(rejected(&[
-            "release-agent",
-            "p1",
-            "--source",
-            "hook",
-            "--agent",
-            "a",
-            "--seq",
-            "x"
-        ]));
-    }
-
-    #[test]
-    fn report_metadata_collects_fields_and_rejects_conflicts() {
-        let params = report_metadata_params(&pane(&[
-            "report-metadata",
-            "p1",
-            "--source",
-            "hook",
-            "--title",
-            "build",
-            "--token",
-            "a=1",
-            "--clear-token",
-            "b",
-            "--ttl-ms",
-            "50",
-        ]))
-        .expect("test precondition");
-        assert_eq!(params.title.as_deref(), Some("build"));
-        assert_eq!(params.tokens.get("a"), Some(&Some("1".to_string())));
-        assert_eq!(params.tokens.get("b"), Some(&None));
-        assert_eq!(params.ttl_ms, Some(50));
-
-        assert!(rejected(&["report-metadata", "p1", "--source", "s"]));
-        assert!(rejected(&[
-            "report-metadata",
-            "p1",
-            "--source",
-            "s",
-            "--title",
-            "t",
-            "--clear-title",
-        ]));
-        assert!(
-            report_metadata_params(&pane(&[
-                "report-metadata",
-                "p1",
-                "--source",
-                "s",
-                "--applies-to-source",
-                " ",
-                "--clear-title",
-            ]))
-            .is_err()
-        );
     }
 
     #[test]

@@ -1333,21 +1333,18 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         workspace_id: test_workspace_id("w1"),
         tab_id: test_tab_id("w1:t1"),
         name: Some("writer".into()),
-        display_agent: None,
         agent: Some("pi".into()),
-        title: Some("implementing navigation".into()),
         terminal_title: None,
         terminal_title_stripped: None,
         agent_status: AgentStatus::Working,
         state_change_seq: 1,
-        tokens: Vec::new(),
         focused: true,
     };
     let mut second_agent = first_agent.clone();
     second_agent.pane_id = "w1:p2".parse().expect("test precondition");
     second_agent.name = Some("reviewer".into());
     second_agent.agent = Some("claude".into());
-    second_agent.title = Some("checking navigation".into());
+    second_agent.terminal_title_stripped = Some("checking navigation".into());
     second_agent.agent_status = AgentStatus::Blocked;
     second_agent.focused = false;
     projected.agents = vec![first_agent, second_agent];

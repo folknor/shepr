@@ -36,38 +36,6 @@ pub(super) fn words(matches: &ArgMatches, id: &str) -> String {
     values::<String>(matches, id).join(" ")
 }
 
-/// Values paired with their argv position, so options that write the same
-/// map (`--token` and `--clear-token`) can be applied in the order given.
-pub(super) fn positioned<T: Clone + Send + Sync + 'static>(
-    matches: &ArgMatches,
-    id: &str,
-) -> Vec<(usize, T)> {
-    let indices: Vec<usize> = matches.indices_of(id).map_or_default(Iterator::collect);
-    indices.into_iter().zip(values::<T>(matches, id)).collect()
-}
-
-/// The `--token NAME=VALUE` / `--clear-token NAME` pairs as a metadata patch.
-/// A name given more than once takes its last setting.
-pub(super) fn metadata_tokens(
-    matches: &ArgMatches,
-) -> std::collections::HashMap<String, Option<String>> {
-    let mut patch: Vec<(usize, String, Option<String>)> =
-        positioned::<(String, Option<String>)>(matches, "token")
-            .into_iter()
-            .map(|(index, (name, value))| (index, name, value))
-            .chain(
-                positioned::<String>(matches, "clear-token")
-                    .into_iter()
-                    .map(|(index, name)| (index, name, None)),
-            )
-            .collect();
-    patch.sort_by_key(|(index, ..)| *index);
-    patch
-        .into_iter()
-        .map(|(_, name, value)| (name, value))
-        .collect()
-}
-
 pub(super) fn resolve_cwd(
     raw: &str,
     remote: bool,

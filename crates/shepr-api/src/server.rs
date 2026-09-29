@@ -987,7 +987,6 @@ mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
-    use std::collections::HashMap;
     use std::fs;
     use std::io::{BufRead, BufReader, Read};
     use std::os::unix::fs::PermissionsExt;
@@ -1246,12 +1245,9 @@ mod tests {
             restore_error: None,
             label: None,
             agent: Some("pi".into()),
-            title: None,
             terminal_title: None,
             terminal_title_stripped: None,
-            display_agent: None,
             agent_status,
-            tokens: HashMap::new(),
             agent_session: None,
             scroll: None,
             revision: 0,

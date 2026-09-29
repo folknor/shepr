@@ -63,7 +63,7 @@ use attach::direct_attach_pixel_mouse;
 use attach::{AttachInputAction, attach_semantic_message};
 use errors::ClientErrorContext;
 pub use errors::{ClientError, ClientExit, ClientRunError};
-use handshake::{ClientProcessRole, do_handshake};
+use handshake::do_handshake;
 use limits::{CLIENT_EVENT_QUEUE_CAPACITY, ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY};
 
 use std::collections::VecDeque;
@@ -84,13 +84,6 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
         let _ = notices.pop_front();
     }
     notices.push_back(message);
-}
-
-/// The reattach command the remote bridge hands the client it spawns, read
-/// once at launch; unset for a local client.
-fn reattach_command_from_env() -> io::Result<Option<String>> {
-    shepr_core::env::read_text(shepr_core::env::EnvVar::SheprReattachCommand)
-        .map_err(io::Error::from)
 }
 
 enum ClientLaunchMode {
@@ -146,16 +139,11 @@ fn run_client_with_launch_state(
     };
     let client_rendered_shell = attach_request.is_none();
     let socket_path = paths.server_address().client_socket().to_path_buf();
-    let error_context = ClientErrorContext::new(
-        paths.server_address().attach_command(paths.session_id()),
-        reattach_command_from_env()?,
-    );
-    let role = ClientProcessRole::from_env().map_err(io::Error::other)?;
-    let keybinding_source = role.keybinding_source();
+    let error_context =
+        ClientErrorContext::new(paths.server_address().attach_command(paths.session_id()));
     let shell_config = if client_rendered_shell {
         Some(
             shell::ClientShellConfig::from_validated_config(config)
-                .with_keybinding_source(keybinding_source)
                 .with_local_endpoint(paths.state_dir(), &socket_path)?,
         )
     } else {
@@ -164,7 +152,6 @@ fn run_client_with_launch_state(
     let mouse_capture = settings.mouse_capture_active();
     let pixel_geometry_fallback = settings.pixel_geometry_fallback();
     let mut loop_config = ClientLoopConfig {
-        role,
         settings,
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
@@ -176,7 +163,7 @@ fn run_client_with_launch_state(
     crate::logging::startup("client");
     info!(path = %socket_path.display(), "{log_message}");
 
-    let endpoint_catalog = if client_rendered_shell && role == ClientProcessRole::Local {
+    let endpoint_catalog = if client_rendered_shell {
         match initial_catalog {
             Some(catalog) => catalog,
             None => {
@@ -214,7 +201,6 @@ fn run_client_with_launch_state(
         .map(|mut stream| {
             do_handshake(
                 &mut stream,
-                role,
                 geometry,
                 shell_surface_size,
                 loop_config.settings.mouse_capture_active(),
@@ -403,9 +389,11 @@ async fn run_client_loop(
         title_write_failure: HostWriteFailure::default(),
     };
     state.set_host_size(cols, rows);
-    // Only a client that loaded the saved machines follows them; attach and remote-client
+    // Only a client that loaded the saved machines follows them; attach
     // processes run with an empty catalog.
-    let catalog_watch = (state.mode.is_shell() && config.role == ClientProcessRole::Local)
+    let catalog_watch = state
+        .mode
+        .is_shell()
         .then(|| endpoint::EndpointCatalogWatch::new(&config.paths, launch_now));
     let freeze_recovery_attempted = None;
     if let Some(shell) = state.mode.shell_mut() {
@@ -486,15 +474,6 @@ async fn run_client_loop(
         );
     });
 
-    // A `--remote` child reaches its server through the SSH bridge, so its Local slot is
-    // health-checked like a saved machine. Only the shell marks an endpoint ready (on its
-    // first snapshot), so a direct attach keeps the plain socket rule.
-    let local_link =
-        if matches!(config.role, ClientProcessRole::Remote { .. }) && state.mode.is_shell() {
-            endpoint::LocalEndpointLink::SshBridge
-        } else {
-            endpoint::LocalEndpointLink::Socket
-        };
     let write_stream = if let Some(stream) = initial {
         let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
         let transport = start_endpoint_transport(
@@ -505,14 +484,13 @@ async fn run_client_loop(
             1,
             surface_decoder,
         )?;
-        let mut registry =
-            endpoint::EndpointRegistry::with_local_link(transport, 1, local_link, launch_now);
+        let mut registry = endpoint::EndpointRegistry::new_at(transport, 1, launch_now);
         if state.mode.is_shell() {
             registry.send(&ClientMessage::ClientShellFocus { focused: true });
         }
         registry
     } else {
-        endpoint::EndpointRegistry::empty(local_link)
+        endpoint::EndpointRegistry::empty()
     };
     let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
         &config.paths,
@@ -1888,8 +1866,6 @@ impl ClientLoop<'_> {
 
 #[cfg(test)]
 use clipboard_forwarding::decode_clipboard_payload;
-#[cfg(test)]
-use handshake::REMOTE_HANDSHAKE_READ_TIMEOUT;
 #[cfg(test)]
 use terminal_geometry::{
     cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size, pack_cell_size,

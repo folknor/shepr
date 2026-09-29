@@ -12,7 +12,6 @@ pub(super) struct ActiveAgentStatusChangedSubscription {
     pane_id: String,
     status_filter: Option<crate::schema::AgentStatus>,
     last_status: Option<crate::schema::AgentStatus>,
-    last_presentation: Option<PanePresentationSnapshot>,
     last_sequence: u64,
     initial_event: Option<PaneAgentStatusChangedEvent>,
     request_prefix: String,
@@ -22,28 +21,6 @@ pub(super) struct ActiveScrollChangedSubscription {
     pane_id: String,
     last_scroll: Option<PaneScrollInfo>,
     request_prefix: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PanePresentationSnapshot {
-    title: Option<String>,
-    display_agent: Option<String>,
-}
-
-impl PanePresentationSnapshot {
-    fn from(pane: &crate::schema::PaneInfo) -> Self {
-        Self {
-            title: pane.title.clone(),
-            display_agent: pane.display_agent.clone(),
-        }
-    }
-
-    fn from_event(title: &Option<String>, display_agent: &Option<String>) -> Self {
-        Self {
-            title: title.clone(),
-            display_agent: display_agent.clone(),
-        }
-    }
 }
 
 pub(super) struct ActiveEventSubscription {
@@ -76,9 +53,6 @@ impl ActiveSubscription {
         match subscription {
             Subscription::WorkspaceCreated {} => {
                 Ok(event_subscription(EventKind::WorkspaceCreated))
-            }
-            Subscription::WorkspaceMetadataUpdated {} => {
-                Ok(event_subscription(EventKind::WorkspaceMetadataUpdated))
             }
             Subscription::WorkspaceRenamed {} => {
                 Ok(event_subscription(EventKind::WorkspaceRenamed))
@@ -113,7 +87,6 @@ impl ActiveSubscription {
                 let last_sequence = event_hub.current_sequence();
                 let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pane_id, api_tx)?;
                 let last_status = probe.agent_status;
-                let last_presentation = PanePresentationSnapshot::from(&probe);
                 let initial_event = agent_status
                     .is_some_and(|wanted| wanted == probe.agent_status)
                     .then_some(PaneAgentStatusChangedEvent {
@@ -121,8 +94,6 @@ impl ActiveSubscription {
                         workspace_id: probe.workspace_id,
                         agent_status: probe.agent_status,
                         agent: probe.agent,
-                        title: probe.title,
-                        display_agent: probe.display_agent,
                     });
 
                 Ok(Self::AgentStatusChanged(Box::new(
@@ -130,7 +101,6 @@ impl ActiveSubscription {
                         pane_id: probe.pane_id.to_string(),
                         status_filter: agent_status,
                         last_status: Some(last_status),
-                        last_presentation: Some(last_presentation),
                         last_sequence,
                         initial_event,
                         request_prefix: format!("{request_id}:sub:{index}"),
@@ -402,8 +372,6 @@ impl ActiveAgentStatusChangedSubscription {
             workspace_id,
             agent_status,
             agent,
-            title,
-            display_agent,
         } = event.data
         else {
             return None;
@@ -412,7 +380,6 @@ impl ActiveAgentStatusChangedSubscription {
             return None;
         }
         self.last_status = Some(agent_status);
-        self.last_presentation = Some(PanePresentationSnapshot::from_event(&title, &display_agent));
         self.initial_event = None;
         if self
             .status_filter
@@ -428,8 +395,6 @@ impl ActiveAgentStatusChangedSubscription {
                 workspace_id,
                 agent_status,
                 agent,
-                title,
-                display_agent,
             }),
         })
     }
@@ -472,14 +437,9 @@ impl ActiveAgentStatusChangedSubscription {
         pane: crate::schema::PaneInfo,
     ) -> Option<SubscriptionEventEnvelope> {
         let current_status = pane.agent_status;
-        let current_presentation = PanePresentationSnapshot::from(&pane);
         let previous_status = self.last_status.replace(current_status);
-        let previous_presentation = self.last_presentation.replace(current_presentation.clone());
-        let presentation_changed = previous_presentation
-            .as_ref()
-            .is_some_and(|previous| previous != &current_presentation);
         let status_changed = previous_status.is_some_and(|previous| previous != current_status);
-        if !(status_changed || presentation_changed) {
+        if !status_changed {
             return None;
         }
         if self
@@ -496,8 +456,6 @@ impl ActiveAgentStatusChangedSubscription {
                 workspace_id: pane.workspace_id,
                 agent_status: current_status,
                 agent: pane.agent,
-                title: pane.title,
-                display_agent: pane.display_agent,
             }),
         })
     }
@@ -573,20 +531,16 @@ fn pane_get(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::schema::{AgentStatus, EventData, EventEnvelope, EventKind, PaneInfo};
 
-    fn presentation_event(title: Option<&str>) -> EventEnvelope {
+    fn status_event(agent: Option<&str>) -> EventEnvelope {
         EventEnvelope {
             data: EventData::PaneAgentStatusChanged {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Working,
-                agent: Some("pi".into()),
-                title: title.map(str::to_string),
-                display_agent: None,
+                agent: agent.map(str::to_string),
             },
         }
     }
@@ -611,12 +565,9 @@ mod tests {
             restore_error: None,
             label: None,
             agent: None,
-            title: None,
             terminal_title: None,
             terminal_title_stripped: None,
-            display_agent: None,
             agent_status: AgentStatus::Idle,
-            tokens: HashMap::new(),
             agent_session: None,
             scroll,
             revision: 0,
@@ -673,7 +624,6 @@ mod tests {
                     pane_id: "w1:p1".into(),
                     status_filter: None,
                     last_status: Some(AgentStatus::Working),
-                    last_presentation: None,
                     last_sequence: event_hub.current_sequence(),
                     initial_event: None,
                     request_prefix: "status".into(),
@@ -872,7 +822,6 @@ mod tests {
             pane_id: "w1:p1".into(),
             status_filter: None,
             last_status: Some(AgentStatus::Working),
-            last_presentation: None,
             last_sequence: event_hub.current_sequence(),
             initial_event: None,
             request_prefix: "lost".into(),
@@ -928,29 +877,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_metadata_subscription_uses_dedicated_event_kind() {
-        let event_hub = EventHub::default();
-        let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let subscription = ActiveSubscription::new(
-            Subscription::WorkspaceMetadataUpdated {},
-            "test",
-            0,
-            &api_tx,
-            &event_hub,
-            event_hub.current_sequence(),
-        )
-        .expect("workspace metadata subscription");
-
-        assert!(matches!(
-            subscription,
-            ActiveSubscription::Event(ActiveEventSubscription {
-                event_kind: EventKind::WorkspaceMetadataUpdated,
-                ..
-            })
-        ));
-    }
-
-    #[test]
     fn lifecycle_batch_drains_in_order_and_advances_past_unmatched_events() {
         let event_hub = EventHub::default();
         event_hub.push(workspace_focused_event("w9"));
@@ -966,7 +892,7 @@ mod tests {
             start,
         )
         .expect("test precondition");
-        event_hub.push(presentation_event(None));
+        event_hub.push(status_event(None));
         event_hub.push(workspace_focused_event("wB"));
         let mut stream = SubscriptionStream::new(vec![subscription], start);
         let events = poll_stream(&mut stream, &api_tx, &event_hub);
@@ -989,26 +915,23 @@ mod tests {
                     pane_id: "w1:p1".into(),
                     status_filter: filtered.then_some(AgentStatus::Working),
                     last_status: Some(AgentStatus::Working),
-                    last_presentation: None,
                     last_sequence: event_hub.current_sequence(),
                     initial_event: Some(PaneAgentStatusChangedEvent {
                         pane_id: shepr_test_fixtures::id("w1:p1"),
                         workspace_id: shepr_test_fixtures::id("w1"),
                         agent_status: AgentStatus::Working,
-                        agent: Some("pi".into()),
-                        title: Some("stale initial snapshot".into()),
-                        display_agent: None,
+                        agent: Some("stale initial snapshot".into()),
                     }),
                     request_prefix: "batch".into(),
                 },
             ));
-            for (status, title) in [
+            for (status, agent) in [
                 (AgentStatus::Working, "started"),
                 (AgentStatus::Blocked, "approval"),
                 (AgentStatus::Idle, "finished"),
                 (AgentStatus::Working, "restarted"),
             ] {
-                let mut event = presentation_event(Some(title));
+                let mut event = status_event(Some(agent));
                 let EventData::PaneAgentStatusChanged { agent_status, .. } = &mut event.data else {
                     panic!("expected status data");
                 };
@@ -1018,12 +941,12 @@ mod tests {
             let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
             let mut stream = stream_of(subscription, &event_hub);
             let events = poll_stream(&mut stream, &api_tx, &event_hub);
-            let titles = events
+            let agents = events
                 .iter()
-                .map(|event| event["data"]["title"].as_str().expect("test precondition"))
+                .map(|event| event["data"]["agent"].as_str().expect("test precondition"))
                 .collect::<Vec<_>>();
             assert_eq!(
-                titles,
+                agents,
                 if filtered {
                     vec!["started", "restarted"]
                 } else {
@@ -1077,23 +1000,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_status_subscription_replays_queued_metadata_set_and_expiry_events() {
+    fn agent_status_subscription_replays_queued_history_events() {
         let event_hub = EventHub::default();
         let mut subscription = ActiveAgentStatusChangedSubscription {
             pane_id: "w1:p1".into(),
             status_filter: None,
             last_status: Some(AgentStatus::Working),
-            last_presentation: Some(PanePresentationSnapshot {
-                title: None,
-                display_agent: None,
-            }),
             last_sequence: event_hub.current_sequence(),
             initial_event: None,
             request_prefix: "test".into(),
         };
 
-        event_hub.push(presentation_event(Some("short lived")));
-        event_hub.push(presentation_event(None));
+        event_hub.push(status_event(Some("short lived")));
+        event_hub.push(status_event(None));
 
         let set_event = subscription
             .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
@@ -1102,16 +1021,16 @@ mod tests {
         let SubscriptionEventData::PaneAgentStatusChanged(set_data) = set_event.data else {
             panic!("wrong event data");
         };
-        assert_eq!(set_data.title.as_deref(), Some("short lived"));
+        assert_eq!(set_data.agent.as_deref(), Some("short lived"));
 
-        let expiry_event = subscription
+        let cleared_event = subscription
             .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
             .expect("history poll succeeds")
-            .expect("expiry event");
-        let SubscriptionEventData::PaneAgentStatusChanged(expiry_data) = expiry_event.data else {
+            .expect("second event");
+        let SubscriptionEventData::PaneAgentStatusChanged(cleared_data) = cleared_event.data else {
             panic!("wrong event data");
         };
-        assert_eq!(expiry_data.title, None);
+        assert_eq!(cleared_data.agent, None);
     }
 
     #[test]
@@ -1121,24 +1040,18 @@ mod tests {
             pane_id: "w1:p1".into(),
             status_filter: Some(AgentStatus::Working),
             last_status: Some(AgentStatus::Working),
-            last_presentation: Some(PanePresentationSnapshot {
-                title: None,
-                display_agent: None,
-            }),
             last_sequence: event_hub.current_sequence(),
             initial_event: Some(PaneAgentStatusChangedEvent {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Working,
                 agent: Some("pi".into()),
-                title: None,
-                display_agent: None,
             }),
             request_prefix: "test".into(),
         };
 
-        event_hub.push(presentation_event(Some("short lived")));
-        event_hub.push(presentation_event(None));
+        event_hub.push(status_event(Some("short lived")));
+        event_hub.push(status_event(None));
 
         let set_event = subscription
             .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
@@ -1147,16 +1060,16 @@ mod tests {
         let SubscriptionEventData::PaneAgentStatusChanged(set_data) = set_event.data else {
             panic!("wrong event data");
         };
-        assert_eq!(set_data.title.as_deref(), Some("short lived"));
+        assert_eq!(set_data.agent.as_deref(), Some("short lived"));
 
-        let expiry_event = subscription
+        let cleared_event = subscription
             .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
             .expect("history poll succeeds")
-            .expect("expiry event");
-        let SubscriptionEventData::PaneAgentStatusChanged(expiry_data) = expiry_event.data else {
+            .expect("second event");
+        let SubscriptionEventData::PaneAgentStatusChanged(cleared_data) = cleared_event.data else {
             panic!("wrong event data");
         };
-        assert_eq!(expiry_data.title, None);
+        assert_eq!(cleared_data.agent, None);
     }
 
     #[test]
@@ -1166,23 +1079,17 @@ mod tests {
             pane_id: "w1:p1".into(),
             status_filter: Some(AgentStatus::Working),
             last_status: Some(AgentStatus::Working),
-            last_presentation: Some(PanePresentationSnapshot {
-                title: Some("short lived".into()),
-                display_agent: None,
-            }),
             last_sequence: event_hub.current_sequence(),
             initial_event: Some(PaneAgentStatusChangedEvent {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Working,
-                agent: Some("pi".into()),
-                title: Some("short lived".into()),
-                display_agent: None,
+                agent: Some("short lived".into()),
             }),
             request_prefix: "test".into(),
         };
 
-        event_hub.push(presentation_event(Some("short lived")));
+        event_hub.push(status_event(Some("short lived")));
 
         let event = subscription
             .poll_result(&tokio::sync::mpsc::unbounded_channel().0, &event_hub)
@@ -1191,7 +1098,7 @@ mod tests {
         let SubscriptionEventData::PaneAgentStatusChanged(data) = event.data else {
             panic!("wrong event data");
         };
-        assert_eq!(data.title.as_deref(), Some("short lived"));
+        assert_eq!(data.agent.as_deref(), Some("short lived"));
         assert!(subscription.initial_event.is_none());
     }
 }

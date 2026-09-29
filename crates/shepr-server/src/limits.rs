@@ -93,24 +93,6 @@ pub(crate) const MAX_QUERY_BYTES: usize = 4096;
 /// Limit copy-mode matches to bound each response.
 pub(crate) const MAX_RETURNED_MATCHES: usize = 1024;
 
-/// Longest metadata TTL, so stale agent metadata expires eventually.
-pub(crate) const METADATA_TTL_MAX_MS: u64 = 86_400_000;
-/// Smallest nonzero metadata TTL accepted by the API.
-pub(crate) const METADATA_TTL_MIN_MS: u64 = 1;
-/// Bound source labels so metadata cannot dominate agent rows.
-pub(crate) const METADATA_SOURCE_MAX_CHARS: usize = 80;
-/// Limit token keys changed per request to bound update work.
-pub(crate) const MAX_METADATA_TOKEN_KEYS_PER_REQUEST: usize = 16;
-/// Limit token keys per resource to bound persistent metadata.
-pub(crate) const MAX_METADATA_TOKEN_KEYS_PER_RESOURCE: usize = 32;
-/// Bound token key length so lookup names stay compact.
-pub(crate) const MAX_METADATA_TOKEN_KEY_LEN: usize = 32;
-/// Bound token value length so status text stays compact.
-pub(crate) const MAX_METADATA_TOKEN_VALUE_LEN: usize = 80;
-/// Characters kept from a pane's reported presentation text, after control
-/// characters are dropped.
-pub(crate) const MAX_PRESENTATION_TEXT_CHARS: usize = 80;
-
 /// Total time a client gets to deliver its complete handshake frame.
 ///
 /// This is a single deadline across every read of the hello, not a per-read idle

@@ -287,7 +287,6 @@ impl App {
         let focused = self.state.active_index() == Some(ws_idx)
             && ws.active_tab_index() == tab_idx
             && ws.focused_pane_id() == pane_id;
-        let presentation = terminal.effective_presentation();
         let tab = ws.tabs().get(tab_idx)?;
         Some(shepr_api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
@@ -308,12 +307,9 @@ impl App {
             restore_error: terminal.restore_error.as_ref().map(ToString::to_string),
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
-            title: presentation.title,
             terminal_title: terminal.terminal_title.clone(),
             terminal_title_stripped: terminal.terminal_title_stripped(),
-            display_agent: presentation.display_agent,
             agent_status: pane_agent_status(terminal.state),
-            tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
             scroll,
             revision: terminal.revision(),
@@ -346,7 +342,6 @@ impl App {
             tab_count: ws.tabs().len(),
             active_tab_id: self.public_tab_id(index, ws.active_tab_index())?,
             agent_status: pane_agent_status(agg_state),
-            tokens: ws.metadata_tokens.values(),
         })
     }
 }

@@ -238,9 +238,7 @@
 
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
 # pane, agent, terminal_title, and terminal_title_stripped.
-# Custom values reported through pane metadata use a $name token.
 # Each layout accepts up to 16 rows, 16 tokens per row, and 16 rules per styled token.
-# Custom token names are limited to 32 ASCII bytes.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
 # Omitted style fields preserve the contextual default.
 # [ui.sidebar.agents]
@@ -252,7 +250,6 @@
 # claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
 
 # Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.
-# Custom values reported through workspace metadata use a $name token, for example $jj_status.
 # Inline token styles accept strict #rgb/#rrggbb hex foregrounds plus bold and dim booleans.
 # [ui.sidebar.spaces]
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
@@ -268,7 +265,7 @@
 # startup_per_agent_delay_ms = 100
 
 [remote]
-# Whether shepr manages the ssh config used for `shepr --remote`.
+# Whether shepr manages the ssh config used for saved machines.
 # When true (default), shepr runs remote ssh through a generated config that
 # includes your ~/.ssh/config first and adds ServerAliveInterval/
 # ServerAliveCountMax as fallbacks (so any keepalive values you set yourself

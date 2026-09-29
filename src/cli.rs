@@ -4,8 +4,7 @@ use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::{ClientWindowTitleSetParams, EmptyParams, Method, Request};
 use shepr_remote::{
     COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
-    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_REMOTE, FLAG_REMOTE_KEYBINDINGS, FLAG_SESSION,
-    option_name_from_flag,
+    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_SESSION, option_name_from_flag,
 };
 
 macro_rules! print {
@@ -43,16 +42,6 @@ use error::SessionCliError;
 pub(crate) use error::{CliError, finish_client, print_notice};
 pub(crate) type CliResult<T> = Result<T, CliError>;
 
-pub(crate) fn parse_token_assignment(raw: &str) -> Result<(String, Option<String>), String> {
-    let Some((key, value)) = raw.split_once('=') else {
-        return Err("token must use NAME=VALUE".into());
-    };
-    if key.is_empty() {
-        return Err("token name must not be empty".into());
-    }
-    Ok((key.to_string(), Some(value.to_string())))
-}
-
 pub(crate) fn parse_env_assignment(raw: &str) -> Result<(String, String), String> {
     let Some((key, value)) = raw.split_once('=') else {
         return Err("env must use KEY=VALUE".into());
@@ -75,7 +64,6 @@ pub(crate) enum Launch {
 
 pub(crate) enum CliCommand {
     Status(status::Command),
-    Config(ConfigCommand),
     Machine(machine::Command),
     Server(server::Command),
     Workspace(workspace::Command),
@@ -92,7 +80,6 @@ impl CliCommand {
     fn from_matches(name: &str, matches: &ArgMatches) -> Option<Self> {
         Some(match name {
             COMMAND_STATUS => Self::Status(status::parse(matches)?),
-            "config" => Self::Config(ConfigCommand::parse(matches)?),
             "machine" => Self::Machine(machine::parse(matches)?),
             COMMAND_SERVER => Self::Server(server::parse(matches)?),
             "workspace" => Self::Workspace(workspace::parse(matches)?),
@@ -110,7 +97,6 @@ impl CliCommand {
     pub(crate) fn name(&self) -> &'static str {
         match self {
             Self::Status(_) => COMMAND_STATUS,
-            Self::Config(_) => "config",
             Self::Machine(_) => "machine",
             Self::Server(_) => COMMAND_SERVER,
             Self::Workspace(_) => "workspace",
@@ -129,7 +115,6 @@ impl CliCommand {
     pub(crate) fn subcommand_name(&self) -> Option<&'static str> {
         match self {
             Self::Status(command) => command.name(),
-            Self::Config(command) => Some(command.name()),
             Self::Machine(command) => Some(command.name()),
             Self::Server(command) => Some(command.name()),
             Self::Workspace(command) => Some(command.name()),
@@ -146,7 +131,6 @@ impl CliCommand {
     pub(crate) fn can_run_on_machine(&self) -> bool {
         match self {
             Self::Status(command) => command.can_run_on_machine(),
-            Self::Config(command) => command.can_run_on_machine(),
             Self::Machine(command) => command.can_run_on_machine(),
             Self::Server(command) => command.can_run_on_machine(),
             Self::Workspace(command) => command.can_run_on_machine(),
@@ -157,32 +141,6 @@ impl CliCommand {
             Self::Terminal(command) => command.can_run_on_machine(),
             Self::Session(command) => command.can_run_on_machine(),
             Self::Integration(command) => command.can_run_on_machine(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConfigCommand {
-    Check,
-}
-
-impl ConfigCommand {
-    fn parse(matches: &ArgMatches) -> Option<Self> {
-        match matches.subcommand_name() {
-            Some("check") => Some(Self::Check),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Check => "check",
-        }
-    }
-
-    fn can_run_on_machine(self) -> bool {
-        match self {
-            Self::Check => false,
         }
     }
 }
@@ -285,11 +243,8 @@ pub(crate) struct Invocation {
     pub(crate) launch: Launch,
     session: Option<String>,
     machine: Option<String>,
-    remote: Option<String>,
-    remote_keybindings: Option<String>,
     help: bool,
     version: bool,
-    default_config: bool,
 }
 
 /// Parses argv. On a usage error, or when `--help` for a subcommand was asked
@@ -336,14 +291,8 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                 launch,
                 session: matches::string(&matches, option_name_from_flag(FLAG_SESSION)),
                 machine: matches::string(&matches, "machine"),
-                remote: matches::string(&matches, option_name_from_flag(FLAG_REMOTE)),
-                remote_keybindings: matches::string(
-                    &matches,
-                    option_name_from_flag(FLAG_REMOTE_KEYBINDINGS),
-                ),
                 help: matches::flag(&matches, "help"),
                 version: matches::flag(&matches, "version"),
-                default_config: matches::flag(&matches, "default-config"),
             })
         }
         Err(error) => {
@@ -365,24 +314,12 @@ impl Invocation {
         self.machine.clone()
     }
 
-    pub(crate) fn remote(&self) -> Option<String> {
-        self.remote.clone()
-    }
-
-    pub(crate) fn remote_keybindings(&self) -> Option<String> {
-        self.remote_keybindings.clone()
-    }
-
     pub(crate) fn help_requested(&self) -> bool {
         self.help
     }
 
     pub(crate) fn version_requested(&self) -> bool {
         self.version
-    }
-
-    pub(crate) fn default_config_requested(&self) -> bool {
-        self.default_config
     }
 
     /// The name given to `session attach NAME`. That command is the default
@@ -415,15 +352,6 @@ impl Invocation {
             Launch::Cli(command) => Some(command.as_ref()),
             _ => None,
         }
-    }
-
-    pub(crate) fn has_subcommand(&self) -> bool {
-        !matches!(
-            &self.launch,
-            Launch::Tui {
-                attached_session: None
-            }
-        )
     }
 }
 
@@ -477,9 +405,6 @@ pub(crate) fn run(
     command: &CliCommand,
     requested_session: Option<shepr_config::SessionId>,
 ) -> CliResult<i32> {
-    if matches!(command, CliCommand::Config(ConfigCommand::Check)) {
-        return Ok(config_check(requested_session));
-    }
     let paths = resolve_app_paths(requested_session)?;
     let context = target::CliContext::local(paths).map_err(CliError::Io)?;
     dispatch_with_config(command, None, &context)
@@ -492,7 +417,6 @@ fn dispatch_with_config(
 ) -> CliResult<i32> {
     match command {
         CliCommand::Status(command) => status::run_status_command(*command, context),
-        CliCommand::Config(ConfigCommand::Check) => Ok(config_check_from_paths(context)),
         CliCommand::Machine(command) => machine::run_machine_command(command.clone(), context),
         CliCommand::Server(command) => server::run_server_command(*command, context),
         CliCommand::Workspace(command) => {
@@ -536,98 +460,6 @@ pub(super) fn usage_error(message: &str) -> i32 {
     let error = CliError::Usage(message.into());
     error.print();
     error.exit_code()
-}
-
-fn config_check(requested_session: Option<shepr_config::SessionId>) -> i32 {
-    // Path problems are reported like any other config issue instead of
-    // aborting the check.
-    match shepr_config::AppPaths::resolve_with_session(requested_session) {
-        Ok(paths) => config_check_from_paths(&paths),
-        Err(diagnostics) => print_config_check(
-            &diagnostics
-                .into_iter()
-                .map(shepr_config::ConfigDiagnostic::Path)
-                .collect::<Vec<_>>(),
-            Vec::new(),
-        ),
-    }
-}
-
-fn config_check_from_paths(paths: &shepr_config::AppPaths) -> i32 {
-    let loaded = shepr_config::load_for_check(paths);
-    let mut sources = loaded
-        .provenance()
-        .values()
-        .iter()
-        .map(|origin| format!("{} = {} <- {}", origin.key, origin.value, origin.source))
-        .collect::<Vec<_>>();
-    let path_sources = paths.provenance();
-    let home = paths.home_dir().map_or_else(
-        || "unavailable".to_owned(),
-        |path| path.display().to_string(),
-    );
-    let current = paths.current_dir().map_or_else(
-        || "unavailable".to_owned(),
-        |path| path.display().to_string(),
-    );
-    sources.extend([
-        format!(
-            "paths.config_dir={} <- {}",
-            paths.config_dir().display(),
-            path_sources.config_dir
-        ),
-        format!(
-            "paths.state_dir={} <- {}",
-            paths.state_dir().display(),
-            path_sources.state_dir
-        ),
-        format!(
-            "paths.config_file={} <- {}",
-            paths.config_file().display(),
-            path_sources.config_file
-        ),
-        format!("paths.home_dir={home} <- {}", path_sources.home_dir),
-        format!(
-            "paths.current_dir={current} <- {}",
-            path_sources.current_dir
-        ),
-        format!(
-            "paths.session_id={} <- {}",
-            paths.session_id().display_name(),
-            path_sources.session_id
-        ),
-        format!(
-            "paths.api_socket={} <- {}",
-            paths.server_address().api_socket().display(),
-            path_sources.api_socket
-        ),
-        format!(
-            "paths.client_socket={} <- {}",
-            paths.server_address().client_socket().display(),
-            path_sources.client_socket
-        ),
-    ]);
-    print_config_check(&loaded.diagnostics, sources)
-}
-
-fn print_config_check(
-    diagnostics: &[shepr_config::ConfigDiagnostic],
-    provenance: Vec<String>,
-) -> i32 {
-    if diagnostics.is_empty() {
-        println!("config: ok");
-    } else {
-        println!("config: issues found");
-        for diagnostic in diagnostics {
-            println!("{diagnostic}");
-        }
-    }
-    println!("resolved sources:");
-    for source in provenance {
-        println!("  {source}");
-    }
-
-    i32::from(!diagnostics.is_empty())
 }
 
 fn load_validated_config(
@@ -984,9 +816,8 @@ mod tests {
 
     #[test]
     fn every_cli_spec_root_has_typed_parser() {
-        let samples: [(&str, &[&str]); 12] = [
+        let samples: [(&str, &[&str]); 11] = [
             ("status", &["status"]),
-            ("config", &["config", "check"]),
             ("machine", &["machine", "list"]),
             ("server", &["server", "stop"]),
             ("workspace", &["workspace", "list"]),
@@ -1251,6 +1082,12 @@ mod tests {
             &["api", "snapshot"],
             &["pane"],
             &["config", "reset-keys"],
+            &["config", "check"],
+            &["config"],
+            &["--remote", "host"],
+            &["--remote", "host", "--remote-keybindings", "local"],
+            &["--remote-keybindings", "server"],
+            &["--default-config"],
         ] {
             assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }
@@ -1352,27 +1189,5 @@ mod tests {
             &client,
         );
         assert!(!super::server_not_running::was_reported(&mapped));
-    }
-
-    #[test]
-    fn metadata_tokens_apply_in_argument_order() {
-        let report = command_matches(&[
-            "workspace",
-            "report-metadata",
-            "w1",
-            "--source",
-            "s",
-            "--token",
-            "a=1",
-            "--clear-token",
-            "a",
-            "--clear-token",
-            "b",
-            "--token",
-            "b=2",
-        ]);
-        let tokens = super::matches::metadata_tokens(&report);
-        assert_eq!(tokens.get("a"), Some(&None));
-        assert_eq!(tokens.get("b"), Some(&Some("2".to_string())));
     }
 }

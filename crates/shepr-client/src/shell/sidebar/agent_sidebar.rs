@@ -401,12 +401,7 @@ impl<'a> AgentRowIndex<'a> {
         let tab_label = tab
             .filter(|tab| tab_count > 1 || tab.custom_label)
             .map(|tab| tab.label.as_str());
-        let agent_label = agent
-            .display_agent
-            .as_deref()
-            .or(agent.name.as_deref())
-            .or(agent.agent.as_deref())
-            .or(agent.title.as_deref());
+        let agent_label = agent.name.as_deref().or(agent.agent.as_deref());
         let state_text = status_text(agent.agent_status);
         let canonical_agent = agent
             .agent
@@ -418,15 +413,11 @@ impl<'a> AgentRowIndex<'a> {
                 machine,
                 workspace: &workspace.label,
                 tab: tab_label,
-                pane: agent
-                    .title
-                    .as_deref()
-                    .or_else(|| pane.and_then(|pane| pane.label.as_deref())),
+                pane: pane.and_then(|pane| pane.label.as_deref()),
                 agent_label,
                 terminal_title: agent.terminal_title.as_deref(),
                 terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
                 canonical_agent,
-                tokens: &agent.tokens,
             },
             state_text,
         );
@@ -481,7 +472,7 @@ pub(super) fn render_agent_row(
                 state_text: status_style,
                 primary: name_style,
                 secondary,
-                custom: secondary,
+                terminal_title: secondary,
             },
             palette,
             usize::from(

@@ -536,7 +536,6 @@ enum WireAgentSidebarToken {
     Agent,
     TerminalTitle,
     TerminalTitleStripped,
-    Custom(String),
     Styled {
         token: Box<Self>,
         style: WireSidebarTokenStyle,
@@ -551,7 +550,6 @@ enum WireSpaceSidebarToken {
     Workspace,
     Branch,
     GitStatus,
-    Custom(String),
     Styled {
         token: Box<Self>,
         style: WireSidebarTokenStyle,
@@ -595,7 +593,6 @@ impl From<&AgentSidebarToken> for WireAgentSidebarToken {
             AgentSidebarToken::Agent => Self::Agent,
             AgentSidebarToken::TerminalTitle => Self::TerminalTitle,
             AgentSidebarToken::TerminalTitleStripped => Self::TerminalTitleStripped,
-            AgentSidebarToken::Custom(name) => Self::Custom(name.clone()),
             AgentSidebarToken::Styled {
                 token,
                 style,
@@ -621,7 +618,6 @@ impl From<WireAgentSidebarToken> for AgentSidebarToken {
             WireAgentSidebarToken::Agent => Self::Agent,
             WireAgentSidebarToken::TerminalTitle => Self::TerminalTitle,
             WireAgentSidebarToken::TerminalTitleStripped => Self::TerminalTitleStripped,
-            WireAgentSidebarToken::Custom(name) => Self::Custom(name),
             WireAgentSidebarToken::Styled {
                 token,
                 style,
@@ -643,7 +639,6 @@ impl From<&SpaceSidebarToken> for WireSpaceSidebarToken {
             SpaceSidebarToken::Workspace => Self::Workspace,
             SpaceSidebarToken::Branch => Self::Branch,
             SpaceSidebarToken::GitStatus => Self::GitStatus,
-            SpaceSidebarToken::Custom(name) => Self::Custom(name.clone()),
             SpaceSidebarToken::Styled {
                 token,
                 style,
@@ -665,7 +660,6 @@ impl From<WireSpaceSidebarToken> for SpaceSidebarToken {
             WireSpaceSidebarToken::Workspace => Self::Workspace,
             WireSpaceSidebarToken::Branch => Self::Branch,
             WireSpaceSidebarToken::GitStatus => Self::GitStatus,
-            WireSpaceSidebarToken::Custom(name) => Self::Custom(name),
             WireSpaceSidebarToken::Styled {
                 token,
                 style,

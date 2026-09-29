@@ -5,9 +5,8 @@ use serde::{Deserialize, Serialize};
 use shepr_core::env::EnvVar;
 
 use super::{
-    Config, ConfigDiagnostic, ConfigProvenance, ConfigSource, NewTerminalCwdConfig,
-    ValidatedConfig, ValidatedTerminalConfig,
-    model::{ConfigDocumentState, LoadedConfig},
+    Config, ConfigDiagnostic, ConfigProvenance, ConfigSource, ValidatedConfig,
+    model::LoadedConfig,
     validated::{CwdCheck, ShellCheck},
 };
 
@@ -580,26 +579,11 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
 }
 
 impl Config {
-    /// Load config data and every diagnostic without rejecting any. The
-    /// `config check` command reports these; `load_validated` rejects them,
-    /// so `config check` passes exactly when a launch would accept the config.
-    pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
-        let mut loaded = Self::load_from_path_with_paths(paths.config_file(), paths);
-        if loaded.document_state == ConfigDocumentState::Unavailable
-            && let Some(new_cwd) = loaded.unavailable_new_cwd.as_ref()
-            && let Err(error) =
-                ValidatedTerminalConfig::parse_new_cwd(new_cwd, paths, CwdCheck::AtLaunch)
-        {
-            loaded.diagnostics.push(ConfigDiagnostic::Path(error));
-        }
-        loaded
-    }
-
     /// Load a config for an application launch. Every path or validation
     /// problem is fatal, so a default config from an unsuccessful parse is
     /// never returned to runtime callers.
     pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDiagnostic>> {
-        Self::load_for_check(paths).into_validated(paths.clone())
+        Self::load_from_path_with_paths(paths.config_file(), paths).into_validated(paths.clone())
     }
 
     fn load_from_path_with_paths(path: &Path, paths: &AppPaths) -> LoadedConfig {
@@ -641,8 +625,6 @@ impl Config {
                     config,
                     resolution,
                     diagnostics,
-                    document_state: ConfigDocumentState::Missing,
-                    unavailable_new_cwd: None,
                 }
             }
             Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(err.to_string())], paths),
@@ -659,13 +641,10 @@ impl Config {
                             match ConfigProvenance::from_config(&config, Some(&document)) {
                                 Ok(provenance) => provenance,
                                 Err(error) => {
-                                    let mut loaded = default_loaded_config(
+                                    return default_loaded_config(
                                         vec![ConfigDiagnostic::Provenance(error)],
                                         paths,
                                     );
-                                    loaded.unavailable_new_cwd =
-                                        Some(config.terminal.new_cwd.clone());
-                                    return loaded;
                                 }
                             };
                         let resolution = super::validated::ConfigResolution::parse(
@@ -708,34 +687,18 @@ impl Config {
                             provenance,
                             resolution,
                             diagnostics,
-                            document_state: ConfigDocumentState::Loaded,
-                            unavailable_new_cwd: None,
                         }
                     }
                     Err(err) => {
-                        let mut loaded = default_loaded_config(
-                            vec![ConfigDiagnostic::Parse(err.to_string())],
-                            paths,
-                        );
-                        loaded.unavailable_new_cwd = configured_new_cwd_for_check(&document);
-                        loaded
+                        default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())], paths)
                     }
                 }
             }
-            // Broken TOML has no typed document to project independent config
-            // checks from; keep the parser diagnostic instead of interpreting
-            // fragments of malformed source text.
             Err(err) => {
                 default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())], paths)
             }
         }
     }
-}
-
-/// Parse the config for the launch-time inspection command and retain every
-/// diagnostic without constructing a runtime configuration.
-pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
-    Config::load_for_check(paths)
 }
 
 /// Parse, resolve and validate the config for an application process.
@@ -758,24 +721,7 @@ fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>, paths: &AppPaths) -
         provenance,
         resolution,
         diagnostics,
-        document_state: ConfigDocumentState::Unavailable,
-        unavailable_new_cwd: None,
     }
-}
-
-#[derive(Deserialize)]
-struct ConfiguredCwdPathCheck {
-    terminal: Option<TerminalCwdPathCheck>,
-}
-
-#[derive(Deserialize)]
-struct TerminalCwdPathCheck {
-    new_cwd: Option<NewTerminalCwdConfig>,
-}
-
-fn configured_new_cwd_for_check(document: &toml::Value) -> Option<NewTerminalCwdConfig> {
-    let projection: ConfiguredCwdPathCheck = document.clone().try_into().ok()?;
-    projection.terminal?.new_cwd
 }
 
 fn unknown_top_level_sections(
@@ -1033,9 +979,8 @@ tab_bar_right = [
         )
         .expect("write invalid config fixture");
 
-        let report = Config::load_for_check(&paths);
-        let messages = report
-            .diagnostics
+        let diagnostics = Config::load_validated(&paths).expect_err("invalid fixture is refused");
+        let messages = diagnostics
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -1057,39 +1002,6 @@ tab_bar_right = [
                 "missing {expected:?} from {messages:?}"
             );
         }
-    }
-
-    #[test]
-    fn config_check_reports_home_path_when_another_field_fails_to_parse() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("config-parse-diagnostics");
-        let paths = AppPaths::test_at(scratch.path());
-        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
-        std::fs::write(
-            paths.config_file(),
-            "[terminal]\nnew_cwd = \"home\"\n[server]\nheadless_cols = \"wide\"\n",
-        )
-        .expect("write config fixture");
-
-        let report = Config::load_for_check(&paths);
-        let messages = report
-            .diagnostics
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        assert_eq!(messages.len(), 2, "{messages:?}");
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("parse error")),
-            "{messages:?}"
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("terminal.new_cwd")),
-            "{messages:?}"
-        );
     }
 
     #[test]
@@ -1129,52 +1041,12 @@ tab_bar_right = [
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
         std::fs::write(path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
 
-        let report = Config::load_for_check(&paths);
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|error| error.message().contains("terminal.new_cwd")),
-            "{:?}",
-            report.diagnostics
-        );
         let errors = Config::load_validated(&paths).expect_err("home cwd needs absolute HOME");
         assert!(
             errors
                 .iter()
                 .any(|error| error.message().contains("terminal.new_cwd")),
             "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn config_check_reports_cwd_path_when_another_value_fails_to_parse() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("config-check-cwd-path");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
-        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
-        std::fs::write(
-            paths.config_file(),
-            "[terminal]\nnew_cwd = \"missing-directory\"\n[server]\nheadless_cols = \"wide\"\n",
-        )
-        .expect("write config fixture");
-
-        let report = Config::load_for_check(&paths);
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.to_string().contains("config parse error")),
-            "missing parse diagnostic: {:?}",
-            report.diagnostics
-        );
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message().contains("terminal.new_cwd")),
-            "missing cwd diagnostic: {:?}",
-            report.diagnostics
         );
     }
 

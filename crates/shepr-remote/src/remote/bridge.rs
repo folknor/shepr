@@ -18,8 +18,7 @@ use std::time::Instant;
 use crate::limits::{
     BRIDGE_ACCEPT_POLL, BRIDGE_CONNECTION_SHUTDOWN_GRACE, BRIDGE_FAILURE_CHANNEL_CAPACITY,
     BRIDGE_FAILURE_REPORT_POLL_INTERVAL, BRIDGE_FAILURE_REPORT_TIMEOUT, BRIDGE_IO_BUFFER_BYTES,
-    BRIDGE_IO_POLL, BRIDGE_PATH_COMPONENT_MAX_CHARS, BRIDGE_TARGET_PREFIX_CHARS,
-    BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
+    BRIDGE_IO_POLL, BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
 };
 
 pub(crate) struct SshStdioBridge {
@@ -44,7 +43,6 @@ impl SshStdioBridge {
         local_socket: PathBuf,
         session_name: &str,
         ssh_options: Option<&ManagedSshOptions>,
-        noninteractive: bool,
     ) -> io::Result<Self> {
         let target_id = target.as_str().to_owned();
         let executable_path = remote_shepr.as_str().to_owned();
@@ -54,7 +52,6 @@ impl SshStdioBridge {
             remote_shepr.bridge_command(session_name),
             local_socket,
             ssh_options,
-            noninteractive,
         )?;
         tracing::info!(
             target = %target_id,
@@ -71,7 +68,6 @@ impl SshStdioBridge {
         remote_command: String,
         local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
-        noninteractive: bool,
     ) -> io::Result<Self> {
         // A held path comes back as `AddrInUse` carrying
         // `shepr_platform::ipc::SocketBusy`, so SSH failure classification
@@ -144,15 +140,12 @@ impl SshStdioBridge {
                             &target,
                             &remote_command,
                             thread_ssh_options.as_ref(),
-                            noninteractive,
                             &thread_stop,
                         ) {
-                            // Use tracing in both modes. The owner reads the error back
-                            // through `reported_failure` and presents it; noninteractive
-                            // is context on the event, not a choice of output channel.
+                            // The owner reads the error back through `reported_failure`
+                            // and presents it; this event only logs it.
                             tracing::warn!(
                                 error = %err,
-                                noninteractive,
                                 target = %target.as_str(),
                                 socket = %thread_socket.display(),
                                 "remote SSH bridge failed"
@@ -171,7 +164,6 @@ impl SshStdioBridge {
                     Err(err) => {
                         tracing::warn!(
                             error = %err,
-                            noninteractive,
                             target = %target.as_str(),
                             socket = %thread_socket.display(),
                             "remote SSH bridge listener failed"
@@ -435,25 +427,18 @@ pub(super) fn bridge_connection(
     target: &SshTarget,
     remote_command: &str,
     ssh_options: Option<&ManagedSshOptions>,
-    noninteractive: bool,
     bridge_stop: &Arc<AtomicBool>,
 ) -> io::Result<()> {
     let mut command = ssh_command();
     apply_managed_ssh_options(&mut command, ssh_options);
-    if noninteractive {
-        apply_noninteractive_ssh_options(&mut command);
-    }
+    apply_noninteractive_ssh_options(&mut command);
     command
         .arg("-T")
         .arg(target.as_str())
         .arg(remote_command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(if noninteractive {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        });
+        .stderr(Stdio::piped());
 
     let child = command
         .spawn()
@@ -468,18 +453,11 @@ pub(super) fn bridge_connection(
         child.child()?.stdout.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stdout missing")
         })?;
-    let stderr_reader = if noninteractive {
-        let child_stderr = child.child()?.stderr.take().ok_or_else(|| {
+    let child_stderr =
+        child.child()?.stderr.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stderr missing")
         })?;
-        Some(PipeCapture::spawn(
-            child_stderr,
-            SSH_STDERR_CAPTURE_LIMIT,
-            PipeEcho::None,
-        ))
-    } else {
-        None
-    };
+    let stderr_reader = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::None);
     let stream_to_child = stream.try_clone()?;
     shepr_platform::ipc::set_local_stream_polling(&mut stream, true)?;
     let mut child_to_stream = stream;
@@ -554,10 +532,7 @@ pub(super) fn bridge_connection(
         .map_err(|_| io::Error::other("remote bridge download worker panicked"))?;
     // Bounded: a ControlPersist master forked by this ssh can hold its stderr open for
     // the whole persist timeout after the bridge itself has exited.
-    let stderr = match stderr_reader {
-        Some(reader) => reader.finish(PIPE_DRAIN_GRACE)?,
-        None => Vec::new(),
-    };
+    let stderr = stderr_reader.finish(PIPE_DRAIN_GRACE)?;
     let status = status_result?;
 
     let stopping = bridge_stop.load(Ordering::Acquire);
@@ -814,97 +789,6 @@ fn copy_upload_stream_to_writer<S: UploadReadStream, W: io::Write>(
     }
 
     Ok(total)
-}
-
-/// Runs the foreground client for `shepr --remote`. It runs in `launch_dir`,
-/// the directory the user ran `shepr` from: it is a foreground child that ends
-/// with this process, so it pins nothing the user's shell does not already.
-pub(super) fn run_client_process(
-    local_socket: &Path,
-    reattach_command: &str,
-    keybindings: RemoteKeybindings,
-    launch_dir: &Path,
-) -> io::Result<()> {
-    let exe = shepr_platform::launch_executable()?;
-    let status = shepr_platform::child_command(exe, launch_dir)
-        .arg("client")
-        .env(shepr_core::env::EnvVar::SheprClientSocketPath, local_socket)
-        .env(
-            shepr_core::env::EnvVar::SheprReattachCommand,
-            reattach_command,
-        )
-        .env(
-            shepr_core::env::EnvVar::SheprRemoteKeybindings,
-            keybindings.to_env_value(),
-        )
-        .env_remove(shepr_core::env::EnvVar::SheprSocketPath)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            format!("remote client exited with {status}"),
-        ))
-    }
-}
-
-/// The `--remote` bridge's local socket. The name carries the SSH target
-/// (`user@host`) so the owner can tell sockets apart; that is not a leak,
-/// because `remote_bridge_endpoint_path` only accepts a runtime directory
-/// owned by the user with mode 0700, so no one else can list it. Saved
-/// machines name theirs by profile id because the profile, not the target,
-/// is their identity.
-pub(super) fn local_forward_socket_path(
-    runtime_dir: &Path,
-    target: &str,
-    session_name: &str,
-) -> io::Result<PathBuf> {
-    let target_clean = sanitize_path_component(target);
-    let session_clean = sanitize_path_component(session_name);
-    let readable_name = format!("shepr-remote-{target_clean}-{session_clean}.sock");
-    let target_prefix: String = target_clean
-        .chars()
-        .take(BRIDGE_TARGET_PREFIX_CHARS)
-        .collect();
-    let hash = short_socket_hash(target, session_name);
-    let short_name = format!("shepr-r-{target_prefix}-{hash}.sock");
-    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable_name, &short_name)
-}
-
-pub(super) fn short_socket_hash(target: &str, session: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    target.hash(&mut hasher);
-    // Keep a fixed separator between the target and session fields in this hash format.
-    0u8.hash(&mut hasher);
-    session.hash(&mut hasher);
-    // Keep all 64 hash bits in the socket name as fixed width hexadecimal.
-    format!("{:016x}", hasher.finish())
-}
-
-pub(super) fn sanitize_path_component(input: &str) -> String {
-    let sanitized: String = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect();
-
-    sanitized
-        .trim_matches('-')
-        .chars()
-        .take(BRIDGE_PATH_COMPONENT_MAX_CHARS)
-        .collect()
 }
 
 #[cfg(test)]

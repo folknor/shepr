@@ -102,24 +102,8 @@ fn launch() -> CliResult<i32> {
         .map(shepr_config::SessionId::parse)
         .transpose()
         .map_err(|err| CliError::Usage(err.to_string()))?;
-    let remote_launch = shepr_remote::remote_launch(
-        invocation.remote().as_deref(),
-        invocation.remote_keybindings().as_deref(),
-    )
-    .map_err(CliError::Usage)?;
 
-    if remote_launch.is_some()
-        && invocation.has_subcommand()
-        && !(invocation.help_requested()
-            || invocation.version_requested()
-            || invocation.default_config_requested())
-    {
-        return Err(CliError::Usage(
-            "--remote can only be used with the default launch command".into(),
-        ));
-    }
-
-    // Root-level `--help`, `--version` and `--default-config` win over any
+    // Root-level `--help` and `--version` win over any
     // subcommand given with them.
     if invocation.help_requested() {
         cli::print_help(requested_session.clone());
@@ -129,12 +113,6 @@ fn launch() -> CliResult<i32> {
     if invocation.version_requested() {
         shepr_platform::begin_cli_output();
         println!("shepr {}", shepr_protocol::build_version());
-        return Ok(0);
-    }
-
-    if invocation.default_config_requested() {
-        shepr_platform::begin_cli_output();
-        print!("{}", shepr_config::DEFAULT_CONFIG);
         return Ok(0);
     }
 
@@ -182,24 +160,6 @@ fn launch() -> CliResult<i32> {
         cli::Launch::ApiBridge { .. } | cli::Launch::ClientBridge | cli::Launch::Cli(_) => {
             return Err(io::Error::other("launch was already handled").into());
         }
-    }
-
-    if let Some(remote_launch) = remote_launch {
-        let remote_target = remote_launch.target.clone();
-        let ssh_settings = shepr_remote::SavedSshSettings {
-            manage_ssh_config: loaded_config.remote().manage_ssh_config,
-        };
-        shepr_remote::run_remote(
-            remote_launch,
-            ssh_settings,
-            paths,
-            &mut cli::operator::TerminalOperator,
-        )
-        .map_err(|error| CliError::Failed {
-            message: error.to_string(),
-            hints: shepr_remote::remote_error_hint(&error, &remote_target),
-        })?;
-        return Ok(0);
     }
 
     refuse_if_nested_disabled(&loaded_config)?;
@@ -294,24 +254,6 @@ mod test_support;
 mod tests {
     use super::*;
     use shepr_test_fixtures::ValidatedConfigFixture as _;
-
-    #[test]
-    fn default_config_lists_ui_accent_before_nested_tables() {
-        let accent_marker = "# accent = \"#89b4fa\"";
-        assert_eq!(
-            shepr_config::DEFAULT_CONFIG.matches(accent_marker).count(),
-            1
-        );
-
-        let accent = shepr_config::DEFAULT_CONFIG
-            .find(accent_marker)
-            .expect("test precondition");
-        let sidebar = shepr_config::DEFAULT_CONFIG
-            .find("# [ui.sidebar.agents]")
-            .expect("test precondition");
-
-        assert!(accent < sidebar);
-    }
 
     #[test]
     fn an_unreadable_saved_machine_catalog_fails_the_launch() {

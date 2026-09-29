@@ -3,7 +3,7 @@
 Decisions from a review of the whole `shepr` command line (the clap model in
 `src/cli/spec.rs` and `src/cli/spec/machine.rs`), with the reasoning behind
 each one, so the design can be judged without the conversation that produced
-it. Nothing here is implemented yet.
+it. The landing order is in `notes/cli-ux-spec.md`.
 
 ## Framing
 

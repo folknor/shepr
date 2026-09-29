@@ -792,73 +792,6 @@ fn reserved_native_state_report_does_not_override_screen_state() {
 }
 
 #[test]
-fn official_release_preserves_process_owned_agent_identity() {
-    let mut state = app_with_workspaces(&["active"]);
-    let pane_id = *state.workspaces[0].tabs()[0]
-        .panes()
-        .keys()
-        .next()
-        .expect("test precondition");
-    let terminal_id = state.workspaces[0].tabs()[0]
-        .panes()
-        .get(&pane_id)
-        .expect("test precondition")
-        .attached_terminal_id
-        .clone();
-
-    state.handle_app_event(AppEvent::StateChanged {
-        pane_id,
-        agent: Some(Agent::Pi),
-        state: AgentState::Working,
-        visible_blocker: false,
-        process_exited: false,
-        observed_at: std::time::Instant::now(),
-    });
-    let terminal = state
-        .terminals
-        .get_mut(&terminal_id)
-        .expect("test precondition");
-    let test_dir = ScratchDir::new("release-session");
-    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:pi".into(),
-        agent: shepr_agent::agent::Agent::Pi,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(
-            test_dir
-                .path()
-                .join("release-session.jsonl")
-                .display()
-                .to_string(),
-        )
-        .expect("test precondition"),
-    });
-    terminal.set_hook_authority(
-        "shepr:pi".into(),
-        "pi".into(),
-        AgentState::Working,
-        None,
-        Some(1),
-    );
-    terminal.set_agent_name("reviewer".into());
-    state.session_dirty = false;
-
-    let updates = state.handle_app_event(AppEvent::HookAgentReleased {
-        pane_id,
-        source: "shepr:pi".into(),
-        agent_label: "pi".into(),
-        known_agent: Some(Agent::Pi),
-        seq: Some(2),
-    });
-
-    assert!(updates.is_empty());
-    let terminal = &state.terminals[&terminal_id];
-    assert_eq!(terminal.state, AgentState::Working);
-    assert_eq!(terminal.detected_agent, Some(Agent::Pi));
-    assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-    assert!(terminal.full_lifecycle_hook_authority_active());
-    assert!(!state.session_dirty);
-}
-
-#[test]
 fn devin_state_report_refreshes_session_without_overriding_screen_state() {
     let mut state = app_with_workspaces(&["active"]);
     let pane_id = *state.workspaces[0].tabs()[0]
@@ -939,44 +872,6 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
 }
 
 #[test]
-fn custom_release_clears_report_owned_agent() {
-    let mut state = app_with_workspaces(&["active"]);
-    let pane_id = *state.workspaces[0].tabs()[0]
-        .panes()
-        .keys()
-        .next()
-        .expect("test precondition");
-    let terminal_id = state.workspaces[0]
-        .pane_state(pane_id)
-        .expect("test precondition")
-        .attached_terminal_id
-        .clone();
-    state
-        .terminals
-        .get_mut(&terminal_id)
-        .expect("test precondition")
-        .set_hook_authority(
-            "custom:agent".into(),
-            "custom-agent".into(),
-            AgentState::Working,
-            None,
-            Some(1),
-        );
-
-    state.handle_app_event(AppEvent::HookAgentReleased {
-        pane_id,
-        source: "custom:agent".into(),
-        agent_label: "custom-agent".into(),
-        known_agent: None,
-        seq: Some(2),
-    });
-
-    let terminal = &state.terminals[&terminal_id];
-    assert!(terminal.hook_authority.is_none());
-    assert_eq!(terminal.state, AgentState::Unknown);
-}
-
-#[test]
 fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
     let mut state = app_with_workspaces(&["active"]);
     let pane_id = *state.workspaces[0].tabs()[0]
@@ -1033,54 +928,6 @@ fn cwd_report_for_missing_pane_is_ignored() {
 
     assert_eq!(state.terminals[&terminal_id].cwd(), before);
     assert!(!state.session_dirty);
-}
-
-#[test]
-fn metadata_expiry_state_change_bumps_state_sequence() {
-    let mut state = app_with_workspaces(&["active", "background"]);
-    state.set_active_index(Some(0));
-    let pane_id = state.workspaces[1].tabs()[0].root_pane();
-    let terminal_id = state
-        .terminal_id_for_pane(1, pane_id)
-        .expect("test precondition");
-    let before_report = Instant::now();
-    {
-        let terminal = state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
-        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        terminal.set_agent_metadata(shepr_mux::terminal::AgentMetadataReport {
-            source: "custom:status".into(),
-            agent_label: None,
-            applies_to_source: None,
-            title: Some("temporary".into()),
-            display_agent: None,
-            clear_title: false,
-            clear_display_agent: false,
-            ttl: Some(std::time::Duration::from_millis(1)),
-            seq: None,
-        });
-        // Leave the effective state stale so the expiry's recompute is
-        // what moves it, the way a time-dependent authority change would.
-        terminal.state = AgentState::Working;
-    }
-    let seq_before = state.next_agent_state_change_seq;
-
-    let updates = state.expire_agent_metadata_at(
-        before_report,
-        Instant::now() + std::time::Duration::from_secs(1),
-    );
-
-    let update = updates.first().expect("expiry publishes a state update");
-    assert_eq!(update.previous.state, AgentState::Working);
-    assert_eq!(update.current.state, AgentState::Idle);
-    assert_eq!(state.next_agent_state_change_seq, seq_before + 1);
-    let terminal = &state.terminals[&terminal_id];
-    assert_eq!(
-        terminal.last_agent_state_change_seq,
-        Some(state.next_agent_state_change_seq)
-    );
 }
 
 #[test]

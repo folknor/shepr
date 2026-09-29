@@ -34,18 +34,7 @@ pub(crate) const MAX_HOOK_REPORT_SOURCES: usize = 64;
 /// Maximum stale lifecycle sessions remembered per hook source, bounding
 /// deduplication memory while retaining recent reports.
 pub(crate) const MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE: usize = 64;
-/// Distinct metadata sources one terminal keeps, both for live presentation
-/// metadata and for the per-source report sequences. Any process in the pane
-/// can report metadata under a source name of its choosing, so without a cap
-/// a script that invents a new name per report grows these maps forever.
-pub(crate) const MAX_METADATA_SOURCES: usize = 64;
-/// Maximum sequence sources tracked for workspace metadata tokens, bounding
-/// names supplied by child processes.
-pub const MAX_SEQUENCE_SOURCES: usize = 32;
 
-/// Time to suppress reacquisition after a release, allowing process state to
-/// settle before the same agent can be reported again.
-pub(crate) const RELEASE_REACQUIRE_SUPPRESSION: Duration = Duration::from_secs(1);
 /// Consecutive process misses required before dropping an identified agent;
 /// transient /proc gaps must not erase its state.
 pub(crate) const AGENT_MISS_CONFIRMATION_ATTEMPTS: u8 = 6;
@@ -66,8 +55,8 @@ pub(crate) const PROCESS_ACQUISITION_FAST_RECHECK: Duration = Duration::from_mil
 pub(crate) const PROCESS_ACQUISITION_SLOW_RECHECK: Duration = Duration::from_secs(2);
 /// Idle time before restarting acquisition after process activity subsides.
 pub(crate) const PROCESS_ACQUISITION_IDLE_RESET: Duration = Duration::from_secs(2);
-/// Probe cadence during a pending release or transient color override, when
-/// a visible state change is expected immediately.
+/// Probe cadence during a transient color override, when a visible state
+/// change is expected immediately.
 pub(crate) const PROCESS_RECHECK_TRANSIENT: Duration = Duration::from_millis(50);
 /// Probe cadence when no agent is identified, balancing acquisition latency
 /// against repeated process scans.

@@ -84,7 +84,6 @@ impl ClientSettings {
 }
 
 pub(super) struct ClientLoopConfig {
-    pub(super) role: super::handshake::ClientProcessRole,
     pub(super) settings: ClientSettings,
     pub(super) host_escape_disambiguation_active: bool,
     pub(super) initial_host_input: Vec<u8>,

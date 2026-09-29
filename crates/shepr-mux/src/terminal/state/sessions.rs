@@ -114,7 +114,6 @@ impl TerminalState {
             let previous_agent_label = self.effective_agent_label().map(str::to_string);
             let previous_known_agent = self.effective_known_agent();
             let previous_state = self.state;
-            let previous_presentation = self.effective_presentation_at(now);
             let previous_session = self.current_session_identity_for_persistence();
             let suppressed = self
                 .suppressed_full_lifecycle_hook_reports
@@ -155,8 +154,6 @@ impl TerminalState {
                         previous_agent_label,
                         previous_known_agent,
                         previous_state,
-                        previous_presentation,
-                        now,
                     ),
                     session_ref_changed: previous_session != current_session,
                     agent_released: false,
@@ -228,7 +225,6 @@ impl TerminalState {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
-        let previous_presentation = self.effective_presentation_at(now);
         let previous_session = self.current_session_identity_for_persistence();
         if session_replacement_allowed || foreground_takeover_allowed {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
@@ -260,8 +256,6 @@ impl TerminalState {
                 previous_agent_label,
                 previous_known_agent,
                 previous_state,
-                previous_presentation,
-                now,
             ),
             session_ref_changed: previous_session != current_session,
             agent_released: false,

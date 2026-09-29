@@ -52,12 +52,6 @@ pub(crate) const MAX_SIDEBAR_RULES: usize = 16;
 /// No blank rows keep the default sidebar compact; users can add spacing in config.
 pub(crate) const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
 
-/// Maximum byte length of a custom sidebar token name.
-///
-/// Custom names are ASCII identifiers, so this also caps their character
-/// count; the cap permits readable names while keeping metadata compact.
-pub(crate) const MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES: usize = 32;
-
 /// Maximum number of characters written to the outer terminal window title.
 ///
 /// The title limit preserves long workspace and pane names while

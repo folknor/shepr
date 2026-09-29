@@ -191,11 +191,6 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    WorkspaceReportMetadata(WorkspaceReportMetadataParams) => "workspace.report_metadata" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     WorkspaceClose(WorkspaceCloseParams) => "workspace.close" {
         client_shell: true, mutates_ui: true, changes_topology: true,
         changes_geometry: true, claims_shell_geometry: true,
@@ -401,17 +396,7 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: true,
     };
-    PaneReportMetadata(PaneReportMetadataParams) => "pane.report_metadata" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: true,
-    };
     PaneClearAgentAuthority(PaneClearAgentAuthorityParams) => "pane.clear_agent_authority" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    PaneReleaseAgent(PaneReleaseAgentParams) => "pane.release_agent" {
         client_shell: false, mutates_ui: true, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: false,

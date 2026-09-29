@@ -163,8 +163,6 @@ fn wait_matched_response(
                     workspace_id: data.workspace_id,
                     agent_status: data.agent_status,
                     agent: data.agent,
-                    title: data.title,
-                    display_agent: data.display_agent,
                 },
             },
         },
@@ -229,12 +227,9 @@ mod tests {
             restore_error: None,
             label: None,
             agent: None,
-            title: None,
             terminal_title: None,
             terminal_title_stripped: None,
-            display_agent: None,
             agent_status: AgentStatus::Working,
-            tokens: std::collections::HashMap::new(),
             agent_session: None,
             scroll: None,
             revision: 0,
@@ -272,8 +267,6 @@ mod tests {
                 workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Idle,
                 agent: Some("pi".into()),
-                title: Some("done".into()),
-                display_agent: None,
             },
         }
     }
@@ -367,7 +360,7 @@ mod tests {
         let data = &response["result"]["event"]["data"];
         assert_eq!(data["pane_id"], PANE);
         assert_eq!(data["agent_status"], "idle");
-        assert_eq!(data["title"], "done");
+        assert_eq!(data["agent"], "pi");
     }
 
     #[test]
@@ -446,8 +439,6 @@ mod tests {
                     workspace_id: shepr_test_fixtures::id("w1"),
                     agent_status: crate::schema::AgentStatus::Idle,
                     agent: None,
-                    title: None,
-                    display_agent: None,
                 },
             ),
         })

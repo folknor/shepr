@@ -24,7 +24,6 @@ use crate::UsableCwd;
 use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalReadSnapshot;
-use shepr_agent::detect::Agent;
 use shepr_core::layout::PaneId;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
 use shepr_pty::{ChildIo, PtyCommand};
@@ -192,7 +191,6 @@ pub struct PaneRuntime {
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
-    pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
     // Task handles for deterministic shutdown
     detect_handle: Option<tokio::task::AbortHandle>,
 }
@@ -1031,7 +1029,7 @@ impl PaneRuntime {
         }
 
         // --- Detection task ---
-        let (detect_handle, detect_reset_notify, pending_release) = {
+        let (detect_handle, detect_reset_notify) = {
             use std::time::Instant;
 
             let child_liveness = Arc::clone(&child_liveness);
@@ -1044,8 +1042,6 @@ impl PaneRuntime {
             let render_dirty = Arc::clone(render_dirty);
             let detect_reset_notify = Arc::new(Notify::new());
             let detect_reset = Arc::clone(&detect_reset_notify);
-            let pending_release = Arc::new(Mutex::new(None));
-            let pending_release_for_task = Arc::clone(&pending_release);
 
             let handle = tokio::spawn(async move {
                 let mut detector = DetectorState::new(Instant::now(), launch_purpose);
@@ -1053,11 +1049,8 @@ impl PaneRuntime {
                 tokio::time::sleep(crate::limits::INITIAL_DETECTION_DELAY).await;
 
                 loop {
-                    let now_for_tick = Instant::now();
-                    let tick = detector.tick_interval(
-                        active_pending_release(&pending_release_for_task, now_for_tick).is_some(),
-                        terminal.has_transient_default_color_override(),
-                    );
+                    let tick =
+                        detector.tick_interval(terminal.has_transient_default_color_override());
                     tokio::select! {
                         _ = tokio::time::sleep(tick) => {}
                         _ = detect_reset.notified() => {
@@ -1066,8 +1059,6 @@ impl PaneRuntime {
                     }
 
                     let now = Instant::now();
-                    let suppressed_agent = active_pending_release(&pending_release_for_task, now);
-                    detector.observe_release(suppressed_agent.is_some());
                     let pid = child_liveness.pid();
                     let lifecycle_authority_active =
                         full_lifecycle_authority_active_for_task.load(Ordering::Acquire);
@@ -1088,7 +1079,6 @@ impl PaneRuntime {
                     };
                     let probe_schedule = detector.schedule_process_probe(&ProcessProbeRequest {
                         now,
-                        suppressed_agent,
                         observed_foreground_group: foreground_pgid,
                         lifecycle_authority_active,
                     });
@@ -1112,14 +1102,8 @@ impl PaneRuntime {
                             &probe,
                             now,
                             foreground_pgid,
-                            suppressed_agent,
                             probe_schedule,
                         );
-                        if process_change.clear_pending_release {
-                            let mut pending_release =
-                                shepr_vt::lock_auxiliary(&pending_release_for_task);
-                            *pending_release = None;
-                        }
                         if process_change.should_clear_osc_evidence {
                             clear_osc_evidence_for_agent_transition(
                                 &terminal,
@@ -1230,12 +1214,7 @@ impl PaneRuntime {
                         detector.clear_pending_idle();
                         continue;
                     };
-                    detector.note_content_change(
-                        now,
-                        suppressed_agent,
-                        process_group_changed,
-                        content_changed,
-                    );
+                    detector.note_content_change(now, process_group_changed, content_changed);
                     if detector.withhold_agent_absence(agent, now) {
                         detector.clear_pending_idle();
                         continue;
@@ -1275,11 +1254,7 @@ impl PaneRuntime {
                     }
                 }
             });
-            (
-                Some(handle.abort_handle()),
-                detect_reset_notify,
-                pending_release,
-            )
+            (Some(handle.abort_handle()), detect_reset_notify)
         };
 
         Ok(Self {
@@ -1296,7 +1271,6 @@ impl PaneRuntime {
             detection_content_seq,
             full_lifecycle_authority_active,
             detect_reset_notify,
-            pending_release,
             detect_handle,
         })
     }
@@ -1333,7 +1307,6 @@ impl PaneRuntime {
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: detection_reset,
-            pending_release: Arc::new(Mutex::new(None)),
             detect_handle: None,
         }
     }
@@ -1353,14 +1326,6 @@ impl PaneRuntime {
     /// terminal core and the content write lock.
     pub fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
         self.terminal.on_next_dirty_collection(hook);
-    }
-
-    pub fn begin_graceful_release(&self, agent: Agent) {
-        *shepr_vt::lock_auxiliary(&self.pending_release) = Some(PendingAgentRelease {
-            agent,
-            until: std::time::Instant::now() + RELEASE_REACQUIRE_SUPPRESSION,
-        });
-        self.detect_reset_notify.notify_one();
     }
 
     pub fn set_full_lifecycle_authority_active(&self, active: bool) {
@@ -1892,6 +1857,7 @@ impl PaneRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_agent::detect::Agent;
     use shepr_test_support::fixture::{self, Held, Signal, Step};
 
     fn shell_probe(
@@ -2645,7 +2611,6 @@ mod tests {
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
-            pending_release: Arc::new(Mutex::new(None)),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
@@ -2676,7 +2641,6 @@ mod tests {
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
-            pending_release: Arc::new(Mutex::new(None)),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 

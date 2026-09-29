@@ -1,12 +1,10 @@
-pub(super) use crate::limits::{AGENT_MISS_CONFIRMATION_ATTEMPTS, RELEASE_REACQUIRE_SUPPRESSION};
+pub(super) use crate::limits::AGENT_MISS_CONFIRMATION_ATTEMPTS;
 use crate::limits::{
     PROCESS_ACQUISITION_FAST_RECHECK, PROCESS_ACQUISITION_FAST_WINDOW,
     PROCESS_ACQUISITION_IDLE_RESET, PROCESS_ACQUISITION_SLOW_RECHECK, PROCESS_ACQUISITION_WINDOW,
     PROCESS_RECHECK_ACTIVE_AGENT, PROCESS_RECHECK_IDENTIFIED,
     PROCESS_RECHECK_MISSING_FOREGROUND_GROUP, PROCESS_RECHECK_NO_AGENT, PROCESS_RECHECK_TRANSIENT,
 };
-use std::sync::Mutex;
-
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -22,27 +20,6 @@ use crate::UsableCwd;
 use crate::events::AppEvent;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct PendingAgentRelease {
-    pub(super) agent: Agent,
-    pub(super) until: std::time::Instant,
-}
-
-pub(super) fn active_pending_release(
-    pending_release: &Mutex<Option<PendingAgentRelease>>,
-    now: std::time::Instant,
-) -> Option<Agent> {
-    let mut pending_release = shepr_vt::lock_auxiliary(pending_release);
-    match *pending_release {
-        Some(pending) if now < pending.until => Some(pending.agent),
-        Some(_) => {
-            *pending_release = None;
-            None
-        }
-        None => None,
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StateChangedUpdate {
@@ -215,7 +192,6 @@ pub(super) fn process_group_for_change_tracking(
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ProcessProbeRequest {
     pub(super) now: std::time::Instant,
-    pub(super) suppressed_agent: Option<Agent>,
     pub(super) observed_foreground_group: Option<u32>,
     pub(super) lifecycle_authority_active: bool,
 }
@@ -224,7 +200,6 @@ pub(super) struct ProcessProbeRequest {
 pub(super) struct ProcessProbeScheduleInput {
     now: std::time::Instant,
     agent: Option<Agent>,
-    suppressed_agent: Option<Agent>,
     observed_foreground_group: Option<u32>,
     lifecycle_authority_active: bool,
     shell_clear_pending: bool,
@@ -268,7 +243,6 @@ pub(super) struct ProcessProbeScheduler {
     has_probe: bool,
     acquisition_started_at: Option<std::time::Instant>,
     last_content_change_at: Option<std::time::Instant>,
-    release_was_active: bool,
 }
 
 impl ProcessProbeScheduler {
@@ -279,7 +253,6 @@ impl ProcessProbeScheduler {
             has_probe: false,
             acquisition_started_at: None,
             last_content_change_at: None,
-            release_was_active: false,
         }
     }
 
@@ -288,16 +261,6 @@ impl ProcessProbeScheduler {
         self.has_probe = false;
         self.acquisition_started_at = None;
         self.last_content_change_at = None;
-        self.release_was_active = false;
-    }
-
-    pub(super) fn observe_release(&mut self, active: bool) {
-        if !active && self.release_was_active {
-            self.has_probe = false;
-            self.acquisition_started_at = None;
-            self.last_content_change_at = None;
-        }
-        self.release_was_active = active;
     }
 
     pub(super) fn foreground_group_changed(&self, observed: Option<u32>) -> bool {
@@ -314,7 +277,6 @@ impl ProcessProbeScheduler {
         let lifecycle_authority_can_skip = input.lifecycle_authority_active
             && input.observed_foreground_group.is_some()
             && !input.shell_clear_pending
-            && input.suppressed_agent.is_none()
             && self.has_probe
             && !group_changed;
         if lifecycle_authority_can_skip {
@@ -335,7 +297,6 @@ impl ProcessProbeScheduler {
 
         if !self.has_probe
             && !input.shell_clear_pending
-            && input.suppressed_agent.is_none()
             && !group_changed
             && !acquisition_due
             && acquisition_age.is_some_and(|age| age <= PROCESS_ACQUISITION_WINDOW)
@@ -345,11 +306,7 @@ impl ProcessProbeScheduler {
             };
         }
 
-        let should_probe = if input.shell_clear_pending {
-            true
-        } else if input.suppressed_agent.is_some() {
-            !self.has_probe || group_changed
-        } else if acquisition_due {
+        let should_probe = if input.shell_clear_pending || acquisition_due {
             true
         } else if input.agent.is_none() {
             !self.has_probe
@@ -397,11 +354,10 @@ impl ProcessProbeScheduler {
         &mut self,
         now: std::time::Instant,
         agent: Option<Agent>,
-        suppressed_agent: Option<Agent>,
         group_changed: bool,
         changed: bool,
     ) {
-        if agent.is_some() || suppressed_agent.is_some() || group_changed {
+        if agent.is_some() || group_changed {
             return;
         }
 
@@ -523,7 +479,6 @@ pub(super) struct AgentProcessChange {
     pub(super) agent_changed: bool,
     pub(super) should_clear_osc_evidence: bool,
     pub(super) process_detected: Option<Agent>,
-    pub(super) clear_pending_release: bool,
 }
 
 /// The detector's mutable state, independent of the PTY runtime and terminal.
@@ -573,12 +528,8 @@ impl DetectorState {
         self.agent_presence.current_agent()
     }
 
-    pub(super) fn tick_interval(
-        &self,
-        pending_release_active: bool,
-        transient_color_override: bool,
-    ) -> std::time::Duration {
-        if pending_release_active || transient_color_override {
+    pub(super) fn tick_interval(&self, transient_color_override: bool) -> std::time::Duration {
+        if transient_color_override {
             PROCESS_RECHECK_TRANSIENT
         } else if self.pending_idle.active() {
             AGENT_PENDING_IDLE_RECHECK
@@ -605,10 +556,6 @@ impl DetectorState {
         self.pending_idle.clear();
     }
 
-    pub(super) fn observe_release(&mut self, active: bool) {
-        self.scheduler.observe_release(active);
-    }
-
     pub(super) fn schedule_process_probe(
         &self,
         request: &ProcessProbeRequest,
@@ -616,7 +563,6 @@ impl DetectorState {
         self.scheduler.schedule(ProcessProbeScheduleInput {
             now: request.now,
             agent: self.current_agent(),
-            suppressed_agent: request.suppressed_agent,
             observed_foreground_group: request.observed_foreground_group,
             lifecycle_authority_active: request.lifecycle_authority_active,
             shell_clear_pending: self.pending_foreground_shell_clear,
@@ -632,23 +578,12 @@ impl DetectorState {
         probe: &ProcessProbeResult,
         now: std::time::Instant,
         observed_foreground_group: Option<u32>,
-        suppressed_agent: Option<Agent>,
         schedule: ProbeScheduleDecision,
     ) -> AgentProcessChange {
         let process_name = probe.process_name().map(str::to_owned);
         let process_group_id = probe.process_group_id();
         let foreground_is_pane_shell = probe.foreground_is_pane_shell();
-        let mut identified_agent = probe.agent();
-        let clear_pending_release = if let Some(suppressed_agent) = suppressed_agent {
-            if identified_agent == Some(suppressed_agent) {
-                identified_agent = None;
-                false
-            } else {
-                true
-            }
-        } else {
-            false
-        };
+        let identified_agent = probe.agent();
 
         let previous_agent = self.current_agent();
         let action = foreground_shell_agent_action(ForegroundShellProbe {
@@ -722,7 +657,6 @@ impl DetectorState {
             agent_changed,
             should_clear_osc_evidence: should_reset_detection && previous_agent.is_some(),
             process_detected: if should_reset_detection { agent } else { None },
-            clear_pending_release,
         }
     }
 
@@ -796,17 +730,11 @@ impl DetectorState {
     pub(super) fn note_content_change(
         &mut self,
         now: std::time::Instant,
-        suppressed_agent: Option<Agent>,
         group_changed: bool,
         changed: bool,
     ) {
-        self.scheduler.content_changed(
-            now,
-            self.current_agent(),
-            suppressed_agent,
-            group_changed,
-            changed,
-        );
+        self.scheduler
+            .content_changed(now, self.current_agent(), group_changed, changed);
     }
 
     pub(super) fn withhold_agent_absence(
@@ -994,7 +922,6 @@ mod tests {
     fn schedule_input(
         now: std::time::Instant,
         agent: Option<Agent>,
-        suppressed_agent: Option<Agent>,
         observed_foreground_group: Option<u32>,
         lifecycle_authority_active: bool,
         shell_clear_pending: bool,
@@ -1002,7 +929,6 @@ mod tests {
         ProcessProbeScheduleInput {
             now,
             agent,
-            suppressed_agent,
             observed_foreground_group,
             lifecycle_authority_active,
             shell_clear_pending,
@@ -1014,7 +940,7 @@ mod tests {
         let now = std::time::Instant::now();
         let mut scheduler = ProcessProbeScheduler::new(now);
         assert!(matches!(
-            scheduler.schedule(schedule_input(now, None, None, None, false, false)),
+            scheduler.schedule(schedule_input(now, None, None, false, false)),
             ProbeScheduleDecision::Probe {
                 had_previous_probe: false,
                 ..
@@ -1029,7 +955,6 @@ mod tests {
                         - std::time::Duration::from_millis(1),
                     None,
                     None,
-                    None,
                     false,
                     false,
                 ))
@@ -1039,7 +964,6 @@ mod tests {
             scheduler
                 .schedule(schedule_input(
                     now + PROCESS_RECHECK_MISSING_FOREGROUND_GROUP,
-                    None,
                     None,
                     None,
                     false,
@@ -1060,7 +984,6 @@ mod tests {
             scheduler.schedule(schedule_input(
                 now + std::time::Duration::from_millis(300),
                 Some(Agent::Pi),
-                None,
                 Some(42),
                 true,
                 false,
@@ -1074,19 +997,6 @@ mod tests {
                 .schedule(schedule_input(
                     now + std::time::Duration::from_millis(300),
                     Some(Agent::Pi),
-                    None,
-                    Some(43),
-                    true,
-                    false,
-                ))
-                .should_probe()
-        );
-        assert!(
-            scheduler
-                .schedule(schedule_input(
-                    now + std::time::Duration::from_millis(300),
-                    None,
-                    Some(Agent::Pi),
                     Some(43),
                     true,
                     false,
@@ -1098,7 +1008,6 @@ mod tests {
                 .schedule(schedule_input(
                     now + std::time::Duration::from_millis(300),
                     Some(Agent::Pi),
-                    None,
                     Some(42),
                     true,
                     true,
@@ -1119,7 +1028,6 @@ mod tests {
                     now + PROCESS_RECHECK_IDENTIFIED - std::time::Duration::from_millis(1),
                     Some(Agent::Pi),
                     None,
-                    None,
                     true,
                     false,
                 ))
@@ -1131,41 +1039,7 @@ mod tests {
                     now + PROCESS_RECHECK_IDENTIFIED,
                     Some(Agent::Pi),
                     None,
-                    None,
                     true,
-                    false,
-                ))
-                .should_probe()
-        );
-    }
-
-    #[test]
-    fn stable_release_suppression_waits_for_a_group_change() {
-        let now = std::time::Instant::now();
-        let mut scheduler = ProcessProbeScheduler::new(now);
-        scheduler.probe_started(now);
-        scheduler.last_foreground_group = Some(42);
-
-        assert!(
-            !scheduler
-                .schedule(schedule_input(
-                    now + std::time::Duration::from_millis(50),
-                    None,
-                    Some(Agent::Codex),
-                    Some(42),
-                    false,
-                    false,
-                ))
-                .should_probe()
-        );
-        assert!(
-            scheduler
-                .schedule(schedule_input(
-                    now + std::time::Duration::from_millis(50),
-                    None,
-                    Some(Agent::Codex),
-                    Some(43),
-                    false,
                     false,
                 ))
                 .should_probe()
@@ -1176,13 +1050,12 @@ mod tests {
     fn scheduler_rechecks_acquisition_quickly_and_resets_after_quiet() {
         let now = std::time::Instant::now();
         let mut scheduler = ProcessProbeScheduler::new(now);
-        scheduler.content_changed(now, None, None, false, true);
+        scheduler.content_changed(now, None, false, true);
 
         assert!(
             !scheduler
                 .schedule(schedule_input(
                     now + PROCESS_ACQUISITION_FAST_RECHECK - std::time::Duration::from_millis(1),
-                    None,
                     None,
                     None,
                     false,
@@ -1194,7 +1067,6 @@ mod tests {
             scheduler
                 .schedule(schedule_input(
                     now + PROCESS_ACQUISITION_FAST_RECHECK,
-                    None,
                     None,
                     None,
                     false,
@@ -1209,7 +1081,6 @@ mod tests {
                     now + PROCESS_ACQUISITION_SLOW_RECHECK - std::time::Duration::from_millis(1),
                     None,
                     None,
-                    None,
                     false,
                     false,
                 ))
@@ -1221,7 +1092,6 @@ mod tests {
                     now + PROCESS_ACQUISITION_SLOW_RECHECK,
                     None,
                     None,
-                    None,
                     false,
                     false,
                 ))
@@ -1230,7 +1100,6 @@ mod tests {
 
         scheduler.content_changed(
             now + PROCESS_ACQUISITION_WINDOW + PROCESS_ACQUISITION_IDLE_RESET,
-            None,
             None,
             false,
             false,
@@ -1244,7 +1113,7 @@ mod tests {
         let mut detector = DetectorState::new(now, LaunchPurpose::AgentResume);
         assert_eq!(detector.current_agent(), None);
         assert_eq!(
-            detector.tick_interval(false, false),
+            detector.tick_interval(false),
             std::time::Duration::from_millis(500)
         );
         assert!(detector.withhold_agent_absence(None, now));
@@ -1278,7 +1147,6 @@ mod tests {
         let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
         let request = ProcessProbeRequest {
             now,
-            suppressed_agent: None,
             observed_foreground_group: Some(25),
             lifecycle_authority_active: false,
         };
@@ -1294,7 +1162,7 @@ mod tests {
                 process_name: "claude".to_string(),
             },
         };
-        let change = detector.observe_process_probe(&probe, now, Some(25), None, schedule);
+        let change = detector.observe_process_probe(&probe, now, Some(25), schedule);
 
         assert_eq!(change.agent, Some(Agent::Claude));
         assert_eq!(change.process_detected, Some(Agent::Claude));

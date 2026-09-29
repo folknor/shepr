@@ -93,7 +93,6 @@ pub struct App {
     pub(crate) last_focus: Option<(usize, shepr_core::layout::PaneId)>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
-    pub(crate) agent_metadata_deadline: Option<Instant>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
     startup_per_agent_delay: Duration,
     next_agent_resume_at: Option<Instant>,
@@ -292,7 +291,6 @@ impl App {
             event_tx,
             event_rx,
             git_refresh: git_refresh::GitRefreshScheduler::new(clock.now),
-            agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
             startup_per_agent_delay: Duration::from_millis(
                 config.session().startup_per_agent_delay_ms.into(),

@@ -66,8 +66,6 @@ pub(super) fn snapshot_from_session(
         .into_iter()
         .enumerate()
         .map(|(position, workspace)| {
-            let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
-            tokens.sort_by(|left, right| left.0.cmp(&right.0));
             let workspace_id = workspace.workspace_id;
             let workspace_index = app
                 .state
@@ -103,7 +101,6 @@ pub(super) fn snapshot_from_session(
                 git_ahead_behind: state
                     .and_then(shepr_mux::workspace::Workspace::git_ahead_behind)
                     .map(|counts| (counts.ahead, counts.behind)),
-                tokens,
                 agent_status: workspace.agent_status,
             }
         })
@@ -166,21 +163,16 @@ pub(super) fn snapshot_from_session(
         .into_iter()
         .map(|agent| {
             let focused = focused_pane_id.as_ref() == Some(&agent.pane_id);
-            let mut tokens = agent.tokens.into_iter().collect::<Vec<_>>();
-            tokens.sort_by(|left, right| left.0.cmp(&right.0));
             shepr_protocol::ClientShellAgent {
                 pane_id: agent.pane_id,
                 workspace_id: agent.workspace_id,
                 tab_id: agent.tab_id,
                 name: agent.name,
-                display_agent: agent.display_agent,
                 agent: agent.agent,
-                title: agent.title,
                 terminal_title: agent.terminal_title,
                 terminal_title_stripped: agent.terminal_title_stripped,
                 agent_status: agent.agent_status,
                 state_change_seq: agent.state_change_seq,
-                tokens,
                 focused,
             }
         })

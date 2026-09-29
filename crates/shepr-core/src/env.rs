@@ -149,12 +149,6 @@ env_vocabulary! {
         /// `SHEPR_STARTUP_CWD`: the directory the user launched `shepr` from,
         /// handed to the server daemon it spawns to seed the first workspace.
         SheprStartupCwd => "SHEPR_STARTUP_CWD",
-        /// `SHEPR_REATTACH_COMMAND`: the command the remote bridge's client
-        /// names in its reattach hint.
-        SheprReattachCommand => "SHEPR_REATTACH_COMMAND",
-        /// `SHEPR_REMOTE_KEYBINDINGS`: `local` or `server`, set by the remote
-        /// bridge on the client it spawns; unset for a local client.
-        SheprRemoteKeybindings => "SHEPR_REMOTE_KEYBINDINGS",
         /// `SHEPR_LOG`: the `tracing` filter directives for the file logs.
         SheprLog => "SHEPR_LOG",
         /// `SHEPR_DEBUG_OSC_EVIDENCE`: logs selected OSC sequences each pane
@@ -360,8 +354,6 @@ impl EnvVar {
             Self::SheprDebugOscEvidence => EnvKind::Flag,
             Self::SheprPaneId
             | Self::SheprEnv
-            | Self::SheprReattachCommand
-            | Self::SheprRemoteKeybindings
             | Self::SheprLog
             | Self::TermProgram
             | Self::GitCeilingDirectories
@@ -968,12 +960,6 @@ mod tests {
             (EnvVar::SheprPaneId, "SHEPR_PANE_ID", Text),
             (EnvVar::SheprEnv, "SHEPR_ENV", Text),
             (EnvVar::SheprStartupCwd, "SHEPR_STARTUP_CWD", Handoff),
-            (EnvVar::SheprReattachCommand, "SHEPR_REATTACH_COMMAND", Text),
-            (
-                EnvVar::SheprRemoteKeybindings,
-                "SHEPR_REMOTE_KEYBINDINGS",
-                Text,
-            ),
             (EnvVar::SheprLog, "SHEPR_LOG", Text),
             (
                 EnvVar::SheprDebugOscEvidence,

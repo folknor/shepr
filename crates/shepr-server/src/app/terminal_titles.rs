@@ -115,7 +115,6 @@ mod tests {
             pane.terminal_title_stripped.as_deref(),
             Some("修复\u{1F642}标题")
         );
-        assert_eq!(pane.title, None);
         assert_eq!(pane.agent_status, shepr_api::schema::AgentStatus::Working);
         assert_eq!(pane.revision, 1);
         let agent = app.collect_agent_infos().pop().expect("test precondition");

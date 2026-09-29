@@ -2,7 +2,7 @@ use shepr_protocol::TerminalId;
 
 /// Viewport state for a pane.
 ///
-/// Terminal identity, cwd, labels, and agent metadata live in TerminalState.
+/// Terminal identity, cwd, labels, and agent state live in TerminalState.
 pub struct PaneState {
     pub attached_terminal_id: TerminalId,
     /// Whether unmodified right-click gestures should be forwarded to the pane application.

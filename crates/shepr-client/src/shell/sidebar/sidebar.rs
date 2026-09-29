@@ -58,7 +58,6 @@ pub(in crate::shell) fn workspace_rows(
             branch: workspace.branch.as_deref(),
             state_text: status_text(status),
             ahead_behind: workspace.git_ahead_behind,
-            tokens: &workspace.tokens,
         },
     )
 }
@@ -124,7 +123,7 @@ pub(in crate::shell) fn render_workspace_rows(
                 state_text: glyph.style,
                 primary: workspace_style,
                 secondary: secondary_style,
-                custom: Style::default().fg(palette.overlay1),
+                terminal_title: Style::default().fg(palette.overlay1),
             },
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,

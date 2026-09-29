@@ -114,9 +114,9 @@ pub(super) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
 /// This is an overall deadline for the frame, not a per-read idle timeout.
 ///
 /// A local client talks to an already-connected server, so this deadline only
-/// needs room for the welcome response. The remote bridge client (`shepr
-/// --remote`) also performs a fresh SSH connection, including key exchange and
-/// authentication, which needs more room on high-latency links.
+/// needs room for the welcome response. A saved-machine endpoint shell that is
+/// not the active surface also waits on a fresh SSH connection, including key
+/// exchange and authentication, which needs more room on high-latency links.
 pub(super) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// Allows a fresh remote SSH connection and its welcome reply to finish on
 /// high-latency links.

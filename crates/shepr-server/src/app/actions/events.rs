@@ -156,33 +156,6 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
-            AppEvent::HookMetadataReported {
-                pane_id,
-                source,
-                agent_label,
-                applies_to_source,
-                title,
-                display_agent,
-                clear_title,
-                clear_display_agent,
-                seq,
-                ttl,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_metadata(shepr_mux::terminal::AgentMetadataReport {
-                        source,
-                        agent_label,
-                        applies_to_source,
-                        title,
-                        display_agent,
-                        clear_title,
-                        clear_display_agent,
-                        ttl,
-                        seq,
-                    })
-                })
-                .into_iter()
-                .collect(),
             AppEvent::HookAuthorityCleared {
                 pane_id,
                 source,
@@ -193,23 +166,6 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
-            AppEvent::HookAgentReleased {
-                pane_id,
-                source,
-                agent_label,
-                seq,
-                ..
-            } => {
-                if shepr_agent::agent::resume::is_official_agent_source(&source, &agent_label) {
-                    Vec::new()
-                } else {
-                    self.update_terminal_state(pane_id, |terminal| {
-                        terminal.release_agent_with_mutation_at(&source, &agent_label, seq, now)
-                    })
-                    .into_iter()
-                    .collect()
-                }
-            }
             // Handled before this state-only handler, which keeps them for
             // AppEvent exhaustiveness: a clipboard write is a host-local effect
             // the HeadlessServer forwards to the foreground client, and git and
@@ -261,7 +217,7 @@ impl AppState {
             let resume_name_changed = terminal.reconcile_agent_resume_name(now);
             let agent_name_changed = terminal.agent_name != previous_agent_name;
             let unchanged_change = (mutation.agent_released || agent_name_changed)
-                .then(|| terminal.unchanged_effective_state_change_at(now));
+                .then(|| terminal.unchanged_effective_state_change());
             (
                 mutation,
                 resume_name_changed,
@@ -282,7 +238,6 @@ impl AppState {
                 agent_label: change.previous_agent_label.clone(),
                 known_agent: change.previous_known_agent,
                 state: change.previous_state,
-                presentation: change.previous_presentation.clone(),
             },
             current: PaneStateSnapshot {
                 agent_label: if agent_released {
@@ -296,7 +251,6 @@ impl AppState {
                     change.known_agent
                 },
                 state: change.state,
-                presentation: change.presentation.clone(),
             },
             cause: match (agent_name_changed, agent_released) {
                 (false, false) => PaneStateCause::StateChanged,

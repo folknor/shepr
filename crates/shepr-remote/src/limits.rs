@@ -143,18 +143,8 @@ pub(crate) const BRIDGE_IO_BUFFER_BYTES: usize = 16 * 1024;
 /// operation and leaves the bridge responsive to cancellation between chunks.
 pub(crate) const BRIDGE_WRITE_CHUNK_BYTES: usize = 4 * 1024;
 
-/// Number of target characters kept in the readable part of a shortened
-/// bridge socket name. The prefix aids diagnosis while leaving room for
-/// the hash and session data under the platform socket path limit.
-pub(crate) const BRIDGE_TARGET_PREFIX_CHARS: usize = 8;
-
-/// Maximum characters in a sanitized component in socket names. The cap
-/// preserves a useful readable prefix while keeping the complete socket name
-/// within Unix socket path limits.
-pub(crate) const BRIDGE_PATH_COMPONENT_MAX_CHARS: usize = 32;
-
 /// Initial capacity reserved for remote CLI arguments. This covers the common
-/// command shape; `Vec` still grows for attach commands with more fields.
+/// command shape; `Vec` still grows if a command needs more.
 pub(crate) const REMOTE_COMMAND_ARGS_INITIAL_CAPACITY: usize = 6;
 
 /// Buffer size for filtering remote SSH stderr before displaying it locally.

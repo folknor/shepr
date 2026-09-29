@@ -28,7 +28,6 @@ impl TerminalState {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
-        let previous_presentation = self.effective_presentation_at(now);
         let previous_session = self.current_session_identity_for_persistence();
         self.suppress_current_full_lifecycle_hook_authority(
             FullLifecycleHookSuppressionReason::HookClear,
@@ -41,80 +40,9 @@ impl TerminalState {
                 previous_agent_label,
                 previous_known_agent,
                 previous_state,
-                previous_presentation,
-                now,
             ),
             session_ref_changed: previous_session.is_some(),
             agent_released: false,
-        })
-    }
-
-    pub fn release_agent_with_mutation_at(
-        &mut self,
-        source: &str,
-        agent_label: &str,
-        seq: Option<u64>,
-        now: Instant,
-    ) -> Option<TerminalStateMutation> {
-        self.warn_unrecognized_hook_identity(source, agent_label);
-        if self.hook_authority.as_ref().is_some_and(|authority| {
-            authority.agent_label != agent_label || authority.source != source
-        }) {
-            return None;
-        }
-
-        let matches_current_agent = self.effective_agent_label() == Some(agent_label);
-        let matches_persisted_session = self.persisted_agent_session_matches(source, agent_label);
-        if !matches_current_agent && !matches_persisted_session {
-            return None;
-        }
-        if !self.accept_hook_report_at(source, seq, now) {
-            return None;
-        }
-        let preserve_foreign_persisted_session =
-            self.persisted_agent_session
-                .as_ref()
-                .is_some_and(|session| {
-                    session.source.as_str() != source || session.agent.label() != agent_label
-                });
-        let process_owns_agent =
-            shepr_agent::detect::parse_agent_label(agent_label).is_some_and(|agent| {
-                self.detected_agent == Some(agent) && self.recent_agent_process_exit.is_none()
-            });
-
-        let previous_agent_label = self.effective_agent_label().map(str::to_string);
-        let previous_known_agent = self.effective_known_agent();
-        let previous_state = self.state;
-        let previous_presentation = self.effective_presentation_at(now);
-        let previous_session = self.current_session_identity_for_persistence();
-        self.suppress_full_lifecycle_hook_report(
-            source,
-            agent_label,
-            FullLifecycleHookSuppressionReason::HookClear,
-            now,
-        );
-        if !process_owns_agent {
-            self.detected_agent = None;
-            self.fallback_state = AgentState::Unknown;
-            self.fallback_visible_blocker = false;
-            self.fallback_observed_at = None;
-            self.clear_agent_name();
-        }
-        self.hook_authority = None;
-        if !preserve_foreign_persisted_session {
-            self.persisted_agent_session = None;
-        }
-        let current_session = self.current_session_identity_for_persistence();
-        Some(TerminalStateMutation {
-            effective_state_change: self.recompute_effective_state(
-                previous_agent_label,
-                previous_known_agent,
-                previous_state,
-                previous_presentation,
-                now,
-            ),
-            session_ref_changed: previous_session != current_session,
-            agent_released: !process_owns_agent,
         })
     }
 
@@ -145,20 +73,17 @@ impl TerminalState {
             .and_then(shepr_agent::detect::parse_agent_label)
     }
 
-    pub fn unchanged_effective_state_change_at(&self, now: Instant) -> EffectiveStateChange {
+    pub fn unchanged_effective_state_change(&self) -> EffectiveStateChange {
         let agent_label = self.effective_agent_label().map(str::to_string);
         let known_agent = self.effective_known_agent();
         let state = self.state;
-        let presentation = self.effective_presentation_at(now);
         EffectiveStateChange {
             previous_agent_label: agent_label.clone(),
             previous_known_agent: known_agent,
             previous_state: state,
-            previous_presentation: presentation.clone(),
             agent_label,
             known_agent,
             state,
-            presentation,
         }
     }
 
@@ -207,14 +132,5 @@ impl TerminalState {
         seq: Option<u64>,
     ) -> Option<TerminalStateMutation> {
         self.clear_hook_authority_with_mutation_at(source, seq, Instant::now())
-    }
-
-    pub fn release_agent_with_mutation(
-        &mut self,
-        source: &str,
-        agent_label: &str,
-        seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
-        self.release_agent_with_mutation_at(source, agent_label, seq, Instant::now())
     }
 }
