@@ -342,13 +342,6 @@ pub(crate) enum ServerEvent {
         request_id: shepr_protocol::RequestId,
         command: Box<shepr_protocol::command::EndpointCommand>,
     },
-    /// A deferred endpoint command was answered.
-    ClientShellEndpointResponseReady {
-        client_id: ClientId,
-        boot_id: shepr_protocol::BootId,
-        request_id: shepr_protocol::RequestId,
-        result: Box<Result<shepr_protocol::command::EndpointReply, shepr_api::error::ApiError>>,
-    },
     /// A client detached gracefully.
     ClientDetach { client_id: ClientId },
     /// A client connection was lost.
@@ -795,8 +788,8 @@ fn client_read_loop_with_endpoint_controls(
                 request_id,
                 command,
             } => {
-                // Both ids are echoed back and the request id is kept while
-                // the command is in flight, so they are bounded here; the
+                // Both ids are echoed back and held with the reply until the
+                // render after the command, so they are bounded here; the
                 // command itself is bounded by its frame.
                 if boot_id.len() > crate::server::client_commands::MAX_ENDPOINT_BOOT_ID_BYTES
                     || request_id.len()

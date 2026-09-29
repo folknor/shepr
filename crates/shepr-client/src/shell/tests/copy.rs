@@ -22,7 +22,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         pane_id: test_pane_id("w1:p1"),
         geometry: (80, 24),
         alternate_screen_active: false,
-        cursor: shepr_api::schema::PaneTextPoint {
+        cursor: shepr_protocol::command::PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 0,
         },
@@ -32,7 +32,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         entry_offset_from_bottom: 0,
         selection: None,
         search_prompt: Some(ClientCopySearchPrompt {
-            direction: shepr_api::schema::PaneCopySearchDirection::Forward,
+            direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
             query: TextEditor::default(),
         }),
         search_query: String::new(),
@@ -267,11 +267,11 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         &request.command,
         EndpointCommand::PaneSelectionRead(params)
             if params.pane_id == "w1:p1"
-                && params.anchor == shepr_api::schema::PaneTextPoint {
+                && params.anchor == shepr_protocol::command::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
                 }
-                && params.cursor == shepr_api::schema::PaneTextPoint {
+                && params.cursor == shepr_protocol::command::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 2,
                 }
@@ -382,7 +382,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         &copy.actions[..],
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(request.command, EndpointCommand::PaneSelectionRead(
-                shepr_api::schema::PaneSelectionReadParams { .. }
+                shepr_protocol::command::PaneSelectionReadParams { .. }
             ))
     ));
     assert!(copy.requests.is_empty());
@@ -668,12 +668,12 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     let [ClientShellAction::Endpoint { request, .. }] = &search.actions[..] else {
         panic!("search request");
     };
-    let found = shepr_api::schema::PaneTextRange {
-        start: shepr_api::schema::PaneTextPoint {
+    let found = shepr_protocol::command::PaneTextRange {
+        start: shepr_protocol::command::PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 0,
         },
-        end: shepr_api::schema::PaneTextPoint {
+        end: shepr_protocol::command::PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 3,
         },
@@ -778,7 +778,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
         &request.command,
         EndpointCommand::PaneCopyMotion(params)
             if params.cursor == origin
-                && params.motion == shepr_api::schema::PaneCopyMotion::NextWordStart
+                && params.motion == shepr_protocol::command::PaneCopyMotion::NextWordStart
     ));
     let (repaint, actions) = state
         .handle_endpoint_result(
@@ -786,7 +786,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
             &request_id,
             Ok(EndpointReply::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
-                cursor: shepr_api::schema::PaneTextPoint {
+                cursor: shepr_protocol::command::PaneTextPoint {
                     row: origin.row,
                     col: 3,
                 },
@@ -842,7 +842,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
         &request_id,
         Ok(EndpointReply::PaneCopyMotion {
             pane_id: "w1:p1".into(),
-            cursor: shepr_api::schema::PaneTextPoint {
+            cursor: shepr_protocol::command::PaneTextPoint {
                 row: origin.row,
                 col: 3,
             },
@@ -891,7 +891,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     )]);
     assert!(state.copy_mode.as_ref().is_some_and(|mode| {
         mode.search_prompt.as_ref().is_some_and(|prompt| {
-            prompt.direction == shepr_api::schema::PaneCopySearchDirection::Backward
+            prompt.direction == shepr_protocol::command::PaneCopySearchDirection::Backward
         })
     }));
     state.handle_raw_events(vec![RawInputEvent::Key(
@@ -937,27 +937,27 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         EndpointCommand::PaneCopySearch(params)
             if params.pane_id == "w1:p1"
                 && params.query == "needle"
-                && params.direction == shepr_api::schema::PaneCopySearchDirection::Forward
+                && params.direction == shepr_protocol::command::PaneCopySearchDirection::Forward
                 && params.cursor == origin
                 && params.previous.is_none()
     ));
     let matches = vec![
-        shepr_api::schema::PaneTextRange {
-            start: shepr_api::schema::PaneTextPoint {
+        shepr_protocol::command::PaneTextRange {
+            start: shepr_protocol::command::PaneTextPoint {
                 row: shepr_vt::AbsRow(5),
                 col: 2,
             },
-            end: shepr_api::schema::PaneTextPoint {
+            end: shepr_protocol::command::PaneTextPoint {
                 row: shepr_vt::AbsRow(5),
                 col: 7,
             },
         },
-        shepr_api::schema::PaneTextRange {
-            start: shepr_api::schema::PaneTextPoint {
+        shepr_protocol::command::PaneTextRange {
+            start: shepr_protocol::command::PaneTextPoint {
                 row: shepr_vt::AbsRow(15),
                 col: 1,
             },
-            end: shepr_api::schema::PaneTextPoint {
+            end: shepr_protocol::command::PaneTextPoint {
                 row: shepr_vt::AbsRow(15),
                 col: 6,
             },
@@ -1029,7 +1029,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneCopySearch(params)
-            if params.direction == shepr_api::schema::PaneCopySearchDirection::Forward
+            if params.direction == shepr_protocol::command::PaneCopySearchDirection::Forward
                 && params.previous == Some(matches[0])
     ));
     let (_, repeat_actions) = state
@@ -1073,7 +1073,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneCopySearch(params)
-            if params.direction == shepr_api::schema::PaneCopySearchDirection::Backward
+            if params.direction == shepr_protocol::command::PaneCopySearchDirection::Backward
                 && params.previous == Some(matches[1])
     ));
     let (_, reverse_actions) = state
@@ -2170,7 +2170,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
     };
-    let intermediate = shepr_api::schema::PaneTextPoint {
+    let intermediate = shepr_protocol::command::PaneTextPoint {
         row: origin.row,
         col: 2,
     };
@@ -2301,7 +2301,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
     };
-    let target = shepr_api::schema::PaneTextPoint {
+    let target = shepr_protocol::command::PaneTextPoint {
         row: origin.row,
         col: 2,
     };
@@ -2350,12 +2350,12 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     );
     let copy_mode = state.copy_mode.as_mut().expect("copy mode");
     copy_mode.search_query = "needle".into();
-    let found_on = |row| shepr_api::schema::PaneTextRange {
-        start: shepr_api::schema::PaneTextPoint {
+    let found_on = |row| shepr_protocol::command::PaneTextRange {
+        start: shepr_protocol::command::PaneTextPoint {
             row: shepr_vt::AbsRow(row),
             col: 0,
         },
-        end: shepr_api::schema::PaneTextPoint {
+        end: shepr_protocol::command::PaneTextPoint {
             row: shepr_vt::AbsRow(row),
             col: 1,
         },

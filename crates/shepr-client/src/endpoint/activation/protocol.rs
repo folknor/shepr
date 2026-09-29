@@ -97,17 +97,6 @@ pub(super) fn coherent_completion_surface(
     Ok(surface)
 }
 
-pub(super) fn resize_geometry(
-    message: &shepr_protocol::ClientMessage,
-) -> Option<shepr_protocol::ClientSurfaceSize> {
-    match message {
-        shepr_protocol::ClientMessage::ClientShellResize { geometry } => {
-            Some(geometry.surface_size())
-        }
-        _ => None,
-    }
-}
-
 pub(super) fn surface_matches_geometry(
     surface: &shepr_protocol::PaneSurfaceFrame,
     geometry: shepr_protocol::ClientSurfaceSize,

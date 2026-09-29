@@ -46,7 +46,6 @@ enum ServerRuntimeStatus {
         version: Option<String>,
         build_id: String,
         boot_id: String,
-        capabilities: Option<shepr_api::schema::ServerCapabilities>,
     },
     NotRunning,
 }
@@ -141,7 +140,6 @@ fn print_server_status_body(
             version,
             build_id,
             boot_id,
-            ..
         } => {
             println!("{indent}status: running");
             println!("{indent}version: {}", option_label(version.as_deref()));
@@ -169,7 +167,6 @@ fn read_server_runtime_status(
             version: status.version,
             build_id: status.build_id,
             boot_id: status.boot_id,
-            capabilities: status.capabilities,
         }),
         Err(ApiClientError::Io(error)) => {
             match super::server_not_running_error(&client.socket_path()) {
@@ -224,13 +221,11 @@ fn server_status_json(
             version,
             build_id,
             boot_id,
-            capabilities,
         } => ServerStatusJson {
             running: true,
             version: version.clone(),
             build_id: Some(build_id.clone()),
             boot_id: Some(boot_id.clone()),
-            capabilities: capabilities.clone(),
             compatible: build_compatible_bool(server),
             socket: api::socket_path(paths).display().to_string(),
             restart_needed: restart_needed_bool(server),
@@ -240,7 +235,6 @@ fn server_status_json(
             version: None,
             build_id: None,
             boot_id: None,
-            capabilities: None,
             compatible: None,
             socket: api::socket_path(paths).display().to_string(),
             restart_needed: false,
@@ -305,25 +299,17 @@ mod tests {
             version: version.map(str::to_owned),
             build_id: build_id.to_owned(),
             boot_id: "4242-1700000000".to_owned(),
-            capabilities: Some(shepr_api::schema::ServerCapabilities {
-                ssh_agent_registration: false,
-            }),
         }
     }
 
     #[test]
-    fn status_exposes_only_dynamic_server_capabilities() {
+    fn server_status_json_reports_the_running_boot() {
         let server = running_server(Some("test"), shepr_protocol::BUILD_ID);
         let paths =
             super::super::target::CliContext::test_local(shepr_config::AppPaths::test_default());
         let value =
             serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
-        assert_eq!(
-            value["capabilities"],
-            serde_json::json!({
-                "ssh_agent_registration": false,
-            })
-        );
+        assert!(value.get("capabilities").is_none());
         assert_eq!(value["running"], true);
         assert_eq!(value["boot_id"], "4242-1700000000");
         assert!(value.get("status").is_none());

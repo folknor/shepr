@@ -452,7 +452,7 @@ impl ClientLoop {
             self.selection.settle(
                 handoff_busy || self.scheduled_activation.is_some(),
                 self.write_stream.active_id(),
-                active_endpoint_owns_presentation(&self.state, &self.write_stream),
+                active_endpoint_owns_presentation(&self.state.presentation, &self.write_stream),
             );
             if !handoff_busy && self.scheduled_activation.is_none() {
                 self.scheduled_activation =
@@ -654,19 +654,15 @@ impl ClientLoop {
         // pane area (with pane hits clipped to match) instead of dropping to the
         // machine-list placeholder.
         state.request_repaint();
-        let msg = client_shell_resize_message(
-            &state.shell,
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-            cell_width_px,
-            cell_height_px,
-            pixel_geometry_exact,
-        );
-        if let Some(activation) = state.presentation.handoff_mut() {
-            if let Err(error) = activation.update_resize_at(&msg, write_stream, now) {
-                rollback_endpoint_activation(state, write_stream, &error, false, now);
-            }
-        } else {
+        if !resize_handoff(state, write_stream, now) {
+            let msg = client_shell_resize_message(
+                &state.shell,
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+                cell_width_px,
+                cell_height_px,
+                pixel_geometry_exact,
+            );
             // A failed send surfaces through the registry's failure list.
             write_stream.send(&msg);
         }

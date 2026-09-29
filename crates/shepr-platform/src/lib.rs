@@ -21,7 +21,6 @@ mod random;
 mod remote_bridge;
 mod remote_bridge_io;
 mod shutdown;
-pub mod ssh_agent;
 mod ssh_paths;
 mod stderr_null;
 mod terminal_environment;

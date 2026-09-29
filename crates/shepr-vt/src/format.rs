@@ -70,9 +70,49 @@ impl StyleKey {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct VtState {
     style: StyleKey,
     link: Option<(String, String)>,
+}
+
+/// What a VT read leaves open where it stops inside a logical line, and what
+/// the read that continues that line must start from: the SGR style and
+/// OSC 8 link in effect after the last cell, and whether the line has emitted
+/// cells at all. A read that starts at a logical line start uses the default,
+/// and every read that ends a line leaves the default (all state is closed at
+/// a line end). Reading a long line in pieces with this carried from each
+/// piece into the next produces exactly the bytes one read of the whole line
+/// would.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnsiCarry {
+    vt: VtState,
+    started: bool,
+}
+
+impl Default for AnsiCarry {
+    fn default() -> Self {
+        Self {
+            vt: VtState::new(),
+            started: false,
+        }
+    }
+}
+
+impl AnsiCarry {
+    /// Whether this is the state of a read that starts on a line start.
+    pub fn is_fresh(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// How a range is read.
+#[derive(Clone, Copy)]
+pub(super) struct RangeOptions {
+    pub(super) rectangle: bool,
+    pub(super) format: Format,
+    pub(super) unwrap: bool,
+    pub(super) trim: bool,
 }
 
 impl VtState {
@@ -96,21 +136,48 @@ impl VtState {
 
 /// Format the cells from `start` to `end` (inclusive, reading order) of `grid`.
 /// Both points must be valid grid points with `start <= end`.
+///
+/// Trailing blanks are trimmed from a logical line's last row only: the rows
+/// of a soft-wrapped line before it keep every cell, so a line can be read in
+/// pieces (see [`format_range_carrying`]) without a later piece changing what
+/// an earlier one emitted.
 pub(super) fn format_range(
     grid: &Grid<Cell>,
     start: Point,
     end: Point,
-    rectangle: bool,
-    format: Format,
-    unwrap: bool,
-    trim: bool,
+    options: RangeOptions,
 ) -> String {
+    format_range_carrying(grid, start, end, options, &mut AnsiCarry::default(), false)
+}
+
+/// [`format_range`] for a range that starts inside a logical line, from the
+/// state `carry` holds, and with `open_end` may stop inside one: the last row
+/// is then a soft-wrapped row whose line continues in the next row. Such a
+/// range emits every cell of its last row, trims nothing, closes nothing and
+/// leaves its state in `carry` for the read of the rest of the line. Without
+/// `open_end` the range ends its line and `carry` is left fresh.
+pub(super) fn format_range_carrying(
+    grid: &Grid<Cell>,
+    start: Point,
+    end: Point,
+    options: RangeOptions,
+    carry: &mut AnsiCarry,
+    open_end: bool,
+) -> String {
+    let RangeOptions {
+        rectangle,
+        format,
+        unwrap,
+        trim,
+    } = options;
     let mut out = String::new();
     if grid.columns() == 0 || start > end {
         return out;
     }
     let last_col = grid.columns() - 1;
-    let mut vt = VtState::new();
+    let mut vt = carry.vt.clone();
+    // Whether the first logical line of the range began before it.
+    let mut continuing = carry.started;
     let mut pending: Vec<&Cell> = Vec::new();
     // Byte length of `out` after the last emitted line that had content, so
     // trailing blank lines can be dropped when trimming.
@@ -136,6 +203,8 @@ pub(super) fn format_range(
             )
         };
         let last_in_range = last_in_range.min(last_col);
+        // Where this row's cells begin: trimming stops at the row's start.
+        let row_start = pending.len();
         if first_col <= last_in_range {
             let mut col = first_col;
             // A range starting on a wide character's spacer includes the character.
@@ -158,7 +227,15 @@ pub(super) fn format_range(
         let soft_wrapped = row[Column(last_col)].flags.contains(Flags::WRAPLINE);
         let join = unwrap && soft_wrapped && !is_last && !rectangle && last_in_range == last_col;
         if !join {
-            let had_content = emit_line(&mut out, &pending, format, trim, &mut vt);
+            if is_last && open_end {
+                emit_cells(&mut out, &pending, format, &mut vt);
+                carry.vt = vt;
+                carry.started = true;
+                return out;
+            }
+            let had_content =
+                emit_line(&mut out, &pending, row_start, format, trim, &mut vt) || continuing;
+            continuing = false;
             pending.clear();
             if format == Format::Vt {
                 vt.close(&mut out);
@@ -179,26 +256,37 @@ pub(super) fn format_range(
     if trim {
         out.truncate(content_end);
     }
+    *carry = AnsiCarry::default();
     out
 }
 
-/// Emits one logical line. Returns whether anything visible was written.
+/// Emits one logical line whose last row's cells start at `last_row_start`;
+/// only that row's trailing blanks are trimmed. Returns whether anything
+/// visible was written.
 fn emit_line(
     out: &mut String,
     cells: &[&Cell],
+    last_row_start: usize,
     format: Format,
     trim: bool,
     vt: &mut VtState,
 ) -> bool {
     let keep = if trim {
-        cells
+        cells[last_row_start..]
             .iter()
             .rposition(|cell| !is_trimmable(cell, format))
-            .map_or(0, |index| index + 1)
+            .map_or(last_row_start, |index| last_row_start + index + 1)
     } else {
         cells.len()
     };
-    for cell in &cells[..keep] {
+    emit_cells(out, &cells[..keep], format, vt);
+    keep > 0
+}
+
+/// Writes `cells`, with the style and link changes between them, from the
+/// state `vt` holds to the state after the last cell.
+fn emit_cells(out: &mut String, cells: &[&Cell], format: Format, vt: &mut VtState) {
+    for cell in cells {
         if format == Format::Vt {
             let style = StyleKey::of(cell);
             if style != vt.style {
@@ -233,7 +321,6 @@ fn emit_line(
         }
         push_cell_text(out, cell);
     }
-    keep > 0
 }
 
 fn is_blank_text(cell: &Cell) -> bool {

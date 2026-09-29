@@ -143,12 +143,6 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert_eq!((surface.frame.width, surface.frame.height), (101, 37));
     assert!(surface.projection_revision >= activation_floor);
     assert_eq!(surface.surface_revision, 1);
-    server
-        .clients
-        .get_mut(&client_id)
-        .expect("surface client")
-        .shell_state_mut()
-        .endpoint_command_in_flight = true;
 
     assert!(
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {

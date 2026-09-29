@@ -449,10 +449,15 @@ fn remote_compatibility_error(
 ) -> io::Error {
     let version = super::server_lifecycle::printable_remote_value(status.version.as_deref());
     let build_id = super::server_lifecycle::printable_remote_value(status.build_id.as_deref());
+    let advice = if shepr_config::BuildProfile::current() == shepr_config::BuildProfile::Dev {
+        "This is a dev client, which needs a dev build of shepr on the remote host; discovery only finds installed builds (normally release), so install a dev build there and retry"
+    } else {
+        "Install the same Shepr build on the host and retry"
+    };
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. Install the same Shepr build on the host and retry",
+            "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. {advice}",
             shepr_protocol::build_version(),
             shepr_protocol::BUILD_ID
         ),

@@ -12,36 +12,6 @@ pub(crate) const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
 /// letting a corrupt cache consume unbounded memory.
 pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
 
-/// Maximum UTF-8 bytes in an SSH agent registration response line. The reply
-/// is a small JSON status, so the cap leaves room for its envelope and bounds
-/// memory used while waiting for the newline.
-pub(crate) const SSH_AGENT_RESPONSE_MAX_BYTES: usize = 4096;
-
-/// How often an attached SSH bridge checks its agent registration stream.
-/// The interval bounds detection delay while keeping an idle worker quiet.
-pub(crate) const SSH_AGENT_STREAM_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Initial delay before retrying SSH agent registration. The short pause
-/// responds quickly when the local API starts after the bridge.
-pub(crate) const SSH_AGENT_INITIAL_RETRY_DELAY: Duration = Duration::from_millis(100);
-
-/// Ceiling for exponential SSH agent registration retry pacing. The cap
-/// keeps recovery responsive without waking continuously during an outage.
-pub(crate) const SSH_AGENT_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
-
-/// Multiplier for exponential SSH agent retry pacing. Backoff reaches the
-/// ceiling in a few retries.
-pub(crate) const SSH_AGENT_RETRY_BACKOFF_FACTOR: u32 = 2;
-
-/// Time allowed for the local API status check and registration response.
-/// The timeout bounds each local IPC wait while allowing a responsive server
-/// to answer under ordinary load.
-pub(crate) const SSH_AGENT_REGISTRATION_TIMEOUT: Duration = Duration::from_millis(500);
-
-/// Delay between nonblocking SSH agent response reads. The interval gives
-/// the API worker time to answer without a tight polling loop.
-pub(crate) const SSH_AGENT_RESPONSE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
 /// How often a launching client checks its spawned server and the launch lock.
 /// The interval notices a daemon that died during boot and makes startup
 /// visible promptly without a busy wait.

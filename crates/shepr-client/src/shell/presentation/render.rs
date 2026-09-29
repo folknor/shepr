@@ -128,8 +128,8 @@ pub(super) fn render_mode_bar(
                 let copy_mode = copy_mode?;
                 if let Some(prompt) = copy_mode.search_prompt.as_ref() {
                     let marker = match prompt.direction {
-                        shepr_api::schema::PaneCopySearchDirection::Forward => "/",
-                        shepr_api::schema::PaneCopySearchDirection::Backward => "?",
+                        shepr_protocol::command::PaneCopySearchDirection::Forward => "/",
+                        shepr_protocol::command::PaneCopySearchDirection::Backward => "?",
                     };
                     buffer.set_stringn(bar.x, bar.y, " COPY ", usize::from(bar.width), mode_style);
                     let prefix = 8.min(bar.width);

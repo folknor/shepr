@@ -517,7 +517,6 @@ mod tests {
             version: Some("0.0.0-test".into()),
             build_id: build_id.into(),
             boot_id: boot_id.into(),
-            capabilities: None,
         }
     }
 

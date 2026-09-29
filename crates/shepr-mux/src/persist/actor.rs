@@ -12,10 +12,17 @@
 //!
 //! The lease is released only when the persister is retired, after every job
 //! submitted before has finished.
+//!
+//! Every job that ends, whether it finished, failed or was abandoned, fires
+//! the completion signal the persister was built with, after its result is
+//! in place, so an event loop waiting on that signal wakes to reap it rather
+//! than polling for it.
 
 use std::io;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::SystemTime;
+
+use tokio::sync::Notify;
 
 use super::lock::DataDirLease;
 use super::snapshot::{
@@ -46,14 +53,31 @@ pub enum PersistJob {
 pub struct PendingSave(mpsc::Receiver<io::Result<()>>);
 
 /// The sending half of a [`PendingSave`]: whoever runs the job reports its
-/// result through it. Dropping it unreported reports a failure.
-pub struct SaveCompletion(mpsc::Sender<io::Result<()>>);
+/// result through it. Dropping it unreported reports a failure. Either way,
+/// once it is gone its completion signal (if it has one) fires.
+pub struct SaveCompletion {
+    /// Taken when the result is sent, or dropped before the signal fires, so
+    /// a woken waiter always finds the result or the disconnect.
+    result: Option<mpsc::Sender<io::Result<()>>>,
+    signal: Option<Arc<Notify>>,
+}
 
 impl PendingSave {
-    /// A pending result and the completion that settles it.
+    /// A pending result and the completion that settles it, with no
+    /// completion signal.
     pub fn channel() -> (SaveCompletion, Self) {
-        let (sender, receiver) = mpsc::channel();
-        (SaveCompletion(sender), Self(receiver))
+        Self::signalled_channel(None)
+    }
+
+    fn signalled_channel(signal: Option<Arc<Notify>>) -> (SaveCompletion, Self) {
+        let (result, receiver) = mpsc::channel();
+        (
+            SaveCompletion {
+                result: Some(result),
+                signal,
+            },
+            Self(receiver),
+        )
     }
 
     /// The job's result once it has finished, without waiting.
@@ -72,10 +96,28 @@ impl PendingSave {
 }
 
 impl SaveCompletion {
-    pub fn complete(self, result: io::Result<()>) {
-        // The submitter may have stopped waiting (a shutdown that gave up on
-        // the result); nobody is left to tell.
-        self.0.send(result).ok();
+    /// Reports the job's result; the signal fires when `self` drops here,
+    /// after the result is readable.
+    pub fn complete(mut self, result: io::Result<()>) {
+        if let Some(sender) = self.result.take() {
+            // The submitter may have stopped waiting (a shutdown that gave up
+            // on the result); nobody is left to tell.
+            sender.send(result).ok();
+        }
+    }
+}
+
+impl Drop for SaveCompletion {
+    /// Fires on every way a job ends: reported, or dropped unreported (a
+    /// panic on the persister's thread unwinds through the job's
+    /// completion), which the pending side reads as abandoned. `notify_one`
+    /// keeps a permit when nobody is waiting yet, so a job that ends between
+    /// the loop's check and its wait still wakes it.
+    fn drop(&mut self) {
+        drop(self.result.take());
+        if let Some(signal) = &self.signal {
+            signal.notify_one();
+        }
     }
 }
 
@@ -161,26 +203,41 @@ enum Worker {
 /// Owns a session's files; see the module docs.
 pub struct SessionPersister {
     worker: Worker,
+    /// Fired once per submitted job, when it ends.
+    finished: Arc<Notify>,
 }
 
 impl SessionPersister {
     /// Takes over the data directory `lease` guards without a thread: jobs run
     /// on the submitting thread. For an owner that persists nothing, which
-    /// only holds the lease, so it does not pay a thread for it.
-    pub fn inline(lease: DataDirLease, protect_unloaded: bool, history: HistoryCarry) -> Self {
+    /// only holds the lease, so it does not pay a thread for it. `finished`
+    /// fires like a threaded persister's, before `submit` returns.
+    pub fn inline(
+        lease: DataDirLease,
+        protect_unloaded: bool,
+        history: HistoryCarry,
+        finished: Arc<Notify>,
+    ) -> Self {
         Self {
             worker: Worker::Inline(Box::new(PersistState {
                 writer: SessionWriter::new(lease, protect_unloaded),
                 history,
             })),
+            finished,
         }
     }
 
     /// Takes over the data directory `lease` guards. `protect_unloaded`: the
     /// first save must copy the session file aside before replacing it (it
     /// could not be loaded, or restore dropped part of it). `history` is the
-    /// carried history restore produced.
-    pub fn spawn(lease: DataDirLease, protect_unloaded: bool, history: HistoryCarry) -> Self {
+    /// carried history restore produced. `finished` is fired each time a
+    /// submitted job ends, once its result can be read.
+    pub fn spawn(
+        lease: DataDirLease,
+        protect_unloaded: bool,
+        history: HistoryCarry,
+        finished: Arc<Notify>,
+    ) -> Self {
         let state = PersistState {
             writer: SessionWriter::new(lease, protect_unloaded),
             history,
@@ -220,14 +277,15 @@ impl SessionPersister {
                 Worker::Inline(Box::new(state))
             }
         };
-        Self { worker }
+        Self { worker, finished }
     }
 
     /// Queues `job`, stamped `now` (the time used for recovery-copy naming
     /// and cadence). Jobs run in submission order. After retirement a job is
-    /// accepted and does nothing, like a retired writer's.
+    /// accepted and does nothing, like a retired writer's. Every job fires
+    /// the completion signal when it ends, including one that was refused.
     pub fn submit(&mut self, job: PersistJob, now: SystemTime) -> PendingSave {
-        let (done, pending) = PendingSave::channel();
+        let (done, pending) = PendingSave::signalled_channel(Some(Arc::clone(&self.finished)));
         match &mut self.worker {
             Worker::Thread { commands, .. } => {
                 if let Err(mpsc::SendError(command)) = commands.send(Command { job, now, done }) {
@@ -300,7 +358,8 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("persister");
         let directory = scratch.join("data");
         let lease = DataDirLease::acquire(&directory).expect("lease");
-        let mut persister = SessionPersister::spawn(lease, false, HistoryCarry::default());
+        let mut persister =
+            SessionPersister::spawn(lease, false, HistoryCarry::default(), signal());
         let now = SystemTime::now();
         let saved = persister.submit(
             PersistJob::Save(SessionBundle {
@@ -363,6 +422,7 @@ mod tests {
             DataDirLease::acquire(&directory).expect("lease"),
             false,
             HistoryCarry::default(),
+            signal(),
         );
         drop(persister);
         DataDirLease::acquire(&directory).expect("the lease is free after the drop");
@@ -376,6 +436,7 @@ mod tests {
             DataDirLease::acquire(&directory).expect("lease"),
             false,
             HistoryCarry::default(),
+            signal(),
         );
         let saved = persister.submit(
             PersistJob::Save(SessionBundle {
@@ -391,5 +452,75 @@ mod tests {
         );
         drop(persister);
         DataDirLease::acquire(&directory).expect("the lease is free after the drop");
+    }
+
+    fn signal() -> Arc<Notify> {
+        Arc::new(Notify::new())
+    }
+
+    /// Waits for one firing of `finished`, bounded so a missing signal fails
+    /// the test instead of hanging it.
+    async fn signalled(finished: &Notify) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
+            .await
+            .expect("the completion signal fired");
+    }
+
+    #[tokio::test]
+    async fn a_finished_job_fires_the_signal_after_its_result_is_readable() {
+        let scratch = crate::test_support::ScratchDir::new("persister-signal");
+        let directory = scratch.join("data");
+        let finished = signal();
+        let mut persister = SessionPersister::spawn(
+            DataDirLease::acquire(&directory).expect("lease"),
+            false,
+            HistoryCarry::default(),
+            Arc::clone(&finished),
+        );
+        let saved = persister.submit(
+            PersistJob::Save(SessionBundle {
+                snapshot: snapshot(),
+                cwds: PendingCwds::default(),
+                history: None,
+            }),
+            SystemTime::now(),
+        );
+        signalled(&finished).await;
+        assert!(
+            saved.try_finish().is_some_and(|result| result.is_ok()),
+            "the result is in place when the signal fires"
+        );
+        drop(persister);
+    }
+
+    #[tokio::test]
+    async fn an_inline_job_leaves_a_permit_for_a_later_wait() {
+        let scratch = crate::test_support::ScratchDir::new("persister-inline-signal");
+        let directory = scratch.join("data");
+        let finished = signal();
+        let mut persister = SessionPersister::inline(
+            DataDirLease::acquire(&directory).expect("lease"),
+            false,
+            HistoryCarry::default(),
+            Arc::clone(&finished),
+        );
+        let cleared = persister.submit(PersistJob::Clear, SystemTime::now());
+        // Nobody was waiting when the job ended; the stored permit wakes the
+        // first wait after it.
+        signalled(&finished).await;
+        assert!(cleared.try_finish().is_some());
+        drop(persister);
+    }
+
+    #[tokio::test]
+    async fn a_completion_dropped_unreported_fires_the_signal_as_abandoned() {
+        let finished = signal();
+        let (completion, pending) = PendingSave::signalled_channel(Some(Arc::clone(&finished)));
+        drop(completion);
+        signalled(&finished).await;
+        assert!(
+            pending.try_finish().is_some_and(|result| result.is_err()),
+            "the pending side reads the dropped completion as abandoned"
+        );
     }
 }

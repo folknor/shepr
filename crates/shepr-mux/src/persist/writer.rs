@@ -4,7 +4,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{SessionHistorySnapshot, SessionSnapshot};
+use super::SessionSnapshot;
+use super::snapshot::SessionHistory;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct HistoryFileStamp {
@@ -63,7 +64,7 @@ enum HistoryIntent<'a> {
     /// Delete it: history is not persisted.
     Remove,
     /// Replace it, unless it already holds exactly these bytes.
-    Write(&'a SessionHistorySnapshot),
+    Write(&'a SessionHistory),
     /// The caller knows it already holds the right history.
     Keep,
 }
@@ -136,7 +137,7 @@ impl SessionWriter {
     pub fn save(
         &mut self,
         snapshot: &SessionSnapshot,
-        history: Option<&SessionHistorySnapshot>,
+        history: Option<&SessionHistory>,
         now: SystemTime,
     ) -> io::Result<()> {
         let history = history.map_or(HistoryIntent::Remove, HistoryIntent::Write);
@@ -296,7 +297,7 @@ impl SessionWriter {
         };
         let super::io::SerializedHistory { json, trimmed } = super::io::serialize_history(history)?;
         self.note_history_trim(history_path, trimmed);
-        let digest = Sha256::digest(json.as_bytes()).to_vec();
+        let digest = Sha256::digest(&json).to_vec();
         if let Some(written) = self
             .written_history
             .as_ref()
@@ -635,7 +636,7 @@ impl SessionWriter {
         &mut self,
         result: io::Result<super::io::Published>,
         snapshot: &SessionSnapshot,
-        history: Option<&SessionHistorySnapshot>,
+        history: Option<&SessionHistory>,
     ) -> io::Result<()> {
         self.finish_save_with_snapshot_plan(
             result,
@@ -657,7 +658,7 @@ mod tests {
         fn save_for_test(
             &mut self,
             snapshot: &SessionSnapshot,
-            history: Option<&SessionHistorySnapshot>,
+            history: Option<&SessionHistory>,
         ) -> io::Result<()> {
             self.save(snapshot, history, SystemTime::now())
         }
@@ -1016,7 +1017,7 @@ mod tests {
 
     #[test]
     fn unsynced_layout_save_still_writes_history_and_releases_the_guard() {
-        let history = SessionHistorySnapshot {
+        let history = SessionHistory {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             layout_fingerprint: None,
             workspaces: Vec::new(),
@@ -1122,7 +1123,7 @@ mod tests {
 
     #[test]
     fn unchanged_history_is_not_rewritten() {
-        let history = |fingerprint: &str| SessionHistorySnapshot {
+        let history = |fingerprint: &str| SessionHistory {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             layout_fingerprint: Some(fingerprint.into()),
             workspaces: Vec::new(),
@@ -1173,7 +1174,7 @@ mod tests {
 
     #[test]
     fn deleted_unchanged_history_is_written_again() {
-        let history = || SessionHistorySnapshot {
+        let history = || SessionHistory {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             layout_fingerprint: Some("same-layout".into()),
             workspaces: Vec::new(),

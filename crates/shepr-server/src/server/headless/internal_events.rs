@@ -27,11 +27,21 @@ impl HeadlessServer {
             return false;
         }
         match &ev {
-            AppEvent::ClipboardWrite { content } => {
-                // Clipboard writes are client-local side effects. Forward them only to
-                // the foreground client instead of broadcasting to every attached client.
+            AppEvent::ClipboardWrite { pane_id, content } => {
+                // Clipboard writes are client-local side effects. They go to
+                // the clients viewing the writing pane, or, when none views
+                // it (a hidden tab, a background program), to the foreground
+                // client so the write is not lost.
                 let data = base64::engine::general_purpose::STANDARD.encode(content.as_slice());
-                self.send_to_foreground_client(&ServerMessage::Clipboard { data });
+                let message = ServerMessage::Clipboard { data };
+                let viewers = self.clipboard_viewers(*pane_id);
+                if viewers.is_empty() {
+                    self.send_to_foreground_client(&message);
+                } else {
+                    for client_id in viewers {
+                        self.send_to_client(client_id, &message);
+                    }
+                }
                 false
             }
             AppEvent::PaneDied {
@@ -78,7 +88,7 @@ impl HeadlessServer {
     /// clients instead of processing them locally.
     ///
     /// The server has no host terminal, so we forward `ClipboardWrite` as
-    /// `ServerMessage::Clipboard` to the foreground client only.
+    /// `ServerMessage::Clipboard` to the clients viewing the writing pane.
     pub(super) fn drain_internal_events_with_forwarding(&mut self) -> bool {
         self.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_DRAIN_LIMIT)
             .1

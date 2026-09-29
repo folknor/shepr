@@ -1,13 +1,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use shepr_api as api;
 use shepr_client::endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport,
+    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport, HandoffGeometry,
     PendingEndpointActivation, SurfaceActivationProgress,
 };
 use shepr_protocol::ServerMessage;
-use shepr_protocol::command::EndpointCommand;
+use shepr_protocol::command::{ClientShellSurfaceSetParams, EndpointCommand};
 
 use crate::server::ClientId;
 use crate::server::client_transport::{RenderLaneReceiver, ServerEvent};
@@ -98,10 +97,8 @@ impl EndpointTransport for CapturingEndpointTransport {
     }
 }
 
-fn lifecycle_resize() -> shepr_protocol::ClientMessage {
-    shepr_protocol::ClientMessage::ClientShellResize {
-        geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false),
-    }
+fn lifecycle_geometry() -> HandoffGeometry {
+    HandoffGeometry::uniform(shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false))
 }
 
 fn begin_activation(
@@ -115,7 +112,7 @@ fn begin_activation(
         endpoints,
         target,
         None,
-        lifecycle_resize(),
+        lifecycle_geometry(),
         serial,
         std::time::Instant::now(),
     )
@@ -230,9 +227,9 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             } => {
                 if matches!(
                     command,
-                    EndpointCommand::ClientShellSurfaceSet(
-                        api::schema::ClientShellSurfaceSetParams { active: false }
-                    )
+                    EndpointCommand::ClientShellSurfaceSet(ClientShellSurfaceSetParams {
+                        active: false
+                    })
                 ) {
                     source_release_request_id = Some(request_id.clone());
                 }
@@ -341,10 +338,8 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             ..
         }) if endpoint == target_id
     ));
-    assert!(
-        !endpoints.active_surface_available(),
-        "target input remains fenced while presentation effects resynchronize"
-    );
+    // Pane input stays fenced from here to the effects fence because the handoff still owns
+    // the client's presentation; the registry only records that the target's surface is live.
 
     let sync_request = target_sent
         .lock()
@@ -484,7 +479,6 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         activation.complete_at(&mut shell, &mut endpoints, Instant::now()),
         Ok(shepr_client::endpoint::ActivationCompletion::Activated)
     );
-    endpoints.unfreeze_input();
     assert_eq!(endpoints.active_id(), &target_id);
     assert!(endpoints.active_surface_available());
     assert!(shell.endpoint_is_active(&target_id));
@@ -501,7 +495,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
                 ..
             } => matches!(
                 command,
-                EndpointCommand::ClientShellSurfaceSet(api::schema::ClientShellSurfaceSetParams {
+                EndpointCommand::ClientShellSurfaceSet(ClientShellSurfaceSetParams {
                     active: false
                 })
             )

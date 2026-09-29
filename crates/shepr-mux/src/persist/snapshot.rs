@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pane::PaneRuntimeRegistry;
+use crate::pane::{HistoryPiece, PaneRuntimeRegistry};
 use crate::workspace::Workspace;
 use shepr_core::layout::{Direction, Node};
 use shepr_core::limits::PALETTE_COLOR_COUNT;
@@ -558,10 +559,91 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     Some(hex)
 }
 
+/// One pane's history text as a save holds it: the pieces its history cache
+/// keeps (or the one piece restored from the file), shared with the cache so
+/// that holding the text for a save copies none of it. The text is the pieces
+/// in order, each preceded by `\r\n` when its `break_before` says so.
+#[derive(Clone, Debug)]
+pub struct HistoryText {
+    pub(super) pieces: Vec<HistoryPiece>,
+}
+
+impl HistoryText {
+    pub(super) fn single(text: Arc<str>) -> Self {
+        Self {
+            pieces: vec![HistoryPiece {
+                text,
+                break_before: false,
+            }],
+        }
+    }
+
+    /// The text as one string. A save does not need it (it serializes the
+    /// pieces), which is the point of keeping them apart.
+    pub(super) fn assemble(&self) -> String {
+        let mut text = String::with_capacity(
+            self.pieces
+                .iter()
+                .map(|piece| piece.text.len() + 2)
+                .sum::<usize>(),
+        );
+        for piece in &self.pieces {
+            if piece.break_before {
+                text.push_str("\r\n");
+            }
+            text.push_str(&piece.text);
+        }
+        text
+    }
+}
+
+/// What a save writes as the history file, before serializing: the pane
+/// histories of each workspace and tab, sorted by pane number, as
+/// [`HistoryText`]. The write-side twin of [`SessionHistorySnapshot`], which
+/// is what reading the file gives; it serializes to the same JSON.
+#[derive(Clone)]
+pub struct SessionHistory {
+    pub(super) version: SnapshotVersion,
+    pub(super) layout_fingerprint: Option<String>,
+    pub(super) workspaces: Vec<Vec<Vec<(u32, HistoryText)>>>,
+}
+
+impl SessionHistory {
+    /// The history with every pane's text assembled into one string.
+    pub(super) fn into_snapshot(self) -> SessionHistorySnapshot {
+        SessionHistorySnapshot {
+            version: self.version,
+            layout_fingerprint: self.layout_fingerprint,
+            workspaces: self
+                .workspaces
+                .into_iter()
+                .map(|tabs| WorkspaceHistorySnapshot {
+                    tabs: tabs
+                        .into_iter()
+                        .map(|panes| TabHistorySnapshot {
+                            panes: panes
+                                .into_iter()
+                                .map(|(id, text)| {
+                                    (
+                                        id,
+                                        PaneHistorySnapshot {
+                                            ansi: text.assemble(),
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The history file's text for a pane that has not run yet; see
 /// `HistoryCarry`.
 struct RestoredEntry {
-    ansi: String,
+    ansi: Arc<str>,
     /// Names `ansi` the way a `PaneHistoryCache` revision names its text.
     revision: u64,
 }
@@ -592,7 +674,7 @@ pub enum ResolvedHistory {
     /// assembled and nothing needs writing. Only ever produced when the
     /// caller allowed it.
     Unchanged,
-    Changed(SessionHistorySnapshot),
+    Changed(SessionHistory),
 }
 
 /// Pane history kept from one save to the next. Restore creates it and hands
@@ -643,7 +725,7 @@ impl HistoryCarry {
             self.restored.insert(
                 terminal.clone(),
                 RestoredEntry {
-                    ansi: history.ansi.clone(),
+                    ansi: Arc::from(history.ansi.as_str()),
                     revision: next_restored_revision(),
                 },
             );
@@ -703,14 +785,13 @@ impl HistoryCarry {
         cache.has_text().then(|| cache.revision())
     }
 
-    /// The text a stamped pane saves.
-    fn text(&self, terminal: &TerminalId) -> Option<String> {
+    /// The text a stamped pane saves, sharing the carried text.
+    fn text(&self, terminal: &TerminalId) -> Option<HistoryText> {
         match self.restored.get(terminal) {
-            Some(entry) => Some(entry.ansi.clone()),
-            None => self
-                .readers
-                .get(terminal)
-                .map(crate::pane::PaneHistoryCache::text),
+            Some(entry) => Some(HistoryText::single(Arc::clone(&entry.ansi))),
+            None => self.readers.get(terminal).map(|cache| HistoryText {
+                pieces: cache.pieces(),
+            }),
         }
     }
 }
@@ -741,7 +822,7 @@ impl PendingHistory {
         carry: &mut HistoryCarry,
     ) -> SessionHistorySnapshot {
         match self.resolve_for_save(snapshot, carry, false) {
-            ResolvedHistory::Changed(history) => history,
+            ResolvedHistory::Changed(history) => history.into_snapshot(),
             // Only produced when the caller allows it.
             ResolvedHistory::Unchanged => SessionHistorySnapshot {
                 version: SNAPSHOT_VERSION,
@@ -824,24 +905,23 @@ impl PendingHistory {
         if allow_unchanged && carry.resolved.is_some() && carry.resolved == carry.saved {
             return ResolvedHistory::Unchanged;
         }
-        ResolvedHistory::Changed(SessionHistorySnapshot {
+        ResolvedHistory::Changed(SessionHistory {
             version: SNAPSHOT_VERSION,
             layout_fingerprint,
             workspaces: named
                 .into_iter()
-                .map(|tabs| WorkspaceHistorySnapshot {
-                    tabs: tabs
-                        .into_iter()
-                        .map(|panes| TabHistorySnapshot {
-                            panes: panes
+                .map(|tabs| {
+                    tabs.into_iter()
+                        .map(|panes| {
+                            panes
                                 .into_iter()
                                 .filter_map(|(id, terminal, stamp)| {
-                                    let ansi = carry.text(&terminal).filter(|_| stamp.is_some())?;
-                                    Some((id, PaneHistorySnapshot { ansi }))
+                                    let text = carry.text(&terminal).filter(|_| stamp.is_some())?;
+                                    Some((id, text))
                                 })
-                                .collect(),
+                                .collect()
                         })
-                        .collect(),
+                        .collect()
                 })
                 .collect(),
         })

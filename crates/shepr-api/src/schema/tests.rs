@@ -143,6 +143,8 @@ fn removed_uncalled_methods_are_rejected() {
         "pane.get",
         "events.subscribe",
         "events.wait",
+        "session.snapshot",
+        "server.ssh_agent.register",
     ] {
         let request = serde_json::json!({"id": "req", "method": method, "params": {}});
         let error = serde_json::from_value::<Request>(request).expect_err("removed method");
@@ -214,57 +216,10 @@ fn success_response_round_trips() {
             version: "0.1.2".into(),
             build_id: "0123456789abcdef".into(),
             boot_id: "17-23".into(),
-            capabilities: Some(ServerCapabilities {
-                ssh_agent_registration: false,
-            }),
         },
     };
 
     let json = serde_json::to_string(&response).expect("test precondition");
-    let value: serde_json::Value = serde_json::from_str(&json).expect("test precondition");
-    assert!(
-        value["result"]["capabilities"]
-            .get("surface_interest")
-            .is_none()
-    );
-    assert!(
-        value["result"]["capabilities"]
-            .get("health_check")
-            .is_none()
-    );
-    let restored: SuccessResponse = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, response);
-}
-
-#[test]
-fn session_snapshot_request_and_response_round_trip() {
-    let request = Request {
-        id: "req_snapshot".into(),
-        method: Method::SessionSnapshot(EmptyParams::default()),
-    };
-    let json = serde_json::to_string(&request).expect("test precondition");
-    assert!(json.contains("\"method\":\"session.snapshot\""));
-    let restored: Request = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, request);
-
-    let response = SuccessResponse {
-        id: "req_snapshot".into(),
-        result: ResponseResult::SessionSnapshot {
-            snapshot: Box::new(SessionSnapshot {
-                version: "0.1.2".into(),
-                focused_workspace_id: None,
-                focused_tab_id: None,
-                focused_pane_id: None,
-                workspaces: Vec::new(),
-                tabs: Vec::new(),
-                panes: Vec::new(),
-                layouts: Vec::new(),
-                agents: Vec::new(),
-            }),
-        },
-    };
-    let json = serde_json::to_string(&response).expect("test precondition");
-    assert!(json.contains("\"type\":\"session_snapshot\""));
     let restored: SuccessResponse = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, response);
 }

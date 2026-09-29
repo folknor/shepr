@@ -88,6 +88,11 @@ pub struct App {
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
+    /// Panes whose runtime was replaced since the server last synced pane
+    /// focus (an agent resume starting its shell). The new runtime has not
+    /// been told about focus; `sync_pane_focus` drains this and re-sends the
+    /// focus-in report for the ones that hold focus.
+    pub(crate) runtimes_replaced_panes: Vec<shepr_core::layout::PaneId>,
     startup_per_agent_delay: Duration,
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_saver: session::SessionSaver,
@@ -208,13 +213,22 @@ impl App {
         // From here on the persister is the one owner of the data directory:
         // it holds the lease, the writer and the carried pane history. An app
         // that persists nothing only holds the lease, so it gets no thread.
+        // Each finished job fires `save_finished`, which the event loop waits
+        // on to reap the save.
+        let save_finished = std::sync::Arc::new(tokio::sync::Notify::new());
         let persister = if policy.persists_session() {
-            shepr_mux::persist::SessionPersister::spawn(lease, protect_unloaded, pane_history_carry)
+            shepr_mux::persist::SessionPersister::spawn(
+                lease,
+                protect_unloaded,
+                pane_history_carry,
+                std::sync::Arc::clone(&save_finished),
+            )
         } else {
             shepr_mux::persist::SessionPersister::inline(
                 lease,
                 protect_unloaded,
                 pane_history_carry,
+                std::sync::Arc::clone(&save_finished),
             )
         };
 
@@ -272,11 +286,12 @@ impl App {
             event_rx,
             git_refresh: git_refresh::GitRefreshScheduler::new(clock.now),
             pending_agent_resume_deadline: None,
+            runtimes_replaced_panes: Vec::new(),
             startup_per_agent_delay: Duration::from_millis(
                 config.session().startup_per_agent_delay_ms.into(),
             ),
             next_agent_resume_at: None,
-            session_saver: session::SessionSaver::new(persister),
+            session_saver: session::SessionSaver::new(persister, save_finished),
             tab_bar_status: tab_bar_status::TabBarStatus::default(),
             hostname,
             window_title_template: None,
@@ -594,16 +609,16 @@ mod tests {
                 .expect("test precondition");
         }
 
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_workspace_list_after_events".into(),
-            method: shepr_api::schema::Method::SessionSnapshot(
-                shepr_api::schema::EmptyParams::default(),
-            ),
+        let response = app.handle_api_request(shepr_api::schema::AppRequest {
+            id: "req_capture_after_events".into(),
+            method: shepr_api::schema::AppMethod::DetectCapture(shepr_api::schema::PaneTarget {
+                pane_id: "w1:p1".into(),
+            }),
         });
         let response: serde_json::Value =
             serde_json::from_str(&response).expect("test precondition");
 
-        assert_eq!(response["result"]["type"], "session_snapshot");
+        assert_eq!(response["id"], "req_capture_after_events");
         assert!(app.event_rx.try_recv().is_err());
     }
 
@@ -800,23 +815,6 @@ mod tests {
         );
 
         assert_eq!(cwd, std::path::PathBuf::from("/shepr-test/shepr-fixed"));
-    }
-
-    #[test]
-    fn workspace_list_request_keeps_server_running() {
-        let mut app = test_app();
-
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_workspace_list".into(),
-            method: shepr_api::schema::Method::SessionSnapshot(
-                shepr_api::schema::EmptyParams::default(),
-            ),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
-
-        assert_eq!(response["result"]["type"], "session_snapshot");
-        assert!(!app.state.should_quit);
     }
 
     #[tokio::test]

@@ -2,9 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use shepr_protocol::PublicPaneId;
 
-use super::server::ServerCapabilities;
-use super::session::SessionSnapshot;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuccessResponse {
     pub id: String,
@@ -41,10 +38,6 @@ pub enum ResponseResult {
         /// Identifies this server process, which a build id cannot: a
         /// conditional `server.stop` names the boot it expects.
         boot_id: String,
-        capabilities: Option<ServerCapabilities>,
-    },
-    SessionSnapshot {
-        snapshot: Box<SessionSnapshot>,
     },
     /// The detector's input for one pane: the detection-source screen text.
     DetectCapture {

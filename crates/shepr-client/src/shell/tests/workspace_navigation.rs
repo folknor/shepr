@@ -344,7 +344,7 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         .as_mut()
         .expect("test precondition")
         .search_prompt = Some(ClientCopySearchPrompt {
-        direction: shepr_api::schema::PaneCopySearchDirection::Forward,
+        direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
         query: "original".into(),
     });
     preview_key(&mut state, b"\x1b[B");
@@ -899,14 +899,14 @@ fn navigation_highlight_ends_for_noop_focus_and_focused_creation() {
 
     for focus in [false, true] {
         for command in [
-            EndpointCommand::WorkspaceCreate(shepr_api::schema::WorkspaceCreateParams {
+            EndpointCommand::WorkspaceCreate(shepr_protocol::command::WorkspaceCreateParams {
                 source_workspace_id: None,
                 cwd: None,
                 focus,
                 label: None,
                 env: Default::default(),
             }),
-            EndpointCommand::TabCreate(shepr_api::schema::TabCreateParams {
+            EndpointCommand::TabCreate(shepr_protocol::command::TabCreateParams {
                 workspace_id: Some("w1".into()),
                 cwd: None,
                 focus,

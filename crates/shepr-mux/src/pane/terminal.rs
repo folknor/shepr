@@ -281,7 +281,7 @@ mod helpers;
 mod history;
 mod text;
 
-pub use history::{PaneHistoryCache, PaneHistorySource};
+pub use history::{HistoryPiece, PaneHistoryCache, PaneHistorySource};
 
 use helpers::*;
 use text::*;

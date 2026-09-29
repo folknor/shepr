@@ -23,8 +23,6 @@ mod process;
 mod server_lifecycle;
 #[path = "remote/ssh.rs"]
 mod ssh;
-#[path = "remote/ssh_agent.rs"]
-mod ssh_agent;
 
 use crate::machine::RemoteExecutable;
 use bridge::*;

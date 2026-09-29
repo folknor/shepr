@@ -28,10 +28,11 @@ impl ClientEndpointId {
         matches!(self, Self::Local)
     }
 
-    pub(crate) fn display_label(&self) -> &'static str {
+    /// The name the client shows for this endpoint: "Local", or the machine's configured label.
+    pub(crate) fn display_label(&self) -> &str {
         match self {
             Self::Local => "Local",
-            Self::Ssh(_) => "Unknown endpoint",
+            Self::Ssh(label) => label.as_str(),
         }
     }
 
@@ -62,12 +63,9 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_display_labels_have_a_single_local_name() {
+    fn endpoint_display_labels_name_local_and_each_machine() {
         let label = MachineLabel::parse("build").expect("test precondition");
         assert_eq!(ClientEndpointId::Local.display_label(), "Local");
-        assert_eq!(
-            ClientEndpointId::Ssh(label).display_label(),
-            "Unknown endpoint"
-        );
+        assert_eq!(ClientEndpointId::Ssh(label).display_label(), "build");
     }
 }

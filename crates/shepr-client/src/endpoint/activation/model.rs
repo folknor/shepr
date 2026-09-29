@@ -152,6 +152,26 @@ pub struct EndpointActivationIntent {
     pub(crate) target: Option<crate::shell::ClientEndpointFocusTarget>,
 }
 
+/// The surface geometry a handoff requests from each endpoint it may present: the target it
+/// activates and the source a rollback restores. Each is sized by the layout that endpoint's own
+/// projection has once committed (`ClientShellState::endpoint_surface_size`), so whichever side
+/// commits already renders at the size it lays out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandoffGeometry {
+    pub source: shepr_protocol::TerminalGeometry,
+    pub target: shepr_protocol::TerminalGeometry,
+}
+
+impl HandoffGeometry {
+    /// One geometry for both sides.
+    pub fn uniform(geometry: shepr_protocol::TerminalGeometry) -> Self {
+        Self {
+            source: geometry,
+            target: geometry,
+        }
+    }
+}
+
 /// Begin failures are separated by whether the transport may already have observed a lifecycle
 /// write. A partial transaction must be kept and rolled back under a frozen presentation.
 #[derive(Debug)]
@@ -172,10 +192,7 @@ pub struct PendingEndpointActivation {
     pub(super) target: EndpointLease,
     pub(super) focus: Option<crate::shell::ClientEndpointFocusTarget>,
     pub(super) host_focused: bool,
-    pub(super) resize: shepr_protocol::ClientMessage,
-    /// The surface size carried by `resize`, kept typed so it never has to be re-extracted
-    /// from the message. Every assignment of `resize` assigns this too.
-    pub(super) geometry: shepr_protocol::ClientSurfaceSize,
+    pub(super) geometry: HandoffGeometry,
     pub(super) phase: ActivationPhase,
     pub(super) deadline: Instant,
     pub(super) epoch: u64,

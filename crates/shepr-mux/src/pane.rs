@@ -16,8 +16,8 @@ pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};
 pub use runtime_registry::PaneRuntimeRegistry;
 pub use state::PaneState;
 pub use teardown::PaneTeardownTracker;
+pub use terminal::{HistoryPiece, PaneHistoryCache, PaneHistorySource};
 pub use terminal::{PaneClearError, ScrollMetrics, TerminalCursorState};
-pub use terminal::{PaneHistoryCache, PaneHistorySource};
 pub use terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalSearchDirection, TerminalSearchWindow,
     TerminalTextPoint, TerminalWordMotion,

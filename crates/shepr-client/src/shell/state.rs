@@ -305,7 +305,7 @@ pub(super) struct ClientNavigatorRow {
     pub(super) meta: String,
     pub(super) detail: String,
     pub(super) agent: Option<String>,
-    pub(super) status: Option<shepr_api::schema::AgentStatus>,
+    pub(super) status: Option<shepr_protocol::AgentStatus>,
     pub(super) stale: bool,
     pub(super) current: bool,
     pub(super) target: ClientNavigatorTarget,
@@ -436,14 +436,14 @@ pub(super) enum PendingEndpointKind {
     },
     CopyMotion {
         pane_id: shepr_protocol::PublicPaneId,
-        origin: shepr_api::schema::PaneTextPoint,
+        origin: shepr_protocol::command::PaneTextPoint,
         session_generation: u64,
     },
     CopySearch {
         pane_id: shepr_protocol::PublicPaneId,
-        origin: shepr_api::schema::PaneTextPoint,
+        origin: shepr_protocol::command::PaneTextPoint,
         query: String,
-        direction: shepr_api::schema::PaneCopySearchDirection,
+        direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         generation: u64,
         session_generation: u64,
@@ -549,22 +549,22 @@ pub(super) enum ClientCopySelection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ClientCopySearchPrompt {
-    pub(super) direction: shepr_api::schema::PaneCopySearchDirection,
+    pub(super) direction: shepr_protocol::command::PaneCopySearchDirection,
     pub(super) query: TextEditor,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ClientCopyOperation {
-    Motion(shepr_api::schema::PaneCopyMotion),
+    Motion(shepr_protocol::command::PaneCopyMotion),
     Search {
         query: String,
-        direction: shepr_api::schema::PaneCopySearchDirection,
+        direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
     },
 }
 
 pub(super) struct ClientCopySearchResult {
-    pub(super) matches: Vec<shepr_api::schema::PaneTextRange>,
+    pub(super) matches: Vec<shepr_protocol::command::PaneTextRange>,
     pub(super) total: u64,
     pub(super) current: Option<usize>,
     pub(super) current_global: Option<u64>,
@@ -576,15 +576,15 @@ pub(super) struct ClientCopyModeState {
     pub(super) history_origin: shepr_vt::AbsRow,
     pub(super) geometry: (u16, u16),
     pub(super) alternate_screen_active: bool,
-    pub(super) cursor: shepr_api::schema::PaneTextPoint,
+    pub(super) cursor: shepr_protocol::command::PaneTextPoint,
     pub(super) offset_from_bottom: usize,
     pub(super) max_offset_from_bottom: usize,
     pub(super) entry_offset_from_bottom: usize,
     pub(super) selection: Option<ClientCopySelection>,
     pub(super) search_prompt: Option<ClientCopySearchPrompt>,
     pub(super) search_query: String,
-    pub(super) search_direction: Option<shepr_api::schema::PaneCopySearchDirection>,
-    pub(super) search_matches: Vec<shepr_api::schema::PaneTextRange>,
+    pub(super) search_direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
+    pub(super) search_matches: Vec<shepr_protocol::command::PaneTextRange>,
     pub(super) search_total: u64,
     pub(super) search_current: Option<usize>,
     pub(super) search_current_global: Option<u64>,
@@ -872,17 +872,33 @@ impl ClientShellState {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
+        self.layout_with_tab_count(cols, rows, self.focused_tab_count())
+    }
+
+    fn layout_with_tab_count(&self, cols: u16, rows: u16, tab_count: usize) -> ClientShellLayout {
         self.config.layout(
             cols,
             rows,
             self.sidebar_collapsed,
-            self.focused_tab_count(),
+            tab_count,
             self.sidebar_width,
         )
     }
 
+    /// The pane surface size under the active projection's layout.
     pub(crate) fn surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {
-        let surface = self.layout(cols, rows).pane_surface;
+        self.surface_size_with_tab_count(cols, rows, self.focused_tab_count())
+    }
+
+    pub(super) fn surface_size_with_tab_count(
+        &self,
+        cols: u16,
+        rows: u16,
+        tab_count: usize,
+    ) -> ClientSurfaceSize {
+        let surface = self
+            .layout_with_tab_count(cols, rows, tab_count)
+            .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),
             rows: surface.height.max(1),

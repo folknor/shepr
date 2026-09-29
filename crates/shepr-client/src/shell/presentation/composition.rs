@@ -734,7 +734,7 @@ fn render_client_copy_search_highlights(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_api::schema::{PaneTextPoint, PaneTextRange};
+    use shepr_protocol::command::{PaneTextPoint, PaneTextRange};
 
     fn text_range(row: u64, start_col: u16, end_col: u16) -> PaneTextRange {
         PaneTextRange {

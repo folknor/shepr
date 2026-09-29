@@ -1,8 +1,5 @@
 use std::time::Duration;
 
-/// Delay between checks while the session persister is still running a save.
-pub(crate) const SESSION_SAVE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-
 /// Maximum retry delay for host-shutdown session checkpoints.
 pub(crate) const HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 

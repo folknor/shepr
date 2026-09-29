@@ -38,6 +38,11 @@ impl Terminal {
         Some(self.row_wrap(line))
     }
 
+    /// The wrap flags of screen row `y`, `None` when the row is not retained.
+    pub fn screen_row_wrap(&self, y: ScreenRow) -> Option<RowWrap> {
+        self.screen_line(y).map(|line| self.row_wrap(line))
+    }
+
     /// The single rule for the two wrap flags exposed by row readers.
     fn row_wrap(&self, line: Line) -> RowWrap {
         let grid = self.term.grid();
@@ -211,7 +216,59 @@ impl Terminal {
             .and_then(|line| format::grid_point(grid, line, end.col))
             .ok_or(Error("selection end out of range"))?;
         Ok(format::format_range(
-            grid, start, end, rectangle, format, unwrap, true,
+            grid,
+            start,
+            end,
+            format::RangeOptions {
+                rectangle,
+                format,
+                unwrap,
+                trim: true,
+            },
+        ))
+    }
+
+    /// [`read_ansi_screen`] (unwrapped) for a range that lies inside one
+    /// logical line's continuation or ends inside a logical line, so a long
+    /// line can be read a few rows at a time. The read starts from the state
+    /// `carry` holds (default at a logical line start). With `open_end` the
+    /// last row must be a soft-wrapped row whose line continues in the next
+    /// row: every cell of it is emitted, nothing is closed or trimmed, and
+    /// `carry` holds the state the read of the next rows starts from. Joining
+    /// such reads with no separator gives exactly the bytes one read of the
+    /// whole line gives. Without `open_end` the range ends its line like any
+    /// read, and `carry` is left at the default. `carry` is unchanged on
+    /// error.
+    ///
+    /// [`read_ansi_screen`]: Self::read_ansi_screen
+    pub fn read_ansi_screen_carrying(
+        &self,
+        start: Point<ScreenRow>,
+        end: Point<ScreenRow>,
+        carry: &mut format::AnsiCarry,
+        open_end: bool,
+    ) -> Result<String, Error> {
+        let grid = self.term.grid();
+        let start = self
+            .screen_line(start.row)
+            .and_then(|line| format::grid_point(grid, line, start.col))
+            .ok_or(Error("selection start out of range"))?;
+        let end = self
+            .screen_line(end.row)
+            .and_then(|line| format::grid_point(grid, line, end.col))
+            .ok_or(Error("selection end out of range"))?;
+        Ok(format::format_range_carrying(
+            grid,
+            start,
+            end,
+            format::RangeOptions {
+                rectangle: false,
+                format: Format::Vt,
+                unwrap: true,
+                trim: true,
+            },
+            carry,
+            open_end,
         ))
     }
 }

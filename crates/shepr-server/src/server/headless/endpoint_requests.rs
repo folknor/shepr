@@ -4,6 +4,14 @@ use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 
 impl HeadlessServer {
+    /// Runs one endpoint command from a client shell. Refusals (an earlier
+    /// boot, an inactive surface) and the surface-set acknowledgement, which
+    /// carries the projection revision the client waits for, go out at once.
+    /// Any other command's answer is held in the endpoint reply outbox and
+    /// sent after the render its effect needs (`flush_endpoint_replies`).
+    /// Commands from one client run in arrival order on this loop, so a
+    /// second command sent before the first was answered simply runs after
+    /// it, and the replies leave in the same order.
     pub(super) fn handle_client_shell_endpoint_request(
         &mut self,
         client_id: ClientId,
@@ -14,7 +22,7 @@ impl HeadlessServer {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
         };
-        let shell = client.shell_state();
+        let surface_active = client.shell_state().surface_active;
         if boot_id != self.client_shell_boot_id {
             let message = crate::server::client_commands::error_message(
                 boot_id,
@@ -25,7 +33,6 @@ impl HeadlessServer {
             self.send_to_client(client_id, &message);
             return false;
         }
-        let surface_active = shell.surface_active;
         if let EndpointCommand::ClientShellSurfaceSet(params) = &command {
             let Some((changed, projection_revision)) =
                 self.set_client_shell_surface_active(client_id, params.active)
@@ -45,16 +52,6 @@ impl HeadlessServer {
             );
             return changed;
         }
-        if shell.endpoint_command_in_flight {
-            let message = crate::server::client_commands::error_message(
-                boot_id,
-                request_id,
-                ApiErrorCode::EndpointBusy,
-                "this endpoint is still processing another command",
-            );
-            self.send_to_client(client_id, &message);
-            return false;
-        }
         if !surface_active {
             let message = crate::server::client_commands::error_message(
                 boot_id,
@@ -66,38 +63,12 @@ impl HeadlessServer {
             return false;
         }
 
-        let (respond_to, response_rx) = std::sync::mpsc::channel();
-        if let Err(err) = crate::server::client_commands::spawn_response_waiter(
-            client_id,
-            boot_id.clone(),
-            request_id.clone(),
-            response_rx,
-            self.server_event_tx.clone(),
-        ) {
-            let message = crate::server::client_commands::error_message(
-                boot_id,
-                request_id,
-                ApiErrorCode::ServerUnavailable,
-                format!("failed to start endpoint response bridge: {err}"),
-            );
-            self.send_to_client(client_id, &message);
-            return false;
-        }
-        if let Some(client) = self.clients.get_mut(&client_id) {
-            client.shell_state_mut().endpoint_command_in_flight = true;
-        }
         let foreground_changed = self.promote_client_to_foreground(client_id);
         let (changed, result) = self.handle_client_shell_command(client_id, command);
-        // The waiter hands the answer back to the loop, so it goes out after
-        // this command's render. A failed send means the waiter is gone, and
-        // its own failure path already answered.
-        if respond_to.send(result).is_err() {
-            tracing::debug!(
-                ?client_id,
-                ?request_id,
-                "endpoint response waiter ended before the command answered"
-            );
-        }
+        self.queue_endpoint_reply(
+            client_id,
+            crate::server::client_commands::response_message(boot_id, request_id, result),
+        );
         foreground_changed | changed
     }
 

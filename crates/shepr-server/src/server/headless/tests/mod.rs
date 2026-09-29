@@ -162,6 +162,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         server_event_tx,
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
+        endpoint_replies: Vec::new(),
         _client_socket_startup_lock: client_socket_startup_lock,
     }
 }
@@ -329,24 +330,8 @@ async fn headless_api_reads_latest_title() {
 }
 
 fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::PaneInfo> {
-    let (respond_to, response_rx) = std::sync::mpsc::channel();
-    server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-        request: shepr_api::schema::Request {
-            id: "list-titles".into(),
-            method: shepr_api::schema::Method::SessionSnapshot(
-                shepr_api::schema::EmptyParams::default(),
-            ),
-        },
-        respond_to,
-    });
-    let response: shepr_api::schema::SuccessResponse = serde_json::from_str(
-        &crate::test_support::test_json(&response_rx.recv().expect("test precondition")),
-    )
-    .expect("test precondition");
-    let shepr_api::schema::ResponseResult::SessionSnapshot { snapshot } = response.result else {
-        panic!("expected session snapshot");
-    };
-    snapshot.panes
+    server.app.sync_pending_terminal_titles();
+    server.app.session_snapshot().panes
 }
 
 #[test]
@@ -377,10 +362,12 @@ fn shutdown_test_request(
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     (
         shepr_api::ApiRequestMessage {
-            request: shepr_api::schema::Request {
+            request: shepr_api::schema::AppRequest {
                 id: id.into(),
-                method: shepr_api::schema::Method::ServerStop(
-                    shepr_api::schema::ServerStopParams::default(),
+                method: shepr_api::schema::AppMethod::DetectCapture(
+                    shepr_api::schema::PaneTarget {
+                        pane_id: "w1:p1".into(),
+                    },
                 ),
             },
             respond_to,
@@ -457,11 +444,11 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
     // An empty git refresh has no render impact, so the returned `changed` flag is
     // not asserted; this test only covers draining past the per-batch limit.
     server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
-        request: shepr_api::schema::Request {
-            id: "headless_list_after_events".into(),
-            method: shepr_api::schema::Method::SessionSnapshot(
-                shepr_api::schema::EmptyParams::default(),
-            ),
+        request: shepr_api::schema::AppRequest {
+            id: "headless_capture_after_events".into(),
+            method: shepr_api::schema::AppMethod::DetectCapture(shepr_api::schema::PaneTarget {
+                pane_id: "w9:p9".into(),
+            }),
         },
         respond_to,
     });
@@ -472,7 +459,7 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
         serde_json::from_str(&crate::test_support::test_json(&response))
             .expect("test precondition");
 
-    assert_eq!(response["result"]["type"], "session_snapshot");
+    assert_eq!(response["error"]["code"], "pane_not_found");
     assert!(server.app.event_rx.try_recv().is_err());
 }
 
@@ -922,76 +909,152 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     );
     let _initial_snapshot = client_shell_snapshot(&control_rx);
     let boot_id = server.client_shell_boot_id.clone();
-    let rename = || {
-        Box::new(shepr_protocol::command::EndpointCommand::WorkspaceRename(
-            shepr_api::schema::WorkspaceRenameParams {
-                workspace_id: server.app.state.workspaces[0].id.to_string(),
-                label: "renamed".into(),
+    let workspace_id = server.app.state.workspaces[0].id.to_string();
+    // A rename is a UI mutation, so each accepted request asks for a render.
+    // The second arrives before the first was answered and simply runs
+    // after it.
+    for (request_id, label) in [("client-shell:1", "first"), ("client-shell:2", "renamed")] {
+        let command = Box::new(EndpointCommand::WorkspaceRename(
+            shepr_protocol::command::WorkspaceRenameParams {
+                workspace_id: workspace_id.clone(),
+                label: label.into(),
             },
-        ))
-    };
-    let first_rename = rename();
-    let busy_rename = rename();
-
-    // A rename is a UI mutation, so the accepted request reports a render.
-    assert!(
-        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
-            client_id,
-            boot_id: boot_id.clone(),
-            request_id: "client-shell:1".into(),
-            command: first_rename,
-        })
-    );
-    assert!(
-        server.clients[&client_id]
-            .shell_state()
-            .endpoint_command_in_flight
-    );
-
-    assert!(
-        !server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
-            client_id,
-            boot_id: boot_id.clone(),
-            request_id: "client-shell:busy".into(),
-            command: busy_rename,
-        })
-    );
-    assert!(server.clients.contains_key(&client_id));
-    let ServerMessage::ClientShellEndpointResponse {
-        result: Err(error), ..
-    } = read_server_message(control_rx.recv().expect("busy endpoint response"))
-    else {
-        panic!("expected busy endpoint response");
-    };
-    assert_eq!(error.code, "endpoint_busy");
-
-    let response_ready = server
-        .server_event_rx
-        .recv()
-        .await
-        .expect("endpoint response ready");
-    assert!(!server.handle_server_event(response_ready));
-    assert!(
-        !server.clients[&client_id]
-            .shell_state()
-            .endpoint_command_in_flight
-    );
-
-    match read_server_message(control_rx.recv().expect("endpoint response")) {
-        ServerMessage::ClientShellEndpointResponse {
-            boot_id: response_boot_id,
-            request_id,
-            result,
-        } => {
-            assert_eq!(response_boot_id, boot_id);
-            assert_eq!(request_id, "client-shell:1");
-            assert!(matches!(
-                result,
-                Ok(shepr_protocol::command::EndpointReply::WorkspaceInfo { .. })
-            ));
-        }
-        other => panic!("expected client shell endpoint response, got {other:?}"),
+        ));
+        assert_eq!(
+            server.handle_server_event_with_render_impact(
+                ServerEvent::ClientShellEndpointRequest {
+                    client_id,
+                    boot_id: boot_id.clone(),
+                    request_id: request_id.into(),
+                    command,
+                }
+            ),
+            RenderDemand::Full
+        );
     }
+    assert!(
+        control_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "a reply waits for the render its command asked for"
+    );
+
+    // The loop's order: render, then flush the held replies.
+    server.render_and_stream();
+    server.flush_endpoint_replies();
+
+    let ServerMessage::EndpointSnapshot(snapshot) =
+        read_server_message(control_rx.recv().expect("renamed projection"))
+    else {
+        panic!("the projection the commands changed goes out before their replies");
+    };
+    assert_eq!(snapshot.workspaces[0].label, "renamed");
+    for expected in ["client-shell:1", "client-shell:2"] {
+        match read_server_message(control_rx.recv().expect("endpoint response")) {
+            ServerMessage::ClientShellEndpointResponse {
+                boot_id: response_boot_id,
+                request_id,
+                result,
+            } => {
+                assert_eq!(response_boot_id, boot_id);
+                assert_eq!(request_id, expected, "replies leave in command order");
+                assert!(matches!(
+                    result,
+                    Ok(shepr_protocol::command::EndpointReply::WorkspaceInfo { .. })
+                ));
+            }
+            other => panic!("expected client shell endpoint response, got {other:?}"),
+        }
+    }
+    assert!(server.endpoint_replies.is_empty());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn an_endpoint_error_reply_is_held_until_the_flush() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("no-render")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_active_index(Some(0));
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    let client_id = ClientId::test_new(42);
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellConnected {
+            client_id,
+            surface_cols: 80,
+            surface_rows: 23,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+            mouse_capture: false,
+            surface_active: true,
+            writer,
+        })
+    );
+    let _initial_snapshot = client_shell_snapshot(&control_rx);
+
+    // Focusing a pane that does not exist fails; its error is held like
+    // any other reply until the loop flushes.
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: server.client_shell_boot_id.clone(),
+        request_id: "missing-pane".into(),
+        command: Box::new(EndpointCommand::PaneFocus(
+            shepr_protocol::command::PaneTarget {
+                pane_id: "w999:p999".into(),
+            },
+        )),
+    });
+    assert_eq!(server.endpoint_replies.len(), 1);
+    server.flush_endpoint_replies();
+    let ServerMessage::ClientShellEndpointResponse {
+        request_id,
+        result: Err(_),
+        ..
+    } = read_server_message(control_rx.recv().expect("error response"))
+    else {
+        panic!("expected an endpoint error response");
+    };
+    assert_eq!(request_id, "missing-pane");
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("departed")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_active_index(Some(0));
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    let client_id = ClientId::test_new(43);
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellConnected {
+            client_id,
+            surface_cols: 80,
+            surface_rows: 23,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+            mouse_capture: false,
+            surface_active: true,
+            writer,
+        })
+    );
+    let _initial_snapshot = client_shell_snapshot(&control_rx);
+    let workspace_id = server.app.state.workspaces[0].id.to_string();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: server.client_shell_boot_id.clone(),
+        request_id: "then-left".into(),
+        command: Box::new(EndpointCommand::WorkspaceRename(
+            shepr_protocol::command::WorkspaceRenameParams {
+                workspace_id,
+                label: "gone".into(),
+            },
+        )),
+    });
+    assert!(server.handle_server_event(ServerEvent::ClientDetach { client_id }));
+    server.flush_endpoint_replies();
+    assert!(server.endpoint_replies.is_empty());
+    assert!(!server.clients.contains_key(&client_id));
     shutdown_test_runtimes(&mut server);
 }
 
@@ -2233,15 +2296,8 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
             )),
         })
     );
-    let response_ready = server
-        .server_event_rx
-        .recv()
-        .await
-        .expect("focus response ready");
-    assert!(!server.handle_server_event(response_ready));
-    let _ = second_control.recv().expect("focus response");
-
     server.render_and_stream();
+    server.flush_endpoint_replies();
 
     assert!(
         first_control.try_recv().is_err(),
@@ -2251,6 +2307,13 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
     assert_eq!(
         second_replacement.focused_tab_id.as_deref(),
         Some(second_tab_id.as_str())
+    );
+    assert!(
+        matches!(
+            read_server_message(second_control.recv().expect("focus response")),
+            ServerMessage::ClientShellEndpointResponse { request_id, .. } if request_id == "focus-second"
+        ),
+        "the focus reply follows the projection it changed"
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -4978,8 +5041,69 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
     });
 }
 
+/// A clipboard write from a pane that no client views: the fallback that
+/// sends it to the foreground client.
+fn unviewed_clipboard_write() -> AppEvent {
+    AppEvent::ClipboardWrite {
+        pane_id: shepr_core::layout::PaneId::alloc(),
+        content: b"test".to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn clipboard_write_goes_to_the_clients_viewing_the_writing_pane() {
+    let mut server = test_headless_server();
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("clipboard-viewers");
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_pane = workspace.tabs()[second_tab].root_pane();
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_active_index(Some(0));
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
+
+    let (first_control, _first_render) = connect_test_shell(&mut server, 7, 100, 30);
+    let (second_control, _second_render) = connect_test_shell(&mut server, 8, 80, 24);
+    let _ = client_shell_snapshot(&first_control);
+    let _ = client_shell_snapshot(&second_control);
+    assert!(server.focus_shell_client_on_tab(ClientId::test_new(8), &second_tab_id));
+    // The client on the first tab is the foreground one, so a delivery to it
+    // would mean the write fell back instead of reaching the viewer.
+    server
+        .clients
+        .set_foreground_client_id(Some(ClientId::test_new(7)));
+
+    let changed = server.handle_internal_event_with_forwarding(AppEvent::ClipboardWrite {
+        pane_id: second_pane,
+        content: b"test".to_vec(),
+    });
+
+    assert!(!changed);
+    let clipboard = loop {
+        match read_server_message(
+            second_control
+                .recv_timeout(Duration::from_millis(100))
+                .expect("viewer clipboard message"),
+        ) {
+            ServerMessage::Clipboard { data } => break data,
+            ServerMessage::EndpointSnapshot(_) => {}
+            other => panic!("expected clipboard message, got {other:?}"),
+        }
+    };
+    assert_eq!(clipboard, "dGVzdA==");
+    while let Ok(bytes) = first_control.recv_timeout(Duration::from_millis(50)) {
+        assert!(
+            !matches!(read_server_message(bytes), ServerMessage::Clipboard { .. }),
+            "a client on another tab does not receive the write"
+        );
+    }
+    shutdown_test_runtimes(&mut server);
+}
+
 #[test]
-fn clipboard_write_targets_foreground_client_only() {
+fn clipboard_write_from_an_unviewed_pane_targets_foreground_client_only() {
     let mut server = test_headless_server();
     let (background_tx, background_control_rx, _background_rx) = test_client_writer();
     let (foreground_tx, foreground_control_rx, _foreground_rx) = test_client_writer();
@@ -5006,9 +5130,7 @@ fn clipboard_write_targets_foreground_client_only() {
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(2)));
 
-    let changed = server.handle_internal_event_with_forwarding(AppEvent::ClipboardWrite {
-        content: b"test".to_vec(),
-    });
+    let changed = server.handle_internal_event_with_forwarding(unviewed_clipboard_write());
 
     assert!(!changed);
     match read_server_message(
@@ -5032,9 +5154,7 @@ fn clipboard_write_without_foreground_client_does_not_change_visual_state() {
     let mut server = test_headless_server();
     server.clients.set_foreground_client_id(None);
 
-    let changed = server.handle_internal_event_with_forwarding(AppEvent::ClipboardWrite {
-        content: b"test".to_vec(),
-    });
+    let changed = server.handle_internal_event_with_forwarding(unviewed_clipboard_write());
 
     assert!(!changed);
 }
@@ -5059,9 +5179,7 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(1)));
 
-    let changed = server.handle_internal_event_with_forwarding(AppEvent::ClipboardWrite {
-        content: b"test".to_vec(),
-    });
+    let changed = server.handle_internal_event_with_forwarding(unviewed_clipboard_write());
 
     assert!(!changed);
     assert!(

@@ -2,10 +2,7 @@ use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 
 use crate::app::App;
 use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand};
-use shepr_api::schema::{
-    PaneLayoutPane, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneReportAgentParams,
-    PaneReportAgentSessionParams, ResponseResult,
-};
+use shepr_api::schema::{PaneReportAgentParams, PaneReportAgentSessionParams, ResponseResult};
 use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 use shepr_protocol::command::{
     EndpointReply, PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection,
@@ -324,69 +321,6 @@ impl App {
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, nav_direction(direction), &panes)
     }
-
-    pub(super) fn pane_layout_snapshot(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Option<PaneLayoutSnapshot> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs().get(tab_idx)?;
-        let area = self.state.tab_layout_area(ws_idx, tab_idx);
-        let layout_area = shepr_mux::workspace::layout_rect(area);
-        let focused_pane_id = self.public_pane_id(ws_idx, tab.layout().focused())?;
-        // The layout reports what is on screen: a zoomed tab shows only its
-        // focused pane over the whole area and no split lines, so its hidden
-        // panes and the split tree under them are left out (`zoomed` says the
-        // tree exists).
-        // `tab_panes` is the one place the zoom rule lives, shared with view
-        // computation and spawn sizing.
-        let panes = self
-            .state
-            .pane_geometry_in(area)
-            .tab_panes(tab.layout(), tab.zoomed())
-            .into_iter()
-            .filter_map(|pane| {
-                Some(PaneLayoutPane {
-                    pane_id: self.public_pane_id(ws_idx, pane.id)?,
-                    focused: pane.is_focused,
-                    rect: pane_layout_rect(shepr_mux::workspace::layout_rect(pane.rect)),
-                })
-            })
-            .collect();
-        let visible_splits = if tab.zoomed() {
-            Vec::new()
-        } else {
-            tab.layout().splits(layout_area)
-        };
-        let splits = visible_splits
-            .into_iter()
-            .enumerate()
-            .map(|(idx, split)| PaneLayoutSplit {
-                id: split_path_id(idx, &split.path),
-                direction: match split.direction {
-                    shepr_core::layout::Direction::Horizontal => {
-                        shepr_api::schema::SplitDirection::Right
-                    }
-                    shepr_core::layout::Direction::Vertical => {
-                        shepr_api::schema::SplitDirection::Down
-                    }
-                },
-                ratio: split.ratio,
-                rect: pane_layout_rect(split.area),
-            })
-            .collect();
-
-        Some(PaneLayoutSnapshot {
-            workspace_id: self.public_workspace_id(ws_idx)?,
-            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
-            zoomed: tab.zoomed(),
-            area: pane_layout_rect(layout_area),
-            focused_pane_id,
-            panes,
-            splits,
-        })
-    }
 }
 
 fn nav_direction(direction: PaneDirection) -> NavDirection {
@@ -396,33 +330,6 @@ fn nav_direction(direction: PaneDirection) -> NavDirection {
         PaneDirection::Up => NavDirection::Up,
         PaneDirection::Down => NavDirection::Down,
     }
-}
-
-fn pane_layout_rect(rect: shepr_core::geometry::Rect) -> PaneLayoutRect {
-    PaneLayoutRect {
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-    }
-}
-
-fn split_path_id(idx: usize, path: &[shepr_core::geometry::SplitBranch]) -> String {
-    if path.is_empty() {
-        return format!("split_{idx}_root");
-    }
-    let path = path
-        .iter()
-        .map(|branch| {
-            if *branch == shepr_core::geometry::SplitBranch::Second {
-                "1"
-            } else {
-                "0"
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    format!("split_{idx}_{path}")
 }
 
 fn invalid_agent() -> ApiResult {

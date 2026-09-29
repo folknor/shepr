@@ -312,7 +312,7 @@ impl ClientShellState {
         self.outer_focused.unwrap_or(true)
     }
 
-    pub(crate) fn endpoint_label(&self, endpoint_id: &ClientEndpointId) -> &str {
+    pub(crate) fn endpoint_label<'a>(&'a self, endpoint_id: &'a ClientEndpointId) -> &'a str {
         self.endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
@@ -334,16 +334,35 @@ impl ClientShellState {
     }
 
     pub(super) fn focused_tab_count(&self) -> usize {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return 0;
-        };
-        snapshot
-            .tabs
+        self.snapshot
+            .as_deref()
+            .map_or(0, |snapshot| workspace_tab_count(snapshot, None))
+    }
+
+    /// The pane surface size `endpoint_id` will lay out once its cached projection is active and
+    /// focused on `focus` (without one, on the workspace its snapshot focuses). A handoff sizes
+    /// its surface requests by this, since the projection it commits is not the active one yet.
+    /// Shell chrome is the client's own, so projections lay out differently only through the
+    /// focused workspace's tab count (the tab bar hides for a single tab with
+    /// `hide_tab_bar_when_single_tab`). An endpoint with no cached snapshot gets the active
+    /// layout's size.
+    pub(crate) fn endpoint_surface_size(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        focus: Option<&ClientEndpointFocusTarget>,
+        cols: u16,
+        rows: u16,
+    ) -> ClientSurfaceSize {
+        let tab_count = self
+            .endpoints
             .iter()
-            .filter(|tab| {
-                Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
-            })
-            .count()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.snapshot.as_deref())
+            .map_or_else(
+                || self.focused_tab_count(),
+                |snapshot| workspace_tab_count(snapshot, focus),
+            );
+        self.surface_size_with_tab_count(cols, rows, tab_count)
     }
 
     pub(crate) fn cache_endpoint_snapshot_for_generation(
@@ -583,6 +602,29 @@ impl ClientShellState {
         let label = self.endpoint_label(&error.endpoint_id);
         format!("{label}: invalid endpoint configuration: {error}")
     }
+}
+
+/// The tab count of the workspace `focus` names in `snapshot`, or of the snapshot's focused
+/// workspace when there is no focus target or its pane is not in the snapshot.
+fn workspace_tab_count(
+    snapshot: &ClientShellSnapshot,
+    focus: Option<&ClientEndpointFocusTarget>,
+) -> usize {
+    let workspace_id = match focus {
+        Some(ClientEndpointFocusTarget::Workspace(workspace_id)) => Some(workspace_id.as_str()),
+        Some(ClientEndpointFocusTarget::Pane(pane_id)) => snapshot
+            .panes
+            .iter()
+            .find(|pane| &pane.pane_id == pane_id)
+            .map(|pane| pane.workspace_id.as_str()),
+        None => None,
+    }
+    .or(snapshot.focused_workspace_id.as_deref());
+    snapshot
+        .tabs
+        .iter()
+        .filter(|tab| Some(tab.workspace_id.as_str()) == workspace_id)
+        .count()
 }
 
 pub(super) fn endpoint_status_presentation(

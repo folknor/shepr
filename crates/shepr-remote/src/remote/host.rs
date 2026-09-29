@@ -10,7 +10,6 @@ pub fn run_remote_client_bridge(
     paths: &shepr_config::AppPaths,
 ) -> io::Result<shepr_platform::RemoteBridgeOutcome> {
     ensure_remote_server_running(paths)?;
-    let _ssh_agent = super::ssh_agent::Registration::start(paths);
 
     let socket_path = paths.server_address().client_socket().to_path_buf();
     // The server's owner is checked before the first relayed byte reaches it.

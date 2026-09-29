@@ -196,7 +196,7 @@ fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
 #[test]
 fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
     use std::io::Write as _;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let runtime = shepr_test_support::ScratchDir::new("platform-stale-sweep");
     std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700))
@@ -215,11 +215,6 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
     std::fs::create_dir(&untagged_config).expect("test precondition");
     let live_config = runtime.join(format!("shepr-ssh-{live_tag}"));
     std::fs::create_dir(&live_config).expect("test precondition");
-
-    let stale_agent_link = runtime.join(format!("agent.shepr-{dead_tag}.new"));
-    let live_agent_link = runtime.join(format!("agent.shepr-{live_tag}.new"));
-    symlink("target", &stale_agent_link).expect("test precondition");
-    symlink("target", &live_agent_link).expect("test precondition");
 
     for (name, tag) in [
         (".s0000000000000001", dead_tag.as_str()),
@@ -251,18 +246,6 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
         present(&live_config),
         "a live owner's config directory is retained"
     );
-
-    let registry = ssh_agent::SshAgentRegistry::new(runtime.join("agent"), None)
-        .expect("create an unmanaged registry");
-    assert!(
-        std::fs::symlink_metadata(&stale_agent_link).is_err(),
-        "dead owner's temporary link is swept"
-    );
-    assert!(
-        std::fs::symlink_metadata(&live_agent_link).is_ok(),
-        "a live owner's temporary link is retained"
-    );
-    drop(registry);
 
     let socket_path = runtime.join("api.sock");
     let listener = ipc::bind_private_local_listener(&socket_path).expect("bind listener");

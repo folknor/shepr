@@ -1,7 +1,7 @@
 use super::*;
 use crate::tests::{test_pane_id, test_tab_id, test_workspace_id};
 use crossterm::event::MouseEvent;
-use shepr_api::schema::AgentStatus;
+use shepr_protocol::AgentStatus;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{
     ClientShellAgent, ClientShellPane, ClientShellTab, PaneSurfacePane, PaneSurfaceSplit,
@@ -164,7 +164,7 @@ fn pane_scroll_result(
             agent: None,
             terminal_title: None,
             terminal_title_stripped: None,
-            agent_status: shepr_api::schema::AgentStatus::Idle,
+            agent_status: shepr_protocol::AgentStatus::Idle,
             agent_session: None,
             scroll: Some(shepr_protocol::command::PaneScrollInfo {
                 offset_from_bottom,

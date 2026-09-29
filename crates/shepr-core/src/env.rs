@@ -176,8 +176,6 @@ env_vocabulary! {
         /// `PATH`: the inherited executable search path used to resolve the
         /// configured pane shell at launch.
         Path => "PATH",
-        /// `SSH_AUTH_SOCK`: the SSH agent socket panes are given access to.
-        SshAuthSock => "SSH_AUTH_SOCK",
         /// `SSH_CONNECTION`: set by sshd; its presence means the clipboard is
         /// on the far side of an SSH session.
         SshConnection => "SSH_CONNECTION",
@@ -359,7 +357,6 @@ impl EnvVar {
             | Self::GitCeilingDirectories
             | Self::GitConfigNoSystem => EnvKind::Text,
             Self::SheprConfigPath
-            | Self::SshAuthSock
             | Self::PiCodingAgentDir
             | Self::PiConfigDir
             | Self::ClaudeConfigDir
@@ -963,7 +960,6 @@ mod tests {
             (EnvVar::XdgRuntimeDir, "XDG_RUNTIME_DIR", AbsolutePath),
             (EnvVar::Shell, "SHELL", Raw),
             (EnvVar::Path, "PATH", Raw),
-            (EnvVar::SshAuthSock, "SSH_AUTH_SOCK", Path),
             (EnvVar::SshConnection, "SSH_CONNECTION", Presence),
             (EnvVar::SshTty, "SSH_TTY", Presence),
             (EnvVar::VscodeIpcHookCli, "VSCODE_IPC_HOOK_CLI", Presence),

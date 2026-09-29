@@ -9,11 +9,11 @@ impl PendingEndpointActivation {
         endpoints: &mut EndpointRegistry,
         target: &ClientEndpointId,
         focus: Option<crate::shell::ClientEndpointFocusTarget>,
-        resize: shepr_protocol::ClientMessage,
+        geometry: HandoffGeometry,
         serial: u64,
         now: Instant,
     ) -> Result<Self, ActivationBeginError> {
-        Self::prepare(shell, endpoints, target, focus, resize, serial, now)?
+        Self::prepare(shell, endpoints, target, focus, geometry, serial, now)?
             .start_at(endpoints, now)
     }
 
@@ -80,11 +80,11 @@ impl PendingEndpointActivation {
 
     pub(crate) fn update_resize(
         &mut self,
-        resize: &shepr_protocol::ClientMessage,
+        geometry: HandoffGeometry,
         endpoints: &mut EndpointRegistry,
     ) -> Result<(), String> {
         // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.update_resize_at(resize, endpoints, Instant::now())
+        self.update_resize_at(geometry, endpoints, Instant::now())
     }
 
     pub(crate) fn update_host_focus(
@@ -255,7 +255,7 @@ fn surface_success(_answers: &str, active: bool, projection_revision: u64) -> Re
 
 fn workspace_focus_success(_answers: &str, workspace_id: &str) -> Reply {
     Ok(shepr_protocol::command::EndpointReply::WorkspaceInfo {
-        workspace: shepr_api::schema::WorkspaceInfo {
+        workspace: shepr_protocol::command::WorkspaceInfo {
             workspace_id: shepr_test_fixtures::id(workspace_id),
             number: 1,
             label: workspace_id.into(),
@@ -266,7 +266,7 @@ fn workspace_focus_success(_answers: &str, workspace_id: &str) -> Reply {
                 &shepr_test_fixtures::id(workspace_id),
                 1,
             ),
-            agent_status: shepr_api::schema::AgentStatus::Idle,
+            agent_status: shepr_protocol::AgentStatus::Idle,
         },
     })
 }
@@ -297,10 +297,8 @@ fn surface_set_active(message: &shepr_protocol::ClientMessage) -> Option<bool> {
     }
 }
 
-fn resize() -> shepr_protocol::ClientMessage {
-    shepr_protocol::ClientMessage::ClientShellResize {
-        geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false),
-    }
+fn handoff_geometry() -> HandoffGeometry {
+    HandoffGeometry::uniform(shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false))
 }
 
 fn surface(boot_id: &str, revision: u64, pane: &str) -> shepr_protocol::PaneSurfaceFrame {
@@ -350,8 +348,7 @@ fn machine() -> PendingEndpointActivation {
         target: lease(endpoint(), 7, "remote-boot"),
         focus: None,
         host_focused: true,
-        resize: resize(),
-        geometry: resize_geometry(&resize()).expect("test precondition"),
+        geometry: handoff_geometry(),
         phase: ActivationPhase::ActivatingTarget {
             request_id: "client-shell-surface:3:on".into(),
             acknowledged_revision: Some(1),
@@ -376,8 +373,7 @@ fn source_off_request_is_distinct_and_precedes_target_on_phase() {
         target: lease(endpoint(), 7, "remote-boot"),
         focus: None,
         host_focused: true,
-        resize: resize(),
-        geometry: resize_geometry(&resize()).expect("test precondition"),
+        geometry: handoff_geometry(),
         phase: ActivationPhase::ReleasingSource {
             request_id: "client-shell-surface:9:off".into(),
         },
@@ -415,7 +411,7 @@ fn active_source_requires_metadata_from_its_current_connection_generation() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         26,
         Instant::now(),
     );
@@ -437,7 +433,7 @@ fn observed_begin_write_failure_returns_recoverable_partial_activation() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         10,
         Instant::now(),
     );
@@ -473,7 +469,7 @@ fn source_release_is_sent_and_acknowledged_before_target_activation() {
         &mut endpoints,
         &target,
         None,
-        resize(),
+        handoff_geometry(),
         11,
         Instant::now(),
     )
@@ -566,7 +562,7 @@ fn typed_target_ack_sets_a_floor_for_same_boot_activation_evidence() {
         &mut endpoints,
         &target,
         None,
-        resize(),
+        handoff_geometry(),
         16,
         Instant::now(),
     )
@@ -648,7 +644,7 @@ fn same_target_retarget_is_latest_wins() {
         Some(crate::shell::ClientEndpointFocusTarget::Workspace(
             shepr_test_fixtures::id("w1"),
         )),
-        resize(),
+        handoff_geometry(),
         12,
         Instant::now(),
     )
@@ -719,7 +715,7 @@ fn latest_host_focus_is_replayed_to_the_eventual_target() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         25,
         Instant::now(),
     )
@@ -792,7 +788,7 @@ fn source_release_rejection_restores_the_source_coherently() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         13,
         Instant::now(),
     )
@@ -835,7 +831,7 @@ fn source_release_timeout_starts_an_acknowledged_source_restore() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         14,
         Instant::now(),
     )
@@ -871,11 +867,10 @@ fn resize_invalidates_already_recorded_surface_evidence() {
         activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "w1:p1")),
         SurfaceActivationProgress::Ready
     );
-    let resize = shepr_protocol::ClientMessage::ClientShellResize {
-        geometry: shepr_protocol::TerminalGeometry::new(100, 30, 9, 17, true),
-    };
+    let resized =
+        HandoffGeometry::uniform(shepr_protocol::TerminalGeometry::new(100, 30, 9, 17, true));
     activation
-        .update_resize(&resize, &mut endpoints)
+        .update_resize(resized, &mut endpoints)
         .expect("test precondition");
     assert_eq!(activation.progress(), SurfaceActivationProgress::Pending);
 }
@@ -888,7 +883,7 @@ fn resize_during_activation_reaches_the_pending_target() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         15,
         Instant::now(),
     )
@@ -900,15 +895,16 @@ fn resize_during_activation_reaches_the_pending_target() {
         &surface_success("client-shell-surface:15:off", false, 1),
         &mut endpoints,
     );
-    let resized = shepr_protocol::ClientMessage::ClientShellResize {
-        geometry: shepr_protocol::TerminalGeometry::new(100, 30, 9, 17, true),
-    };
+    let resized =
+        HandoffGeometry::uniform(shepr_protocol::TerminalGeometry::new(100, 30, 9, 17, true));
     activation
-        .update_resize(&resized, &mut endpoints)
+        .update_resize(resized, &mut endpoints)
         .expect("test precondition");
     assert_eq!(
         remote_sent.lock().expect("test precondition").last(),
-        Some(&resized)
+        Some(&shepr_protocol::ClientMessage::ClientShellResize {
+            geometry: resized.target
+        })
     );
     assert_eq!(
         activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "w1:p1")),
@@ -925,7 +921,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         20,
         Instant::now(),
     )
@@ -1064,7 +1060,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
         Some(crate::shell::ClientEndpointFocusTarget::Pane(test_pane_id(
             "w1:p1",
         ))),
-        resize(),
+        handoff_geometry(),
         21,
         Instant::now(),
     )
@@ -1114,7 +1110,7 @@ fn local_escape(source_state: &str) {
         &mut endpoints,
         &ClientEndpointId::Local,
         None,
-        resize(),
+        handoff_geometry(),
         22,
         Instant::now(),
     )
@@ -1218,10 +1214,9 @@ fn local_escape(source_state: &str) {
     );
     assert_eq!(endpoints.active_id(), &ClientEndpointId::Local);
     assert_ne!(endpoints.active_id(), &disconnected);
-    assert!(
-        !endpoints.active_surface_available(),
-        "runtime opens input only after the effects fence"
-    );
+    // Local's surface is live; pane input opens when the runtime ends the handoff `Owned`,
+    // which it does only on this completion, after the effects fence.
+    assert!(endpoints.active_surface_available());
 }
 
 #[test]
@@ -1237,7 +1232,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
             &mut endpoints,
             &endpoint(),
             None,
-            resize(),
+            handoff_geometry(),
             30,
             Instant::now(),
         )
@@ -1543,7 +1538,7 @@ fn chrome_frames_pass_an_unavailable_freeze_but_not_a_handoff() {
         &mut endpoints,
         &endpoint(),
         None,
-        resize(),
+        handoff_geometry(),
         70,
         Instant::now(),
     )
@@ -1588,7 +1583,7 @@ fn rollback_keeps_the_latest_intent_even_when_it_returns_to_the_target() {
         &mut endpoints,
         &target,
         None,
-        resize(),
+        handoff_geometry(),
         23,
         Instant::now(),
     )
@@ -1641,7 +1636,7 @@ fn unacknowledged_target_release_closes_target_before_restoring_source() {
         &mut endpoints,
         &target,
         None,
-        resize(),
+        handoff_geometry(),
         24,
         Instant::now(),
     )
@@ -1691,7 +1686,7 @@ fn target_loss_at_activation_deadline_restores_source_before_timeout() {
         &mut endpoints,
         &target,
         None,
-        resize(),
+        handoff_geometry(),
         30,
         Instant::now(),
     )
@@ -1743,7 +1738,7 @@ fn losing_local_during_handoff_does_not_revoke_the_healthy_target() {
             &mut endpoints,
             &target,
             None,
-            resize(),
+            handoff_geometry(),
             29,
             Instant::now(),
         )
@@ -1844,9 +1839,71 @@ fn target_loss_while_synchronizing_the_restored_source_keeps_that_restore() {
 }
 
 #[test]
-fn resize_message_preserves_the_latest_surface_dimensions() {
+fn each_side_of_a_handoff_is_sized_by_its_own_layout() {
+    let (shell, mut endpoints, local_sent, remote_sent) = shell_and_registry();
+    // The target's projection shows a tab bar the source's does not.
+    let source = shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false);
+    let target = shepr_protocol::TerminalGeometry::new(80, 23, 8, 16, false);
+    let mut activation = PendingEndpointActivation::begin(
+        &shell,
+        &mut endpoints,
+        &endpoint(),
+        None,
+        HandoffGeometry { source, target },
+        40,
+        Instant::now(),
+    )
+    .expect("test precondition");
+    let _ = activation.receive_response(
+        &ClientEndpointId::Local,
+        1,
+        "client-shell-surface:40:off",
+        &surface_success("client-shell-surface:40:off", false, 1),
+        &mut endpoints,
+    );
     assert_eq!(
-        resize_geometry(&resize()),
-        Some(shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 })
+        remote_sent.lock().expect("test precondition").first(),
+        Some(&shepr_protocol::ClientMessage::ClientShellResize { geometry: target })
+    );
+    assert_eq!(
+        activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "w1:p1")),
+        SurfaceActivationProgress::Pending,
+        "a surface at the source's size cannot activate the target"
+    );
+
+    // A rollback restores the source at the source's size.
+    assert_eq!(
+        activation.rollback(&mut endpoints, "cancel", false),
+        ActivationRollback::Pending
+    );
+    let _ = activation.receive_response(
+        &endpoint(),
+        7,
+        "client-shell-surface:40:rollback-target-off",
+        &surface_success("client-shell-surface:40:rollback-target-off", false, 1),
+        &mut endpoints,
+    );
+    assert!(
+        local_sent
+            .lock()
+            .expect("test precondition")
+            .contains(&shepr_protocol::ClientMessage::ClientShellResize { geometry: source })
+    );
+    let _ = activation.receive_response(
+        &ClientEndpointId::Local,
+        1,
+        "client-shell-surface:40:rollback-source-on",
+        &surface_success("client-shell-surface:40:rollback-source-on", true, 2),
+        &mut endpoints,
+    );
+    let _ =
+        activation.receive_snapshot(&ClientEndpointId::Local, 1, &test_snapshot("local-boot", 2));
+    assert_eq!(
+        activation.receive_surface(
+            &ClientEndpointId::Local,
+            1,
+            surface("local-boot", 2, "w1:p1")
+        ),
+        SurfaceActivationProgress::Ready
     );
 }

@@ -12,7 +12,7 @@ mod status;
 mod stop;
 
 pub use server::ServerHandle;
-pub use server::{api_method_name, start_server_with_stop_control};
+pub use server::start_server_with_stop_control;
 pub use status::{RuntimeStatus, read_runtime_status_at};
 pub use stop::ServerStopSignal;
 
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
-use crate::schema::Request;
+use crate::schema::AppRequest;
 
 pub fn serialize_response_or_error<T: serde::Serialize>(request_id: &str, response: &T) -> String {
     serialize_response_or_error_with_outcome(request_id, response).body
@@ -63,8 +63,10 @@ pub fn send_api_response(
     }
 }
 
+/// One request handed from a socket connection thread to the app loop, with
+/// the channel its answer goes back on.
 pub struct ApiRequestMessage {
-    pub request: Request,
+    pub request: AppRequest,
     pub respond_to: std::sync::mpsc::Sender<error::ApiResult>,
 }
 
@@ -77,7 +79,7 @@ pub fn socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::Method;
+    use crate::schema::{Method, Request};
 
     struct FailingResponse;
 
@@ -139,7 +141,6 @@ mod tests {
     fn method_traits_carry_routing_and_log_facts() {
         let ping = Method::Ping(crate::schema::PingParams::default()).traits();
         assert_eq!(ping.name, "ping");
-        assert!(ping.runs_on_socket_thread);
         assert!(!ping.mutates_ui);
         assert!(!ping.routine);
 
@@ -154,7 +155,6 @@ mod tests {
         })
         .traits();
         assert_eq!(report.name, "pane.report_agent_session");
-        assert!(!report.runs_on_socket_thread);
         assert!(report.mutates_ui);
         assert!(report.routine);
 
@@ -163,9 +163,14 @@ mod tests {
         })
         .traits();
         assert_eq!(capture.name, "detect.capture");
-        assert!(!capture.runs_on_socket_thread);
         assert!(!capture.mutates_ui);
         assert!(!capture.routine);
+
+        let app_capture = crate::schema::AppMethod::DetectCapture(crate::schema::PaneTarget {
+            pane_id: "w1:p1".into(),
+        })
+        .traits();
+        assert_eq!(app_capture, capture);
     }
 
     #[test]

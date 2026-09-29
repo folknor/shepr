@@ -77,8 +77,8 @@ pub enum AppEvent {
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
     },
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
-    /// re-emits it through shepr's own clipboard writer.
-    ClipboardWrite { content: Vec<u8> },
+    /// re-emits it to the clients viewing `pane_id`.
+    ClipboardWrite { pane_id: PaneId, content: Vec<u8> },
     /// A pane child reported its shell current directory through terminal
     /// metadata such as OSC 7.
     TerminalCwdReported {

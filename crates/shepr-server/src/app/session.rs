@@ -8,13 +8,20 @@
 //! event loop, where only the cheap part happens (the structural snapshot, a
 //! handle to each pane's terminal and a probe of each shell's cwd), and hands
 //! the result to the persister.
+//!
+//! The loop learns that a save finished from the persister's completion
+//! signal ([`SessionSaver::save_finished`]), not by polling: it waits on the
+//! signal and reaps the save when it fires. While a save is in flight no
+//! save deadline is reported, since nothing can start before the save ends,
+//! and its end wakes the loop to reconsider them.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::App;
 use crate::limits::{
-    CHECKPOINT_MAX_FAILURES, HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_CHECK_INTERVAL,
-    SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN,
+    CHECKPOINT_MAX_FAILURES, HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_DEBOUNCE,
+    SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN,
 };
 #[derive(Clone, Copy)]
 enum SessionSavePurpose {
@@ -33,13 +40,14 @@ struct InFlightSave {
 
 pub(crate) struct SessionSaver {
     pub(crate) session_save_deadline: Option<Instant>,
-    session_save_check_deadline: Option<Instant>,
     /// Consecutive failed saves, for the retry backoff.
     failed_saves: u32,
     /// At most one save is in flight: a due save waits for it, so every
     /// capture reaches the persister after the one before it finished.
     in_flight: Option<InFlightSave>,
     persister: shepr_mux::persist::SessionPersister,
+    /// Fired by the persister each time a submitted save ends.
+    save_finished: Arc<tokio::sync::Notify>,
     pub(crate) pane_exit_checkpoint_pending: bool,
     pane_exit_checkpoint_requested: bool,
     pane_exit_checkpoint_generation: u64,
@@ -55,13 +63,17 @@ pub(crate) struct SessionSaver {
 }
 
 impl SessionSaver {
-    pub(crate) fn new(persister: shepr_mux::persist::SessionPersister) -> Self {
+    /// `save_finished` is the signal `persister` was built with.
+    pub(crate) fn new(
+        persister: shepr_mux::persist::SessionPersister,
+        save_finished: Arc<tokio::sync::Notify>,
+    ) -> Self {
         Self {
             session_save_deadline: None,
-            session_save_check_deadline: None,
             failed_saves: 0,
             in_flight: None,
             persister,
+            save_finished,
             pane_exit_checkpoint_pending: false,
             pane_exit_checkpoint_requested: false,
             pane_exit_checkpoint_generation: 0,
@@ -75,10 +87,15 @@ impl SessionSaver {
         }
     }
 
+    /// When the loop should next try to start a save. `None` while a save is
+    /// in flight: nothing can start before it ends, and its end fires
+    /// [`Self::save_finished`], which wakes the loop instead.
     pub(crate) fn deadline(&self) -> Option<Instant> {
+        if self.in_flight.is_some() {
+            return None;
+        }
         [
             self.session_save_deadline,
-            self.session_save_check_deadline,
             self.critical_save_retry_deadline,
         ]
         .into_iter()
@@ -90,9 +107,14 @@ impl SessionSaver {
         self.deadline().is_some_and(|deadline| now >= deadline)
     }
 
+    /// The signal the persister fires when a save ends. The headless loop
+    /// waits on it; a firing with nothing to reap is harmless.
+    pub(crate) fn save_finished(&self) -> &tokio::sync::Notify {
+        &self.save_finished
+    }
+
     pub(crate) fn clear_deadline(&mut self) {
         self.session_save_deadline = None;
-        self.session_save_check_deadline = None;
         self.critical_save_retry_deadline = None;
     }
 
@@ -111,10 +133,6 @@ impl SessionSaver {
     fn schedule(&mut self, now: Instant) {
         self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = Some(now + SESSION_SAVE_DEBOUNCE);
-    }
-
-    fn retry(&mut self, now: Instant) {
-        self.retry_after(now, SESSION_SAVE_RETRY_MIN);
     }
 
     /// Schedules the retry for a failed save. The delay doubles per
@@ -165,19 +183,22 @@ impl App {
         }
     }
 
-    fn reap_finished_session_save(&mut self, now: Instant) {
+    /// Records the save in flight if it has finished, without waiting.
+    /// Returns whether it reaped one; the loop then reconsiders starting the
+    /// next save, since none could start while this one ran.
+    pub(crate) fn reap_finished_session_save(&mut self) -> bool {
         let Some(result) = self
             .session_saver
             .in_flight
             .as_ref()
             .and_then(|save| save.pending.try_finish())
         else {
-            return;
+            return false;
         };
-        self.session_saver.session_save_check_deadline = None;
         if let Some(save) = self.session_saver.in_flight.take() {
-            self.finish_session_save(save.purpose, result, now);
+            self.finish_session_save(save.purpose, result, self.clock.now);
         }
+        true
     }
 
     pub(super) fn record_session_save_result(
@@ -385,14 +406,12 @@ impl App {
 
     pub(crate) fn start_background_session_save(&mut self) {
         if !self.policy.persists_session() && !self.session_saver.pane_exit_checkpoint_requested {
-            self.session_saver.session_save_deadline = None;
-            self.session_saver.session_save_check_deadline = None;
-            self.session_saver.critical_save_retry_deadline = None;
+            self.session_saver.clear_deadline();
             return;
         }
 
         let now = self.clock.now;
-        self.reap_finished_session_save(now);
+        self.reap_finished_session_save();
         if self
             .session_saver
             .host_shutdown_checkpoint_result
@@ -402,11 +421,9 @@ impl App {
             return;
         }
         if self.session_saver.in_flight.is_some() {
-            if self.session_saver.save_is_due(now) {
-                self.session_saver.retry(now);
-            }
-            self.session_saver.session_save_check_deadline =
-                Some(now + SESSION_SAVE_CHECK_INTERVAL);
+            // A due save or checkpoint keeps its deadline: the end of the
+            // save in flight wakes the loop, which reaps it and comes back
+            // here to start this one.
             return;
         }
 
@@ -425,7 +442,6 @@ impl App {
                 return;
             }
             self.session_saver.session_save_deadline = None;
-            self.session_saver.session_save_check_deadline = None;
             self.session_saver.critical_save_retry_deadline = None;
             self.state.session_dirty = false;
             self.spawn_session_save(
@@ -434,15 +450,12 @@ impl App {
                     host_shutdown_generation,
                     pane_exit_generation,
                 },
-                now,
             );
         } else if self.session_saver.save_is_due(now) {
             self.session_saver.session_save_deadline = None;
-            self.session_saver.session_save_check_deadline = None;
             self.spawn_session_save(
                 self.capture_session_save_job(),
                 SessionSavePurpose::Autosave,
-                now,
             );
         }
     }
@@ -451,14 +464,12 @@ impl App {
         &mut self,
         job: shepr_mux::persist::PersistJob,
         purpose: SessionSavePurpose,
-        now: Instant,
     ) {
         let pending = self
             .session_saver
             .persister
             .submit(job, self.clock.wall_now);
         self.session_saver.in_flight = Some(InFlightSave { pending, purpose });
-        self.session_saver.session_save_check_deadline = Some(now + SESSION_SAVE_CHECK_INTERVAL);
     }
 
     /// Whether an exited pane may be removed now: nothing is persisted, the
@@ -549,7 +560,6 @@ impl App {
             self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty;
 
         if let Some(save) = self.session_saver.in_flight.take() {
-            self.session_saver.session_save_check_deadline = None;
             let result = wait_off_the_runtime(save.pending).await;
             self.finish_session_save(save.purpose, result, self.clock.now);
         }
@@ -638,7 +648,6 @@ impl App {
     /// its outcome.
     fn wait_for_session_save(&mut self) {
         if let Some(save) = self.session_saver.in_flight.take() {
-            self.session_saver.session_save_check_deadline = None;
             let result = save.pending.wait();
             self.finish_session_save(save.purpose, result, self.clock.now);
         }

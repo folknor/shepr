@@ -13,7 +13,7 @@ use super::*;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: shepr_protocol::PublicPaneId,
-    pub(super) status: shepr_api::schema::AgentStatus,
+    pub(super) status: shepr_protocol::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<ResolvedToken>>,
 }

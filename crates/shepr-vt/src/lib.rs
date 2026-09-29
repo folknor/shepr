@@ -53,6 +53,7 @@ pub use cell::{
 };
 use cell::{CellText, cell_graphemes, cell_text, cell_text_into, cell_wide};
 pub use cell::{RowWrap, ScreenTextCell, ScreenTextRow, unicode_display_units};
+pub use format::AnsiCarry;
 pub use modes::DecMode;
 // limits-exempt: this fixed terminfo name advertises the pane terminal type.
 pub const PANE_TERM: &str = "xterm-256color";

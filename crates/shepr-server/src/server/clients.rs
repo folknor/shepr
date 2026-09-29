@@ -50,8 +50,6 @@ pub(crate) struct ClientShellState {
     pub(crate) session_generation: u64,
     /// Monotonic shell replacement revision for this connection.
     pub(crate) projection_revision: shepr_protocol::ProjectionRevision,
-    /// Whether this shell is waiting for one ordered endpoint command response.
-    pub(crate) endpoint_command_in_flight: bool,
 }
 
 impl ClientShellState {
@@ -134,8 +132,9 @@ pub(crate) struct RenderTarget {
 /// client's view as a session-wide one. The registry holds two arbitrations
 /// between clients: which one controls each tab's PTY geometry, and which one
 /// was active most recently (the foreground client). The foreground client
-/// receives clipboard writes from panes and supplies the host theme panes are
-/// coloured with, the two effects a pane has one of whichever client views it.
+/// supplies the host theme panes are coloured with, the one effect a pane has
+/// one of whichever client views it, and receives clipboard writes from panes
+/// that no client views.
 pub(crate) struct ClientRegistry {
     connections: HashMap<ClientId, ClientConnection>,
     next_client_id: u64,

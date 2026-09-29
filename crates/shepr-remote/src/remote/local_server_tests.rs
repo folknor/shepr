@@ -17,7 +17,6 @@ fn status_of_build(build_id: &str) -> RuntimeStatus {
         version: Some("0.0.0".to_owned()),
         build_id: build_id.to_owned(),
         boot_id: "4242-1700000000".to_owned(),
-        capabilities: None,
     }
 }
 

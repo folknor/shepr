@@ -1,14 +1,6 @@
-use crate::server::ClientId;
-use std::io;
-use std::sync::mpsc;
-
-use tokio::sync::mpsc as tokio_mpsc;
-
 use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, RequestId, ServerMessage};
-
-use super::client_transport::ServerEvent;
 
 pub(crate) use crate::limits::{MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_REQUEST_ID_BYTES};
 
@@ -60,38 +52,6 @@ pub(crate) fn error_message(
     message: impl Into<String>,
 ) -> ServerMessage {
     response_message(boot_id, request_id, Err(ApiError::new(code, message)))
-}
-
-/// Waits on its own thread for the answer to one endpoint command and hands
-/// it to the server loop, which sends it if the command is still the client's
-/// in-flight one.
-pub(crate) fn spawn_response_waiter(
-    client_id: ClientId,
-    boot_id: BootId,
-    request_id: RequestId,
-    response_rx: mpsc::Receiver<Result<EndpointReply, ApiError>>,
-    server_event_tx: tokio_mpsc::Sender<ServerEvent>,
-) -> io::Result<()> {
-    std::thread::Builder::new()
-        .name("shepr-client-endpoint-response".into())
-        .spawn(move || {
-            let result = response_rx.recv().unwrap_or_else(|_| {
-                Err(ApiError::new(
-                    ApiErrorCode::ServerUnavailable,
-                    "endpoint command ended without a response",
-                ))
-            });
-            // A failed send means the server loop is gone, and the client with it.
-            server_event_tx
-                .blocking_send(ServerEvent::ClientShellEndpointResponseReady {
-                    client_id,
-                    boot_id,
-                    request_id,
-                    result: Box::new(result),
-                })
-                .ok();
-        })
-        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -158,37 +118,5 @@ mod tests {
         assert_eq!(request_id, "request-a");
         assert_eq!(error.code, "endpoint_response_too_large");
         assert!(shepr_protocol::encode_frame(&message).is_ok());
-    }
-
-    #[test]
-    fn the_waiter_forwards_the_result_once() {
-        let (response_tx, response_rx) = mpsc::channel();
-        let (event_tx, mut event_rx) = tokio_mpsc::channel(8);
-        spawn_response_waiter(
-            ClientId::test_new(7),
-            shepr_test_fixtures::fixed_boot_id(1),
-            "request-a".into(),
-            response_rx,
-            event_tx,
-        )
-        .expect("test precondition");
-        response_tx
-            .send(Err(ApiError::new(ApiErrorCode::InternalError, "boom")))
-            .expect("test precondition");
-
-        let ServerEvent::ClientShellEndpointResponseReady {
-            client_id,
-            boot_id,
-            request_id,
-            result,
-        } = event_rx.blocking_recv().expect("response event")
-        else {
-            panic!("expected an endpoint response event");
-        };
-        assert_eq!(client_id, 7);
-        assert_eq!(boot_id, shepr_test_fixtures::fixed_boot_id(1));
-        assert_eq!(request_id, "request-a");
-        assert!(matches!(*result, Err(error) if error.code == ApiErrorCode::InternalError));
-        assert!(event_rx.blocking_recv().is_none());
     }
 }

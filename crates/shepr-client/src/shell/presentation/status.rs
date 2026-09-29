@@ -7,13 +7,13 @@ pub(super) struct StatusGlyph {
 }
 
 pub(super) fn status_glyph(
-    status: shepr_api::schema::AgentStatus,
+    status: shepr_protocol::AgentStatus,
     indicator_style: shepr_config::StatusIndicatorStyle,
     palette: &Palette,
     stale: bool,
 ) -> StatusGlyph {
-    use shepr_api::schema::AgentStatus;
     use shepr_config::StatusIndicatorStyle;
+    use shepr_protocol::AgentStatus;
     let text = match (indicator_style, status) {
         (StatusIndicatorStyle::Dots, AgentStatus::Working | AgentStatus::Blocked) => "●",
         (_, AgentStatus::Idle) => "○",
@@ -39,8 +39,8 @@ pub(super) fn status_glyph(
     }
 }
 
-pub(super) fn status_priority(status: shepr_api::schema::AgentStatus) -> u8 {
-    use shepr_api::schema::AgentStatus;
+pub(super) fn status_priority(status: shepr_protocol::AgentStatus) -> u8 {
+    use shepr_protocol::AgentStatus;
     let state = match status {
         AgentStatus::Blocked => shepr_agent::detect::AgentState::Blocked,
         AgentStatus::Working => shepr_agent::detect::AgentState::Working,
@@ -49,8 +49,8 @@ pub(super) fn status_priority(status: shepr_api::schema::AgentStatus) -> u8 {
     state.attention_rank()
 }
 
-pub(super) fn status_text(status: shepr_api::schema::AgentStatus) -> &'static str {
-    use shepr_api::schema::AgentStatus;
+pub(super) fn status_text(status: shepr_protocol::AgentStatus) -> &'static str {
+    use shepr_protocol::AgentStatus;
     match status {
         AgentStatus::Working => "working",
         AgentStatus::Blocked => "blocked",

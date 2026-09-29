@@ -4,6 +4,7 @@ pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
+    presentation: &Presentation,
     output_writer: &mut impl io::Write,
     prefers_osc52_clipboard: bool,
     shell: &mut shell::ClientShellState,
@@ -19,7 +20,8 @@ pub(super) fn dispatch_client_shell_actions(
                 request,
             } => {
                 if let Some(connection) = endpoints.connection(&endpoint_id).filter(|_| {
-                    endpoints.active_id() == &endpoint_id && endpoints.active_surface_available()
+                    endpoints.active_id() == &endpoint_id
+                        && active_endpoint_owns_presentation(presentation, endpoints)
                 }) {
                     endpoint_commands.enqueue(
                         endpoint_id,
@@ -60,8 +62,8 @@ pub(super) fn dispatch_client_shell_actions(
     }
     // A source-off-first endpoint activation leaves the registry's committed identity pointing
     // at a deliberately surface-inactive source. Do not drain its retained queue into a server
-    // that must reject it; completion below resumes the committed owner's lane.
-    if endpoints.active_surface_available() {
+    // that must reject it; the handoff's commit resumes the committed owner's lane.
+    if active_endpoint_owns_presentation(presentation, endpoints) {
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
         for request_id in cancelled {
@@ -91,6 +93,73 @@ pub(super) fn client_shell_resize_message(
             pixel_mouse,
         ),
     }
+}
+
+/// The geometry `endpoint_id` is asked to render once its cached projection commits focused on
+/// `focus`: the host size under that projection's own layout, not the active one's.
+fn endpoint_terminal_geometry(
+    state: &ClientState,
+    endpoint_id: &endpoint::ClientEndpointId,
+    focus: Option<&shell::ClientEndpointFocusTarget>,
+) -> shepr_protocol::TerminalGeometry {
+    let geometry = &state.reported_geometry;
+    let (cell_width_px, cell_height_px, pixel_mouse) =
+        super::terminal_geometry::bounded_cell_geometry(
+            geometry.cell_width(),
+            geometry.cell_height(),
+            geometry.exact,
+        );
+    let size =
+        state
+            .shell
+            .endpoint_surface_size(endpoint_id, focus, geometry.cols(), geometry.rows());
+    shepr_protocol::TerminalGeometry::new(
+        size.cols,
+        size.rows,
+        cell_width_px,
+        cell_height_px,
+        pixel_mouse,
+    )
+}
+
+/// The geometry a handoff from `source` to `target` (navigating to `focus`) requests from each
+/// side, each sized by the layout it commits with.
+fn handoff_geometry(
+    state: &ClientState,
+    source: &endpoint::ClientEndpointId,
+    target: &endpoint::ClientEndpointId,
+    focus: Option<&shell::ClientEndpointFocusTarget>,
+) -> endpoint::HandoffGeometry {
+    endpoint::HandoffGeometry {
+        source: endpoint_terminal_geometry(state, source, None),
+        target: endpoint_terminal_geometry(state, target, focus),
+    }
+}
+
+/// Brings the handoff in flight to the current host size and navigation target, rolling it back
+/// when the resize cannot be sent. Returns false when no handoff is in flight.
+pub(super) fn resize_handoff(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    now: std::time::Instant,
+) -> bool {
+    let Some(activation) = state.presentation.handoff() else {
+        return false;
+    };
+    let geometry = handoff_geometry(
+        state,
+        activation.source(),
+        activation.target(),
+        activation.focus(),
+    );
+    let resized = state
+        .presentation
+        .handoff_mut()
+        .map(|activation| activation.update_resize_at(geometry, endpoints, now));
+    if let Some(Err(error)) = resized {
+        rollback_endpoint_activation(state, endpoints, &error, false, now);
+    }
+    true
 }
 
 pub(super) fn sync_client_shell_keyboard_report_all(
@@ -213,6 +282,9 @@ pub(super) fn begin_endpoint_activation(
             let retarget_error = activation.retarget(target, endpoints).err();
             if let Some(error) = retarget_error {
                 rollback_endpoint_activation(state, endpoints, &error, false, now);
+            } else {
+                // The new navigation target can lay the target out differently.
+                resize_handoff(state, endpoints, now);
             }
         } else {
             // Once rollback starts, even a request for the original target is a new intent.
@@ -241,6 +313,7 @@ pub(super) fn begin_endpoint_activation(
                 actions,
                 endpoint_commands,
                 endpoints,
+                &state.presentation,
                 &mut state.output_writer,
                 state.settings.prefers_osc52_clipboard(),
                 &mut state.shell,
@@ -258,20 +331,13 @@ pub(super) fn begin_endpoint_activation(
         }
         return Ok(());
     }
-    let resize = client_shell_resize_message(
-        &state.shell,
-        state.reported_geometry.cols(),
-        state.reported_geometry.rows(),
-        state.reported_geometry.cell_width(),
-        state.reported_geometry.cell_height(),
-        state.reported_geometry.exact,
-    );
+    let geometry = handoff_geometry(state, endpoints.active_id(), &endpoint_id, target.as_ref());
     match endpoint::PendingEndpointActivation::prepare(
         &state.shell,
         endpoints,
         &endpoint_id,
         target,
-        resize,
+        geometry,
         *next_surface_serial,
         now,
     )
@@ -337,9 +403,9 @@ pub(super) fn complete_endpoint_activation(
         endpoint::ActivationCompletion::AwaitingPresentationSync { .. }
     ) {
         // The coherent target frame replaces the frozen source now (the handoff's phase no
-        // longer freezes frames), but the registry keeps pane input disabled until a second
-        // projection epoch has replayed host modes/effects. Written in full: a resize or
-        // metadata event may have happened while frozen.
+        // longer freezes frames), but pane input stays closed while the handoff owns the
+        // presentation, until a second projection epoch has replayed host modes/effects.
+        // Written in full: a resize or metadata event may have happened while frozen.
         state.request_repaint();
         let frame = state.shell.compose(
             state.reported_geometry.cols(),
@@ -354,12 +420,8 @@ pub(super) fn complete_endpoint_activation(
         return Ok(None);
     }
 
-    let requested_surface_size = state
-        .presentation
-        .handoff()
-        .map(endpoint::PendingEndpointActivation::requested_surface_size);
+    // Owning the presentation is also what opens pane input to the committed endpoint.
     state.end_handoff(Presentation::Owned);
-    endpoints.unfreeze_input();
     let successor = match completion {
         endpoint::ActivationCompletion::RestoredSource {
             error,
@@ -377,7 +439,6 @@ pub(super) fn complete_endpoint_activation(
         | endpoint::ActivationCompletion::AwaitingPresentationEffects => None,
     };
     if successor.is_none() {
-        correct_committed_surface_size(state, endpoints, requested_surface_size);
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
         for request_id in cancelled {
@@ -400,45 +461,6 @@ pub(super) fn complete_endpoint_activation(
         }));
     }
     Ok(None)
-}
-
-/// A handoff asks its endpoint for a surface sized by the shell layout of the projection that
-/// was current when it started (the source's), and the committed projection can lay out
-/// differently: with `hide_tab_bar_when_single_tab`, switching between a single-tab and a
-/// multi-tab workspace moves the pane area by the tab bar's row. Nothing else resizes after the
-/// commit (snapshot installs only compare their own before/after), so the committed endpoint
-/// would keep panes one row off. Once the handoff has committed, compare the size it asked for
-/// with the committed layout and resize the committed endpoint when they disagree.
-fn correct_committed_surface_size(
-    state: &ClientState,
-    endpoints: &mut endpoint::EndpointRegistry,
-    requested: Option<shepr_protocol::ClientSurfaceSize>,
-) {
-    if let Some(resize) = requested.and_then(|requested| committed_resize(state, requested)) {
-        // A failed send surfaces through the registry's failure list.
-        endpoints.send(&resize);
-    }
-}
-
-fn committed_resize(
-    state: &ClientState,
-    requested: shepr_protocol::ClientSurfaceSize,
-) -> Option<ClientMessage> {
-    let shell = &state.shell;
-    (shell.surface_size(
-        state.reported_geometry.cols(),
-        state.reported_geometry.rows(),
-    ) != requested)
-        .then(|| {
-            client_shell_resize_message(
-                shell,
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-                state.reported_geometry.cell_width(),
-                state.reported_geometry.cell_height(),
-                state.reported_geometry.exact,
-            )
-        })
 }
 
 /// Reports that the committed endpoint cannot present. Without a handoff in flight nothing owns
@@ -531,15 +553,14 @@ pub(super) fn handle_endpoint_disconnect(
 
 /// Whether the registry's active endpoint owns the presentation: nothing short of `Owned` with
 /// a live surface counts, so a handoff that ends `Unavailable` is judged failed even when its
-/// endpoint's connection kept its surface.
+/// endpoint's connection kept its surface. This is also the pane input gate: input, endpoint
+/// commands and host effects flow only while it holds, so input and presentation cannot
+/// disagree.
 pub(super) fn active_endpoint_owns_presentation(
-    state: &ClientState,
+    presentation: &Presentation,
     endpoints: &endpoint::EndpointRegistry,
 ) -> bool {
-    state.presentation.owned()
-        && endpoints
-            .connection(endpoints.active_id())
-            .is_some_and(|connection| connection.surface_active)
+    presentation.owned() && endpoints.active_surface_available()
 }
 
 /// The handoff the client starts on its own, judged once no handoff work is in flight: to the
@@ -670,7 +691,7 @@ pub(super) fn finish_client_shell_input(
         endpoints.send(&ClientMessage::Detach);
         return Ok(true);
     }
-    if outcome.resize {
+    if outcome.resize && !resize_handoff(state, endpoints, now) {
         let resize = client_shell_resize_message(
             &state.shell,
             state.reported_geometry.cols(),
@@ -679,15 +700,9 @@ pub(super) fn finish_client_shell_input(
             state.reported_geometry.cell_height(),
             state.reported_geometry.exact,
         );
-        if let Some(activation) = state.presentation.handoff_mut() {
-            if let Err(error) = activation.update_resize_at(&resize, endpoints, now) {
-                rollback_endpoint_activation(state, endpoints, &error, false, now);
-            }
-        } else {
-            // A failed send is recorded against the active endpoint; the client timer
-            // applies the reconnect or local failure policy to it.
-            endpoints.send(&resize);
-        }
+        // A failed send is recorded against the active endpoint; the client timer
+        // applies the reconnect or local failure policy to it.
+        endpoints.send(&resize);
     }
     if outcome.full_redraw {
         // Discard the blit baseline so the frame below is written in full; the
@@ -705,6 +720,7 @@ pub(super) fn finish_client_shell_input(
         outcome.actions,
         endpoint_commands,
         endpoints,
+        &state.presentation,
         &mut state.output_writer,
         state.settings.prefers_osc52_clipboard(),
         &mut state.shell,
@@ -719,8 +735,10 @@ pub(super) fn finish_client_shell_input(
     } else {
         frame
     };
+    // Pane input and host effects flow only to an endpoint that owns the presentation, so none
+    // crosses a handoff or reaches an endpoint while nothing owns it.
     let active_endpoint_online = state.shell.endpoint_is_online(endpoints.active_id())
-        && endpoints.active_surface_available();
+        && active_endpoint_owns_presentation(&state.presentation, endpoints);
     for request in outcome.requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
@@ -750,10 +768,6 @@ pub(super) fn finish_client_shell_input(
         if !active_endpoint_online {
             continue;
         }
-        if state.presentation.handoff_in_flight() {
-            // Pane input and non-focus host effects do not cross the frozen handoff boundary.
-            continue;
-        }
         write_to_server(endpoints, &request).map_err(ClientError::ConnectionLost)?;
     }
     if let Some(frame) = frame {
@@ -770,29 +784,6 @@ pub(super) fn finish_client_shell_input(
 mod tests {
     use super::*;
     use shepr_test_fixtures::*;
-
-    #[test]
-    fn committed_handoff_resizes_only_when_its_requested_size_is_stale() {
-        let state = ClientState::test_new();
-        let committed = state.shell.surface_size(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        );
-        assert!(committed_resize(&state, committed).is_none());
-
-        // A surface requested under the source's layout, one row off (the tab bar hides for a
-        // single-tab workspace), is corrected to the committed layout.
-        let stale = shepr_protocol::ClientSurfaceSize {
-            cols: committed.cols,
-            rows: committed.rows.saturating_add(1),
-        };
-        match committed_resize(&state, stale) {
-            Some(ClientMessage::ClientShellResize { geometry }) => {
-                assert_eq!(geometry.surface_size(), committed);
-            }
-            other => panic!("expected a corrective resize, got {other:?}"),
-        }
-    }
 
     #[test]
     fn an_interrupted_machine_switch_names_the_machine_and_reads_as_one_sentence() {
@@ -869,12 +860,18 @@ mod tests {
         let mut selection = endpoint::selection::EndpointSelectionTracker::new(Vec::new());
 
         // Nothing to do while Local owns the presentation.
-        assert!(active_endpoint_owns_presentation(&state, &endpoints));
+        assert!(active_endpoint_owns_presentation(
+            &state.presentation,
+            &endpoints
+        ));
         assert!(automatic_activation(&state, &endpoints, &selection).is_none());
 
         // Nothing owns the presentation although Local kept its surface: re-prove it.
         state.presentation = Presentation::Unavailable;
-        assert!(!active_endpoint_owns_presentation(&state, &endpoints));
+        assert!(!active_endpoint_owns_presentation(
+            &state.presentation,
+            &endpoints
+        ));
         assert!(is_automatic_activation(
             automatic_activation(&state, &endpoints, &selection),
             &local
@@ -887,7 +884,7 @@ mod tests {
             selection.settle(
                 false,
                 endpoints.active_id(),
-                active_endpoint_owns_presentation(&state, &endpoints)
+                active_endpoint_owns_presentation(&state.presentation, &endpoints)
             ),
             endpoint::selection::SelectionOutcome::Reverted
         );

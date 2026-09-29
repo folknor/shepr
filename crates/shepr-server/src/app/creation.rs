@@ -198,9 +198,10 @@ impl App {
             cwd: tab
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            // Runs on the server main loop once per pane for every
-            // `session.snapshot`, so the runtime accessor behind it must stay a
-            // few /proc reads and never wait on the PTY actor thread.
+            // Runs on the server main loop once per pane for every session
+            // snapshot the client shells are projected from, so the runtime
+            // accessor behind it must stay a few /proc reads and never wait on
+            // the PTY actor thread.
             foreground_cwd: tab
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),

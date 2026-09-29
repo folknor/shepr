@@ -16,7 +16,9 @@ struct StoredMetadata {
 }
 
 /// The remembered remote executable for one SSH target. Machines that share a
-/// target share the hint, since the executable belongs to the host.
+/// target share the hint, since the executable belongs to the host. The cache
+/// is kept per build profile inside the shared client state directory, so a dev
+/// and a release client never overwrite each other's hint for a target.
 pub struct SshMetadataCache {
     path: PathBuf,
     target: String,
@@ -24,10 +26,18 @@ pub struct SshMetadataCache {
 
 impl SshMetadataCache {
     pub fn new(paths: &shepr_config::AppPaths, target: &SshTarget) -> Self {
+        Self::for_profile(paths, target, shepr_config::BuildProfile::current())
+    }
+
+    fn for_profile(
+        paths: &shepr_config::AppPaths,
+        target: &SshTarget,
+        profile: shepr_config::BuildProfile,
+    ) -> Self {
         Self {
             path: paths
                 .client_state_dir()
-                .join("ssh-metadata")
+                .join(format!("ssh-metadata-{}", profile.marker()))
                 .join(format!("{:016x}.json", target_file_key(target.as_str()))),
             target: target.as_str().to_owned(),
         }
@@ -180,6 +190,18 @@ mod tests {
         assert_eq!(build.path(), again.path());
         assert_ne!(build.path(), other.path());
         assert!(build.path().starts_with(paths.client_state_dir()));
+    }
+
+    #[test]
+    fn metadata_path_differs_per_build_profile() {
+        let scratch = shepr_test_support::ScratchDir::new("ssh-metadata-profile");
+        let paths = shepr_config::AppPaths::rooted_at(&scratch, None, None);
+        let target = SshTarget::parse("dev@build.example").expect("test precondition");
+        let release =
+            SshMetadataCache::for_profile(&paths, &target, shepr_config::BuildProfile::Release);
+        let dev = SshMetadataCache::for_profile(&paths, &target, shepr_config::BuildProfile::Dev);
+        assert_ne!(release.path(), dev.path());
+        assert!(dev.path().starts_with(paths.client_state_dir()));
     }
 
     #[test]

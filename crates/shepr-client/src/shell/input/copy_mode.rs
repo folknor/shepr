@@ -260,7 +260,7 @@ impl ClientShellState {
                 outcome.repaint = true;
             }
             '$' => {
-                self.request_copy_motion(shepr_protocol::command::PaneCopyMotion::LineEnd, outcome)
+                self.request_copy_motion(shepr_protocol::command::PaneCopyMotion::LineEnd, outcome);
             }
             '^' => {
                 self.request_copy_motion(
@@ -270,7 +270,7 @@ impl ClientShellState {
             }
             '/' => self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Forward),
             '?' => {
-                self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Backward)
+                self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Backward);
             }
             'n' => self.repeat_copy_search(false, outcome),
             'N' => self.repeat_copy_search(true, outcome),

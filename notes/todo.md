@@ -6,24 +6,25 @@ once, so it needs a wave of its own rather than parallel fixers.
 
 ## JSON API leftovers
 
-- `session.snapshot` has no production caller; only tests use it.
-- A thread per client-shell command forwards an already computed reply
-  (`spawn_response_waiter`) so it arrives after the command's render. A
-  post-render outbox in `headless.rs` would drop the thread, and with it
-  `endpoint_command_in_flight` and `EndpointBusy`.
-- `ApiRequestMessage` carries the full `Method`, so the app keeps an arm for
-  socket-only methods routed to it by mistake; an app-only enum would drop it.
-- Client shell code still names protocol types through `shepr_api::schema`
-  re-exports; they could move to `shepr_protocol::command`.
-
-## Delete ssh-agent forwarding
-
-Decided: the owner does not use it. Remove the whole feature: the
-`server.ssh_agent.register` API method and its capability flag, the lease
-connection handling in `crates/shepr-api/src/server.rs`,
-`crates/shepr-remote/src/remote/ssh_agent.rs` and its start in `host.rs`,
-`crates/shepr-platform/src/ssh_agent.rs`, the `SSH_AGENT_*` limits, the
-`ssh_agent_unavailable` error code and whatever `status` reports about it.
+- `shepr_api::schema::SessionSnapshot` is no longer an API type: it is only an
+  internal step before `client_shell.rs` builds the shell snapshot. Move it
+  into shepr-server without serde; its `version` is never read, and several
+  `PaneInfo` fields (`restore_error`, `agent_session`, `scroll`,
+  `terminal_id`, `agent`, `focused`) are computed for every pane on every
+  rebuild but never projected.
+- `ApiErrorCode` still carries codes from the JSON era of TUI commands
+  (`copy_motion_unavailable`, `invalid_pane_swap`, `split_not_found`,
+  `query_too_large` and kin), plus an `External` variant and a string parser
+  whose main wire user was the deleted ssh-agent bridge; audit what still
+  produces or parses each.
+- `shepr_platform::ipc::poll_local_stream_read` has no callers, and
+  `start_server_with_stop_control` is the API server's only entry point.
+- `render_and_stream` (`headless/render.rs`) skips a client whose surface
+  render is deferred (synchronized output) before its snapshot projection, so
+  that client gets no snapshot that render and a held endpoint reply can
+  arrive before the projection its command changed.
+- In the loop's stop path a `ClientShellEndpointRequest` falls into the
+  catch-all arm and is never answered; the client waits out its timeout.
 
 ## Deferred
 
@@ -52,11 +53,6 @@ none blocks anything.
   config directory then reads as absent.
 - **Flatten workspaces and tabs.** The owner considers the two grouping levels
   one too many. Touches the data model, persistence, sidebar and tab bar.
-- **Metadata cache and remote discovery versus build profiles.** The cache sits
-  in the shared client state directory, so dev and release clients overwrite
-  each other's hint for a target; remote discovery only finds an installed
-  `shepr` (PATH, `~/.cargo/bin`, `~/.local/bin`), so a dev client can never
-  match a remote dev build.
 - **A stopped server whose lease outlives its sockets.** `server stop` now waits
   for the data-directory lease, so the launcher no longer does. A server stopped
   another way (a signal) can still drop its sockets before its lease, and a
@@ -89,24 +85,28 @@ Do this the next time opencode or Kilo is in use.
 
 ## Client presentation follow-ups
 
-`ClientState::presentation` (Owned, Handoff, Unavailable) now owns the handoff
-state. Two pieces remain:
+- A handoff sizes each side by its own layout (`HandoffGeometry`), but if a
+  cached snapshot changes the committing endpoint's tab count mid-handoff (a
+  tab added or closed elsewhere), the requested size goes stale and nothing
+  corrects it after commit. Comparing geometry in `lib.rs` before
+  `receive_snapshot` would catch it.
+- `ClientShellEndpoint.label` always equals `endpoint_id.display_label()`; the
+  field and the lookup in `endpoint_label` can go.
+- shepr-client depends on shepr-api for one call,
+  `shepr_api::server_stop::restart_after_update_guidance_for` in
+  `endpoint/supervisor.rs`. Moving it lower (shepr-config or shepr-remote)
+  drops the dependency.
 
-- `EndpointRegistry::input_enabled` is a third freeze flag that could derive
-  from `Presentation::Owned`; server netside tests call `unfreeze_input` and
-  `active_surface_available`.
-- `correct_committed_surface_size` (`shell_runtime.rs`) patches a handoff that
-  sizes its surface request by the source's shell layout. The root fix is a
-  shell API that gives the surface size under a cached, not-yet-active
-  projection so the handoff can size by the target's layout.
-- `ClientEndpointId::display_label` returns "Unknown endpoint" for every SSH
-  endpoint.
+## Composition and config encoding
 
-## Finish typing the client wire messages
-
-Surfaces, the snapshot and the shell handshake are typed `ServerMessage`/`ClientMessage` variants now (`SurfaceUpdate`, `EndpointSnapshot`, `EndpointHello`/`EndpointWelcome`). What remains:
-
-- Composition round-trips the frame through a ratatui buffer for every overlay it draws (`crates/shepr-client/src/shell/presentation/composition.rs`): `FrameData::to_ratatui_buffer` and `replace_from_ratatui_buffer_preserving_effects` (`crates/shepr-protocol/src/ratatui_conversion.rs`) rebuild every cell's `String` plus two hyperlink `HashMap`s each time.
+- Composition converts a frame with overlays to a ratatui buffer once and
+  writes it back once (`crates/shepr-client/src/shell/presentation/composition.rs`),
+  but the write-back (`FrameData::from_ratatui_buffer_with_hyperlinks` in
+  `crates/shepr-protocol/src/ratatui_conversion.rs`) still rebuilds every
+  cell's `String` and two hyperlink `HashMap`s, and underline shapes survive
+  only through `Modifier` bits stashed across the round trip.
+- `ClientShellSnapshot.resolved_config` is a codec-encoded blob inside a codec
+  message.
 
 ## Split large surfaces across frames
 
@@ -116,16 +116,8 @@ Surfaces, the snapshot and the shell handshake are typed `ServerMessage`/`Client
 ## Per-client presentation state on the server
 
 - `app.state.active` doubles as a request context: a client-shell command first makes the requesting client's tab the session's focus (`set_default_shell_target_from_client`), so app handlers that take no explicit target act on what that client views, and a new tab or workspace spawns at that tab's area. Passing the requesting client's target and area into the app handlers would leave `active` as the saved session focus only.
-- Clipboard writes from panes (`AppEvent::ClipboardWrite`) carry no pane, so they go to the foreground client rather than to the clients viewing the writing pane.
-- A pane in the focused set whose runtime is replaced (an agent resume starting its shell) is not told it has focus again; `sync_pane_focus` only reports changes to the set.
-
-## Event-driven SSH agent registration on the bridge side
-
-- The API server's end of `server.ssh_agent.register` blocks in `shepr_platform::ipc::wait_local_stream_hangup` and wakes on hang-up, API shutdown or the lease refresh interval. The bridge's end (`Registration` in `crates/shepr-remote/src/remote/ssh_agent.rs`) still polls its registration stream with `park_timeout(SSH_AGENT_STREAM_POLL_INTERVAL)` and reads the registration response in a 10 ms sleep loop. It could hold a `ShutdownTrigger` in place of its stop flag and wait on the stream with the same primitive.
 
 ## Persistence leftovers
 
 - The agent resume schedule (`crates/shepr-server/src/app/agent_resume.rs`) still lives on `App`, apart from the session persister (`crates/shepr-mux/src/persist/actor.rs`). It spawns runtimes and needs each tab's layout area, so it stays on the loop; what could move is the decision of which restored panes wait for a resume.
-- The loop still polls the persister for a finished save every `SESSION_SAVE_CHECK_INTERVAL`. The persister could wake the loop instead (a channel the headless `select!` waits on).
-- A pane's history is held once between saves (the reader's cached chunks; the alternate-screen fallback is rebuilt from them and the last screen read), but a save that has to write still holds it up to three times at once on the persister thread: the chunks, the assembled snapshot text and the serialized JSON. Serializing straight from the chunks would drop the assembled copy; the file-cap trimming in `io.rs` works on assembled text, so it would have to move too.
-- A single logical line longer than a chunk (a huge soft-wrapped line) is still formatted under one lock hold: chunks only end on logical line ends.
+- History chunks are cut only at a line end with visible text or at a soft wrap (`crates/shepr-mux/src/pane/terminal/history.rs`), so a run of thousands of blank, unwrapped lines in history is still formatted under one lock hold.

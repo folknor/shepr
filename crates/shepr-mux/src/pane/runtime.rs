@@ -540,7 +540,10 @@ impl PaneReadEffects {
             self.render_notify.notify_one();
         }
         for content in result.clipboard_writes {
-            if let Err(err) = self.events.try_send(AppEvent::ClipboardWrite { content }) {
+            if let Err(err) = self
+                .events
+                .try_send(AppEvent::ClipboardWrite { pane_id, content })
+            {
                 warn!(
                     pane = pane_id.raw(),
                     error = %err,

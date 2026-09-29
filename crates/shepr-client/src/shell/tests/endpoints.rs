@@ -18,7 +18,7 @@ fn machine_named(label: &str, ssh: &str) -> shepr_config::MachineConfig {
 
 /// The first argument only documents which agent a test means; agents carry
 /// no name of their own.
-fn agent(status: shepr_api::schema::AgentStatus, state_change_seq: u64) -> ClientShellAgent {
+fn agent(status: shepr_protocol::AgentStatus, state_change_seq: u64) -> ClientShellAgent {
     ClientShellAgent {
         pane_id: "w1:p1".parse().expect("test precondition"),
         workspace_id: test_workspace_id("w1"),
@@ -80,6 +80,61 @@ fn repeated_endpoint_snapshots_reuse_the_validated_config() {
     );
 
     assert!(std::sync::Arc::ptr_eq(&first, &second));
+}
+
+#[test]
+fn endpoint_surface_size_follows_the_cached_projection_and_navigation_target() {
+    let mut config = Config::default();
+    config.ui.hide_tab_bar_when_single_tab = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let machine = remote_machine();
+    let remote_id = ClientEndpointId::Ssh(machine.label.clone());
+    state.set_machines(&[machine]);
+    state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);
+    // Local focuses a single-tab workspace, so it shows no tab bar.
+    state.set_snapshot(Box::new(snapshot()));
+    // The remote focuses a two-tab workspace and also has a single-tab one.
+    let mut remote = snapshot();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
+    let mut second_tab = remote.tabs[0].clone();
+    second_tab.tab_id = test_tab_id("w1:t2");
+    second_tab.number = 2;
+    second_tab.focused = false;
+    let mut other_workspace_tab = remote.tabs[0].clone();
+    other_workspace_tab.tab_id = test_tab_id("w2:t1");
+    other_workspace_tab.workspace_id = test_workspace_id("w2");
+    other_workspace_tab.focused = false;
+    remote.tabs.extend([second_tab, other_workspace_tab]);
+    state.cache_endpoint_snapshot(&remote_id, Box::new(remote));
+
+    let local = state.surface_size(100, 30);
+    assert_eq!(
+        state.endpoint_surface_size(&ClientEndpointId::Local, None, 100, 30),
+        local
+    );
+    let remote = state.endpoint_surface_size(&remote_id, None, 100, 30);
+    assert_eq!(
+        remote.rows + 1,
+        local.rows,
+        "the remote's focused workspace shows a tab bar"
+    );
+    assert_eq!(
+        state.surface_size(100, 30),
+        local,
+        "sizing a cached projection leaves the active layout alone"
+    );
+    let single_tab = state.endpoint_surface_size(
+        &remote_id,
+        Some(&ClientEndpointFocusTarget::Workspace(test_workspace_id(
+            "w2",
+        ))),
+        100,
+        30,
+    );
+    assert_eq!(
+        single_tab, local,
+        "the navigation target decides the layout"
+    );
 }
 
 #[test]
@@ -949,8 +1004,8 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
 
 #[test]
 fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
-    use shepr_api::schema::AgentStatus;
     use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
+    use shepr_protocol::AgentStatus;
 
     let mut config = Config::default();
     config.ui.status_indicators = StatusIndicatorStyle::Symbols;
@@ -1015,8 +1070,8 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
 
 #[test]
 fn aggregate_priority_uses_client_observed_recency_across_machines() {
-    use shepr_api::schema::AgentStatus;
     use shepr_config::AgentSidebarToken;
+    use shepr_protocol::AgentStatus;
 
     let mut config = Config::default();
     config.ui.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
@@ -1090,7 +1145,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
 
 #[test]
 fn unselected_endpoint_snapshot_keeps_server_idle_status() {
-    use shepr_api::schema::AgentStatus;
+    use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
     let mut remote = snapshot();
@@ -1538,8 +1593,8 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
 
 #[test]
 fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
-    use shepr_api::schema::AgentStatus;
     use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
+    use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
     state.config.status_indicators = StatusIndicatorStyle::Symbols;
@@ -1801,7 +1856,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
 
 #[test]
 fn focus_agent_index_uses_online_aggregate_rows() {
-    use shepr_api::schema::AgentStatus;
+    use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
     state
@@ -1861,7 +1916,7 @@ fn workspace_drag_rejects_foreign_endpoint_slots() {
 
 #[test]
 fn collapsed_aggregate_workspace_status_uses_its_status_color() {
-    use shepr_api::schema::AgentStatus;
+    use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
     state

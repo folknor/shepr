@@ -643,29 +643,6 @@ fn pane_zoom_on_an_unfocused_pane_of_a_zoomed_tab_moves_focus() {
 }
 
 #[test]
-fn pane_layout_of_a_zoomed_tab_reports_only_the_zoomed_pane() {
-    let mut app = app_with_workspace();
-    app.state.set_active_index(Some(0));
-    app.state.set_selected_index(Some(0));
-    let root = app.state.workspaces[0].tabs()[0].root_pane();
-    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
-    app.state.workspaces[0].focus_pane_in_tab(0, right);
-    app.state.workspaces[0].set_tab_zoomed(0, true);
-    lay_out_first_tab(&mut app);
-    let right_public = app.public_pane_id(0, right).expect("test precondition");
-    assert!(app.public_pane_id(0, root).is_some());
-
-    let layout = app.pane_layout_snapshot(0, 0).expect("layout");
-
-    assert!(layout.zoomed);
-    assert_eq!(layout.panes.len(), 1);
-    assert_eq!(layout.panes[0].pane_id, right_public);
-    assert!(layout.panes[0].focused);
-    assert_eq!(layout.panes[0].rect, layout.area);
-    assert!(layout.splits.is_empty());
-}
-
-#[test]
 fn pane_resize_changes_target_ratio_without_changing_focus() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].tabs()[0].root_pane();
@@ -681,8 +658,9 @@ fn pane_resize_changes_target_ratio_without_changing_focus() {
     });
 
     assert_eq!(response, Ok(EndpointReply::Done));
-    let layout = app.pane_layout_snapshot(0, 0).expect("layout");
-    assert!((layout.splits[0].ratio - 0.6).abs() < f32::EPSILON);
+    let area = shepr_mux::workspace::layout_rect(app.state.tab_layout_area(0, 0));
+    let splits = app.state.workspaces[0].tabs()[0].layout().splits(area);
+    assert!((splits[0].ratio - 0.6).abs() < f32::EPSILON);
     assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
 }
 

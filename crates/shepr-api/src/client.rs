@@ -119,12 +119,10 @@ impl ApiClient {
                 version,
                 build_id,
                 boot_id,
-                capabilities,
             } => Ok(crate::RuntimeStatus {
                 version: Some(version),
                 build_id,
                 boot_id,
-                capabilities,
             }),
             result => Err(ApiClientError::UnexpectedResult(format!("{result:?}"))),
         }
@@ -265,7 +263,7 @@ mod tests {
         let client = ApiClient::for_socket(path.clone());
         let request = Request {
             id: "stalled".into(),
-            method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
+            method: Method::Ping(PingParams::default()),
         };
         let error = client
             .request_value_with_timeout(&request, Duration::from_millis(100))
@@ -304,7 +302,7 @@ mod tests {
         let client = ApiClient::for_socket(path.clone());
         let request = Request {
             id: "partial".into(),
-            method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
+            method: Method::Ping(PingParams::default()),
         };
         let error = client
             .request_value_with_timeout(&request, Duration::from_millis(120))

@@ -4,7 +4,7 @@ use super::*;
 fn parse_remote_server_status_json_reads_running_server() {
     assert_eq!(
         parse_remote_server_status_json(
-            r#"{"running":true,"version":"0.6.0","build_id":"0123456789abcdef","boot_id":"4242-1700000000","capabilities":{"ssh_agent_registration":false},"compatible":true,"socket":"/run/shepr.sock","restart_needed":false}"#
+            r#"{"running":true,"version":"0.6.0","build_id":"0123456789abcdef","boot_id":"4242-1700000000","compatible":true,"socket":"/run/shepr.sock","restart_needed":false}"#
         )
         .expect("test precondition"),
         RemoteServerStatus::Running {
@@ -19,7 +19,7 @@ fn parse_remote_server_status_json_reads_running_server() {
 fn parse_remote_server_status_json_reads_stopped_server() {
     assert_eq!(
         parse_remote_server_status_json(
-            r#"{"running":false,"version":null,"build_id":null,"capabilities":null,"compatible":null,"socket":"/run/shepr.sock","restart_needed":false}"#
+            r#"{"running":false,"version":null,"build_id":null,"compatible":null,"socket":"/run/shepr.sock","restart_needed":false}"#
         )
         .expect("test precondition"),
         RemoteServerStatus::NotRunning

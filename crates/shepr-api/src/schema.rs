@@ -29,16 +29,46 @@ pub struct Request {
     pub method: Method,
 }
 
-/// Facts about one API method, kept together so request handling, rendering,
-/// logging, and routing share one exhaustive classification. The JSON API is
-/// the socket's vocabulary only; a client shell asks through
+/// Facts about one API method, kept together so request handling, rendering
+/// and logging share one exhaustive classification. The JSON API is the
+/// socket's vocabulary only; a client shell asks through
 /// `shepr_protocol::command::EndpointCommand` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MethodTraits {
     pub name: &'static str,
     pub mutates_ui: bool,
-    pub runs_on_socket_thread: bool,
     pub routine: bool,
+}
+
+/// A request the app loop answers: the socket thread answers `ping` and
+/// `server.stop` itself and hands every other method to the app as this.
+/// Not a wire type; the socket thread builds it from a decoded [`Request`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppRequest {
+    pub id: String,
+    pub method: AppMethod,
+}
+
+/// The methods the app loop answers, a subset of [`Method`] with no arm for
+/// the ones the socket thread keeps.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppMethod {
+    DetectCapture(PaneTarget),
+    DetectExplain(PaneTarget),
+    PaneReportAgent(PaneReportAgentParams),
+    PaneReportAgentSession(PaneReportAgentSessionParams),
+}
+
+impl AppMethod {
+    pub fn traits(&self) -> MethodTraits {
+        match self {
+            Self::DetectCapture(_) => MethodKind::DetectCapture,
+            Self::DetectExplain(_) => MethodKind::DetectExplain,
+            Self::PaneReportAgent(_) => MethodKind::PaneReportAgent,
+            Self::PaneReportAgentSession(_) => MethodKind::PaneReportAgentSession,
+        }
+        .traits()
+    }
 }
 
 macro_rules! define_methods {
@@ -46,7 +76,6 @@ macro_rules! define_methods {
         $(
             $variant:ident($params:ty) => $name:literal {
                 mutates_ui: $mutates_ui:literal,
-                runs_on_socket_thread: $runs_on_socket_thread:literal,
                 routine: $routine:literal,
             };
         )+
@@ -73,7 +102,6 @@ macro_rules! define_methods {
                         Self::$variant => MethodTraits {
                             name: $name,
                             mutates_ui: $mutates_ui,
-                            runs_on_socket_thread: $runs_on_socket_thread,
                             routine: $routine,
                         },
                     )+
@@ -98,35 +126,27 @@ macro_rules! define_methods {
 define_methods! {
     Ping(PingParams) => "ping" {
         mutates_ui: false,
-        runs_on_socket_thread: true, routine: false,
+        routine: false,
     };
     ServerStop(ServerStopParams) => "server.stop" {
         mutates_ui: false,
-        runs_on_socket_thread: true, routine: false,
-    };
-    ServerSshAgentRegister(ServerSshAgentRegisterParams) => "server.ssh_agent.register" {
-        mutates_ui: false,
-        runs_on_socket_thread: true, routine: false,
-    };
-    SessionSnapshot(EmptyParams) => "session.snapshot" {
-        mutates_ui: false,
-        runs_on_socket_thread: false, routine: false,
+        routine: false,
     };
     DetectCapture(PaneTarget) => "detect.capture" {
         mutates_ui: false,
-        runs_on_socket_thread: false, routine: false,
+        routine: false,
     };
     DetectExplain(PaneTarget) => "detect.explain" {
         mutates_ui: false,
-        runs_on_socket_thread: false, routine: false,
+        routine: false,
     };
     PaneReportAgent(PaneReportAgentParams) => "pane.report_agent" {
         mutates_ui: true,
-        runs_on_socket_thread: false, routine: true,
+        routine: true,
     };
     PaneReportAgentSession(PaneReportAgentSessionParams) => "pane.report_agent_session" {
         mutates_ui: true,
-        runs_on_socket_thread: false, routine: true,
+        routine: true,
     };
 }
 

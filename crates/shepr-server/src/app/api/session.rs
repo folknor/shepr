@@ -1,25 +1,10 @@
 use crate::app::App;
-use shepr_api::error::ApiResult;
-use shepr_api::schema::{ResponseResult, SessionSnapshot};
-
-use super::responses::success;
+use shepr_api::schema::SessionSnapshot;
 
 impl App {
-    pub(super) fn handle_session_snapshot(&mut self) -> ApiResult {
-        success(ResponseResult::SessionSnapshot {
-            snapshot: Box::new(self.session_snapshot()),
-        })
-    }
-
+    /// The session's workspaces, tabs, panes and agents, which the server
+    /// projects into each client shell's snapshot.
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
-        self.session_snapshot_with_layouts(true)
-    }
-
-    pub(crate) fn shell_session_snapshot(&self) -> SessionSnapshot {
-        self.session_snapshot_with_layouts(false)
-    }
-
-    fn session_snapshot_with_layouts(&self, include_layouts: bool) -> SessionSnapshot {
         let focused_workspace_id = self.state.active.clone();
         let focused_tab_id = self.state.active_tab_id.clone();
         let focused_pane_id = self.state.active_index().and_then(|ws_idx| {
@@ -29,16 +14,11 @@ impl App {
 
         let mut workspaces = Vec::new();
         let mut tabs = Vec::new();
-        let mut layouts = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             workspaces.extend(self.workspace_info(ws_idx));
             for tab_idx in 0..ws.tabs().len() {
                 if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
                     tabs.push(tab);
-                }
-                if include_layouts && let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx)
-                {
-                    layouts.push(layout);
                 }
             }
         }
@@ -51,7 +31,6 @@ impl App {
             workspaces,
             tabs,
             panes: self.collect_panes(),
-            layouts,
             agents: self.collect_agent_infos(),
         }
     }
@@ -60,7 +39,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::test_support::*;
-    use shepr_api::schema::{EmptyParams, Method, ResponseResult, SuccessResponse};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
 
@@ -76,21 +54,13 @@ mod tests {
     }
 
     #[test]
-    fn session_snapshot_bootstraps_runtime_resources() {
-        let mut app = app_with_two_tabs();
-        let response = app.handle_api_request(shepr_api::schema::Request {
-            id: "req_snapshot".into(),
-            method: Method::SessionSnapshot(EmptyParams::default()),
-        });
+    fn session_snapshot_lists_the_session_and_its_focus() {
+        let app = app_with_two_tabs();
+        let snapshot = app.session_snapshot();
 
-        let success: SuccessResponse = crate::test_support::test_success(&response);
-        let ResponseResult::SessionSnapshot { snapshot } = success.result else {
-            panic!("expected session snapshot response");
-        };
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.tabs.len(), 2);
         assert_eq!(snapshot.panes.len(), 2);
-        assert_eq!(snapshot.layouts.len(), 2);
         assert_eq!(
             snapshot.focused_workspace_id.as_deref(),
             Some(snapshot.workspaces[0].workspace_id.as_str())

@@ -34,7 +34,7 @@ impl HeadlessServer {
         self.shell_session_cache = Some(ShellSessionCache {
             revision: self.app.state.shell_projection_revision,
             built_at: self.app.clock.now,
-            session: self.app.shell_session_snapshot(),
+            session: self.app.session_snapshot(),
         });
     }
 

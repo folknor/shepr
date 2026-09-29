@@ -385,7 +385,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         &request.command,
         EndpointCommand::PaneSplit(params)
             if params.target_pane_id.as_deref() == Some("w1:p1")
-                && params.direction == shepr_api::schema::SplitDirection::Right
+                && params.direction == shepr_protocol::command::SplitDirection::Right
     ));
 }
 

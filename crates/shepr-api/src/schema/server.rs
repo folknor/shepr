@@ -13,18 +13,6 @@ pub struct ServerStopParams {
     pub expected_boot_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServerSshAgentRegisterParams {
-    /// Absolute remote-host agent socket. Registration lasts until this API connection closes.
-    pub socket_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServerCapabilities {
-    /// Supports connection-scoped `server.ssh_agent.register` on the local JSON API.
-    pub ssh_agent_registration: bool,
-}
-
 /// JSON emitted by `shepr status client --json`, also read during remote discovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientStatusJson {
@@ -61,7 +49,6 @@ pub struct ServerStatusJson {
     /// The running server process's boot identity, which a conditional stop
     /// (`shepr server stop --expect-boot`) names.
     pub boot_id: Option<String>,
-    pub capabilities: Option<ServerCapabilities>,
     pub compatible: Option<bool>,
     pub socket: String,
     pub restart_needed: bool,

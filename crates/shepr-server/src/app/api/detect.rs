@@ -97,7 +97,7 @@ mod tests {
     use crate::app::App;
     use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
-    use shepr_api::schema::{Method, PaneTarget, Request};
+    use shepr_api::schema::{AppMethod, AppRequest, PaneTarget};
 
     fn app_with_pane(name: &str) -> (App, shepr_core::layout::PaneId) {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -112,8 +112,8 @@ mod tests {
         (app, pane_id)
     }
 
-    fn request(app: &mut App, id: &str, method: Method) -> serde_json::Value {
-        let response = app.handle_api_request(Request {
+    fn request(app: &mut App, id: &str, method: AppMethod) -> serde_json::Value {
+        let response = app.handle_api_request(AppRequest {
             id: id.into(),
             method,
         });
@@ -145,7 +145,7 @@ mod tests {
         let response = request(
             &mut app,
             "detect_explain",
-            Method::DetectExplain(PaneTarget { pane_id: pane }),
+            AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
         );
 
         assert_eq!(response["result"]["type"], "detect_explain");
@@ -182,7 +182,7 @@ mod tests {
         let capture = request(
             &mut app,
             "detect_capture",
-            Method::DetectCapture(PaneTarget {
+            AppMethod::DetectCapture(PaneTarget {
                 pane_id: pane.clone(),
             }),
         );
@@ -200,7 +200,7 @@ mod tests {
         let explain = request(
             &mut app,
             "detect_explain",
-            Method::DetectExplain(PaneTarget { pane_id: pane }),
+            AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
         );
         assert_eq!(explain["result"]["explain"]["state"], "blocked");
     }
@@ -222,7 +222,7 @@ mod tests {
         let capture = request(
             &mut app,
             "capture_plain",
-            Method::DetectCapture(PaneTarget {
+            AppMethod::DetectCapture(PaneTarget {
                 pane_id: pane.clone(),
             }),
         );
@@ -236,7 +236,7 @@ mod tests {
         let explain = request(
             &mut app,
             "explain_plain",
-            Method::DetectExplain(PaneTarget { pane_id: pane }),
+            AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
         );
         assert_eq!(explain["error"]["code"], "agent_explain_unavailable");
     }
@@ -260,10 +260,10 @@ mod tests {
 
         for name in ["pi", "w9:p9"] {
             for method in [
-                Method::DetectCapture(PaneTarget {
+                AppMethod::DetectCapture(PaneTarget {
                     pane_id: name.into(),
                 }),
-                Method::DetectExplain(PaneTarget {
+                AppMethod::DetectExplain(PaneTarget {
                     pane_id: name.into(),
                 }),
             ] {
@@ -319,7 +319,7 @@ mod tests {
         let response = request(
             &mut app,
             "detect_explain_omp",
-            Method::DetectExplain(PaneTarget { pane_id: pane }),
+            AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
         );
 
         let explain = &response["result"]["explain"];

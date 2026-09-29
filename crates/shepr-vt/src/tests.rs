@@ -1566,3 +1566,64 @@ fn ris_drops_the_childs_colour_overrides() {
     assert_eq!((colors.foreground, colors.background), (host_fg, host_bg));
     assert_eq!(colors.palette[1], default_palette()[1]);
 }
+
+/// A logical line read a few rows at a time, each piece from the state the
+/// one before it stopped in, is byte for byte what one read gives, wherever
+/// the cuts fall: inside styled runs, inside a hyperlink, and with the line
+/// ending in blank cells.
+#[test]
+fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
+    let mut terminal = Terminal::new(10, 3, 100_000);
+    terminal.write(b"head\r\n");
+    terminal.write(
+        "\x1b[1;31mred bold \x1b[0m plain \x1b[4:3mcurly\x1b[0m \
+         \x1b]8;;https://example.test/a\x1b\\linked text across rows\x1b]8;;\x1b\\ \
+         \x1b[7minverse\x1b[0m tail  \x1b[32m      "
+            .as_bytes(),
+    );
+    terminal.write(b"\r\nnext line\r\nlast");
+    let cols = terminal.cols();
+    let last_row = terminal.total_rows() - 1;
+    let whole = terminal
+        .read_ansi_screen(sr(0, 0), sr(cols - 1, last_row), false, true)
+        .expect("test precondition");
+
+    // The wrapped line is the rows from 1 up to the first row that is not
+    // soft-wrapped. Cut it after every soft-wrapped row in turn, and after
+    // every pair of them.
+    let mut line_end = 1;
+    while terminal
+        .screen_row_wrap(ScreenRow(line_end))
+        .is_some_and(|wrap| wrap.soft_wrapped)
+    {
+        line_end += 1;
+    }
+    assert!(line_end > 4, "the line must wrap over several rows");
+    for step in [1, 2, 3] {
+        let mut carry = AnsiCarry::default();
+        let mut joined = terminal
+            .read_ansi_screen(sr(0, 0), sr(cols - 1, 0), false, true)
+            .expect("test precondition");
+        joined.push_str("\r\n");
+        let mut row = 1;
+        while row <= line_end {
+            let last = (row + step - 1).min(line_end);
+            let open_end = last < line_end;
+            joined.push_str(
+                &terminal
+                    .read_ansi_screen_carrying(sr(0, row), sr(cols - 1, last), &mut carry, open_end)
+                    .expect("test precondition"),
+            );
+            assert_eq!(carry.is_fresh(), !open_end, "step {step}, row {row}");
+            row = last + 1;
+        }
+        // The rest of the screen follows the line as it does in the whole read.
+        joined.push_str("\r\n");
+        joined.push_str(
+            &terminal
+                .read_ansi_screen(sr(0, line_end + 1), sr(cols - 1, last_row), false, true)
+                .expect("test precondition"),
+        );
+        assert_eq!(joined, whole, "step {step}");
+    }
+}

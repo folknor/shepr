@@ -48,7 +48,7 @@ pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<usize> {
 
 pub(in crate::shell) fn workspace_rows(
     workspace: &ClientShellWorkspace,
-    status: shepr_api::schema::AgentStatus,
+    status: shepr_protocol::AgentStatus,
     config: &SpacesSidebarConfig,
 ) -> Vec<Vec<ResolvedToken>> {
     sidebar_space_rows(
@@ -66,7 +66,7 @@ pub(in crate::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
     workspace_number: usize,
-    status: shepr_api::schema::AgentStatus,
+    status: shepr_protocol::AgentStatus,
     indicators: shepr_config::StatusIndicatorStyle,
     rows: &[Vec<ResolvedToken>],
     focused: bool,

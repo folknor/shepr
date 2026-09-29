@@ -12,7 +12,7 @@ pub(super) fn snapshot(
 ) -> shepr_protocol::ClientShellSnapshot {
     snapshot_from_session(
         app,
-        app.shell_session_snapshot(),
+        app.session_snapshot(),
         resolved_config,
         boot_id,
         revision,
@@ -20,7 +20,7 @@ pub(super) fn snapshot(
     )
 }
 
-/// Projects an already built `app.shell_session_snapshot()` for one shell
+/// Projects an already built `app.session_snapshot()` for one shell
 /// client.
 ///
 /// The session snapshot underneath is cached by the headless server and shared

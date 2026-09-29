@@ -13,17 +13,15 @@ use crate::limits::{
     MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT, STREAM_WRITE_TIMEOUT,
 };
 use crate::schema::{
-    ErrorResponse, Method, MethodTraits, Request, ResponseResult, ServerCapabilities,
-    SuccessResponse,
+    AppMethod, AppRequest, ErrorResponse, Method, MethodTraits, Request, ResponseResult,
+    ServerStopParams, SuccessResponse,
 };
 use crate::{ApiRequestMessage, ApiRequestSender, socket_path};
 use shepr_platform::ipc::{
-    HangupWait, LocalStream, ShutdownTrigger, ShutdownWatch, SocketFileIdentity, SocketStartupLock,
-    bind_private_socket, is_connection_closed_error, peer_is_same_user,
-    remove_socket_file_if_owned, set_local_stream_polling, shutdown_pipe, socket_file_identity,
-    wait_local_stream_hangup,
+    LocalStream, SocketFileIdentity, SocketStartupLock, bind_private_socket,
+    is_connection_closed_error, peer_is_same_user, remove_socket_file_if_owned,
+    set_local_stream_polling, socket_file_identity,
 };
-use shepr_platform::ssh_agent::SshAgentLease;
 
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
     "timed out waiting for app response; the request may still run, so its outcome is unknown";
@@ -56,9 +54,6 @@ pub struct ServerHandle {
     path: PathBuf,
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
-    /// Dropped first in `drop`: wakes every connection thread holding a
-    /// long-lived connection (the SSH agent leases) so it ends at once.
-    shutdown: Option<ShutdownTrigger>,
     // Declared last so it is released only after `drop` has removed the
     // socket file and joined the listener: a racing server cannot claim the
     // path while this one still owns it.
@@ -68,7 +63,6 @@ pub struct ServerHandle {
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
-        drop(self.shutdown.take());
 
         // The listener thread only looks at `running` after an accept returns,
         // so without a wake-up it would sit in `accept` holding the listening
@@ -125,50 +119,9 @@ pub fn start_server_with_stop_control(
     server_stop: Arc<crate::ServerStopSignal>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
-    let inherited_agent = shepr_platform::ssh_agent::inherited_agent_socket()?;
-    start_server_inner(
-        api_tx,
-        default_capabilities(),
-        Some(server_stop),
-        inherited_agent,
-        paths,
-    )
-}
-
-fn default_capabilities() -> Option<ServerCapabilities> {
-    Some(ServerCapabilities {
-        ssh_agent_registration: false,
-    })
-}
-
-fn start_server_inner(
-    api_tx: ApiRequestSender,
-    mut capabilities: Option<ServerCapabilities>,
-    server_stop: Option<Arc<crate::ServerStopSignal>>,
-    inherited_agent: Option<PathBuf>,
-    paths: &shepr_config::AppPaths,
-) -> std::io::Result<ServerHandle> {
     let path = socket_path(paths);
-    // Made before the bind, so its failure leaves no socket file behind.
-    let (shutdown, shutdown_watch) = shutdown_pipe()?;
     let (listener, startup_lock, identity) = bind_private_socket(&path)?;
     info!(path = %path.display(), "api server listening");
-
-    let ssh_agents = match shepr_platform::ssh_agent::SshAgentRegistry::new(
-        shepr_platform::ssh_agent::socket_path(&crate::socket_path(paths)),
-        inherited_agent,
-    ) {
-        Ok(registry) => Some(registry),
-        Err(error) => {
-            // Setup failure disables SSH agent registration for this server process.
-            warn!(%error, "SSH agent refresh unavailable; retaining inherited pane environment");
-            None
-        }
-    };
-
-    if let Some(capabilities) = capabilities.as_mut() {
-        capabilities.ssh_agent_registration = ssh_agents.is_some();
-    }
 
     let running = Arc::new(AtomicBool::new(true));
     let listener_running = Arc::clone(&running);
@@ -201,10 +154,7 @@ fn start_server_inner(
             return Ok(());
         };
         let api_tx = api_tx.clone();
-        let capabilities = capabilities.clone();
-        let server_stop = server_stop.clone();
-        let shutdown_watch = shutdown_watch.clone();
-        let ssh_agents = ssh_agents.clone();
+        let server_stop = Arc::clone(&server_stop);
         // `std::thread::spawn` panics when the OS refuses a new thread, which
         // would take the listener down with it. On failure the closure (and
         // the accepted stream) is dropped, which closes that one connection;
@@ -213,14 +163,7 @@ fn start_server_inner(
             .name("shepr-api-conn".into())
             .spawn(move || {
                 let _admission = admission;
-                if let Err(err) = handle_connection_with_stop(
-                    stream,
-                    &api_tx,
-                    &shutdown_watch,
-                    capabilities,
-                    server_stop.as_ref(),
-                    ssh_agents.as_ref(),
-                ) {
+                if let Err(err) = handle_connection(stream, &api_tx, &server_stop) {
                     warn!(error = %err, "api connection failed");
                 }
             })
@@ -232,7 +175,6 @@ fn start_server_inner(
         path,
         identity,
         running,
-        shutdown: Some(shutdown),
         _startup_lock: startup_lock,
     })
 }
@@ -388,13 +330,10 @@ impl AcceptBackoff {
     }
 }
 
-fn handle_connection_with_stop(
+fn handle_connection(
     mut stream: LocalStream,
     api_tx: &ApiRequestSender,
-    shutdown: &ShutdownWatch,
-    capabilities: Option<ServerCapabilities>,
-    server_stop: Option<&Arc<crate::ServerStopSignal>>,
-    ssh_agents: Option<&shepr_platform::ssh_agent::SshAgentRegistry>,
+    server_stop: &crate::ServerStopSignal,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(error = %err, "api connection write timeout unavailable");
@@ -437,78 +376,8 @@ fn handle_connection_with_stop(
         method_traits.routine,
     );
 
-    // Socket-thread methods bypass `handle_request`, so gate them here too.
-    if let Some(response) = shutdown_rejection(&request, server_stop) {
-        return finish_api_response(&mut stream, &request_id, method_traits, &response);
-    }
-
-    // Requests sent to the app loop are handled there. The method facts are
-    // the single routing classification; this thread only handles methods
-    // whose response or connection lifetime belongs here.
-    if !method_traits.runs_on_socket_thread {
-        let response = handle_request(request, api_tx, capabilities, server_stop);
-        return finish_api_response(&mut stream, &request_id, method_traits, &response);
-    }
-
-    match request.method {
-        Method::ServerSshAgentRegister(params) => {
-            let lease = ssh_agents
-                .ok_or_else(|| io::Error::other("SSH agent registration is unavailable"))
-                .and_then(|registry| registry.register(PathBuf::from(params.socket_path)));
-            let lease = match lease {
-                Ok(lease) => lease,
-                Err(error) => {
-                    return write_text_line_allow_disconnect(
-                        &mut stream,
-                        &error_response_json(
-                            &request_id,
-                            if error.kind() == io::ErrorKind::InvalidInput {
-                                crate::error::ApiErrorCode::InvalidSshAgent
-                            } else {
-                                crate::error::ApiErrorCode::SshAgentUnavailable
-                            },
-                            error.to_string(),
-                        )
-                        .body,
-                    );
-                }
-            };
-            write_api_json_line(
-                &mut stream,
-                &request_id,
-                &SuccessResponse {
-                    id: request_id.clone(),
-                    result: ResponseResult::Ok {},
-                },
-            )?;
-            // The lease lasts as long as the connection: it ends when the
-            // client hangs up or the API server shuts down (its handle drops
-            // after the final session save, so panes keep a working agent
-            // through a stop's drain). Between those the wait wakes only to
-            // re-probe agent liveness, because SSH can unlink an inherited
-            // socket after its bridge's lease closes and nothing announces it.
-            loop {
-                match wait_local_stream_hangup(&stream, shutdown, SshAgentLease::REFRESH_INTERVAL)?
-                {
-                    HangupWait::PeerClosed | HangupWait::Shutdown => break,
-                    HangupWait::Elapsed => lease.refresh()?,
-                }
-            }
-            Ok(())
-        }
-        method_body => {
-            let response = handle_request(
-                Request {
-                    id: request_id.clone(),
-                    method: method_body,
-                },
-                api_tx,
-                capabilities,
-                server_stop,
-            );
-            finish_api_response(&mut stream, &request_id, method_traits, &response)
-        }
-    }
+    let response = handle_request(request, api_tx, server_stop);
+    finish_api_response(&mut stream, &request_id, method_traits, &response)
 }
 
 fn finish_api_response(
@@ -537,79 +406,72 @@ fn finish_api_response(
     Ok(())
 }
 
+/// Answers `ping` and `server.stop` on this thread and hands every other
+/// method to the app loop as an [`AppRequest`]. The match is the one routing
+/// classification: a method the app answers has an [`AppMethod`] arm, and
+/// nothing else reaches the app.
 fn handle_request(
     request: Request,
     api_tx: &ApiRequestSender,
-    capabilities: Option<ServerCapabilities>,
-    server_stop: Option<&Arc<crate::ServerStopSignal>>,
+    server_stop: &crate::ServerStopSignal,
 ) -> crate::error::EncodedApiResponse {
-    if matches!(&request.method, Method::Ping(_)) {
-        let response = SuccessResponse {
-            id: request.id.clone(),
-            result: ResponseResult::Pong {
-                version: shepr_protocol::build_version(),
-                build_id: shepr_protocol::BUILD_ID.to_owned(),
-                boot_id: shepr_protocol::BootId::for_this_process().to_string(),
-                capabilities,
-            },
-        };
-        return crate::serialize_response_or_error_with_outcome(&request.id, &response);
-    }
-
-    if let Method::ServerStop(params) = &request.method {
-        if let Some(server_stop) = server_stop {
-            // A stop aimed at one boot must not stop another: the caller
-            // observed that instance, and the occupant may have been replaced
-            // since. The refusal leaves this server running.
-            if let Some(expected) = &params.expected_boot_id {
-                let actual = shepr_protocol::BootId::for_this_process();
-                if actual != expected.as_str() {
-                    return error_response_json(
-                        &request.id,
-                        crate::error::ApiErrorCode::ServerBootMismatch,
-                        format!(
-                            "refusing to stop: this server is boot {actual}, not the expected boot {expected}"
-                        ),
-                    );
-                }
-            }
-            server_stop.request();
+    let Request { id, method } = request;
+    let method = match method {
+        Method::Ping(_) => {
             let response = SuccessResponse {
-                id: request.id.clone(),
-                result: ResponseResult::Ok {},
+                id: id.clone(),
+                result: ResponseResult::Pong {
+                    version: shepr_protocol::build_version(),
+                    build_id: shepr_protocol::BUILD_ID.to_owned(),
+                    boot_id: shepr_protocol::BootId::for_this_process().to_string(),
+                },
             };
-            return crate::serialize_response_or_error_with_outcome(&request.id, &response);
+            return crate::serialize_response_or_error_with_outcome(&id, &response);
         }
-    } else if let Some(response) = shutdown_rejection(&request, server_stop) {
-        return response;
+        Method::ServerStop(params) => return stop_server(&id, &params, server_stop),
+        Method::DetectCapture(target) => AppMethod::DetectCapture(target),
+        Method::DetectExplain(target) => AppMethod::DetectExplain(target),
+        Method::PaneReportAgent(params) => AppMethod::PaneReportAgent(params),
+        Method::PaneReportAgentSession(params) => AppMethod::PaneReportAgentSession(params),
+    };
+
+    if server_stop.is_requested() {
+        return error_response_json(
+            &id,
+            crate::error::ApiErrorCode::ServerUnavailable,
+            "server is shutting down".into(),
+        );
     }
 
-    dispatch_to_app(request, api_tx)
+    dispatch_to_app(AppRequest { id, method }, api_tx)
 }
 
-fn server_is_stopping(server_stop: Option<&Arc<crate::ServerStopSignal>>) -> bool {
-    server_stop.is_some_and(|stop| stop.is_requested())
-}
-
-fn shutdown_rejection(
-    request: &Request,
-    server_stop: Option<&Arc<crate::ServerStopSignal>>,
-) -> Option<crate::error::EncodedApiResponse> {
-    if !server_is_stopping(server_stop)
-        || matches!(&request.method, Method::Ping(_) | Method::ServerStop(_))
-    {
-        return None;
+fn stop_server(
+    id: &str,
+    params: &ServerStopParams,
+    server_stop: &crate::ServerStopSignal,
+) -> crate::error::EncodedApiResponse {
+    // A stop aimed at one boot must not stop another: the caller observed
+    // that instance, and the occupant may have been replaced since. The
+    // refusal leaves this server running.
+    if let Some(expected) = &params.expected_boot_id {
+        let actual = shepr_protocol::BootId::for_this_process();
+        if actual != expected.as_str() {
+            return error_response_json(
+                id,
+                crate::error::ApiErrorCode::ServerBootMismatch,
+                format!(
+                    "refusing to stop: this server is boot {actual}, not the expected boot {expected}"
+                ),
+            );
+        }
     }
-
-    Some(error_response_json(
-        &request.id,
-        crate::error::ApiErrorCode::ServerUnavailable,
-        "server is shutting down".into(),
-    ))
-}
-
-pub fn api_method_name(method: &Method) -> &'static str {
-    method.traits().name
+    server_stop.request();
+    let response = SuccessResponse {
+        id: id.to_owned(),
+        result: ResponseResult::Ok {},
+    };
+    crate::serialize_response_or_error_with_outcome(id, &response)
 }
 
 fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option<String>> {
@@ -624,9 +486,7 @@ fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option
 /// writes just after connecting pays no poll interval, and a large request
 /// costs one syscall per chunk rather than per byte. Reading in chunks can
 /// consume bytes past the newline, which are dropped. The protocol is one
-/// request per connection and no method reads a payload after its line: the
-/// SSH-agent lease loop detects the peer's hang-up with a readiness check that
-/// ignores unread bytes, and ends on EOF whether or not stray bytes preceded it.
+/// request per connection and no method reads a payload after its line.
 fn read_request_line_until(
     stream: &mut LocalStream,
     deadline: Instant,
@@ -718,14 +578,17 @@ fn write_api_json_line_allow_disconnect<T: serde::Serialize>(
 }
 
 fn dispatch_to_app(
-    request: Request,
+    request: AppRequest,
     api_tx: &ApiRequestSender,
 ) -> crate::error::EncodedApiResponse {
     let request_id = request.id.clone();
     crate::error::encode_result_with_outcome(request_id, dispatch_to_app_result(request, api_tx))
 }
 
-fn dispatch_to_app_result(request: Request, api_tx: &ApiRequestSender) -> crate::error::ApiResult {
+fn dispatch_to_app_result(
+    request: AppRequest,
+    api_tx: &ApiRequestSender,
+) -> crate::error::ApiResult {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     if let Err(err) = api_tx.send(ApiRequestMessage {
         request,
@@ -761,17 +624,6 @@ fn error_response_json(
     )
 }
 
-/// Serves one short-lived request; the shutdown watch is never waited on.
-#[cfg(test)]
-fn handle_connection(
-    stream: LocalStream,
-    api_tx: &ApiRequestSender,
-    capabilities: Option<ServerCapabilities>,
-) -> std::io::Result<()> {
-    let (_shutdown, watch) = shutdown_pipe()?;
-    handle_connection_with_stop(stream, api_tx, &watch, capabilities, None, None)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,8 +632,20 @@ mod tests {
     use std::fs;
     use std::io::{BufRead, BufReader, Read};
     use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
     use tokio::sync::mpsc;
+
+    fn running() -> crate::ServerStopSignal {
+        crate::ServerStopSignal::default()
+    }
+
+    fn detect_capture(id: &str) -> Request {
+        Request {
+            id: id.into(),
+            method: Method::DetectCapture(crate::schema::PaneTarget {
+                pane_id: "w1:p1".into(),
+            }),
+        }
+    }
 
     /// A fresh path in its own scratch directory.
     fn unique_test_path(name: &str) -> PathBuf {
@@ -956,7 +820,6 @@ mod tests {
             path: path.clone(),
             identity,
             running,
-            shutdown: None,
             _startup_lock: startup_lock,
         };
         let refusal = shepr_platform::ipc::acquire_socket_startup_lock(&path)
@@ -979,76 +842,6 @@ mod tests {
             !path.try_exists().expect("stat socket file"),
             "socket file must be removed"
         );
-    }
-
-    struct LeaseFixture {
-        _directory: ScratchDir,
-        _agent_listener: UnixListener,
-        stable: PathBuf,
-        registry: shepr_platform::ssh_agent::SshAgentRegistry,
-        client: LocalStream,
-        worker: std::thread::JoinHandle<()>,
-    }
-
-    /// Registers an agent lease over a fresh connection served on a worker
-    /// thread, and checks the success line and the published address.
-    fn register_lease(name: &str, shutdown: ShutdownWatch) -> LeaseFixture {
-        let directory = ScratchDir::new(name);
-        let agent = directory.join("upstream");
-        let agent_listener = UnixListener::bind(&agent).expect("test precondition");
-        let stable = directory.join("stable");
-        let registry = shepr_platform::ssh_agent::SshAgentRegistry::new(stable.clone(), None)
-            .expect("test precondition");
-        let (mut client, server) = local_stream_pair(name);
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let worker_registry = registry.clone();
-        let worker = std::thread::spawn(move || {
-            handle_connection_with_stop(server, &tx, &shutdown, None, None, Some(&worker_registry))
-                .expect("test precondition");
-        });
-        let request = Request {
-            id: "agent-lease".into(),
-            method: Method::ServerSshAgentRegister(crate::schema::ServerSshAgentRegisterParams {
-                socket_path: agent.to_string_lossy().into_owned(),
-            }),
-        };
-        let encoded = serde_json::to_string(&request).expect("test precondition");
-        write_text_line(&mut client, &encoded).expect("test precondition");
-        let response: SuccessResponse =
-            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
-        assert!(matches!(response.result, ResponseResult::Ok {}));
-        assert_eq!(fs::read_link(&stable).expect("test precondition"), agent);
-        LeaseFixture {
-            _directory: directory,
-            _agent_listener: agent_listener,
-            stable,
-            registry,
-            client,
-            worker,
-        }
-    }
-
-    #[test]
-    fn ssh_agent_registration_lasts_only_for_the_api_connection() {
-        let (_shutdown, watch) = shutdown_pipe().expect("test precondition");
-        let lease = register_lease("agent-lease", watch);
-        drop(lease.client);
-        lease.worker.join().expect("test precondition");
-        assert!(!lease.stable.try_exists().expect("stat stable agent link"));
-        drop(lease.registry);
-    }
-
-    /// Dropping the server handle's shutdown trigger ends a lease whose client
-    /// is still connected, and the lease's address goes with it.
-    #[test]
-    fn ssh_agent_lease_ends_when_the_api_server_shuts_down() {
-        let (shutdown, watch) = shutdown_pipe().expect("test precondition");
-        let lease = register_lease("agent-lease-shutdown", watch);
-        drop(shutdown);
-        lease.worker.join().expect("test precondition");
-        assert!(!lease.stable.try_exists().expect("stat stable agent link"));
-        drop(lease.client);
-        drop(lease.registry);
     }
 
     #[test]
@@ -1120,7 +913,7 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(server, &api_tx, None).expect("test precondition");
+        handle_connection(server, &api_tx, &running()).expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -1139,7 +932,7 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(server, &api_tx, None).expect("test precondition");
+        handle_connection(server, &api_tx, &running()).expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -1157,10 +950,7 @@ mod tests {
                 method: Method::Ping(crate::schema::PingParams::default()),
             },
             &tx,
-            Some(ServerCapabilities {
-                ssh_agent_registration: false,
-            }),
-            None,
+            &running(),
         );
 
         let parsed: SuccessResponse =
@@ -1172,15 +962,14 @@ mod tests {
     #[test]
     fn server_stop_control_bypasses_app_channel() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let stop = Arc::new(crate::ServerStopSignal::default());
+        let stop = running();
         let response = handle_request(
             Request {
                 id: "priority_stop".into(),
                 method: Method::ServerStop(crate::schema::ServerStopParams::default()),
             },
             &tx,
-            None,
-            Some(&stop),
+            &stop,
         );
 
         let response: serde_json::Value =
@@ -1189,15 +978,7 @@ mod tests {
         assert_eq!(response["result"]["type"], "ok");
         assert!(stop.is_requested());
 
-        let rejected = handle_request(
-            Request {
-                id: "after_stop".into(),
-                method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
-            },
-            &tx,
-            None,
-            Some(&stop),
-        );
+        let rejected = handle_request(detect_capture("after_stop"), &tx, &stop);
         let rejected: serde_json::Value =
             serde_json::from_str(&rejected.body).expect("test precondition");
         assert_eq!(rejected["error"]["code"], "server_unavailable");
@@ -1213,14 +994,13 @@ mod tests {
                 method: Method::Ping(crate::schema::PingParams::default()),
             },
             &tx,
-            None,
-            None,
+            &running(),
         );
         let ping: SuccessResponse = serde_json::from_str(&ping.body).expect("test precondition");
         let ResponseResult::Pong { boot_id, .. } = ping.result else {
             panic!("ping did not answer with a pong");
         };
-        let stop_with = |expected_boot_id: Option<String>, stop: &Arc<crate::ServerStopSignal>| {
+        let stop_with = |expected_boot_id: Option<String>, stop: &crate::ServerStopSignal| {
             let response = handle_request(
                 Request {
                     id: "stop".into(),
@@ -1229,18 +1009,17 @@ mod tests {
                     }),
                 },
                 &tx,
-                None,
-                Some(stop),
+                stop,
             );
             serde_json::from_str::<serde_json::Value>(&response.body).expect("test precondition")
         };
 
-        let other_boot = Arc::new(crate::ServerStopSignal::default());
+        let other_boot = running();
         let refused = stop_with(Some(format!("{boot_id}0")), &other_boot);
         assert_eq!(refused["error"]["code"], "server_boot_mismatch");
         assert!(!other_boot.is_requested());
 
-        let this_boot = Arc::new(crate::ServerStopSignal::default());
+        let this_boot = running();
         let stopped = stop_with(Some(boot_id), &this_boot);
         assert_eq!(stopped["result"]["type"], "ok");
         assert!(this_boot.is_requested());
@@ -1249,17 +1028,17 @@ mod tests {
     #[test]
     fn request_dispatches_to_app_channel() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let request = Request {
-            id: "req_2".into(),
-            method: Method::SessionSnapshot(crate::schema::EmptyParams::default()),
-        };
-
-        let request_for_thread = request.clone();
         let thread =
-            std::thread::spawn(move || handle_request(request_for_thread, &tx, None, None));
+            std::thread::spawn(move || handle_request(detect_capture("req_2"), &tx, &running()));
 
         let msg = rx.blocking_recv().expect("test precondition");
         assert_eq!(msg.request.id, "req_2");
+        assert_eq!(
+            msg.request.method,
+            AppMethod::DetectCapture(crate::schema::PaneTarget {
+                pane_id: "w1:p1".into(),
+            })
+        );
         msg.respond_to
             .send(Ok(ResponseResult::Ok {}))
             .expect("test precondition");
@@ -1291,7 +1070,7 @@ mod tests {
             let (api_tx, mut api_rx) = mpsc::unbounded_channel();
             let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
-            handle_connection(server, &api_tx, None).expect("test precondition");
+            handle_connection(server, &api_tx, &running()).expect("test precondition");
 
             let mut response = String::new();
             BufReader::new(client)

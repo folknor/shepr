@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use shepr_protocol::{PublicPaneId, PublicTabId, WorkspaceId};
 
 use super::agents::AgentInfo;
-use super::panes::{PaneInfo, PaneLayoutSnapshot};
+use super::panes::PaneInfo;
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 
@@ -18,6 +18,5 @@ pub struct SessionSnapshot {
     pub workspaces: Vec<WorkspaceInfo>,
     pub tabs: Vec<TabInfo>,
     pub panes: Vec<PaneInfo>,
-    pub layouts: Vec<PaneLayoutSnapshot>,
     pub agents: Vec<AgentInfo>,
 }

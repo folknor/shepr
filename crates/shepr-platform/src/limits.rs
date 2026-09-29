@@ -42,10 +42,6 @@ pub(super) const CLIENT_STREAM_POLL_INTERVAL_MS: i32 = 100;
 /// The delay gives desktop helpers time to claim a selection.
 pub(super) const CLIPBOARD_OWNER_STARTUP_WAIT: Duration = Duration::from_millis(100);
 
-/// Interval between SSH agent liveness probes.
-/// The interval detects stale agents promptly without repeated probes.
-pub(super) const SSH_AGENT_PROBE_INTERVAL: Duration = Duration::from_secs(1);
-
 /// Initial delay after a shutdown signal stream is lost.
 /// The delay retries promptly while avoiding a reconnect spin.
 pub(super) const SHUTDOWN_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);

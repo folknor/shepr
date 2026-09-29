@@ -40,7 +40,6 @@ pub(crate) enum EndpointSendOutcome {
 
 pub struct EndpointRegistry {
     active: ClientEndpointId,
-    input_enabled: bool,
     connections: HashMap<ClientEndpointId, EndpointConnection>,
     failures: Vec<EndpointTransportFailure>,
 }
@@ -49,7 +48,6 @@ impl EndpointRegistry {
     pub(crate) fn empty() -> Self {
         Self {
             active: ClientEndpointId::Local,
-            input_enabled: false,
             connections: HashMap::new(),
             failures: Vec::new(),
         }
@@ -58,7 +56,6 @@ impl EndpointRegistry {
     /// A registry whose Local slot is a server socket on this host, connected at `now`.
     pub fn new_at(local: impl EndpointTransport + 'static, generation: u64, now: Instant) -> Self {
         let mut registry = Self::empty();
-        registry.input_enabled = true;
         registry.insert(ClientEndpointId::Local, local, generation, true, now);
         registry
     }
@@ -74,20 +71,14 @@ impl EndpointRegistry {
         &self.active
     }
 
+    /// Whether the active endpoint's connection holds a live surface. This is transport state
+    /// only: who owns the presentation, and so whether pane input may flow, is the client's
+    /// `Presentation`, which also requires `Owned` (see
+    /// `shell_runtime::active_endpoint_owns_presentation`).
     pub fn active_surface_available(&self) -> bool {
-        self.input_enabled
-            && self
-                .connections
-                .get(&self.active)
-                .is_some_and(|connection| connection.surface_active)
-    }
-
-    pub(crate) fn freeze_input(&mut self) {
-        self.input_enabled = false;
-    }
-
-    pub fn unfreeze_input(&mut self) {
-        self.input_enabled = true;
+        self.connections
+            .get(&self.active)
+            .is_some_and(|connection| connection.surface_active)
     }
 
     pub(crate) fn connection(&self, endpoint_id: &ClientEndpointId) -> Option<&EndpointConnection> {

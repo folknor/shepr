@@ -462,28 +462,3 @@ impl TestResponseJson for shepr_api::error::ApiResult {
 pub(crate) fn test_json(response: &impl TestResponseJson) -> String {
     response.test_json()
 }
-
-/// An API reply read as the success it is expected to be; an error is a
-/// broken test and panics.
-pub(crate) trait TestReply {
-    fn success(&self) -> shepr_api::schema::SuccessResponse;
-}
-
-impl TestReply for shepr_api::error::ApiResult {
-    fn success(&self) -> shepr_api::schema::SuccessResponse {
-        shepr_api::schema::SuccessResponse {
-            id: String::new(),
-            result: self.clone().expect("expected successful API result"),
-        }
-    }
-}
-
-impl TestReply for String {
-    fn success(&self) -> shepr_api::schema::SuccessResponse {
-        serde_json::from_str(self).expect("expected successful API response")
-    }
-}
-
-pub(crate) fn test_success(response: &impl TestReply) -> shepr_api::schema::SuccessResponse {
-    response.success()
-}

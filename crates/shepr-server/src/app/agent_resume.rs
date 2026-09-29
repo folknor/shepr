@@ -362,6 +362,7 @@ impl App {
         }
 
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        self.runtimes_replaced_panes.push(pane_id);
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.pending_agent_resume_plan = None;
         }

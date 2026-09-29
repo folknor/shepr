@@ -284,6 +284,24 @@ impl HeadlessServer {
     /// it once their change is applied.
     pub(super) fn sync_pane_focus(&mut self) {
         let focused = self.panes_holding_focus();
+        // A pane whose runtime was replaced (an agent resume starting its
+        // shell) stays in the set, so the set diff never tells the new
+        // runtime; it gets the focus-in report here. A replaced pane that
+        // newly gains focus is told by the diff below.
+        let replaced = std::mem::take(&mut self.app.runtimes_replaced_panes);
+        for pane_id in replaced {
+            let Some(workspace_id) = self
+                .app
+                .find_pane(pane_id)
+                .and_then(|(ws_idx, _)| self.app.public_workspace_id(ws_idx))
+            else {
+                continue;
+            };
+            let key = (workspace_id, pane_id);
+            if focused.contains(&key) && self.focused_panes.contains(&key) {
+                self.send_pane_focus(&key.0, pane_id, shepr_vt::FocusEvent::Gained);
+            }
+        }
         if focused == self.focused_panes {
             return;
         }
@@ -312,6 +330,23 @@ impl HeadlessServer {
             self.app
                 .send_pane_focus_event(workspace_index, pane_id, event);
         }
+    }
+
+    /// The active shell clients with a writer that view `pane_id`, in id
+    /// order: the recipients of a clipboard write from that pane.
+    pub(super) fn clipboard_viewers(&self, pane_id: shepr_core::layout::PaneId) -> Vec<ClientId> {
+        let Some((workspace_index, _)) = self.app.find_pane(pane_id) else {
+            return Vec::new();
+        };
+        let mut viewers: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, client)| client.is_active_shell_client() && client.writer.is_some())
+            .map(|(&client_id, _)| client_id)
+            .filter(|&client_id| self.shell_client_views_pane(client_id, workspace_index, pane_id))
+            .collect();
+        viewers.sort_unstable();
+        viewers
     }
 
     pub(super) fn shell_client_views_pane(
@@ -442,6 +477,7 @@ impl HeadlessServer {
             for client in self.clients.values_mut() {
                 client.request_recompute();
             }
+            self.sync_pane_focus();
         }
     }
 

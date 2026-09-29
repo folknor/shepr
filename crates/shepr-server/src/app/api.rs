@@ -26,7 +26,7 @@ pub(crate) struct EndpointOutcome {
 impl App {
     pub(crate) fn handle_api_request_with_render(
         &mut self,
-        request: shepr_api::schema::Request,
+        request: shepr_api::schema::AppRequest,
     ) -> Outcome {
         let mutates_ui = request.method.traits().mutates_ui;
         let render = if mutates_ui {
@@ -41,30 +41,18 @@ impl App {
 
     pub(crate) fn handle_api_request_after_internal_events_drained(
         &mut self,
-        request: shepr_api::schema::Request,
+        request: shepr_api::schema::AppRequest,
     ) -> ApiResult {
         self.sync_pending_terminal_titles();
-        use shepr_api::schema::Method;
+        use shepr_api::schema::AppMethod;
 
-        let method_name = shepr_api::api_method_name(&request.method);
         match request.method {
-            // The API server answers these on the connection thread; reaching
-            // here is a routing bug, reported as such.
-            Method::Ping(_) | Method::ServerStop(_) | Method::ServerSshAgentRegister(_) => {
-                tracing::warn!(
-                    method = method_name,
-                    "api request routed to the app by mistake"
-                );
-                responses::failure(
-                    ApiErrorCode::InternalError,
-                    format!("{method_name} is not handled by the app"),
-                )
+            AppMethod::DetectCapture(target) => self.handle_detect_capture(&target),
+            AppMethod::DetectExplain(target) => self.handle_detect_explain(&target),
+            AppMethod::PaneReportAgent(params) => self.handle_pane_report_agent(params),
+            AppMethod::PaneReportAgentSession(params) => {
+                self.handle_pane_report_agent_session(params)
             }
-            Method::SessionSnapshot(_) => self.handle_session_snapshot(),
-            Method::DetectCapture(target) => self.handle_detect_capture(&target),
-            Method::DetectExplain(target) => self.handle_detect_explain(&target),
-            Method::PaneReportAgent(params) => self.handle_pane_report_agent(params),
-            Method::PaneReportAgentSession(params) => self.handle_pane_report_agent_session(params),
         }
     }
 
@@ -153,7 +141,7 @@ use shepr_mux::events::AppEvent;
 
 #[cfg(test)]
 impl App {
-    pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::Request) -> String {
+    pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::AppRequest) -> String {
         let id = request.id.clone();
         self.drain_all_internal_events();
         shepr_api::error::encode_result(
@@ -193,29 +181,13 @@ mod tests {
     use shepr_agent::detect::{Agent, AgentState};
 
     #[test]
-    fn methods_answered_before_the_app_are_reported_as_misrouted() {
+    fn the_surface_lease_answered_by_the_loop_is_reported_as_misrouted() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );
-
-        for method in [
-            shepr_api::schema::Method::ServerStop(shepr_api::schema::ServerStopParams::default()),
-            shepr_api::schema::Method::Ping(shepr_api::schema::PingParams::default()),
-        ] {
-            let name = shepr_api::api_method_name(&method);
-            let response = app.handle_api_request(shepr_api::schema::Request {
-                id: "misrouted".into(),
-                method,
-            });
-            let response: serde_json::Value =
-                serde_json::from_str(&crate::test_support::test_json(&response))
-                    .expect("test precondition");
-            assert_eq!(response["id"], "misrouted", "{name}");
-            assert_eq!(response["error"]["code"], "internal_error", "{name}");
-        }
 
         let surface = app.handle_endpoint_command(EndpointCommand::ClientShellSurfaceSet(
             shepr_protocol::command::ClientShellSurfaceSetParams { active: true },

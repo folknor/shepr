@@ -37,7 +37,6 @@ fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
         | EnvVar::XdgRuntimeDir
         | EnvVar::Shell
         | EnvVar::Path
-        | EnvVar::SshAuthSock
         | EnvVar::SshConnection
         | EnvVar::SshTty
         | EnvVar::VscodeIpcHookCli
@@ -183,9 +182,6 @@ impl PaneLaunchEnv {
 }
 
 pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
-    if let Some(path) = shepr_platform::ssh_agent::pane_agent_socket(&launch_env.api_socket_path) {
-        cmd.env(EnvVar::SshAuthSock, path);
-    }
     // Explicit launch env below can opt back into a scrubbed variable, such as
     // an intentional child agent session or host handle.
     for name in registered_names_where(|policy| policy != PaneEnvPolicy::Allowed) {
@@ -263,6 +259,7 @@ mod tests {
             command.env(name, "inherited");
         }
         command.env("SHEPR_TEST_UNREGISTERED", "inherited");
+        command.env("SSH_AUTH_SOCK", "/run/user/1000/agent.sock");
 
         apply_pane_terminal_env(&mut command);
         apply_pane_launch_env(
@@ -292,6 +289,11 @@ mod tests {
             command.get_env("SHEPR_TEST_UNREGISTERED"),
             Some(std::ffi::OsStr::new("inherited")),
             "a variable shepr does not know passes through to the pane"
+        );
+        assert_eq!(
+            command.get_env("SSH_AUTH_SOCK"),
+            Some(std::ffi::OsStr::new("/run/user/1000/agent.sock")),
+            "a pane reaches the server's own SSH agent"
         );
         assert_eq!(
             command.get_env(EnvVar::TermProgram),

@@ -161,6 +161,12 @@ pub struct HeadlessServer {
     shutdown_flushes: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// Pane exits held until their pre-removal session checkpoint reaches disk.
     pending_checkpointed_pane_exits: VecDeque<shepr_mux::events::AppEvent>,
+    /// Answers to client-shell endpoint commands, in the order the commands
+    /// ran, waiting for the render that shows their effect. The loop queues
+    /// them to the clients after that render (or at once when no render is
+    /// pending), so a reply never reaches a client ahead of the projection
+    /// its command changed. See `flush_endpoint_replies`.
+    endpoint_replies: Vec<(ClientId, ServerMessage)>,
     // Kept after the listener so it is released only after socket cleanup and listener drop.
     _client_socket_startup_lock: SocketStartupLock,
 }
@@ -229,6 +235,7 @@ impl HeadlessServer {
             server_event_tx,
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
+            endpoint_replies: Vec::new(),
             _client_socket_startup_lock: client_socket_startup_lock,
         })
     }
@@ -268,6 +275,10 @@ impl HeadlessServer {
         loop {
             // If shutdown has been initiated, complete it and exit.
             if self.lifecycle.phase() == ShutdownPhase::Stopping {
+                // Commands answered before the stop (a command that arrived
+                // while stopping is answered with the refusal) still reach
+                // their clients, ahead of the shutdown notice.
+                self.flush_endpoint_replies();
                 if let Err(err) = self.complete_shutdown().await {
                     run_error.get_or_insert(err);
                 }
@@ -402,10 +413,18 @@ impl HeadlessServer {
                 }
                 self.app.record_render_attempt(now, !hidden_only);
                 render_demand = RenderDemand::None;
+                // After the render, so each reply follows the projection its
+                // command changed on the client's control lane.
+                self.flush_endpoint_replies();
                 continue;
             }
 
-            // 7. Wait for next event.
+            // 7. Wait for next event. With no render pending, no reply has a
+            // surface update to wait for. A pending render that the cadence
+            // holds back keeps its replies until it runs.
+            if render_demand == RenderDemand::None {
+                self.flush_endpoint_replies();
+            }
             let next_deadline = self.app.next_headless_loop_deadline_with_git_refresh(
                 now,
                 render_demand != RenderDemand::None,
@@ -435,6 +454,9 @@ impl HeadlessServer {
                         None => LoopEvent::Timer,
                     },
                     _ = sleep_until_or_pending(next_deadline) => LoopEvent::Timer,
+                    // A save ended: the scheduled tasks reap it and start
+                    // whatever save waited for it.
+                    () = self.app.session_saver.save_finished().notified() => LoopEvent::Timer,
                     _ = self.app.render_notify.notified() => LoopEvent::RenderRequested,
                     ready = client_listener_ready.readable() => {
                         match ready {
@@ -898,6 +920,27 @@ impl HeadlessServer {
         true
     }
 
+    /// Holds an endpoint command's reply for the post-render flush.
+    fn queue_endpoint_reply(&mut self, client_id: ClientId, message: ServerMessage) {
+        self.endpoint_replies.push((client_id, message));
+    }
+
+    /// Hands every held endpoint reply to its client's control lane, in the
+    /// order the commands ran. The render before this queued each client's
+    /// changed projection on the same lane, so a reply follows it there. The
+    /// pane frame of that render travels in the render slot, which the
+    /// writer drains after pending control messages, so the reply can reach
+    /// the socket before that frame. A reply for a client that left in the
+    /// meantime is dropped by `send_to_client`.
+    fn flush_endpoint_replies(&mut self) {
+        if self.endpoint_replies.is_empty() {
+            return;
+        }
+        for (client_id, message) in std::mem::take(&mut self.endpoint_replies) {
+            self.send_to_client(client_id, &message);
+        }
+    }
+
     /// Handles a server event, then reports any change in which panes hold
     /// terminal focus. Returns true if the event requires a re-render.
     fn handle_server_event(&mut self, ev: ServerEvent) -> bool {
@@ -1175,26 +1218,6 @@ impl HeadlessServer {
             } => {
                 self.handle_client_shell_endpoint_request(client_id, boot_id, request_id, *command)
             }
-            ServerEvent::ClientShellEndpointResponseReady {
-                client_id,
-                boot_id,
-                request_id,
-                result,
-            } => {
-                let Some(client) = self.clients.get_mut(&client_id) else {
-                    return false;
-                };
-                if !client.shell_state().endpoint_command_in_flight
-                    || boot_id != self.client_shell_boot_id
-                {
-                    return false;
-                }
-                client.shell_state_mut().endpoint_command_in_flight = false;
-                let message =
-                    crate::server::client_commands::response_message(boot_id, request_id, *result);
-                self.send_to_client(client_id, &message);
-                false
-            }
             ServerEvent::ClientDetach { client_id } => {
                 info!(?client_id, "client detached");
                 self.remove_client_and_resize_if_needed(client_id);
@@ -1275,7 +1298,10 @@ impl HeadlessServer {
             self.app.start_git_status_refresh_if_due(now);
         }
 
-        if self.app.session_saver.is_due(now) {
+        // The persister's completion signal wakes the loop when a save ends;
+        // reaping it may make the next save (or a held checkpoint) startable.
+        let save_reaped = self.app.reap_finished_session_save();
+        if save_reaped || self.app.session_saver.is_due(now) {
             self.app.start_background_session_save();
         }
 
@@ -1301,10 +1327,16 @@ impl HeadlessServer {
         // pane printing at least every theme-wait interval postponed the first
         // restored agent indefinitely.
         self.app.sync_pending_agent_resume_deadline(now);
-        changed |= self
+        let resumed = self
             .app
             .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now));
-        changed
+        if resumed {
+            // A resumed agent runs in a fresh runtime; one whose pane a
+            // client has focused gets its focus-in report now rather than on
+            // the next focus change.
+            self.sync_pane_focus();
+        }
+        changed | resumed
     }
 }
 
